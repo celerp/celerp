@@ -195,6 +195,28 @@ async def test_a_quotation_list_takes_full_as_the_matched_lot(client):
     assert _qtys(await _list_lines(client, t, lst)) == [6.0]
 
 
+
+async def test_a_quotation_list_takes_one_when_full_has_nothing_on_hand(client):
+    t = await _register(client)
+    await _ct(client, t, "QLZ", 0, default_sell_qty="full")
+    lst = await _quotation_list(client, t)
+
+    body = (await _list_scan(client, t, lst, "QLZ")).json()
+    assert body["scanned"] == 1, body
+    assert _qtys(await _list_lines(client, t, lst)) == [1.0]
+
+
+async def test_a_value_under_attributes_scans_as_unset(client):
+    t = await _register(client)
+    r = await client.post("/items", headers=_h(t), json={
+        "status": "available", "sku": "ATTR", "name": "Attr", "quantity": 5, "sell_by": "piece",
+        "allow_splitting": True, "attributes": {"default_sell_qty": 3}})
+    assert r.status_code == 200, r.text
+    doc = await _doc(client, t)
+
+    assert (await _scan(client, t, doc, "ATTR")).json()["scanned"] == 1
+    assert _qtys(await _lines(client, t, doc)) == [1.0]
+
 async def test_race_for_the_last_parcel_lands_once(_db_engine):
     from test_doc_scan_concurrency import _race, _seed_draft_doc, _seed_unique_item
     from test_list_outcome_concurrency import _barcode, _cleanup, _factory, _seed_company, _state

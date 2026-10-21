@@ -57,7 +57,7 @@ from celerp.services.item_erasure import erased_from_connector
 from celerp.services.field_schema import AMOUNT_ITEM_KEYS, reject_system_item_fields
 from celerp.services.money import to_stored_float, unit_price_from_total
 from celerp.services.peer_import import SourceRevision
-from celerp.services.line_measures import FULL, stored_sell_qty, validate_default_sell_qty
+from celerp.services.line_measures import check_sell_qty_fits_unit, validate_default_sell_qty
 from celerp.services.permissions import role_has_permission
 from celerp.services.vertical_presets import category_item_defaults
 from celerp.services.pricing import derived_price_keys, get_price_config, is_derived, price_key, price_keys_in
@@ -3948,17 +3948,15 @@ async def write_import_batch(
         # number when the record changes the unit.
         stored_state = (stored_proj.state or {}) if stored_proj is not None else {}
         unit_changed = bool(sell_by) and sell_by != str(stored_state.get("sell_by") or "")
-        if "default_sell_qty" in data or (
-                unit_changed and stored_sell_qty(stored_state.get("default_sell_qty")) not in (None, FULL)):
-            try:
-                sell_qty = validate_default_sell_qty(
-                    data.get("default_sell_qty", stored_state.get("default_sell_qty")),
-                    sell_by or stored_state.get("sell_by"), unit_map)
-            except HTTPException as exc:
-                outcome.add(entity_id, "rejected", _row_refused(named, exc.detail))
-                continue
+        try:
             if "default_sell_qty" in data:
-                data["default_sell_qty"] = sell_qty
+                data["default_sell_qty"] = validate_default_sell_qty(
+                    data["default_sell_qty"], sell_by or stored_state.get("sell_by"), unit_map)
+            elif unit_changed:
+                check_sell_qty_fits_unit(stored_state.get("default_sell_qty"), sell_by, unit_map)
+        except HTTPException as exc:
+            outcome.add(entity_id, "rejected", _row_refused(named, exc.detail))
+            continue
 
         if event_type == "item.patched" and stored_proj is not None:
             if not role_has_permission(settings, role, "edit_inventory_amounts"):

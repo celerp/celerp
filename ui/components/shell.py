@@ -546,11 +546,11 @@ function initCombobox(wrap) {
     }
   }
 
-  // allow-custom: typed text that is not the committed label becomes the value.
-  // Typing already mirrors it into the hidden input, so the commit is the change
-  // event; text equal to the committed label keeps the committed value.
+  // allow-custom: on Enter or Tab, typed text that is not the committed label becomes
+  // the value (an emptied box clears it). Typing already mirrors it into the hidden
+  // input, so the commit is the change event; text equal to the committed label keeps
+  // the committed value. Leaving the box any other way never commits a filter query.
   function commitCustom() {
-    if (!input.value) return;
     if (input.value === committedLabel) { hidden.value = committedValue; return; }
     hidden.value = input.value;
     committedValue = input.value;
@@ -601,7 +601,17 @@ function initCombobox(wrap) {
       // Typing filters the list in multi mode; the selection bag is the state,
       // so restore the summary rather than leaving the search text behind.
       if (isMulti) { syncMultiLabel(); return; }
-      if (allowCustom) { commitCustom(); return; }
+      // allow-custom keeps the hidden value in step with typing; if the box was
+      // cleared, commit whatever text stands as the value.
+      if (allowCustom) {
+        if (input.value && !hidden.value) {
+          hidden.value = input.value;
+          committedValue = input.value;
+          committedLabel = input.value;
+          fireChange();
+        }
+        return;
+      }
       // Plain single-select over a fixed option set: typing only filters, it
       // never commits. Restore the committed label and value so blurring after a
       // search that was not confirmed never leaves a stale query in the box or an
@@ -613,19 +623,22 @@ function initCombobox(wrap) {
   input.addEventListener('keydown', function(e) {
     if (e.key === 'ArrowDown') { moveFocus(1); e.preventDefault(); }
     if (e.key === 'ArrowUp') { moveFocus(-1); e.preventDefault(); }
-    if (e.key === 'Enter') {
+    // Enter commits; on an allow-custom box Tab commits the same way and still moves on.
+    var enter = e.key === 'Enter';
+    if (enter || (e.key === 'Tab' && allowCustom)) {
       var focused = list.querySelector('.combobox-option.focused');
-      if (focused) { selectOpt(focused); e.preventDefault(); return; }
+      if (focused) { selectOpt(focused); if (enter) e.preventDefault(); return; }
       // No arrow-key focus: commit the exact visible label match, or the only
       // visible option if the query narrowed the list to one, so a keyboard user
       // who typed a full name and pressed Enter is not left with nothing selected.
+      // An empty box is no query, so it never picks the lone option.
       var vis = currentOpts().filter(function(o) {
         return o.style.display !== 'none' && !o.classList.contains('combobox-option--empty');
       });
       var typed = input.value.trim().toLowerCase();
       var exact = vis.filter(function(o) { return o.textContent.trim().toLowerCase() === typed; });
-      var pick = exact.length === 1 ? exact[0] : (vis.length === 1 ? vis[0] : null);
-      if (pick) { selectOpt(pick); e.preventDefault(); }
+      var pick = exact.length === 1 ? exact[0] : (typed && vis.length === 1 ? vis[0] : null);
+      if (pick) { selectOpt(pick); if (enter) e.preventDefault(); }
       else if (allowCustom) commitCustom();
     }
     if (e.key === 'Escape') {

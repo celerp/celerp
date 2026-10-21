@@ -97,7 +97,7 @@ from ui.components.table import display_unit
 from ui.i18n import category_label, field_label, item_status_label, price_list_label, t
 from celerp.services.units import validate_quantity, build_unit_map, get_company_units, is_weight_unit, is_pieces_unit, LANDED_COST_KINDS
 from celerp.services.vertical_presets import category_item_defaults
-from celerp.services.line_measures import FULL, splitting_allowed, stored_sell_qty, validate_default_sell_qty
+from celerp.services.line_measures import check_sell_qty_fits_unit, splitting_allowed, validate_default_sell_qty
 from celerp.services.money import round_basis, round_money, to_decimal, to_stored_float
 from celerp.schemas.numbers import FiniteFloat
 from celerp_inventory.projections import _is_image_mime, is_core_item_key, is_item_available, thumbnail_file_id
@@ -2639,8 +2639,8 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
             change = payload.fields_changed["default_sell_qty"] or {}
             payload.fields_changed["default_sell_qty"] = {
                 **change, "new": validate_default_sell_qty(change.get("new"), sell_by, unit_map)}
-        elif stored_sell_qty(current.get("default_sell_qty")) not in (None, FULL):
-            validate_default_sell_qty(current["default_sell_qty"], sell_by, unit_map)
+        else:
+            check_sell_qty_fits_unit(current.get("default_sell_qty"), sell_by, unit_map)
 
     # Validate quantity change against current sell_by unit.
     # Also sync derived weight/pieces field: if sell_by is a weight unit,

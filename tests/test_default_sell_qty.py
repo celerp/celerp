@@ -7,19 +7,24 @@ directly after Allow Splitting."""
 from __future__ import annotations
 
 import json
+import re
 import uuid
+from pathlib import Path
 
 import pytest
 
 from celerp.events.engine import emit_event
 from celerp.services.company_lock import locked_company
 from celerp.services.field_schema import _BASE_FIELDS, get_effective_field_schema
+from celerp.services.line_measures import validate_default_sell_qty
 from mfg_runs import issue, product, receive, run
 from test_cost_restatement import _item, _merge, _state
 from test_inventory_transform import _transform_payload
 from test_receipt_accounting import _doc, _parcels, _receive
 
 pytestmark = pytest.mark.asyncio
+
+LOCALES = Path(__file__).resolve().parent.parent / "ui" / "locales"
 
 
 async def _lot(client, auth, sell_by: str = "carat", qty: float = 6, **fields) -> str:
@@ -156,6 +161,8 @@ async def test_a_unit_change_that_invalidates_the_stored_number_is_refused(clien
     r = await client.patch(f"/items/{lot}", headers=auth["headers"], json={
         "fields_changed": {"sell_by": {"old": "carat", "new": "piece"}}})
     assert r.status_code == 422, r.text
+    assert r.json()["detail"]["message_key"] == "item.default_sell_qty_unit_change", r.text
+    assert "Change Default Sell Qty" in r.json()["detail"]["message"], r.text
     assert (await _state(session, auth, lot))["sell_by"] == "carat"
     assert await _sell_qty(session, auth, lot) == 0.25
 
@@ -232,6 +239,17 @@ async def test_raw_batch_import_refuses_an_invalid_value(client, session, auth):
     assert (await _state(session, auth, "item:dsq-ok"))["default_sell_qty"] == "full"
 
 
+
+async def test_an_import_update_that_changes_the_unit_under_a_stored_fraction_is_refused(client, session, auth, shelf):
+    sku = f"DSQ-U-{uuid.uuid4().hex[:5]}"
+    r = await _import(client, auth, [{"sku": sku, "name": "U", "sell_by": "carat", "quantity": "6",
+                                      "location_name": shelf, "default_sell_qty": "2.5"}])
+    assert r.status_code == 200, r.text
+    r = await _import(client, auth, [{"sku": sku, "name": "U", "sell_by": "piece", "quantity": "6"}], upsert=True)
+    assert "Change Default Sell Qty" in r.text, r.text
+    state = await _by_sku(session, auth, sku)
+    assert state["sell_by"] == "carat" and state["default_sell_qty"] == 2.5, state
+
 async def test_import_template_names_the_column(client, auth):
     from celerp_inventory.services import ITEM_IMPORT_TAIL_COLS
 
@@ -307,3 +325,13 @@ async def test_the_scan_bar_names_the_placed_quantity_and_unit():
     assert capped != placed and capped.startswith(placed.rstrip(".")), capped
     piece = _scan_added_label({"sku": "S", "quantity": 2.0, "unit": "piece", "capped": False}, units)
     assert "2" in piece and "2.0" not in piece, piece
+
+
+@pytest.mark.parametrize("path", sorted(LOCALES.glob("*.json")), ids=lambda p: p.stem)
+def test_the_tooltip_example_number_is_accepted(path):
+    """Numbers are typed with a decimal point in every language, so the tooltip's example must be."""
+    tip = json.loads(path.read_text())["field.tooltip.default_sell_qty"]
+    examples = re.findall(r"\d+[.,]\d+", tip)
+    assert examples, f"{path.stem}: no example number in the tooltip"
+    for example in examples:
+        assert validate_default_sell_qty(example, "carat", {"carat": {"unit_type": "weight", "decimals": 2}}) == 0.5

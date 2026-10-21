@@ -22,7 +22,7 @@ from decimal import ROUND_DOWN, Decimal, InvalidOperation
 from fastapi import HTTPException
 
 from celerp.accounting_roles import refusal
-from celerp.services.units import is_pieces_unit, is_weight_unit, validate_quantity
+from celerp.services.units import exceeds_precision, is_pieces_unit, is_weight_unit, validate_quantity
 from ui.i18n import t
 
 
@@ -274,3 +274,16 @@ def measure_locks(meta: dict, *, allow_split: bool | None = None) -> dict:
         "weight_locked": meta.get("weight") is None or bool(meta.get("qty_is_weight")) or not allow,
         "qty_locked": not allow,
     }
+
+
+def check_sell_qty_fits_unit(stored, sell_by: str | None, unit_map: dict) -> None:
+    """A unit change under a stored Default Sell Qty number: refused with 422 when the new
+    unit cannot hold it, naming what to change first. Never rounded to fit."""
+    qty = stored_sell_qty(stored)
+    unit = unit_map.get(sell_by or "")
+    if qty in (None, FULL) or unit is None or not exceeds_precision(float(qty), int(unit.get("decimals") or 0)):
+        return
+    raise HTTPException(status_code=422, detail=refusal(
+        "item.default_sell_qty_unit_change",
+        f"This unit cannot hold the Default Sell Qty of {float(qty):g}. Change Default Sell Qty to Full or a number "
+        "the unit allows, then change the unit.", qty=f"{float(qty):g}"))

@@ -97,15 +97,78 @@ def test_a_typed_number_saves(page, ui_server, api, commit):
     expect(page.locator(CELL)).to_contain_text("2.5")
 
 
-def test_a_refused_value_shows_its_message(page, ui_server, api):
+@pytest.mark.parametrize("typed", ["0.5", "abc"])
+def test_a_refused_value_keeps_the_cell_to_correct(page, ui_server, api, typed):
     screws = _item(api, sell_by="piece", quantity=10)
     _open(page, ui_server, screws)
     box = _open_editor(page)
-    box.fill("0.5")
+    box.fill(typed)
     box.press("Enter")
-    expect(page.locator(".cell-error")).to_be_visible(timeout=6000)
+    expect(page.locator(f"{EDITING} .cell-error")).to_be_visible(timeout=6000)
     assert page.locator(".cell-error").inner_text().strip()
     assert _stored(api, screws) is None
+
+    box = page.locator(f"{EDITING} .combobox-input")
+    box.fill("2")
+    box.press("Enter")
+    _wait_stored(api, screws, 2)
+    expect(page.locator(CELL)).to_have_text("2")
+
+
+def test_clearing_a_set_value_returns_it_to_unset(page, ui_server, api):
+    screws = _item(api, sell_by="piece", quantity=10, default_sell_qty=2)
+    _open(page, ui_server, screws)
+    box = _open_editor(page)
+    box.fill("")
+    box.press("Enter")
+    _wait_stored(api, screws, None)
+    expect(page.locator(f"{CELL} .cell-suggestion")).to_have_text("1")
+
+
+def test_the_unit_default_option_returns_a_value_to_unset(page, ui_server, api):
+    parcel = _item(api, default_sell_qty=2)
+    _open(page, ui_server, parcel)
+    box = _open_editor(page)
+    box.click()
+    page.locator(f'{EDITING} .combobox-option[data-value=""]').click()
+    _wait_stored(api, parcel, None)
+    expect(page.locator(f"{CELL} .cell-suggestion")).to_contain_text("Full (everything left)")
+
+
+def test_a_whole_number_shows_without_a_decimal(page, ui_server, api):
+    screws = _item(api, sell_by="piece", quantity=10, default_sell_qty=3)
+    _open(page, ui_server, screws)
+    expect(page.locator(CELL)).to_have_text("3")
+
+
+def test_filtering_a_searchable_cell_then_clicking_away_keeps_its_value(page, ui_server, api):
+    """Typed text saves on Enter or Tab; leaving the box any other way keeps the stored value."""
+    gem = _item(api, category="diamond")
+    _open(page, ui_server, gem)
+    settled(page, SCOPE)
+    page.dblclick('td[data-col="category"]')
+    box = page.locator(f"{EDITING} .combobox-input")
+    box.wait_for(state="visible", timeout=4000)
+    ready(page, f"{EDITING} input[name=value]")
+    box.fill("Dia")
+    page.locator("h1").first.click()
+    page.wait_for_timeout(1500)
+    assert api.get(f"/items/{gem}").json().get("category") == "diamond"
+
+
+def test_a_refused_unit_change_keeps_the_qty_cell_and_says_what_to_change(page, ui_server, api):
+    parcel = _item(api, default_sell_qty=2.5)
+    _open(page, ui_server, parcel)
+    settled(page, SCOPE)
+    page.dblclick('td[data-col="quantity"] span.paired-secondary')
+    box = page.locator(f"{EDITING} .combobox-input")
+    box.wait_for(state="visible", timeout=4000)
+    ready(page, f"{EDITING} input[name=value]")
+    box.fill("piece")
+    box.press("Enter")
+    error = page.locator('td[data-col="quantity"] .cell-error')
+    expect(error).to_contain_text("Change Default Sell Qty", timeout=6000)
+    assert api.get(f"/items/{parcel}").json()["sell_by"] == "carat"
 
 
 def test_esc_leaves_the_old_value(page, ui_server, api):

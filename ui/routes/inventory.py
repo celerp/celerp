@@ -44,8 +44,8 @@ from celerp.events.schemas import _WORKFLOW_TIME_UNITS
 from celerp.importers.tabular import known_headers
 from ui.routes.documents import _ICON_PRINT as _ICON_PRINT_SVG
 from ui.i18n import t, get_lang, is_rtl, field_label, price_list_label, category_label, category_labels, refusal_text, doc_type_label
-from celerp.services.units import is_weight_unit, is_pieces_unit
-from celerp.services.line_measures import FULL, proposed_sell_qty, splitting_allowed
+from celerp.services.units import format_qty, is_weight_unit, is_pieces_unit
+from celerp.services.line_measures import FULL, proposed_sell_qty, splitting_allowed, stored_sell_qty
 from celerp_inventory.services import (
     apply_source_semantics,
     build_item_import_spec,
@@ -2501,9 +2501,13 @@ function celerpPrintLabel(entityId, templateId) {
             label_map = await api.get_category_labels(token)
         elif field == "inventory_type":
             label_map = _inventory_type_labels()
-        elif field == "default_sell_qty":
-            # Full from the list or a number typed in the same box, whatever a stored schema says.
-            cell_type, options, allow_custom, label_map = "select", [FULL], True, _sell_qty_labels()
+        edit_value = item.get(field, "")
+        if field == "default_sell_qty":
+            # Full from the list, a number typed in the same box, or back to the unit's default,
+            # whatever a stored schema says.
+            cell_type, allow_custom, label_map = "select", True, _sell_qty_labels()
+            options = [("", t("field.option.default_sell_qty_unset")), FULL]
+            edit_value = _sell_qty_text(item, await _units_by_name(token))
         # location_name: render a select cell with locations + "Add new" as last option
         if field == "location_name":
             loc_names = [loc.get("name", "") for loc in locations if loc.get("name")]
@@ -2537,7 +2541,7 @@ function celerpPrintLabel(entityId, templateId) {
         # Reorder fields: carry the velocity suggestion as a grey placeholder while editing
         # an empty field (a hint only - it is never submitted, so the stored value is unaffected).
         _placeholder = await _reorder_placeholder(token, entity_id, field, item.get(field))
-        return editable_cell(entity_id=entity_id, field=field, value=item.get(field, ""),
+        return editable_cell(entity_id=entity_id, field=field, value=edit_value,
                              cell_type=cell_type, options=options, allow_custom=allow_custom,
                              label_map=label_map, placeholder=_placeholder)
 
@@ -2599,6 +2603,16 @@ function celerpPrintLabel(entityId, templateId) {
                                       "gross_weight": "gross_weight_unit", "gross_weight_unit": "gross_weight",
                                       "purchase_unit": "purchase_conversion_factor",
                                       "purchase_conversion_factor": "purchase_unit"}
+
+    async def _refused_cell(request: Request, entity_id: str, field: str, detail: str):
+        """A refused edit keeps the cell's editor open with the reason under it, so the user
+        can correct the value or press Esc, never left without a cell to retry."""
+        edit = field_paired_edit_cell if field in _PAIRED_FIELDS else field_edit_cell
+        cell = await edit(request, entity_id, field)
+        if cell.tag != "td":
+            return P(detail, cls="cell-error")
+        cell.attrs["class"] = f'{cell.attrs.get("class", "")} cell--error'.strip()
+        return cell(P(detail, cls="cell-error"))
 
     @app.patch("/api/items/{entity_id}/field/{field}")
     async def field_patch(request: Request, entity_id: str, field: str):
@@ -2853,7 +2867,9 @@ function celerpPrintLabel(entityId, templateId) {
                 api.get_locations(token),
             )
         except APIError as e:
-            return P(e.detail, cls="cell-error")
+            if e.status == 401:
+                return P(t("error.session_expired"), cls="cell-error")
+            return await _refused_cell(request, entity_id, field, e.detail)
 
         locations = locs_data.get("items", [])
         try:
@@ -3183,7 +3199,6 @@ function celerpPrintLabel(entityId, templateId) {
                 sb_val=item.get("sell_by", ""),
             )
         from ui.components.table import paired_display_cell
-        from celerp.services.units import format_qty
         locations = locs.get("items", [])
         peer = _PAIRED_FIELDS[field]
         # Determine which is primary (qty/weight) vs secondary (unit)
@@ -5566,6 +5581,15 @@ def _sell_qty_labels() -> dict:
     return {FULL: t("field.option.default_sell_qty_full")}
 
 
+def _sell_qty_text(item: dict, units_map: dict) -> str | None:
+    """A stored Default Sell Qty as the cell shows it: Full as its key, a number at the
+    item's unit precision (3 on a piece item, not 3.0), None when unset."""
+    stored = stored_sell_qty(item.get("default_sell_qty"))
+    if stored in (None, FULL):
+        return stored
+    return format_qty(stored, item.get("sell_by"), units_map)
+
+
 def _default_sell_qty_cell(entity_id: str, item: dict, f_def: dict | None, units_map: dict, *, oob: bool = False) -> FT:
     """The Default Sell Qty cell, one render for list rows, the detail page and cell saves.
     Unset shows what a scan will do in grey ("--" when the item's unit is unknown). While
@@ -5576,9 +5600,10 @@ def _default_sell_qty_cell(entity_id: str, item: dict, f_def: dict | None, units
     placeholder = None
     if (item.get("sell_by") or "") in units_map:
         proposed = proposed_sell_qty({**item, "default_sell_qty": None}, units_map)
-        placeholder = _sell_qty_labels()[FULL] if proposed == FULL else f"{proposed:g}"
+        placeholder = (_sell_qty_labels()[FULL] if proposed == FULL
+                       else format_qty(proposed, item.get("sell_by"), units_map))
     cell = display_cell(
-        entity_id=entity_id, field="default_sell_qty", value=item.get("default_sell_qty"),
+        entity_id=entity_id, field="default_sell_qty", value=_sell_qty_text(item, units_map),
         cell_type="select", options=[FULL],
         editable=not locked and (f_def.get("editable", True) if f_def else True),
         label_map=_sell_qty_labels(), placeholder=placeholder,
@@ -5605,7 +5630,6 @@ def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None =
     units_map: full unit dict keyed by name, used to check unit_type for derivation.
     """
     from ui.components.table import paired_display_cell, display_cell
-    from celerp.services.units import format_qty
     schema_keys = {f["key"] for f in schema}
     renderers: dict = {}
     _umap = units_map or {}
