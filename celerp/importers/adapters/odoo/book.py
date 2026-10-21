@@ -471,13 +471,13 @@ class _Reader:
         if move_type in DOCUMENTS:
             _, source, kind = DOCUMENTS[move_type]
             doc = self.documents[move["id"]]
-            invoice, contact = doc.number, doc.contact
+            invoice, contact, document = doc.number, doc.contact, doc.key
         else:
             source, kind = ENTRY_SOURCES.get(move_type, ENTRY_SOURCES["entry"]), "journal"
             if payment is not None:
                 source, kind = INTERNAL_TRANSFER if _internal(payment) else PAYMENTS.get(
                     (payment["partner_type"], payment["payment_type"]), OTHER_PAYMENT)
-            invoice = ""
+            invoice, document = "", None
             named = {ln.contact for ln in out if ln.contact}
             contact = next(iter(named)) if len(named) == 1 else self.partners.get(
                 move.get("commercial_partner_id") or move.get("partner_id") or "", "")
@@ -489,7 +489,7 @@ class _Reader:
                 allocated_base = settled_base
         return GLJournal(f"J:{move['id']}", move["name"], _day(move["date"]), source, kind,
                          move.get("ref") or move["name"], invoice, contact, self.currency(move["currency_id"]), out,
-                         allocated, allocated_base)
+                         allocated, allocated_base, document)
 
     def _document(self, move: Row, rows: list[Row], tax_rel: dict[str, list[str]]) -> None:
         book = self.book

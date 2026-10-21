@@ -265,6 +265,29 @@ def test_chart_taxes_contacts_and_products(tmp_path, version):
 
 # ── Documents, payments and journals ─────────────────────────────────────────
 
+def _documents(manifest) -> list[tuple]:
+    return sorted((d.contact_external_id, d.issue_date, d.status, d.total, d.amount_outstanding)
+                  for d in manifest.bundle.documents)
+
+
+@pytest.mark.parametrize("renamed", [
+    7,      # another customer's invoice, from another sales journal, numbered INV/2024/00001 too
+    17,     # the same customer's later invoice numbered INV/2024/00001 again
+])
+def test_invoices_sharing_a_number_are_each_carried_as_documents(tmp_path, renamed):
+    tables = build.tables(17)
+    columns, rows = tables.rows["account_move"]
+    next(r for r in rows if r[0] == renamed)[columns.index("name")] = "INV/2024/00001"
+    before = _adapter().build_manifest(_file(tmp_path, _backup(17)), FULL)
+    after = _adapter().build_manifest(_file(tmp_path, build.backup(17, tables), "renamed.zip"), FULL)
+    # Every invoice is still a document of its own customer with what it was owed, and the
+    # journals left to fall back to are the same ones.
+    assert len(after.bundle.documents) == len(before.bundle.documents)
+    assert _documents(after) == _documents(before)
+    assert sorted(j.source_external_id for j in after.bundle.journals) == \
+        sorted(j.source_external_id for j in before.bundle.journals)
+
+
 @pytest.mark.parametrize("version", VERSIONS)
 def test_invoices_bills_payments_and_journals(tmp_path, version):
     bundle = _adapter().build_manifest(_file(tmp_path, _backup(version)), FULL).bundle

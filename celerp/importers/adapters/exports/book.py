@@ -170,6 +170,8 @@ class GLJournal:
     settles: dict[str, Decimal | None] = field(default_factory=dict)
     # The base amount those allocations applied, when the source states it.
     settled_base: Decimal | None = None
+    # The key of the document the journal books, when the source links them itself rather than by number.
+    document: str | None = None
 
 
 @dataclass

@@ -137,8 +137,15 @@ class Ledger:
 
 
 def find_document(book: Book, sales: bool, number: str, contact: str) -> Document | None:
+    """The document of `number` on one side of the books that is `contact`'s: the one keyed
+    by number and contact where numbers repeat, else the one keyed by number alone. Never
+    another contact's document."""
     side = "S" if sales else "P"
-    return book.documents.get(f"{side}:{number}") or book.documents.get(f"{side}:{number}|{contact}")
+    for key in (f"{side}:{number}|{contact}", f"{side}:{number}"):
+        doc = book.documents.get(key)
+        if doc is not None and (not contact or doc.contact == contact):
+            return doc
+    return None
 
 
 def _party(book: Book, doc_type: str) -> set[str]:
@@ -237,7 +244,8 @@ def _document_journal(book: Book, j: GLJournal) -> Document | None:
     customer or supplier line. None when the journal books no document the export lists."""
     if j.kind not in DOCUMENT_KINDS:
         return None
-    doc = find_document(book, j.kind.startswith("receivable"), j.invoice, j.contact)
+    doc = book.documents.get(j.document) if j.document else \
+        find_document(book, j.kind.startswith("receivable"), j.invoice, j.contact)
     if doc is None or doc.status != "posted" or doc.journal is not None:
         return None
     party = [ln for ln in j.lines if ln.account in _party(book, doc.doc_type)]

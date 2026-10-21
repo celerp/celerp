@@ -368,3 +368,21 @@ async def test_quickbooks_and_xero_adapters(real_engine, monkeypatch, tmp_path, 
         if m.meta.get("representation") == "journal_fallback":
             assert ((m.source_type, "mapped_with_loss") in coverage
                     or (f"{m.source_type} (journal fallback)", "mapped_with_loss") in coverage), m.source_type
+
+
+def test_a_document_number_is_found_only_on_its_own_contacts_document():
+    from celerp.importers.adapters.exports.book import Book, Document
+    from celerp.importers.adapters.exports.ledger import find_document
+
+    def doc(key: str, contact: str) -> Document:
+        return Document(key, "INV-1", "invoice", "Invoice", contact, "", date(2025, 1, 1), None, "USD", "posted",
+                        [], Decimal(0), Decimal(0), Decimal(0), Decimal(0))
+
+    book = Book("xero")
+    book.documents = {k: doc(k, c) for k, c in (("S:INV-1", "Ann"), ("S:INV-1|Bob", "Bob"), ("P:INV-1|Cy", "Cy"))}
+    assert find_document(book, True, "INV-1", "Ann").key == "S:INV-1"
+    assert find_document(book, True, "INV-1", "Bob").key == "S:INV-1|Bob"
+    assert find_document(book, True, "INV-1", "Dee") is None          # never another contact's
+    assert find_document(book, True, "INV-1", "").key == "S:INV-1"    # a journal naming no contact
+    assert find_document(book, False, "INV-1", "Cy").key == "P:INV-1|Cy"
+    assert find_document(book, False, "INV-1", "Ann") is None
