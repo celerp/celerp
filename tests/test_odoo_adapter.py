@@ -463,6 +463,34 @@ def test_a_base_currency_payment_of_a_foreign_invoice_is_allocated_in_the_invoic
     assert docs["S:INV/2024/00004"] == ("awaiting_payment", D(50))
 
 
+def test_a_base_currency_overpayment_of_a_foreign_invoice_settles_at_the_rate_odoo_applied(tmp_path):
+    """The customer pays USD 66 from a USD account and Odoo reconciles EUR 50 / USD 55 of it
+    with INV/2024/00004 (EUR 100 at 1.10). The settlement is EUR 50 at 1.10, the receipt books
+    no exchange difference, and the USD 11 Odoo left open stays on the customer."""
+    tables = build.tables(17)
+    for r in _lines_of(tables, 18):
+        _set(tables, r, currency_id=build.USD)
+    _resize(tables, 18, D(66))
+    mcols, moves = tables.rows["account_move"]
+    next(m for m in moves if m[0] == 18)[mcols.index("currency_id")] = build.USD
+    next(m for m in moves if m[0] == 17)[mcols.index("amount_residual")] = "50.00"
+    pcols, payments = tables.rows["account_payment"]
+    pay = next(p for p in payments if p[pcols.index("move_id")] == 18)
+    pay[pcols.index("currency_id")], pay[pcols.index("amount")] = build.USD, "66"
+    _set(tables, _party_line(tables, 17), amount_residual="55.00")
+    _set(tables, _party_line(tables, 18), amount_residual="-11.00")
+    rcols, partials = tables.rows["account_partial_reconcile"]
+    partials[:] = [p for p in partials if p[rcols.index("amount")] not in ("110", "2")]
+    _reconcile(tables, 17, 18, "55", "50", "55")
+    bundle, docs, settled = _book(tmp_path, tables)
+    assert settled["J:18"] == (D(50), [("S:INV/2024/00004", D(50))])
+    assert next(s for s in bundle.settlements if s.source_external_id == "J:18").exchange_rate == D("1.1")
+    assert docs["S:INV/2024/00004"] == ("awaiting_payment", D(50))
+    credit = next(j for j in bundle.journals if j.source_external_id == "J:18:journal")
+    assert {(ln.account_external_id, ln.contact_external_id, ln.debit - ln.credit) for ln in credit.lines} == {
+        ("121000", "Lakeshore Trading Co", D(-11)), ("101401", None, D(11))}
+
+
 @pytest.mark.asyncio
 async def test_a_statement_line_reconciled_invoice_migrates_paid(real_engine, monkeypatch, tmp_path):
     tables = build.tables(17)

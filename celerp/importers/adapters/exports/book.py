@@ -168,6 +168,8 @@ class GLJournal:
     # A receipt or payment journal's allocations: document key -> amount in that document's
     # currency, or None for the journal's whole customer or supplier line (one document only).
     settles: dict[str, Decimal | None] = field(default_factory=dict)
+    # The base amount those allocations applied, when the source states it.
+    settled_base: Decimal | None = None
 
 
 @dataclass

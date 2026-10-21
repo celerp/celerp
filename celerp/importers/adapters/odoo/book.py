@@ -399,7 +399,7 @@ class _Reader:
         for move in ordered:
             if self._move_type(move) in DOCUMENTS:
                 self._document(move, lines[move["id"]], tax_rel)
-        settles = self._allocations()
+        settles, settled_base = self._allocations()
         payments = {r["id"]: r for r in self.rows.get("account_payment", [])}
         self._mark_banks(ordered, lines, payments)
         for move in ordered:
@@ -407,7 +407,8 @@ class _Reader:
                 if self._move_type(move) not in DOCUMENTS:
                     book.skipped[DRAFT_ENTRY] += 1
                 continue
-            journal = self._journal(move, lines[move["id"]], payments, settles.get(move["id"], {}))
+            journal = self._journal(move, lines[move["id"]], payments, settles.get(move["id"], {}),
+                                    settled_base.get(move["id"]))
             if journal is not None:
                 book.journals.append(journal)
 
@@ -430,9 +431,10 @@ class _Reader:
         return payments.get(found or "")
 
     def _journal(self, move: Row, rows: list[Row], payments: dict[str, Row],
-                 settles: dict[str, Decimal]) -> GLJournal | None:
+                 settles: dict[str, Decimal], settled_base: Decimal | None) -> GLJournal | None:
         """A posted move's lines. A payment or bank statement line reconciled only with invoices,
-        or only with bills, settles them by what each reconciliation applied."""
+        or only with bills, settles them by what each reconciliation applied, in the documents'
+        currency and in the base currency."""
         book = self.book
         move_type = self._move_type(move)
         parties = {*book.control("receivable"), *book.control("payable")}
@@ -464,6 +466,7 @@ class _Reader:
             return None
         payment = self._payment(move, rows, payments)
         allocated: dict[str, Decimal | None] = {}
+        allocated_base = None
         if move_type in DOCUMENTS:
             _, source, kind = DOCUMENTS[move_type]
             doc = self.documents[move["id"]]
@@ -482,9 +485,10 @@ class _Reader:
             if banked and len(types) == 1 and next(iter(types)) in SETTLING and kind != INTERNAL_TRANSFER[1]:
                 source, kind = SETTLING[next(iter(types))]
                 allocated, contact = dict(settles), book.documents[next(iter(settles))].contact
+                allocated_base = settled_base
         return GLJournal(f"J:{move['id']}", move["name"], _day(move["date"]), source, kind,
                          move.get("ref") or move["name"], invoice, contact, self.currency(move["currency_id"]), out,
-                         allocated)
+                         allocated, allocated_base)
 
     def _document(self, move: Row, rows: list[Row], tax_rel: dict[str, list[str]]) -> None:
         book = self.book
@@ -578,11 +582,14 @@ class _Reader:
             return "rounding"
         return None if _true(row.get("exclude_from_invoice_tab")) else "product"
 
-    def _allocations(self) -> dict[str, dict[str, Decimal]]:
+    def _allocations(self) -> tuple[dict[str, dict[str, Decimal]], dict[str, Decimal]]:
         """Move id of a posted entry that is not a document -> document key -> what each
-        reconciliation with that document applied, in the document's currency. A credit note
-        or refund reconciled with an invoice or bill applies to it what the reconciliation did."""
+        reconciliation with that document applied, in the document's currency; and move id ->
+        what those reconciliations applied in the base currency, which Odoo states on each. A
+        credit note or refund reconciled with an invoice or bill applies to it what the
+        reconciliation did."""
         out: dict[str, dict[str, Decimal]] = defaultdict(lambda: defaultdict(lambda: ZERO))
+        base: dict[str, Decimal] = defaultdict(lambda: ZERO)
         for r in self.rows.get("account_partial_reconcile", []):
             sides = {side: self.lines.get(r[f"{side}_move_id"]) for side in ("debit", "credit")}
             if None in sides.values():
@@ -597,7 +604,8 @@ class _Reader:
                             r, other, sides[other], note)
                 elif move in self.posted:
                     out[move][doc.key] += self._applied(r, side, sides[side], doc)
-        return {move: dict(docs) for move, docs in out.items()}
+                    base[move] += _dec(r["amount"])
+        return {move: dict(docs) for move, docs in out.items()}, dict(base)
 
     def _applied(self, partial: Row, side: str, line: Row, doc: Document) -> Decimal:
         """A reconciliation's amount in the currency of the document on its `side`: Odoo 14 and

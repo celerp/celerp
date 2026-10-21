@@ -283,7 +283,15 @@ def _settlement(book: Book, j: GLJournal, owing: dict[str, Decimal]) -> Settleme
             return None
         allocations.append((doc.key, amount))
     total = sum((a for _, a in allocations), ZERO)
-    rate = (_rate(bank.amount, bank.foreign if bank.foreign is not None else total) if foreign else Decimal(1))
+    if not foreign:
+        rate = Decimal(1)
+    elif bank.foreign is not None:
+        rate = _rate(bank.amount, bank.foreign)
+    elif j.settled_base is not None:
+        # A base currency bank line can hold more than the source applied: the rest stays on the contact.
+        rate = _rate(j.settled_base, total) if j.settled_base <= abs(bank.amount) else None
+    else:
+        rate = _rate(bank.amount, total)
     if rate is None or (foreign and book.fx_account is None):
         return None
     for key, amount in allocations:
