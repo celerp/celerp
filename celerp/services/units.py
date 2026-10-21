@@ -174,14 +174,16 @@ async def check_precision_change(session, company_id, old_units: list[dict], new
     how many items and open documents hold them, a few of them, and what to change. Every item
     counts, whatever its status, since any item can come back into stock; a document counts the
     quantities its lines can still receive, ship or carry into a converted document
-    (quantities_still_moving), and a list its lines while it is a draft or finalized (its closing
-    action is still to come). What a document received or shipped is history and never blocks. Raising
-    precision always passes. A unit missing from the old list (deleted, then added back or
-    re-seeded) had no precision to compare with, so it is checked against what is stored in it. A
-    line with no unit of its own is in its item's unit, found by item id or SKU."""
+    (quantities_still_moving), a list its lines while it is a draft or finalized (its closing
+    action is still to come), and an open manufacturing run what it still has to issue and
+    receive. What a document received or shipped is history and never blocks. Raising precision
+    always passes. A unit missing from the old list (deleted, then added back or re-seeded) had no
+    precision to compare with, so it is checked against what is stored in it. A line with no unit
+    of its own is in its item's unit, found by item id or SKU."""
     from sqlalchemy import or_, select
 
     from celerp_docs.doc_constants import quantities_still_moving, sent_out_by
+    from celerp_manufacturing.movements import quantities_still_moving as run_still_moving, run_name
 
     from celerp.models.projections import Projection
     from celerp.services.document_lines import line_item_id
@@ -197,7 +199,8 @@ async def check_precision_change(session, company_id, old_units: list[dict], new
     rows = (await session.execute(select(Projection.entity_id, Projection.entity_type, Projection.state).where(
         Projection.company_id == company_id,
         or_((Projection.entity_type == "item") & Projection.state["sell_by"].as_string().in_(list(lowered)),
-            Projection.entity_type.in_(("doc", "list")) & or_(status.is_(None), status != "void")),
+            Projection.entity_type.in_(("doc", "list")) & or_(status.is_(None), status != "void"),
+            Projection.entity_type == "mfg_order"),
     ))).all()
     items = {entity_id: state for entity_id, entity_type, state in rows if entity_type == "item"}
     item_unit = {key: state.get("sell_by") for entity_id, state in items.items()
@@ -211,6 +214,8 @@ async def check_precision_change(session, company_id, old_units: list[dict], new
         if entity_type == "doc":
             return quantities_still_moving(
                 state, lambda line: sent_out_by(items.get(line_item_id(line)) or {}, entity_id))
+        if entity_type == "mfg_order":
+            return run_still_moving(state)
         return [(line, line.get("quantity")) for line in state.get("line_items") or []
                 if isinstance(line, dict)] if state.get("status") in (None, DRAFT, FINALIZED) else []
 
@@ -227,7 +232,8 @@ async def check_precision_change(session, company_id, old_units: list[dict], new
                 label = state.get("sku") or state.get("name")
             else:
                 quantities = [qty for line, qty in lines if line_unit(line) == name]
-                label = state.get("doc_number") or state.get("ref_id") or state.get("name")
+                label = run_name(state) if entity_type == "mfg_order" else \
+                    state.get("doc_number") or state.get("ref_id") or state.get("name")
             finer = [q for q in quantities if _finer_than(q, decimals)]
             if finer:
                 holders.append(str(label or "-"))

@@ -91,6 +91,69 @@ async def test_manufactured_lot_carries_the_product_value(client, session, auth)
     assert await _sell_qty(session, auth, r.json()["lot_item_id"]) == 2
 
 
+async def _carat_run(client, auth, output_qty: float, input_qty: float = 1,
+                     stock: float = 10) -> tuple[str, str, str]:
+    """(run, product, component): a run making ``output_qty`` ct from ``input_qty`` ct of a carat
+    component holding ``stock`` ct."""
+    made, used = await _lot(client, auth, qty=6), await _lot(client, auth, qty=stock)
+    r = await client.post("/manufacturing", headers=auth["headers"], json={
+        "description": "Cut", "output_item_id": made, "quantity": output_qty,
+        "inputs": [{"item_id": used, "quantity": input_qty}]})
+    assert r.status_code == 200, r.text
+    return r.json()["id"], made, used
+
+
+@pytest.mark.parametrize("output_qty, input_qty", [(0.27, 1), (1, 0.27)])
+async def test_a_manufacturing_run_finer_than_its_units_is_refused(client, auth, output_qty, input_qty):
+    made, used = await _lot(client, auth, qty=6), await _lot(client, auth, qty=10)
+    assert (await _set_carat_decimals(client, auth, 1)).status_code == 200
+    body = {"description": "Cut", "output_item_id": made, "inputs": [{"item_id": used, "quantity": input_qty}]}
+    r = await client.post("/manufacturing", headers=auth["headers"], json={**body, "quantity": output_qty})
+    assert r.status_code == 422 and "1 decimal places" in r.text, r.text
+    r = await client.post("/manufacturing", headers=auth["headers"], json={
+        **body, "quantity": round(output_qty, 1), "inputs": [{"item_id": used, "quantity": round(input_qty, 1)}]})
+    assert r.status_code == 200, r.text
+
+
+async def test_a_manufacturing_issue_or_receipt_finer_than_its_unit_is_refused(client, session, auth):
+    order, _, used = await _carat_run(client, auth, 1)
+    assert (await _set_carat_decimals(client, auth, 1)).status_code == 200
+    r = await issue(client, auth, order, [(used, 0.25)])
+    assert r.status_code == 422 and "1 decimal places" in r.text, r.text
+    assert (await issue(client, auth, order, [(used, 0.5)])).status_code == 200
+    assert (await issue(client, auth, order)).status_code == 200
+    assert (await _state(session, auth, used))["quantity"] == 9
+
+    r = await receive(client, auth, order, 0.25)
+    assert r.status_code == 422 and "1 decimal places" in r.text, r.text
+    r = await receive(client, auth, order, 0.5)
+    assert r.status_code == 200, r.text
+    assert (await _state(session, auth, r.json()["lot_item_id"]))["quantity"] == 0.5
+
+
+async def test_an_open_manufacturing_run_blocks_fewer_decimals_until_it_is_cancelled(client, session, auth):
+    order, made, _ = await _carat_run(client, auth, 0.27)
+    sku = await _sku(session, auth, made)
+    r = await _set_carat_decimals(client, auth, 1)
+    assert r.status_code == 422 and sku in r.text, r.text
+    assert await _carat_decimals(client, auth) == 2
+
+    assert (await client.post(f"/manufacturing/{order}/cancel", headers=auth["headers"], json={})).status_code == 200
+    assert (await _set_carat_decimals(client, auth, 1)).status_code == 200
+
+
+async def test_a_partly_issued_run_blocks_only_by_what_it_still_has_to_issue(client, session, auth):
+    order, _, used = await _carat_run(client, auth, 1, input_qty=1.25, stock=10.25)
+    assert (await issue(client, auth, order)).status_code == 200
+    assert (await _set_carat_decimals(client, auth, 1)).status_code == 200
+    assert (await _set_carat_decimals(client, auth, 2)).status_code == 200
+
+    order, made, used = await _carat_run(client, auth, 1, input_qty=1.25, stock=10.5)
+    assert (await issue(client, auth, order, [(used, 0.5)])).status_code == 200
+    r = await _set_carat_decimals(client, auth, 1)
+    assert r.status_code == 422 and await _sku(session, auth, made) in r.text, r.text
+
+
 async def test_duplicate_keeps_the_value_top_level():
     from ui.routes.inventory import _duplicate_payload
 
