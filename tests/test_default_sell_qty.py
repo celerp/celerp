@@ -18,7 +18,8 @@ from celerp.events.engine import emit_event
 from celerp.services.company_lock import locked_company
 from celerp.services.field_schema import _BASE_FIELDS, get_effective_field_schema
 from celerp.services.line_measures import validate_default_sell_qty
-from mfg_runs import issue, product, receive, run
+from celerp.services.list_behavior import FINALIZED
+from mfg_runs import complete, issue, product, receive, reopen, run
 from test_cost_restatement import _item, _merge, _state
 from test_inventory_transform import _transform_payload
 from test_receipt_accounting import _doc, _finalize, _parcels, _receive
@@ -377,6 +378,164 @@ async def test_a_memo_blocks_what_it_has_still_to_send_and_its_lot_while_out_nev
     # Only the lot, which every item status counts, holds 0.275 now: the converted memo never does.
     assert await holders() == sku
     assert await _carat_decimals(client, auth) == 3
+
+
+# A document, list or run that is history never blocks fewer decimal places, so when it moves again
+# (unvoided, reopened, back to draft, undone, or copied into a new draft) what it can then move is
+# held to its unit as it is that day, before anything is written.
+def _finer_refusal(r, label: str = "Stone", qty: str = "0.275") -> None:
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert detail["message_key"] == "units.moving_finer_than_unit", detail
+    assert detail["params"] == {"label": label, "qty": qty, "unit": "carat", "decimals": 2, "places": 3}, detail
+    assert "set carat back to 3 decimal places" in detail["message"], detail
+
+
+async def _rows(session, auth) -> dict[str, str]:
+    """Document and list ids by number."""
+    from sqlalchemy import select
+
+    from celerp.models.projections import Projection
+    rows = (await session.execute(select(Projection.entity_id, Projection.state).where(
+        Projection.company_id == auth["company_id"], Projection.entity_type.in_(("doc", "list"))))).all()
+    return {state.get("doc_number"): entity_id for entity_id, state in rows if state.get("doc_number")}
+
+
+async def _doc_count(session, auth) -> int:
+    from sqlalchemy import func, select
+
+    from celerp.models.projections import Projection
+    return (await session.execute(select(func.count()).select_from(Projection).where(
+        Projection.company_id == auth["company_id"], Projection.entity_type.in_(("doc", "list"))))).scalar_one()
+
+
+@pytest.mark.parametrize("doc_type", ["invoice", "quotation"])
+@pytest.mark.parametrize("qty, refused", [(0.275, True), (0.27, False)])
+async def test_an_unvoided_document_is_held_to_its_units_as_they_are_now(client, session, auth, doc_type, qty, refused):
+    assert (await _set_carat_decimals(client, auth, 3)).status_code == 200
+    lot = await _lot(client, auth, qty=1)
+    r = await client.post("/docs", headers=auth["headers"], json={
+        "doc_type": doc_type, "contact_id": "customer:1", "line_items": [
+            {"item_id": lot, "sku": await _sku(session, auth, lot), "name": "Stone", "quantity": qty, "unit": "carat",
+             "unit_price": 10}]})
+    assert r.status_code == 200, r.text
+    doc = r.json()["id"]
+    assert (await client.post(f"/docs/{doc}/finalize", headers=auth["headers"])).status_code == 200
+    assert (await client.post(f"/docs/{doc}/void", headers=auth["headers"], json={})).status_code == 200
+    # Void is history: it never blocks fewer decimal places.
+    assert (await _set_carat_decimals(client, auth, 2)).status_code == 200
+
+    r = await client.post(f"/docs/{doc}/unvoid", headers=auth["headers"], json={})
+    if refused:
+        _finer_refusal(r)
+        assert (await _state(session, auth, doc))["status"] == "void"
+        # The way out the message names: the unit back to 3 places, then it unvoids.
+        assert (await _set_carat_decimals(client, auth, 3)).status_code == 200
+        r = await client.post(f"/docs/{doc}/unvoid", headers=auth["headers"], json={})
+    assert r.status_code == 200, r.text
+    assert (await _state(session, auth, doc))["status"] == "final"
+    if doc_type == "invoice":
+        r = await client.post(f"/docs/{doc}/fulfill-lines", headers=auth["headers"], json={"line_entity_ids": [lot]})
+    else:
+        r = await client.post(f"/docs/{doc}/convert", headers=auth["headers"])
+    assert r.status_code == 200, r.text
+
+
+# Records written before a precision change looked at them, so what they hold is finer than the unit
+# allows today; each way they could move again checks them.
+async def test_a_quotation_or_list_copied_into_a_new_draft_is_held_to_its_units(client, session, auth):
+    for entity_type, status in (("doc", "final"), ("list", "void"), ("list", FINALIZED)):
+        await _carat_doc(session, auth, status, 0.275, f"Q-{entity_type}-{status}", doc_type="quotation",
+                         entity_type=entity_type)
+    rows = await _rows(session, auth)
+    before = await _doc_count(session, auth)
+    _finer_refusal(await client.post(f"/docs/{rows['Q-doc-final']}/convert", headers=auth["headers"]))
+    _finer_refusal(await client.post(f"/lists/{rows['Q-list-void']}/duplicate", headers=auth["headers"]))
+    _finer_refusal(await client.post(f"/lists/{rows[f'Q-list-{FINALIZED}']}/convert", headers=auth["headers"],
+                                     json={"target_type": "invoice"}))
+    assert await _doc_count(session, auth) == before
+    assert (await _state(session, auth, rows["Q-doc-final"]))["status"] == "final"
+
+    # The same records holding what the unit allows copy as before.
+    for entity_type, status in (("doc", "final"), ("list", "void"), ("list", FINALIZED)):
+        await _carat_doc(session, auth, status, 0.27, f"R-{entity_type}-{status}", doc_type="quotation",
+                         entity_type=entity_type)
+    rows = await _rows(session, auth)
+    assert (await client.post(f"/docs/{rows['R-doc-final']}/convert", headers=auth["headers"])).status_code == 200
+    assert (await client.post(f"/lists/{rows['R-list-void']}/duplicate", headers=auth["headers"])).status_code == 200
+    r = await client.post(f"/lists/{rows[f'R-list-{FINALIZED}']}/convert", headers=auth["headers"],
+                          json={"target_type": "invoice"})
+    assert r.status_code == 200, r.text
+
+
+@pytest.mark.parametrize("qty, refused", [(0.275, True), (0.27, False)])
+async def test_a_reopened_memo_or_a_document_back_to_draft_is_held_to_its_units(client, session, auth, qty, refused):
+    await _carat_doc(session, auth, "closed", qty, "MEMO-1", doc_type="memo")
+    await _carat_doc(session, auth, "final", qty, "INV-1")
+    rows = await _rows(session, auth)
+    for doc, path, back in ((rows["MEMO-1"], "reopen", "final"), (rows["INV-1"], "revert-to-draft", "draft")):
+        r = await client.post(f"/docs/{doc}/{path}", headers=auth["headers"], json={})
+        if refused:
+            _finer_refusal(r)
+        else:
+            assert r.status_code == 200, r.text
+        assert (await _state(session, auth, doc))["status"] == ({"reopen": "closed", "revert-to-draft": "final"}[path]
+                                                                if refused else back)
+
+
+async def test_undoing_a_stock_count_never_puts_back_a_quantity_finer_than_its_unit(client, session, auth):
+    assert (await _set_carat_decimals(client, auth, 3)).status_code == 200
+    r = await client.post("/companies/me/locations", headers=auth["headers"], json={"name": "Vault", "type": "warehouse"})
+    assert r.status_code == 200, r.text
+    lot = await _lot(client, auth, qty=0.275, location_id=r.json()["id"])
+    r = await client.post("/lists/audit", headers=auth["headers"], json={"location_id": r.json()["id"]})
+    assert r.status_code == 200, r.text
+    audit = r.json()["id"]
+    assert (await client.post(f"/lists/{audit}/finalize", headers=auth["headers"])).status_code == 200
+    r = await client.patch(f"/lists/{audit}/line/{lot}", headers=auth["headers"], json={"counted_qty": 0.3})
+    assert r.status_code == 200, r.text
+    assert (await client.post(f"/lists/{audit}/adjust", headers=auth["headers"])).status_code == 200
+    assert (await _state(session, auth, lot))["quantity"] == 0.3
+    # The closed count is history and the lot holds 0.3, so carat can go to 2 places.
+    assert (await _set_carat_decimals(client, auth, 2)).status_code == 200
+
+    r = await client.post(f"/lists/{audit}/undo-adjust", headers=auth["headers"])
+    # The reopened count's line is named as the list shows it.
+    _finer_refusal(r, label="Parcel")
+    assert (await _state(session, auth, lot))["quantity"] == 0.3
+    assert (await _state(session, auth, audit))["status"] == "closed"
+    assert (await _set_carat_decimals(client, auth, 3)).status_code == 200
+    assert (await client.post(f"/lists/{audit}/undo-adjust", headers=auth["headers"])).status_code == 200
+    assert (await _state(session, auth, lot))["quantity"] == 0.275
+
+
+async def test_completing_a_run_after_part_of_its_output_came_in_receives_the_rest(client, session, auth):
+    assert (await _set_carat_decimals(client, auth, 3)).status_code == 200
+    order, _, _ = await _carat_run(client, auth, 0.275)
+    assert (await issue(client, auth, order)).status_code == 200
+    assert (await receive(client, auth, order, 0.1)).status_code == 200
+    # The rest is 0.175, which carat allows, never a float remainder finer than it.
+    r = await complete(client, auth, order)
+    assert r.status_code == 200, r.text
+    assert (await _state(session, auth, order))["received_qty"] == 0.275
+
+
+async def test_a_reopened_run_is_held_to_its_units_as_they_are_now(client, session, auth):
+    assert (await _set_carat_decimals(client, auth, 3)).status_code == 200
+    # A run whose components were all wasted completes without its 0.175 still to make.
+    order, made, _ = await _carat_run(client, auth, 0.275)
+    assert (await issue(client, auth, order)).status_code == 200
+    assert (await receive(client, auth, order, 0.1)).status_code == 200
+    r = await complete(client, auth, order, waste_quantity=1)
+    assert r.status_code == 200, r.text
+    # A completed run moves nothing more, so carat can go to 2 places under it.
+    assert (await _set_carat_decimals(client, auth, 2)).status_code == 200
+
+    r = await reopen(client, auth, order)
+    _finer_refusal(r, label=await _sku(session, auth, made), qty="0.175")
+    assert (await _state(session, auth, order))["status"] == "completed"
+    assert (await _set_carat_decimals(client, auth, 3)).status_code == 200
+    assert (await reopen(client, auth, order)).status_code == 200
 
 
 async def test_an_issued_purchase_order_keeps_its_ordered_quantity_receivable(client, session, auth):

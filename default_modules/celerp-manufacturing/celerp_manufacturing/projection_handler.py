@@ -17,6 +17,14 @@ WIP_FACTS = ("wip_issued", "wip_transferred", "wip_wasted", "wip_account_code", 
 _CLOSED = ("status", "is_in_production", "actual_outputs", "waste", "labor_hours", "wip_transferred", "wip_wasted")
 
 
+def reopened(state: dict) -> dict:
+    """A completed run as reopening leaves it: what it held before completion, without the closing."""
+    current = {k: v for k, v in state.items() if k != "closing" and k not in _CLOSED}
+    before = (state.get("closing") or {}).get("before") or {}
+    current.update({k: before[k] for k in _CLOSED if k in before})
+    return current
+
+
 def _money(value) -> str:
     return str(Decimal(str(value or 0)))
 
@@ -146,12 +154,7 @@ def apply_manufacturing_event(state: dict, event_type: str, data: dict) -> dict:
         current["receipts"] = [r for r in current.get("receipts") or [] if r.get("lot_item_id") != lot_id]
         _add(current, "wip_transferred", -Decimal(str(data["value"])))
     elif event_type == "mfg.order.reopened":
-        before = (current.pop("closing", None) or {}).get("before") or {}
-        for key in _CLOSED:
-            if key in before:
-                current[key] = before[key]
-            else:
-                current.pop(key, None)
+        current = reopened(current)
     elif event_type == "mfg.order.completed":
         if data.get("closing") is not None:
             current["closing"] = {**data["closing"], "before": {k: current[k] for k in _CLOSED if k in current}}

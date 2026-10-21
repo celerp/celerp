@@ -64,7 +64,7 @@ from celerp.services.auth import AuthContext, get_auth_context, get_current_comp
 from celerp.services.permissions import assert_role_permission, get_current_company_settings, locked_authority, reject_price_change, require_permission, role_has_permission
 from celerp_docs.sequences import next_doc_ref, next_draft_ref, require_doc_type, get_all_sequences, update_sequence, list_sequence_key
 from celerp_docs.search import doc_q_clause
-from celerp.services.units import build_unit_map, default_receive_as, get_company_units, is_non_stock_line, is_pieces_unit, is_weight_unit, line_receive_kind, validate_line_quantity
+from celerp.services.units import build_unit_map, default_receive_as, get_company_units, is_non_stock_line, is_pieces_unit, is_weight_unit, line_receive_kind, require_moving_fits_units, validate_line_quantity
 from celerp.services.money import allocate_pro_rata, books_currency, checked_exchange_rate, discount_from_inputs, doc_rate, document_line_unit, require_doc_rate, received_share, round_basis, round_money, round_rate, to_base, to_decimal, to_stored_float
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, coerce_price, get_price_config, is_cost_list_name, line_price_list, price_keys_in, resolve_price
 from celerp.services.terms import resolve_document_terms
@@ -3195,6 +3195,7 @@ async def reopen_doc(entity_id: str, payload: DocReopenBody, company_id: str = D
             f"Only a closed memo can be reopened. {number} closed because its invoice is void and stays closed; "
             "to credit the customer, issue a new credit note on a live invoice.", document=number))
     restored = row.state.get("pre_close_status") or "final"
+    await require_moving_fits_units(session, company_id, entity_id, "doc", {**row.state, "status": restored})
     event_data = payload.model_dump(exclude_none=True)
     event_data["restored_status"] = restored
     entry = await emit_event(
@@ -3282,6 +3283,7 @@ async def revert_doc_to_draft(entity_id: str, payload: DocRevertBody, company_id
             detail="Cannot revert to draft while lines are still out on memo or sold. "
                    "Select those lines and use Set as available first, then revert.",
         )
+    await require_moving_fits_units(session, company_id, entity_id, "doc", {**state, "status": "draft"})
 
     event_data: dict = {"reverted_by": str(user.id), "previous_status": previous_status}
     if payload.reason:
@@ -3434,6 +3436,7 @@ async def unvoid_doc(entity_id: str, payload: DocUnvoidBody, company_id: str = D
                 "This supplier credit note was raised by a return, and voiding it took the return back: the "
                 "goods are in stock again. To send them back, use Return items on the bill."))
         await supplier_credit_original(session, company_id, state, for_update=True)
+    await require_moving_fits_units(session, company_id, entity_id, "doc", {**state, "status": restored_status})
 
     # Restored in a savepoint, so a refusal that can only be read off the restored books
     # leaves nothing behind.
@@ -7338,6 +7341,7 @@ async def convert_doc(entity_id: str, payload: DocConvertBody | None = None, com
         # The invoice is a new draft: none of the quotation's own lifecycle carries over.
         new_data = {k: v for k, v in state.items() if k not in LIFECYCLE_OWNED_FIELDS}
         new_data.update({"doc_type": "invoice", "ref_id": ref, "source_quotation_id": entity_id, "status": "draft"})
+        await require_moving_fits_units(session, company_id, new_doc_id, "doc", new_data)
         await emit_event(
             session, company_id=company_id, entity_id=new_doc_id, entity_type="doc", event_type="doc.created", data=new_data,
             actor_id=user.id, location_id=None, source="api", idempotency_key=str(uuid.uuid4()), metadata_={},
@@ -9359,6 +9363,8 @@ async def convert_list(
     to_transfer = await _held_lots(session, company_id, entity_id)
     ref = next_draft_ref(company, payload.target_type)
     new_doc_id = f"doc:{ref}"
+    await require_moving_fits_units(session, company_id, new_doc_id, "doc",
+                                    {**state, "doc_type": payload.target_type, "status": "draft"})
     for li_eid, held in to_transfer.items():
         data = {"new_status": "reserved", "source_doc_id": new_doc_id, "doc_number": ref}
         if held.state.get("status_line_entity_id"):
@@ -9404,6 +9410,7 @@ async def duplicate_list(
                 if k not in {"status", "entity_type", "ref_id", "share_token", SCAN_RUNS_FIELD}}
     new_data.update({"ref_id": ref_id, "status": "draft", "source_list_id": entity_id,
                      "line_items": strip_line_ids(state.get("line_items"))})
+    await require_moving_fits_units(session, company_id, new_entity_id, "list", new_data)
     entry = await _emit_list(session, company_id, new_entity_id, "list.created", new_data, user)
     await session.commit()
     return {"event_id": entry.id, "id": new_entity_id}
@@ -12942,6 +12949,9 @@ async def undo_audit_adjust(
                 status_code=409,
                 detail=t("documents.err_audit_undo_cost", sku=l.get("sku") or item_id),
             )
+    # The count reopens and each lot goes back to what it held before the count.
+    await require_moving_fits_units(session, company_id, entity_id, "list", {**row.state, "status": FINALIZED},
+                                    also=[({"item_id": l["item_id"]}, l["prior_qty"]) for l in targets])
     for l in targets:
         item_id = str(l["item_id"])
         await emit_event(
@@ -13317,9 +13327,11 @@ async def undo_write_off(
 
     # Lock the projection: undo reads each disposed line, restores its lot, and writes the line_items
     # array back (read-modify-write), so it must serialize against a concurrent re-run/undo.
+    await lock_company(session, company_id)  # before the list row lock (lock order)
     row = await _get_writeoff(session, company_id, entity_id, for_update=True)
     if row.state.get("status") != CLOSED or row.state.get("result") != "written_off":
         raise HTTPException(status_code=409, detail=t("documents.err_writeoff_no_undo"))
+    await require_moving_fits_units(session, company_id, entity_id, "list", {**row.state, "status": FINALIZED})
     cycle = int(row.state.get("adjust_count") or 1) - 1
     lines = [dict(l) for l in (row.state.get("line_items") or [])]
     for l in lines:

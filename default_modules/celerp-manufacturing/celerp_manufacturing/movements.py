@@ -70,10 +70,11 @@ from celerp.services.lot_origin import (
     value_moved,
 )
 from celerp.services.money import allocate_pro_rata, round_money
-from celerp.services.units import build_unit_map, get_company_units, validate_line_quantity
+from celerp.services.units import build_unit_map, get_company_units, require_moving_fits_units, validate_line_quantity
 
 from . import run_events  # noqa: F401  (registers the run's own event types)
 from .expansion import merge_inputs, output_line
+from .projection_handler import reopened
 from .search import _INCOMPLETE_STATUSES
 
 # Namespace for produced-lot ids: a receipt retried with its key resolves to the same lot id.
@@ -153,7 +154,7 @@ def outstanding_inputs(run_state: dict) -> list[dict]:
 def outstanding_output(run_state: dict) -> float:
     """Finished-goods quantity still to receive (expected - already received)."""
     expected = float((run_state.get("expected_outputs") or [{}])[0].get("quantity") or 0)
-    return max(0.0, expected - float(run_state.get("received_qty") or 0))
+    return max(0.0, round(expected - float(run_state.get("received_qty") or 0), 6))
 
 
 def quantities_still_moving(run_state: dict) -> list[tuple[dict, float]]:
@@ -1074,6 +1075,7 @@ async def reopen(session: AsyncSession, company_id, user_id, order_id: str, key:
                      "was in another state, so what completion recorded cannot be reversed exactly. It cannot "
                      "be reopened; start a new run for further work.")
     _require_settled(op, state)
+    await require_moving_fits_units(session, company_id, order_id, "mfg_order", reopened(state))
     deltas = {lot["lot_item_id"]: _money(lot["delta"]) for lot in closing.get("lots") or []}
     # Completion re-costed only the lots whose cost it could still reach; a lot that keeps what
     # it was given (reconcile) is none of its business.
