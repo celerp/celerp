@@ -32,7 +32,7 @@ from decimal import Decimal
 from functools import lru_cache, partial
 
 from fastapi import HTTPException
-from sqlalchemy import cast, delete, select, text, update
+from sqlalchemy import Select, cast, delete, select, text, update
 from sqlalchemy.dialects.postgresql import JSONB, insert as pg_insert
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -533,19 +533,27 @@ async def resume_prepared_runs(session: AsyncSession) -> int:
     return len(started)
 
 
-async def get_owned_migration_run(session: AsyncSession, run_id: uuid.UUID, user_id: uuid.UUID) -> MigrationRun:
-    """The run, if *user_id* started it and still owns its company; otherwise not found.
+def _owned_runs(user_id: uuid.UUID) -> Select:
+    """The runs *user_id* started in a company they are still an active member of, each with
+    their role there, the company's settings and its name; `_may_manage` says which they control.
 
     Control follows the user's own membership, never the company their current token is
     scoped to, so the owner watches and acts on a staged company from their working session."""
-    row = (await session.execute(
-        select(MigrationRun, UserCompany.role, Company.settings)
-        .join(UserCompany, (UserCompany.company_id == MigrationRun.company_id)
-              & (UserCompany.user_id == user_id) & UserCompany.is_active.is_(True))
-        .join(Company, Company.id == MigrationRun.company_id)
-        .where(MigrationRun.id == run_id, MigrationRun.created_by_user_id == user_id)
-    )).first()
-    if row is None or not role_has_permission(row.settings, normalize_role(row.role), "manage_company_lifecycle"):
+    return (select(MigrationRun, UserCompany.role, Company.settings, Company.name)
+            .join(UserCompany, (UserCompany.company_id == MigrationRun.company_id)
+                  & (UserCompany.user_id == user_id) & UserCompany.is_active.is_(True))
+            .join(Company, Company.id == MigrationRun.company_id)
+            .where(MigrationRun.created_by_user_id == user_id))
+
+
+def _may_manage(row) -> bool:
+    return role_has_permission(row.settings, normalize_role(row.role), "manage_company_lifecycle")
+
+
+async def get_owned_migration_run(session: AsyncSession, run_id: uuid.UUID, user_id: uuid.UUID) -> MigrationRun:
+    """The run, if *user_id* started it and still owns its company; otherwise not found."""
+    row = (await session.execute(_owned_runs(user_id).where(MigrationRun.id == run_id))).first()
+    if row is None or not _may_manage(row):
         raise MigrationError(404, t(NOT_FOUND))
     return row[0]
 
@@ -1315,15 +1323,14 @@ async def run_view(session: AsyncSession, run: MigrationRun) -> dict:
 
 
 async def open_runs(session: AsyncSession, user_id: uuid.UUID) -> list[dict]:
-    """The runs *user_id* started that still wait on them: not completed, and, once stopped,
-    still able to resume because their source is kept. Newest first."""
-    runs = (await session.execute(
-        select(MigrationRun, Company.name).join(Company, Company.id == MigrationRun.company_id)
-        .where(MigrationRun.created_by_user_id == user_id, MigrationRun.status != _S.COMPLETED.value)
-        .order_by(MigrationRun.created_at.desc()))).all()
-    return [{"id": str(run.id), "company_name": name, "status": run.status,
-             "preparing": _awaiting_restart(run)}
-            for run, name in runs if run.status == _S.PREPARING or store.run_dir(run.id).exists()]
+    """The runs *user_id* started and may still open that still wait on them: not completed,
+    and, once stopped, still able to resume because their source is kept. Newest first."""
+    rows = (await session.execute(_owned_runs(user_id).where(MigrationRun.status != _S.COMPLETED.value)
+                                  .order_by(MigrationRun.created_at.desc()))).all()
+    return [{"id": str(row[0].id), "company_name": row.name, "status": row[0].status,
+             "preparing": _awaiting_restart(row[0])}
+            for row in rows if _may_manage(row)
+            and (row[0].status == _S.PREPARING or store.run_dir(row[0].id).exists())]
 
 
 async def purge_run_sources(session: AsyncSession) -> int:

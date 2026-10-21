@@ -252,3 +252,35 @@ async def test_open_runs_lead_their_creator_back_to_a_move(real_client, real_eng
     assert await _set_status("completed") == []
     shutil.rmtree(store.run_dir(uuid.UUID(run_id)))
     assert await _set_status("failed") == [], "a stopped run whose source is gone cannot resume"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("revoke", ["membership", "role"])
+async def test_open_runs_stop_leading_back_once_the_person_may_no_longer_manage_the_company(
+        real_client, real_engine, migration_env, revoke):
+    """The list of moves in progress follows the run page's access rule: once the creator's
+    membership ends, or their role no longer manages the company, the move and its company's
+    name leave the list as the run page closes to them; restoring the access brings both back."""
+    from sqlalchemy import update
+
+    from celerp.models.accounting import UserCompany
+    from celerp.services.migrations import open_runs
+
+    admin_token = await register_admin(real_client)
+    run_id = await migrate_as_owner(real_client, admin_token, company_name="Moved Co")
+    run = await load_run(real_engine, uuid.UUID(run_id))
+    changed, restored = ({"is_active": False}, {"is_active": True}) if revoke == "membership" else (
+        {"role": "manager"}, {"role": "owner"})
+
+    async def _access(values: dict) -> tuple[list, list, int]:
+        async with maker(real_engine)() as s:
+            await s.execute(update(UserCompany).where(UserCompany.user_id == run.created_by_user_id,
+                                                      UserCompany.company_id == run.company_id).values(**values))
+            await s.commit()
+            listed = [i["id"] for i in await open_runs(s, run.created_by_user_id)]
+        served = (await real_client.get("/migrations/open", headers=auth(admin_token))).json()["items"]
+        page = (await real_client.get(f"/migrations/{run_id}", headers=auth(admin_token))).status_code
+        return listed, [i["id"] for i in served], page
+
+    assert await _access(changed) == ([], [], 404)
+    assert await _access(restored) == ([run_id], [run_id], 200)
