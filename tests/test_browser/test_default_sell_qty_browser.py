@@ -195,9 +195,10 @@ def test_filtering_a_searchable_cell_then_clicking_away_keeps_its_value_and_says
     assert len(patches) == 1
 
 
-def test_a_new_category_one_label_contains_saves_the_typed_text(page, ui_server, api):
-    """Typed text that a single existing label merely contains is a new value, on click-away
-    and on Enter: "Gems" never saves the "Rough Gemstone" category."""
+def test_a_new_category_one_label_contains_is_never_saved_as_that_category(page, ui_server, api):
+    """Typed text that one existing label merely contains is still a search: clicking away
+    saves nothing and says how to finish, Enter adds it as typed, so "Gems" never saves the
+    "Rough Gemstone" category. Text no label contains saves as typed on click-away."""
     gem, box = _category_editor(page, ui_server, api, "diamond", slugs=("diamond", "rough_gemstone"))
     label = page.locator(f"{EDITING} .combobox-option[data-value='rough_gemstone']").first.inner_text().strip()
     assert "gems" in label.lower()
@@ -205,13 +206,23 @@ def test_a_new_category_one_label_contains_saves_the_typed_text(page, ui_server,
     box.fill("Gems")
     assert page.locator(f"{EDITING} .combobox-option:visible").count() == 1
     _click_away(page)
+    assert patches == []
+    assert _category(api, gem) == "diamond"
+    expect(page.locator(f"{EDITING} .combobox-note")).to_have_text(
+        'Pick one of the matches, or press Enter to add "Gems".')
+    box.focus()
+    box.press("Enter")
+    page.wait_for_timeout(1500)
     assert _category(api, gem) == "Gems"
     assert len(patches) == 1
     gem, box = _category_editor(page, ui_server, api, "diamond", slugs=())
-    box.fill("Gem")
-    box.press("Enter")
-    page.wait_for_timeout(1500)
-    assert _category(api, gem) == "Gem"
+    patches = _count_patches(page)
+    box.fill("Zircon")
+    assert page.locator(f"{EDITING} .combobox-option:not(.combobox-option--empty)"
+                        ":not(.combobox-option--pinned):visible").count() == 0
+    _click_away(page)
+    assert _category(api, gem) == "Zircon"
+    assert len(patches) == 1
 
 
 @pytest.mark.parametrize("typed", ["DIAMOND", "diamond"])

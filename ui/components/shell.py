@@ -547,7 +547,7 @@ function initCombobox(wrap) {
     }
   }
 
-  // allow-custom: on Enter, or on Tab or blur when no option matches, typed text that is
+  // allow-custom: on Enter, or on Tab or blur when no option contains it, typed text that is
   // not the committed label becomes the value (an emptied box clears it on Enter). Typing
   // already mirrors it into the hidden input, so the commit is the change event; text
   // equal to the committed label keeps the committed value.
@@ -562,8 +562,8 @@ function initCombobox(wrap) {
 
   // What the typed text names without arrow-key focus. exact: the option whose label,
   // or else whose value, it spells in any case. lone: the only option the query leaves
-  // visible, which only Enter on a fixed-list box picks; an allow-custom box treats a
-  // partial match as a new value, so "Gems" never becomes "Rough Gemstone". An empty
+  // visible, which only Enter on a fixed-list box picks; an allow-custom box never turns
+  // a partial match into that option, so "Gems" never becomes "Rough Gemstone". An empty
   // box is no query, so it never picks the lone option. Pinned actions (add-new, scope
   // toggles) stay visible whatever is typed, so they are never picked or counted.
   function typedMatch() {
@@ -580,7 +580,7 @@ function initCombobox(wrap) {
     return {exact: exact, lone: typed && vis.length === 1 ? vis[0] : null, matches: vis.length};
   }
 
-  // Several options still match on Tab or click-away: nothing is saved, the committed
+  // Options still match on Tab or click-away: nothing is saved, the committed
   // value stays behind the typed text, and a note under the box says how to finish.
   function showPickNote() {
     hidden.value = committedValue;
@@ -599,8 +599,8 @@ function initCombobox(wrap) {
   }
 
   // allow-custom, leaving the box by Tab or click-away: an exact match picks its option,
-  // text no option or only one option contains is a new value, and several matches are
-  // an unfinished search the user is told about. Text equal to the committed label
+  // text no option contains is a new value, and text options still contain is an
+  // unfinished search the user is told about. Text equal to the committed label
   // changes nothing, so a box Enter, Tab or a pick already committed is never saved twice.
   function settleTyped() {
     if (input.value === committedLabel) { hidden.value = committedValue; return; }
@@ -609,7 +609,7 @@ function initCombobox(wrap) {
       var val = m.exact.dataset.value !== undefined ? m.exact.dataset.value : m.exact.textContent.trim();
       if (val !== committedValue) selectOpt(m.exact);
       else { input.value = committedLabel; hidden.value = committedValue; }
-    } else if (m.matches > 1) showPickNote();
+    } else if (m.matches) showPickNote();
     else commitCustom();
   }
 
