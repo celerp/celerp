@@ -1440,6 +1440,41 @@ async def test_bootstrap_start_signs_in_the_new_owner(ui, router, fake_api):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("with_accounts", [False, True])
+async def test_the_backup_company_choice_reads_as_a_choice_from_the_backup(ui, router, fake_api, with_accounts):
+    """A backup that holds several companies asks which one to import. The choice lists the
+    backup's companies, so it sits above the mapping table as a choice from the file, never
+    under "In Celerp" or a title about where items go in Celerp."""
+    from celerp.importers.adapters.base import COMPANY_QUESTION
+
+    _owner(ui)
+    base = "/setup/new-company/migrate"
+    r = await ui.post(f"{base}/scan", files=_UPLOAD, data={"source": "manager_io", "prepared_by": "Example Bookkeeping"})
+    token = _cookie_value(r, SCAN_COOKIE)
+    ui.cookies.set(SCAN_COOKIE, token)
+    scan = fake_api.scans[token]["scan"]
+    choice = {"key": COMPANY_QUESTION, "source_type": "Company", "source_external_id": "company",
+              "label": t("migration.odoo_company_question", "en"), "options": ["Harbour Supplies Ltd", "Second Co"],
+              "suggested": "Harbour Supplies Ltd"}
+    scan["questions"] = [choice, *(scan["questions"] if with_accounts else [])]
+
+    r = await ui.get(f"{base}/mapping")
+    assert r.status_code == 200
+    page, visible = _page(r), _visible(r)
+    choice_at = page.index(f'name="mapping__{COMPANY_QUESTION}"')
+    assert "Company to import from this backup" in visible
+    assert "<table" not in page[:choice_at], "the company choice comes before the mapping table"
+    if with_accounts:
+        table = page[page.index("<table"):page.index("</table>")]
+        assert 'name="mapping__account:fx-gain"' in table and f"mapping__{COMPANY_QUESTION}" not in table
+        assert t("migration.mapping_title", "en") in visible
+    else:
+        assert "<table" not in page
+        assert "Choose the company to import" in visible
+        assert t("migration.mapping_subtitle", "en") not in visible and "In Celerp" not in visible
+
+
+@pytest.mark.asyncio
 async def test_move_another_company_starts_clean_wizard(ui, router, fake_api):
     _owner(ui)
     base = "/setup/new-company/migrate"

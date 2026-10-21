@@ -36,6 +36,7 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, RedirectResponse, Response, StreamingResponse
 
 from celerp.accounting_roles import account_label
+from celerp.importers.adapters.base import COMPANY_QUESTION
 import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.posting_accounts import NEW_ACCOUNT, account_picker
@@ -1290,24 +1291,35 @@ def _mapping_page(request: Request, mode: WizardMode, entry: dict, errors: dict 
     current = _decisions(scan).get("mappings") or {}
     errors = errors or {}
     questions = scan.get("questions") or []
+    # A backup that holds several companies asks which one to import: a choice from the
+    # file, so it stands above the table of where items go in Celerp.
+    company = next((q for q in questions if q["key"] == COMPANY_QUESTION), None)
+    rows = [q for q in questions if q is not company]
+
+    def control(q: dict) -> FT:
+        return _mapping_control(q, current.get(q["key"], q.get("suggested") or ""))
+
+    header = auth_header(t("migration.mapping_title"), t("migration.mapping_subtitle")) if rows else \
+        auth_header(t("migration.company_choice_title"), t("migration.company_choice_subtitle"))
     return wizard_page(
         request,
         _steps(3),
-        auth_header(t("migration.mapping_title"), t("migration.mapping_subtitle")),
+        header,
         flash(error) if error else "",
         Form(
             Input(type="hidden", name="step", value="mapping"),
+            Div(Label(company.get("label", ""), cls="form-label"), control(company),
+                field_error(errors, company["key"]), cls="form-group") if company else "",
             wizard_table(
                 Thead(Tr(Th(t("migration.source_item")), Th(t("migration.celerp_item")))),
                 Tbody(*[
                     Tr(
                         Td(q.get("label", ""), Br(), Span(q.get("source_type", ""), cls="form-hint")),
-                        Td(_mapping_control(q, current.get(q["key"], q.get("suggested") or "")),
-                           field_error(errors, q["key"])),
+                        Td(control(q), field_error(errors, q["key"])),
                     )
-                    for q in questions
+                    for q in rows
                 ]),
-            ),
+            ) if rows else "",
             field_error(errors, "mappings"),
             Button(t("btn.continue"), type="submit", cls="btn btn--primary btn--full mt-md"),
             method="post", action=f"{mode.base}/decisions", cls="auth-form",
