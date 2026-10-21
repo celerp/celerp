@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import threading
 from collections import defaultdict
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from decimal import Decimal
 from functools import lru_cache
@@ -78,14 +80,17 @@ def _book(artifacts: ArtifactSet, decisions: MigrationDecisions) -> OdooBook:
     return _books(artifact.path, artifact.sha256, decisions.mappings.get(COMPANY_QUESTION))
 
 
-def _read(artifacts: ArtifactSet, decisions: MigrationDecisions) -> tuple[OdooBook, Ledger, attachments.Screened]:
-    # One run at a time builds its ledger on the shared book.
+@contextmanager
+def _read(artifacts: ArtifactSet,
+          decisions: MigrationDecisions) -> Iterator[tuple[OdooBook, Ledger, attachments.Screened]]:
+    """The book, its ledger for these decisions and the files it carries. Every run on a backup
+    shares its book and rebuilds the ledger on it, so one run at a time reads and uses them."""
     with _READING:
         odoo = _book(artifacts, decisions)
         ledger = build_ledger(odoo.book, decisions)
         with Backup(_single(artifacts).path) as backup:
             screened = attachments.screen(backup, odoo.attachments, _carried(ledger))
-    return odoo, ledger, screened
+        yield odoo, ledger, screened
 
 
 def _carried(ledger: Ledger) -> set[tuple[str, str]]:
@@ -158,58 +163,59 @@ class OdooAdapter:
 
     def inspect(self, artifacts: ArtifactSet, company: str | None = None) -> SourceScan:
         decisions = FULL if company is None else MigrationDecisions(FULL.mode, mappings={COMPANY_QUESTION: company})
-        odoo, ledger, screened = _read(artifacts, decisions)
-        book = odoo.book
-        dated = sorted([j.date for j in book.journals] + [d.date for d in book.documents.values()]
-                       + [m.date for m in odoo.moves])
-        features = [name for name, present in (
-            ("foreign_currency", any(book.is_foreign(c) for c in book.currencies)),
-            ("inventory", bool(odoo.moves or book.stock)), ("tax", bool(book.tax_codes)),
-            ("attachments", bool(screened.accepted)),
-        ) if present]
-        return SourceScan(
-            source_system=self.key, source_schema_version=str(odoo.version),
-            company_name=book.company_name or None, base_currency=book.base or None,
-            period_start=dated[0] if dated else None, period_end=dated[-1] if dated else None,
-            currencies=book.currencies, object_counts=dict(book.object_counts), features=tuple(features),
-            coverage=tuple(_coverage(odoo, ledger, screened)),
-            questions=(MappingQuestion(key=COMPANY_QUESTION, source_type="Company", source_external_id="company",
-                                       label=t("migration.odoo_company_question"), options=odoo.companies,
-                                       suggested=company or odoo.companies[0]),) if odoo.companies else (),
-        )
+        with _read(artifacts, decisions) as (odoo, ledger, screened):
+            book = odoo.book
+            dated = sorted([j.date for j in book.journals] + [d.date for d in book.documents.values()]
+                           + [m.date for m in odoo.moves])
+            features = [name for name, present in (
+                ("foreign_currency", any(book.is_foreign(c) for c in book.currencies)),
+                ("inventory", bool(odoo.moves or book.stock)), ("tax", bool(book.tax_codes)),
+                ("attachments", bool(screened.accepted)),
+            ) if present]
+            return SourceScan(
+                source_system=self.key, source_schema_version=str(odoo.version),
+                company_name=book.company_name or None, base_currency=book.base or None,
+                period_start=dated[0] if dated else None, period_end=dated[-1] if dated else None,
+                currencies=book.currencies, object_counts=dict(book.object_counts), features=tuple(features),
+                coverage=tuple(_coverage(odoo, ledger, screened)),
+                questions=(MappingQuestion(
+                    key=COMPANY_QUESTION, source_type="Company", source_external_id="company",
+                    label=t("migration.odoo_company_question"), options=odoo.companies,
+                    suggested=company or odoo.companies[0]),) if odoo.companies else (),
+            )
 
     def build_manifest(self, artifacts: ArtifactSet, decisions: MigrationDecisions) -> CIFImportManifest:
-        odoo, ledger, screened = _read(artifacts, decisions)
-        book = odoo.book
-        bundle = build_bundle(ledger, Source(self.key))
-        bundle.inventory_adjustments = _stock(odoo, ledger)
-        bundle.attachments = [
-            CIFAttachment(**Source(self.key)("Attachment", a.key), file_name=a.name,
-                          declared_content_type=a.content_type, size_bytes=a.size, sha256=a.sha256,
-                          target_source_type=a.target_type, target_source_external_id=a.target,
-                          item_image=a.item_image)
-            for a in screened.accepted.values()]
-        return CIFImportManifest(
-            source=book.company_name or _single(artifacts).original_name,
-            source_system=self.key,
-            source_schema_version=str(odoo.version),
-            adapter_version=self.adapter_version,
-            mode=decisions.mode,
-            cutover_date=decisions.cutover_date if decisions.mode == CIFMode.CUTOVER else None,
-            exported_at=datetime.now(timezone.utc),
-            bundle=bundle,
-            coverage=_coverage(odoo, ledger, screened),
-            source_summary={"attachments": {
-                "accepted": len(screened.accepted),
-                "rejected": [{"source_external_id": key, "reason": reason}
-                             for key, reason in sorted(screened.rejected.items())],
-            }},
-            reconciliation_expectations=expectations_from(book, ledger),
-        )
+        with _read(artifacts, decisions) as (odoo, ledger, screened):
+            book = odoo.book
+            bundle = build_bundle(ledger, Source(self.key))
+            bundle.inventory_adjustments = _stock(odoo, ledger)
+            bundle.attachments = [
+                CIFAttachment(**Source(self.key)("Attachment", a.key), file_name=a.name,
+                              declared_content_type=a.content_type, size_bytes=a.size, sha256=a.sha256,
+                              target_source_type=a.target_type, target_source_external_id=a.target,
+                              item_image=a.item_image)
+                for a in screened.accepted.values()]
+            return CIFImportManifest(
+                source=book.company_name or _single(artifacts).original_name,
+                source_system=self.key,
+                source_schema_version=str(odoo.version),
+                adapter_version=self.adapter_version,
+                mode=decisions.mode,
+                cutover_date=decisions.cutover_date if decisions.mode == CIFMode.CUTOVER else None,
+                exported_at=datetime.now(timezone.utc),
+                bundle=bundle,
+                coverage=_coverage(odoo, ledger, screened),
+                source_summary={"attachments": {
+                    "accepted": len(screened.accepted),
+                    "rejected": [{"source_external_id": key, "reason": reason}
+                                 for key, reason in sorted(screened.rejected.items())],
+                }},
+                reconciliation_expectations=expectations_from(book, ledger),
+            )
 
     def source_expectations(self, artifacts: ArtifactSet, decisions: MigrationDecisions) -> ReconciliationExpectations:
-        odoo, ledger, _ = _read(artifacts, decisions)
-        return expectations_from(odoo.book, ledger)
+        with _read(artifacts, decisions) as (odoo, ledger, _):
+            return expectations_from(odoo.book, ledger)
 
     def read_attachment(self, artifacts: ArtifactSet, decisions: MigrationDecisions, key: str) -> bytes:
         """The content of one file of the chosen company that the scan accepts. Raises

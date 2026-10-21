@@ -1156,6 +1156,48 @@ def test_a_run_reads_the_dump_once_for_every_step(tmp_path, monkeypatch):
     assert len(reads) == 2
 
 
+def test_runs_on_one_upload_at_once_build_what_each_builds_alone(tmp_path, monkeypatch):
+    """A full history manifest and a cutover manifest of one backup built at the same time, the
+    full history one bundled while the cutover is halfway through building its ledger on the
+    book they share, come out as each does on its own."""
+    import threading
+
+    from celerp.importers.adapters.exports import ledger
+    from celerp.importers.adapters.odoo import adapter as odoo
+
+    files, cutover = _file(tmp_path, _backup(17)), MigrationDecisions(mode=CIFMode.CUTOVER, cutover_date=CUTOVER)
+    adapter = _adapter()
+    odoo._books.cache_clear()
+    alone = {d.mode: adapter.build_manifest(files, d).model_dump(exclude={"exported_at"}) for d in (FULL, cutover)}
+
+    halfway, bundled = threading.Event(), threading.Event()
+    link_notes, bundle = ledger._link_notes, odoo.build_bundle
+
+    def paused_link_notes(book):
+        link_notes(book)
+        if threading.current_thread() is cut:
+            halfway.set()
+            bundled.wait(2)
+
+    def build_bundle(led, source):
+        if led.cutover is None:
+            cut.start()
+            halfway.wait(2)             # the cutover is halfway through its ledger, unless held back
+        try:
+            return bundle(led, source)
+        finally:
+            bundled.set()
+
+    monkeypatch.setattr(ledger, "_link_notes", paused_link_notes)
+    monkeypatch.setattr(odoo, "build_bundle", build_bundle)
+    together = {}
+    cut = threading.Thread(target=lambda: together.setdefault(
+        CIFMode.CUTOVER, adapter.build_manifest(files, cutover).model_dump(exclude={"exported_at"})))
+    together[CIFMode.FULL_HISTORY] = adapter.build_manifest(files, FULL).model_dump(exclude={"exported_at"})
+    cut.join()
+    assert together == alone
+
+
 # ── End to end ────────────────────────────────────────────────────────────────
 
 async def _events(engine, company_id) -> int:
