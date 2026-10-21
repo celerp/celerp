@@ -529,7 +529,105 @@ def test_a_record_longer_than_the_line_limit_is_refused(tmp_path, monkeypatch):
     monkeypatch.setattr(dump, "MAX_LINE", 4000)
     with pytest.raises(ScanError) as refused:
         _adapter().inspect(_file(tmp_path, build.backup(17, tables)))
-    assert str(refused.value) == t("migration.err_odoo_record_too_large", "en", limit=f"{4000 / 1024 ** 2:g}")
+    assert str(refused.value) == t("migration.err_odoo_record_too_large", "en", limit=f"{4000 / 10 ** 6:g}")
+    assert "4000" not in str(refused.value) and "MB" not in str(refused.value)
+
+
+def _with_attachment(**values) -> build.Tables:
+    """The fixture with one more file, on a contact Celerp imports."""
+    tables = build.tables(17)
+    columns, rows = tables.rows["ir_attachment"]
+    if "index_content" in values:  # the text Odoo extracts from a text file it indexes, uncapped
+        columns.append("index_content")
+        for r in rows:
+            r.append(None)
+    row = dict.fromkeys(columns)
+    row.update({"id": 99001, "res_id": 7, "company_id": 1, "file_size": 13, "name": "export.txt",
+                "res_model": "res.partner", "type": "binary", "mimetype": "text/plain", **values})
+    rows.append([row[c] for c in columns])
+    return tables
+
+
+def _read(tmp_path, tables: build.Tables, name: str):
+    manifest = _adapter().build_manifest(_file(tmp_path, build.backup(17, tables), name), FULL)
+    return manifest.bundle, manifest.source_summary
+
+
+def test_a_long_column_the_import_drops_does_not_count_toward_the_line_limit(tmp_path, monkeypatch):
+    """Odoo keeps the text of an indexed text file in its ir_attachment row; the import never
+    keeps that column, so however long it is the backup reads as if it were short."""
+    from celerp.importers.adapters.odoo import dump
+
+    monkeypatch.setattr(dump, "MAX_LINE", _longest_line(17))
+    short = _read(tmp_path, _with_attachment(index_content="w", store_fname=build.store_name(b"Net 30 days.\n"),
+                                             checksum=None), "short.zip")
+    long = _read(tmp_path, _with_attachment(index_content="w" * 3 * dump.MAX_LINE,
+                                            store_fname=build.store_name(b"Net 30 days.\n"), checksum=None), "long.zip")
+    assert long == short
+    assert "attachment:99001" in {a.source_external_id for a in long[0].attachments}
+
+
+@pytest.mark.parametrize("size", ["over the file limit", "over the line limit"])
+def test_a_file_in_the_database_too_large_to_import_is_rejected_alone(tmp_path, monkeypatch, size):
+    """A file kept in the database larger than the import takes is rejected alone and listed with
+    the others left out, whether its row fits the line limit or not; the rest reads as it would
+    without the file's content. In miniature: files up to 100 bytes."""
+    from celerp.importers.adapters.odoo import book, dump
+
+    longest = _longest_line(17)
+    monkeypatch.setattr(dump, "MAX_LINE", longest)
+    monkeypatch.setattr(book, "MAX_ATTACHMENT_BYTES", 100)
+    monkeypatch.setattr(attachments, "MAX_ATTACHMENT_BYTES", 100)
+    content = bytes(101 if size == "over the file limit" else longest)
+    assert (len(content) * 2 > longest) == (size == "over the line limit")
+    stored = _read(tmp_path, _with_attachment(db_datas="\\x" + content.hex()), "stored.zip")
+    missing = _read(tmp_path, _with_attachment(), "missing.zip")
+    assert stored == missing
+    rejected = {r["source_external_id"]: r["reason"] for r in stored[1]["attachments"]["rejected"]}
+    assert rejected["attachment:99001"] == t("migration.odoo_attachment_unreadable", "en")
+
+
+def test_an_attachment_row_too_long_to_read_is_rejected_alone(tmp_path, monkeypatch):
+    """An attachment whose kept text is longer than the line limit is left out by its row id and
+    listed with the others left out; the backup is not refused and everything else reads."""
+    from celerp.importers.adapters.odoo import dump
+
+    monkeypatch.setattr(dump, "MAX_LINE", _longest_line(17))
+    bundle, summary = _read(tmp_path, _with_attachment(name="n" * 2 * dump.MAX_LINE), "long.zip")
+    plain, plain_summary = _read(tmp_path, build.tables(17), "plain.zip")
+    assert bundle == plain
+    rejected = {r["source_external_id"]: r["reason"] for r in summary["attachments"]["rejected"]}
+    assert rejected == {r["source_external_id"]: r["reason"] for r in plain_summary["attachments"]["rejected"]} | {
+        "attachment:99001": t("migration.odoo_attachment_unreadable", "en")}
+
+
+def test_an_attachment_row_too_long_to_read_without_an_id_refuses_the_backup(tmp_path, monkeypatch):
+    """A row left out is listed by its id; one whose leading field is not an id is not listed
+    (a long one would be held for every such row) but refuses the backup."""
+    from celerp.importers.adapters.odoo import dump
+
+    monkeypatch.setattr(dump, "MAX_LINE", _longest_line(17))
+    with pytest.raises(ScanError) as refused:
+        _read(tmp_path, _with_attachment(id="9" * 20, name="n" * 2 * dump.MAX_LINE), "long.zip")
+    assert str(refused.value) == t("migration.err_odoo_record_too_large", "en",
+                                   limit=f"{_longest_line(17) / 10 ** 6:g}")
+
+
+def test_a_row_of_another_table_too_long_to_read_refuses_the_backup_even_in_pieces(tmp_path, monkeypatch):
+    """Over the line limit outside attachments the backup is refused, also when the long value
+    sits after columns the import drops."""
+    from celerp.importers.adapters.odoo import dump
+
+    tables = build.tables(17)
+    columns, rows = tables.rows["res_partner"]
+    columns.insert(1, "comment_dropped")
+    for r in rows:
+        r.insert(1, "c" * 3000)
+    rows[0][columns.index("name")] = "x" * 5000
+    monkeypatch.setattr(dump, "MAX_LINE", 4000)
+    with pytest.raises(ScanError) as refused:
+        _adapter().inspect(_file(tmp_path, build.backup(17, tables)))
+    assert str(refused.value) == t("migration.err_odoo_record_too_large", "en", limit=f"{4000 / 10 ** 6:g}")
 
 
 def test_a_long_line_the_import_does_not_read_is_passed_over_and_the_rest_read(tmp_path, monkeypatch):
@@ -1498,7 +1596,7 @@ def test_a_run_reads_the_dump_once_for_every_step(tmp_path, monkeypatch):
     from celerp.importers.adapters.odoo.dump import Backup
 
     reads, tables = [], Backup.tables
-    monkeypatch.setattr(Backup, "tables", lambda self, *a: reads.append(1) or tables(self, *a))
+    monkeypatch.setattr(Backup, "tables", lambda self, *a, **kw: reads.append(1) or tables(self, *a, **kw))
     odoo._books.cache_clear()
     files, cutover = _file(tmp_path, _backup(17)), MigrationDecisions(mode=CIFMode.CUTOVER, cutover_date=CUTOVER)
     adapter = _adapter()

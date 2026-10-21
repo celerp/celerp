@@ -15,6 +15,7 @@ from __future__ import annotations
 import io
 import json
 import lzma
+import math
 import re
 import zipfile
 import zlib
@@ -40,12 +41,13 @@ DAMAGED = "migration.err_odoo_dump_damaged"
 TOO_LARGE = "migration.err_file_too_large"
 HELD_TOO_LARGE = "migration.err_odoo_backup_too_large"
 # What one backup may make the server unpack and hold. A database's dump packs about ten to one;
-# a far higher ratio is a file made to unpack large, not a database. The longest line a wanted
-# table holds is an attachment stored in its row: up to 25 MB as hex, twice the characters.
+# a far higher ratio is a file made to unpack large, not a database. The most text one row keeps
+# is an attachment stored in it: up to 25 MB as hex, twice the characters, and the rest of its row.
 MAX_DUMP_BYTES = 20 * 1024 ** 3  # ten times the largest upload
 MAX_RATIO = 100
-MAX_LINE = 64 * 1024 ** 2  # characters
+MAX_LINE = 64_000_000  # characters of the columns kept from one row
 MAX_MANIFEST = 1024 ** 2  # Odoo's is a few kilobytes
+ID_DIGITS = 19  # the most a PostgreSQL bigint id writes
 # What the rows read may take of the server's memory, in bytes, counted as Python holds them:
 # each row a tuple of its kept values, each distinct value a string held once in its table.
 MAX_HELD = 1024 ** 3
@@ -115,6 +117,48 @@ def _intact(error: type[Exception] = ScanError) -> Iterator[None]:
 def too_large(error: type[Exception] = ScanError) -> Exception:
     """The refusal of a backup whose rows need more memory than MAX_HELD, or than the server has."""
     return error(t(HELD_TOO_LARGE, limit=f"{MAX_HELD / 1024 ** 3:g}"))
+
+
+def too_long() -> ScanError:
+    """The refusal of a backup with a row keeping more than MAX_LINE characters."""
+    return ScanError(t("migration.err_odoo_record_too_large", limit=f"{MAX_LINE / 10 ** 6:g}"))
+
+
+def _long_row(first: str, lines: IO[str], limits: Mapping[int, float]) -> tuple[list[str], bool, bool]:
+    """A row longer than MAX_LINE, read in pieces from its first: its fields, one not in `limits`
+    (kept column index -> its cap in characters, inf when uncapped) as empty and one longer than
+    its cap as NULL; whether the fields kept add up to more than MAX_LINE characters (then the
+    fields after are empty too), and whether the line ends."""
+    fields: list[str] = []
+    text: list[str] = []
+    length = kept = 0
+    over = ended = False
+
+    def close() -> None:
+        nonlocal kept
+        limit = limits.get(len(fields))
+        held = limit is not None and length <= limit
+        fields.append("" if limit is None or over else "".join(text) if held else "\\N")
+        kept += length if held else 0
+
+    piece = first
+    while piece and not ended:
+        ended = piece.endswith("\n")
+        for j, part in enumerate(piece.removesuffix("\n").split("\t")):
+            if j:
+                close()
+                text, length = [], 0
+            length += len(part)
+            limit = limits.get(len(fields))
+            if limit is None or over or length > limit:
+                text = []
+            else:
+                text.append(part)
+                if kept + length > MAX_LINE:
+                    over, text = True, []
+        piece = "" if ended else lines.readline(MAX_LINE)
+    close()
+    return fields, over, ended
 
 
 def _open(archive: zipfile.ZipFile, name: str) -> IO[bytes]:
@@ -241,17 +285,23 @@ class Backup:
 
     def tables(self, names: Iterable[str], columns: frozenset[str],
                where: Mapping[str, Callable[[Row], bool]] | None = None,
-               required: Iterable[str] = ()) -> dict[str, list[Row]]:
+               required: Iterable[str] = (), capped: Mapping[str, int] | None = None,
+               may_leave_out: Iterable[str] = ()) -> dict[str, list[Row]]:
         """The rows of each named table the dump holds, in dump order, with only the named
         columns, and of a table in `where` only the rows its test keeps. A table the dump does
-        not hold (its module is not installed) is absent. The dump is streamed and a value
-        repeated within a table is held once, and a line longer than MAX_LINE is never held
-        whole: one outside the wanted tables' rows is read in pieces and dropped. Raises
-        ScanError, before any row is used, when a wanted row is that long, when the rows kept
-        would take more than MAX_HELD of memory, or when the dump is cut short or damaged: it does not unpack, has no closing line, a table's data never ends or
-        never starts, a row has more or fewer fields than its table, or a `required` table (one
-        an installed module makes) is missing."""
-        wanted, where = set(names) | set(required), where or {}
+        not hold (its module is not installed) is absent. A value of a `capped` column longer
+        than its cap, in characters, is read as NULL. The dump is streamed and a value repeated
+        within a table is held once, and a line longer than MAX_LINE is never held whole: it is
+        read in pieces, keeping only the wanted rows' kept columns. A row of a `may_leave_out`
+        table keeping more than MAX_LINE characters is left out and its leading field (its id)
+        listed in `self.left_out` under its table. Raises ScanError, before any row is used,
+        when a row of another wanted table, or one whose leading field is not an id, keeps that
+        much, when the rows kept would take more
+        than MAX_HELD of memory, or when the dump is cut short or damaged: it does not unpack,
+        has no closing line, a table's data never ends or never starts, a row has more or fewer
+        fields than its table, or a `required` table (one an installed module makes) is missing."""
+        wanted, where, capped, may_leave_out = set(names) | set(required), where or {}, capped or {}, set(may_leave_out)
+        self.left_out: dict[str, list[str]] = {}
         out: dict[str, list[Row]] = {}
         made: set[str] = set()
         copying: str | None = None
@@ -262,11 +312,19 @@ class Backup:
             rows: list[Row] | None = None
             for line in iter(partial(lines.readline, MAX_LINE + 1), ""):
                 if len(line) > MAX_LINE and not line.endswith("\n"):
-                    if rows is not None:
-                        raise ScanError(t("migration.err_odoo_record_too_large", limit=f"{MAX_LINE / 1024 ** 2:g}"))
-                    while (rest := lines.readline(MAX_LINE)) and not rest.endswith("\n"):
-                        pass
-                    continue
+                    if rows is None:
+                        while (rest := lines.readline(MAX_LINE)) and not rest.endswith("\n"):
+                            pass
+                        continue
+                    values, over, ended = _long_row(line, lines, dict(zip(kept, limits)))
+                    if len(values) != width or not ended:
+                        raise ScanError(t(DAMAGED))
+                    if over:
+                        if copying not in may_leave_out or not (values[0].isdigit() and len(values[0]) <= ID_DIGITS):
+                            raise too_long()
+                        self.left_out.setdefault(copying, []).append(values[0])
+                        continue
+                    line = "\t".join(values) + "\n"
                 if copying is not None:
                     if line == "\\.\n":
                         copying = rows = None
@@ -274,7 +332,7 @@ class Backup:
                         values = line.rstrip("\n").split("\t")
                         if len(values) != width or not line.endswith("\n"):
                             raise ScanError(t(DAMAGED))
-                        fields = [_field(values[i]) for i in kept]
+                        fields = [_field(values[i]) if len(values[i]) <= limit else None for i, limit in zip(kept, limits)]
                         if keep is not None and not keep(shape(fields)):
                             continue
                         held += row_bytes + sum(VALUE_BYTES + len(f) for f in fields if f is not None and f not in seen)
@@ -291,6 +349,7 @@ class Backup:
                     if copying in wanted:
                         header = [c.strip().strip('"') for c in match.group(2).split(",")]
                         width, kept = len(header), [i for i, name in enumerate(header) if name in columns]
+                        limits = [capped.get(header[i], math.inf) for i in kept]
                         shape = type("Row", (Row,), {"__slots__": (), "index": {header[i]: n for n, i in enumerate(kept)}})
                         keep, seen = where.get(copying), {}
                         row_bytes = ROW_BYTES + FIELD_BYTES * len(kept)

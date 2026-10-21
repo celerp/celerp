@@ -183,6 +183,7 @@ class AttachmentRef:
     target_type: str | None                     # source type of its record; None when Celerp holds no such record
     target: str | None
     item_image: bool = False                    # the item's own picture rather than a file attached to it
+    too_long: bool = False                      # its row keeps more than Celerp reads from one record
 
 
 @dataclass
@@ -240,8 +241,11 @@ class _Reader:
     def __init__(self, backup: Backup, company: str | None) -> None:
         self.backup = backup
         self.text = backup.text
+        # A file kept in the database is hex after \x, two characters a byte: one larger than the
+        # import takes is read as absent, and an attachment row too long to read is left out alone.
         self.rows = backup.tables((*TABLES, backup.lot_table), COLUMNS, KEPT_ROWS,
-                                  required_tables(backup.modules, backup.version))
+                                  required_tables(backup.modules, backup.version),
+                                  capped={"db_datas": 3 + 2 * MAX_ATTACHMENT_BYTES}, may_leave_out=("ir_attachment",))
         self.company, companies = self._company(company)
         currencies = {r["id"]: r["name"] for r in self.rows.get("res_currency", [])}
         self.currency = lambda i: currencies.get(i or "", "")
@@ -844,13 +848,16 @@ class _Reader:
                 # Odoo names a picture after its field; name it after its record instead.
                 name = target.replace("/", "-").replace("\\", "-") + extension
             # A file kept in the database is held only when it can be imported: attached to a
-            # record Celerp holds and within the size limit. Any other is left out unread.
+            # record Celerp holds and within the size limit (one larger is read as absent).
             stored = r.get("db_datas") if target else None
-            held = stored and stored.startswith("\\x") and len(stored) <= 2 + 2 * MAX_ATTACHMENT_BYTES
+            held = stored and stored.startswith("\\x")
             key = f"attachment:{r['id']}"
             self.out.attachments[key] = AttachmentRef(
                 key, name, r.get("store_fname"), bytes.fromhex(stored[2:]) if held else None,
                 r.get("checksum"), target_type, target, bool(res_field) and target_type == "Item")
+        for row_id in self.backup.left_out.get("ir_attachment", []):
+            key = f"attachment:{row_id}"
+            self.out.attachments[key] = AttachmentRef(key, "", None, None, None, None, None, too_long=True)
         book.object_counts["Attachment"] = len(self.out.attachments)
 
 

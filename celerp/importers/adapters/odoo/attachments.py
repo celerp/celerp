@@ -52,6 +52,8 @@ class Screened:
 
 def _check(backup: Backup, ref: AttachmentRef, carried: set[tuple[str, str]]) -> tuple[Accepted, bytes]:
     """The accepted file and its content. Raises ScanError with the reason it is left out."""
+    if ref.too_long:
+        raise ScanError(t("migration.odoo_attachment_unreadable"))
     if ref.target_type is None or (ref.target_type, ref.target) not in carried:
         raise ScanError(t("migration.odoo_attachment_no_target"))
     ext = accepted_extension(ref.name)

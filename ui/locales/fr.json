@@ -4167,7 +4167,7 @@
   "migration.err_odoo_backup_damaged": "Ce fichier de sauvegarde est illisible : il est endommagé, a été tronqué lors du téléversement ou de la copie, ou a été recompressé d’une manière que Celerp ne peut pas ouvrir. Aucune donnée n’a été importée. Créez une nouvelle sauvegarde dans le gestionnaire de bases de données d’Odoo et téléversez le fichier ZIP sans le modifier.",
   "migration.err_odoo_backup_encrypted": "This backup is protected with a password, so Celerp cannot open it. Nothing was imported. Make a new backup in Odoo's database manager without a password and upload the zip as it is.",
   "migration.err_odoo_backup_too_large": "This backup is too large to import: reading its records takes more memory than this server can give one import, at most {limit} GB. Nothing was imported. For help with large backups, ask on GitHub Issues or Discussions.",
-  "migration.err_odoo_record_too_large": "One record in this backup is larger than {limit} MB, more than Celerp reads from a single record. Nothing was imported.",
+  "migration.err_odoo_record_too_large": "One record in this backup holds more than {limit} million characters, more than Celerp reads from a single record. Nothing was imported.",
   "migration.err_attachment_not_found": "Cette pièce jointe ne se trouve pas dans le fichier importé.",
   "migration.err_odoo_company_missing": "Cette sauvegarde ne contient aucune comptabilité pour {company}. Choisissez l'une des sociétés de la liste.",
   "migration.odoo_company_question": "Entreprise à importer depuis cette sauvegarde",
