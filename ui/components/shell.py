@@ -534,12 +534,28 @@ function initCombobox(wrap) {
     committedLabel = label;
     list.classList.remove('open');
     currentOpts().forEach(function(o) { o.classList.remove('focused'); });
+    fireChange();
+  }
+
+  function fireChange() {
     // Use htmx.trigger() — synthetic dispatchEvent is ignored by HTMX 2.x
     if (hidden && typeof htmx !== 'undefined') {
       htmx.trigger(hidden, 'change');
     } else if (hidden) {
       hidden.dispatchEvent(new Event('change', {bubbles: true}));
     }
+  }
+
+  // allow-custom: typed text that is not the committed label becomes the value.
+  // Typing already mirrors it into the hidden input, so the commit is the change
+  // event; text equal to the committed label keeps the committed value.
+  function commitCustom() {
+    if (!input.value) return;
+    if (input.value === committedLabel) { hidden.value = committedValue; return; }
+    hidden.value = input.value;
+    committedValue = input.value;
+    committedLabel = input.value;
+    fireChange();
   }
 
   function openList() {
@@ -585,18 +601,7 @@ function initCombobox(wrap) {
       // Typing filters the list in multi mode; the selection bag is the state,
       // so restore the summary rather than leaving the search text behind.
       if (isMulti) { syncMultiLabel(); return; }
-      // allow-custom keeps the hidden value in step with typing; if the box was
-      // cleared, commit whatever text stands as the value.
-      if (allowCustom) {
-        if (input.value && !hidden.value) {
-          hidden.value = input.value;
-          committedValue = input.value;
-          committedLabel = input.value;
-          if (typeof htmx !== 'undefined') htmx.trigger(hidden, 'change');
-          else hidden.dispatchEvent(new Event('change', {bubbles: true}));
-        }
-        return;
-      }
+      if (allowCustom) { commitCustom(); return; }
       // Plain single-select over a fixed option set: typing only filters, it
       // never commits. Restore the committed label and value so blurring after a
       // search that was not confirmed never leaves a stale query in the box or an
@@ -621,6 +626,7 @@ function initCombobox(wrap) {
       var exact = vis.filter(function(o) { return o.textContent.trim().toLowerCase() === typed; });
       var pick = exact.length === 1 ? exact[0] : (vis.length === 1 ? vis[0] : null);
       if (pick) { selectOpt(pick); e.preventDefault(); }
+      else if (allowCustom) commitCustom();
     }
     if (e.key === 'Escape') {
       list.classList.remove('open');
