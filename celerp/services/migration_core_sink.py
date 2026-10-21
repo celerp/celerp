@@ -283,7 +283,7 @@ async def _import_attachment(context: SinkContext, record: CIFAttachment) -> tup
         raise AttachmentStorageError(record.file_name) from exc
     document_tag, is_hero = None, None
     if entity_type == "item":
-        is_hero, document_tag = item_file_role(row.state.get("files", []), mime)
+        is_hero, document_tag = item_file_role(row.state.get("files", []), mime, as_hero=record.item_image)
     await attach_file(context.session, context.company_id, entity_type, entity_id, meta, context.user_id,
                       source="migration", idempotency_key=key, document_tag=document_tag, is_hero=is_hero)
     await context.session.execute(delete(MigrationCleanupTask).where(MigrationCleanupTask.id == task_id))

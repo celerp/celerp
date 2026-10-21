@@ -117,6 +117,9 @@ def _coverage(odoo: OdooBook, ledger: Ledger, screened: attachments.Screened) ->
     if screened.rejected:
         rows.append(CIFCoverageEntry(source_type=attachments.REJECTED, count=len(screened.rejected),
                                      coverage_class=CoverageClass.MAPPED_WITH_LOSS, note=attachments.REJECTED_NOTE))
+    if odoo.system_files:
+        rows.append(CIFCoverageEntry(source_type=attachments.IGNORED, count=odoo.system_files,
+                                     coverage_class=CoverageClass.IGNORED_NON_BUSINESS, note=attachments.IGNORED_NOTE))
     return sorted(rows, key=lambda r: r.source_type)
 
 
@@ -163,7 +166,8 @@ class OdooAdapter:
         bundle.attachments = [
             CIFAttachment(**Source(self.key)("Attachment", a.key), file_name=a.name,
                           declared_content_type=a.content_type, size_bytes=a.size, sha256=a.sha256,
-                          target_source_type=a.target_type, target_source_external_id=a.target)
+                          target_source_type=a.target_type, target_source_external_id=a.target,
+                          item_image=a.item_image)
             for a in screened.accepted.values()]
         return CIFImportManifest(
             source=book.company_name or _single(artifacts).original_name,

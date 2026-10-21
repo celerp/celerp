@@ -242,6 +242,8 @@ ATTACHMENTS = [
     (8, "ir.ui.view", 1, None, "web.assets.css", b"body{}", False, True),
     (9, "res.partner", 10, None, "terms.txt", b"Payment on delivery.\n", True, False),
     (10, "res.partner", 7, None, "lost.pdf", PDF + b"%lost\n", False, False),
+    (11, "product.template", 1, "image_128", "image_128", PNG + b"small", False, True),
+    (12, "sale.order", 3, None, "quote.pdf", PDF + b"%quote\n", False, True),
 ]
 
 
@@ -473,7 +475,8 @@ def _attachments(out: Tables) -> None:
     for i, model, record, field_, n, content, in_db, in_store in ATTACHMENTS:
         checksum = hashlib.sha1(content).hexdigest()
         rows.append([i, record, 1, len(content), n, model, field_, "binary", None,
-                     None if in_db else store_name(content), checksum, "application/octet-stream",
+                     None if in_db else store_name(content), checksum,
+                     "image/png" if content.startswith(PNG) else "application/octet-stream",
                      "\\x" + content.hex() if in_db else None])
     out.add("ir_attachment", ["id", "res_id", "company_id", "file_size", "name", "res_model", "res_field", "type",
                               "url", "store_fname", "checksum", "mimetype", "db_datas"], rows)

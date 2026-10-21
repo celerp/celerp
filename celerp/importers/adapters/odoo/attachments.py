@@ -28,6 +28,8 @@ from ui.i18n import t
 
 REJECTED = "Attachment (left out)"
 REJECTED_NOTE = "Files left out are listed in the run summary with the reason and are not imported."
+IGNORED = "Attachment (not a business file)"
+IGNORED_NOTE = "Odoo's own interface files and the smaller copies it keeps of each picture. The full-size picture is imported."
 
 
 @dataclass(frozen=True)
@@ -39,6 +41,7 @@ class Accepted:
     sha256: str
     target: str
     target_type: str
+    item_image: bool
 
 
 @dataclass
@@ -63,7 +66,7 @@ def _check(backup: Backup, ref: AttachmentRef, carried: set[tuple[str, str]]) ->
     if not signature_matches(ext, content):
         raise ScanError(t("migration.odoo_attachment_type"))
     accepted = Accepted(ref.key, ref.name, FILE_TYPES[ext][0], len(content), hashlib.sha256(content).hexdigest(),
-                        ref.target, ref.target_type)
+                        ref.target, ref.target_type, ref.item_image)
     return accepted, content
 
 

@@ -19,6 +19,7 @@ import pytest
 from sqlalchemy import text
 
 from celerp.importers.adapters.base import MigrationDecisions, ScanError, SourceRevisionError
+from celerp.importers.adapters.odoo import attachments
 from celerp.importers.schema import CIFMode, CoverageClass, ReconciliationMeasure as M
 from fixtures.manager_io.support import BASIC, artifact
 from fixtures.odoo_backup import build
@@ -560,26 +561,53 @@ def test_cutover_carries_each_items_position_then_the_moves_after(tmp_path):
 def test_files_on_documents_contacts_and_products_are_screened(tmp_path, version):
     files = _file(tmp_path, _backup(version))
     manifest = _adapter().build_manifest(files, FULL)
-    attached = {a.source_external_id: (a.file_name, a.target_source_type, a.target_source_external_id)
+    attached = {a.source_external_id: (a.file_name, a.target_source_type, a.target_source_external_id, a.item_image)
                 for a in manifest.bundle.attachments}
     assert attached == {
-        "attachment:1": ("INV-2024-00001.pdf", "Customer Invoice", "S:INV/2024/00001"),
-        "attachment:2": ("contract.txt", "Contact", "Lakeshore Trading Co"),
-        "attachment:3": ("widget.png", "Item", "WID-1"),
-        "attachment:9": ("terms.txt", "Contact", "Northwind Wholesale"),     # kept in the database
+        "attachment:1": ("INV-2024-00001.pdf", "Customer Invoice", "S:INV/2024/00001", False),
+        "attachment:2": ("contract.txt", "Contact", "Lakeshore Trading Co", False),
+        "attachment:3": ("widget.png", "Item", "WID-1", False),
+        "attachment:7": ("WID-1.png", "Item", "WID-1", True),               # the product's own image
+        "attachment:9": ("terms.txt", "Contact", "Northwind Wholesale", False),     # kept in the database
     }
     rejected = {r["source_external_id"]: r["reason"] for r in manifest.source_summary["attachments"]["rejected"]}
-    assert set(rejected) == {"attachment:4", "attachment:5", "attachment:6", "attachment:10"}
+    assert set(rejected) == {"attachment:4", "attachment:5", "attachment:6", "attachment:10", "attachment:12"}
     assert "isn't brought into Celerp" in rejected["attachment:4"]          # on a journal entry
+    assert "isn't brought into Celerp" in rejected["attachment:12"]         # on a quotation
     assert "contents aren't accepted" in rejected["attachment:5"]           # an executable
     assert "contents aren't accepted" in rejected["attachment:6"]           # not the JPEG it claims
     assert "missing from the backup" in rejected["attachment:10"]
 
     assert _adapter().read_attachment(files, "attachment:1") == build.PDF
     assert _adapter().read_attachment(files, "attachment:9") == b"Payment on delivery.\n"
-    for key in ("attachment:4", "attachment:7", "attachment:99"):
+    assert _adapter().read_attachment(files, "attachment:7") == build.PNG
+    for key in ("attachment:4", "attachment:8", "attachment:11", "attachment:99"):
         with pytest.raises(ScanError):
             _adapter().read_attachment(files, key)
+
+
+@pytest.mark.parametrize("version", VERSIONS)
+def test_every_file_in_the_backup_is_carried_or_counted(tmp_path, version):
+    """Odoo's interface files and the smaller copies it keeps of each picture are counted as
+    not business files; every other file is carried or listed as left out."""
+    manifest = _adapter().build_manifest(_file(tmp_path, _backup(version)), FULL)
+    rows = {r.source_type: r for r in manifest.coverage}
+    assert (rows["Attachment"].count, rows[attachments.REJECTED].count) == (5, 5)
+    ignored = rows[attachments.IGNORED]
+    assert (ignored.count, ignored.coverage_class) == (2, CoverageClass.IGNORED_NON_BUSINESS)
+    assert rows["Attachment"].count + rows[attachments.REJECTED].count + ignored.count == len(build.ATTACHMENTS)
+
+
+@pytest.mark.asyncio
+async def test_the_odoo_product_image_becomes_the_items_picture(real_engine, monkeypatch, tmp_path):
+    from test_migration_e2e import _projections
+
+    run, rejected = await migrate_set(real_engine, [("harbour.zip", _backup(17))], {"mode": "full_history"},
+                                      monkeypatch, tmp_path)
+    assert rejected == []
+    [item] = [i for i in (await _projections(real_engine, run, "item")).values() if i.get("sku") == "WID-1"]
+    assert sorted((f["filename"], f["is_hero"], f["document_tag"]) for f in item["files"]) == [
+        ("WID-1.png", True, "product_images"), ("widget.png", False, "product_images")]
 
 
 # ── Reconciliation ────────────────────────────────────────────────────────────

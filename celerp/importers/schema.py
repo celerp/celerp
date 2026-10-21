@@ -520,6 +520,7 @@ class CIFAttachment(CIFSourceRecord):
     sha256: Annotated[str, Field(min_length=64, max_length=64)]
     target_source_type: NonEmptyStr
     target_source_external_id: NonEmptyStr
+    item_image: bool = False    # the item's own picture in the source: it becomes the item's main image
 
 
 # ── Coverage and reconciliation expectations ───────────────────────────────────

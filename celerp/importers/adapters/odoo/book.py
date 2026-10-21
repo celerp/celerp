@@ -19,6 +19,7 @@ documents are read from the backup's filestore.
 from __future__ import annotations
 
 import json
+import mimetypes
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date
@@ -96,6 +97,8 @@ ANALYTIC_TAG = "Analytic tag"
 
 # Odoo models whose files a migration reads.
 TARGET_MODELS = frozenset({"account.move", "account.payment", "res.partner", "product.product", "product.template"})
+# The field holding a record's full-size picture; Odoo keeps smaller copies of it under other fields.
+MAIN_IMAGES = frozenset({"image_1920", "image_variant_1920"})
 
 TABLES = (
     "res_company", "res_currency", "res_partner", "account_account", "account_account_type", "ir_model_data",
@@ -114,12 +117,12 @@ COLUMNS = frozenset({
     "date", "db_datas", "debit", "debit_amount_currency", "debit_move_id", "default_code", "deprecated", "description", "description_sale",
     "discount", "display_type", "document_type", "email", "exclude_from_invoice_tab", "id",
     "income_currency_exchange_account_id", "internal_group", "invoice_date_due", "invoice_tax_id",
-    "is_internal_transfer", "is_rounding_line", "list_price", "location_dest_id", "location_id", "mobile", "model",
+    "is_internal_transfer", "is_rounding_line", "list_price", "location_dest_id", "location_id", "mimetype", "mobile", "model",
     "move_id", "move_type", "name", "partner_id", "partner_type", "payment_id", "payment_type", "phone", "plan_id",
     "price_subtotal", "price_total", "price_unit", "product_id", "product_qty", "product_tmpl_id", "quantity", "ref",
     "reference", "repartition_type", "res_field", "res_id", "res_model", "sequence", "state", "stock_move_id",
     "store_fname", "street", "street2", "supplier_rank", "tax_id", "tax_line_id", "type", "usage", "user_type_id",
-    "value", "vat", "zip",
+    "url", "value", "vat", "zip",
 })
 
 
@@ -143,6 +146,7 @@ class AttachmentRef:
     checksum: str | None                        # SHA-1 of the content, as Odoo records it
     target_type: str | None                     # source type of its record; None when Celerp holds no such record
     target: str | None
+    item_image: bool = False                    # the item's own picture rather than a file attached to it
 
 
 @dataclass
@@ -151,6 +155,7 @@ class OdooBook:
     version: int
     moves: list[StockMove] = field(default_factory=list)
     attachments: dict[str, AttachmentRef] = field(default_factory=dict)
+    system_files: int = 0                       # Odoo's interface files and the smaller copies of each picture
     locations: int = 0
 
 
@@ -657,8 +662,10 @@ class _Reader:
             if r["id"] in self.products:
                 templates[r["product_tmpl_id"]].append(self.products[r["id"]])
         for r in self.table("ir_attachment"):
-            model, res_id = r["res_model"], r["res_id"] or ""
-            if r["res_field"] or r["type"] != "binary" or model not in TARGET_MODELS:
+            model, res_id, res_field = r["res_model"] or "", r["res_id"] or "", r["res_field"]
+            if (not model or model.startswith("ir.") or (res_field and res_field not in MAIN_IMAGES)
+                    or (r["type"] == "url" and (r["url"] or "").startswith("/"))):
+                self.out.system_files += 1
                 continue
             target_type, target = None, None
             if model == "account.move" and res_id in self.documents:
@@ -669,12 +676,17 @@ class _Reader:
                 target_type, target = "Item", self.products[res_id]
             elif model == "product.template" and len(templates.get(res_id, [])) == 1:
                 target_type, target = "Item", templates[res_id][0]
+            name = r["name"] or ""
+            extension = mimetypes.guess_extension(r["mimetype"] or "")
+            if res_field and target and extension:
+                # Odoo names a picture after its field; name it after its record instead.
+                name = target.replace("/", "-").replace("\\", "-") + extension
             stored = r.get("db_datas")
             key = f"attachment:{r['id']}"
             self.out.attachments[key] = AttachmentRef(
-                key, r["name"] or "", r.get("store_fname"),
+                key, name, r.get("store_fname"),
                 bytes.fromhex(stored[2:]) if stored and stored.startswith("\\x") else None,
-                r.get("checksum"), target_type, target)
+                r.get("checksum"), target_type, target, bool(res_field) and target_type == "Item")
         book.object_counts["Attachment"] = len(self.out.attachments)
 
 
