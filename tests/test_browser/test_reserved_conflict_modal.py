@@ -99,6 +99,28 @@ def _wait_status_cell_html(page, eid, timeout=5000):
     return handle.json_value()
 
 
+def test_picker_opens_above_a_row_at_the_bottom_of_the_window(page, ui_server, api):
+    """The suggestion list is fixed to the window, so it cannot be scrolled to: for a row at
+    the bottom of the window it opens above the input and stays clickable."""
+    sku = f"RESMOD-LOW-{uuid.uuid4().hex[:6]}"
+    eid = _create_item(api, sku)
+    draft_id = _create_draft_invoice(api, f"RESMOD-DRAFT-{uuid.uuid4().hex[:6]}", [], total=0)
+    page.goto(f"{ui_server}/docs/{draft_id}", wait_until="domcontentloaded")
+    page.wait_for_selector("#line-body", timeout=8000)
+    page.evaluate("celerpAddLine()")
+    inp = page.locator('#line-body tr').last.locator('[data-name="sku"]')
+    inp.evaluate("el => el.scrollIntoView({block: 'end'})")
+    inp.focus()
+    inp.fill(sku)
+    opt = page.locator(".catalog-ac-option:not(.catalog-ac-option--custom)", has_text=sku).first
+    opt.wait_for(state="visible", timeout=8000)
+    box, field = opt.bounding_box(), inp.bounding_box()
+    assert box["y"] + box["height"] <= page.viewport_size["height"], f"option off screen: {box}"
+    assert box["y"] < field["y"], f"list should open above the input: {box} vs {field}"
+    opt.click(timeout=5000)
+    assert _row_count(page, eid) == 1
+
+
 def test_added_row_status_populates(page, ui_server, api):
     """RESMOD-01: picking a reserved item onto a draft fills the Status cell
     immediately - exact badge label ('Reserved') and class (badge--reserved)
