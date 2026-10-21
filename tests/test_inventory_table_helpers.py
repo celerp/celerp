@@ -113,7 +113,7 @@ class TestPairedDisplayCellFormatFn:
 
 
 class TestNormalizeNumberStr:
-    """_normalize_number_str drops .0 for integers, uses :g for floats."""
+    """_normalize_number_str drops .0 for integers and keeps every digit of a real number."""
 
     def test_integer_float_drops_decimal(self):
         from ui.components.table import _normalize_number_str
@@ -124,6 +124,11 @@ class TestNormalizeNumberStr:
         from ui.components.table import _normalize_number_str
         assert _normalize_number_str("7.5") == "7.5"
         assert _normalize_number_str("64.25") == "64.25"
+
+    def test_six_or_more_significant_digits_are_kept(self):
+        from ui.components.table import _normalize_number_str
+        assert _normalize_number_str("12345.678") == "12345.678"
+        assert _normalize_number_str("1234567.5") == "1234567.5"
 
     def test_non_numeric_passthrough(self):
         from ui.components.table import _normalize_number_str

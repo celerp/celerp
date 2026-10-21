@@ -194,6 +194,30 @@ def test_a_refused_unit_change_keeps_the_qty_cell_and_says_what_to_change(page, 
     assert api.get(f"/items/{parcel}").json()["sell_by"] == "carat"
 
 
+@pytest.mark.parametrize("field, stored, opener", [
+    ("quantity", 12345.67, 'td[data-col="quantity"] .paired-primary'),
+    ("reorder_point", 12345.678, 'td[data-col="reorder_point"]'),
+])
+def test_opening_a_number_cell_and_leaving_keeps_the_stored_value(page, ui_server, api, field, stored, opener):
+    parcel = _item(api)
+    old = api.get(f"/items/{parcel}").json().get(field)
+    r = api.patch(f"/items/{parcel}", json={"fields_changed": {field: {"old": old, "new": stored}}})
+    assert r.status_code == 200, r.text
+    _open(page, ui_server, parcel)
+    settled(page, SCOPE)
+    page.dblclick(opener)
+    editor = page.locator(f"{EDITING} input[name=value]")
+    editor.wait_for(state="visible", timeout=4000)
+    expect(editor).to_have_value(str(stored))
+    patches: list[str] = []
+    page.on("request", lambda req: req.method == "PATCH" and patches.append(req.url))
+    page.locator("h1").first.click()
+    page.wait_for_timeout(1500)
+    assert patches == []  # an untouched editor sends nothing
+    assert api.get(f"/items/{parcel}").json().get(field) == stored
+    expect(page.locator(EDITING)).to_have_count(0)
+
+
 def test_esc_leaves_the_old_value(page, ui_server, api):
     parcel = _item(api, default_sell_qty=2)
     _open(page, ui_server, parcel)

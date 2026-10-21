@@ -162,6 +162,14 @@ def validate_line_quantity(
     validate_quantity(qty, unit_map[sell_by]["decimals"], label=label)
 
 
+def plain_number(value: float) -> str:
+    """A number with every digit it holds and no trailing zeros, never rounded to a few
+    significant digits or written in exponent form (12345.678 stays 12345.678, 7.0 is 7).
+    It is rounded to 10 places first, the precision quantity writers round to, so a float
+    sum such as 0.1 + 0.2 reads 0.3."""
+    return format(Decimal(str(round(value, 10) + 0.0)).normalize(), "f")
+
+
 def format_qty(value, unit_name: str | None, unit_map: dict[str, dict]) -> str:
     """Format a quantity value according to its unit's decimal precision.
 
@@ -179,6 +187,5 @@ def format_qty(value, unit_name: str | None, unit_map: dict[str, dict]) -> str:
         decimals = unit_map[unit_name].get("decimals", None)
         if decimals is not None:
             return f"{f:.{decimals}f}"
-    # Unknown unit: no precision to apply, so show the value as stored, without
-    # trailing zeros and never rounded or in exponent form.
-    return format(Decimal(str(f)).normalize(), "f")
+    # Unknown unit: no precision to apply, so show the value as stored.
+    return plain_number(f)

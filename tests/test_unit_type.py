@@ -395,6 +395,12 @@ class TestFormatQty:
         assert format_qty(1234.567, "unknown", {}) == "1234.567"
         assert format_qty(100.0, "unknown", {}) == "100"
 
+    @pytest.mark.parametrize("unit", ["bundle", None, ""])
+    def test_unknown_unit_hides_float_noise(self, unit):
+        from celerp.services.units import format_qty
+        assert format_qty(0.1 + 0.2, unit, {}) == "0.3"
+        assert format_qty(0.0000001, unit, {}) == "0.0000001"
+
     def test_none_value_returns_empty_string(self):
         from celerp.services.units import format_qty
         assert format_qty(None, "piece", {}) == ""

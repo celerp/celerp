@@ -8,6 +8,7 @@ import re
 from fasthtml.common import *
 from ui.i18n import t, t_or, field_label
 from celerp.services.field_schema import MIXED_VALUE
+from celerp.services.units import plain_number
 # Canonical definitions live with the shared document renderer; re-exported
 # here for the UI's many call sites. EMPTY is the canonical empty-value
 # placeholder (rule k).
@@ -1018,6 +1019,13 @@ def editable_cell(
         f"else if(event.key==='Enter'){{event.preventDefault();htmx.trigger(this,'blur');}}"
     )
     blur_restore_js = f"if(!this._escaping){{htmx.ajax('GET','{restore_url}',{{target:this.closest('td'),swap:'outerHTML'}})}}"
+    # Typed editors save on blur only a value changed from the one they opened with; leaving
+    # an untouched editor restores the cell, so opening one and moving on never writes.
+    blur_save = dict(
+        hx_trigger="blur[this.value!==this.defaultValue] delay:200ms",
+        onblur=(f"if(!this._escaping&&this.value===this.defaultValue){{"
+                f"htmx.ajax('GET','{restore_url}',{{target:this.closest('td'),swap:'outerHTML'}})}}"),
+    )
     # ESC handler for combobox wrapper (keydown bubbles up from the inner input)
     combobox_escape_js = (
         f"if(event.key==='Escape'){{"
@@ -1068,8 +1076,7 @@ def editable_cell(
         step = {"money": "0.01", "weight": "0.001"}.get(cell_type, "any")
         input_el = Input(
             type="number", name="value", value=display_val, step=step,
-            **swap, **_ph, **_aria,
-            hx_trigger="blur delay:200ms",
+            **swap, **_ph, **_aria, **blur_save,
             cls="cell-input cell-input--number",
             autofocus=True,
             onkeydown=escape_js,
@@ -1095,8 +1102,7 @@ def editable_cell(
             f"event.preventDefault();}}"
         )
         input_el = Textarea(
-            display_val, name="value", **swap, **_aria,
-            hx_trigger="blur delay:200ms",
+            display_val, name="value", **swap, **_aria, **blur_save,
             cls="cell-input cell-textarea-input", rows="5",
             autofocus=True,
             onkeydown=textarea_escape_js,
@@ -1118,8 +1124,7 @@ def editable_cell(
     else:
         input_el = Input(
             type="text", name="value", value=display_val,
-            **swap, **_ph, **_aria,
-            hx_trigger="blur delay:200ms",
+            **swap, **_ph, **_aria, **blur_save,
             cls="cell-input",
             autofocus=True,
             onkeydown=escape_js,
@@ -1129,10 +1134,10 @@ def editable_cell(
 
 
 def _normalize_number_str(s: str) -> str:
-    """Format a numeric string for display: drop .0 for integers, use :g for floats."""
+    """Format a numeric string for display and editing: drop .0 for integers and keep
+    every digit of a real number, so an editor opened on a value holds exactly that value."""
     try:
-        n = float(s)
-        return str(int(n)) if n == int(n) else f"{n:g}"
+        return plain_number(float(s))
     except (ValueError, TypeError):
         return s
 
