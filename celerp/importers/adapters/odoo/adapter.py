@@ -26,6 +26,7 @@ from celerp.importers.adapters.base import (
     MappingQuestion,
     MigrationDecisions,
     ScanError,
+    SourceRevisionError,
     SourceScan,
 )
 from celerp.importers.adapters.exports.bundle import Source, build_bundle, coverage
@@ -36,7 +37,7 @@ from celerp.importers.adapters.odoo.book import (
     DRAFT_ENTRY, LOT, NO_CONTACT, OFF_BALANCE_LINE, SOURCE_NAME, SOURCE_SYSTEM, UNSTOCKED_LOT, OdooBook,
     read_odoo,
 )
-from celerp.importers.adapters.odoo.dump import Backup
+from celerp.importers.adapters.odoo.dump import Backup, too_large
 from celerp.importers.schema import (
     CIFAttachment,
     CIFCoverageEntry,
@@ -70,9 +71,13 @@ _READING = threading.Lock()
 @lru_cache(maxsize=1)
 def _books(path: Path, sha256: str, company: str | None) -> OdooBook:
     """The books of one company of a backup, read from the dump once for every step of a run
-    (the scan, the manifest, the expectations and each file the import fetches)."""
+    (the scan, the manifest, the expectations and each file the import fetches). Running out
+    of memory refuses the backup as too large."""
     with Backup(path) as backup:
-        return read_odoo(backup, company)
+        try:
+            return read_odoo(backup, company)
+        except MemoryError as exc:
+            raise too_large(SourceRevisionError) from exc
 
 
 def _book(artifacts: ArtifactSet, decisions: MigrationDecisions) -> OdooBook:

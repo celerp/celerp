@@ -4166,6 +4166,7 @@
   "migration.err_odoo_dump_damaged": "Bản sao lưu này không đầy đủ hoặc bị hỏng: bản kết xuất cơ sở dữ liệu bị ngắt giữa chừng hoặc một bảng trong đó bị lỗi, nên không đọc được dữ liệu nào. Hãy tạo bản sao lưu mới trong trình quản lý cơ sở dữ liệu của Odoo rồi tải lên lại.",
   "migration.err_odoo_backup_damaged": "Không thể đọc tệp sao lưu này: tệp bị hỏng, bị cắt ngắn khi tải lên hoặc sao chép, hoặc được nén lại theo cách Celerp không thể mở. Không có dữ liệu nào được nhập. Hãy tạo bản sao lưu mới trong trình quản lý cơ sở dữ liệu của Odoo rồi tải nguyên tệp ZIP lên, không chỉnh sửa.",
   "migration.err_odoo_backup_encrypted": "This backup is protected with a password, so Celerp cannot open it. Nothing was imported. Make a new backup in Odoo's database manager without a password and upload the zip as it is.",
+  "migration.err_odoo_backup_too_large": "This backup is too large to import: reading its records takes more memory than this server can give one import, at most {limit} GB. Nothing was imported. For help with large backups, ask on GitHub Issues or Discussions.",
   "migration.err_odoo_record_too_large": "One record in this backup is larger than {limit} MB, more than Celerp reads from a single record. Nothing was imported.",
   "migration.err_attachment_not_found": "Tệp đính kèm này không có trong tệp đã tải lên.",
   "migration.err_odoo_company_missing": "Bản sao lưu này không có sổ sách của {company}. Hãy chọn một trong các công ty được liệt kê.",

@@ -4166,6 +4166,7 @@
   "migration.err_odoo_dump_damaged": "Cadangan ini tidak lengkap atau rusak: dump basis datanya terpotong atau salah satu tabelnya rusak sehingga tidak ada data yang berhasil dibaca. Buat cadangan baru melalui pengelola basis data Odoo, lalu unggah kembali.",
   "migration.err_odoo_backup_damaged": "Berkas cadangan ini tidak dapat dibaca: berkas rusak, terpotong saat diunggah atau disalin, atau dikompresi ulang dengan cara yang tidak dapat dibuka Celerp. Tidak ada yang diimpor. Buat cadangan baru melalui pengelola basis data Odoo, lalu unggah berkas ZIP tersebut tanpa mengubahnya.",
   "migration.err_odoo_backup_encrypted": "This backup is protected with a password, so Celerp cannot open it. Nothing was imported. Make a new backup in Odoo's database manager without a password and upload the zip as it is.",
+  "migration.err_odoo_backup_too_large": "This backup is too large to import: reading its records takes more memory than this server can give one import, at most {limit} GB. Nothing was imported. For help with large backups, ask on GitHub Issues or Discussions.",
   "migration.err_odoo_record_too_large": "One record in this backup is larger than {limit} MB, more than Celerp reads from a single record. Nothing was imported.",
   "migration.err_attachment_not_found": "Lampiran ini tidak ada di file yang diunggah.",
   "migration.err_odoo_company_missing": "Cadangan ini tidak berisi pembukuan untuk {company}. Pilih salah satu perusahaan yang tercantum.",

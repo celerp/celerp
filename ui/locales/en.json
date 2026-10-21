@@ -4166,6 +4166,7 @@
   "migration.err_odoo_dump_damaged": "This backup is incomplete or damaged: its database dump stops early or a table in it is broken, so nothing was read from it. Make a new backup in Odoo's database manager and upload it again.",
   "migration.err_odoo_backup_damaged": "This backup file cannot be read: it is damaged, was cut short while uploading or copying, or was zipped again in a way Celerp cannot open. Nothing was imported. Make a new backup in Odoo's database manager and upload the zip as it is.",
   "migration.err_odoo_backup_encrypted": "This backup is protected with a password, so Celerp cannot open it. Nothing was imported. Make a new backup in Odoo's database manager without a password and upload the zip as it is.",
+  "migration.err_odoo_backup_too_large": "This backup is too large to import: reading its records takes more memory than this server can give one import, at most {limit} GB. Nothing was imported. For help with large backups, ask on GitHub Issues or Discussions.",
   "migration.err_odoo_record_too_large": "One record in this backup is larger than {limit} MB, more than Celerp reads from a single record. Nothing was imported.",
   "migration.err_attachment_not_found": "This attachment is not in the uploaded file.",
   "migration.err_odoo_company_missing": "This backup holds no books for {company}. Choose one of the companies listed.",

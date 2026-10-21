@@ -4166,6 +4166,7 @@
   "migration.err_odoo_dump_damaged": "هذه النسخة الاحتياطية غير مكتملة أو تالفة: انتهى تفريغ قاعدة البيانات قبل اكتماله أو تلف أحد جداوله، لذا لم تُقرأ منها أي بيانات. أنشئ نسخة احتياطية جديدة من مدير قواعد البيانات في Odoo، ثم ارفعها مجددًا.",
   "migration.err_odoo_backup_damaged": "لا يمكن قراءة ملف النسخة الاحتياطية هذا: إما أنه تالف، أو لم يكتمل رفعه أو نسخه، أو أُعيد ضغطه بطريقة لا يستطيع Celerp فتحها. لم يُستورد أي شيء. أنشئ نسخة احتياطية جديدة عبر مدير قواعد البيانات في Odoo وارفع ملف ZIP كما هو.",
   "migration.err_odoo_backup_encrypted": "This backup is protected with a password, so Celerp cannot open it. Nothing was imported. Make a new backup in Odoo's database manager without a password and upload the zip as it is.",
+  "migration.err_odoo_backup_too_large": "This backup is too large to import: reading its records takes more memory than this server can give one import, at most {limit} GB. Nothing was imported. For help with large backups, ask on GitHub Issues or Discussions.",
   "migration.err_odoo_record_too_large": "One record in this backup is larger than {limit} MB, more than Celerp reads from a single record. Nothing was imported.",
   "migration.err_attachment_not_found": "هذا المرفق غير موجود في الملف المرفوع.",
   "migration.err_odoo_company_missing": "لا تحتوي هذه النسخة الاحتياطية على دفاتر لـ {company}. اختر إحدى الشركات المدرجة.",

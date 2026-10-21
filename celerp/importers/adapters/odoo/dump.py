@@ -38,6 +38,7 @@ UNREADABLE = "migration.err_odoo_backup_damaged"
 ENCRYPTED = "migration.err_odoo_backup_encrypted"
 DAMAGED = "migration.err_odoo_dump_damaged"
 TOO_LARGE = "migration.err_file_too_large"
+HELD_TOO_LARGE = "migration.err_odoo_backup_too_large"
 # What one backup may make the server unpack and hold. A database's dump packs about ten to one;
 # a far higher ratio is a file made to unpack large, not a database. The longest line a wanted
 # table holds is an attachment stored in its row: up to 25 MB as hex, twice the characters.
@@ -45,6 +46,10 @@ MAX_DUMP_BYTES = 20 * 1024 ** 3  # ten times the largest upload
 MAX_RATIO = 100
 MAX_LINE = 64 * 1024 ** 2  # characters
 MAX_MANIFEST = 1024 ** 2  # Odoo's is a few kilobytes
+# What the rows read may take of the server's memory, in bytes, counted as Python holds them:
+# each row a tuple of its kept values, each distinct value a string held once in its table.
+MAX_HELD = 1024 ** 3
+ROW_BYTES, FIELD_BYTES, VALUE_BYTES = 64, 8, 100
 # How a file in a zip fails to unpack, whichever way it is packed: a stream that does not
 # decompress or ends early, a failed checksum, or a method or option this reader cannot unpack.
 BROKEN = (EOFError, NotImplementedError, OSError, lzma.LZMAError, zipfile.BadZipFile, zlib.error)
@@ -96,13 +101,20 @@ def _major(manifest: dict) -> int | None:
 @contextmanager
 def _intact(error: type[Exception] = ScanError) -> Iterator[None]:
     """Reading the zip: a file in it that does not unpack (BROKEN), or a dump that is not
-    UTF-8 text (every Odoo database is), is refused with `error`."""
+    UTF-8 text (every Odoo database is), is refused with `error`, and so is running out of memory."""
     try:
         yield
     except UnicodeDecodeError as exc:
         raise error(t(DAMAGED)) from exc
     except BROKEN as exc:
         raise error(t(UNREADABLE)) from exc
+    except MemoryError as exc:
+        raise too_large(error) from exc
+
+
+def too_large(error: type[Exception] = ScanError) -> Exception:
+    """The refusal of a backup whose rows need more memory than MAX_HELD, or than the server has."""
+    return error(t(HELD_TOO_LARGE, limit=f"{MAX_HELD / 1024 ** 3:g}"))
 
 
 def _open(archive: zipfile.ZipFile, name: str) -> IO[bytes]:
@@ -235,8 +247,8 @@ class Backup:
         not hold (its module is not installed) is absent. The dump is streamed and a value
         repeated within a table is held once, and a line longer than MAX_LINE is never held
         whole: one outside the wanted tables' rows is read in pieces and dropped. Raises
-        ScanError, before any row is used, when a wanted row is that long or the dump is cut
-        short or damaged: it does not unpack, has no closing line, a table's data never ends or
+        ScanError, before any row is used, when a wanted row is that long, when the rows kept
+        would take more than MAX_HELD of memory, or when the dump is cut short or damaged: it does not unpack, has no closing line, a table's data never ends or
         never starts, a row has more or fewer fields than its table, or a `required` table (one
         an installed module makes) is missing."""
         wanted, where = set(names) | set(required), where or {}
@@ -244,6 +256,7 @@ class Backup:
         made: set[str] = set()
         copying: str | None = None
         complete = False
+        held = 0
         with _intact(), _open(self.archive, self.root + DUMP) as raw:
             lines = io.TextIOWrapper(raw, encoding="utf-8", newline="\n")
             rows: list[Row] | None = None
@@ -262,9 +275,12 @@ class Backup:
                         if len(values) != width or not line.endswith("\n"):
                             raise ScanError(t(DAMAGED))
                         fields = [_field(values[i]) for i in kept]
-                        row = shape(map(seen.setdefault, fields, fields))
-                        if keep is None or keep(row):
-                            rows.append(row)
+                        if keep is not None and not keep(shape(fields)):
+                            continue
+                        held += row_bytes + sum(VALUE_BYTES + len(f) for f in fields if f is not None and f not in seen)
+                        if held > MAX_HELD:
+                            raise too_large()
+                        rows.append(shape(map(seen.setdefault, fields, fields)))
                     continue
                 if line.startswith(DUMP_COMPLETE):
                     complete = True
@@ -277,6 +293,7 @@ class Backup:
                         width, kept = len(header), [i for i, name in enumerate(header) if name in columns]
                         shape = type("Row", (Row,), {"__slots__": (), "index": {header[i]: n for n, i in enumerate(kept)}})
                         keep, seen = where.get(copying), {}
+                        row_bytes = ROW_BYTES + FIELD_BYTES * len(kept)
                         rows = out.setdefault(copying, [])
         if copying is not None or not complete or ((made & wanted) | set(required)) - set(out):
             raise ScanError(t(DAMAGED))

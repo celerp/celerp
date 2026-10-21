@@ -450,6 +450,72 @@ def test_a_manifest_larger_than_any_odoo_writes_is_refused_before_it_is_read(tmp
         _adapter().inspect(_file(tmp_path, data, "again.zip"))
 
 
+MI = 1024 ** 2
+
+
+def _amplified(contacts: int, size: int) -> bytes:
+    """A backup with `contacts` more contacts, each named with `size` characters of its own,
+    and lines of random text before them so that the dump unpacks about 90 times its packed
+    size: inside MAX_RATIO, as a file made to fill the server's memory would be."""
+    tables = build.tables(17)
+    sql = build.dump_sql(tables)
+    start = sql.index("COPY public.res_partner (")
+    at = sql.index("\\.\n", start)
+    columns = tables.rows["res_partner"][0]
+    rng = random.Random(7)
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z, z.open("dump.sql", "w", force_zip64=True) as d:
+        d.write(sql[:start].encode())
+        d.write(("-- " + rng.randbytes(contacts * size // 90).hex() + "\n").encode())
+        d.write(sql[start:at].encode())
+        for i in range(contacts):
+            values = {"id": str(900000 + i), "name": f"{i:x}".rjust(size, "a"), "active": "t"}
+            d.write(("\t".join(values.get(c, "\\N") for c in columns) + "\n").encode())
+        d.write(sql[at:].encode())
+    with zipfile.ZipFile(out, "a") as z:
+        z.writestr("manifest.json", json.dumps(build.manifest(17)))
+    return out.getvalue()
+
+
+def test_rows_needing_more_memory_than_the_budget_are_refused_with_what_is_held_bounded(tmp_path, monkeypatch):
+    """A file packed inside every size limit can still unpack to rows that fill the server's
+    memory: what the rows read take is counted, and the backup is refused once it passes
+    MAX_HELD, holding about that much and never what the file unpacks to. In miniature: a
+    budget of 4 MiB and 64 MiB of names."""
+    from celerp.importers.adapters.odoo import dump
+
+    data = _amplified(64, MI)
+    info = zipfile.ZipFile(io.BytesIO(data)).getinfo("dump.sql")
+    assert 50 < info.file_size / info.compress_size < dump.MAX_RATIO
+    monkeypatch.setattr(dump, "MAX_HELD", 4 * MI)
+    assert _adapter().build_manifest(_file(tmp_path, _backup(17)), FULL).bundle.documents
+    tracemalloc.start()
+    try:
+        with pytest.raises(ScanError) as refused:
+            _adapter().inspect(_file(tmp_path, data, "amplified.zip"))
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    assert str(refused.value) == t("migration.err_odoo_backup_too_large", "en", limit=f"{4 * MI / 1024 ** 3:g}")
+    assert peak < 16 * MI, f"held {peak / MI:.0f} MiB"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["the dump", "the books"])
+async def test_running_out_of_memory_while_reading_is_refused_as_too_large(client, monkeypatch, tmp_path, stage):
+    from celerp.config import settings
+    from celerp.importers.adapters.odoo import book, dump
+
+    def exhausted(*_):
+        raise MemoryError
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setattr(*((dump, "_field", exhausted) if stage == "the dump" else (book.steps, "roles_from_ledger", exhausted)))
+    r = await scan_upload(client, _backup(17), name="harbour.zip", source="odoo")
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"] == t("migration.err_odoo_backup_too_large", "en", limit=f"{dump.MAX_HELD / 1024 ** 3:g}")
+
+
 def _longest_line(version: int) -> int:
     return max(len(line) for line in build.dump_sql(build.tables(version)).split("\n"))
 
