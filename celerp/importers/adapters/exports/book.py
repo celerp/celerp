@@ -117,6 +117,7 @@ class GLLine:
     foreign: Decimal | None                     # the same line in the journal's currency, when stated
     description: str
     tracking: dict[str, str] = field(default_factory=dict)
+    contact: str | None = None                  # the line's own contact, where it names one other than its journal's
 
 
 @dataclass
@@ -150,6 +151,8 @@ class Book:
     aged: dict[str, tuple[date, dict[str, Decimal]]] = field(default_factory=dict)
     skipped: Counter = field(default_factory=Counter)       # coverage label -> count of records not carried
     tracking: set[str] = field(default_factory=set)          # tracking category names
+    # Item code -> (quantity on hand, inventory value or None when the source values no stock), as the source states it.
+    stock: dict[str, tuple[Decimal, Decimal | None]] = field(default_factory=dict)
     object_counts: Counter = field(default_factory=Counter)
 
     @property

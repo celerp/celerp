@@ -162,7 +162,7 @@ def test_manager_decoder_resource_limits(tmp_path):
 def test_every_attachment_type_the_manager_adapter_accepts_is_stored_by_celerp():
     """RED before the change: XLSX and CSV pass the Manager screen, then every attempt to
     store them fails, so the migration can never finish."""
-    from celerp.importers.adapters.manager_io.attachments import FILE_TYPES
+    from celerp.importers.adapters.attachment_files import FILE_TYPES
     from celerp.services.attachments import accepts_mime
 
     assert [ext for ext, (mime, _) in FILE_TYPES.items() if not accepts_mime(mime)] == []

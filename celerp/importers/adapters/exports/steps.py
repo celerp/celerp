@@ -47,13 +47,12 @@ def bank_currencies(book: Book) -> None:
 def roles_from_ledger(book: Book) -> None:
     receivable, payable = set(book.control("receivable")), set(book.control("payable"))
     for j in book.journals:
-        if not j.contact:
-            continue
         for ln in j.lines:
-            if ln.account in receivable:
-                book.contact(j.contact).roles.add("customer")
-            elif ln.account in payable:
-                book.contact(j.contact).roles.add("supplier")
+            contact = ln.contact or j.contact
+            if contact and ln.account in receivable:
+                book.contact(contact).roles.add("customer")
+            elif contact and ln.account in payable:
+                book.contact(contact).roles.add("supplier")
 
 
 def tax_rates(book: Book) -> None:

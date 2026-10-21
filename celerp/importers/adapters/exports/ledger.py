@@ -137,9 +137,10 @@ def _party(book: Book, doc_type: str) -> set[str]:
 
 
 def _actual(book: Book, j: GLJournal, record: str, part: str, document: str | None = None) -> list[Posting]:
-    """A journal's own lines; a customer or supplier balance line names the journal's contact."""
+    """A journal's own lines; a customer or supplier balance line names its own contact, else the journal's."""
     parties = {*book.control("receivable"), *book.control("payable")}
-    return [Posting(record, part, j.date, ln.account, ln.amount, j.contact if ln.account in parties else None,
+    return [Posting(record, part, j.date, ln.account, ln.amount,
+                    (ln.contact or j.contact) if ln.account in parties else None,
                     ln.description or None, document, ln.foreign if ln.foreign is not None else ln.amount)
             for ln in j.lines]
 
