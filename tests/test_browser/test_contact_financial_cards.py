@@ -10,7 +10,7 @@ from playwright.sync_api import Page
 pytestmark = pytest.mark.browser
 
 # Each tile's label box against its tile box, and each tile against the next one.
-_TILES_JS = """() => Array.from(document.querySelectorAll('.financial-card')).map(card => {
+_TILES_JS = r"""() => Array.from(document.querySelectorAll('.financial-card')).map(card => {
   const c = card.getBoundingClientRect();
   const l = card.querySelector('.financial-card-label');
   const words = Array.from(l.querySelectorAll('span')).map(s => {

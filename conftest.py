@@ -91,7 +91,7 @@ def _provision_test_database() -> None:
         if worker:
             url = provision_worker_db(url, worker)
     else:
-        from testcontainers.postgres import PostgresContainer
+        from testcontainers.community.postgres import PostgresContainer
         global _PG_CONTAINER
         # Throwaway DB → turn off durability guards for speed (data is discarded).
         _PG_CONTAINER = PostgresContainer("postgres:16-alpine").with_command(

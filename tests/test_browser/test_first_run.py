@@ -69,11 +69,11 @@ class _FreshInstall:
         self.procs: list[subprocess.Popen] = []
 
     def _spawn(self, app: str, port: int, env: dict) -> subprocess.Popen:
-        log = open(self.tmp / f"{port}.log", "ab")
-        return subprocess.Popen(
-            [sys.executable, "-m", "uvicorn", app, "--host", "127.0.0.1", "--port", str(port)],
-            cwd=_REPO, env=env, stdout=log, stderr=subprocess.STDOUT,
-        )
+        with open(self.tmp / f"{port}.log", "ab") as log:
+            return subprocess.Popen(
+                [sys.executable, "-m", "uvicorn", app, "--host", "127.0.0.1", "--port", str(port)],
+                cwd=_REPO, env=env, stdout=log, stderr=subprocess.STDOUT,
+            )
 
     def start(self) -> None:
         for port in (_API_PORT, _UI_PORT):
