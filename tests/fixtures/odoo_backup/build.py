@@ -7,13 +7,14 @@ a zip of `manifest.json`, a plain PostgreSQL `dump.sql` whose COPY blocks hold t
 rows, and `filestore/` with the attached files. Odoo 17 stores translated names as
 JSON and keeps account types on the account; Odoo 13 and 14 keep them in a type
 record named by its XML id and call the lot table `stock_production_lot`, and Odoo 13
-names a payment only on its journal items.
+names a payment only on its journal items. Odoo 17 calls a stock move line's quantity done
+`quantity`, and earlier versions `qty_done`.
 
 The company, Harbour Supplies Ltd, keeps its books in USD from January to April 2024:
 capital paid in, a vendor bill for stock and its payment, customer invoices paid in
 full, in part and in EUR at a later rate with Odoo's exchange difference entry, an open
 credit note, a vendor refund applied to a bill, a draft and a cancelled invoice, a draft
-journal entry, stock received, delivered, moved between shelves, counted and revalued,
+journal entry, stock received in two lots, delivered, moved between shelves, counted and revalued,
 and files attached to an invoice, contacts and a product.
 """
 
@@ -226,7 +227,13 @@ STOCK_MOVES = [
     (5, "WH/OUT/00002", "2024-04-25 12:00:00", WIDGET, D(3), 8, 2, "assigned", None),
 ]
 LANDED_COST = (D(10), "2024-03-15 08:00:00")
-QUANTS = [(8, WIDGET, D(5)), (9, WIDGET, D(2))]
+# The widget is tracked by lot. id, move, lot, quantity done, from, to
+STOCK_MOVE_LINES = [(1, 1, 1, D(6), 1, 8), (2, 1, 2, D(4), 1, 8), (3, 2, 2, D(4), 8, 2), (4, 3, 1, D(2), 8, 9),
+                    (5, 4, 1, D(1), 5, 8), (6, 5, 1, D(3), 8, 2)]
+# id, name; the third lot was made and never stocked
+LOTS = [(1, "LOT-0001"), (2, "LOT-0002"), (3, "LOT-0003")]
+# location, product, lot, quantity
+QUANTS = [(8, WIDGET, 1, D(5)), (9, WIDGET, 1, D(2))]
 
 PDF = b"%PDF-1.4\n1 0 obj << >> endobj\ntrailer << >>\n%%EOF\n"
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 24
@@ -456,13 +463,20 @@ def _stock(out: Tables, version: int) -> None:
              for i, ref, on, product, qty, src, dest, state, _ in STOCK_MOVES])
     layers = [[i, 1, product, i, f"{qty if dest == 8 else -qty}", f"{value}", ref, on]
               for i, ref, on, product, qty, src, dest, state, value in STOCK_MOVES if value is not None]
-    layers.append([len(layers) + 1, 1, WIDGET, None, "0", f"{LANDED_COST[0]}", "Landed cost", LANDED_COST[1]])
+    layers.append([layers[-1][0] + 1, 1, WIDGET, None, "0", f"{LANDED_COST[0]}", "Landed cost", LANDED_COST[1]])
     out.add("stock_valuation_layer", ["id", "company_id", "product_id", "stock_move_id", "quantity", "value",
                                       "description", "create_date"], layers)
-    out.add("stock_quant", ["id", "product_id", "company_id", "location_id", "quantity", "reserved_quantity"],
-            [[n, product, 1, location, f"{qty}", "0"] for n, (location, product, qty) in enumerate(QUANTS, 1)])
+    moves_ = {m[0]: m for m in STOCK_MOVES}
+    out.add("stock_move_line", ["id", "move_id", "product_id", "lot_id", "location_id", "location_dest_id",
+                                "quantity" if version >= 17 else "qty_done", "reference", "date", "state",
+                                "company_id"],
+            [[i, move, moves_[move][3], lot, src, dest, f"{qty}", moves_[move][1], moves_[move][2], moves_[move][7], 1]
+             for i, move, lot, qty, src, dest in STOCK_MOVE_LINES])
+    out.add("stock_quant", ["id", "product_id", "company_id", "location_id", "lot_id", "quantity",
+                            "reserved_quantity"],
+            [[n, product, 1, location, lot, f"{qty}", "0"] for n, (location, product, lot, qty) in enumerate(QUANTS, 1)])
     out.add("stock_lot" if version >= 16 else "stock_production_lot", ["id", "name", "product_id", "company_id"],
-            [[1, "LOT-0001", WIDGET, 1]])
+            [[i, n, WIDGET, 1] for i, n in LOTS])
 
 
 def store_name(content: bytes) -> str:

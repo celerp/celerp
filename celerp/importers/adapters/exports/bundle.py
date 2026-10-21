@@ -30,6 +30,7 @@ from celerp.importers.schema import (
     CIFJournalLine,
     CIFLineItem,
     CIFLineTax,
+    CIFLocation,
     CIFSettlement,
     CIFTaxCode,
     CoverageClass,
@@ -75,9 +76,18 @@ def _contacts(book: Book, src: Source) -> list[CIFContact]:
 
 
 def _items(book: Book, src: Source) -> list[CIFItem]:
-    return [CIFItem(**src("Item", i.code, i.code), sku=i.code, name=i.name, description=i.description,
-                    retail_price=i.price, sell_by="piece", status="available" if i.active else "archived")
-            for i in sorted(book.items.values(), key=lambda i: i.code)]
+    """Each item at the first location, then each holding as stock of its item."""
+    home = book.locations[0] if book.locations else None
+    items = [CIFItem(**src("Item", i.code, i.code), sku=i.code, name=i.name, description=i.description,
+                     retail_price=i.price, sell_by="piece", status="available" if i.active else "archived",
+                     location_name=home)
+             for i in sorted(book.items.values(), key=lambda i: i.code)]
+    for h in sorted(book.holdings.values(), key=lambda h: h.key):
+        item = book.items[h.item]
+        items.append(CIFItem(**src("Item", h.key, h.key), sku=item.code, name=item.name, description=item.description,
+                             retail_price=item.price, sell_by="piece", status="available" if item.active else "archived",
+                             product_external_id=item.code, batch_no=h.lot, location_name=h.location))
+    return items
 
 
 
@@ -195,6 +205,7 @@ def build_bundle(ledger: Ledger, src: Source) -> CIFImportBundle:
         company=company,
         currencies=_currencies(book, src),
         accounts=_accounts(book, src),
+        locations=[CIFLocation(**src("Location", name), name=name) for name in book.locations],
         tax_codes=[CIFTaxCode(**src("Tax rate", tc.name), name=tc.name, rate_percent=tc.rate,
                               account_external_id=tc.account) for tc in book.tax_codes.values()],
         contacts=_contacts(book, src),

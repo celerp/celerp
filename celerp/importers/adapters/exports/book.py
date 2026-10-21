@@ -62,6 +62,15 @@ class Item:
     active: bool = True
 
 
+@dataclass(frozen=True)
+class StockHolding:
+    """An item's stock kept apart from the item itself: one lot, or the stock at another location."""
+    key: str
+    item: str                                   # the item's code
+    location: str
+    lot: str | None = None
+
+
 @dataclass
 class TaxCode:
     name: str
@@ -178,8 +187,12 @@ class Book:
     aged: dict[str, tuple[date, dict[str, Decimal]]] = field(default_factory=dict)
     skipped: Counter = field(default_factory=Counter)       # coverage label -> count of records not carried
     tracking: set[str] = field(default_factory=set)          # tracking category names
-    # Item code -> (quantity on hand, inventory value or None when the source values no stock), as the source states it.
+    # Item code or holding key -> (quantity on hand, inventory value or None when the source values no
+    # stock), as the source states it. An item's figures include those of its holdings.
     stock: dict[str, tuple[Decimal, Decimal | None]] = field(default_factory=dict)
+    # Where the stock is kept, by name; each item itself is kept at the first.
+    locations: list[str] = field(default_factory=list)
+    holdings: dict[str, StockHolding] = field(default_factory=dict)
     object_counts: Counter = field(default_factory=Counter)
 
     @property
@@ -190,6 +203,11 @@ class Book:
 
     def is_foreign(self, currency: str | None) -> bool:
         return bool(currency) and currency != self.base
+
+    def stock_item(self, key: str) -> str:
+        """The code of the item whose stock `key` is: a holding's item, else the item itself."""
+        holding = self.holdings.get(key)
+        return holding.item if holding else key
 
     def control(self, kind: str) -> list[str]:
         return [a.code for a in self.accounts.values() if a.control == kind]

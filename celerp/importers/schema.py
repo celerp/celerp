@@ -365,6 +365,8 @@ class CIFItem(CIFSourceRecord):
     status: ImportItemStatus
     category: str | None = None
     parent_external_id: str | None = None     # split lineage
+    product_external_id: str | None = None    # the item this is stock of: a lot of it, or its stock elsewhere
+    batch_no: str | None = None               # lot or serial number
     barcode: str | None = None
     location_name: str | None = None          # resolved to location_id at import time
     attributes: dict[str, Any] = Field(default_factory=dict)  # industry-specific fields

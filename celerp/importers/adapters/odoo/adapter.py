@@ -30,8 +30,8 @@ from celerp.importers.adapters.exports.ledger import Ledger, build_ledger
 from celerp.importers.adapters.exports.reconcile import expectations_from
 from celerp.importers.adapters.odoo import attachments
 from celerp.importers.adapters.odoo.book import (
-    DRAFT_ENTRY, LOT, NO_CONTACT, OFF_BALANCE_LINE, SOURCE_NAME, SOURCE_SYSTEM, AttachmentRef, OdooBook,
-    read_odoo,
+    DRAFT_ENTRY, LOT, NO_CONTACT, OFF_BALANCE_LINE, SOURCE_NAME, SOURCE_SYSTEM, UNSTOCKED_LOT, AttachmentRef,
+    OdooBook, read_odoo,
 )
 from celerp.importers.adapters.odoo.dump import Backup
 from celerp.importers.schema import (
@@ -48,9 +48,8 @@ from ui.i18n import t
 MAX_FILE_BYTES = 2 * 1024 * 1024 * 1024
 FULL = MigrationDecisions(mode=CIFMode.FULL_HISTORY)
 SKIPPED = {DRAFT_ENTRY: CoverageClass.IGNORED_NON_BUSINESS, NO_CONTACT: CoverageClass.IGNORED_NON_BUSINESS,
-           OFF_BALANCE_LINE: CoverageClass.UNSUPPORTED_NONFINANCIAL, LOT: CoverageClass.UNSUPPORTED_NONFINANCIAL}
+           OFF_BALANCE_LINE: CoverageClass.UNSUPPORTED_NONFINANCIAL, UNSTOCKED_LOT: CoverageClass.IGNORED_NON_BUSINESS}
 LOCATION = "Stock location"
-LOCATION_NOTE = "Celerp keeps each item at one location; the stock of every internal location is added together."
 OPENING = "Opening balances"
 OTHER_COMPANY = "Entry of another company"
 OTHER_COMPANY_NOTE = "Each company is imported on its own. To import another company, upload this backup again and choose it."
@@ -107,14 +106,12 @@ def _stock(odoo: OdooBook, ledger: Ledger) -> list[CIFInventoryAdjustment]:
 
 def _coverage(odoo: OdooBook, ledger: Ledger, screened: attachments.Screened) -> list[CIFCoverageEntry]:
     rows = coverage(ledger, SKIPPED)
-    moved: dict[str, int] = defaultdict(int)
+    moved: dict[str, set[str]] = defaultdict(set)
     for m in odoo.moves:
-        moved[m.source_type] += 1
+        moved[m.source_type].add(m.record)
+    carried = {**{label: len(records) for label, records in moved.items()}, LOCATION: odoo.locations, LOT: odoo.lots}
     rows += [CIFCoverageEntry(source_type=label, count=count, coverage_class=CoverageClass.MAPPED)
-             for label, count in moved.items()]
-    if odoo.locations > 1:
-        rows.append(CIFCoverageEntry(source_type=LOCATION, count=odoo.locations,
-                                     coverage_class=CoverageClass.MAPPED_WITH_LOSS, note=LOCATION_NOTE))
+             for label, count in carried.items() if count]
     if screened.accepted:
         rows.append(CIFCoverageEntry(source_type="Attachment", count=len(screened.accepted),
                                      coverage_class=CoverageClass.MAPPED))

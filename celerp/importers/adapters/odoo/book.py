@@ -4,15 +4,16 @@
 
 Every posted journal entry is a ledger journal with its own lines; the customer
 invoices, credit notes, vendor bills and refunds are its documents, posted, draft or
-cancelled. A payment is linked to the one invoice or bill it is reconciled with, and a
-credit note or refund to the invoice or bill it fully settles, so the ledger carries
+cancelled. A payment is linked to each invoice or bill it is reconciled with, and a
+credit note or refund to each one it is applied to, by what each reconciliation applied, so the ledger carries
 them as Celerp settlements and applied notes. The source's own figures for the
 reconciliation are its posted move lines summed to each month end, the open amount of
 each customer's and supplier's lines, each document's open amount, the stock on hand
 in its internal locations and the value of its stock valuation layers.
 
-Stock moves that took goods into or out of an internal location are carried per item
-with the value their valuation layers record. Files attached to contacts, products and
+Stock is carried per item, lot and internal location: each done move line that took
+goods into, out of or between internal locations, with the share of its move's value its
+valuation layers record. Files attached to contacts, products and
 documents are read from the backup's filestore.
 """
 
@@ -28,9 +29,11 @@ from decimal import Decimal
 from celerp.importers.adapters.base import ScanError
 from celerp.importers.adapters.exports import steps
 from celerp.importers.adapters.exports.book import (
-    PARTY_SIGN, ZERO, Account, Book, Contact, DocLine, Document, GLJournal, GLLine, Item, LineTax, TaxCode,
+    PARTY_SIGN, ZERO, Account, Book, Contact, DocLine, Document, GLJournal, GLLine, Item, LineTax, StockHolding,
+    TaxCode,
 )
 from celerp.importers.adapters.odoo.dump import Backup, Row
+from celerp.services.money import allocate_pro_rata, round_money
 from ui.i18n import t
 
 SOURCE_SYSTEM = "odoo"
@@ -91,6 +94,7 @@ DRAFT_ENTRY = "Draft or cancelled journal entry"
 OFF_BALANCE_LINE = "Off-balance journal item"
 NO_CONTACT = "Draft document without a contact"
 LOT = "Lot or serial number"
+UNSTOCKED_LOT = "Lot or serial number never stocked"
 # Tracking categories of an analytic account with no plan (Odoo 13 to 15) and of analytic tags.
 ANALYTIC_ACCOUNT = "Analytic account"
 ANALYTIC_TAG = "Analytic tag"
@@ -104,7 +108,7 @@ TABLES = (
     "res_company", "res_currency", "res_partner", "account_account", "account_account_type", "ir_model_data",
     "account_tax", "account_tax_repartition_line", "account_move", "account_move_line",
     "account_move_line_account_tax_rel", "account_partial_reconcile", "account_payment", "product_product",
-    "product_template", "stock_location", "stock_move", "stock_quant", "stock_valuation_layer", "ir_attachment",
+    "product_template", "stock_location", "stock_move", "stock_move_line", "stock_quant", "stock_valuation_layer", "ir_attachment",
     "account_analytic_account", "account_analytic_plan", "account_analytic_tag",
     "account_analytic_tag_account_move_line_rel",
 )
@@ -113,13 +117,15 @@ COLUMNS = frozenset({
     "account_analytic_tag_id", "account_id", "account_move_line_id", "account_tax_id", "analytic_account_id",
     "analytic_distribution", "account_type", "active", "amount", "amount_currency",
     "amount_residual", "amount_tax", "amount_total", "amount_type", "checksum", "city", "code",
-    "commercial_partner_id", "company_id", "create_date", "credit", "credit_amount_currency", "credit_move_id", "currency_id", "customer_rank",
+    "commercial_partner_id", "company_id", "complete_name", "create_date", "credit", "credit_amount_currency", "credit_move_id", "currency_id", "customer_rank",
     "date", "db_datas", "debit", "debit_amount_currency", "debit_move_id", "default_code", "deprecated", "description", "description_sale",
     "discount", "display_type", "document_type", "email", "exclude_from_invoice_tab", "id",
     "income_currency_exchange_account_id", "internal_group", "invoice_date_due", "invoice_tax_id",
-    "is_internal_transfer", "is_rounding_line", "list_price", "location_dest_id", "location_id", "mimetype", "mobile", "model",
+    "is_internal_transfer", "is_rounding_line", "list_price", "location_dest_id", "location_id", "lot_id", "mimetype",
+    "mobile", "model",
     "move_id", "move_type", "name", "partner_id", "partner_type", "payment_id", "payment_type", "phone", "plan_id",
-    "price_subtotal", "price_total", "price_unit", "product_id", "product_qty", "product_tmpl_id", "quantity", "ref",
+    "price_subtotal", "price_total", "price_unit", "product_id", "product_qty", "product_tmpl_id", "qty_done",
+    "quantity", "ref",
     "reference", "repartition_type", "res_field", "res_id", "res_model", "sequence", "state", "stock_move_id",
     "store_fname", "street", "street2", "supplier_rank", "tax_id", "tax_line_id", "type", "usage", "user_type_id",
     "url", "value", "vat", "zip",
@@ -132,9 +138,10 @@ class StockMove:
     source_type: str
     ref: str
     date: date
-    item: str
+    item: str                                   # the item or holding whose stock moved
     quantity: Decimal                           # into the company's internal locations, signed
     value: Decimal | None                       # base, signed; None when the source values no stock
+    record: str                                 # the Odoo move line or valuation layer it comes from
 
 
 @dataclass(frozen=True)
@@ -157,6 +164,7 @@ class OdooBook:
     attachments: dict[str, AttachmentRef] = field(default_factory=dict)
     system_files: int = 0                       # Odoo's interface files and the smaller copies of each picture
     locations: int = 0
+    lots: int = 0                               # lots and serial numbers with stock carried
     companies: tuple[str, ...] = ()             # every company with books, when there are several
     other_entries: int = 0                      # entries of the companies not imported
 
@@ -167,6 +175,15 @@ def _dec(value: str | None) -> Decimal:
 
 def _day(value: str | None) -> date | None:
     return date.fromisoformat(value[:10]) if value else None
+
+
+def _shares(total: Decimal, weights: list[Decimal]) -> list[Decimal]:
+    """`total` split in proportion to `weights`, the last part taking what is left."""
+    whole = sum(weights, ZERO)
+    if whole == total:
+        return list(weights)
+    shares = [total * w / whole for w in weights[:-1]]
+    return [*shares, total - sum(shares, ZERO)]
 
 
 def _true(value: str | None) -> bool:
@@ -626,41 +643,105 @@ class _Reader:
     # ── Stock ────────────────────────────────────────────────────────────────
 
     def read_stock(self) -> None:
-        book = self.book
-        internal = {r["id"] for r in self.table("stock_location") if r["usage"] == "internal"}
+        """Stock per item, lot and internal location, in the order it moved. Each done move line
+        takes its share of its move's quantity and value by the quantity it moved; a line between
+        two internal locations takes along its share of what the stock it left was worth, and a
+        valuation with no move falls on the item's stock held at the time, by quantity."""
+        book, base = self.book, self.book.base
+        names = _unique({r["id"]: r["complete_name"] or r["name"] or "" for r in self.table("stock_location")
+                         if r["usage"] == "internal"})
+        internal = sorted(names, key=int)
         self.out.locations = len(internal)
+        book.locations = [names[i] for i in internal]
+        lots = {r["id"]: r["name"] or r["id"] for r in self.table(self.backup.lot_table)}
+        stocked: set[str] = set()
+
+        def bucket(product: str, location: str, lot: str | None) -> str:
+            """The item, or the holding, that keeps a product's stock of one lot at one location."""
+            code = self.products[product]
+            lot = lot if lot in lots else None
+            if location == internal[0] and lot is None:
+                return code
+            key = code + (f"#{lots[lot]}" if lot else "") + ("" if location == internal[0] else f"@{names[location]}")
+            book.holdings.setdefault(key, StockHolding(key, code, names[location], lots[lot] if lot else None))
+            if lot:
+                stocked.add(lot)
+            return key
+
         valued = "stock_valuation_layer" in self.rows
         layers = [r for r in self.table("stock_valuation_layer") if r["product_id"] in self.products]
         by_move: dict[str, Decimal] = defaultdict(lambda: ZERO)
         for r in layers:
             if r.get("stock_move_id"):
                 by_move[r["stock_move_id"]] += _dec(r["value"])
-        moves = []
-        for r in self.table("stock_move"):
-            if r["state"] != "done" or r["product_id"] not in self.products:
+        done = "quantity" if self.out.version >= 17 else "qty_done"
+        lines: dict[str, list[Row]] = defaultdict(list)
+        for r in self.table("stock_move_line"):
+            lines[r["move_id"]].append(r)
+        events = [(r["date"] or "", 0, int(r["id"]), r) for r in self.table("stock_move")
+                  if r["state"] == "done" and r["product_id"] in self.products]
+        events += [(r["create_date"] or "", 1, int(r["id"]), r) for r in layers
+                   if not r.get("stock_move_id") and _dec(r["value"])]
+        held: dict[str, list[Decimal]] = defaultdict(lambda: [ZERO, ZERO])    # key -> [quantity, value]
+        moves: list[StockMove] = []
+
+        def add(record: str, key: str, source_type: str, ref: str, on: date, target: str, quantity: Decimal,
+                value: Decimal | None) -> None:
+            held[target][0] += quantity
+            held[target][1] += value or ZERO
+            moves.append(StockMove(key, source_type, ref, on, target, quantity, value, record))
+
+        for when, is_layer, _, r in sorted(events, key=lambda e: e[:3]):
+            code, on = self.products[r["product_id"]], _day(when)
+            if is_layer:
+                record = f"valuation:{r['id']}"
+                holders = sorted(k for k, (q, _) in held.items() if q > 0 and book.stock_item(k) == code)
+                shares = allocate_pro_rata(_dec(r["value"]), [held[k][0] for k in holders], base) if holders \
+                    else [_dec(r["value"])]
+                for target, share in zip(holders or [code], shares):
+                    add(record, f"{record}:{target}" if holders else record, "Stock valuation",
+                        self.text(r.get("description")), on, target, ZERO, share)
                 continue
-            sign = (r["location_dest_id"] in internal) - (r["location_id"] in internal)
-            if not sign:
-                continue
-            moves.append(StockMove(f"stock:{r['id']}", "Stock move", r.get("reference") or r.get("name") or "",
-                                   _day(r["date"]), self.products[r["product_id"]], sign * _dec(r["product_qty"]),
-                                   by_move[r["id"]] if valued else None))
-        moves += [StockMove(f"valuation:{r['id']}", "Stock valuation", self.text(r.get("description")),
-                            _day(r["create_date"]), self.products[r["product_id"]], ZERO, _dec(r["value"]))
-                  for r in layers if not r.get("stock_move_id") and _dec(r["value"])]
+            # A move Odoo recorded without lines moves as one line of its own.
+            parts = [(f"stock:{ln['id']}", ln.get("lot_id"), ln["location_id"], ln["location_dest_id"],
+                      _dec(ln.get(done))) for ln in sorted(lines.get(r["id"], []), key=lambda ln: int(ln["id"]))] \
+                or [(f"stock:move:{r['id']}", None, r["location_id"], r["location_dest_id"], _dec(r["product_qty"]))]
+            weights = [p[4] for p in parts] if any(p[4] for p in parts) else [Decimal(1)] * len(parts)
+            quantities = _shares(_dec(r["product_qty"]), weights)
+            values = allocate_pro_rata(by_move[r["id"]], weights, base) if by_move[r["id"]] else [ZERO] * len(parts)
+            ref = r.get("reference") or r.get("name") or ""
+            for (record, lot, src, dest, _), quantity, value in zip(parts, quantities, values):
+                if src in names and dest in names:
+                    leaves, enters = bucket(r["product_id"], src, lot), bucket(r["product_id"], dest, lot)
+                    if leaves == enters:
+                        continue
+                    on_hand, worth = held[leaves]
+                    taken = (round_money(worth * quantity / on_hand, base) if on_hand > 0 else ZERO) if valued else None
+                    add(record, f"{record}:to", "Stock move", ref, on, enters, quantity, taken)
+                    add(record, f"{record}:from", "Stock move", ref, on, leaves, -quantity, None if taken is None else -taken)
+                elif src in names or dest in names:
+                    into = dest in names
+                    add(record, record, "Stock move", ref, on, bucket(r["product_id"], dest if into else src, lot),
+                        quantity if into else -quantity, value if valued else None)
         self.out.moves = sorted(moves, key=lambda m: (m.date, m.quantity < 0, m.key))
-        held: dict[str, Decimal] = defaultdict(lambda: ZERO)
+
+        on_hand: dict[str, Decimal] = defaultdict(lambda: ZERO)
         for r in self.table("stock_quant"):
-            if r["location_id"] in internal and r["product_id"] in self.products:
-                held[self.products[r["product_id"]]] += _dec(r["quantity"])
+            if r["location_id"] in names and r["product_id"] in self.products:
+                key = bucket(r["product_id"], r["location_id"], r.get("lot_id"))
+                on_hand[key] += _dec(r["quantity"])
+                if key in book.holdings:
+                    on_hand[book.holdings[key].item] += _dec(r["quantity"])
         value: dict[str, Decimal] = defaultdict(lambda: ZERO)
         for r in layers:
             value[self.products[r["product_id"]]] += _dec(r["value"])
-        for code in {*held, *value, *(m.item for m in moves)}:
-            book.stock[code] = (held[code], value[code] if valued else None)
-        lots = self.table(self.backup.lot_table)
-        if lots:
-            book.skipped[LOT] = len(lots)
+        for code in {*value, *(book.stock_item(k) for k in (*on_hand, *(m.item for m in moves)))}:
+            book.stock[code] = (on_hand[code], value[code] if valued else None)
+        for key in book.holdings:
+            book.stock[key] = (on_hand[key], None)
+        self.out.lots = len(stocked)
+        if len(lots) > len(stocked):
+            book.skipped[UNSTOCKED_LOT] = len(lots) - len(stocked)
 
     # ── Attachments ──────────────────────────────────────────────────────────
 
@@ -715,5 +796,6 @@ def read_odoo(backup: Backup, company: str | None = None) -> OdooBook:
     reader.read_attachments()
     book.object_counts.update({"Account": len(book.accounts), "Contact": len(book.contacts), "Item": len(book.items),
                                "Tax": len(book.tax_codes), "Invoice or bill": len(book.documents),
-                               "Journal entry": len(book.journals), "Stock move": len(reader.out.moves)})
+                               "Journal entry": len(book.journals),
+                               "Stock move": len({m.record for m in reader.out.moves})})
     return reader.out

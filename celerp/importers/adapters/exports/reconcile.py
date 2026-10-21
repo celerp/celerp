@@ -4,7 +4,8 @@
 
 Taken from the source's own reports, never from the conversion: the trial balance at
 the last month end and at every month end before it, the aged receivables and payables
-per contact, the stock on hand per item where the source states it, and the invoices and
+per contact, the stock on hand per item (and per lot and location where the source keeps
+them apart) where the source states it, and the invoices and
 bills list's own totals, statuses and amount due on each document. The
 ledger decides only which documents the migration imports and the rate each was booked
 at, so an import is checked against figures that did not pass through it.
@@ -74,7 +75,10 @@ def expectations_from(book: Book, ledger: Ledger) -> ReconciliationExpectations:
                 add(measure, name, base, owed.get(name, ZERO), name, side == "payable")
 
     for code, (quantity, value) in sorted(book.stock.items()):
-        label = book.items[code].name
+        label = book.items[book.stock_item(code)].name
+        holding = book.holdings.get(code)
+        if holding:
+            label = ", ".join(filter(None, (label, holding.lot, holding.location)))
         add(M.INVENTORY_QUANTITY, code, None, quantity, label)
         if value is not None:
             add(M.INVENTORY_VALUE, code, base, value, label)

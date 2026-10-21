@@ -544,30 +544,58 @@ async def test_each_migrated_line_keeps_its_analytic_distribution(real_engine, m
 
 # ── Stock and files ───────────────────────────────────────────────────────────
 
+LOT_1, LOT_2, SHELF = "WID-1#LOT-0001", "WID-1#LOT-0002", "WID-1#LOT-0001@WH/Stock/Shelf 2"
+
+
 @pytest.mark.parametrize("version", VERSIONS)
-def test_stock_moves_into_and_out_of_internal_locations(tmp_path, version):
+def test_stock_moves_each_lot_at_each_location(tmp_path, version):
     manifest = _adapter().build_manifest(_file(tmp_path, _backup(version)), FULL)
-    moved = [(a.source_type, a.source_external_id, a.kind, a.adjustment_date, a.item_external_id, a.quantity, a.value)
+    moved = [(a.source_external_id, a.adjustment_date, a.item_external_id, a.quantity, a.value)
              for a in manifest.bundle.inventory_adjustments]
-    # A move between two shelves changes nothing, and a move not yet done is not carried.
+    # A receipt's value is shared by its lots, a move between shelves takes its share of the
+    # lot's cost along, a cost with no move falls on the stock held then, and a move not yet
+    # done is not carried.
     assert moved == [
-        ("Stock move", "stock:1", "adjustment", date(2024, 1, 10), "WID-1", D(10), D(300)),
-        ("Stock move", "stock:2", "adjustment", date(2024, 1, 20), "WID-1", D(-4), D(-120)),
-        ("Stock move", "stock:4", "adjustment", date(2024, 3, 1), "WID-1", D(1), D(30)),
-        ("Stock valuation", "valuation:4", "adjustment", date(2024, 3, 15), "WID-1", D(0), D(10)),
+        ("stock:1", date(2024, 1, 10), LOT_1, D(6), D(180)),
+        ("stock:2", date(2024, 1, 10), LOT_2, D(4), D(120)),
+        ("stock:3", date(2024, 1, 20), LOT_2, D(-4), D(-120)),
+        ("stock:4:to", date(2024, 2, 1), SHELF, D(2), D(60)),
+        ("stock:4:from", date(2024, 2, 1), LOT_1, D(-2), D(-60)),
+        ("stock:5", date(2024, 3, 1), LOT_1, D(1), D(30)),
+        (f"valuation:5:{LOT_1}", date(2024, 3, 15), LOT_1, D(0), D("7.14")),
+        (f"valuation:5:{SHELF}", date(2024, 3, 15), SHELF, D(0), D("2.86")),
     ]
+    assert sum(a.value for a in manifest.bundle.inventory_adjustments) == D(220)
     coverage = {r.source_type: (r.count, r.coverage_class) for r in manifest.coverage}
-    assert coverage["Stock location"] == (2, CoverageClass.MAPPED_WITH_LOSS)
-    assert coverage["Lot or serial number"] == (1, CoverageClass.UNSUPPORTED_NONFINANCIAL)
+    assert coverage["Stock location"] == (2, CoverageClass.MAPPED)
+    assert coverage["Lot or serial number"] == (2, CoverageClass.MAPPED)
+    assert coverage["Lot or serial number never stocked"] == (1, CoverageClass.IGNORED_NON_BUSINESS)
+    assert coverage["Item"] == (2, CoverageClass.MAPPED)
     assert coverage["Draft or cancelled journal entry"] == (1, CoverageClass.IGNORED_NON_BUSINESS)
+
+
+@pytest.mark.parametrize("version", VERSIONS)
+def test_each_lot_and_location_is_stock_of_its_product(tmp_path, version):
+    bundle = _adapter().build_manifest(_file(tmp_path, _backup(version)), FULL).bundle
+    # The location the company's stock starts in comes first, so it is Celerp's default.
+    assert [loc.name for loc in bundle.locations] == ["WH/Stock", "WH/Stock/Shelf 2"]
+    items = [(i.source_external_id, i.sku, i.product_external_id, i.batch_no, i.location_name)
+             for i in bundle.items]
+    assert items == [
+        ("SRV", "SRV", None, None, "WH/Stock"), ("WID-1", "WID-1", None, None, "WH/Stock"),
+        (LOT_1, "WID-1", "WID-1", "LOT-0001", "WH/Stock"), (SHELF, "WID-1", "WID-1", "LOT-0001", "WH/Stock/Shelf 2"),
+        (LOT_2, "WID-1", "WID-1", "LOT-0002", "WH/Stock")]
 
 
 def test_cutover_carries_each_items_position_then_the_moves_after(tmp_path):
     manifest = _adapter().build_manifest(_file(tmp_path, _backup(17)),
                                          MigrationDecisions(mode=CIFMode.CUTOVER, cutover_date=CUTOVER))
-    assert [(a.kind, a.adjustment_date, a.quantity, a.value) for a in manifest.bundle.inventory_adjustments] == [
-        ("opening", CUTOVER, D(6), D(180)), ("adjustment", date(2024, 3, 1), D(1), D(30)),
-        ("adjustment", date(2024, 3, 15), D(0), D(10))]
+    assert [(a.kind, a.adjustment_date, a.item_external_id, a.quantity, a.value)
+            for a in manifest.bundle.inventory_adjustments] == [
+        ("opening", CUTOVER, LOT_1, D(4), D(120)), ("opening", CUTOVER, SHELF, D(2), D(60)),
+        ("adjustment", date(2024, 3, 1), LOT_1, D(1), D(30)),
+        ("adjustment", date(2024, 3, 15), LOT_1, D(0), D("7.14")),
+        ("adjustment", date(2024, 3, 15), SHELF, D(0), D("2.86"))]
 
 
 @pytest.mark.parametrize("version", VERSIONS)
@@ -618,9 +646,30 @@ async def test_the_odoo_product_image_becomes_the_items_picture(real_engine, mon
     run, rejected = await migrate_set(real_engine, [("harbour.zip", _backup(17))], {"mode": "full_history"},
                                       monkeypatch, tmp_path)
     assert rejected == []
-    [item] = [i for i in (await _projections(real_engine, run, "item")).values() if i.get("sku") == "WID-1"]
+    [item] = [i for i in (await _projections(real_engine, run, "item")).values()
+              if i.get("sku") == "WID-1" and not i.get("catalog_item_id")]
     assert sorted((f["filename"], f["is_hero"], f["document_tag"]) for f in item["files"]) == [
         ("WID-1.png", True, "product_images"), ("widget.png", False, "product_images")]
+
+
+@pytest.mark.asyncio
+async def test_each_lot_migrates_as_stock_of_its_product_where_odoo_keeps_it(real_engine, monkeypatch, tmp_path):
+    from test_migration_e2e import _projections
+
+    run, rejected = await migrate_set(real_engine, [("harbour.zip", _backup(17))], {"mode": "full_history"},
+                                      monkeypatch, tmp_path)
+    assert rejected == []
+    _passing(run)
+    async with real_engine.connect() as conn:
+        places = dict((await conn.execute(text("SELECT id::text, name FROM locations WHERE company_id = :c"),
+                                          {"c": run.company_id})).all())
+    items = await _projections(real_engine, run, "item")
+    [product] = [k for k, i in items.items() if i.get("sku") == "WID-1" and not i.get("catalog_item_id")]
+    stock = sorted((i.get("batch_no"), places[i["location_id"]], i["quantity"], i["catalog_item_id"])
+                   for i in items.values() if i.get("catalog_item_id"))
+    assert stock == [("LOT-0001", "WH/Stock", 5, product), ("LOT-0001", "WH/Stock/Shelf 2", 2, product),
+                     ("LOT-0002", "WH/Stock", 0, product)]
+    assert items[product]["quantity"] == 0
 
 
 # ── Several companies in one backup ───────────────────────────────────────────
@@ -728,6 +777,10 @@ def test_expectations_come_from_the_source(tmp_path, version):
     assert by[(M.AP_DOCUMENT_RESIDUAL, "")] == 0
     assert by[(M.INVENTORY_QUANTITY, "WID-1")] == D(7)           # what the quants hold, not the moves
     assert by[(M.INVENTORY_VALUE, "WID-1")] == D(220)
+    # Each lot at each location holds what its quants hold; Odoo values stock per product only.
+    assert {k: v for (m, k), v in by.items() if m == M.INVENTORY_QUANTITY and k != "WID-1"} == {
+        LOT_1: D(5), SHELF: D(2), LOT_2: D(0)}
+    assert {k for m, k in by if m == M.INVENTORY_VALUE} == {"WID-1"}
     assert by[(M.DOCUMENT_COUNT, "invoice")] == D(6)
     assert by[(M.DOCUMENT_RESIDUAL, "S:INV/2024/00002")] == D(130)
     assert by[(M.DOCUMENT_RESIDUAL, "S:RINV/2024/00001")] == D("57.50")
