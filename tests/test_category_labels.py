@@ -84,7 +84,7 @@ async def _colored_stone_item(owner_ui) -> str:
 async def test_settings_library_and_rename_form_show_the_users_language(owner_ui):
     await _gem_company(owner_ui)
     settings = await owner_ui.get("/settings/inventory?tab=categories", headers=_DE)
-    assert ">Wein<" in settings.text, "the Browse Library rows are translated"
+    assert re.search(r'<tr[^>]*data-name="wein"', settings.text), "the Browse Library rows are translated"
     edit = await owner_ui.get("/settings/categories/colored_stone/edit", headers=_DE)
     assert 'value="Farbedelstein"' in edit.text, "the rename box starts from the name shown, not the key"
 

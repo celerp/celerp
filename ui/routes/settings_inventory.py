@@ -297,9 +297,6 @@ def _categories_tab(
 
     # ── Library view ──────────────────────────────────────────────────
 
-    # Shared result div targeted by Browse Library
-    result_div = Div(id="verticals-apply-result")
-
     # ── Section A: Your Categories ────────────────────────────────────
     _dn = cat_display_names or {}
     add_form = Form(
@@ -365,14 +362,15 @@ def _categories_tab(
                 already = cdisplay in applied_names or cname in applied_names
                 clabel = category_label(cname, cdisplay)
                 rows.append(Tr(
-                    Td(clabel, cls="cell"),
+                    # An added category reloads the tab (HX-Redirect); a refused one says why here.
+                    Td(clabel, Div(cls="vert-apply-result"), cls="cell"),
                     Td(
                         Span(t("settings._applied"), cls="badge badge--active") if already else
                         Form(
                             Input(type="hidden", name="name", value=cname),
                             Button(t("btn._add"), type="submit", cls="btn btn--primary btn--xs"),
                             hx_post="/settings/verticals/apply-category",
-                            hx_target="#verticals-apply-result",
+                            hx_target="previous .vert-apply-result",
                             hx_swap="innerHTML",
                         ),
                         cls="cell cell--action",
@@ -385,13 +383,13 @@ def _categories_tab(
                     Summary(
                         Span(_tag_label(tag), cls="vert-group-label"),
                         *(
-                            [Form(
+                            [Div(cls="vert-apply-result"), Form(
                                 Input(type="hidden", name="vertical", value=tag_to_preset[tag].get("name", "")),
                                 Button(t("btn.apply_preset"), type="submit",
                                        cls="btn btn--secondary btn--xs vert-preset-btn",
                                        onclick="event.stopPropagation()"),
                                 hx_post="/settings/verticals/apply-preset",
-                                hx_target="#verticals-apply-result",
+                                hx_target="previous .vert-apply-result",
                                 hx_swap="innerHTML",
                             )]
                             if tag in tag_to_preset else []
@@ -434,7 +432,6 @@ def _categories_tab(
     )
 
     return Div(
-        result_div,
         section_a,
         section_c,
         cls="settings-card",
