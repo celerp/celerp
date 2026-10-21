@@ -267,6 +267,26 @@ async def test_an_issued_purchase_order_keeps_its_ordered_quantity_receivable(cl
     r = await _receive(client, auth, po, {"po_line_index": 0, "quantity_received": 0.27})
     assert r.status_code == 200, r.text
 
+
+@pytest.mark.parametrize("by", ["item_id", "sku"])
+async def test_a_line_with_no_unit_is_checked_in_its_items_unit(client, session, auth, by):
+    carat = await _lot(client, auth, qty=6)
+    gram = await _lot(client, auth, sell_by="gram", qty=6)
+    ref = {"item_id": lambda i: {"item_id": i}, "sku": lambda i: {"sku": i}}[by]
+    lines = [{**ref(item if by == "item_id" else await _sku(session, auth, item)),
+              "name": "Stone", "quantity": 0.27, "unit_price": 10.0} for item in (carat, gram)]
+    doc = await _doc(client, auth, "invoice", lines)
+    stored = (await _state(session, auth, doc))["line_items"]
+    assert not any(line.get("unit") or line.get("sell_by") for line in stored), stored
+
+    r = await _set_carat_decimals(client, auth, 1)
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"]["params"]["count"] == 1, r.text
+    assert await _carat_decimals(client, auth) == 2
+    # The gram item's line counts once, under gram.
+    assert (await client.put("/companies/me/units", headers=auth["headers"], json={"units": [
+        {**u, "decimals": 1} if u["name"] == "gram" else u for u in await _units(client, auth)]})).status_code == 422
+
 async def _units(client, auth) -> list[dict]:
     return (await client.get("/companies/me/units", headers=auth["headers"])).json()
 

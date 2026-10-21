@@ -176,7 +176,8 @@ async def check_precision_change(session, company_id, old_units: list[dict], new
     can still receive, ship, send back or convert its lines, and a list while it is a draft or
     finalized (its closing action is still to come). Other documents are history and never block. Raising
     precision always passes. A unit missing from the old list (deleted, then added back or
-    re-seeded) had no precision to compare with, so it is checked against what is stored in it."""
+    re-seeded) had no precision to compare with, so it is checked against what is stored in it. A
+    line with no unit of its own is in its item's unit, found by item id or SKU."""
     from sqlalchemy import or_, select
 
     from celerp_docs.doc_constants import lines_still_move_stock
@@ -191,12 +192,19 @@ async def check_precision_change(session, company_id, old_units: list[dict], new
     if not lowered:
         return
     status = Projection.state["status"].as_string()
-    rows = (await session.execute(select(Projection.entity_type, Projection.state).where(
+    rows = (await session.execute(select(Projection.entity_id, Projection.entity_type, Projection.state).where(
         Projection.company_id == company_id,
         or_((Projection.entity_type == "item") & Projection.state["sell_by"].as_string().in_(list(lowered)),
             Projection.entity_type.in_(("doc", "list")) & or_(status.is_(None), status != "void")),
     ))).all()
-    rows = [(entity_type, state) for entity_type, state in rows if entity_type == "item" or (
+    item_unit = {key: state.get("sell_by") for entity_id, entity_type, state in rows if entity_type == "item"
+                 for key in (entity_id, state.get("sku")) if key}
+
+    def line_unit(line: dict):
+        return line.get("unit") or line.get("sell_by") or item_unit.get(line.get("item_id")) \
+            or item_unit.get(line.get("sku"))
+
+    rows = [(entity_type, state) for _, entity_type, state in rows if entity_type == "item" or (
         lines_still_move_stock(state.get("doc_type"), state.get("status")) if entity_type == "doc"
         else state.get("status") in (None, DRAFT, FINALIZED))]
     for name, decimals in lowered.items():
@@ -210,7 +218,7 @@ async def check_precision_change(session, company_id, old_units: list[dict], new
                 label = state.get("sku") or state.get("name")
             else:
                 quantities = [line.get("quantity") for line in state.get("line_items") or []
-                              if isinstance(line, dict) and (line.get("unit") or line.get("sell_by")) == name]
+                              if isinstance(line, dict) and line_unit(line) == name]
                 label = state.get("doc_number") or state.get("ref_id") or state.get("name")
             finer = [q for q in quantities if _finer_than(q, decimals)]
             if finer:
