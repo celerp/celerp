@@ -46,8 +46,7 @@ FALLBACK_NARRATION = ("Lines of this record booked differently in the source: ro
                       "or a payment's part not applied to any document.")
 OPENING_NARRATION = "Opening balances at the cutover date."
 TRACKING = "Tracking category"
-TRACKING_NOTE = ("Each invoice and bill line keeps its tracking options; journal entry lines are carried without "
-                 "them. Celerp does not report by them.")
+TRACKING_NOTE = "migration.coverage_tracking_note"
 FALLBACK_NOTE = "migration.coverage_fallback_note"
 
 
@@ -242,5 +241,5 @@ def coverage(ledger: Ledger, skipped: dict[str, CoverageClass]) -> list[CIFCover
              for label, count in book.skipped.items() if count]
     if book.tracking:
         rows.append(CIFCoverageEntry(source_type=TRACKING, count=len(book.tracking),
-                                     coverage_class=CoverageClass.UNSUPPORTED_NONFINANCIAL, note=TRACKING_NOTE))
+                                     coverage_class=CoverageClass.UNSUPPORTED_NONFINANCIAL, note=t(TRACKING_NOTE)))
     return sorted(rows, key=lambda r: r.source_type)

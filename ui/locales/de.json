@@ -4171,6 +4171,7 @@
   "migration.err_odoo_doc_total": "In diesem Backup ergeben die Positionen von {number} nicht dessen Gesamtbetrag. Prüfen Sie den Beleg in Odoo und erstellen Sie dann ein neues Backup.",
   "migration.odoo_attachment_type": "Dateiname, Typ oder Inhalt dieses Anhangs werden nicht akzeptiert, daher wird er ausgelassen. Laden Sie ihn bei Bedarf aus Odoo herunter.",
   "migration.coverage_fallback_note": "What the source booked for these records less what Celerp books for them (a rounding cent, an exchange difference, or a payment's part left on the contact as credit) is carried as a journal on the record.",
+  "migration.coverage_tracking_note": "Invoice and bill lines keep their tracking options. Journal entry lines are imported without them. Celerp does not report by tracking options.",
   "migration.odoo_attachments_rejected_note": "Files left out are listed in the run summary with the reason and are not imported.",
   "migration.odoo_attachments_ignored_note": "Odoo's own interface files and the smaller copies it keeps of each picture. The full-size picture is imported.",
   "migration.odoo_other_company_note": "Each company is imported on its own. To import another company, upload this backup again and choose it.",

@@ -789,7 +789,7 @@ def test_analytic_distributions_ride_on_document_lines_and_are_reported(tmp_path
                for ln in d.line_items)
     row = next(r for r in manifest.coverage if r.source_type == TRACKING)
     assert (row.count, row.coverage_class) == (2, CoverageClass.UNSUPPORTED_NONFINANCIAL)
-    assert "journal entry lines" in row.note
+    assert row.note == t("migration.coverage_tracking_note")
     with Backup(_file(tmp_path, _backup(version))[0].path) as backup:
         journal = next(j for j in read_odoo(backup).book.journals if j.key == "J:20")
     region = "Regions" if version >= 16 else "Analytic tag"

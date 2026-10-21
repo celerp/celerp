@@ -23,6 +23,7 @@ from fixtures.qbo_export import build as qbo
 from fixtures.xero_export import build
 from migration_support import maker, real_engine  # noqa: F401
 from test_migration_e2e import _maps, _passing, migrate_set
+from ui.i18n import t
 
 FULL = MigrationDecisions(mode=CIFMode.FULL_HISTORY)
 CUTOVER = date(2025, 6, 30)
@@ -209,6 +210,9 @@ def test_xero_masters_and_documents_carry_into_cif(tmp_path):
     coverage = {row.source_type: (row.count, row.coverage_class) for row in manifest.coverage}
     assert coverage["Deleted invoice or bill"] == (3, CoverageClass.IGNORED_NON_BUSINESS)
     assert coverage["Tracking category"][1] == CoverageClass.UNSUPPORTED_NONFINANCIAL
+    # The report's note is read from the catalogs, so it is shown in the user's language.
+    notes = {row.source_type: row.note for row in manifest.coverage}
+    assert notes["Tracking category"] == t("migration.coverage_tracking_note") != "migration.coverage_tracking_note"
     assert all(row.coverage_class != CoverageClass.UNSUPPORTED_FINANCIAL_BLOCKER for row in manifest.coverage)
 
 
