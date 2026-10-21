@@ -1720,7 +1720,7 @@ async def import_purchasing_payment_terms_batch(
 
 import re as _re
 
-from celerp.services.units import DEFAULT_UNITS, check_precision_change
+from celerp.services.units import check_precision_change, settings_units
 
 _UNIT_NAME_RE = _re.compile(r"^[a-z0-9_]+$")
 
@@ -1747,7 +1747,7 @@ async def get_units(company_id=Depends(get_current_company_id), session: AsyncSe
     company = await session.get(Company, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
-    return company.settings.get("units") or DEFAULT_UNITS
+    return settings_units(company.settings)
 
 
 @router.put("/me/units")
@@ -1763,7 +1763,7 @@ async def put_units(
         raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
     settings = dict(company.settings)
     new_units = [u.model_dump() for u in payload.units]
-    await check_precision_change(session, company_id, settings.get("units") or DEFAULT_UNITS, new_units)
+    await check_precision_change(session, company_id, settings_units(settings), new_units)
     settings["units"] = new_units
     company.settings = settings
     await session.commit()

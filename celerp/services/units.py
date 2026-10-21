@@ -103,8 +103,12 @@ async def read_company_units(session, company_id) -> list[dict]:
 
 
 def _units_of(company) -> list[dict]:
-    units = (company.settings or {}).get("units") if company else None
-    return units or DEFAULT_UNITS
+    return settings_units(company.settings if company else None)
+
+
+def settings_units(settings: dict | None) -> list[dict]:
+    """The units a company settings value holds (DEFAULT_UNITS when it has none)."""
+    return (settings or {}).get("units") or DEFAULT_UNITS
 
 
 def is_weight_unit(unit_name: str | None, unit_map: dict[str, dict]) -> bool:
@@ -160,12 +164,18 @@ def _finer_than(value, decimals: int) -> bool:
     return math.isfinite(qty) and exceeds_precision(qty, decimals)
 
 
+def _places(value) -> int:
+    """The decimal places a stored quantity uses (0.275 -> 3)."""
+    return max(0, -Decimal(str(float(value))).normalize().as_tuple().exponent)
+
+
 async def check_precision_change(session, company_id, old_units: list[dict], new_units: list[dict]) -> None:
     """Fewer decimal places for a unit that still holds finer quantities: refused with 422, naming
     how many items and open drafts hold them, a few of them, and what to change. Every item counts,
     whatever its status, since any item can come back into stock; a draft document or list counts
     because it will still move stock. Posted documents are history and never block. Raising
-    precision always passes."""
+    precision always passes. A unit missing from the old list (deleted, then added back or
+    re-seeded) had no precision to compare with, so it is checked against what is stored in it."""
     from sqlalchemy import or_, select
 
     from celerp.models.projections import Projection
@@ -173,7 +183,7 @@ async def check_precision_change(session, company_id, old_units: list[dict], new
 
     old = {u["name"]: int(u.get("decimals") or 0) for u in old_units}
     lowered = {u["name"]: int(u["decimals"]) for u in new_units
-               if u["name"] in old and int(u["decimals"]) < old[u["name"]]}
+               if u["name"] not in old or int(u["decimals"]) < old[u["name"]]}
     if not lowered:
         return
     status = Projection.state["status"].as_string()
@@ -184,27 +194,29 @@ async def check_precision_change(session, company_id, old_units: list[dict], new
     ))).all()
     for name, decimals in lowered.items():
         holders: list[str] = []
+        needed = decimals
         for entity_type, state in rows:
             if entity_type == "item":
                 sell_qty = stored_sell_qty(state.get("default_sell_qty"))
-                held = state.get("sell_by") == name and (
-                    _finer_than(state.get("quantity"), decimals)
-                    or (sell_qty not in (None, FULL) and _finer_than(sell_qty, decimals)))
+                quantities = [state.get("quantity"), *([] if sell_qty in (None, FULL) else [sell_qty])] \
+                    if state.get("sell_by") == name else []
                 label = state.get("sku") or state.get("name")
             else:
-                held = any((line.get("unit") or line.get("sell_by")) == name
-                           and _finer_than(line.get("quantity"), decimals)
-                           for line in state.get("line_items") or [] if isinstance(line, dict))
+                quantities = [line.get("quantity") for line in state.get("line_items") or []
+                              if isinstance(line, dict) and (line.get("unit") or line.get("sell_by")) == name]
                 label = state.get("doc_number") or state.get("ref_id") or state.get("name")
-            if held:
+            finer = [q for q in quantities if _finer_than(q, decimals)]
+            if finer:
                 holders.append(str(label or "-"))
+                needed = max(needed, *(_places(q) for q in finer))
         if holders:
             examples = ", ".join(holders[:3])
+            current = old.get(name, needed)
             raise HTTPException(status_code=422, detail=refusal(
                 "units.precision_lowered_under_quantities",
                 f"{name} cannot go to {decimals} decimal places: {len(holders)} item or draft quantities use more "
-                f"({examples}). Change those quantities first, or keep {old[name]} decimal places.",
-                unit=name, decimals=decimals, count=len(holders), examples=examples, current=old[name]))
+                f"({examples}). Change those quantities first, or keep {current} decimal places.",
+                unit=name, decimals=decimals, count=len(holders), examples=examples, current=current))
 
 
 def validate_positive(qty: float, *, label: str = "Quantity") -> None:

@@ -12,6 +12,7 @@ import uuid
 from pathlib import Path
 
 import pytest
+from fastapi import HTTPException
 
 from celerp.events.engine import emit_event
 from celerp.services.company_lock import locked_company
@@ -237,6 +238,72 @@ async def test_a_draft_line_blocks_fewer_decimals_and_a_posted_one_does_not(clie
     assert r.status_code == 422, r.text
     assert r.json()["detail"]["params"]["examples"] == "INV-DRAFT", r.text
     assert await _carat_decimals(client, auth) == 2
+
+
+async def _units(client, auth) -> list[dict]:
+    return (await client.get("/companies/me/units", headers=auth["headers"])).json()
+
+
+async def _put_units(client, auth, units: list[dict]):
+    return await client.put("/companies/me/units", headers=auth["headers"], json={"units": units})
+
+
+async def test_a_unit_deleted_then_added_back_is_checked_against_what_it_holds(client, session, auth):
+    lot = await _lot(client, auth, qty=0.27)
+    units = await _units(client, auth)
+    carat = next(u for u in units if u["name"] == "carat")
+    without = [u for u in units if u["name"] != "carat"]
+    assert (await _put_units(client, auth, without)).status_code == 200
+
+    r = await _put_units(client, auth, [*without, {**carat, "decimals": 1}])
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"]["params"] == {"unit": "carat", "decimals": 1, "count": 1,
+                                            "examples": await _sku(session, auth, lot), "current": 2}, r.text
+    assert all(u["name"] != "carat" for u in await _units(client, auth))
+    # Back at a precision that holds the stored quantity, and a new unit nothing uses, both pass.
+    assert (await _put_units(client, auth, [*without, carat])).status_code == 200
+    assert (await _put_units(client, auth, [*await _units(client, auth), {**carat, "name": "tola", "decimals": 0}])
+            ).status_code == 200
+
+
+async def _business_type(client, session, auth, ids):
+    """The business-type change, which only the owner role may make, run as the company admin's actor."""
+    from celerp.services.business_type import set_business_type
+
+    try:
+        return await set_business_type(session, auth["company_id"], ids["user_id"], "gemstones")
+    except HTTPException as exc:
+        return exc
+
+
+_SEEDS = {
+    "apply-category": lambda client, session, auth, ids: client.post(
+        "/companies/me/apply-category", params={"name": "diamond"}, headers=auth["headers"]),
+    "apply-preset": lambda client, session, auth, ids: client.post(
+        "/companies/me/apply-preset", params={"vertical": "gemstones"}, headers=auth["headers"]),
+    "business-type": _business_type,
+}
+
+
+@pytest.mark.parametrize("seed", list(_SEEDS))
+async def test_a_category_seeding_a_deleted_unit_back_is_checked_against_what_it_holds(client, session, auth, ids, seed):
+    finer = [{**u, "decimals": 3} if u["name"] == "gram" else u for u in await _units(client, auth)]
+    assert (await _put_units(client, auth, finer)).status_code == 200
+    lot = await _lot(client, auth, sell_by="gram", qty=0.275)
+    without = [u for u in finer if u["name"] != "gram"]
+    assert (await _put_units(client, auth, without)).status_code == 200
+    company = await locked_company(session, auth["company_id"])
+    company.settings = {**company.settings, **{  # so the category is new to the company
+        key: {k: v for k, v in (company.settings.get(key) or {}).items() if k != "diamond"}
+        for key in ("category_schemas", "category_display_names")}}
+    await session.commit()
+
+    r = await _SEEDS[seed](client, session, auth, ids)
+    status, detail = (r.status_code, r.detail) if isinstance(r, HTTPException) else (r.status_code, r.json()["detail"])
+    assert status == 422, detail
+    assert (detail["params"]["examples"], detail["params"]["current"]) == (await _sku(session, auth, lot), 3), detail
+    assert all(u["name"] != "gram" for u in await _units(client, auth))
+    assert (await _state(session, auth, lot))["quantity"] == 0.275
 
 
 # CSV import and export
