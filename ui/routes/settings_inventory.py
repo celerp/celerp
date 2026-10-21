@@ -25,7 +25,7 @@ _VERTICAL_TAGS: tuple[str, ...] = (
     "property_rental", "saas", "watches_accessories", "wine_spirits", "other",
 )
 _TAG_LABELS: dict[str, str] = {tag: f"enum.vertical_tag.{tag}" for tag in _VERTICAL_TAGS}
-from ui.i18n import t, get_lang, category_label, category_labels, refusal_text
+from ui.i18n import t, get_lang, category_label, category_labels
 
 from ui.routes.settings import (
     _token,
@@ -36,6 +36,7 @@ from ui.routes.settings import (
     _bulk_attach_tab,
     _cat_schema_display_cell,
     _load_cat_schema_sorted,
+    _refusal,
 )
 from ui.routes.settings_general import _section_breadcrumb
 from ui.routes.settings_cloud import _relay_has_paid_access
@@ -107,10 +108,11 @@ def _units_tab(units: list[dict], from_import: str = "") -> FT:
                 Button(
                     "✕",
                     cls="btn btn--danger btn--xs",
+                    type="button",
                     hx_delete=f"/settings/units/{uname}",
                     hx_confirm=t("settings_inventory.delete_unit_confirm", name=uname),
-                    hx_swap="none",
-                    hx_on__after_request="window.location.href='/settings/inventory?tab=units'",
+                    hx_target="#units-add-result",
+                    hx_swap="innerHTML",
                 ),
                 cls="cell",
             ),
@@ -151,7 +153,7 @@ def _units_tab(units: list[dict], from_import: str = "") -> FT:
                 cls="data-table",
             ),
             # The table's inline editors sit inside this form, so it never reloads on a request:
-            # a saved unit redirects (HX-Redirect), a refused one shows why below.
+            # a saved or deleted unit redirects (HX-Redirect), a refused one shows why below.
             hx_post="/settings/units/add",
             hx_target="#units-add-result",
             hx_swap="innerHTML",
@@ -258,8 +260,7 @@ def _categories_tab(
                     Button("✕", cls="btn btn--danger btn--xs",
                            hx_delete=f"/settings/cat-schema/{enc}/{idx}",
                            hx_confirm=t("settings_inventory.delete_field_confirm", name=f.get('key', idx)),
-                           hx_swap="none",
-                           hx_on__after_request=f"window.location.href='/settings/inventory?tab=categories&cat={enc}'"),
+                           hx_target="#cat-fields-result", hx_swap="innerHTML"),
                     cls="cell",
                 ),
                 cls="data-row",
@@ -269,8 +270,7 @@ def _categories_tab(
             Td(
                 Button(t("btn.add_field"), cls="btn btn--secondary btn--xs",
                        hx_post=f"/settings/cat-schema/{enc}/add",
-                       hx_swap="none",
-                       hx_on__after_request=f"window.location.href='/settings/inventory?tab=categories&cat={enc}'"),
+                       hx_target="#cat-fields-result", hx_swap="innerHTML"),
                 colspan="9", cls="p-sm",
             ),
         )
@@ -290,6 +290,8 @@ def _categories_tab(
                 Tbody(*[_cat_row(i, f) for i, f in enumerate(sorted_fields)], add_row),
                 cls="data-table sticky-head",
             ),
+            # A saved change reloads this page (HX-Redirect); a refused one shows why here.
+            Div(id="cat-fields-result"),
             cls="settings-card",
         )
 
@@ -371,8 +373,7 @@ def _categories_tab(
                             Button(t("btn._add"), type="submit", cls="btn btn--primary btn--xs"),
                             hx_post="/settings/verticals/apply-category",
                             hx_target="#verticals-apply-result",
-                            hx_swap="outerHTML",
-                            hx_on__after_request="window.location.href='/settings/inventory?tab=categories'",
+                            hx_swap="innerHTML",
                         ),
                         cls="cell cell--action",
                     ),
@@ -391,8 +392,7 @@ def _categories_tab(
                                        onclick="event.stopPropagation()"),
                                 hx_post="/settings/verticals/apply-preset",
                                 hx_target="#verticals-apply-result",
-                                hx_swap="outerHTML",
-                                hx_on__after_request="window.location.href='/settings/inventory?tab=categories'",
+                                hx_swap="innerHTML",
                             )]
                             if tag in tag_to_preset else []
                         ),
@@ -585,7 +585,7 @@ def setup_routes(app):
         try:
             await api.patch_units(token, current)
         except APIError as e:
-            return P(refusal_text(e.data or e.detail) or str(e.detail), cls="cell-error")
+            return _refusal(e)
         return Response(status_code=204, headers={"HX-Redirect": "/settings/inventory?tab=units"})
 
     @app.delete("/settings/units/{name}")
@@ -594,9 +594,11 @@ def setup_routes(app):
         if not token:
             return RedirectResponse("/login", status_code=302)
         current = await api.get_units(token)
-        updated = [u for u in current if u.get("name") != name]
-        await api.patch_units(token, updated)
-        return RedirectResponse("/settings/inventory?tab=units", status_code=303)
+        try:
+            await api.patch_units(token, [u for u in current if u.get("name") != name])
+        except APIError as e:
+            return _refusal(e)
+        return Response(status_code=204, headers={"HX-Redirect": "/settings/inventory?tab=units"})
 
     @app.get("/settings/units/{name}/{field}/edit")
     async def units_field_edit(name: str, field: str, request: Request):
@@ -661,7 +663,7 @@ def setup_routes(app):
             # A refused change leaves the stored value in place and says why under it.
             stored = next((u for u in units if u.get("name") == name), {})
             return _unit_display_cell(name, field, stored.get(field, ""))(
-                P(refusal_text(e.data or e.detail) or str(e.detail), cls="cell-error"))
+                _refusal(e))
         # Re-fetch to get clean value and return display cell
         fresh = await api.get_units(token)
         unit = next((u for u in fresh if u.get("name") == name), {})

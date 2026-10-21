@@ -2923,8 +2923,6 @@
   "settings.cloud_status_tier_plan": "- {tier} kế hoạch{backup_text}",
   "settings.cloud_status_email_usage": "Email: {email_used} / {email_quota} đã gửi trong kỳ này",
   "settings.field_is_required": "Hãy nhập {label}.",
-  "settings.vertical_applied": "✓ Đã áp dụng '{name}' - {n} danh mục đã được tạo sẵn",
-  "settings.category_added": "✓ '{name}' đã được thêm vào lược đồ của bạn",
   "settings.add_category": "Thêm danh mục",
   "settings.unknown_permission": "Quyền '{perm_key}' không xác định",
   "settings.role_permissions_note": "Quyền của mỗi vai trò được thiết lập độc lập: việc cấp hoặc thu hồi quyền cho một vai trò sẽ không bao giờ ảnh hưởng đến bất kỳ vai trò nào khác. Luôn phải có ít nhất một Chủ sở hữu.",

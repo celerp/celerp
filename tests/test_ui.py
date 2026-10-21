@@ -13331,7 +13331,7 @@ class TestUnitsSettings:
 
     @pytest.mark.asyncio
     async def test_delete_unit_via_delete(self, ui_client):
-        """DELETE /settings/units/{name} removes unit and redirects."""
+        """DELETE /settings/units/{name} removes the unit and sends the page to the refreshed list."""
         current = [
             {"name": "piece", "label": "Piece", "decimals": 0},
             {"name": "gram", "label": "Gram", "decimals": 2},
@@ -13346,11 +13346,24 @@ class TestUnitsSettings:
                 "/settings/units/gram",
                 cookies=_authed(),
             )
-        assert r.status_code in (302, 303)
-        assert "tab=units" in r.headers.get("location", "")
+        assert r.status_code == 204
+        assert r.headers.get("hx-redirect") == "/settings/inventory?tab=units"
         sent = mock_put.call_args[0][1]
         assert not any(u["name"] == "gram" for u in sent)
         assert any(u["name"] == "piece" for u in sent)
+
+    @pytest.mark.asyncio
+    async def test_a_refused_unit_delete_says_why_and_stays_on_the_page(self, ui_client):
+        from ui.api_client import APIError
+        refused = APIError(422, "gram is in use", data={"detail": "gram is in use"})
+        with (
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=list(_DEFAULT_UNITS_SEED))),
+            patch("ui.api_client.patch_units", new=AsyncMock(side_effect=refused)),
+        ):
+            r = await ui_client.delete("/settings/units/gram", cookies=_authed())
+        assert r.status_code == 200
+        assert "hx-redirect" not in r.headers
+        assert 'class="cell-error"' in r.text and "gram is in use" in r.text
 
     # ── UI: Edit unit (inline patch) ─────────────────────────────────
 

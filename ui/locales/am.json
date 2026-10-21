@@ -3143,8 +3143,6 @@
   "settings.cloud_status_tier_plan": "- {tier} እቅድ{backup_text}",
   "settings.cloud_status_email_usage": "ኢሜል፡ {email_used} / {email_quota} ይህን ጊዜ ልኳል",
   "settings.field_is_required": "{label} ያስገቡ።",
-  "settings.vertical_applied": "✓ ተተግብሯል '{name}' - {n} ምድቦች ዘር",
-  "settings.category_added": "✓ '{name}' ወደ እቅድዎ ታክሏል",
   "settings.add_category": "ምድብ አክል",
   "settings.unknown_permission": "ያልታወቀ ፍቃድ '{perm_key}'",
   "settings.role_permissions_note": "የእያንዳንዱ ሚና ፈቃዶች በተናጥል ተዋቅረዋል፡ ለአንድ ሚና ፍቃድ መስጠት ወይም ማስወገድ ሌላ ሚና በጭራሽ አይለውጠውም። ሁልጊዜ ቢያንስ አንድ ባለቤት መኖር አለበት።",

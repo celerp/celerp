@@ -2923,8 +2923,6 @@
   "settings.cloud_status_tier_plan": "- Paket {tier}{backup_text}",
   "settings.cloud_status_email_usage": "Email: {email_used} / {email_quota} dikirim pada periode ini",
   "settings.field_is_required": "Masukkan {label}.",
-  "settings.vertical_applied": "✓ '{name}' diterapkan - kategori {n} telah diisi",
-  "settings.category_added": "✓ '{name}' ditambahkan ke skema Anda",
   "settings.add_category": "Tambahkan Kategori",
   "settings.unknown_permission": "Izin tidak dikenal '{perm_key}'",
   "settings.role_permissions_note": "Izin setiap peran ditetapkan secara independen: pemberian atau pencabutan izin untuk satu peran tidak akan pernah mengubah peran lainnya. Harus selalu ada setidaknya satu Pemilik.",

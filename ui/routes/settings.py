@@ -32,6 +32,11 @@ from ui.routes.documents import _action_error
 from ui.routes.setup import business_type_label, business_type_options
 
 
+def _refusal(e: APIError) -> FT:
+    """An API refusal as its message in the user's language, shown where the action was taken."""
+    return P(refusal_text(e.data or e.detail) or str(e.detail), cls="cell-error")
+
+
 async def _check_permission(
     request: Request, key: str, *, page_view: bool = False
 ) -> Response | None:
@@ -86,6 +91,12 @@ async def _category_field_count(token: str, key: str) -> int:
         return 0
 
 
+def _cat_fields_url(key: str) -> str:
+    """The page listing one category's fields."""
+    from urllib.parse import quote
+    return f"/settings/inventory?tab=categories&cat={quote(key, safe='')}"
+
+
 def _category_row(key: str, display_name: str, field_count: int) -> FT:
     """Single category Tr for the Your Categories table."""
     from urllib.parse import quote as _q
@@ -100,7 +111,7 @@ def _category_row(key: str, display_name: str, field_count: int) -> FT:
         Td(str(field_count), cls="cell cell--center your-cats-fields"),
         Td(
             A(t("settings.edit"),
-              href=f"/settings/inventory?tab=categories&cat={_q(key, safe='')}",
+              href=_cat_fields_url(key),
               cls="btn btn--secondary btn--xs"),
             Button("x", cls="btn btn--danger btn--xs",
                    hx_delete=f"/settings/categories/{_q(key, safe='')}",
@@ -1532,8 +1543,8 @@ def setup_routes(app):
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
-            return _R("", status_code=500)
-        return _R("", status_code=204)
+            return _refusal(e)
+        return _R("", status_code=204, headers={"HX-Redirect": _cat_fields_url(category)})
 
     @app.post("/settings/cat-schema/{category}/add")
     async def cat_schema_field_add(request: Request, category: str):
@@ -1562,8 +1573,8 @@ def setup_routes(app):
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
-            return _R("", status_code=500)
-        return _R("", status_code=204)
+            return _refusal(e)
+        return _R("", status_code=204, headers={"HX-Redirect": _cat_fields_url(category)})
 
     # ── Module toggle endpoints ──────────────────────────────────────
     @app.post("/settings/locations/new")
@@ -2247,15 +2258,10 @@ def setup_routes(app):
         if not vertical:
             return P(t("settings.no_vertical_specified"), cls="error-banner")
         try:
-            result = await api.apply_vertical_preset(token, vertical)
+            await api.apply_vertical_preset(token, vertical)
         except APIError as e:
-            return P(str(e.detail), cls="error-banner")
-        n = result.get("categories", 0)
-        return Div(
-            Span(t("settings.vertical_applied", name=result.get("applied", vertical), n=n),
-                 cls="flash flash--success"),
-            id="verticals-apply-result",
-        )
+            return _refusal(e)
+        return _R("", status_code=204, headers={"HX-Redirect": "/settings/inventory?tab=categories"})
 
     @app.post("/settings/verticals/apply-category")
     async def verticals_apply_category(request: Request):
@@ -2269,14 +2275,10 @@ def setup_routes(app):
         if not name:
             return P(t("settings.no_category_specified"), cls="error-banner")
         try:
-            result = await api.apply_vertical_category(token, name)
+            await api.apply_vertical_category(token, name)
         except APIError as e:
-            return P(str(e.detail), cls="error-banner")
-        return Div(
-            Span(t("settings.category_added", name=category_label(name, result.get("display_name"))),
-                 cls="flash flash--success"),
-            id="verticals-apply-result",
-        )
+            return _refusal(e)
+        return _R("", status_code=204, headers={"HX-Redirect": "/settings/inventory?tab=categories"})
 
     # ── Category CRUD UI routes ─────────────────────────────────────────────
 

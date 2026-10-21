@@ -2923,8 +2923,6 @@
   "settings.cloud_status_tier_plan": "- {tier} plano{backup_text}",
   "settings.cloud_status_email_usage": "E-mail: {email_used} / {email_quota} enviados neste período",
   "settings.field_is_required": "Digite {label}.",
-  "settings.vertical_applied": "✓ Aplicado '{name}' - categorias {n} preenchidas",
-  "settings.category_added": "✓ '{name}' adicionado ao seu esquema",
   "settings.add_category": "Adicionar categoria",
   "settings.unknown_permission": "Permissão desconhecida '{perm_key}'",
   "settings.role_permissions_note": "As permissões de cada função são definidas independentemente: conceder ou remover uma permissão para uma função nunca altera nenhuma outra função. Deve haver sempre pelo menos um Proprietário.",

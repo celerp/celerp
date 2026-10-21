@@ -2923,8 +2923,6 @@
   "settings.cloud_status_tier_plan": "- {tier} خطة{backup_text}",
   "settings.cloud_status_email_usage": "البريد الإلكتروني: {email_used} / {email_quota} تم إرسالها خلال هذه الفترة",
   "settings.field_is_required": "أدخل {label}.",
-  "settings.vertical_applied": "✓ تم تطبيق '{name}' - تم إنشاء فئات {n}",
-  "settings.category_added": "✓ تمت إضافة '{name}' إلى مخططك",
   "settings.add_category": "إضافة فئة",
   "settings.unknown_permission": "إذن غير معروف '{perm_key}'",
   "settings.role_permissions_note": "يتم تعيين أذونات كل دور بشكل مستقل: لا يؤدي منح أو إزالة إذن لدور ما إلى تغيير أي دور آخر أبدًا. يجب أن يكون هناك دائمًا مالك واحد على الأقل.",

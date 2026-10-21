@@ -2924,8 +2924,6 @@
   "settings.cloud_status_tier_plan": "- {tier} plan{backup_text}",
   "settings.cloud_status_email_usage": "E-mail : {email_used} / {email_quota} envoyés cette période",
   "settings.field_is_required": "Saisissez {label}.",
-  "settings.vertical_applied": "✓ « {name} » appliqué - catégories {n} préremplies",
-  "settings.category_added": "✓ « {name} » ajouté à votre schéma",
   "settings.add_category": "Ajouter une catégorie",
   "settings.unknown_permission": "Autorisation inconnue « {perm_key} »",
   "settings.role_permissions_note": "Les autorisations de chaque rôle sont définies indépendamment : l'octroi ou la suppression d'une autorisation pour un rôle n'affecte jamais les autres rôles. Il doit toujours y avoir au moins un propriétaire.",

@@ -2924,8 +2924,6 @@
   "settings.cloud_status_tier_plan": "- {tier} piano{backup_text}",
   "settings.cloud_status_email_usage": "E-mail: {email_used} / {email_quota} inviate in questo periodo",
   "settings.field_is_required": "Inserisci {label}.",
-  "settings.vertical_applied": "✓ Applicato '{name}' - Categorie {n} popolate",
-  "settings.category_added": "✓ '{name}' aggiunto al tuo schema",
   "settings.add_category": "Aggiungi categoria",
   "settings.unknown_permission": "Autorizzazione sconosciuta '{perm_key}'",
   "settings.role_permissions_note": "Le autorizzazioni di ciascun ruolo sono impostate in modo indipendente: concedere o rimuovere un’autorizzazione per un ruolo non modifica mai nessun altro ruolo. Deve esserci sempre almeno un proprietario.",
