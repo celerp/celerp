@@ -177,11 +177,21 @@ def test_translated_names_from_odoo_16_are_read_in_english(tmp_path):
         assert backup.lot_table == "stock_production_lot"
 
 
+def _uninstall(version: int, *modules: str, tables: tuple[str, ...]) -> bytes:
+    """The backup of a database without `modules`: the manifest does not list them and the
+    dump holds none of `tables`, the tables they make."""
+    out = build.tables(version)
+    for name in [n for n in out.rows if n.startswith(tables)]:
+        del out.rows[name]
+    installed = tuple(m for m in build.INSTALLED if m not in modules)
+    return build.backup(version, out, build.manifest(version, installed))
+
+
 def test_a_backup_without_accounting_is_refused(tmp_path):
-    tables = build.tables(17)
-    del tables.rows["account_account"]
+    data = _uninstall(17, "account", "stock_account", tables=("account_account", "account_move", "account_tax",
+                                                               "account_partial", "account_payment", "stock_valuation"))
     with pytest.raises(ScanError, match="Accounting is not installed"):
-        _adapter().inspect(_file(tmp_path, build.backup(17, tables)))
+        _adapter().inspect(_file(tmp_path, data))
 
 
 def _cut(dump: str, at: str, keep: int = 0) -> str:
@@ -211,14 +221,67 @@ def test_a_damaged_or_incomplete_dump_is_refused_before_anything_is_read(tmp_pat
         _adapter().inspect(_file(tmp_path, data))
 
 
-def test_a_module_that_is_not_installed_is_absent_not_damage(tmp_path):
-    """A table Odoo never made, because its module is not installed, is not damage: a backup
-    without Inventory imports its books without stock."""
-    tables = build.tables(17)
+def _read_tables(version: int) -> tuple[str, ...]:
+    """Every table the import reads of a database with Invoicing and Inventory installed."""
+    common = (
+        "res_company", "res_currency", "res_partner", "ir_attachment", "uom_uom", "product_product",
+        "product_template", "account_analytic_account", "account_account", "account_tax",
+        "account_tax_repartition_line", "account_move", "account_move_line", "account_move_line_account_tax_rel",
+        "account_partial_reconcile", "account_payment", "stock_location", "stock_move", "stock_move_line",
+        "stock_quant", "stock_valuation_layer")
+    if version >= 16:
+        return (*common, "account_analytic_plan", "stock_lot")
+    return (*common, "ir_model_data", "account_account_type", "account_analytic_tag",
+            "account_analytic_tag_account_move_line_rel", "stock_production_lot")
+
+
+@pytest.mark.parametrize("version, table", [(v, n) for v in VERSIONS for n in _read_tables(v)])
+def test_an_installed_module_missing_a_table_is_a_damaged_backup(tmp_path, version, table):
+    """The manifest lists the modules installed, and each makes its tables even when they hold
+    no rows: one missing is a backup cut or edited, never a module left out."""
+    tables = build.tables(version)
+    del tables.rows[table]
+    with pytest.raises(ScanError, match="incomplete or damaged"):
+        _adapter().inspect(_file(tmp_path, build.backup(version, tables)))
+
+
+@pytest.mark.parametrize("version", VERSIONS)
+def test_a_backup_with_inventory_installed_and_its_stock_removed_is_refused(tmp_path, version):
+    tables = build.tables(version)
     for name in [n for n in tables.rows if n.startswith("stock_")]:
         del tables.rows[name]
-    manifest = _adapter().build_manifest(_file(tmp_path, build.backup(17, tables)), FULL)
+    with pytest.raises(ScanError, match="incomplete or damaged"):
+        _adapter().build_manifest(_file(tmp_path, build.backup(version, tables)), FULL)
+
+
+@pytest.mark.parametrize("version", VERSIONS)
+def test_a_module_that_is_not_installed_is_absent_not_damage(tmp_path, version):
+    """A table Odoo never made, because its module is not installed, is not damage: a backup
+    without Inventory imports its books without stock."""
+    data = _uninstall(version, "stock", "stock_account", tables=("stock_",))
+    manifest = _adapter().build_manifest(_file(tmp_path, data), FULL)
     assert manifest.bundle.inventory_adjustments == [] and manifest.bundle.documents
+    assert len(manifest.bundle.documents) == len(_adapter().build_manifest(
+        _file(tmp_path, _backup(version), "whole.zip"), FULL).bundle.documents)
+
+
+def test_a_table_the_import_does_not_read_may_be_missing(tmp_path):
+    tables = build.tables(17)
+    del tables.rows["ir_ui_view"]
+    assert _adapter().build_manifest(_file(tmp_path, build.backup(17, tables)), FULL).bundle.documents
+
+
+@pytest.mark.parametrize("modules", [None, {}, ["base", "account", "stock"], {"account": "17.0.1.0"}])
+def test_a_manifest_that_does_not_list_the_installed_modules_is_refused(tmp_path, modules):
+    """Without the list of modules installed, a missing table cannot be told from a missing
+    module, so nothing proves the backup whole."""
+    manifest = build.manifest(17)
+    if modules is None:
+        del manifest["modules"]
+    else:
+        manifest["modules"] = modules
+    with pytest.raises(ScanError, match="incomplete or damaged"):
+        _adapter().inspect(_file(tmp_path, build.backup(17, manifest_=manifest)))
 
 
 def test_a_document_whose_lines_do_not_add_up_is_refused(tmp_path):
@@ -853,7 +916,7 @@ def test_each_lot_and_location_is_stock_of_its_product(tmp_path, version):
 
 
 def _receipt(version: int, lot_quantities: tuple[str, str], ordered: str = "10", ordered_in_units: str = "10",
-             line_units: tuple[int, int] = (build.UNITS, build.UNITS)) -> list:
+             line_units: tuple[int | None, int | None] = (build.UNITS, build.UNITS)) -> list:
     """The first receipt as Odoo records it done: `ordered` in the move's unit of measure (and
     `ordered_in_units` in the product's), and what actually arrived of each lot on its lines,
     each counted in its own unit."""
@@ -906,9 +969,8 @@ def test_each_move_line_counts_in_its_own_unit_of_measure(tmp_path, version):
 
 
 def test_move_lines_without_a_known_unit_count_in_the_moves_unit(tmp_path):
-    # A backup without the units of measure: the lines count in the move's unit, dozens here.
-    tables = _receipt(13, ("0.5", "0.5"), ordered="1", ordered_in_units="12")
-    del tables.rows["uom_uom"]
+    # Lines that record no unit of measure count in the move's unit, dozens here.
+    tables = _receipt(13, ("0.5", "0.5"), ordered="1", ordered_in_units="12", line_units=(None, None))
     moved = {a.source_external_id: a.quantity for a in
              _adapter().build_manifest(_file(tmp_path, build.backup(13, tables)), FULL).bundle.inventory_adjustments}
     assert (moved["stock:1"], moved["stock:2"]) == (D(6), D(6))

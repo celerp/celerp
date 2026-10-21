@@ -132,6 +132,30 @@ COLUMNS = frozenset({
     "store_fname", "street", "street2", "supplier_rank", "tax_id", "tax_line_id", "type", "usage", "user_type_id",
     "url", "value", "vat", "zip", "factor", "rounding", "uom_id", "product_uom_id", "quantity_product_uom",
 })
+
+
+def required_tables(modules: frozenset[str], version: int) -> set[str]:
+    """The tables read that each installed module makes at `version`, empty or not: one
+    missing from the dump means the backup was cut or edited. A module not installed makes
+    none, so its absence is no damage."""
+    old = version <= 15
+    made = {
+        "base": ("res_company", "res_currency", "res_partner", "ir_attachment", *(("ir_model_data",) if old else ())),
+        "uom": ("uom_uom",),
+        "product": ("product_product", "product_template"),
+        "analytic": ("account_analytic_account",
+                     *(("account_analytic_tag",) if old else ("account_analytic_plan",))),
+        "account": ("account_account", "account_tax", "account_tax_repartition_line", "account_move",
+                    "account_move_line", "account_move_line_account_tax_rel", "account_partial_reconcile",
+                    "account_payment",
+                    *(("account_account_type", "account_analytic_tag_account_move_line_rel") if old else ())),
+        "stock": ("stock_location", "stock_move", "stock_move_line", "stock_quant",
+                  "stock_production_lot" if old else "stock_lot"),
+        "stock_account": ("stock_valuation_layer",),
+    }
+    return {table for module in modules & made.keys() for table in made[module]}
+
+
 # The rows kept of a table the reader needs only a few rows of: Odoo names every record in
 # ir_model_data, and only the names of the account types are read.
 KEPT_ROWS = {"ir_model_data": lambda r: r["model"] == "account.account.type"}
@@ -216,7 +240,8 @@ class _Reader:
     def __init__(self, backup: Backup, company: str | None) -> None:
         self.backup = backup
         self.text = backup.text
-        self.rows = backup.tables((*TABLES, backup.lot_table), COLUMNS, KEPT_ROWS)
+        self.rows = backup.tables((*TABLES, backup.lot_table), COLUMNS, KEPT_ROWS,
+                                  required_tables(backup.modules, backup.version))
         self.company, companies = self._company(company)
         currencies = {r["id"]: r["name"] for r in self.rows.get("res_currency", [])}
         self.currency = lambda i: currencies.get(i or "", "")

@@ -552,10 +552,14 @@ def dump_sql(out: Tables) -> str:
     return "".join(parts)
 
 
-def manifest(version: int) -> dict:
+# The modules a company that invoices and keeps stock has installed, as the manifest lists them.
+INSTALLED = ("base", "web", "uom", "product", "analytic", "account", "stock", "stock_account")
+
+
+def manifest(version: int, modules: tuple[str, ...] = INSTALLED) -> dict:
     return {"odoo_dump": "1", "db_name": "harbour", "version": f"{version}.0",
             "version_info": [version, 0, 0, "final", 0, ""], "major_version": f"{version}.0", "pg_version": "16.3",
-            "modules": {"base": f"{version}.0.1.3", "account": f"{version}.0.1.2", "stock": f"{version}.0.1.1"}}
+            "modules": {name: f"{version}.0.1.0" for name in modules}}
 
 
 def backup(version: int, out: Tables | None = None, manifest_: dict | None = None) -> bytes:

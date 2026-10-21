@@ -140,6 +140,13 @@ class Backup:
             self.archive.close()
             raise SourceRevisionError(t("migration.err_odoo_version", version=self.version))
         self.database = str(manifest.get("db_name") or "")
+        # The modules installed, as Odoo lists them in every backup's manifest; they decide which
+        # tables the dump must hold. A list without base, which every database has, is not one.
+        modules = manifest.get("modules")
+        if not isinstance(modules, dict) or "base" not in modules:
+            self.archive.close()
+            raise ScanError(t("migration.err_odoo_dump_damaged"))
+        self.modules = frozenset(modules)
 
     def __enter__(self) -> Backup:
         return self
@@ -152,14 +159,16 @@ class Backup:
         return "stock_lot" if self.version >= 16 else "stock_production_lot"
 
     def tables(self, names: Iterable[str], columns: frozenset[str],
-               where: Mapping[str, Callable[[Row], bool]] | None = None) -> dict[str, list[Row]]:
+               where: Mapping[str, Callable[[Row], bool]] | None = None,
+               required: Iterable[str] = ()) -> dict[str, list[Row]]:
         """The rows of each named table the dump holds, in dump order, with only the named
         columns, and of a table in `where` only the rows its test keeps. A table the dump does
         not hold (its module is not installed) is absent. The dump is streamed and a value
         repeated within a table is held once. Raises ScanError, before any row is used, when
         the dump is cut short or damaged: no closing line, a table's data that never ends or
-        never starts, or a row with more or fewer fields than its table."""
-        wanted, where = set(names), where or {}
+        never starts, a row with more or fewer fields than its table, or a `required` table
+        (one an installed module makes) missing."""
+        wanted, where = set(names) | set(required), where or {}
         out: dict[str, list[Row]] = {}
         made: set[str] = set()
         copying: str | None = None
@@ -192,7 +201,7 @@ class Backup:
                         shape = type("Row", (Row,), {"__slots__": (), "index": {header[i]: n for n, i in enumerate(kept)}})
                         keep, seen = where.get(copying), {}
                         rows = out.setdefault(copying, [])
-        if copying is not None or not complete or (made & wanted) - set(out):
+        if copying is not None or not complete or ((made & wanted) | set(required)) - set(out):
             raise ScanError(t("migration.err_odoo_dump_damaged"))
         return out
 
