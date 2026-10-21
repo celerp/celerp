@@ -4163,6 +4163,7 @@
   "migration.err_odoo_not_backup": "これは Odoo のバックアップではありません。Odoo のデータベースマネージャーが作成する zip (Backup、filestore を含む zip 形式) をそのままアップロードしてください。",
   "migration.err_odoo_version": "このバックアップは Odoo {version} のものです。Celerp が読み込めるのは Odoo 13 から 17 のバックアップです。何もインポートされていません。",
   "migration.err_odoo_custom_format": "これは pg_dump カスタム形式の Odoo バックアップで、Celerp では読み込めません。Odoo のデータベースマネージャーでもう一度バックアップし、zip 形式 (filestore を含む) を選んで、その zip をアップロードしてください。何もインポートされていません。",
+  "migration.err_odoo_dump_damaged": "This backup is incomplete or damaged: its database dump stops early or a table in it is broken, so nothing was read from it. Make a new backup in Odoo's database manager and upload it again.",
   "migration.err_attachment_not_found": "この添付ファイルはアップロードされたファイルに含まれていません。",
   "migration.err_odoo_company_missing": "このバックアップには {company} の帳簿がありません。一覧の会社から選択してください。",
   "migration.odoo_company_question": "Company to import from this backup",

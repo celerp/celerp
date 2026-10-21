@@ -29,6 +29,7 @@ MANIFEST = "manifest.json"
 DUMP = "dump.sql"
 FILESTORE = "filestore/"
 DUMP_HEADER = "-- PostgreSQL database dump"
+DUMP_COMPLETE = "-- PostgreSQL database dump complete"  # the line pg_dump ends a whole dump with
 CUSTOM_FORMAT = b"PGDMP"  # how a pg_dump custom format file starts
 OLDEST, NEWEST = 13, 17
 LANGUAGE = "en_US"
@@ -48,6 +49,7 @@ class Row(tuple):
         return default if at is None else tuple.__getitem__(self, at)
 
 
+_CREATE = re.compile(r'^CREATE TABLE (?:"?public"?\.)?"?(\w+)"? \($')
 _COPY = re.compile(r'^COPY (?:"?public"?\.)?"?(\w+)"? \((.*)\) FROM stdin;$')
 _ESCAPE = re.compile(r"\\(?:([0-7]{1,3})|x([0-9a-fA-F]{1,2})|(.))")
 _ESCAPED = {"b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t", "v": "\v"}
@@ -154,32 +156,44 @@ class Backup:
         """The rows of each named table the dump holds, in dump order, with only the named
         columns, and of a table in `where` only the rows its test keeps. A table the dump does
         not hold (its module is not installed) is absent. The dump is streamed and a value
-        repeated within a table is held once."""
+        repeated within a table is held once. Raises ScanError, before any row is used, when
+        the dump is cut short or damaged: no closing line, a table's data that never ends or
+        never starts, or a row with more or fewer fields than its table."""
         wanted, where = set(names), where or {}
         out: dict[str, list[Row]] = {}
+        made: set[str] = set()
+        copying: str | None = None
+        complete = False
         with self.archive.open(self.root + DUMP) as raw:
             lines = io.TextIOWrapper(raw, encoding="utf-8", newline="\n")
             rows: list[Row] | None = None
             for line in lines:
-                if rows is not None:
+                if copying is not None:
                     if line == "\\.\n":
-                        rows = None
-                        continue
-                    values = line.rstrip("\n").split("\t")
-                    fields = [_field(values[i]) for i in kept]
-                    row = shape(map(seen.setdefault, fields, fields))
-                    if keep is None or keep(row):
-                        rows.append(row)
+                        copying = rows = None
+                    elif rows is not None:
+                        values = line.rstrip("\n").split("\t")
+                        if len(values) != width or not line.endswith("\n"):
+                            raise ScanError(t("migration.err_odoo_dump_damaged"))
+                        fields = [_field(values[i]) for i in kept]
+                        row = shape(map(seen.setdefault, fields, fields))
+                        if keep is None or keep(row):
+                            rows.append(row)
                     continue
-                if not line.startswith("COPY "):
-                    continue
-                match = _COPY.match(line.rstrip("\n"))
-                if match and match.group(1) in wanted:
-                    header = [c.strip().strip('"') for c in match.group(2).split(",")]
-                    kept = [i for i, name in enumerate(header) if name in columns]
-                    shape = type("Row", (Row,), {"__slots__": (), "index": {header[i]: n for n, i in enumerate(kept)}})
-                    keep, seen = where.get(match.group(1)), {}
-                    rows = out.setdefault(match.group(1), [])
+                if line.startswith(DUMP_COMPLETE):
+                    complete = True
+                elif created := _CREATE.match(line):
+                    made.add(created.group(1))
+                elif line.startswith("COPY ") and (match := _COPY.match(line.rstrip("\n"))):
+                    copying = match.group(1)
+                    if copying in wanted:
+                        header = [c.strip().strip('"') for c in match.group(2).split(",")]
+                        width, kept = len(header), [i for i, name in enumerate(header) if name in columns]
+                        shape = type("Row", (Row,), {"__slots__": (), "index": {header[i]: n for n, i in enumerate(kept)}})
+                        keep, seen = where.get(copying), {}
+                        rows = out.setdefault(copying, [])
+        if copying is not None or not complete or (made & wanted) - set(out):
+            raise ScanError(t("migration.err_odoo_dump_damaged"))
         return out
 
     def text(self, value: str | None) -> str:

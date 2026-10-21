@@ -4163,6 +4163,7 @@
   "migration.err_odoo_not_backup": "ይህ የOdoo ምትኬ አይደለም። የOdoo ዳታቤዝ አስተዳዳሪው የሚሰራውን zip (Backup፣ የzip ቅርጸት ከfilestore ጋር) እንዳለ ይስቀሉ።",
   "migration.err_odoo_version": "ይህ ምትኬ ከOdoo {version} ነው። Celerp ከOdoo 13 እስከ 17 ያሉ ምትኬዎችን ያነባል። ምንም አልገባም።",
   "migration.err_odoo_custom_format": "ይህ በpg_dump ብጁ ቅርጸት የተሰራ የOdoo ምትኬ ነው፤ Celerp ሊያነበው አይችልም። በOdoo ዳታቤዝ አስተዳዳሪው ውስጥ ምትኬውን እንደገና ይስሩ፣ የzip ቅርጸትን (ከfilestore ጋር) ይምረጡ፣ ከዚያ ያንን zip ይስቀሉ። ምንም አልገባም።",
+  "migration.err_odoo_dump_damaged": "This backup is incomplete or damaged: its database dump stops early or a table in it is broken, so nothing was read from it. Make a new backup in Odoo's database manager and upload it again.",
   "migration.err_attachment_not_found": "ይህ አባሪ በተሰቀለው ፋይል ውስጥ የለም።",
   "migration.err_odoo_company_missing": "ይህ ምትኬ ለ{company} ምንም መዝገብ የለውም። ከተዘረዘሩት ኩባንያዎች አንዱን ይምረጡ።",
   "migration.odoo_company_question": "Company to import from this backup",

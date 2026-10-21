@@ -183,6 +183,43 @@ def test_a_backup_without_accounting_is_refused(tmp_path):
         _adapter().inspect(_file(tmp_path, build.backup(17, tables)))
 
 
+def _cut(dump: str, at: str, keep: int = 0) -> str:
+    """The dump up to where `at` starts, and `keep` characters more."""
+    return dump[:dump.index(at) + keep]
+
+
+def _damaged() -> dict[str, str]:
+    dump = build.dump_sql(build.tables(17))
+    copy = "COPY public.account_move_line ("
+    row = dump.index("\n", dump.index(copy)) + 1
+    return {
+        # The upload stopped after the books, before the stock.
+        "truncated between tables": _cut(dump, "--\n-- Data for Name: stock_location"),
+        "truncated inside a table": _cut(dump, copy, dump.index("\n", row) + 1 - dump.index(copy)),
+        "truncated inside a row": _cut(dump, copy, row + 5 - dump.index(copy)),
+        "a row short of a field": dump[:row] + dump[row:].replace("\t", " ", 1),
+        "a table left without its data": dump.replace(_cut(dump[dump.index("--\n-- Data for Name: stock_quant;"):],
+                                                           "--\n-- Data for Name: stock_lot"), ""),
+    }
+
+
+@pytest.mark.parametrize("damage", list(_damaged()))
+def test_a_damaged_or_incomplete_dump_is_refused_before_anything_is_read(tmp_path, damage):
+    data = _zip({"dump.sql": _damaged()[damage], "manifest.json": json.dumps(build.manifest(17))})
+    with pytest.raises(ScanError, match="incomplete or damaged"):
+        _adapter().inspect(_file(tmp_path, data))
+
+
+def test_a_module_that_is_not_installed_is_absent_not_damage(tmp_path):
+    """A table Odoo never made, because its module is not installed, is not damage: a backup
+    without Inventory imports its books without stock."""
+    tables = build.tables(17)
+    for name in [n for n in tables.rows if n.startswith("stock_")]:
+        del tables.rows[name]
+    manifest = _adapter().build_manifest(_file(tmp_path, build.backup(17, tables)), FULL)
+    assert manifest.bundle.inventory_adjustments == [] and manifest.bundle.documents
+
+
 def test_a_document_whose_lines_do_not_add_up_is_refused(tmp_path):
     tables = build.tables(17)
     columns, rows = tables.rows["account_move"]
