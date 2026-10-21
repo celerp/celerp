@@ -741,6 +741,44 @@ def test_each_lot_and_location_is_stock_of_its_product(tmp_path, version):
         (LOT_2, "WID-1", "WID-1", "LOT-0002", "WH/Stock")]
 
 
+def _receipt(version: int, lot_quantities: tuple[str, str], ordered: str = "10", ordered_in_units: str = "10") -> list:
+    """The first receipt as Odoo records it done: `ordered` in the move's unit of measure (and
+    `ordered_in_units` in the product's), and what actually arrived of each lot on its lines."""
+    tables = build.tables(version)
+    columns, rows = tables.rows["stock_move"]
+    move = next(r for r in rows if r[0] == 1)
+    move[columns.index("product_uom_qty")], move[columns.index("product_qty")] = ordered, ordered_in_units
+    columns, rows = tables.rows["stock_move_line"]
+    done = columns.index("quantity" if version >= 17 else "qty_done")
+    for row, quantity in zip((r for r in rows if r[columns.index("move_id")] == 1), lot_quantities):
+        row[done] = quantity
+    return tables
+
+
+@pytest.mark.parametrize("version", VERSIONS)
+@pytest.mark.parametrize("arrived, values", [
+    (("4", "3"), (D("171.43"), D("128.57"))),       # 7 of 10 ordered arrived
+    (("8", "4"), (D(200), D(100))),                 # 12 of 10 ordered arrived
+    (("1", "9"), (D(30), D(270))),                  # the lots' split differs from the order's
+])
+def test_a_done_move_carries_what_actually_moved_of_each_lot(tmp_path, version, arrived, values):
+    tables = _receipt(version, arrived)
+    moved = {a.source_external_id: (a.item_external_id, a.quantity, a.value) for a in
+             _adapter().build_manifest(_file(tmp_path, build.backup(version, tables)), FULL).bundle.inventory_adjustments}
+    # The receipt's value is what Odoo valued it at, shared by what each lot received.
+    assert moved["stock:1"] == (LOT_1, D(arrived[0]), values[0])
+    assert moved["stock:2"] == (LOT_2, D(arrived[1]), values[1])
+
+
+def test_a_done_move_in_another_unit_of_measure_carries_the_products_units(tmp_path):
+    # 1 dozen ordered, 1 dozen arrived: 7 of LOT-0001 and 5 of LOT-0002 counted in units would
+    # be wrong; the lines count dozens, so 0.5 and 0.5 dozen are 6 and 6 units.
+    tables = _receipt(17, ("0.5", "0.5"), ordered="1", ordered_in_units="12")
+    moved = {a.source_external_id: a.quantity for a in
+             _adapter().build_manifest(_file(tmp_path, build.backup(17, tables)), FULL).bundle.inventory_adjustments}
+    assert (moved["stock:1"], moved["stock:2"]) == (D(6), D(6))
+
+
 def test_cutover_carries_each_items_position_then_the_moves_after(tmp_path):
     manifest = _adapter().build_manifest(_file(tmp_path, _backup(17)),
                                          MigrationDecisions(mode=CIFMode.CUTOVER, cutover_date=CUTOVER))

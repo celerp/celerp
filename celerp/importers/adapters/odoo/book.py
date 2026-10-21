@@ -125,8 +125,8 @@ COLUMNS = frozenset({
     "is_internal_transfer", "is_rounding_line", "list_price", "location_dest_id", "location_id", "lot_id", "mimetype",
     "mobile", "model",
     "move_id", "move_type", "name", "partner_id", "partner_type", "payment_id", "payment_type", "phone", "plan_id",
-    "price_subtotal", "price_total", "price_unit", "product_id", "product_qty", "product_tmpl_id", "qty_done",
-    "quantity", "ref",
+    "price_subtotal", "price_total", "price_unit", "product_id", "product_qty", "product_tmpl_id", "product_uom_qty",
+    "qty_done", "quantity", "ref",
     "reference", "repartition_type", "res_field", "res_id", "res_model", "sequence", "state", "stock_move_id",
     "store_fname", "street", "street2", "supplier_rank", "tax_id", "tax_line_id", "type", "usage", "user_type_id",
     "url", "value", "vat", "zip",
@@ -660,7 +660,7 @@ class _Reader:
 
     def read_stock(self) -> None:
         """Stock per item, lot and internal location, in the order it moved. Each done move line
-        takes its share of its move's quantity and value by the quantity it moved; a line between
+        carries the quantity it moved, in the product's unit, and its share of its move's value; a line between
         two internal locations takes along its share of what the stock it left was worth, and a
         valuation with no move falls on the item's stock held at the time, by quantity."""
         book, base = self.book, self.book.base
@@ -719,11 +719,19 @@ class _Reader:
                         self.text(r.get("description")), on, target, ZERO, share)
                 continue
             # A move Odoo recorded without lines moves as one line of its own.
+            ordered, in_units = _dec(r.get("product_uom_qty")), _dec(r["product_qty"])
             parts = [(f"stock:{ln['id']}", ln.get("lot_id"), ln["location_id"], ln["location_dest_id"],
                       _dec(ln.get(done))) for ln in sorted(lines.get(r["id"], []), key=lambda ln: int(ln["id"]))] \
-                or [(f"stock:move:{r['id']}", None, r["location_id"], r["location_dest_id"], _dec(r["product_qty"]))]
-            weights = [p[4] for p in parts] if any(p[4] for p in parts) else [Decimal(1)] * len(parts)
-            quantities = _shares(_dec(r["product_qty"]), weights)
+                or [(f"stock:move:{r['id']}", None, r["location_id"], r["location_dest_id"], ordered)]
+            # What moved is what the lines record, in the move's unit of measure, which can differ
+            # from what was ordered; lines that record nothing share the order.
+            weights = [p[4] for p in parts]
+            if any(weights):
+                moved = sum(weights, ZERO)
+                quantities = _shares(moved if ordered in (ZERO, in_units) else moved * in_units / ordered, weights)
+            else:
+                weights = [Decimal(1)] * len(parts)
+                quantities = _shares(in_units, weights)
             values = allocate_pro_rata(by_move[r["id"]], weights, base) if by_move[r["id"]] else [ZERO] * len(parts)
             ref = r.get("reference") or r.get("name") or ""
             for (record, lot, src, dest, _), quantity, value in zip(parts, quantities, values):
