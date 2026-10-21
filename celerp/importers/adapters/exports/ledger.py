@@ -8,8 +8,8 @@ is carried as the native Celerp record it describes, where one fits:
 
 - a journal posting an invoice, bill or credit note found in the invoices and bills
   export is that document;
-- a receipt or payment journal settling one such document from one bank account is a
-  receipt or payment allocated to it;
+- a receipt or payment journal settling such documents from one bank account is a
+  receipt or payment allocated to them, what it did not apply staying on the contact;
 - a transfer journal between two bank accounts is a bank transfer;
 - every other journal (spend and receive money, overpayments, manual journals) is a
   journal entry.
@@ -67,10 +67,17 @@ class Settlement:
     bank: str
     currency: str
     rate: Decimal                              # base per settlement unit
-    amount: Decimal                            # in the document's currency
-    document: str
+    allocations: tuple[tuple[str, Decimal], ...]   # document key, amount in the documents' currency
     reference: str
     source: str
+
+    @property
+    def amount(self) -> Decimal:
+        return sum((a for _, a in self.allocations), ZERO)
+
+    @property
+    def documents(self) -> list[str]:
+        return [k for k, _ in self.allocations]
 
 
 @dataclass(frozen=True)
@@ -124,7 +131,7 @@ class Ledger:
 
     def imported_settlements(self) -> list[Settlement]:
         docs = set(self.documents)
-        return [s for s in self.settlements.values() if s.document in docs]
+        return [s for s in self.settlements.values() if docs.issuperset(s.documents)]
 
 
 def find_document(book: Book, sales: bool, number: str, contact: str) -> Document | None:
@@ -192,17 +199,19 @@ def _note_difference(book: Book, note: Document, party: Decimal) -> list[Posting
 
 
 def _settlement_postings(book: Book, s: Settlement) -> list[Posting]:
-    """The bank moves at the settlement's rate and the document is relieved at its own."""
-    doc = book.documents[s.document]
+    """Per allocation, the bank moves at the settlement's rate and the document is relieved at its own."""
     bank_sign = 1 if s.kind == "receipt" else -1
-    relieved = round_money(s.amount * doc.rate, book.base)
-    moved = round_money(s.amount * s.rate, book.base)
-    out = [Posting(s.key, "settlement", s.date, book.party_account(doc.doc_type), -bank_sign * relieved, s.contact,
-                   document=doc.key, native=-bank_sign * s.amount),
-           Posting(s.key, "settlement", s.date, s.bank, bank_sign * moved, document=doc.key,
-                   native=bank_sign * s.amount)]
-    if moved != relieved:
-        out.append(Posting(s.key, "fx", s.date, book.fx_account, -bank_sign * (moved - relieved), document=doc.key))
+    out: list[Posting] = []
+    for key, amount in s.allocations:
+        doc = book.documents[key]
+        relieved = round_money(amount * doc.rate, book.base)
+        moved = round_money(amount * s.rate, book.base)
+        out += [Posting(s.key, "settlement", s.date, book.party_account(doc.doc_type), -bank_sign * relieved,
+                        s.contact, document=key, native=-bank_sign * amount),
+                Posting(s.key, "settlement", s.date, s.bank, bank_sign * moved, document=key,
+                        native=bank_sign * amount)]
+        if moved != relieved:
+            out.append(Posting(s.key, "fx", s.date, book.fx_account, -bank_sign * (moved - relieved), document=key))
     return out
 
 
@@ -231,29 +240,44 @@ def _document_journal(book: Book, j: GLJournal) -> Document | None:
 
 
 def _settlement(book: Book, j: GLJournal, owing: dict[str, Decimal]) -> Settlement | None:
-    """A receipt or payment journal settling one carried document from one bank account
-    in the document's currency or the base currency, within what is still owed on it."""
+    """A receipt or payment journal settling carried invoices or bills of one contact and
+    currency from one bank account in that currency or the base currency, each within what
+    is still owed on it. What the journal did not apply stays on the contact."""
     kind = SETTLEMENT_KINDS.get(j.kind)
-    if kind is None:
+    if kind is None or not j.settles:
         return None
-    doc = find_document(book, kind == "receipt", j.invoice, j.contact)
-    if doc is None or doc.journal is None:
+    doc_type = "invoice" if kind == "receipt" else "bill"
+    docs = [book.documents.get(k) for k in j.settles]
+    if any(d is None or d.journal is None or d.doc_type != doc_type for d in docs):
+        return None
+    contact, currency = docs[0].contact, docs[0].currency
+    if any(d.contact != contact or d.currency != currency for d in docs):
         return None
     banks = [ln for ln in j.lines if book.accounts[ln.account].control == "bank"]
-    party = [ln for ln in j.lines if ln.account in _party(book, doc.doc_type)]
+    party = [ln for ln in j.lines if ln.account in _party(book, doc_type)]
     if len(banks) != 1 or len(party) != 1:
         return None
     bank: GLLine = banks[0]
-    bank_currency = book.accounts[bank.account].currency or book.base
-    if bank_currency not in (book.base, doc.currency):
+    if (book.accounts[bank.account].currency or book.base) not in (book.base, currency):
         return None
-    foreign = book.is_foreign(doc.currency)
-    amount = abs(party[0].foreign if foreign and party[0].foreign is not None else party[0].amount)
-    rate = _rate(bank.amount, bank.foreign if foreign else bank.amount) if foreign else Decimal(1)
-    if not amount or rate is None or amount > owing[doc.key] or (foreign and book.fx_account is None):
+    foreign = book.is_foreign(currency)
+    allocations = []
+    for doc, amount in zip(docs, j.settles.values()):
+        if amount is None:
+            # The whole customer or supplier line, which then settles one document only.
+            if len(docs) != 1 or (foreign and party[0].foreign is None):
+                return None
+            amount = abs(party[0].foreign if foreign else party[0].amount)
+        if not 0 < amount <= owing[doc.key]:
+            return None
+        allocations.append((doc.key, amount))
+    total = sum((a for _, a in allocations), ZERO)
+    rate = (_rate(bank.amount, bank.foreign if bank.foreign is not None else total) if foreign else Decimal(1))
+    if rate is None or (foreign and book.fx_account is None):
         return None
-    owing[doc.key] -= amount
-    return Settlement(j.key, kind, j.date, doc.contact, bank.account, doc.currency, rate, amount, doc.key,
+    for key, amount in allocations:
+        owing[key] -= amount
+    return Settlement(j.key, kind, j.date, contact, bank.account, currency, rate, tuple(allocations),
                       j.reference, j.source)
 
 
@@ -283,7 +307,8 @@ def _states(book: Book, settlements: list[Settlement], keys: set[str]) -> dict[s
     """Paid and outstanding per document from the settlements and notes given."""
     paid: dict[str, Decimal] = defaultdict(lambda: ZERO)
     for s in settlements:
-        paid[s.document] += s.amount
+        for key, amount in s.allocations:
+            paid[key] += amount
     for key in keys:
         note = book.documents[key]
         if note.applies_to:
@@ -310,10 +335,16 @@ def _carried(book: Book, ledger: Ledger, posted: list[str], cutover: date) -> se
     pre = {k for k in posted if book.documents[k].date <= cutover}
     early = [s for s in ledger.settlements.values() if s.date <= cutover]
     carried = {k for k, state in _states(book, early, pre).items() if state.amount_outstanding != 0}
-    carried |= {s.document for s in ledger.settlements.values() if s.date > cutover}
+    carried |= {k for s in ledger.settlements.values() if s.date > cutover for k in s.documents}
     carried |= {book.documents[k].applies_to for k in posted if book.documents[k].date > cutover
                 and book.documents[k].applies_to}
     carried &= pre
+    # A settlement is imported whole: carrying one of its documents carries the others.
+    grown = True
+    while grown:
+        touched = {k for s in ledger.settlements.values() if carried.intersection(s.documents) for k in s.documents}
+        grown = bool((touched & pre) - carried)
+        carried |= touched & pre
     return carried | {k for k in pre if book.documents[k].applies_to in carried}
 
 
@@ -375,7 +406,7 @@ def build_ledger(book: Book, decisions: MigrationDecisions) -> Ledger:
             ledger.settlements[j.key] = s
             predicted = _settlement_postings(book, s)
             ledger.postings += predicted + _fallback(_actual(book, j, j.key, "settlement"), predicted, j.key,
-                                                     j.date, s.document)
+                                                     j.date, s.documents[0])
         elif (tr := _transfer(book, j)) is not None:
             ledger.transfers[j.key] = tr
             ledger.postings += _actual(book, j, j.key, "transfer")

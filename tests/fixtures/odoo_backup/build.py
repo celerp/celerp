@@ -190,9 +190,10 @@ def _payment_term(moves_: dict[int, Move], move: int) -> Line:
     return next(ln for ln in moves_[move].lines if ln.account in (4, 5))
 
 
-# (debit move, credit move, amount): the payment term or counterpart lines each pair reconciles.
-PARTIALS = [(4, 6, D(345)), (7, 8, D(100)), (10, 2, D(345)), (13, 12, D("34.50")), (17, 18, D(110)),
-            (19, 18, D(2))]
+# (debit move, credit move, amount, amount in the lines' own currency where it is not the
+# company's): the payment term or counterpart lines each pair reconciles.
+PARTIALS = [(4, 6, D(345)), (7, 8, D(100)), (10, 2, D(345)), (13, 12, D("34.50")), (17, 18, D(110), D(100)),
+            (19, 18, D(2), D(0))]
 
 # Stock locations: id, name, usage
 LOCATIONS = [(1, "Partners/Vendors", "supplier"), (2, "Partners/Customers", "customer"),
@@ -243,7 +244,7 @@ def _residuals(all_moves: list[Move]) -> tuple[dict[tuple[int, int], Decimal], d
         for n, ln in enumerate(m.lines):
             if ln.account in (2, 3, 4, 5) and m.state == "posted":
                 open_[(m.id, n)] = ln.balance
-    for debit, credit, amount in PARTIALS:
+    for debit, credit, amount, *_ in PARTIALS:
         for move, sign in ((debit, -1), (credit, 1)):
             n = next(n for n, ln in enumerate(by_id[move].lines) if ln.account in (4, 5))
             open_[(move, n)] += sign * amount
@@ -386,13 +387,17 @@ def _ledger(out: Tables, version: int) -> None:
     out.add("account_move_line", line_columns, line_rows)
     out.add("account_move_line_account_tax_rel", ["account_move_line_id", "account_tax_id"], tax_rel)
     by_id = {m.id: m for m in all_moves}
+    # Odoo 14 states the amount in each line's currency; Odoo 13 in the currency both lines share.
     partials = []
-    for n, (debit, credit, amount) in enumerate(PARTIALS, 1):
+    for n, (debit, credit, amount, *foreign) in enumerate(PARTIALS, 1):
         d = next(i for i, ln in enumerate(by_id[debit].lines) if ln.account in (4, 5))
         c = next(i for i, ln in enumerate(by_id[credit].lines) if ln.account in (4, 5))
-        partials.append([n, first_line[(debit, d)], first_line[(credit, c)], 1, f"{amount}", "2024-04-30"])
+        own = foreign[0] if foreign else amount
+        partials.append([n, first_line[(debit, d)], first_line[(credit, c)], 1, f"{amount}", "2024-04-30",
+                         *((f"{own}" if foreign else "0", EUR if foreign else None) if v13 else (f"{own}", f"{own}"))])
     out.add("account_partial_reconcile", ["id", "debit_move_id", "credit_move_id", "company_id", "amount",
-                                          "max_date"], partials)
+                                          "max_date", *(("amount_currency", "currency_id") if v13 else (
+                                              "debit_amount_currency", "credit_amount_currency"))], partials)
     if v13:
         out.add("account_payment", ["id", "currency_id", "partner_id", "partner_type", "payment_type", "amount",
                                     "state"], [[p[0], *p[2:7], "posted"] for p in payments])

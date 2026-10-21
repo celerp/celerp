@@ -304,6 +304,25 @@ def test_quickbooks_online_masters_and_documents_carry_into_cif(tmp_path):
     assert all(row.coverage_class != CoverageClass.UNSUPPORTED_FINANCIAL_BLOCKER for row in manifest.coverage)
 
 
+def test_a_quickbooks_online_payment_applied_to_two_invoices_settles_each(tmp_path):
+    """One receipt applied to two invoices of a customer settles each by what was applied to it."""
+    books = build.simulate()
+    pays = [j for j in books.journals if j.source == "Receivable Payment" and j.currency == build.BASE]
+    first, second = next((a, b) for a in pays for b in pays if a.contact == b.contact and a.invoice < b.invoice)
+    party = sum((p.amount for p in first.postings if p.account == "610"), Decimal(0))
+    later = sum((p.amount for p in second.postings if p.account == "610"), Decimal(0))
+    first.applied = {first.invoice: -party, second.invoice: -later}
+    first.on, first.invoice = max(first.on, second.on), ""
+    totals: dict[str, Decimal] = {}
+    for p in first.postings + second.postings:
+        totals[p.account] = totals.get(p.account, Decimal(0)) + p.amount
+    first.postings = [build.Posting(account, amount) for account, amount in totals.items()]
+    books.journals.remove(second)
+    bundle = _qbo_adapter().build_manifest(_set(tmp_path, qbo.files(books).items()), FULL).bundle
+    settled = {tuple((a.document_external_id, a.amount) for a in s.allocations) for s in bundle.settlements}
+    assert ((f"S:{next(iter(first.applied))}", -party), (f"S:{list(first.applied)[1]}", -later)) in settled
+
+
 def test_quickbooks_online_expectations_come_from_the_reports(tmp_path):
     expectations = _qbo_adapter().source_expectations(_set(tmp_path, _qbo()), FULL).expectations
     by = {(e.measure, e.key): e.expected for e in expectations}

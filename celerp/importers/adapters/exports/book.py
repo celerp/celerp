@@ -128,10 +128,13 @@ class GLJournal:
     source: str                                 # the source's own name for the kind of journal
     kind: str                                   # receivable invoice, receivable payment, bank transfer, ...
     reference: str
-    invoice: str
+    invoice: str                                # the document number the source names on the journal
     contact: str
     currency: str
     lines: list[GLLine]
+    # A receipt or payment journal's allocations: document key -> amount in that document's
+    # currency, or None for the journal's whole customer or supplier line (one document only).
+    settles: dict[str, Decimal | None] = field(default_factory=dict)
 
 
 @dataclass

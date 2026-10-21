@@ -240,6 +240,142 @@ def test_invoices_bills_payments_and_journals(tmp_path, version):
     assert (journals["J:1"].source_type, journals["J:1"].source_ref) == ("Journal Entry", "Capital paid in")
 
 
+# ── Payments matched by reconciliation ────────────────────────────────────────
+
+def _lines_of(tables: build.Tables, move: int) -> list[list]:
+    cols, rows = tables.rows["account_move_line"]
+    return [r for r in rows if r[cols.index("move_id")] == move]
+
+
+def _set(tables: build.Tables, row: list, **values) -> None:
+    cols = tables.rows["account_move_line"][0]
+    for name, value in values.items():
+        row[cols.index(name)] = value
+
+
+def _party_line(tables: build.Tables, move: int) -> list:
+    cols = tables.rows["account_move_line"][0]
+    return next(r for r in _lines_of(tables, move) if r[cols.index("account_id")] in (4, 5))
+
+
+def _resize(tables: build.Tables, move: int, amount: Decimal) -> None:
+    """Every line of a two-line base currency move moved to `amount` either way."""
+    cols = tables.rows["account_move_line"][0]
+    for r in _lines_of(tables, move):
+        new = amount if D(r[cols.index("balance")]) > 0 else -amount
+        _set(tables, r, balance=f"{new}", amount_currency=f"{new}", debit=f"{max(new, D(0))}",
+             credit=f"{max(-new, D(0))}")
+
+
+def _reconcile(tables: build.Tables, debit: int, credit: int, amount: str, *own: str) -> None:
+    """One more partial reconciliation between two moves' customer or supplier lines."""
+    rows = tables.rows["account_partial_reconcile"][1]
+    rows.append([len(rows) + 90, _party_line(tables, debit)[0], _party_line(tables, credit)[0], 1, amount,
+                 "2024-04-30", *(own or (amount, amount))])
+
+
+def _statement_line(tables: build.Tables, move: int) -> None:
+    """A move posted by a bank statement line matched straight to documents: no account.payment."""
+    pcols, payments = tables.rows["account_payment"]
+    payments[:] = [p for p in payments if p[pcols.index("move_id")] != move]
+    mcols, moves = tables.rows["account_move"]
+    next(m for m in moves if m[0] == move)[mcols.index("payment_id")] = None
+    for r in _lines_of(tables, move):
+        _set(tables, r, payment_id=None)
+
+
+def _book(tmp_path, tables: build.Tables):
+    bundle = _adapter().build_manifest(_file(tmp_path, build.backup(17, tables)), FULL).bundle
+    docs = {d.source_external_id: (d.status, d.amount_outstanding) for d in bundle.documents}
+    settled = {s.source_external_id: (s.amount, [(a.document_external_id, a.amount) for a in s.allocations])
+               for s in bundle.settlements}
+    return bundle, docs, settled
+
+
+def test_a_bank_statement_line_matched_to_an_invoice_pays_it(tmp_path):
+    """Odoo's bank reconciliation matches a statement line straight to the invoice."""
+    tables = build.tables(17)
+    _statement_line(tables, 6)
+    bundle, docs, settled = _book(tmp_path, tables)
+    assert docs["S:INV/2024/00001"] == ("paid", D(0))
+    assert settled["J:6"] == (D(345), [("S:INV/2024/00001", D(345))])
+    assert next(s for s in bundle.settlements if s.source_external_id == "J:6").source_type == "Customer Payment"
+    assert "J:6" not in {j.source_external_id for j in bundle.journals}
+
+
+def test_one_payment_for_two_invoices_settles_each_by_what_was_applied(tmp_path):
+    """Lakeshore pays INV/2024/00001 and 100.00 of INV/2024/00002 with one payment of 445.00."""
+    tables = build.tables(17)
+    mcols, moves = tables.rows["account_move"]
+    second = next(m for m in moves if m[0] == 7)
+    second[mcols.index("partner_id")] = second[mcols.index("commercial_partner_id")] = 7
+    for r in _lines_of(tables, 7):
+        _set(tables, r, partner_id=7)
+    pcols, partials = tables.rows["account_partial_reconcile"]
+    partials[:] = [p for p in partials if p[pcols.index("credit_move_id")] != _party_line(tables, 8)[0]]
+    _set(tables, _party_line(tables, 8), amount_residual="-100.00")       # Pine's payment, applied to nothing
+    _resize(tables, 6, D(445))
+    _reconcile(tables, 7, 6, "100")
+    bundle, docs, settled = _book(tmp_path, tables)
+    assert docs["S:INV/2024/00001"] == ("paid", D(0))
+    assert docs["S:INV/2024/00002"] == ("awaiting_payment", D(130))
+    assert settled["J:6"] == (D(445), [("S:INV/2024/00001", D(345)), ("S:INV/2024/00002", D(100))])
+    assert "J:8" not in settled and "J:8" in {j.source_external_id for j in bundle.journals}
+
+
+def test_an_overpayment_settles_the_invoice_and_leaves_the_rest_as_credit(tmp_path):
+    """400.00 received against a 345.00 invoice: Odoo reconciles 345.00 and leaves 55.00 open
+    credit, which stays on the customer's balance as the payment's journal."""
+    tables = build.tables(17)
+    _resize(tables, 6, D(400))
+    _set(tables, _party_line(tables, 6), amount_residual="-55.00")
+    pcols, payments = tables.rows["account_payment"]
+    next(p for p in payments if p[pcols.index("move_id")] == 6)[pcols.index("amount")] = "400"
+    bundle, docs, settled = _book(tmp_path, tables)
+    assert docs["S:INV/2024/00001"] == ("paid", D(0))
+    assert settled["J:6"] == (D(345), [("S:INV/2024/00001", D(345))])
+    credit = next(j for j in bundle.journals if j.source_external_id == "J:6:journal")
+    assert credit.fallback is True
+    assert {(ln.account_external_id, ln.contact_external_id, ln.debit - ln.credit) for ln in credit.lines} == {
+        ("121000", "Lakeshore Trading Co", D(-55)), ("101401", None, D(55))}
+
+
+def test_a_base_currency_payment_of_a_foreign_invoice_is_allocated_in_the_invoice_currency(tmp_path):
+    """INV/2024/00004 is EUR 100 at 1.10. The customer pays USD 55 from a USD account and Odoo
+    reconciles EUR 50 of it: Celerp allocates EUR 50 at 1.10 and leaves EUR 50 open."""
+    tables = build.tables(17)
+    for r in _lines_of(tables, 18):
+        _set(tables, r, currency_id=build.USD)
+    _resize(tables, 18, D(55))
+    mcols, moves = tables.rows["account_move"]
+    next(m for m in moves if m[0] == 18)[mcols.index("currency_id")] = build.USD
+    next(m for m in moves if m[0] == 17)[mcols.index("amount_residual")] = "50.00"
+    pcols, payments = tables.rows["account_payment"]
+    pay = next(p for p in payments if p[pcols.index("move_id")] == 18)
+    pay[pcols.index("currency_id")], pay[pcols.index("amount")] = build.USD, "55"
+    _set(tables, _party_line(tables, 17), amount_residual="55.00")
+    rcols, partials = tables.rows["account_partial_reconcile"]
+    partials[:] = [p for p in partials if p[rcols.index("amount")] not in ("110", "2")]
+    tables.rows["account_move"][1][:] = [m for m in moves if m[0] != 19]            # no exchange difference
+    tables.rows["account_move_line"][1][:] = [r for r in tables.rows["account_move_line"][1]
+                                              if r not in _lines_of(tables, 19)]
+    _reconcile(tables, 17, 18, "55", "50", "55")
+    bundle, docs, settled = _book(tmp_path, tables)
+    assert settled["J:18"] == (D(50), [("S:INV/2024/00004", D(50))])
+    assert next(s for s in bundle.settlements if s.source_external_id == "J:18").exchange_rate == D("1.1")
+    assert docs["S:INV/2024/00004"] == ("awaiting_payment", D(50))
+
+
+@pytest.mark.asyncio
+async def test_a_statement_line_reconciled_invoice_migrates_paid(real_engine, monkeypatch, tmp_path):
+    tables = build.tables(17)
+    _statement_line(tables, 6)
+    run, rejected = await migrate_set(real_engine, [("harbour.zip", build.backup(17, tables))],
+                                      {"mode": "full_history"}, monkeypatch, tmp_path)
+    assert rejected == []
+    _passing(run)
+
+
 # ── Stock and files ───────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("version", VERSIONS)

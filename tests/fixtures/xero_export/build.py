@@ -161,6 +161,7 @@ class Journal:
     currency: str
     invoice: str
     postings: list[Posting] = field(default_factory=list)
+    applied: dict[str, Decimal] = field(default_factory=dict)   # invoice -> amount, a payment applied to several
 
 
 class Books:

@@ -78,6 +78,8 @@ PAYMENTS = {
     ("customer", "inbound"): ("Customer Payment", "receivable payment"),
     ("supplier", "outbound"): ("Vendor Payment", "payable payment"),
 }
+# Document type -> the payment kind of a move reconciled only with documents of that type.
+SETTLING = {"invoice": PAYMENTS[("customer", "inbound")], "bill": PAYMENTS[("supplier", "outbound")]}
 OTHER_PAYMENT = ("Payment", "payment")
 INTERNAL_TRANSFER = ("Internal Transfer", "bank transfer")
 STATUSES = {"posted": "posted", "draft": "draft", "cancel": "void"}
@@ -102,8 +104,8 @@ TABLES = (
 COLUMNS = frozenset({
     "account_id", "account_move_line_id", "account_tax_id", "account_type", "active", "amount", "amount_currency",
     "amount_residual", "amount_tax", "amount_total", "amount_type", "checksum", "city", "code",
-    "commercial_partner_id", "company_id", "create_date", "credit", "credit_move_id", "currency_id", "customer_rank",
-    "date", "db_datas", "debit", "debit_move_id", "default_code", "deprecated", "description", "description_sale",
+    "commercial_partner_id", "company_id", "create_date", "credit", "credit_amount_currency", "credit_move_id", "currency_id", "customer_rank",
+    "date", "db_datas", "debit", "debit_amount_currency", "debit_move_id", "default_code", "deprecated", "description", "description_sale",
     "discount", "display_type", "document_type", "email", "exclude_from_invoice_tab", "id",
     "income_currency_exchange_account_id", "internal_group", "invoice_date_due", "invoice_tax_id",
     "is_internal_transfer", "is_rounding_line", "list_price", "location_dest_id", "location_id", "mobile", "model",
@@ -156,6 +158,10 @@ def _day(value: str | None) -> date | None:
 
 def _true(value: str | None) -> bool:
     return value == "t"
+
+
+def _internal(payment: Row) -> bool:
+    return _true(payment.get("is_internal_transfer")) or payment.get("payment_type") == "transfer"
 
 
 def _unique(names: dict[str, str]) -> dict[str, str]:
@@ -322,28 +328,40 @@ class _Reader:
         for move in ordered:
             if self._move_type(move) in DOCUMENTS:
                 self._document(move, lines[move["id"]], tax_rel)
-        settles = self._settled()
+        settles = self._allocations()
         payments = {r["id"]: r for r in self.rows.get("account_payment", [])}
+        self._mark_banks(ordered, lines, payments)
         for move in ordered:
             if move["state"] != "posted":
                 if self._move_type(move) not in DOCUMENTS:
                     book.skipped[DRAFT_ENTRY] += 1
                 continue
-            journal = self._journal(move, lines[move["id"]], payments)
-            if journal is None:
+            journal = self._journal(move, lines[move["id"]], payments, settles.get(move["id"], {}))
+            if journal is not None:
+                book.journals.append(journal)
+
+    def _mark_banks(self, moves: list[Row], lines: dict[str, list[Row]], payments: dict[str, Row]) -> None:
+        """An asset account a posted payment moves money through is a bank account: Odoo 14 and
+        later post a payment to an outstanding receipts or payments account until the bank
+        statement clears it."""
+        for move in moves:
+            payment = self._payment(move, lines[move["id"]], payments)
+            if move["state"] != "posted" or payment is None or _internal(payment):
                 continue
-            if journal.kind in ("receivable payment", "payable payment"):
-                doc = settles.get(move["id"])
-                if doc is not None and doc.doc_type == ("invoice" if journal.kind == "receivable payment" else "bill"):
-                    journal.invoice, journal.contact = doc.number, doc.contact
-            book.journals.append(journal)
+            for r in lines[move["id"]]:
+                account = self.book.accounts.get(self.accounts.get(r["account_id"], ""))
+                if account is not None and account.account_type == "asset" and account.control is None:
+                    account.control = "bank"
 
     def _payment(self, move: Row, lines: list[Row], payments: dict[str, Row]) -> Row | None:
         """The payment a move posts: named on the move from Odoo 14, on its lines before."""
         found = move.get("payment_id") or next((r.get("payment_id") for r in lines if r.get("payment_id")), None)
         return payments.get(found or "")
 
-    def _journal(self, move: Row, rows: list[Row], payments: dict[str, Row]) -> GLJournal | None:
+    def _journal(self, move: Row, rows: list[Row], payments: dict[str, Row],
+                 settles: dict[str, Decimal]) -> GLJournal | None:
+        """A posted move's lines. A payment or bank statement line reconciled only with invoices,
+        or only with bills, settles them by what each reconciliation applied."""
         book = self.book
         move_type = self._move_type(move)
         parties = {*book.control("receivable"), *book.control("payable")}
@@ -372,6 +390,7 @@ class _Reader:
         if not out:
             return None
         payment = self._payment(move, rows, payments)
+        allocated: dict[str, Decimal | None] = {}
         if move_type in DOCUMENTS:
             _, source, kind = DOCUMENTS[move_type]
             doc = self.documents[move["id"]]
@@ -379,15 +398,20 @@ class _Reader:
         else:
             source, kind = ENTRY_SOURCES.get(move_type, ENTRY_SOURCES["entry"]), "journal"
             if payment is not None:
-                internal = _true(payment.get("is_internal_transfer")) or payment.get("payment_type") == "transfer"
-                source, kind = INTERNAL_TRANSFER if internal else PAYMENTS.get(
+                source, kind = INTERNAL_TRANSFER if _internal(payment) else PAYMENTS.get(
                     (payment["partner_type"], payment["payment_type"]), OTHER_PAYMENT)
             invoice = ""
             named = {ln.contact for ln in out if ln.contact}
             contact = next(iter(named)) if len(named) == 1 else self.partners.get(
                 move.get("commercial_partner_id") or move.get("partner_id") or "", "")
+            types = {book.documents[k].doc_type for k in settles}
+            banked = payment is not None or any(book.accounts[ln.account].control == "bank" for ln in out)
+            if banked and len(types) == 1 and next(iter(types)) in SETTLING and kind != INTERNAL_TRANSFER[1]:
+                source, kind = SETTLING[next(iter(types))]
+                allocated, contact = dict(settles), book.documents[next(iter(settles))].contact
         return GLJournal(f"J:{move['id']}", move["name"], _day(move["date"]), source, kind,
-                         move.get("ref") or move["name"], invoice, contact, self.currency(move["currency_id"]), out)
+                         move.get("ref") or move["name"], invoice, contact, self.currency(move["currency_id"]), out,
+                         allocated)
 
     def _document(self, move: Row, rows: list[Row], tax_rel: dict[str, list[str]]) -> None:
         book = self.book
@@ -446,27 +470,42 @@ class _Reader:
             return "rounding"
         return None if _true(row.get("exclude_from_invoice_tab")) else "product"
 
-    def _settled(self) -> dict[str, Document]:
-        """Move id of a payment, credit note or refund -> the one document it is reconciled with.
-        A credit note or refund fully settled against one invoice or bill applies to it."""
-        counterparts: dict[str, set[str]] = defaultdict(set)
+    def _allocations(self) -> dict[str, dict[str, Decimal]]:
+        """Move id of a posted entry that is not a document -> document key -> what each
+        reconciliation with that document applied, in the document's currency. A credit note
+        or refund fully settled against one invoice or bill applies to it."""
+        out: dict[str, dict[str, Decimal]] = defaultdict(lambda: defaultdict(lambda: ZERO))
+        applied: dict[str, set[str]] = defaultdict(set)
         for r in self.rows.get("account_partial_reconcile", []):
-            debit, credit = self.lines.get(r["debit_move_id"]), self.lines.get(r["credit_move_id"])
-            if debit is None or credit is None:
+            sides = {side: self.lines.get(r[f"{side}_move_id"]) for side in ("debit", "credit")}
+            if None in sides.values():
                 continue
-            counterparts[debit["move_id"]].add(credit["move_id"])
-            counterparts[credit["move_id"]].add(debit["move_id"])
-        out: dict[str, Document] = {}
-        for move, others in counterparts.items():
-            docs = {self.documents[o].key: self.documents[o] for o in others if o in self.documents}
-            if len(docs) != 1:
-                continue
-            doc = next(iter(docs.values()))
-            out[move] = doc
-            note = self.documents.get(move)
-            if note is not None and note.doc_type in ("credit_note", "debit_note") and note.amount_due == 0:
-                note.reference = doc.number
-        return out
+            for side, other in (("debit", "credit"), ("credit", "debit")):
+                doc, move = self.documents.get(sides[side]["move_id"]), sides[other]["move_id"]
+                if doc is None:
+                    continue
+                if move in self.documents:
+                    applied[move].add(doc.key)
+                elif move in self.posted:
+                    out[move][doc.key] += self._applied(r, side, sides[side], doc)
+        for move, keys in applied.items():
+            note = self.documents[move]
+            if note.doc_type in ("credit_note", "debit_note") and note.amount_due == 0 and len(keys) == 1:
+                note.reference = self.book.documents[next(iter(keys))].number
+        return {move: dict(docs) for move, docs in out.items()}
+
+    def _applied(self, partial: Row, side: str, line: Row, doc: Document) -> Decimal:
+        """A reconciliation's amount in the currency of the document on its `side`: Odoo 14 and
+        later state it per side, Odoo 13 once in the currency both lines share."""
+        amount = _dec(partial["amount"])
+        if not self.book.is_foreign(doc.currency):
+            return amount
+        if partial.get(f"{side}_amount_currency") is not None:
+            return abs(_dec(partial[f"{side}_amount_currency"]))
+        if partial.get("currency_id") is not None and partial["currency_id"] == line["currency_id"]:
+            return abs(_dec(partial["amount_currency"]))
+        balance = _dec(line["debit"]) - _dec(line["credit"])
+        return (amount * abs(_dec(line["amount_currency"]) / balance)).quantize(Decimal("0.01"))
 
     # ── The source's own figures ─────────────────────────────────────────────
 
@@ -500,18 +539,6 @@ class _Reader:
                         and r["partner_id"] in self.partners:
                     owed[self.partners[r["partner_id"]]] += _dec(r["amount_residual"])
             book.aged[side] = (on, dict(owed))
-
-    def mark_banks(self) -> None:
-        """An asset account a payment moves money through is a bank account: Odoo 14 and later
-        post a payment to an outstanding receipts or payments account until the bank statement
-        clears it."""
-        book = self.book
-        for j in book.journals:
-            if j.kind in ("receivable payment", "payable payment", OTHER_PAYMENT[1]):
-                for ln in j.lines:
-                    account = book.accounts[ln.account]
-                    if account.account_type == "asset" and account.control is None:
-                        account.control = "bank"
 
     # ── Stock ────────────────────────────────────────────────────────────────
 
@@ -589,7 +616,6 @@ def read_odoo(backup: Backup) -> OdooBook:
     reader.read_items()
     reader.read_taxes()
     reader.read_ledger()
-    reader.mark_banks()
     reader.roll_trial_balances()
     reader.read_open_balances()
     steps.roles_from_ledger(book)

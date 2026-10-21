@@ -24,6 +24,7 @@ from celerp.importers.adapters.exports.files import (
     DateReader, Layout, SetCheck, Stranger, Table, amount, as_at, check_set, company_name, money, normalize, of,
     read_set, report_date,
 )
+from celerp.importers.adapters.exports.ledger import SETTLEMENT_KINDS, find_document
 from ui.i18n import t
 
 SOURCE_SYSTEM = "xero"
@@ -313,6 +314,15 @@ def check(artifacts: ArtifactSet) -> SetCheck:
     return _check(*read_set(artifacts, LAYOUTS))
 
 
+def _settles(book: Book) -> None:
+    """A receipt or payment journal settles the invoice or bill its ledger lines name."""
+    for j in book.journals:
+        if j.kind in SETTLEMENT_KINDS and j.invoice:
+            doc = find_document(book, SETTLEMENT_KINDS[j.kind] == "receipt", j.invoice, j.contact)
+            if doc is not None:
+                j.settles = {doc.key: None}
+
+
 def read_xero(artifacts: ArtifactSet) -> Book:
     tables, strangers = read_set(artifacts, LAYOUTS)
     _check(tables, strangers).refuse()
@@ -328,6 +338,7 @@ def read_xero(artifacts: ArtifactSet) -> Book:
     _documents(book, tables, read_date)
     for doc in book.documents.values():
         doc.currency = doc.currency or book.base
+    _settles(book)
     steps.bank_currencies(book)
     _trial_balances(book, tables)
     _aged(book, tables)

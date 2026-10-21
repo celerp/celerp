@@ -268,12 +268,14 @@ def _settled_amount(book: Book, j: GLJournal) -> Decimal:
 
 
 def _applied(book: Book, tables: list[Table], read_date: DateReader) -> None:
-    """Link each payment journal to the invoice or bill it was applied to, matched on date,
-    contact and amount; a payment matched to none, or to two, stays a journal. A credit memo
-    or vendor credit listed under an invoice or bill applies to it."""
+    """Link each payment journal to the invoices or bills it was applied to. A row matches the
+    journal of its date, contact and amount; rows left over settle together the one journal
+    left on their date and contact whose amount they add up to. A payment matched to none
+    stays a journal. A credit memo or vendor credit listed under an invoice or bill applies to it."""
     for layout, party, sales, kind in ((RECEIVED, "customer", True, "receivable payment"),
                                        (APPLIED, "vendor", False, "payable payment")):
         waiting: dict[tuple[date, str, Decimal], list[GLJournal]] = defaultdict(list)
+        leftover: dict[tuple[date, str], list[tuple[Document, Decimal]]] = defaultdict(list)
         for j in book.journals:
             if j.kind == kind:
                 waiting[(j.date, j.contact, _settled_amount(book, j))].append(j)
@@ -292,7 +294,16 @@ def _applied(book: Book, tables: list[Table], read_date: DateReader) -> None:
                 elif JOURNAL_KINDS.get(kind_name) == kind and target is not None and tb.value(row, "date"):
                     key = (read_date(tb.value(row, "date"), where), contact, abs(money(tb.value(row, "amount"), where)))
                     if waiting.get(key):
-                        waiting[key].pop(0).invoice = target.number
+                        waiting[key].pop(0).settles = {target.key: None}
+                    else:
+                        leftover[key[:2]].append((target, key[2]))
+        for (on, contact), rows in leftover.items():
+            left = [j for (d, c, _), js in waiting.items() if (d, c) == (on, contact) for j in js]
+            if len(left) == 1 and sum(a for _, a in rows) == _settled_amount(book, left[0]):
+                settles: dict[str, Decimal | None] = defaultdict(lambda: ZERO)
+                for doc, amount in rows:
+                    settles[doc.key] += amount
+                left[0].settles = dict(settles)
 
 
 def _trial_balances(book: Book, tables: list[Table], account: _Accounts) -> None:

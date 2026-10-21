@@ -38,12 +38,14 @@ from celerp.services.money import checked_exchange_rate
 # Journal parts of the ledger, and the source id suffix each part's journal carries.
 JOURNAL_PARTS = {"journal": "", "fallback": ":journal"}
 FALLBACK = "{} (journal fallback)"
-FALLBACK_NARRATION = "Lines of this record booked differently in the source: rounding or an exchange difference."
+FALLBACK_NARRATION = ("Lines of this record booked differently in the source: rounding, an exchange difference, "
+                      "or a payment's part not applied to any document.")
 OPENING_NARRATION = "Opening balances at the cutover date."
 TRACKING = "Tracking category"
 TRACKING_NOTE = "Each invoice and bill line keeps its tracking options; Celerp does not report by them."
-FALLBACK_NOTE = ("The difference between what the source booked for these records and what Celerp books for "
-                 "them, a rounding cent or an exchange difference, is carried as a journal on the record.")
+FALLBACK_NOTE = ("What the source booked for these records less what Celerp books for them (a rounding cent, an "
+                 "exchange difference, or a payment's part left on the contact as credit) is carried as a journal "
+                 "on the record.")
 
 
 class Source:
@@ -105,7 +107,8 @@ def _settlements(ledger: Ledger, src: Source) -> list[CIFSettlement]:
     return [CIFSettlement(**src(s.source, s.key, s.reference), settlement_type=s.kind, settlement_date=s.date,
                           contact_external_id=s.contact, bank_account_external_id=s.bank, currency=s.currency,
                           exchange_rate=s.rate if book.is_foreign(s.currency) else None, amount=s.amount,
-                          allocations=[CIFAllocation(document_external_id=s.document, amount=s.amount)])
+                          allocations=[CIFAllocation(document_external_id=key, amount=amount)
+                                       for key, amount in s.allocations])
             for s in ledger.imported_settlements()]
 
 
