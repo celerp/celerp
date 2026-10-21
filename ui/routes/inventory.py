@@ -2433,6 +2433,10 @@ function celerpPrintLabel(entityId, templateId) {
 
     @app.get("/api/items/{entity_id}/field/{field}/edit")
     async def field_edit_cell(request: Request, entity_id: str, field: str):
+        return await _edit_cell(request, entity_id, field)
+
+    async def _edit_cell(request: Request, entity_id: str, field: str, typed: str | None = None):
+        """The editor for one field, holding the stored value or, after a refusal, what was typed."""
         token = _token(request)
         if not token:
             return P(t("error.session_expired"), cls="cell-error")
@@ -2541,7 +2545,7 @@ function celerpPrintLabel(entityId, templateId) {
         # Reorder fields: carry the velocity suggestion as a grey placeholder while editing
         # an empty field (a hint only - it is never submitted, so the stored value is unaffected).
         _placeholder = await _reorder_placeholder(token, entity_id, field, item.get(field))
-        return editable_cell(entity_id=entity_id, field=field, value=edit_value,
+        return editable_cell(entity_id=entity_id, field=field, value=edit_value if typed is None else typed,
                              cell_type=cell_type, options=options, allow_custom=allow_custom,
                              label_map=label_map, placeholder=_placeholder)
 
@@ -2611,11 +2615,11 @@ function celerpPrintLabel(entityId, templateId) {
             return "purchase_unit"
         return field if field in ("quantity", "weight", "gross_weight") else _PAIRED_FIELDS[field]
 
-    async def _refused_cell(request: Request, entity_id: str, field: str, detail: str):
-        """A refused edit keeps the cell's editor open with the reason under it, so the user
-        can correct the value or press Esc, never left without a cell to retry."""
-        edit = field_paired_edit_cell if field in _PAIRED_FIELDS else field_edit_cell
-        cell = await edit(request, entity_id, field)
+    async def _refused_cell(request: Request, entity_id: str, field: str, detail: str, typed: str):
+        """A refused edit keeps the cell's editor open, holding what was typed, with the reason
+        under it, so the user can correct the value or press Esc, never left without a cell to retry."""
+        edit = _paired_edit_cell if field in _PAIRED_FIELDS else _edit_cell
+        cell = await edit(request, entity_id, field, typed)
         if cell.tag != "td":
             return P(detail, cls="cell-error")
         cell.attrs["class"] = f'{cell.attrs.get("class", "")} cell--error'.strip()
@@ -2876,7 +2880,7 @@ function celerpPrintLabel(entityId, templateId) {
         except APIError as e:
             if e.status == 401:
                 return P(t("error.session_expired"), cls="cell-error")
-            return await _refused_cell(request, entity_id, field, e.detail)
+            return await _refused_cell(request, entity_id, field, e.detail, str(form.get("value", "")))
 
         locations = locs_data.get("items", [])
         try:
@@ -3229,7 +3233,11 @@ function celerpPrintLabel(entityId, templateId) {
 
     @app.get("/api/items/{entity_id}/field/{field}/paired-edit")
     async def field_paired_edit_cell(request: Request, entity_id: str, field: str):
-        """Return editable_cell for `field` with restore_url → paired-display."""
+        return await _paired_edit_cell(request, entity_id, field)
+
+    async def _paired_edit_cell(request: Request, entity_id: str, field: str, typed: str | None = None):
+        """Return editable_cell for `field` with restore_url → paired-display, holding the
+        stored value or, after a refusal, what was typed."""
         token = _token(request)
         if not token:
             return P(t("error.session_expired"), cls="cell-error")
@@ -3288,7 +3296,8 @@ function celerpPrintLabel(entityId, templateId) {
                 )
         from ui.components.table import editable_cell
         restore_url = f"/api/items/{entity_id}/field/{field}/paired-display"
-        cell = editable_cell(entity_id=entity_id, field=field, value=item.get(field, ""),
+        cell = editable_cell(entity_id=entity_id, field=field,
+                             value=item.get(field, "") if typed is None else typed,
                              cell_type=cell_type, options=options, allow_custom=allow_custom,
                              label_map=_unit_labels(field, options), restore_url=restore_url)
         # The editor stays in its column, so column show/hide and order still find it.

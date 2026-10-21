@@ -69,7 +69,7 @@ def _scan_added_label(result: dict, unit_map: dict) -> str:
     """What the scan bar says for one added code: the SKU and the quantity this scan placed in
     its unit, and when the scan was held to what is left, that it took all that is left."""
     qty, unit = result.get("quantity"), result.get("unit") or ""
-    shown = format_qty(qty, unit, unit_map) if unit in unit_map else f"{float(qty):g}"
+    shown = format_qty(qty, unit, unit_map)
     key = "documents.scan_added_line_capped" if result.get("capped") else "documents.scan_added_line"
     return t(key, sku=result.get("sku") or "", qty=shown, unit=display_unit(unit)).strip()
 

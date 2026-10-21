@@ -389,6 +389,12 @@ class TestFormatQty:
         from celerp.services.units import format_qty
         assert format_qty(3.14, "unknown", {}) == "3.14"
 
+    def test_unknown_unit_keeps_every_digit(self):
+        from celerp.services.units import format_qty
+        assert format_qty(1234567, "unknown", {}) == "1234567"
+        assert format_qty(1234.567, "unknown", {}) == "1234.567"
+        assert format_qty(100.0, "unknown", {}) == "100"
+
     def test_none_value_returns_empty_string(self):
         from celerp.services.units import format_qty
         assert format_qty(None, "piece", {}) == ""

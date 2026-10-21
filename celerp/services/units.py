@@ -166,7 +166,7 @@ def format_qty(value, unit_name: str | None, unit_map: dict[str, dict]) -> str:
     """Format a quantity value according to its unit's decimal precision.
 
     Returns a string with exactly `decimals` decimal places for known units,
-    or a plain str() conversion for unknown/absent units.
+    or every digit of the value without trailing zeros for unknown/absent units.
     Falls back to str() if value is not numeric.
     """
     if value is None or value == "":
@@ -179,5 +179,6 @@ def format_qty(value, unit_name: str | None, unit_map: dict[str, dict]) -> str:
         decimals = unit_map[unit_name].get("decimals", None)
         if decimals is not None:
             return f"{f:.{decimals}f}"
-    # Unknown unit: strip trailing zeros but keep at least one decimal if non-integer
-    return f"{f:g}"
+    # Unknown unit: no precision to apply, so show the value as stored, without
+    # trailing zeros and never rounded or in exponent form.
+    return format(Decimal(str(f)).normalize(), "f")

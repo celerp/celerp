@@ -546,8 +546,8 @@ function initCombobox(wrap) {
     }
   }
 
-  // allow-custom: on Enter or Tab, typed text that is not the committed label becomes
-  // the value (an emptied box clears it). Typing already mirrors it into the hidden
+  // allow-custom: on Enter, or on Tab when no option matches, typed text that is not the
+  // committed label becomes the value (an emptied box clears it). Typing already mirrors it into the hidden
   // input, so the commit is the change event; text equal to the committed label keeps
   // the committed value. Leaving the box any other way never commits a filter query.
   function commitCustom() {
@@ -623,7 +623,7 @@ function initCombobox(wrap) {
   input.addEventListener('keydown', function(e) {
     if (e.key === 'ArrowDown') { moveFocus(1); e.preventDefault(); }
     if (e.key === 'ArrowUp') { moveFocus(-1); e.preventDefault(); }
-    // Enter commits; on an allow-custom box Tab commits the same way and still moves on.
+    // Enter commits; on an allow-custom box Tab picks the same way and still moves on.
     var enter = e.key === 'Enter';
     if (enter || (e.key === 'Tab' && allowCustom)) {
       var focused = list.querySelector('.combobox-option.focused');
@@ -638,8 +638,10 @@ function initCombobox(wrap) {
       var typed = input.value.trim().toLowerCase();
       var exact = vis.filter(function(o) { return o.textContent.trim().toLowerCase() === typed; });
       var pick = exact.length === 1 ? exact[0] : (typed && vis.length === 1 ? vis[0] : null);
+      // Tab with no pick commits typed text only when no option matches it, so it is
+      // clearly a new value; a query that still matches several options is a search.
       if (pick) { selectOpt(pick); if (enter) e.preventDefault(); }
-      else if (allowCustom) commitCustom();
+      else if (allowCustom && (enter || vis.length === 0)) commitCustom();
     }
     if (e.key === 'Escape') {
       list.classList.remove('open');

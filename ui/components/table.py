@@ -707,6 +707,7 @@ def searchable_select(
     values: list[str] | None = None,
     count_label: str = "",
     aria_label: str = "",
+    autofocus: bool = False,
     **htmx_attrs,
 ) -> FT:
     """
@@ -729,6 +730,7 @@ def searchable_select(
         other than "N selected".
     aria_label: accessible name for the visible input, for a control whose only label
         would otherwise be a column header the screen reader does not read with it.
+    autofocus: focus the visible input when it is swapped in, as an inline-edit cell does.
     htmx_attrs: HTMX attributes forwarded to the hidden input (hx_get, hx_target, etc.)
     """
     placeholder = placeholder or t("table.search_or_select")
@@ -794,6 +796,8 @@ def searchable_select(
     # name belongs there rather than on the hidden value input.
     if aria_label:
         text_input_extra["aria_label"] = aria_label
+    if autofocus:
+        text_input_extra["autofocus"] = True
     # ARIA combobox semantics (rule i): a screen reader announces this as a
     # combobox owning a popup listbox. The dynamic wiring - aria-controls to the
     # list id, aria-expanded on open/close, aria-activedescendant to the focused
@@ -1031,6 +1035,7 @@ def editable_cell(
                     options=options,
                     value=display_val,
                     allow_custom=allow_custom,
+                    autofocus=True,
                     hx_patch=patch_url,
                     hx_target="closest td",
                     hx_swap="outerHTML",

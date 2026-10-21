@@ -333,3 +333,10 @@ def test_the_tooltip_example_number_is_accepted(path):
     assert examples, f"{path.stem}: no example number in the tooltip"
     for example in examples:
         assert validate_default_sell_qty(example, "carat", {"carat": {"unit_type": "weight", "decimals": 2}}) == 0.5
+
+
+@pytest.mark.parametrize("stored, shown", [(1234567, "1234567"), (1234.567, "1234.567"), (2.50, "2.5")])
+def test_a_number_on_an_unlisted_unit_shows_every_digit(stored, shown):
+    from ui.routes.inventory import _sell_qty_text
+
+    assert _sell_qty_text({"sell_by": "bundle", "default_sell_qty": stored}, {}) == shown

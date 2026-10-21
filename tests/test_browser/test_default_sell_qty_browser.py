@@ -107,8 +107,11 @@ def test_a_refused_value_keeps_the_cell_to_correct(page, ui_server, api, typed):
     expect(page.locator(f"{EDITING} .cell-error")).to_be_visible(timeout=6000)
     assert page.locator(".cell-error").inner_text().strip()
     assert _stored(api, screws) is None
-
+    # The box still holds what was typed, with focus in it, so Esc or a correction works at once.
     box = page.locator(f"{EDITING} .combobox-input")
+    expect(box).to_have_value(typed)
+    expect(box).to_be_focused()
+
     box.fill("2")
     box.press("Enter")
     _wait_stored(api, screws, 2)
@@ -152,6 +155,26 @@ def test_filtering_a_searchable_cell_then_clicking_away_keeps_its_value(page, ui
     ready(page, f"{EDITING} input[name=value]")
     box.fill("Dia")
     page.locator("h1").first.click()
+    page.wait_for_timeout(1500)
+    assert api.get(f"/items/{gem}").json().get("category") == "diamond"
+
+
+def test_tab_after_a_filter_matching_several_options_keeps_the_value(page, ui_server, api):
+    """Tab commits typed text only when it names one option or none; a filter that still
+    matches several options is a search, not a value."""
+    for slug in ("diamond", "dolomite", "druzy"):
+        r = api.patch(f"/companies/me/category-schema/{slug}", json={"fields": []})
+        assert r.status_code in {200, 201}, r.text
+    gem = _item(api, category="diamond")
+    _open(page, ui_server, gem)
+    settled(page, SCOPE)
+    page.dblclick('td[data-col="category"]')
+    box = page.locator(f"{EDITING} .combobox-input")
+    box.wait_for(state="visible", timeout=4000)
+    ready(page, f"{EDITING} input[name=value]")
+    box.fill("d")
+    assert page.locator(f"{EDITING} .combobox-option:visible").count() > 1
+    box.press("Tab")
     page.wait_for_timeout(1500)
     assert api.get(f"/items/{gem}").json().get("category") == "diamond"
 
