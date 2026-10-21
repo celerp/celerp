@@ -119,7 +119,7 @@ COLUMNS = frozenset({
     "analytic_distribution", "account_type", "active", "amount", "amount_currency",
     "amount_residual", "amount_tax", "amount_total", "amount_type", "checksum", "city", "code",
     "commercial_partner_id", "company_id", "complete_name", "create_date", "credit", "credit_amount_currency", "credit_move_id", "currency_id", "customer_rank",
-    "date", "db_datas", "debit", "debit_amount_currency", "debit_move_id", "default_code", "deprecated", "description", "description_sale",
+    "date", "db_datas", "decimal_places", "debit", "debit_amount_currency", "debit_move_id", "default_code", "deprecated", "description", "description_sale",
     "discount", "display_type", "document_type", "email", "exclude_from_invoice_tab", "id",
     "income_currency_exchange_account_id", "internal_group", "invoice_date_due", "invoice_tax_id",
     "is_internal_transfer", "is_rounding_line", "list_price", "location_dest_id", "location_id", "lot_id", "mimetype",
@@ -219,6 +219,8 @@ class _Reader:
         self.company, companies = self._company(company)
         currencies = {r["id"]: r["name"] for r in self.rows.get("res_currency", [])}
         self.currency = lambda i: currencies.get(i or "", "")
+        # Currency -> its smallest unit. Odoo writes floats, so a stored amount's scale is not the currency's.
+        self.cents = {r["name"]: Decimal(1).scaleb(-int(r["decimal_places"])) for r in self.rows.get("res_currency", [])}
         self.book = Book(SOURCE_SYSTEM, company_name=self.company["name"] or "",
                          base=self.currency(self.company["currency_id"]))
         self.out = OdooBook(self.book, backup.version, companies=companies, other_entries=sum(
@@ -515,7 +517,8 @@ class _Reader:
             discount = _dec(r.get("discount"))
             lines.append(DocLine(self.products.get(r["product_id"] or ""), r["name"] or "", _dec(r["quantity"]),
                                  _dec(r["price_unit"]), discount or None, net,
-                                 self._line_taxes(tax_rel.get(r["id"], []), net, tax), self.accounts[r["account_id"]],
+                                 self._line_taxes(tax_rel.get(r["id"], []), net, tax, self.cents[currency]),
+                                 self.accounts[r["account_id"]],
                                  self._tracking(r)))
         # Each tax totals what Odoo booked on its tax lines: Odoo can round a tax on the whole
         # document, and that difference lands on the last line carrying the tax.
@@ -560,12 +563,13 @@ class _Reader:
             amount_due=due, withheld=dict(withheld))
         self.documents[move["id"]] = book.documents[key]
 
-    def _line_taxes(self, taxes: list[str], net: Decimal, tax: Decimal) -> list[LineTax]:
-        """A line's tax split across its taxes by rate, the rounding remainder on the last."""
+    def _line_taxes(self, taxes: list[str], net: Decimal, tax: Decimal, cents: Decimal) -> list[LineTax]:
+        """A line's tax split across its taxes by rate to the currency's smallest unit, the
+        rounding remainder on the last."""
         if not taxes:
             return [LineTax(None, tax)] if tax else []
         rates = [self.rates[i] for i in taxes]
-        out = [LineTax(self.taxes[i], (net * rate / 100).quantize(tax) if any(rates) else ZERO)
+        out = [LineTax(self.taxes[i], (net * rate / 100).quantize(cents) if any(rates) else ZERO)
                for i, rate in zip(taxes, rates)]
         out[-1].amount += tax - sum((x.amount for x in out), ZERO)
         return out

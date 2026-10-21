@@ -337,6 +337,28 @@ def test_odoo_rounding_a_tax_on_the_whole_document_lands_on_that_tax(tmp_path):
                                 [("15%", "251000", D("7.49"))]]
 
 
+def test_a_tax_split_keeps_the_currencys_cents_when_odoo_stored_fewer(tmp_path):
+    """Odoo writes floats and Postgres keeps the scale written, so a 105.00 line with 15% and
+    7% tax can be stored as 105.0 and 128.1. Each tax is still split to the cent: 15.75 and
+    7.35, and the next line's 15% stays 7.50."""
+    tables = build.tables(17)
+    by_id = {r[0]: r for r in tables.rows["account_move_line"][1]}
+    _set(tables, by_id[52], price_unit="105.0", price_subtotal="105.0", price_total="128.1", credit="105.0",
+         balance="-105.0", amount_currency="-105.0")
+    _set(tables, by_id[54], credit="23.25", balance="-23.25", amount_currency="-23.25")
+    _set(tables, by_id[55], credit="7.35", balance="-7.35", amount_currency="-7.35")
+    _set(tables, by_id[56], debit="185.6", balance="185.6", amount_currency="185.6", amount_residual="185.6")
+    mcols, moves = tables.rows["account_move"]
+    move = next(m for m in moves if m[0] == 22)
+    for column, value in (("amount_tax", "30.6"), ("amount_total", "185.6"), ("amount_residual", "185.6")):
+        move[mcols.index(column)] = value
+    bundle = _adapter().build_manifest(_file(tmp_path, build.backup(17, tables)), FULL).bundle
+    doc = next(d for d in bundle.documents if d.source_external_id == "S:INV/2024/00005")
+    assert _line_taxes(doc) == [[("15%", "251000", D("15.75")), ("PST 7%", "251000", D("7.35"))],
+                                [("15%", "251000", D("7.50"))]]
+    assert (doc.total, doc.tax_total) == (D("185.6"), D("30.6"))
+
+
 # ── Payments matched by reconciliation ────────────────────────────────────────
 
 def _lines_of(tables: build.Tables, move: int) -> list[list]:
