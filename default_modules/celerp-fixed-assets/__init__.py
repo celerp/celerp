@@ -113,4 +113,5 @@ PLUGIN_MANIFEST = {
         "th": {"file": "celerp_fixed_assets/locales/th.json"},
         "vi": {"file": "celerp_fixed_assets/locales/vi.json"},
     },
+    "help": {"dir": "celerp_fixed_assets/help"},
 }

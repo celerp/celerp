@@ -1,0 +1,24 @@
+{
+  "id": "accounting.financial-reports",
+  "title": "Read the profit and loss, balance sheet and other statements",
+  "summary": "Open the financial statements and move between them without losing your date range.",
+  "keywords": ["profit and loss", "p&l", "balance sheet", "trial balance", "general ledger", "cash flow", "financial statement"],
+  "routes": ["/reports", "/reports/pnl", "/reports/balance-sheet", "/reports/trial-balance", "/reports/general-ledger", "/reports/cash-flow"],
+  "permission": "view_financial_reports",
+  "order": 2,
+  "steps": [
+    {
+      "text": "Open {rep} from the sidebar for a list of every report.",
+      "labels": {"rep": "nav.reports"},
+      "image": null,
+      "capture": {"route": "/reports", "selector": "main", "actions": []}
+    },
+    {
+      "text": "Click {pnl} to see income and expenses for the period, or pick another statement from the same list; each carries your date range to the next.",
+      "labels": {"pnl": "acct.tab_pnl"},
+      "image": null,
+      "capture": {"route": "/reports/pnl", "selector": "main", "actions": []}
+    }
+  ],
+  "related": ["accounting.journal-entries", "reports.operational-reports"]
+}

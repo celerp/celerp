@@ -52,6 +52,11 @@ def demo_token(api_server, api):
             contacts = await seed_demo.seed_contacts(client, token)
             await seed_demo.seed_docs(client, token, contacts, "invoice", 12)
             await seed_demo.seed_docs(client, token, contacts, "purchase_order", 6)
+            # The fixed assets register shows nothing until its one-time start is
+            # confirmed; help pages for it capture the register in its normal,
+            # already-started state.
+            r = await client.post("/fixed-assets/api/start", headers={"Authorization": f"Bearer {token}"})
+            assert r.status_code in (200, 201), r.text
 
     random.seed(20261022)
     # Playwright's sync API keeps its own event loop running on this thread for the whole

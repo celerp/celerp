@@ -1,0 +1,24 @@
+{
+  "id": "fixed-assets.register",
+  "title": "Add an asset to the register",
+  "summary": "Register assets from paid bills, or add one by hand.",
+  "keywords": ["asset", "register", "add asset", "fixed asset", "bill", "intake"],
+  "routes": ["/fixed-assets", "/fixed-assets/intake", "/fixed-assets/assets/new"],
+  "permission": "view_fixed_assets",
+  "order": 1,
+  "steps": [
+    {
+      "text": "Open {fa} from the sidebar to see every registered asset.",
+      "labels": {"fa": "nav.fixed_assets"},
+      "image": null,
+      "capture": {"route": "/fixed-assets", "selector": "main", "actions": []}
+    },
+    {
+      "text": "Click {intake} to register an asset from a paid bill's lines, or {add} to add one by hand.",
+      "labels": {"intake": "fixed_assets.register_from_bills", "add": "fixed_assets.add_asset"},
+      "image": null,
+      "capture": {"route": "/fixed-assets", "selector": "main", "actions": []}
+    }
+  ],
+  "related": ["fixed-assets.depreciation-and-disposals", "fixed-assets.settings"]
+}
