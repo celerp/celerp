@@ -37,7 +37,7 @@ from celerp.importers.adapters.odoo.book import (
     DRAFT_ENTRY, LOT, NO_CONTACT, OFF_BALANCE_LINE, SOURCE_NAME, SOURCE_SYSTEM, UNSTOCKED_LOT, OdooBook,
     read_odoo,
 )
-from celerp.importers.adapters.odoo.dump import Backup, too_large
+from celerp.importers.adapters.odoo.dump import Backup, freed, too_large
 from celerp.importers.schema import (
     CIFAttachment,
     CIFCoverageEntry,
@@ -80,14 +80,17 @@ def _books(path: Path, sha256: str, company: str | None) -> OdooBook:
 def _opened(artifacts: ArtifactSet, decisions: MigrationDecisions) -> Iterator[tuple[OdooBook, Backup]]:
     """The book of the chosen company and its backup, open, for every step that reads them.
     Running out of memory anywhere while they are used, in the book or in what is built from
-    it, refuses the backup as too large, as the reader does."""
+    it, refuses the backup as too large, as the reader does, and the refused book is not kept."""
     artifact = _single(artifacts)
     try:
-        odoo = _books(artifact.path, artifact.sha256, decisions.mappings.get(COMPANY_QUESTION))
         with Backup(artifact.path) as backup:
-            yield odoo, backup
+            yield _books(artifact.path, artifact.sha256, decisions.mappings.get(COMPANY_QUESTION)), backup
     except MemoryError as exc:
-        raise too_large(SourceRevisionError) from exc
+        freed(exc)
+    else:
+        return
+    _books.cache_clear()
+    raise too_large(SourceRevisionError)
 
 
 @contextmanager

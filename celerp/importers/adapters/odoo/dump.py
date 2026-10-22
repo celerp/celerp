@@ -17,6 +17,7 @@ import json
 import math
 import re
 import sys
+import traceback
 import zipfile
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
@@ -109,7 +110,17 @@ def _intact(error: type[Exception] = ScanError) -> Iterator[None]:
     except ZIP_ERRORS as exc:
         raise error(t(UNREADABLE)) from exc
     except MemoryError as exc:
-        raise too_large(error) from exc
+        freed(exc)
+    else:
+        return
+    raise too_large(error)
+
+
+def freed(exc: MemoryError) -> None:
+    """Free what the steps that ran out of memory held, so the refusal (which may read its
+    language's messages) is built with that memory back. The caller raises the refusal once
+    out of its `except` block, so the refusal does not carry the failure along with it."""
+    traceback.clear_frames(exc.__traceback__)
 
 
 def too_large(error: type[Exception] = ScanError) -> Exception:

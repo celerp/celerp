@@ -755,6 +755,72 @@ def test_running_out_of_memory_anywhere_after_the_backup_is_opened_is_refused_as
     assert str(refused.value) == t("migration.err_odoo_backup_too_large", "en")
 
 
+@pytest.mark.parametrize("step", ["build_ledger", "build_bundle"])
+def test_a_book_refused_as_too_large_is_not_kept(tmp_path, monkeypatch, step):
+    """A backup refused as too large is never used, so its book is not kept for the next step;
+    a book read in full is kept for every step of the run."""
+    from celerp.importers.adapters.odoo import adapter
+
+    files = _file(tmp_path, _backup(17))
+    adapter._books.cache_clear()
+    _adapter().source_expectations(files, FULL)
+    assert adapter._books.cache_info().currsize == 1
+
+    def exhausted(*_, **__):
+        raise MemoryError
+
+    monkeypatch.setattr(adapter, step, exhausted)
+    with pytest.raises(SourceRevisionError) as refused:
+        _adapter().build_manifest(files, FULL)
+    assert str(refused.value) == t("migration.err_odoo_backup_too_large", "en")
+    assert adapter._books.cache_info().currsize == 0, "the refused book is still held"
+
+
+class _Held:
+    """What a step holds when memory runs out in it."""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("owner, step", [("dump", "_field"), ("book.steps", "roles_from_ledger"),
+                                         ("adapter", "build_ledger")])
+async def test_the_too_large_refusal_is_built_after_what_ran_out_is_freed(client, monkeypatch, tmp_path, owner, step):
+    """The refusal reads its language's messages, which can need memory of its own: it is built
+    only once what the failing step held is freed, so a language not yet read still refuses in
+    that language (a 422), never a server error."""
+    import weakref
+
+    import ui.i18n
+    from celerp.config import settings
+    from celerp.importers.adapters.odoo import adapter, book, dump
+
+    held = []
+
+    def exhausted(*_, **__):
+        holding = _Held()
+        held.append(weakref.ref(holding))
+        raise MemoryError
+
+    load = ui.i18n._cached_load
+
+    read = []
+
+    def reading(lang):
+        if any(ref() is not None for ref in held):
+            raise MemoryError
+        read.append(lang)
+        return load(lang)
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setattr({"dump": dump, "book.steps": book.steps, "adapter": adapter}[owner], step, exhausted)
+    load.cache_clear()
+    monkeypatch.setattr(ui.i18n, "_cached_load", reading)
+    r = await scan_upload(client, _backup(17), name="harbour.zip", source="odoo", headers={"Accept-Language": "th"})
+    assert held, "the step never ran"
+    assert r.status_code == 422, r.text
+    assert "th" in read
+    assert r.json()["detail"] == t("migration.err_odoo_backup_too_large", "th")
+
+
 def _longest_line(version: int) -> int:
     return max(len(line) for line in build.dump_sql(build.tables(version)).split("\n"))
 
