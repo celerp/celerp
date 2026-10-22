@@ -1,0 +1,24 @@
+{
+  "id": "labels.print-labels",
+  "title": "Printing labels",
+  "summary": "Print barcode or QR labels for a batch of items.",
+  "keywords": ["labels", "barcode", "qr", "print", "sticker"],
+  "routes": ["/labels/print-list"],
+  "permission": "manage_labels",
+  "order": 1,
+  "steps": [
+    {
+      "text": "Selecting items in {inv} opens the print screen, titled {print}, with those items ready to print.",
+      "labels": {"inv": "nav.inventory", "print": "labels.print_labels_heading"},
+      "image": null,
+      "capture": {"route": "/labels/print-list", "selector": "main", "actions": []}
+    },
+    {
+      "text": "Pick the {tmpl} to use, then confirm with {btn} to open the print dialog.",
+      "labels": {"tmpl": "label.label_template", "btn": "btn._print_labels"},
+      "image": null,
+      "capture": {"route": "/labels/print-list", "selector": "main", "actions": []}
+    }
+  ],
+  "related": ["labels.settings"]
+}

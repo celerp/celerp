@@ -1,0 +1,18 @@
+{
+  "id": "subscriptions.import",
+  "title": "Importing subscriptions from a file",
+  "summary": "Bulk-create subscriptions from a spreadsheet.",
+  "keywords": ["import", "csv", "bulk", "subscription"],
+  "routes": ["/subscriptions/import"],
+  "permission": "import_export_data",
+  "order": 2,
+  "steps": [
+    {
+      "text": "On the {hdr} screen, choose {dl} for the column layout, or upload your own file directly.",
+      "labels": {"hdr": "subscriptions_import.hdr_import", "dl": "btn.download_template"},
+      "image": null,
+      "capture": {"route": "/subscriptions/import", "selector": "main", "actions": []}
+    }
+  ],
+  "related": ["subscriptions.overview"]
+}

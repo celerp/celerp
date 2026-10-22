@@ -1,0 +1,24 @@
+{
+  "id": "labels.settings",
+  "title": "Label templates",
+  "summary": "Design and manage the label templates used when printing.",
+  "keywords": ["label template", "barcode template", "qr template", "settings"],
+  "routes": ["/settings/labels"],
+  "permission": "manage_labels",
+  "order": 2,
+  "steps": [
+    {
+      "text": "Open {lbl} from Inventory Settings to see the {tmpl} list.",
+      "labels": {"lbl": "nav.labels", "tmpl": "page.templates"},
+      "image": null,
+      "capture": {"route": "/settings/labels", "selector": "main", "actions": []}
+    },
+    {
+      "text": "Choose {add} to create a new template, then lay out its fields in the editor.",
+      "labels": {"add": "btn._add"},
+      "image": null,
+      "capture": {"route": "/settings/labels", "selector": "main", "actions": []}
+    }
+  ],
+  "related": ["labels.print-labels"]
+}

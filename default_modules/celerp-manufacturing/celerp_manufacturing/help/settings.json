@@ -1,0 +1,30 @@
+{
+  "id": "manufacturing.settings",
+  "title": "Manufacturing preferences and work centers",
+  "summary": "Set production rules and add the work centers runs are scheduled against.",
+  "keywords": ["manufacturing settings", "work center", "auto create", "production rules"],
+  "routes": ["/settings/manufacturing"],
+  "permission": "manage_manufacturing",
+  "order": 3,
+  "steps": [
+    {
+      "text": "Open {settings} from the gear link on the Manufacturing group to set company-wide rules.",
+      "labels": {"settings": "settings_manufacturing.page_header"},
+      "image": null,
+      "capture": {"route": "/settings/manufacturing", "selector": "main", "actions": []}
+    },
+    {
+      "text": "Turn on {require} to block completing a run until its components are issued.",
+      "labels": {"require": "settings_manufacturing.require_issued_label"},
+      "image": null,
+      "capture": {"route": "/settings/manufacturing", "selector": "main", "actions": []}
+    },
+    {
+      "text": "Choose {wc} to add a work center, so runs can be assigned to a working area and its working-day length.",
+      "labels": {"wc": "settings_manufacturing.add_work_center"},
+      "image": null,
+      "capture": {"route": "/settings/manufacturing", "selector": "main", "actions": []}
+    }
+  ],
+  "related": ["manufacturing.production"]
+}
