@@ -43,8 +43,9 @@ def _toast(r) -> dict:
     ("/docs/x:1/fulfill-lines", "fulfill_lines", {}, [_L0, _L1], "2 lines set as shipped."),
 ])
 async def test_a_line_action_says_what_it_did(ui_client, path, send, fields, lines, expected):
+    ui_client.cookies.update(_cookies())
     with patch(f"ui.api_client.{send}", new=AsyncMock(return_value={})):
-        r = await ui_client.post(path, cookies=_cookies(),
+        r = await ui_client.post(path,
                                  data={"line_id": lines, "idempotency_key": "k", **fields})
     toast = _toast(r)
     assert toast["message"] == expected
@@ -53,7 +54,8 @@ async def test_a_line_action_says_what_it_did(ui_client, path, send, fields, lin
 
 @pytest.mark.asyncio
 async def test_undo_receipt_says_it_was_undone(ui_client):
+    ui_client.cookies.update(_cookies())
     with patch("ui.api_client.undo_receive_goods", new=AsyncMock(return_value={})):
-        r = await ui_client.delete("/docs/x:1/receive", cookies=_cookies())
+        r = await ui_client.delete("/docs/x:1/receive")
     assert r.headers["HX-Redirect"] == "/docs/x:1"
     assert _toast(r) == {"message": "Receipt undone.", "type": "info"}

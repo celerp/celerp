@@ -84,7 +84,8 @@ async def test_line_items_csv_named_by_its_number(ui_client, monkeypatch, kind, 
 
     monkeypatch.setattr(api, "get_doc", AsyncMock(return_value={
         "ref_id": ref, "line_items": [{"description": "Widget", "quantity": 1, "unit_price": 100}]}))
-    r = await ui_client.get(f"/{kind}/doc:1/items/csv", cookies={"celerp_token": make_test_token(role="owner")})
+    ui_client.cookies.update({"celerp_token": make_test_token(role="owner")})
+    r = await ui_client.get(f"/{kind}/doc:1/items/csv")
     assert r.status_code == 200
     assert _sent_name(r.headers["content-disposition"]) == f"{ref}_items.csv".replace(" ", "_")
 

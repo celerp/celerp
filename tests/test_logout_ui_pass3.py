@@ -21,11 +21,11 @@ async def test_logout_uses_refresh_fallback_and_clears_external_domain(method):
         base_url="https://bup053.celerp.com",
         follow_redirects=False,
     ) as client:
+        client.cookies.update({"celerp_refresh": "refresh-only"})
         with patch("ui.routes.auth.api_logout", new=logout):
             r = await client.request(
                 method,
                 "/logout",
-                cookies={"celerp_refresh": "refresh-only"},
             )
 
     assert r.status_code == 302

@@ -26,7 +26,7 @@ a migration run records it and resumes only under it.
 from __future__ import annotations
 
 import re
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Annotated, Any, Literal, get_args
 
@@ -167,7 +167,7 @@ class CIFBatch(BaseModel):
     cif_version: str = CIF_VERSION
     source: str
     source_system: str
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     record_count: int = 0
     notes: str | None = None
 

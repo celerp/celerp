@@ -146,9 +146,10 @@ async def test_ai_quota_status_topup_url_policy(auth_client):
     _set_partner()
     mock_status = {"used": 15, "limit": 200, "topup_credits": 0,
                    "resets_at": "", "tier": "ai"}
+    auth_client.cookies.update(authed_cookies())
     with patch("celerp_ai.ui_routes.api.ai_quota_status",
                AsyncMock(return_value=mock_status | {"instance_id": "inst-1"})):
-        r = await auth_client.get("/ai/quota-status", cookies=authed_cookies())
+        r = await auth_client.get("/ai/quota-status")
     data = r.json()
     assert "topup_url" in data
     assert "/subscribe/topup" not in data["topup_url"]
@@ -160,9 +161,10 @@ async def test_ai_quota_status_topup_url_direct(auth_client):
     which resolves the direct topup destination at click (positive control)."""
     mock_status = {"used": 15, "limit": 200, "topup_credits": 0,
                    "resets_at": "", "tier": "ai"}
+    auth_client.cookies.update(authed_cookies())
     with patch("celerp_ai.ui_routes.api.ai_quota_status",
                AsyncMock(return_value=mock_status | {"instance_id": "inst-1"})):
-        r = await auth_client.get("/ai/quota-status", cookies=authed_cookies())
+        r = await auth_client.get("/ai/quota-status")
     data = r.json()
     assert "/commercial/checkout?intent=topup" in data["topup_url"]
 

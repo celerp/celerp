@@ -12,8 +12,6 @@ import pytest
 from celerp.models.projections import Projection
 from test_mfg_outstanding_demand import _invoice, _row, _stocked
 
-pytestmark = pytest.mark.asyncio
-
 _DOC, _OTHER = "doc:mine", "doc:other"
 
 # Every legal item status, classified for the document that wants it. Adding a status to

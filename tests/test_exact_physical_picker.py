@@ -70,7 +70,8 @@ def _patches(items, list_items=None):
 async def _get(ui_client, url, items, list_items=None):
     p1, p2, p3, p4 = _patches(items, list_items)
     with p1, p2, p3, p4:
-        return await ui_client.get(url, cookies=_authed())
+        ui_client.cookies.update(_authed())
+        return await ui_client.get(url)
 
 
 async def _search(ui_client, code, items, hint=""):

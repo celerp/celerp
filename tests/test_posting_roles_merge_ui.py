@@ -40,6 +40,7 @@ def test_a_merge_within_one_account_says_nothing_extra():
 @pytest.mark.asyncio
 async def test_the_bulk_merge_sends_one_key_and_raises_the_moved_value_as_a_toast(ui_client):
     merge = AsyncMock(return_value={"id": "item:new", "inventory_reclassification": _TWO})
+    ui_client.cookies.update(_authed())
     with (
         patch("ui.api_client.get_item", new=AsyncMock(return_value={"id": "item:a", "sku": "A", "quantity": 1})),
         patch("ui.api_client.merge_items", new=merge),
@@ -48,7 +49,6 @@ async def test_the_bulk_merge_sends_one_key_and_raises_the_moved_value_as_a_toas
             "/api/items/bulk/merge",
             content=b"selected=item%3Aa&selected=item%3Ab&target_sku_from=item%3Aa&idempotency_key=merge-k1",
             headers={"content-type": "application/x-www-form-urlencoded"},
-            cookies=_authed(),
         )
     assert r.status_code == 200
     assert merge.await_args.kwargs["idempotency_key"] == "merge-k1"
@@ -60,20 +60,21 @@ async def test_the_bulk_merge_sends_one_key_and_raises_the_moved_value_as_a_toas
 
 @pytest.mark.asyncio
 async def test_the_merge_preview_returns_the_sentence(ui_client):
+    ui_client.cookies.update(_authed())
     with patch("ui.api_client.preview_merge", new=AsyncMock(
             return_value={"inventory_reclassification": _TWO, "plan_fingerprint": "fp-1"})):
         r = await ui_client.post("/api/items/merge/preview", data={"selected": ["item:a", "item:b"],
-                                                                   "target_sku_from": "item:a"}, cookies=_authed())
+                                                                   "target_sku_from": "item:a"})
     assert r.json() == {"message": _merge_reclass_sentence(_TWO), "plan_fingerprint": "fp-1"}
 
 
 @pytest.mark.asyncio
 async def test_the_merge_preview_asks_for_the_typed_sku(ui_client):
     preview = AsyncMock(return_value={"inventory_reclassification": None, "plan_fingerprint": "fp-2"})
+    ui_client.cookies.update(_authed())
     with patch("ui.api_client.preview_merge", new=preview):
         r = await ui_client.post("/api/items/merge/preview", data={
-            "selected": ["item:a", "item:b"], "target_sku_from": "item:a", "resulting_sku": "NEW-1"},
-            cookies=_authed())
+            "selected": ["item:a", "item:b"], "target_sku_from": "item:a", "resulting_sku": "NEW-1"})
     assert r.json()["plan_fingerprint"] == "fp-2"
     assert preview.await_args.args[1:] == (["item:a", "item:b"], "item:a", "NEW-1")
 
@@ -109,6 +110,7 @@ _STALE = "The merge or its items changed since it was reviewed. Review the merge
 async def test_the_confirmed_merge_carries_the_preview_and_a_stale_one_is_explained(ui_client):
     from ui.api_client import APIError
     merge = AsyncMock(side_effect=APIError(409, _STALE))
+    ui_client.cookies.update(_authed())
     with (
         patch("ui.api_client.get_item", new=AsyncMock(return_value={"id": "item:a", "sku": "A", "quantity": 1})),
         patch("ui.api_client.merge_items", new=merge),
@@ -117,7 +119,6 @@ async def test_the_confirmed_merge_carries_the_preview_and_a_stale_one_is_explai
             "/api/items/bulk/merge",
             content=b"selected=item%3Aa&selected=item%3Ab&target_sku_from=item%3Aa&plan_fingerprint=fp-1",
             headers={"content-type": "application/x-www-form-urlencoded"},
-            cookies=_authed(),
         )
     assert merge.await_args.kwargs["plan_fingerprint"] == "fp-1"
     # The quantity is the merge's own sum, never a figure the screen read earlier.
@@ -128,6 +129,7 @@ async def test_the_confirmed_merge_carries_the_preview_and_a_stale_one_is_explai
 @pytest.mark.asyncio
 async def test_an_undo_the_api_refuses_is_explained(ui_client):
     from ui.api_client import APIError
+    ui_client.cookies.update(_authed())
     with patch("ui.api_client.undo_merge", new=AsyncMock(side_effect=APIError(409, "The merged item has changed."))):
-        r = await ui_client.post("/api/items/item:new/undo-merge", cookies=_authed())
+        r = await ui_client.post("/api/items/item:new/undo-merge")
     assert json.loads(r.headers["HX-Trigger"])["celerpToast"]["message"] == "The merged item has changed."

@@ -967,10 +967,10 @@ async def _verification(session: AsyncSession, run: MigrationRun) -> dict:
 async def _unmapped(session: AsyncSession, run_id: uuid.UUID,
                     expected: list[tuple[str, str]]) -> list[tuple[str, str]]:
     """Manifest source identities with no durable entity mapping for this run."""
-    mapped = set((await session.execute(
+    mapped = {tuple(row) for row in await session.execute(
         select(MigrationEntityMap.source_type, MigrationEntityMap.source_external_id)
         .where(MigrationEntityMap.migration_run_id == run_id)
-    )).tuples())
+    )}
     return [key for key in expected if key not in mapped]
 
 

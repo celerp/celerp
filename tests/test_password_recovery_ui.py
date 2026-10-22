@@ -377,12 +377,14 @@ async def _sign_in_at(site: str, ui, client) -> object:
         from ui.routes.migrations import SCAN_COOKIE
         started = {"run_id": "run-1", "access_token": pair[0], "refresh_token": pair[1]}
         with patch("ui.api_client.migration_start_company_start", new=AsyncMock(return_value=started)):
-            return await ui.post("/setup/start-company/migrate/start", cookies={SCAN_COOKIE: "scan-1"}, data={
+            ui.cookies.update({SCAN_COOKIE: "scan-1"})
+            return await ui.post("/setup/start-company/migrate/start", data={
                 "email": OWNER, "password": NEW_PW, "company_name": "Next Co"})
     from ui.routes.company_backup import UPLOAD_COOKIE
     done = {"access_token": pair[0], "refresh_token": pair[1], "outcome": "created"}
     with patch("ui.api_client.company_backup_start_restore", new=AsyncMock(return_value=done)):
-        return await ui.post("/setup/start-company/restore-backup/restore", cookies={UPLOAD_COOKIE: "up-1"}, data={
+        ui.cookies.update({UPLOAD_COOKIE: "up-1"})
+        return await ui.post("/setup/start-company/restore-backup/restore", data={
             "email": OWNER, "password": NEW_PW, "company_name": "Next Co"})
 
 
@@ -411,9 +413,9 @@ async def test_sign_in_after_reset_shows_notice(client, session, ui, site):
     unseen = await _sign_in_at(site, ui, client)
     assert unseen.status_code == 200 and "Your password was reset on" in unseen.text, site
 
+    ui.cookies.update({COOKIE_NAME: unseen.cookies[COOKIE_NAME]})
     went_on = await ui.post("/password-reset-notices/acknowledge",
-                            data={"id": [v for k, v in fields if k == "id"], "next": dest},
-                            cookies={COOKIE_NAME: unseen.cookies[COOKIE_NAME]})
+                            data={"id": [v for k, v in fields if k == "id"], "next": dest})
     assert (went_on.status_code, went_on.headers["location"]) == (303, dest)
     again = await _sign_in_at(site, ui, client)
     assert again.status_code in (302, 303), site

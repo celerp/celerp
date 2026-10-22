@@ -406,7 +406,7 @@ def demo(port_file: str, folder: str, sample: str, text: str) -> None:
 
 
 def carried(before_path: str, after_path: str) -> None:
-    before, after = (json.loads(open(p, encoding="utf-8").read()) for p in (before_path, after_path))
+    before, after = (json.loads(Path(p).read_text(encoding="utf-8")) for p in (before_path, after_path))
     if before["ledger"] != after["ledger"]:
         fail(f"the ledger changed:\n before {before['ledger']}\n after  {after['ledger']}")
     changed = {path: (rows, after["served"].get(path)) for path, rows in before["served"].items()

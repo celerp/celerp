@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import shutil
 import sqlite3
+from contextlib import closing
 
 import pytest
 
@@ -170,7 +171,7 @@ async def test_manager_missing_or_unknown_revision_refused(client, migration_env
     from celerp.importers.adapters.manager_io.sqlite_reader import NOT_MANAGER
 
     missing = _book(tmp_path / "missing.manager", TESTED_REVISION)
-    with sqlite3.connect(missing) as conn:
+    with closing(sqlite3.connect(missing)) as conn, conn:
         conn.execute('DELETE FROM "Objects" WHERE "Key" = ?', (str(SCHEMA_GUID),))
     for name, call in _entries(missing):
         if name == "detect":
@@ -182,7 +183,7 @@ async def test_manager_missing_or_unknown_revision_refused(client, migration_env
     messages = set()
     for label, content in (("garbled", b"\xff\xff\xff"), ("zero", b""), ("text", b"\x0a\x03abc")):
         unknown = shutil.copyfile(missing, tmp_path / f"{label}.manager")
-        with sqlite3.connect(unknown) as conn:
+        with closing(sqlite3.connect(unknown)) as conn, conn:
             conn.execute('INSERT INTO "Objects" VALUES (?, ?, ?, 0)', (str(SCHEMA_GUID), str(SCHEMA_GUID), content))
         messages.add(_refused_everywhere(unknown)[0])
         assert await _scan_refusals(client, unknown) == messages

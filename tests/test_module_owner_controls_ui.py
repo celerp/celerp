@@ -57,7 +57,8 @@ def _owner(value: bool):
 async def _modules_page(ui_client, owner: bool) -> str:
     with _owner(owner), patch("ui.api_client.get_modules", new=AsyncMock(return_value=_MODULES)), \
             patch("ui.routes.modules_page._modules_dir_display", return_value="/data/modules"):
-        r = await ui_client.get("/modules", cookies=_cookies())
+        ui_client.cookies.update(_cookies())
+        r = await ui_client.get("/modules")
     assert r.status_code == 200
     return r.text
 
@@ -84,12 +85,13 @@ async def test_installation_owner_is_offered_installation_controls(ui_client):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("owner", [False, True])
 async def test_marketplace_offers_buying_and_installing_to_the_owner_only(ui_client, owner):
+    ui_client.cookies.update(_cookies())
     with _owner(owner), \
             patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG, False))), \
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])), \
             patch("ui.api_client.module_licenses", new=AsyncMock(return_value=[])), \
             patch("ui.api_client.account_status", new=AsyncMock(return_value={})):
-        r = await ui_client.get("/modules/marketplace-panel", cookies=_cookies())
+        r = await ui_client.get("/modules/marketplace-panel")
     body = r.text
     assert "Paid" in body and "Free" in body
     for control in ('hx-post="/modules/buy', 'hx-post="/modules/marketplace-download"'):
@@ -100,10 +102,11 @@ async def test_marketplace_offers_buying_and_installing_to_the_owner_only(ui_cli
 @pytest.mark.asyncio
 @pytest.mark.parametrize("owner", [False, True])
 async def test_community_offers_downloading_to_the_owner_only(ui_client, owner):
+    ui_client.cookies.update(_cookies())
     with _owner(owner), \
             patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG, False))), \
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])):
-        r = await ui_client.post("/modules/community-ack", cookies=_cookies())
+        r = await ui_client.post("/modules/community-ack")
     body = r.text
     assert "Community" in body
     assert ('hx-post="/modules/community-download"' in body) is owner
@@ -156,9 +159,10 @@ async def test_a_module_that_failed_to_load_names_the_reason_and_what_to_do(ui_c
     reason = "api_routes 'celerp.routers.health' does not resolve to source inside the module."
     broken = [{"name": "bad-mod", "label": "Bad Mod", "version": "1.0", "author": "A",
                "enabled": True, "running": False, "load_error": reason}]
+    ui_client.cookies.update(_cookies())
     with _owner(True), patch("ui.api_client.get_modules", new=AsyncMock(return_value=broken)), \
             patch("ui.routes.modules_page._modules_dir_display", return_value="/data/modules"):
-        r = await ui_client.get("/modules", cookies=_cookies())
+        r = await ui_client.get("/modules")
     assert json.dumps(t("modules.load_failed", "en", label="Bad Mod", error=reason))[1:-1] in r.text
 
 

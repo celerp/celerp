@@ -281,168 +281,194 @@ class TestDiscovery:
 
     @pytest.mark.asyncio
     async def test_dashboard_has_kpi_cards(self, ui):
+        ui.cookies.update(_c())
         with _Patches(_dashboard_mocks()):
-            r = await ui.get("/dashboard", cookies=_c())
+            r = await ui.get("/dashboard")
         assert r.status_code == 200
         assert b"kpi-card" in r.content
 
     @pytest.mark.asyncio
     async def test_dashboard_has_quick_links(self, ui):
+        ui.cookies.update(_c())
         with _Patches(_dashboard_mocks()):
-            r = await ui.get("/dashboard", cookies=_c())
+            r = await ui.get("/dashboard")
         assert b"quick-link" in r.content
 
     @pytest.mark.asyncio
     async def test_dashboard_has_activity_feed(self, ui):
+        ui.cookies.update(_c())
         with _Patches(_dashboard_mocks()):
-            r = await ui.get("/dashboard", cookies=_c())
+            r = await ui.get("/dashboard")
         assert b"activity" in r.content.lower()
 
     @pytest.mark.asyncio
     async def test_dashboard_has_charts(self, ui):
+        ui.cookies.update(_c())
         with _Patches(_dashboard_mocks()):
-            r = await ui.get("/dashboard", cookies=_c())
+            r = await ui.get("/dashboard")
         assert b"chart" in r.content.lower()
 
     @pytest.mark.asyncio
     async def test_sidebar_has_all_nav_groups(self, ui):
+        ui.cookies.update(_c())
         with _Patches(_dashboard_mocks()):
-            r = await ui.get("/dashboard", cookies=_c())
+            r = await ui.get("/dashboard")
         for group in [b"Sales", b"Documents", b"Inventory", b"Finance"]:
             assert group in r.content, f"Missing sidebar group: {group}"
 
     @pytest.mark.asyncio
     async def test_sidebar_has_dashboard_link(self, ui):
+        ui.cookies.update(_c())
         with _Patches(_dashboard_mocks()):
-            r = await ui.get("/dashboard", cookies=_c())
+            r = await ui.get("/dashboard")
         assert b"/dashboard" in r.content
 
     @pytest.mark.asyncio
     async def test_find_inventory_from_sidebar(self, ui):
+        ui.cookies.update(_c())
         with _Patches(_dashboard_mocks()):
-            r = await ui.get("/dashboard", cookies=_c())
+            r = await ui.get("/dashboard")
         assert b"/inventory" in r.content
 
     @pytest.mark.asyncio
     async def test_find_invoices_from_sidebar(self, ui):
+        ui.cookies.update(_c())
         with _Patches(_dashboard_mocks()):
-            r = await ui.get("/dashboard", cookies=_c())
+            r = await ui.get("/dashboard")
         assert b"Invoices" in r.content
 
     @pytest.mark.asyncio
     async def test_find_crm_from_sidebar(self, ui):
+        ui.cookies.update(_c())
         with _Patches(_dashboard_mocks()):
-            r = await ui.get("/dashboard", cookies=_c())
+            r = await ui.get("/dashboard")
         assert b"/crm" in r.content
 
     @pytest.mark.asyncio
     async def test_find_reports_from_sidebar(self, ui):
+        ui.cookies.update(_c())
         with _Patches(_dashboard_mocks()):
-            r = await ui.get("/dashboard", cookies=_c())
+            r = await ui.get("/dashboard")
         assert b"Reports" in r.content
 
     @pytest.mark.asyncio
     async def test_find_manufacturing_from_sidebar(self, ui):
+        ui.cookies.update(_c())
         with _Patches(_dashboard_mocks()):
-            r = await ui.get("/dashboard", cookies=_c())
+            r = await ui.get("/dashboard")
         assert b"/manufacturing" in r.content
 
     @pytest.mark.asyncio
     async def test_find_settings_from_sidebar(self, ui):
+        ui.cookies.update(_c())
         with _Patches(_dashboard_mocks()):
-            r = await ui.get("/dashboard", cookies=_c())
+            r = await ui.get("/dashboard")
         assert b"/settings" in r.content
 
     @pytest.mark.asyncio
     async def test_find_accounting_from_sidebar(self, ui):
+        ui.cookies.update(_c())
         with _Patches(_dashboard_mocks()):
-            r = await ui.get("/dashboard", cookies=_c())
+            r = await ui.get("/dashboard")
         assert b"/accounting" in r.content
 
     @pytest.mark.asyncio
     async def test_find_subscriptions_from_sidebar(self, ui):
+        ui.cookies.update(_c())
         with _Patches(_dashboard_mocks()):
-            r = await ui.get("/dashboard", cookies=_c())
+            r = await ui.get("/dashboard")
         assert b"/subscriptions" in r.content
 
     @pytest.mark.asyncio
     async def test_global_search_in_topbar(self, ui):
+        ui.cookies.update(_c())
         with _Patches(_dashboard_mocks()):
-            r = await ui.get("/dashboard", cookies=_c())
+            r = await ui.get("/dashboard")
         assert b"global-search" in r.content
 
     @pytest.mark.asyncio
     async def test_inventory_has_search(self, ui):
+        ui.cookies.update(_c())
         with _Patches(_inventory_mocks()):
-            r = await ui.get("/inventory", cookies=_c())
+            r = await ui.get("/inventory")
         assert r.status_code == 200
         assert b"search" in r.content.lower()
 
     @pytest.mark.asyncio
     async def test_inventory_has_import_button(self, ui):
+        ui.cookies.update(_c())
         with _Patches(_inventory_mocks()):
-            r = await ui.get("/inventory", cookies=_c())
+            r = await ui.get("/inventory")
         assert b"import" in r.content.lower()
 
     @pytest.mark.asyncio
     async def test_docs_page_has_new_invoice_button(self, ui):
+        ui.cookies.update(_c())
         with _Patches(_docs_mocks()):
-            r = await ui.get("/docs", cookies=_c())
+            r = await ui.get("/docs")
         assert r.status_code == 200
         assert b"New" in r.content or b"new" in r.content.lower()
 
     @pytest.mark.asyncio
     async def test_crm_page_has_contacts_tab(self, ui):
+        ui.cookies.update(_c())
         with _Patches(_crm_mocks()):
-            r = await ui.get("/contacts/customers", cookies=_c())
+            r = await ui.get("/contacts/customers")
         assert r.status_code == 200
         assert b"Customer" in r.content or b"Contact" in r.content
 
     @pytest.mark.asyncio
     async def test_crm_page_has_deals_tab(self, ui):
+        ui.cookies.update(_c())
         with _Patches(_crm_mocks()):
-            r = await ui.get("/contacts/sales", cookies=_c())
+            r = await ui.get("/contacts/sales")
         assert r.status_code == 200
         assert b"Deal" in r.content or b"deal" in r.content or b"Sales" in r.content
 
     @pytest.mark.asyncio
     async def test_reports_landing_shows_report_types(self, ui):
+        ui.cookies.update(_c())
         with _Patches(_reports_mocks()):
-            r = await ui.get("/reports", cookies=_c())
+            r = await ui.get("/reports")
         assert r.status_code == 200
 
     @pytest.mark.asyncio
     async def test_settings_has_company_tab(self, ui):
+        ui.cookies.update(_c())
         with _Patches(_settings_mocks()):
-            r = await ui.get("/settings/general", cookies=_c())
+            r = await ui.get("/settings/general")
         assert r.status_code == 200
         assert b"company" in r.content.lower() or b"Company" in r.content
 
     @pytest.mark.asyncio
     async def test_settings_has_users_tab(self, ui):
+        ui.cookies.update(_c())
         with _Patches(_settings_mocks()):
-            r = await ui.get("/settings/general", cookies=_c())
+            r = await ui.get("/settings/general")
         assert r.status_code == 200
         assert b"user" in r.content.lower()
 
     @pytest.mark.asyncio
     async def test_settings_has_taxes_tab(self, ui):
+        ui.cookies.update(_c())
         with _Patches(_settings_mocks()):
-            r = await ui.get("/settings/sales", cookies=_c())
+            r = await ui.get("/settings/sales")
         assert r.status_code == 200
         assert b"tax" in r.content.lower()
 
     @pytest.mark.asyncio
     async def test_manufacturing_page_loads(self, ui):
+        ui.cookies.update(_c())
         with _Patches({"ui.api_client.get_company": AsyncMock(return_value=_COMPANY),
                        "ui.api_client.manufacturing_to_make": AsyncMock(return_value={"items": [], "total": 0})}):
-            r = await ui.get("/manufacturing", cookies=_c())
+            r = await ui.get("/manufacturing")
         assert r.status_code == 200
 
     @pytest.mark.asyncio
     async def test_subscriptions_page_loads(self, ui):
+        ui.cookies.update(_c())
         with _Patches({"ui.api_client.list_subscriptions": AsyncMock(return_value=[_SUB])}):
-            r = await ui.get("/subscriptions", cookies=_c())
+            r = await ui.get("/subscriptions")
         assert r.status_code == 200
 
 
@@ -455,13 +481,15 @@ class TestCRUDRead:
 
     @pytest.mark.asyncio
     async def test_inventory_shows_items(self, ui):
+        ui.cookies.update(_c())
         with _Patches(_inventory_mocks()):
-            r = await ui.get("/inventory", cookies=_c())
+            r = await ui.get("/inventory")
         assert r.status_code == 200
         assert b"Ruby" in r.content or b"RB001" in r.content
 
     @pytest.mark.asyncio
     async def test_inventory_item_detail(self, ui):
+        ui.cookies.update(_c())
         with _Patches({"ui.api_client.get_item": AsyncMock(return_value=_ITEM),
                        "ui.api_client.get_item_schema": AsyncMock(return_value=_SCHEMA),
                        "ui.api_client.get_company": AsyncMock(return_value=_COMPANY),
@@ -472,27 +500,30 @@ class TestCRUDRead:
                        "ui.api_client.get_all_category_schemas": AsyncMock(return_value={}),
                        "ui.api_client.get_company_category_schemas": AsyncMock(return_value={}),
                        "ui.api_client.list_import_batches": AsyncMock(return_value={"batches": []})}):
-            r = await ui.get("/inventory/item:1", cookies=_c())
+            r = await ui.get("/inventory/item:1")
         assert r.status_code == 200
 
     @pytest.mark.asyncio
     async def test_docs_list_shows_invoices(self, ui):
+        ui.cookies.update(_c())
         with _Patches(_docs_mocks()):
-            r = await ui.get("/docs?type=invoice", cookies=_c())
+            r = await ui.get("/docs?type=invoice")
         assert r.status_code == 200
         assert b"INV2026001" in r.content or b"invoice" in r.content.lower()
 
     @pytest.mark.asyncio
     async def test_docs_list_shows_pos(self, ui):
+        ui.cookies.update(_c())
         with _Patches(_docs_mocks()):
-            r = await ui.get("/docs?type=purchase_order", cookies=_c())
+            r = await ui.get("/docs?type=purchase_order")
         assert r.status_code == 200
 
     @pytest.mark.asyncio
     async def test_doc_detail_page(self, ui):
+        ui.cookies.update(_c())
         with _Patches({"ui.api_client.get_doc": AsyncMock(return_value=_DOC_INV),
                        "ui.api_client.list_contacts": AsyncMock(return_value={"items": [_CONTACT], "total": 1})}):
-            r = await ui.get("/docs/doc:inv1", cookies=_c())
+            r = await ui.get("/docs/doc:inv1")
         assert r.status_code == 200
 
     @pytest.mark.asyncio
@@ -501,9 +532,10 @@ class TestCRUDRead:
         number is issued on finalize — so the cell renders locked, with the
         explanatory tooltip, and WITHOUT the inline click-to-edit endpoint."""
         draft = {**_DOC_INV, "status": "draft"}
+        ui.cookies.update(_c())
         with _Patches({"ui.api_client.get_doc": AsyncMock(return_value=draft),
                        "ui.api_client.list_contacts": AsyncMock(return_value={"items": [_CONTACT], "total": 1})}):
-            r = await ui.get("/docs/doc:inv1", cookies=_c())
+            r = await ui.get("/docs/doc:inv1")
         assert r.status_code == 200
         html = r.text
         assert "editable-cell--locked" in html, "draft doc number should render locked"
@@ -516,9 +548,10 @@ class TestCRUDRead:
         """Once finalized, the number can be manually overridden, so the inline
         edit cell (→ renumber) stays available and is not locked."""
         final = {**_DOC_QUOT, "status": "sent"}
+        ui.cookies.update(_c())
         with _Patches({"ui.api_client.get_doc": AsyncMock(return_value=final),
                        "ui.api_client.list_contacts": AsyncMock(return_value={"items": [_CONTACT], "total": 1})}):
-            r = await ui.get("/docs/doc:quo1", cookies=_c())
+            r = await ui.get("/docs/doc:quo1")
         assert r.status_code == 200
         html = r.text
         assert "/docs/doc:quo1/field/ref_id/edit" in html, \
@@ -528,75 +561,86 @@ class TestCRUDRead:
 
     @pytest.mark.asyncio
     async def test_contact_list(self, ui):
+        ui.cookies.update(_c())
         with _Patches(_crm_mocks()):
-            r = await ui.get("/contacts/customers", cookies=_c())
+            r = await ui.get("/contacts/customers")
         assert r.status_code == 200
         assert b"Alice" in r.content
 
     @pytest.mark.asyncio
     async def test_contact_detail(self, ui):
+        ui.cookies.update(_c())
         with _Patches({"ui.api_client.get_contact": AsyncMock(return_value=_CONTACT)}):
-            r = await ui.get("/contacts/contact:1", cookies=_c())
+            r = await ui.get("/contacts/contact:1")
         assert r.status_code == 200
 
     @pytest.mark.asyncio
     @pytest.mark.asyncio
     @pytest.mark.asyncio
     async def test_subscription_list(self, ui):
+        ui.cookies.update(_c())
         with _Patches({"ui.api_client.list_subscriptions": AsyncMock(return_value=[_SUB])}):
-            r = await ui.get("/subscriptions", cookies=_c())
+            r = await ui.get("/subscriptions")
         assert r.status_code == 200
 
     @pytest.mark.asyncio
     async def test_mfg_order_list(self, ui):
+        ui.cookies.update(_c())
         with _Patches({"ui.api_client.get_company": AsyncMock(return_value=_COMPANY),
                        "ui.api_client.manufacturing_to_make": AsyncMock(
                            return_value={"items": [{"item_id": "item:1", "sku": "RING", "name": "Ring",
                                                      "to_make": 2, "demand": 2, "on_hand": 0, "doc_count": 1,
                                                      "est_cost": 100, "est_hours": 1, "due": None}], "total": 1})}):
-            r = await ui.get("/manufacturing", cookies=_c())
+            r = await ui.get("/manufacturing")
         assert r.status_code == 200
 
     @pytest.mark.asyncio
     async def test_accounting_pnl(self, ui):
+        ui.cookies.update(_c())
         with _Patches(_accounting_mocks()):
-            r = await ui.get("/reports/pnl", cookies=_c())
+            r = await ui.get("/reports/pnl")
         assert r.status_code == 200
 
     @pytest.mark.asyncio
     async def test_accounting_balance_sheet(self, ui):
+        ui.cookies.update(_c())
         with _Patches(_accounting_mocks()):
-            r = await ui.get("/reports/balance-sheet", cookies=_c())
+            r = await ui.get("/reports/balance-sheet")
         assert r.status_code == 200
 
     @pytest.mark.asyncio
     async def test_ar_aging_report(self, ui):
+        ui.cookies.update(_c())
         with _Patches(_reports_mocks()):
-            r = await ui.get("/reports/ar-aging", cookies=_c())
+            r = await ui.get("/reports/ar-aging")
         assert r.status_code == 200
 
     @pytest.mark.asyncio
     async def test_ap_aging_report(self, ui):
+        ui.cookies.update(_c())
         with _Patches(_reports_mocks()):
-            r = await ui.get("/reports/ap-aging", cookies=_c())
+            r = await ui.get("/reports/ap-aging")
         assert r.status_code == 200
 
     @pytest.mark.asyncio
     async def test_sales_report(self, ui):
+        ui.cookies.update(_c())
         with _Patches(_reports_mocks()):
-            r = await ui.get("/reports/sales", cookies=_c())
+            r = await ui.get("/reports/sales")
         assert r.status_code == 200
 
     @pytest.mark.asyncio
     async def test_purchases_report(self, ui):
+        ui.cookies.update(_c())
         with _Patches(_reports_mocks()):
-            r = await ui.get("/reports/purchases", cookies=_c())
+            r = await ui.get("/reports/purchases")
         assert r.status_code == 200
 
     @pytest.mark.asyncio
     async def test_expiring_report(self, ui):
+        ui.cookies.update(_c())
         with _Patches(_reports_mocks()):
-            r = await ui.get("/reports/expiring", cookies=_c())
+            r = await ui.get("/reports/expiring")
         assert r.status_code == 200
 
 
@@ -605,35 +649,40 @@ class TestCRUDCreate:
 
     @pytest.mark.asyncio
     async def test_create_invoice_blank_first(self, ui):
+        ui.cookies.update(_c())
         with _Patches({"ui.api_client.create_doc": AsyncMock(return_value={"id": "doc:new1", "event_id": 1})}):
-            r = await ui.post("/docs/create-blank?type=invoice", cookies=_c())
+            r = await ui.post("/docs/create-blank?type=invoice")
         assert r.status_code in (204, 302, 303, 200)
 
     @pytest.mark.asyncio
     async def test_create_po_blank_first(self, ui):
+        ui.cookies.update(_c())
         with _Patches({"ui.api_client.create_doc": AsyncMock(return_value={"id": "doc:newpo", "event_id": 1})}):
-            r = await ui.post("/docs/create-blank?type=purchase_order", cookies=_c())
+            r = await ui.post("/docs/create-blank?type=purchase_order")
         assert r.status_code in (204, 302, 303, 200)
 
     @pytest.mark.asyncio
     async def test_create_quotation_blank_first(self, ui):
+        ui.cookies.update(_c())
         with _Patches({"ui.api_client.create_doc": AsyncMock(return_value={"id": "doc:newq", "event_id": 1})}):
-            r = await ui.post("/docs/create-blank?type=quotation", cookies=_c())
+            r = await ui.post("/docs/create-blank?type=quotation")
         assert r.status_code in (204, 302, 303, 200)
 
     @pytest.mark.asyncio
     async def test_create_contact_blank_first(self, ui):
+        ui.cookies.update(_c())
         with _Patches({
             "ui.api_client.list_contacts": AsyncMock(return_value={"items": [], "total": 0}),
             "ui.api_client.create_contact": AsyncMock(return_value={"id": "contact:new", "event_id": 1}),
         }):
-            r = await ui.post("/contacts/create?type=customer", cookies=_c())
+            r = await ui.post("/contacts/create?type=customer")
         assert r.status_code in (200, 204, 302, 303)
 
     @pytest.mark.asyncio
     async def test_create_subscription(self, ui):
+        ui.cookies.update(_c())
         with _Patches({"ui.api_client.create_subscription": AsyncMock(return_value={"id": "sub:new", "event_id": 1})}):
-            r = await ui.post("/subscriptions/new", cookies=_c(),
+            r = await ui.post("/subscriptions/new",
                              data={"name": "Test Sub", "frequency": "monthly", "doc_type": "invoice",
                                    "start_date": "2026-03-01"})
         assert r.status_code in (200, 204, 302, 303)
@@ -647,46 +696,53 @@ class TestWorkflows:
 
     @pytest.mark.asyncio
     async def test_invoice_finalize(self, ui):
+        ui.cookies.update(_c())
         with _Patches({"ui.api_client.finalize_doc": AsyncMock(return_value={"ok": True})}):
-            r = await ui.post("/docs/doc:inv1/action/finalize", cookies=_c())
+            r = await ui.post("/docs/doc:inv1/action/finalize")
         assert r.status_code in (200, 204, 302, 303)
 
     @pytest.mark.asyncio
     async def test_invoice_send(self, ui):
+        ui.cookies.update(_c())
         with _Patches({"ui.api_client.send_doc": AsyncMock(return_value={"ok": True})}):
-            r = await ui.post("/docs/doc:inv1/action/send", cookies=_c())
+            r = await ui.post("/docs/doc:inv1/action/send")
         assert r.status_code in (200, 204, 302, 303)
 
     @pytest.mark.asyncio
     async def test_invoice_void(self, ui):
+        ui.cookies.update(_c())
         with _Patches({"ui.api_client.void_doc": AsyncMock(return_value={"ok": True})}):
-            r = await ui.post("/docs/doc:inv1/action/void", cookies=_c(), data={"reason": "test"})
+            r = await ui.post("/docs/doc:inv1/action/void", data={"reason": "test"})
         assert r.status_code in (200, 204, 302, 303)
 
     @pytest.mark.asyncio
     async def test_record_payment(self, ui):
+        ui.cookies.update(_c())
         with _Patches({"ui.api_client.record_payment": AsyncMock(return_value={"ok": True})}):
-            r = await ui.post("/docs/doc:inv1/payment", cookies=_c(),
+            r = await ui.post("/docs/doc:inv1/payment",
                              data={"amount": "5000", "method": "bank_transfer", "payment_date": "2026-02-25"})
         assert r.status_code in (200, 204, 302, 303)
 
     @pytest.mark.asyncio
     async def test_quotation_convert_to_invoice(self, ui):
+        ui.cookies.update(_c())
         with _Patches({"ui.api_client.convert_doc": AsyncMock(return_value={"id": "doc:conv1"})}):
-            r = await ui.post("/docs/doc:quo1/convert", cookies=_c())
+            r = await ui.post("/docs/doc:quo1/convert")
         assert r.status_code in (200, 204, 302, 303)
 
     @pytest.mark.asyncio
     async def test_po_receive_goods(self, ui):
+        ui.cookies.update(_c())
         with _Patches({"ui.api_client.receive_po": AsyncMock(return_value={"ok": True})}):
-            r = await ui.post("/docs/doc:po1/receive", cookies=_c(),
+            r = await ui.post("/docs/doc:po1/receive",
                              data={"lines": "[]"})
         assert r.status_code in (200, 204, 302, 303)
 
     @pytest.mark.asyncio
     async def test_payment_refund(self, ui):
+        ui.cookies.update(_c())
         with _Patches({"ui.api_client.refund_payment": AsyncMock(return_value={"ok": True})}):
-            r = await ui.post("/docs/doc:inv2/refund", cookies=_c(),
+            r = await ui.post("/docs/doc:inv2/refund",
                              data={"payment_index": "0", "amount": "1000", "payment_date": "2026-01-15", "method": "cash"})
         assert r.status_code in (200, 204, 302, 303)
 
@@ -695,70 +751,80 @@ class TestWorkflows:
     @pytest.mark.asyncio
     @pytest.mark.asyncio
     async def test_item_adjust_stock(self, ui):
+        ui.cookies.update(_c())
         with _Patches({"ui.api_client.adjust_item": AsyncMock(return_value={"ok": True})}):
-            r = await ui.post("/api/items/item:1/adjust", cookies=_c(), data={"new_qty": "20"})
+            r = await ui.post("/api/items/item:1/adjust", data={"new_qty": "20"})
         assert r.status_code in (200, 204, 302, 303)
 
     @pytest.mark.asyncio
     async def test_item_transfer(self, ui):
+        ui.cookies.update(_c())
         with _Patches({"ui.api_client.transfer_item": AsyncMock(return_value={"ok": True})}):
-            r = await ui.post("/api/items/item:1/transfer", cookies=_c(), data={"location_id": "loc:2"})
+            r = await ui.post("/api/items/item:1/transfer", data={"location_id": "loc:2"})
         assert r.status_code in (200, 204, 302, 303)
 
     @pytest.mark.asyncio
     async def test_item_reserve(self, ui):
+        ui.cookies.update(_c())
         with _Patches({"ui.api_client.reserve_item": AsyncMock(return_value={"ok": True})}):
-            r = await ui.post("/api/items/item:1/reserve", cookies=_c(), data={"quantity": "5"})
+            r = await ui.post("/api/items/item:1/reserve", data={"quantity": "5"})
         assert r.status_code in (200, 204, 302, 303)
 
     @pytest.mark.asyncio
     async def test_item_unreserve(self, ui):
+        ui.cookies.update(_c())
         with _Patches({"ui.api_client.unreserve_item": AsyncMock(return_value={"ok": True})}):
-            r = await ui.post("/api/items/item:1/unreserve", cookies=_c(), data={"quantity": "5"})
+            r = await ui.post("/api/items/item:1/unreserve", data={"quantity": "5"})
         assert r.status_code in (200, 204, 302, 303)
 
     @pytest.mark.asyncio
     async def test_item_update_price(self, ui):
+        ui.cookies.update(_c())
         with _Patches({
             "ui.api_client.get_price_lists": AsyncMock(return_value=[{"name": "Cost"}, {"name": "Retail"}]),
             "ui.api_client.set_item_price": AsyncMock(return_value={"event_id": "e1"}),
         }):
-            r = await ui.post("/api/items/item:1/price", cookies=_c(),
+            r = await ui.post("/api/items/item:1/price",
                              data={"cost_price": "150", "retail_price": "600"})
         assert r.status_code in (200, 204, 302, 303)
 
     @pytest.mark.asyncio
     async def test_item_expire(self, ui):
+        ui.cookies.update(_c())
         with _Patches({"ui.api_client.expire_item": AsyncMock(return_value={"ok": True})}):
-            r = await ui.post("/api/items/item:1/expire", cookies=_c(), data={"reason": "damaged"})
+            r = await ui.post("/api/items/item:1/expire", data={"reason": "damaged"})
         assert r.status_code in (200, 204, 302, 303)
 
     @pytest.mark.asyncio
     async def test_item_archive(self, ui):
+        ui.cookies.update(_c())
         with _Patches({"ui.api_client.set_item_status": AsyncMock(return_value={"updated": 1})}):
-            r = await ui.post("/api/items/item:1/archive", cookies=_c(),
+            r = await ui.post("/api/items/item:1/archive",
                              data={"reason": "broken"})
         assert r.status_code in (200, 204, 302, 303)
 
     @pytest.mark.asyncio
     async def test_subscription_pause(self, ui):
+        ui.cookies.update(_c())
         with _Patches({"ui.api_client.subscription_action": AsyncMock(return_value={"ok": True}),
                        "ui.api_client.get_subscription": AsyncMock(return_value=_SUB)}):
-            r = await ui.post("/subscriptions/sub:1/pause", cookies=_c())
+            r = await ui.post("/subscriptions/sub:1/pause")
         assert r.status_code in (200, 204, 302, 303)
 
     @pytest.mark.asyncio
     async def test_subscription_resume(self, ui):
+        ui.cookies.update(_c())
         with _Patches({"ui.api_client.subscription_action": AsyncMock(return_value={"ok": True}),
                        "ui.api_client.get_subscription": AsyncMock(return_value=_SUB)}):
-            r = await ui.post("/subscriptions/sub:1/resume", cookies=_c())
+            r = await ui.post("/subscriptions/sub:1/resume")
         assert r.status_code in (200, 204, 302, 303)
 
     @pytest.mark.asyncio
     async def test_subscription_generate(self, ui):
+        ui.cookies.update(_c())
         with _Patches({"ui.api_client.subscription_action": AsyncMock(return_value={"ok": True}),
                        "ui.api_client.get_subscription": AsyncMock(return_value=_SUB)}):
-            r = await ui.post("/subscriptions/sub:1/generate", cookies=_c())
+            r = await ui.post("/subscriptions/sub:1/generate")
         assert r.status_code in (200, 204, 302, 303)
 
 
@@ -785,8 +851,9 @@ class TestNavigation:
             "ui.api_client.manufacturing_to_make": AsyncMock(return_value={"items": [], "total": 0}),
             "ui.api_client.list_subscriptions": AsyncMock(return_value=[]),
         }
+        ui.cookies.update(_c())
         with _Patches(mocks):
-            r = await ui.get(path, cookies=_c())
+            r = await ui.get(path)
         assert r.status_code == 200, f"{path} returned {r.status_code}"
 
     @pytest.mark.asyncio
@@ -803,17 +870,19 @@ class TestNavigation:
     @pytest.mark.asyncio
     async def test_report_subpages_accessible(self, ui):
         """All report subpages load."""
+        ui.cookies.update(_c())
         for subpath in ["/reports/ar-aging", "/reports/ap-aging", "/reports/sales",
                        "/reports/purchases", "/reports/expiring"]:
             with _Patches(_reports_mocks()):
-                r = await ui.get(subpath, cookies=_c())
+                r = await ui.get(subpath)
             assert r.status_code == 200, f"{subpath} failed"
 
     @pytest.mark.asyncio
     async def test_accounting_subpages(self, ui):
+        ui.cookies.update(_c())
         for subpath in ["/accounting", "/reports/pnl", "/reports/balance-sheet"]:
             with _Patches(_accounting_mocks()):
-                r = await ui.get(subpath, cookies=_c())
+                r = await ui.get(subpath)
             assert r.status_code == 200, f"{subpath} failed"
 
     @pytest.mark.asyncio
@@ -825,10 +894,11 @@ class TestNavigation:
             "users": "/settings/general?tab=users",
             "schema": "/settings/inventory?tab=categories",
         }
+        ui.cookies.update(_c())
         for tab in ["company", "taxes", "terms", "users", "schema"]:
             url = _TAB_URLS[tab]
             with _Patches(_settings_mocks()):
-                r = await ui.get(url, cookies=_c())
+                r = await ui.get(url)
             assert r.status_code == 200, f"Settings tab={tab} (url={url}) failed"
 
 
@@ -846,87 +916,101 @@ class TestSearchAndFilter:
             list_contacts=AsyncMock(return_value={"items": [_CONTACT], "total": 1}),
             list_docs=AsyncMock(return_value={"items": [_DOC_INV], "total": 1}),
         )
+        ui.cookies.update(_c())
         with _Patches(mocks):
-            r = await ui.get("/search?q=Ruby", cookies=_c())
+            r = await ui.get("/search?q=Ruby")
         assert r.status_code == 200
 
     @pytest.mark.asyncio
     async def test_global_search_empty_query(self, ui):
-        r = await ui.get("/search?q=", cookies=_c())
+        ui.cookies.update(_c())
+        r = await ui.get("/search?q=")
         assert r.status_code == 200
 
     @pytest.mark.asyncio
     async def test_inventory_search(self, ui):
+        ui.cookies.update(_c())
         with _Patches(_inventory_mocks()):
-            r = await ui.get("/inventory?q=Ruby", cookies=_c())
+            r = await ui.get("/inventory?q=Ruby")
         assert r.status_code == 200
 
     @pytest.mark.asyncio
     async def test_inventory_category_filter(self, ui):
+        ui.cookies.update(_c())
         with _Patches(_inventory_mocks()):
-            r = await ui.get("/inventory?category=Parcel", cookies=_c())
+            r = await ui.get("/inventory?category=Parcel")
         assert r.status_code == 200
 
     @pytest.mark.asyncio
     async def test_docs_type_filter(self, ui):
+        ui.cookies.update(_c())
         with _Patches(_docs_mocks()):
-            r = await ui.get("/docs?type=invoice", cookies=_c())
+            r = await ui.get("/docs?type=invoice")
         assert r.status_code == 200
 
     @pytest.mark.asyncio
     async def test_docs_status_filter(self, ui):
+        ui.cookies.update(_c())
         with _Patches(_docs_mocks()):
-            r = await ui.get("/docs?status=paid", cookies=_c())
+            r = await ui.get("/docs?status=paid")
         assert r.status_code == 200
 
     @pytest.mark.asyncio
     async def test_reports_date_range_params(self, ui):
+        ui.cookies.update(_c())
         with _Patches(_reports_mocks()):
-            r = await ui.get("/reports/ar-aging?from=2026-01-01&to=2026-02-28", cookies=_c())
+            r = await ui.get("/reports/ar-aging?from=2026-01-01&to=2026-02-28")
         assert r.status_code == 200
 
     @pytest.mark.asyncio
     async def test_reports_preset_filter(self, ui):
+        ui.cookies.update(_c())
         with _Patches(_reports_mocks()):
-            r = await ui.get("/reports/sales?preset=last_12_months", cookies=_c())
+            r = await ui.get("/reports/sales?preset=last_12_months")
         assert r.status_code == 200
 
     @pytest.mark.asyncio
     async def test_inventory_sort_param(self, ui):
+        ui.cookies.update(_c())
         with _Patches(_inventory_mocks()):
-            r = await ui.get("/inventory?sort=name&dir=asc", cookies=_c())
+            r = await ui.get("/inventory?sort=name&dir=asc")
         assert r.status_code == 200
 
     @pytest.mark.asyncio
     async def test_docs_sort_param(self, ui):
+        ui.cookies.update(_c())
         with _Patches(_docs_mocks()):
-            r = await ui.get("/docs?sort=total&dir=desc", cookies=_c())
+            r = await ui.get("/docs?sort=total&dir=desc")
         assert r.status_code == 200
 
     @pytest.mark.asyncio
     async def test_inventory_pagination(self, ui):
+        ui.cookies.update(_c())
         with _Patches(_inventory_mocks()):
-            r = await ui.get("/inventory?page=1&per_page=25", cookies=_c())
+            r = await ui.get("/inventory?page=1&per_page=25")
         assert r.status_code == 200
 
     @pytest.mark.asyncio
     async def test_docs_pagination(self, ui):
+        ui.cookies.update(_c())
         with _Patches(_docs_mocks()):
-            r = await ui.get("/docs?page=1&per_page=50", cookies=_c())
+            r = await ui.get("/docs?page=1&per_page=50")
         assert r.status_code == 200
 
     @pytest.mark.asyncio
     async def test_crm_tab_param(self, ui):
         # CRM now split into per-section pages
+        ui.cookies.update(_c())
         for url in ["/contacts/customers", "/contacts/vendors", "/contacts/sales"]:
             with _Patches(_crm_mocks()):
-                r = await ui.get(url, cookies=_c())
+                r = await ui.get(url)
             assert r.status_code == 200, f"{url} failed"
 
     @pytest.mark.asyncio
     async def test_pnl_date_range(self, ui):
+        ui.cookies.update(_c())
         with _Patches(_accounting_mocks()):
-            r = await ui.get("/reports/pnl?from=2026-01-01&to=2026-12-31", cookies=_c())
+            r = await ui.get("/reports/pnl?from=2026-01-01&to=2026-12-31")
         assert r.status_code == 200
 
 
@@ -939,103 +1023,117 @@ class TestEdgeCases:
 
     @pytest.mark.asyncio
     async def test_empty_inventory(self, ui):
+        ui.cookies.update(_c())
         with _Patches(_inventory_mocks(items=[])):
-            r = await ui.get("/inventory", cookies=_c())
+            r = await ui.get("/inventory")
         assert r.status_code == 200
         # Should show empty state, not crash
         assert b"No" in r.content or b"empty" in r.content.lower() or b"Import" in r.content
 
     @pytest.mark.asyncio
     async def test_empty_documents(self, ui):
+        ui.cookies.update(_c())
         with _Patches(_docs_mocks(docs=[])):
-            r = await ui.get("/docs", cookies=_c())
+            r = await ui.get("/docs")
         assert r.status_code == 200
 
     @pytest.mark.asyncio
     async def test_empty_crm(self, ui):
+        ui.cookies.update(_c())
         with _Patches(_crm_mocks(contacts=[], deals=[])):
-            r = await ui.get("/contacts/customers", cookies=_c())
+            r = await ui.get("/contacts/customers")
         assert r.status_code == 200
 
     @pytest.mark.asyncio
     async def test_empty_manufacturing(self, ui):
+        ui.cookies.update(_c())
         with _Patches({"ui.api_client.get_company": AsyncMock(return_value=_COMPANY),
                        "ui.api_client.manufacturing_to_make": AsyncMock(return_value={"items": [], "total": 0})}):
-            r = await ui.get("/manufacturing", cookies=_c())
+            r = await ui.get("/manufacturing")
         assert r.status_code == 200
 
     @pytest.mark.asyncio
     async def test_empty_subscriptions(self, ui):
+        ui.cookies.update(_c())
         with _Patches({"ui.api_client.list_subscriptions": AsyncMock(return_value=[])}):
-            r = await ui.get("/subscriptions", cookies=_c())
+            r = await ui.get("/subscriptions")
         assert r.status_code == 200
 
     @pytest.mark.asyncio
     async def test_invalid_page_param(self, ui):
+        ui.cookies.update(_c())
         with _Patches(_inventory_mocks()):
-            r = await ui.get("/inventory?page=abc", cookies=_c())
+            r = await ui.get("/inventory?page=abc")
         assert r.status_code == 200  # Graceful fallback, not crash
 
     @pytest.mark.asyncio
     async def test_negative_page_param(self, ui):
+        ui.cookies.update(_c())
         with _Patches(_inventory_mocks()):
-            r = await ui.get("/inventory?page=-1", cookies=_c())
+            r = await ui.get("/inventory?page=-1")
         assert r.status_code == 200
 
     @pytest.mark.asyncio
     async def test_huge_page_param(self, ui):
+        ui.cookies.update(_c())
         with _Patches(_inventory_mocks()):
-            r = await ui.get("/inventory?page=99999", cookies=_c())
+            r = await ui.get("/inventory?page=99999")
         assert r.status_code == 200
 
     @pytest.mark.asyncio
     async def test_invalid_sort_param(self, ui):
+        ui.cookies.update(_c())
         with _Patches(_inventory_mocks()):
-            r = await ui.get("/inventory?sort=nonexistent&dir=asc", cookies=_c())
+            r = await ui.get("/inventory?sort=nonexistent&dir=asc")
         assert r.status_code == 200
 
     @pytest.mark.asyncio
     async def test_invalid_doc_type(self, ui):
+        ui.cookies.update(_c())
         with _Patches(_docs_mocks()):
-            r = await ui.get("/docs?type=nonexistent", cookies=_c())
+            r = await ui.get("/docs?type=nonexistent")
         assert r.status_code == 200
 
     @pytest.mark.asyncio
     async def test_expired_token_redirects(self, ui):
         from ui.api_client import APIError
+        ui.cookies.update(_c())
         with _Patches({"ui.api_client.get_company": AsyncMock(side_effect=APIError(401, "expired")),
                        "ui.api_client.get_valuation": AsyncMock(side_effect=APIError(401, "expired")),
                        "ui.api_client.get_doc_summary": AsyncMock(side_effect=APIError(401, "expired")),
                        "ui.api_client.my_companies": AsyncMock(side_effect=APIError(401, "expired")),
                        "ui.api_client.get_ar_aging": AsyncMock(side_effect=APIError(401, "expired")),
                        "ui.api_client.get_activity": AsyncMock(side_effect=APIError(401, "expired"))}):
-            r = await ui.get("/dashboard", cookies=_c())
+            r = await ui.get("/dashboard")
         assert r.status_code in (302, 303)
 
     @pytest.mark.asyncio
     async def test_api_error_shows_error_banner(self, ui):
         from ui.api_client import APIError
+        ui.cookies.update(_c())
         with _Patches({"ui.api_client.list_items": AsyncMock(side_effect=APIError(500, "internal")),
                        "ui.api_client.get_valuation": AsyncMock(side_effect=APIError(500, "internal")),
                        "ui.api_client.get_item_schema": AsyncMock(side_effect=APIError(500, "internal"))}):
-            r = await ui.get("/inventory", cookies=_c())
+            r = await ui.get("/inventory")
         # Should show error, not crash
         assert r.status_code in (200, 500)
 
     @pytest.mark.asyncio
     async def test_nonexistent_item_detail(self, ui):
         from ui.api_client import APIError
+        ui.cookies.update(_c())
         with _Patches({"ui.api_client.get_item": AsyncMock(side_effect=APIError(404, "not found")),
                        "ui.api_client.get_item_schema": AsyncMock(return_value=_SCHEMA)}):
-            r = await ui.get("/inventory/item:nonexistent", cookies=_c())
+            r = await ui.get("/inventory/item:nonexistent")
         assert r.status_code in (200, 404)
 
     @pytest.mark.asyncio
     async def test_nonexistent_doc_detail(self, ui):
         from ui.api_client import APIError
+        ui.cookies.update(_c())
         with _Patches({"ui.api_client.get_doc": AsyncMock(side_effect=APIError(404, "not found")),
                        "ui.api_client.list_contacts": AsyncMock(return_value={"items": [], "total": 0})}):
-            r = await ui.get("/docs/doc:nonexistent", cookies=_c())
+            r = await ui.get("/docs/doc:nonexistent")
         assert r.status_code in (200, 404)
 
     @pytest.mark.asyncio
@@ -1043,28 +1141,32 @@ class TestEdgeCases:
         """Items with null/missing fields should show '--' not crash."""
         null_item = {"entity_id": "item:null", "name": None, "sku": None, "category": None,
                      "status": None, "quantity": None, "cost_price": None, "retail_price": None}
+        ui.cookies.update(_c())
         with _Patches(_inventory_mocks(items=[null_item])):
-            r = await ui.get("/inventory", cookies=_c())
+            r = await ui.get("/inventory")
         assert r.status_code == 200
         assert b"--" in r.content
 
     @pytest.mark.asyncio
     async def test_doc_with_zero_total(self, ui):
         zero_doc = {**_DOC_INV, "total": 0, "amount_outstanding": 0}
+        ui.cookies.update(_c())
         with _Patches(_docs_mocks(docs=[zero_doc])):
-            r = await ui.get("/docs", cookies=_c())
+            r = await ui.get("/docs")
         assert r.status_code == 200
 
     @pytest.mark.asyncio
     async def test_empty_search_results(self, ui):
+        ui.cookies.update(_c())
         with _Patches(_search_mocks()):
-            r = await ui.get("/search?q=zzzzzznonexistent", cookies=_c())
+            r = await ui.get("/search?q=zzzzzznonexistent")
         assert r.status_code == 200
 
     @pytest.mark.asyncio
     async def test_special_chars_in_search(self, ui):
+        ui.cookies.update(_c())
         with _Patches(_search_mocks()):
-            r = await ui.get("/search?q=%3Cscript%3Ealert(1)%3C/script%3E", cookies=_c())
+            r = await ui.get("/search?q=%3Cscript%3Ealert(1)%3C/script%3E")
         assert r.status_code == 200
 
     @pytest.mark.asyncio
@@ -1075,8 +1177,9 @@ class TestEdgeCases:
         here we assert the route renders the sold row it is handed."""
         mock_items = AsyncMock(return_value={"items": [
             {"name": "Sold Widget", "sku": "SW1", "id": "item:sw1", "status": "sold"}], "total": 1})
+        ui.cookies.update(_c())
         with _Patches(_search_mocks(list_items=mock_items)):
-            r = await ui.get("/search?q=widget", cookies=_c())
+            r = await ui.get("/search?q=widget")
         assert r.status_code == 200
         assert b"Sold Widget" in r.content
 
@@ -1092,8 +1195,9 @@ class TestEdgeCases:
             {"name": "Ruby Ring", "sku": "R1", "id": "item:r1", "status": "available",
              "q_match": [{"field": "name", "match": "ruby"}]},
         ], "total": 2})
+        ui.cookies.update(_c())
         with _Patches(_search_mocks(list_items=mock_items)):
-            r = await ui.get("/search?q=255", cookies=_c())
+            r = await ui.get("/search?q=255")
         assert r.status_code == 200
         # Hidden-field hit: tag names the field by its display label (never the raw
         # key), matched part bold within the value.
@@ -1112,8 +1216,9 @@ class TestEdgeCases:
             list_subscriptions=AsyncMock(return_value={"items": [{"name": "Gold Retainer", "id": "doc:sub1"}], "total": 1}),
             get_journal=AsyncMock(return_value={"entries": [{"je_id": "je:9", "memo": "Depreciation JE", "lines": []}]}),
         )
+        ui.cookies.update(_c())
         with _Patches(mocks):
-            r = await ui.get("/search?q=zz", cookies=_c())
+            r = await ui.get("/search?q=zz")
         assert r.status_code == 200
         assert b"MO Assembly Run" in r.content
         assert b"Gold Retainer" in r.content
@@ -1133,8 +1238,9 @@ class TestEdgeCases:
             list_mfg_orders=AsyncMock(return_value={"items": [{"description": "MO Weld Batch", "id": "mo:2"}], "total": 1}),
             list_subscriptions=AsyncMock(return_value={"items": [{"name": "Silver Retainer", "id": "doc:sub2"}], "total": 1}),
         )
+        ui.cookies.update(_c())
         with _Patches(mocks):
-            r = await ui.get("/search?q=re", cookies=_c())
+            r = await ui.get("/search?q=re")
         assert r.status_code == 200
         assert b"Visible Item" in r.content
         assert b"MO Weld Batch" in r.content
@@ -1153,8 +1259,9 @@ class TestEdgeCases:
                 {"name": "Survivor Item", "sku": "SI", "id": "item:si", "status": "available"}], "total": 1}),
             get_journal=AsyncMock(return_value={"entries": [{"je_id": "je:1", "memo": "Ledger Note", "lines": []}]}),
         )
+        ui.cookies.update(_c())
         with _Patches(mocks):
-            r = await ui.get("/search?q=zz", cookies=_c())
+            r = await ui.get("/search?q=zz")
         assert r.status_code == 200
         assert b"Survivor Item" in r.content
         assert b"Ledger Note" in r.content
@@ -1172,8 +1279,9 @@ class TestEdgeCases:
             list_contacts=AsyncMock(return_value={"items": [
                 {"name": "Linked Contact", "id": "contact:lc1"}], "total": 1}),
         )
+        ui.cookies.update(_c())
         with _Patches(mocks):
-            r = await ui.get("/search?q=linked", cookies=_c())
+            r = await ui.get("/search?q=linked")
         assert r.status_code == 200
         assert b'href="/inventory/item:lw1"' in r.content
         assert b'href="/docs/doc:inv100"' in r.content
@@ -1191,8 +1299,9 @@ class TestEdgeCases:
             list_docs=AsyncMock(return_value={"items": [
                 {"doc_number": "INV-200", "doc_type": "invoice", "id": "doc:inv200", "status": "void"}], "total": 1}),
         )
+        ui.cookies.update(_c())
         with _Patches(mocks):
-            r = await ui.get("/search?q=widget", cookies=_c())
+            r = await ui.get("/search?q=widget")
         assert r.status_code == 200
         body = r.content.decode()
         assert "- Available" in body
@@ -1214,43 +1323,49 @@ class TestEdgeCases:
             list_docs=AsyncMock(return_value={"items": [
                 {"doc_number": "INV-300", "doc_type": "invoice", "id": "doc:inv300", "status": "issued"}], "total": 1}),
         )
+        ui.cookies.update(_c())
         with _Patches(mocks):
-            r = await ui.get("/search?q=zz", cookies=_c())
+            r = await ui.get("/search?q=zz")
         assert r.status_code == 200
         body = r.content.decode()
         assert body.index("INV-300") < body.index("Stale Widget")
 
     @pytest.mark.asyncio
     async def test_unicode_in_search(self, ui):
+        ui.cookies.update(_c())
         with _Patches(_inventory_mocks()):
-            r = await ui.get("/inventory?q=%E0%B8%97%E0%B8%94%E0%B8%AA%E0%B8%AD%E0%B8%9A", cookies=_c())
+            r = await ui.get("/inventory?q=%E0%B8%97%E0%B8%94%E0%B8%AA%E0%B8%AD%E0%B8%9A")
         assert r.status_code == 200
 
     @pytest.mark.asyncio
     async def test_csv_export_empty(self, ui):
+        ui.cookies.update(_c())
         with _Patches({**_inventory_mocks(), "ui.api_client.export_items_csv": AsyncMock(return_value=b"name,sku\n")}):
-            r = await ui.get("/inventory/export/csv", cookies=_c())
+            r = await ui.get("/inventory/export/csv")
         assert r.status_code == 200
 
     @pytest.mark.asyncio
     async def test_double_slash_url(self, ui):
         """Double slashes in path should not crash the app."""
+        ui.cookies.update(_c())
         with _Patches(_dashboard_mocks()):
-            r = await ui.get("/dashboard/", cookies=_c())
+            r = await ui.get("/dashboard/")
         # Should not crash - 200, 307 redirect, or 404 are all acceptable
         assert r.status_code in (200, 301, 302, 303, 307, 404)
 
     @pytest.mark.asyncio
     async def test_reports_future_dates(self, ui):
+        ui.cookies.update(_c())
         with _Patches(_reports_mocks()):
-            r = await ui.get("/reports/sales?from=2030-01-01&to=2030-12-31", cookies=_c())
+            r = await ui.get("/reports/sales?from=2030-01-01&to=2030-12-31")
         assert r.status_code == 200
 
     @pytest.mark.asyncio
     async def test_reports_inverted_dates(self, ui):
         """from > to should not crash."""
+        ui.cookies.update(_c())
         with _Patches(_reports_mocks()):
-            r = await ui.get("/reports/sales?from=2026-12-31&to=2026-01-01", cookies=_c())
+            r = await ui.get("/reports/sales?from=2026-12-31&to=2026-01-01")
         assert r.status_code == 200
 
 
@@ -1285,58 +1400,66 @@ class TestDataEntry:
 
     @pytest.mark.asyncio
     async def test_logout_clears_cookie(self, ui):
-        r = await ui.get("/logout", cookies=_c())
+        ui.cookies.update(_c())
+        r = await ui.get("/logout")
         assert r.status_code in (302, 303)
 
     @pytest.mark.asyncio
     async def test_settings_company_name_edit(self, ui):
+        ui.cookies.update(_c())
         with _Patches(_settings_mocks()):
-            r = await ui.get("/settings/company/name/edit", cookies=_c())
+            r = await ui.get("/settings/company/name/edit")
         assert r.status_code == 200
         assert b"input" in r.content.lower()
 
     @pytest.mark.asyncio
     async def test_settings_company_name_patch(self, ui):
+        ui.cookies.update(_c())
         with _Patches({**_settings_mocks(),
                        "ui.api_client.patch_company": AsyncMock(return_value={})}):
-            r = await ui.patch("/settings/company/name", cookies=_c(),
+            r = await ui.patch("/settings/company/name",
                               data={"value": "New Name"})
         assert r.status_code == 200
 
     @pytest.mark.asyncio
     async def test_csv_import_page_loads(self, ui):
-        r = await ui.get("/inventory/import", cookies=_c())
+        ui.cookies.update(_c())
+        r = await ui.get("/inventory/import")
         assert r.status_code == 200
 
     @pytest.mark.asyncio
     async def test_inventory_manage_columns_present(self, ui):
+        ui.cookies.update(_c())
         with _Patches(_inventory_mocks()):
-            r = await ui.get("/inventory", cookies=_c())
+            r = await ui.get("/inventory")
         assert r.status_code == 200
         # Column manager or manage columns should be present
         assert b"column" in r.content.lower() or b"col" in r.content.lower()
 
     @pytest.mark.asyncio
     async def test_reports_date_presets_present(self, ui):
+        ui.cookies.update(_c())
         with _Patches(_reports_mocks()):
-            r = await ui.get("/reports/ar-aging", cookies=_c())
+            r = await ui.get("/reports/ar-aging")
         assert r.status_code == 200
         # Date presets should be in the page
         assert b"preset" in r.content.lower() or b"month" in r.content.lower() or b"date" in r.content.lower()
 
     @pytest.mark.asyncio
     async def test_doc_line_items_section(self, ui):
+        ui.cookies.update(_c())
         with _Patches({"ui.api_client.get_doc": AsyncMock(return_value=_DOC_INV),
                        "ui.api_client.list_contacts": AsyncMock(return_value={"items": [_CONTACT], "total": 1})}):
-            r = await ui.get("/docs/doc:inv1", cookies=_c())
+            r = await ui.get("/docs/doc:inv1")
         assert r.status_code == 200
         # Line items section
         assert b"line" in r.content.lower() or b"item" in r.content.lower()
 
     @pytest.mark.asyncio
     async def test_contact_detail_shows_email(self, ui):
+        ui.cookies.update(_c())
         with _Patches({"ui.api_client.get_contact": AsyncMock(return_value=_CONTACT)}):
-            r = await ui.get("/contacts/contact:1", cookies=_c())
+            r = await ui.get("/contacts/contact:1")
         assert r.status_code == 200
         assert b"alice@test.com" in r.content
 
@@ -1346,8 +1469,9 @@ class TestDataEntry:
         empty_item = {"entity_id": "item:e", "name": "Test", "sku": "", "category": "",
                       "status": "available", "quantity": 0, "cost_price": None,
                       "retail_price": None, "wholesale_price": None}
+        ui.cookies.update(_c())
         with _Patches(_inventory_mocks(items=[empty_item])):
-            r = await ui.get("/inventory", cookies=_c())
+            r = await ui.get("/inventory")
         assert r.status_code == 200
         assert b"--" in r.content
 
@@ -1368,8 +1492,9 @@ class TestVisualConsistency:
         ("/settings/general", _settings_mocks),
     ])
     async def test_page_has_sidebar(self, ui, path, mocks_fn):
+        ui.cookies.update(_c())
         with _Patches(mocks_fn()):
-            r = await ui.get(path, cookies=_c())
+            r = await ui.get(path)
         assert b"sidebar" in r.content
 
     @pytest.mark.asyncio
@@ -1381,8 +1506,9 @@ class TestVisualConsistency:
         ("/settings/general", _settings_mocks),
     ])
     async def test_page_has_topbar(self, ui, path, mocks_fn):
+        ui.cookies.update(_c())
         with _Patches(mocks_fn()):
-            r = await ui.get(path, cookies=_c())
+            r = await ui.get(path)
         assert b"topbar" in r.content
 
     @pytest.mark.asyncio
@@ -1393,14 +1519,16 @@ class TestVisualConsistency:
         ("/contacts/customers", _crm_mocks),
     ])
     async def test_page_has_page_header(self, ui, path, mocks_fn):
+        ui.cookies.update(_c())
         with _Patches(mocks_fn()):
-            r = await ui.get(path, cookies=_c())
+            r = await ui.get(path)
         assert b"page-header" in r.content
 
     @pytest.mark.asyncio
     async def test_css_loaded(self, ui):
+        ui.cookies.update(_c())
         with _Patches(_dashboard_mocks()):
-            r = await ui.get("/dashboard", cookies=_c())
+            r = await ui.get("/dashboard")
         assert b"app.css" in r.content
 
     @pytest.mark.asyncio
@@ -1412,9 +1540,10 @@ class TestVisualConsistency:
             ("/docs", _docs_mocks()),
             ("/contacts/customers", _crm_mocks()),
         ]
+        ui.cookies.update(_c())
         for path, mocks in pages_and_mocks:
             with _Patches(mocks):
-                r = await ui.get(path, cookies=_c())
+                r = await ui.get(path)
             content = r.content.decode(errors="ignore")
             assert "<class '" not in content, f"Raw Python class in {path}"
             # "None" as literal text (not in HTML attributes) could indicate a bug

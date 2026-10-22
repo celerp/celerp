@@ -32,7 +32,8 @@ async def _ui_request(method: str, path: str, **kwargs):
     with patch("ui.routes.auth.api_get_company", new=AsyncMock(return_value=company)), \
          patch("ui.api_client.get_company", new=AsyncMock(return_value=company)):
         async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as c:
-            return await c.request(method, path, cookies={"celerp_token": make_test_token(role="owner")}, **kwargs)
+            c.cookies.update({"celerp_token": make_test_token(role="owner")})
+            return await c.request(method, path, **kwargs)
 
 
 # ── N4: adding a company, and the company details form ───────────────────────

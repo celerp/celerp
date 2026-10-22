@@ -86,11 +86,12 @@ async def test_sales_funnel_at_new_url(ui_client):
 @pytest.mark.asyncio
 async def test_customers_page_renders_authenticated(ui_client):
     """GET /contacts/customers renders with contacts list when authenticated."""
+    ui_client.cookies.update(_authed())
     with (
         patch("ui.api_client.list_contacts", new=AsyncMock(return_value={"items": _CONTACTS[:1], "total": 1})),
         patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
     ):
-        r = await ui_client.get("/contacts/customers", cookies=_authed())
+        r = await ui_client.get("/contacts/customers")
     assert r.status_code == 200
     assert b"Alice" in r.content or b"Customer" in r.content
 
@@ -98,11 +99,12 @@ async def test_customers_page_renders_authenticated(ui_client):
 @pytest.mark.asyncio
 async def test_vendors_page_renders_authenticated(ui_client):
     """GET /contacts/vendors renders with vendors list when authenticated."""
+    ui_client.cookies.update(_authed())
     with (
         patch("ui.api_client.list_contacts", new=AsyncMock(return_value={"items": [_CONTACTS[1]], "total": 1})),
         patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
     ):
-        r = await ui_client.get("/contacts/vendors", cookies=_authed())
+        r = await ui_client.get("/contacts/vendors")
     assert r.status_code == 200
     assert b"Bob" in r.content or b"Vendor" in r.content
 
@@ -110,11 +112,12 @@ async def test_vendors_page_renders_authenticated(ui_client):
 @pytest.mark.asyncio
 async def test_sales_funnel_renders_authenticated(ui_client):
     """GET /contacts/sales renders deals kanban when authenticated."""
+    ui_client.cookies.update(_authed())
     with (
         patch("ui.api_client.list_deals", new=AsyncMock(return_value={"items": _DEALS, "total": 1})),
         patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
     ):
-        r = await ui_client.get("/contacts/sales", cookies=_authed())
+        r = await ui_client.get("/contacts/sales")
     assert r.status_code == 200
     assert b"Deal" in r.content or b"deal" in r.content or b"Sales" in r.content
 
@@ -122,11 +125,12 @@ async def test_sales_funnel_renders_authenticated(ui_client):
 @pytest.mark.asyncio
 async def test_crm_authenticated_redirects_to_customers(ui_client):
     """GET /crm when authenticated returns 302 to /contacts/customers."""
+    ui_client.cookies.update(_authed())
     with (
         patch("ui.api_client.list_contacts", new=AsyncMock(return_value={"items": [], "total": 0})),
         patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
     ):
-        r = await ui_client.get("/crm", cookies=_authed(), follow_redirects=False)
+        r = await ui_client.get("/crm", follow_redirects=False)
     assert r.status_code in (301, 302, 303)
     assert "contacts" in r.headers.get("location", "")
 
@@ -134,11 +138,12 @@ async def test_crm_authenticated_redirects_to_customers(ui_client):
 @pytest.mark.asyncio
 async def test_create_customer_type_set(ui_client):
     """POST /contacts/create?type=customer creates contact with customer type."""
+    ui_client.cookies.update(_authed())
     with (
         patch("ui.api_client.list_contacts", new=AsyncMock(return_value={"items": [], "total": 0})),
         patch("ui.api_client.create_contact", new=AsyncMock(return_value={"id": "contact:new", "event_id": 1})),
         patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
     ):
-        r = await ui_client.post("/contacts/create?type=customer", cookies=_authed())
+        r = await ui_client.post("/contacts/create?type=customer")
     # Should redirect to new contact detail or return 204
     assert r.status_code in (200, 204, 302, 303)

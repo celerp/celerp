@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import shutil
+from pathlib import Path
 
 from conftest_support import (
     is_own_test_config, provision_worker_db, resolve_worker_config, resolve_worker_data_dir)
@@ -90,7 +91,7 @@ def _provision_test_database() -> None:
         if worker:
             url = provision_worker_db(url, worker)
     else:
-        from testcontainers.postgres import PostgresContainer
+        from testcontainers.community.postgres import PostgresContainer
         global _PG_CONTAINER
         # Throwaway DB → turn off durability guards for speed (data is discarded).
         _PG_CONTAINER = PostgresContainer("postgres:16-alpine").with_command(
@@ -551,8 +552,7 @@ def _reset_cloud_settings():
     _cfg_path = os.environ.get("CELERP_CONFIG")
     _cfg_before = None
     if _cfg_path and os.path.exists(_cfg_path):
-        with open(_cfg_path, "rb") as _fh:
-            _cfg_before = _fh.read()
+        _cfg_before = Path(_cfg_path).read_bytes()
     yield
     for f, v in snapshot.items():
         setattr(_s, f, v)
@@ -562,9 +562,8 @@ def _reset_cloud_settings():
                 os.remove(_cfg_path)
             except FileNotFoundError:
                 pass
-        elif _cfg_before != (open(_cfg_path, "rb").read() if os.path.exists(_cfg_path) else None):
-            with open(_cfg_path, "wb") as _fh:
-                _fh.write(_cfg_before)
+        elif _cfg_before != (Path(_cfg_path).read_bytes() if os.path.exists(_cfg_path) else None):
+            Path(_cfg_path).write_bytes(_cfg_before)
 
 
 @pytest.fixture(autouse=True)
@@ -610,6 +609,24 @@ def _restore_bytecode_settings():
     before = (_sys.dont_write_bytecode, _sys.pycache_prefix)
     yield
     _sys.dont_write_bytecode, _sys.pycache_prefix = before
+
+
+@pytest.fixture(autouse=True)
+def _ui_api_not_running(request, monkeypatch):
+    """Unit tests run the UI with no API server behind it. A request the UI sends to the
+    API fails as a refused connection does, without opening a socket: no test reaches a
+    server that happens to listen on the API's port, and no connection attempt outlives
+    its test. Tests that answer as the API patch the transport or client themselves.
+    Browser tests run a real API."""
+    if request.node.get_closest_marker("browser"):
+        return
+    import httpx
+    from ui import api_client
+
+    async def _refused(self, api_request):
+        raise httpx.ConnectError("The API is not running in unit tests.", request=api_request)
+
+    monkeypatch.setattr(api_client._SharedTransport, "handle_async_request", _refused)
 
 
 @pytest.fixture(autouse=True)

@@ -271,8 +271,10 @@ def import_backup_page(ui_client):
              patch("ui.api_client.setup_code_required", new=AsyncMock(return_value=False)), \
              patch("ui.api_client._local_client", new=timed_out):
             if method == "GET":
-                return await ui_client.get("/setup/import-backup", cookies=cookies)
-            return await ui_client.post("/setup/import-backup", cookies=cookies,
+                ui_client.cookies.update(cookies)
+                return await ui_client.get("/setup/import-backup")
+            ui_client.cookies.update(cookies)
+            return await ui_client.post("/setup/import-backup",
                                         files={"backup_file": ("b.celerp-backup", b"x", "application/octet-stream")})
     return open_
 
@@ -315,12 +317,12 @@ async def test_repricing_without_a_version_says_so_in_the_readers_language(ui_cl
     from unittest.mock import AsyncMock, patch
     from test_ui import _authed
     from ui.i18n import t
+    ui_client.cookies.update({**_authed(), "celerp_lang": "th"})
     with patch("ui.api_client.get_doc", new=AsyncMock(return_value={"doc_type": "invoice"})), \
          patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[{"name": "Wholesale"}])), \
          patch("ui.api_client.patch_doc", new=AsyncMock(return_value={})), \
          patch("ui.api_client.reprice_doc", new=AsyncMock(return_value={})):
-        r = await ui_client.patch("/docs/d1/field/price_list", data={"value": "Wholesale"},
-                                  cookies={**_authed(), "celerp_lang": "th"})
+        r = await ui_client.patch("/docs/d1/field/price_list", data={"value": "Wholesale"})
     toast = json.loads(r.headers["HX-Trigger"])["celerpToast"]
     assert toast["message"] == t("documents.reprice_version_unknown", "th")
     assert toast["message"] != "documents.reprice_version_unknown"
@@ -346,5 +348,6 @@ def ui_client_for_notices(ui_client):
     async def get(path):
         with patch("ui.api_client.list_contact_docs", new=AsyncMock(return_value={"items": []})), \
              patch("ui.api_client.get_contact", new=AsyncMock(side_effect=APIError(503, "down"))):
-            return await ui_client.get(path, cookies=_authed())
+            ui_client.cookies.update(_authed())
+            return await ui_client.get(path)
     return get

@@ -63,9 +63,10 @@ async def test_website_edits_through_the_document_field_route(ui_client):
     doc = _doc("invoice", company_website="https://old.example")
     updated = doc | {"company_website": "https://new.example"}
     patch_doc = AsyncMock(return_value=updated)
+    ui_client.cookies.update({"celerp_token": make_test_token(role="owner")})
     with patch("ui.api_client.patch_doc", new=patch_doc), \
          patch("ui.api_client.get_doc", new=AsyncMock(return_value=updated)):
-        r = await ui_client.patch("/docs/doc:w1/field/company_website", data={"value": "https://new.example"}, cookies={"celerp_token": make_test_token(role="owner")})
+        r = await ui_client.patch("/docs/doc:w1/field/company_website", data={"value": "https://new.example"})
     assert r.status_code == 200
     assert patch_doc.await_args.args[2] == {"company_website": "https://new.example"}
     assert b"https://new.example" in r.content

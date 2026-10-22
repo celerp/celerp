@@ -50,17 +50,17 @@ def _reading(posting=None, needs=None):
 async def _page(ui_client, posting=None, needs=None, lang="en"):
     a, b, c = _reading(posting, needs)
     with a, b, c:
-        return await ui_client.get(f"/manufacturing/runs/{RUN['id']}/reconcile",
-                                   cookies={**_authed(), "celerp_lang": lang})
+        ui_client.cookies.update({**_authed(), "celerp_lang": lang})
+        return await ui_client.get(f"/manufacturing/runs/{RUN['id']}/reconcile")
 
 
 async def _send(ui_client, values, account, reconcile, lang="en"):
     body = "&".join([*(f"item_id={i}&value={v}" for i, v in values), f"account={account}", "idempotency_key=k1"])
     a, b, c = _reading()
     with a, b, c, patch("ui.api_client.reconcile_mfg_order", new=reconcile):
+        ui_client.cookies.update({**_authed(), "celerp_lang": lang})
         return await ui_client.post(f"/manufacturing/runs/{RUN['id']}/reconcile", content=body.encode(),
-                                    headers={"content-type": "application/x-www-form-urlencoded"},
-                                    cookies={**_authed(), "celerp_lang": lang})
+                                    headers={"content-type": "application/x-www-form-urlencoded"})
 
 
 async def test_the_page_says_why_and_asks_for_each_value_and_the_account(ui_client):
@@ -159,9 +159,10 @@ async def test_a_receipt_that_made_no_stock_is_offered_for_discarding(ui_client)
 async def test_discarding_says_what_comes_next(ui_client):
     repair = AsyncMock(return_value={"discarded": 1.0, "output_item_id": None})
     a, b, c = _reading(needs=UNLOTTED)
+    ui_client.cookies.update(_authed())
     with a, b, c, patch("ui.api_client.repair_mfg_output", new=repair):
         r = await ui_client.post(f"/manufacturing/runs/{RUN['id']}/repair-output", content=b"idempotency_key=k2",
-                                 headers={"content-type": "application/x-www-form-urlencoded"}, cookies=_authed())
+                                 headers={"content-type": "application/x-www-form-urlencoded"})
 
     assert r.status_code == 200, r.text
     assert repair.await_args.args[1:] == (RUN["id"],) and repair.await_args.kwargs == {"idempotency_key": "k2"}
@@ -172,10 +173,11 @@ async def test_a_refused_discard_says_why_and_keeps_the_offer(ui_client):
     refused = {"message": "This run is cancelled, so it cannot be repaired.", "message_key": "mfg.run_closed",
                "params": {"status": "cancelled"}}
     a, b, c = _reading(needs=UNLOTTED)
+    ui_client.cookies.update(_authed())
     with a, b, c, patch("ui.api_client.repair_mfg_output",
                         new=AsyncMock(side_effect=APIError(409, refused["message"], refused))):
         r = await ui_client.post(f"/manufacturing/runs/{RUN['id']}/repair-output", content=b"idempotency_key=k2",
-                                 headers={"content-type": "application/x-www-form-urlencoded"}, cookies=_authed())
+                                 headers={"content-type": "application/x-www-form-urlencoded"})
 
     assert r.status_code == 200, r.text
     assert refused["message"] in r.text and "repair-output" in r.text
@@ -215,10 +217,11 @@ async def test_any_other_refusal_keeps_the_key_so_sending_again_is_the_same_acti
 
 async def test_a_discard_refused_for_a_spent_key_brings_a_new_one(ui_client):
     a, b, c = _reading(needs=UNLOTTED)
+    ui_client.cookies.update(_authed())
     with a, b, c, patch("ui.api_client.repair_mfg_output",
                         new=AsyncMock(side_effect=APIError(409, REUSED["message"], REUSED))):
         r = await ui_client.post(f"/manufacturing/runs/{RUN['id']}/repair-output", content=b"idempotency_key=k2",
-                                 headers={"content-type": "application/x-www-form-urlencoded"}, cookies=_authed())
+                                 headers={"content-type": "application/x-www-form-urlencoded"})
 
     keys = _form_keys(r.text)
     assert keys and "k2" not in keys and all(keys), keys

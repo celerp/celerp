@@ -72,6 +72,14 @@ def _start(server: list[str]):
     return app, int(pid), ready.strip()
 
 
+def _end(app: subprocess.Popen) -> None:
+    """Kill the stand-in app if it still runs, and close its pipes."""
+    app.kill()
+    app.wait()
+    app.stdin.close()
+    app.stdout.close()
+
+
 @pytest.fixture
 def module(tmp_path, monkeypatch):
     package = tmp_path / "zz_server"
@@ -94,8 +102,7 @@ def test_a_python_server_stops_when_the_app_is_killed(tmp_path, module):
     finally:
         if _alive(pid):
             os.kill(pid, signal.SIGKILL)
-        app.kill()
-        app.wait()
+        _end(app)
 
 
 def test_a_program_stops_when_the_app_is_killed_and_on_a_normal_stop(tmp_path):
@@ -117,5 +124,4 @@ def test_a_program_stops_when_the_app_is_killed_and_on_a_normal_stop(tmp_path):
         finally:
             if _alive(pid):
                 os.kill(pid, signal.SIGKILL)
-            app.kill()
-            app.wait()
+            _end(app)

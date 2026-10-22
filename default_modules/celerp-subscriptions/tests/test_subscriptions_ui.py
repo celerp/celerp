@@ -58,14 +58,16 @@ class TestSubscriptionsUI:
         assert "/login" in r.headers["location"]
 
     async def test_list_sales_authenticated(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.list_subscriptions", new=AsyncMock(return_value={"items": [_SUB_DOC]})):
-            r = await ui_client.get("/subscriptions?direction=sales", cookies=_authed())
+            r = await ui_client.get("/subscriptions?direction=sales")
         assert r.status_code == 200
         assert "Sales Subscriptions" in r.text
 
     async def test_list_purchasing_authenticated(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.list_subscriptions", new=AsyncMock(return_value={"items": []})):
-            r = await ui_client.get("/subscriptions?direction=purchasing", cookies=_authed())
+            r = await ui_client.get("/subscriptions?direction=purchasing")
         assert r.status_code == 200
         assert "Purchasing Subscriptions" in r.text
 
@@ -75,16 +77,17 @@ class TestSubscriptionsUI:
         assert "/login" in r.headers["location"]
 
     async def test_create_subscription_redirects_to_detail(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.create_subscription", new=AsyncMock(return_value=_SUB_DOC)):
             r = await ui_client.post(
                 "/subscriptions/new?direction=sales",
-                cookies=_authed(),
             )
         # Route returns 204 + HX-Redirect so HTMX can follow the redirect
         assert r.status_code == 204
         assert "/subscriptions/sub-001" in r.headers["hx-redirect"]
 
     async def test_detail_page_renders(self, ui_client):
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_subscription", new=AsyncMock(return_value=_SUB_DOC)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "ACME", "currency": "USD", "timezone": "UTC"})),
@@ -93,7 +96,7 @@ class TestSubscriptionsUI:
             patch("ui.api_client.get_taxes", new=AsyncMock(return_value=[])),
             patch("ui.api_client.list_doc_notes", new=AsyncMock(return_value=[])),
         ):
-            r = await ui_client.get("/subscriptions/sub-001", cookies=_authed())
+            r = await ui_client.get("/subscriptions/sub-001")
         assert r.status_code == 200
         assert "sub-001" in r.text  # ref_id shown in breadcrumb/header
         assert "Generate Now" in r.text  # active-status action visible
@@ -105,8 +108,9 @@ class TestSubscriptionsUI:
 
     async def test_detail_page_api_error_redirects_to_list(self, ui_client):
         from ui.api_client import APIError
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_subscription", new=AsyncMock(side_effect=APIError(404, "not found"))):
-            r = await ui_client.get("/subscriptions/bad-id", cookies=_authed())
+            r = await ui_client.get("/subscriptions/bad-id")
         assert r.status_code == 302
         assert "/subscriptions" in r.headers["location"]
 

@@ -465,6 +465,7 @@ async def test_bootstrap_e2e_against_local_relay_stub(monkeypatch):
         assert seen_nonces[1] == committed_nonce
     finally:
         server.shutdown()
+        server.server_close()
         thread.join(timeout=5)
 
 

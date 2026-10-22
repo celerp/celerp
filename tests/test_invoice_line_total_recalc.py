@@ -91,7 +91,8 @@ async def ui_client():
 async def draft_html(ui_client):
     """Rendered HTML of the draft invoice detail page."""
     with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_DRAFT_DOC)):
-        r = await ui_client.get("/docs/d:lt1", cookies=_authed())
+        ui_client.cookies.update(_authed())
+        r = await ui_client.get("/docs/d:lt1")
     assert r.status_code == 200
     return r.text
 
@@ -198,9 +199,10 @@ class TestHeaderDiscount:
         # Pin relay off so the relay-gated Send dialog can't render; this test is
         # about the discount editor being an inline popover, not a modal.
         _no_relay = AsyncMock(return_value={"connected": False, "public_url": ""})
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)), \
              patch("ui.api_client.get_relay_status", new=_no_relay):
-            r = await ui_client.get("/docs/d:hd", cookies=_authed())
+            r = await ui_client.get("/docs/d:hd")
         assert r.status_code == 200
         assert 'class="btn-disc-edit"' in r.text, "discount pencil missing on a draft invoice"
         assert 'id="discount-popover"' in r.text, "discount popover missing"
@@ -212,8 +214,9 @@ class TestHeaderDiscount:
         # The pencil sits LEFT of the "Total:" label (grouped in .total-final-left); the amount keeps
         # its right-aligned accounting position.
         doc = {**_DRAFT_DOC, "entity_id": "d:hdL", "doc_type": "invoice", "status": "draft"}
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)):
-            r = await ui_client.get("/docs/d:hdL", cookies=_authed())
+            r = await ui_client.get("/docs/d:hdL")
         assert r.status_code == 200
         assert "total-final-left" in r.text
         # pencil -> Total label -> amount, in that order.
@@ -224,23 +227,25 @@ class TestHeaderDiscount:
     @pytest.mark.asyncio
     async def test_secondary_button_is_cancel_until_discount_exists(self, ui_client):
         no_disc = {**_DRAFT_DOC, "entity_id": "d:hdC", "doc_type": "invoice", "status": "draft"}
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=no_disc)):
-            r = await ui_client.get("/docs/d:hdC", cookies=_authed())
+            r = await ui_client.get("/docs/d:hdC")
         assert ">Cancel<" in r.text and ">Remove<" not in r.text, "new discount editor shows Cancel, not Remove"
 
         with_disc = {**_DRAFT_DOC, "entity_id": "d:hdR", "doc_type": "invoice", "status": "draft",
                      "subtotal": 100.0, "total": 90.0, "total_amount": 90.0,
                      "discount": 10, "discount_type": "percentage", "discount_amount": 10.0}
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=with_disc)):
-            r2 = await ui_client.get("/docs/d:hdR", cookies=_authed())
+            r2 = await ui_client.get("/docs/d:hdR")
         assert ">Remove<" in r2.text, "an existing discount shows Remove"
 
     @pytest.mark.asyncio
     async def test_no_pencil_on_credit_note(self, ui_client):
         # A credit note is a reversal - a header discount is incoherent there, so no affordance.
         doc = {**_DRAFT_DOC, "entity_id": "d:cn", "doc_type": "credit_note", "status": "draft"}
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)):
-            r = await ui_client.get("/docs/d:cn", cookies=_authed())
+            r = await ui_client.get("/docs/d:cn")
         assert r.status_code == 200
         # The pencil button + popover markup are gated; only the JS handler mentions the class name.
         assert 'class="btn-disc-edit"' not in r.text, "credit note should not show the discount pencil"
@@ -249,8 +254,9 @@ class TestHeaderDiscount:
     @pytest.mark.asyncio
     async def test_pencil_on_supplier_bill(self, ui_client):
         doc = {**_DRAFT_DOC, "entity_id": "d:bill", "doc_type": "bill", "status": "draft"}
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)):
-            r = await ui_client.get("/docs/d:bill", cookies=_authed())
+            r = await ui_client.get("/docs/d:bill")
         assert r.status_code == 200
         assert 'class="btn-disc-edit"' in r.text, "supplier bill should offer a header discount"
         assert 'id="discount-popover"' in r.text
@@ -265,8 +271,9 @@ class TestHeaderDiscount:
                "total_amount": 945.0, "discount": 10, "discount_type": "percentage",
                "discount_amount": 100.0}
         doc.pop("tax_amount")  # a document stores its tax as `tax`
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)):
-            r = await ui_client.get("/docs/d:hd2", cookies=_authed())
+            r = await ui_client.get("/docs/d:hd2")
         assert r.status_code == 200
         assert "Discount (10%)" in r.text, "discount row should name the percentage"
         assert "-$100.00" in r.text, "discount amount row"
@@ -281,8 +288,9 @@ class TestHeaderDiscount:
                "line_items": [line], "subtotal": 1000.0, "tax": 0.0, "total": 850.0,
                "total_amount": 850.0, "discount": 150, "discount_type": "flat",
                "discount_amount": 150.0}
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)):
-            r = await ui_client.get("/docs/d:hd3", cookies=_authed())
+            r = await ui_client.get("/docs/d:hd3")
         assert r.status_code == 200
         assert "-$150.00" in r.text
         assert "Discount (" not in r.text, "a flat discount must not show a percentage"
@@ -338,8 +346,9 @@ class TestUnitPricePrecision:
     @pytest.mark.asyncio
     async def test_draft_hiprec_unit_price_keeps_decimals(self, ui_client):
         """A draft line's editable unit-price input shows the stored 3-decimal price, not 2 dp."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_doc_with([_HIPREC_LINE]))):
-            r = await ui_client.get("/docs/d:hp", cookies=_authed())
+            r = await ui_client.get("/docs/d:hp")
         assert r.status_code == 200
         assert "15.285" in r.text
 
@@ -347,8 +356,9 @@ class TestUnitPricePrecision:
     async def test_finalized_hiprec_unit_price_full_precision(self, ui_client):
         """The finalized read-only view renders the unit price via fmt_rate (real decimals),
         never rounded to 2 dp."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_doc_with([_HIPREC_LINE], status="final"))):
-            r = await ui_client.get("/docs/d:hp", cookies=_authed())
+            r = await ui_client.get("/docs/d:hp")
         assert r.status_code == 200
         assert "15.285" in r.text, "finalized view must show the real unit-price decimals"
         assert "15.29" not in r.text, "unit price must not be rounded up to 2 dp"
@@ -363,8 +373,9 @@ class TestUnitPricePrecision:
         names that id, is not emitted on a finalized doc)."""
         lines = [{"description": f"Item {i}", "quantity": 1, "unit_price": 10.333,
                   "discount_pct": 0, "line_total": 10.33} for i in range(3)]
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_doc_with(lines, status="final"))):
-            r = await ui_client.get("/docs/d:hp", cookies=_authed())
+            r = await ui_client.get("/docs/d:hp")
         assert r.status_code == 200
         assert 'id="doc-line-discount"' not in r.text, "rounding residue must not appear as a discount"
 
@@ -374,8 +385,9 @@ class TestUnitPricePrecision:
         Finalized so the id reflects a real server row, not the editable JS template."""
         line = {"description": "Widget", "quantity": 10, "unit_price": 10.0,
                 "discount_pct": 10, "line_total": 90.0}
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_doc_with([line], status="final"))):
-            r = await ui_client.get("/docs/d:hp", cookies=_authed())
+            r = await ui_client.get("/docs/d:hp")
         assert r.status_code == 200
         assert 'id="doc-line-discount"' in r.text, "a real line discount must still be shown"
 

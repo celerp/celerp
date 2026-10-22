@@ -71,11 +71,12 @@ class TestCurrencyThreadingAllRoutes:
                         "d60": 0, "d90": 0, "d90plus": 0, "total": 150}],
             "buckets": {"current": 100, "1-30": 50},
         }
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY_USD)),
             patch("ui.api_client.get_ar_aging", new=AsyncMock(return_value=aging_data)),
         ):
-            r = await ui_client.get("/reports/ar-aging", cookies=_authed())
+            r = await ui_client.get("/reports/ar-aging")
         assert r.status_code == 200
         # USD company: must show $ not ฿
         assert b"$" in r.content or b"USD" in r.content
@@ -90,11 +91,12 @@ class TestCurrencyThreadingAllRoutes:
                         "d60": 0, "d90": 0, "d90plus": 0, "total": 200}],
             "buckets": {},
         }
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY_EUR)),
             patch("ui.api_client.get_ap_aging", new=AsyncMock(return_value=aging_data)),
         ):
-            r = await ui_client.get("/reports/ap-aging", cookies=_authed())
+            r = await ui_client.get("/reports/ap-aging")
         assert r.status_code == 200
         assert b"EUR" in r.content or "\u20ac" in r.text
         assert "฿200" not in r.text
@@ -106,11 +108,12 @@ class TestCurrencyThreadingAllRoutes:
             "lines": [{"customer_name": "Jane", "invoice_count": 2, "total_revenue": 500}],
             "total": 500, "group_by": "customer",
         }
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY_USD)),
             patch("ui.api_client.get_sales_report", new=AsyncMock(return_value=sales_data)),
         ):
-            r = await ui_client.get("/reports/sales?group_by=customer", cookies=_authed())
+            r = await ui_client.get("/reports/sales?group_by=customer")
         assert r.status_code == 200
         assert b"$" in r.content or b"USD" in r.content
         assert "฿500" not in r.text
@@ -122,11 +125,12 @@ class TestCurrencyThreadingAllRoutes:
             "lines": [{"supplier_name": "Supplier A", "po_count": 1, "total_spend": 300}],
             "total": 300, "group_by": "supplier",
         }
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY_EUR)),
             patch("ui.api_client.get_purchases_report", new=AsyncMock(return_value=purchases_data)),
         ):
-            r = await ui_client.get("/reports/purchases?group_by=supplier", cookies=_authed())
+            r = await ui_client.get("/reports/purchases?group_by=supplier")
         assert r.status_code == 200
         assert b"EUR" in r.content or "\u20ac" in r.text
         assert "฿300" not in r.text
@@ -139,11 +143,12 @@ class TestCurrencyThreadingAllRoutes:
             "items": [{"sku": "S1", "name": "Item", "expiry_date": "2026-04-01",
                         "days_left": 23, "status": "available"}],
         }
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY_USD)),
             patch("ui.api_client.get_expiring", new=AsyncMock(return_value=expiring_data)),
         ):
-            r = await ui_client.get("/reports/expiring?days=30", cookies=_authed())
+            r = await ui_client.get("/reports/expiring?days=30")
         assert r.status_code == 200
 
     def test_fmt_money_thb(self):
@@ -187,24 +192,26 @@ class TestCurrencyThreadingAllRoutes:
     @pytest.mark.asyncio
     async def test_documents_page_loads_for_usd_company(self, ui_client):
         """Documents list page must load for a non-THB company."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY_USD)),
             patch("ui.api_client.list_docs", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_doc_summary", new=AsyncMock(return_value={})),
         ):
-            r = await ui_client.get("/docs", cookies=_authed())
+            r = await ui_client.get("/docs")
         assert r.status_code == 200
 
     @pytest.mark.asyncio
     async def test_doc_status_cards_use_company_currency(self, ui_client):
         """Status cards on /docs must use company.currency, not hardcode ฿."""
         docs = [{"entity_id": "d1", "status": "paid", "total_amount": 150.0}]
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY_USD)),
             patch("ui.api_client.list_docs", new=AsyncMock(return_value={"items": docs, "total": 1})),
             patch("ui.api_client.get_doc_summary", new=AsyncMock(return_value={"count_by_status": {"paid": 1}})),
         ):
-            r = await ui_client.get("/docs", cookies=_authed())
+            r = await ui_client.get("/docs")
         assert r.status_code == 200
         assert "฿150" not in r.text
         assert "฿0" not in r.text
@@ -217,11 +224,12 @@ class TestCurrencyThreadingAllRoutes:
             "contact_id": "", "start_date": "", "next_billing_date": "",
             "line_items": [{"description": "Widget", "quantity": 1, "unit_price": 99.00}],
         }
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_subscription", new=AsyncMock(return_value=sub)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY_USD)),
         ):
-            r = await ui_client.get("/subscriptions/sub:1", cookies=_authed())
+            r = await ui_client.get("/subscriptions/sub:1")
         assert r.status_code == 200
         # ฿99 must not appear — company is USD
         assert "฿99" not in r.text
@@ -279,77 +287,84 @@ class TestSettingsServerSideValidation:
 
     @pytest.mark.asyncio
     async def test_company_name_rejects_empty(self, ui_client, _stack):
+        ui_client.cookies.update(_authed())
         with _stack():
             mock = AsyncMock()
             with patch("ui.api_client.patch_company", new=mock):
                 r = await ui_client.patch("/settings/company/name",
-                                          data={"value": "  "}, cookies=_authed())
+                                          data={"value": "  "})
         assert r.status_code == 200
         assert b"blank" in r.content.lower() or b"cannot" in r.content.lower() or b"error" in r.content.lower()
         mock.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_company_slug_rejects_spaces(self, ui_client, _stack):
+        ui_client.cookies.update(_authed())
         with _stack():
             mock = AsyncMock()
             with patch("ui.api_client.patch_company", new=mock):
                 r = await ui_client.patch("/settings/company/slug",
-                                          data={"value": "my company"}, cookies=_authed())
+                                          data={"value": "my company"})
         assert r.status_code == 200
         assert b"slug" in r.content.lower() or b"invalid" in r.content.lower() or b"error" in r.content.lower()
         mock.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_company_slug_rejects_uppercase(self, ui_client, _stack):
+        ui_client.cookies.update(_authed())
         with _stack():
             mock = AsyncMock()
             with patch("ui.api_client.patch_company", new=mock):
                 r = await ui_client.patch("/settings/company/slug",
-                                          data={"value": "MySlug"}, cookies=_authed())
+                                          data={"value": "MySlug"})
         assert r.status_code == 200
         mock.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_company_slug_accepts_valid(self, ui_client, _stack):
+        ui_client.cookies.update(_authed())
         with _stack():
             mock_patch = AsyncMock(return_value=None)
             mock_get = AsyncMock(return_value=_COMPANY_THB)
             with patch("ui.api_client.patch_company", new=mock_patch):
                 with patch("ui.api_client.get_company", new=mock_get):
                     r = await ui_client.patch("/settings/company/slug",
-                                              data={"value": "valid-slug-123"}, cookies=_authed())
+                                              data={"value": "valid-slug-123"})
         assert r.status_code == 200
         mock_patch.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_company_currency_rejects_invalid(self, ui_client, _stack):
+        ui_client.cookies.update(_authed())
         with _stack():
             mock = AsyncMock()
             with patch("ui.api_client.patch_company", new=mock):
                 r = await ui_client.patch("/settings/company/currency",
-                                          data={"value": "NOTACURRENCY"}, cookies=_authed())
+                                          data={"value": "NOTACURRENCY"})
         assert r.status_code == 200
         assert b"invalid" in r.content.lower() or b"error" in r.content.lower()
         mock.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_company_fiscal_year_rejects_invalid(self, ui_client, _stack):
+        ui_client.cookies.update(_authed())
         with _stack():
             mock = AsyncMock()
             with patch("ui.api_client.patch_company", new=mock):
                 r = await ui_client.patch("/settings/company/fiscal_year_start",
-                                          data={"value": "not-valid"}, cookies=_authed())
+                                          data={"value": "not-valid"})
         assert r.status_code == 200
         mock.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_tax_type_rejects_invalid(self, ui_client, _stack):
         """Tax type field must reject values outside {sales, purchase, both}."""
+        ui_client.cookies.update(_authed())
         with _stack():
             mock = AsyncMock()
             with patch("ui.api_client.patch_taxes", new=mock):
                 r = await ui_client.patch("/settings/taxes/0/tax_type",
-                                          data={"value": "invalid_type"}, cookies=_authed())
+                                          data={"value": "invalid_type"})
         assert r.status_code == 200
         assert b"invalid" in r.content.lower() or b"error" in r.content.lower()
         mock.assert_not_called()
@@ -360,22 +375,24 @@ class TestSettingsServerSideValidation:
         taxes_with_entry = [{"name": "VAT", "rate": 7.0, "tax_type": "sales", "is_default": True, "description": ""}]
         mock_get = AsyncMock(return_value=taxes_with_entry)
         mock_patch = AsyncMock(return_value=None)
+        ui_client.cookies.update(_authed())
         with _stack():
             with patch("ui.api_client.get_taxes", new=mock_get):
                 with patch("ui.api_client.patch_taxes", new=mock_patch):
                     r = await ui_client.patch("/settings/taxes/0/tax_type",
-                                              data={"value": "purchase"}, cookies=_authed())
+                                              data={"value": "purchase"})
         assert r.status_code == 200
         mock_patch.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_schema_type_rejects_invalid(self, ui_client, _stack):
         """Item schema field type must reject unknown types."""
+        ui_client.cookies.update(_authed())
         with _stack():
             mock = AsyncMock()
             with patch("ui.api_client.patch_item_schema", new=mock):
                 r = await ui_client.patch("/settings/schema/0/type",
-                                          data={"value": "fakeType"}, cookies=_authed())
+                                          data={"value": "fakeType"})
         assert r.status_code == 200
         assert b"invalid" in r.content.lower() or b"error" in r.content.lower()
         mock.assert_not_called()
@@ -385,11 +402,12 @@ class TestSettingsServerSideValidation:
         """Payment term days must reject non-integer values."""
         mock = AsyncMock()
         terms_data = [{"name": "Net 30", "days": 30}]
+        ui_client.cookies.update(_authed())
         with _stack():
             with patch("ui.api_client.get_payment_terms", new=AsyncMock(return_value=terms_data)):
                 with patch("ui.api_client.patch_payment_terms", new=mock):
                     r = await ui_client.patch("/settings/terms/0/days",
-                                              data={"value": "thirty"}, cookies=_authed())
+                                              data={"value": "thirty"})
         assert r.status_code == 200
         assert b"whole" in r.content.lower() or b"number" in r.content.lower() or b"invalid" in r.content.lower() or b"error" in r.content.lower()
         mock.assert_not_called()
@@ -399,11 +417,12 @@ class TestSettingsServerSideValidation:
         """Payment term days cannot be negative."""
         mock = AsyncMock()
         terms_data = [{"name": "Net 30", "days": 30}]
+        ui_client.cookies.update(_authed())
         with _stack():
             with patch("ui.api_client.get_payment_terms", new=AsyncMock(return_value=terms_data)):
                 with patch("ui.api_client.patch_payment_terms", new=mock):
                     r = await ui_client.patch("/settings/terms/0/days",
-                                              data={"value": "-5"}, cookies=_authed())
+                                              data={"value": "-5"})
         assert r.status_code == 200
         assert b"negative" in r.content.lower() or b"error" in r.content.lower()
         mock.assert_not_called()
@@ -414,11 +433,12 @@ class TestSettingsServerSideValidation:
         mock_patch = AsyncMock(return_value=None)
         terms_data = [{"name": "Immediate", "days": 0}]
         mock_get = AsyncMock(return_value=terms_data)
+        ui_client.cookies.update(_authed())
         with _stack():
             with patch("ui.api_client.get_payment_terms", new=mock_get):
                 with patch("ui.api_client.patch_payment_terms", new=mock_patch):
                     r = await ui_client.patch("/settings/terms/0/days",
-                                              data={"value": "0"}, cookies=_authed())
+                                              data={"value": "0"})
         assert r.status_code == 200
         mock_patch.assert_called_once()
 
@@ -427,11 +447,12 @@ class TestSettingsServerSideValidation:
         """Float days (e.g. 7.5) must be rejected."""
         mock = AsyncMock()
         terms_data = [{"name": "Net 7", "days": 7}]
+        ui_client.cookies.update(_authed())
         with _stack():
             with patch("ui.api_client.get_payment_terms", new=AsyncMock(return_value=terms_data)):
                 with patch("ui.api_client.patch_payment_terms", new=mock):
                     r = await ui_client.patch("/settings/terms/0/days",
-                                              data={"value": "7.5"}, cookies=_authed())
+                                              data={"value": "7.5"})
         assert r.status_code == 200
         # "7.5" is not a valid int — must error
         assert b"whole" in r.content.lower() or b"number" in r.content.lower() or b"invalid" in r.content.lower() or b"error" in r.content.lower()
@@ -512,15 +533,17 @@ class TestHtmxPartialContract:
     @pytest.mark.asyncio
     async def test_company_name_edit_has_hx_patch(self, ui_client):
         """GET /settings/company/name/edit must return element with hx-patch."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY_THB)):
-            r = await ui_client.get("/settings/company/name/edit", cookies=_authed())
+            r = await ui_client.get("/settings/company/name/edit")
         assert r.status_code == 200
         assert b"hx-patch" in r.content or b"hx_patch" in r.content
 
     @pytest.mark.asyncio
     async def test_company_slug_edit_has_hx_patch(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY_THB)):
-            r = await ui_client.get("/settings/company/slug/edit", cookies=_authed())
+            r = await ui_client.get("/settings/company/slug/edit")
         assert r.status_code == 200
         assert b"hx-patch" in r.content or b"hx_patch" in r.content
 
@@ -528,8 +551,9 @@ class TestHtmxPartialContract:
     async def test_company_name_edit_prepopulates_value(self, ui_client):
         """Edit fields must be pre-populated with current value."""
         company = {**_COMPANY_THB, "name": "PrePop Test Corp"}
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_company", new=AsyncMock(return_value=company)):
-            r = await ui_client.get("/settings/company/name/edit", cookies=_authed())
+            r = await ui_client.get("/settings/company/name/edit")
         assert r.status_code == 200
         assert b"PrePop Test Corp" in r.content
 
@@ -543,6 +567,7 @@ class TestHtmxPartialContract:
             "created_at": "", "updated_at": "",
         }
         schema = [{"key": "name", "type": "text", "label": "Name", "editable": True, "required": False, "position": 0, "options": []}]
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value=item)),
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=schema)),
@@ -550,7 +575,7 @@ class TestHtmxPartialContract:
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_company", new=AsyncMock(return_value={"settings": {}})),
         ):
-            r = await ui_client.get("/api/items/item:x/field/name/edit", cookies=_authed())
+            r = await ui_client.get("/api/items/item:x/field/name/edit")
         assert r.status_code == 200
         assert b"input" in r.content.lower() or b"textarea" in r.content.lower()
 
@@ -565,6 +590,7 @@ class TestHtmxPartialContract:
         }
         schema = [{"key": "weight_unit", "type": "select", "label": "Weight Unit",
                    "editable": True, "required": False, "position": 0, "options": ["ct", "g", "kg"]}]
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value=item)),
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=schema)),
@@ -572,7 +598,7 @@ class TestHtmxPartialContract:
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_company", new=AsyncMock(return_value={"settings": {}})),
         ):
-            r = await ui_client.get("/api/items/item:x/field/weight_unit/edit", cookies=_authed())
+            r = await ui_client.get("/api/items/item:x/field/weight_unit/edit")
         assert r.status_code == 200
         assert b"select" in r.content.lower() or b"option" in r.content.lower()
 
@@ -589,11 +615,12 @@ class TestMultiTenantTokenThreading:
         async def _capture(token, params=None):
             calls.append(token)
             return {"lines": [], "buckets": {}}
+        ui_client.cookies.update({"celerp_token": "token-tenant-X"})
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY_THB)),
             patch("ui.api_client.get_ar_aging", new=_capture),
         ):
-            await ui_client.get("/reports/ar-aging", cookies={"celerp_token": "token-tenant-X"})
+            await ui_client.get("/reports/ar-aging")
         assert calls == ["token-tenant-X"]
 
     @pytest.mark.asyncio
@@ -603,11 +630,12 @@ class TestMultiTenantTokenThreading:
         async def _capture(token, params=None):
             calls.append(token)
             return {"lines": [], "group_by": "customer", "total": 0}
+        ui_client.cookies.update({"celerp_token": "token-tenant-Y"})
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY_THB)),
             patch("ui.api_client.get_sales_report", new=_capture),
         ):
-            await ui_client.get("/reports/sales", cookies={"celerp_token": "token-tenant-Y"})
+            await ui_client.get("/reports/sales")
         assert calls == ["token-tenant-Y"]
 
     @pytest.mark.asyncio
@@ -617,12 +645,13 @@ class TestMultiTenantTokenThreading:
         async def _capture(token, params=None):
             calls.append(token)
             return {"items": [], "total": 0}
+        ui_client.cookies.update({"celerp_token": "token-tenant-Z"})
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY_THB)),
             patch("ui.api_client.list_docs", new=_capture),
             patch("ui.api_client.get_doc_summary", new=AsyncMock(return_value={})),
         ):
-            await ui_client.get("/docs", cookies={"celerp_token": "token-tenant-Z"})
+            await ui_client.get("/docs")
         assert "token-tenant-Z" in calls
 
     @pytest.mark.asyncio
@@ -632,11 +661,12 @@ class TestMultiTenantTokenThreading:
         async def _capture(token):
             calls.append(token)
             return {"items": [], "total": 0}
+        ui_client.cookies.update({"celerp_token": "mfg-token"})
         with (
             patch("ui.api_client.manufacturing_to_make", new=_capture),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY_USD)),
         ):
-            await ui_client.get("/manufacturing", cookies={"celerp_token": "mfg-token"})
+            await ui_client.get("/manufacturing")
         assert "mfg-token" in calls
 
 
@@ -648,39 +678,43 @@ class TestGracefulEmptyData:
     @pytest.mark.asyncio
     async def test_ar_aging_empty_lines(self, ui_client):
         """AR aging with 0 lines must show empty state, not crash."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY_THB)),
             patch("ui.api_client.get_ar_aging", new=AsyncMock(return_value={"lines": [], "buckets": {}})),
         ):
-            r = await ui_client.get("/reports/ar-aging", cookies=_authed())
+            r = await ui_client.get("/reports/ar-aging")
         assert r.status_code == 200
         assert b"no data" in r.content.lower() or b"empty" in r.content.lower() or b"adjust" in r.content.lower()
 
     @pytest.mark.asyncio
     async def test_sales_report_empty_lines(self, ui_client):
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY_THB)),
             patch("ui.api_client.get_sales_report", new=AsyncMock(return_value={"lines": [], "total": 0, "group_by": "customer"})),
         ):
-            r = await ui_client.get("/reports/sales", cookies=_authed())
+            r = await ui_client.get("/reports/sales")
         assert r.status_code == 200
 
     @pytest.mark.asyncio
     async def test_purchases_report_empty_lines(self, ui_client):
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY_THB)),
             patch("ui.api_client.get_purchases_report", new=AsyncMock(return_value={"lines": [], "total": 0, "group_by": "supplier"})),
         ):
-            r = await ui_client.get("/reports/purchases", cookies=_authed())
+            r = await ui_client.get("/reports/purchases")
         assert r.status_code == 200
 
     @pytest.mark.asyncio
     async def test_expiring_empty(self, ui_client):
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY_THB)),
             patch("ui.api_client.get_expiring", new=AsyncMock(return_value={"count": 0, "days_threshold": 30, "items": []})),
         ):
-            r = await ui_client.get("/reports/expiring", cookies=_authed())
+            r = await ui_client.get("/reports/expiring")
         assert r.status_code == 200
 
     @pytest.mark.asyncio
@@ -693,11 +727,12 @@ class TestGracefulEmptyData:
             ],
             "buckets": {},
         }
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY_THB)),
             patch("ui.api_client.get_ar_aging", new=AsyncMock(return_value=aging_data)),
         ):
-            r = await ui_client.get("/reports/ar-aging", cookies=_authed())
+            r = await ui_client.get("/reports/ar-aging")
         assert r.status_code == 200
         # Zero + no contact = meaningless line — must show empty state
         assert b"no data" in r.content.lower() or b"adjust" in r.content.lower()
@@ -711,53 +746,58 @@ class TestReportApiErrors:
     @pytest.mark.asyncio
     async def test_ar_aging_401_redirects(self, ui_client):
         from ui.api_client import APIError
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY_THB)),
             patch("ui.api_client.get_ar_aging", new=AsyncMock(side_effect=APIError(401, "Unauthorized"))),
         ):
-            r = await ui_client.get("/reports/ar-aging", cookies=_authed())
+            r = await ui_client.get("/reports/ar-aging")
         assert r.status_code in (302, 303)
         assert "/login" in r.headers.get("location", "")
 
     @pytest.mark.asyncio
     async def test_ap_aging_401_redirects(self, ui_client):
         from ui.api_client import APIError
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY_THB)),
             patch("ui.api_client.get_ap_aging", new=AsyncMock(side_effect=APIError(401, "Unauthorized"))),
         ):
-            r = await ui_client.get("/reports/ap-aging", cookies=_authed())
+            r = await ui_client.get("/reports/ap-aging")
         assert r.status_code in (302, 303)
 
     @pytest.mark.asyncio
     async def test_sales_report_401_redirects(self, ui_client):
         from ui.api_client import APIError
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY_THB)),
             patch("ui.api_client.get_sales_report", new=AsyncMock(side_effect=APIError(401, "Unauthorized"))),
         ):
-            r = await ui_client.get("/reports/sales", cookies=_authed())
+            r = await ui_client.get("/reports/sales")
         assert r.status_code in (302, 303)
 
     @pytest.mark.asyncio
     async def test_purchases_report_non_401_shows_empty(self, ui_client):
         """Non-401 APIError on purchases must show empty state, not crash."""
         from ui.api_client import APIError
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY_THB)),
             patch("ui.api_client.get_purchases_report", new=AsyncMock(side_effect=APIError(503, "Service down"))),
         ):
-            r = await ui_client.get("/reports/purchases", cookies=_authed())
+            r = await ui_client.get("/reports/purchases")
         assert r.status_code == 200  # graceful fallback
 
     @pytest.mark.asyncio
     async def test_expiring_non_401_shows_empty(self, ui_client):
         from ui.api_client import APIError
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY_THB)),
             patch("ui.api_client.get_expiring", new=AsyncMock(side_effect=APIError(500, "Internal error"))),
         ):
-            r = await ui_client.get("/reports/expiring", cookies=_authed())
+            r = await ui_client.get("/reports/expiring")
         assert r.status_code == 200
 
     @pytest.mark.parametrize("failure,status,fragment", [
@@ -800,33 +840,36 @@ class TestReportDisplayConsistency:
     @pytest.mark.asyncio
     async def test_ar_aging_has_date_filter_bar(self, ui_client):
         """AR aging must include the date filter bar with preset links."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY_THB)),
             patch("ui.api_client.get_ar_aging", new=AsyncMock(return_value={"lines": [], "buckets": {}})),
         ):
-            r = await ui_client.get("/reports/ar-aging", cookies=_authed())
+            r = await ui_client.get("/reports/ar-aging")
         assert r.status_code == 200
         assert b"preset" in r.content or b"This month" in r.content or b"date-filter" in r.content
 
     @pytest.mark.asyncio
     async def test_sales_report_has_group_by_selector(self, ui_client):
         """Sales report must include group-by selector."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY_THB)),
             patch("ui.api_client.get_sales_report", new=AsyncMock(return_value={"lines": [], "total": 0, "group_by": "customer"})),
         ):
-            r = await ui_client.get("/reports/sales", cookies=_authed())
+            r = await ui_client.get("/reports/sales")
         assert r.status_code == 200
         assert b"group_by" in r.content or b"Customer" in r.content
 
     @pytest.mark.asyncio
     async def test_purchases_report_group_by_supplier_default(self, ui_client):
         """Purchases report default group-by is supplier."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY_THB)),
             patch("ui.api_client.get_purchases_report", new=AsyncMock(return_value={"lines": [], "total": 0, "group_by": "supplier"})),
         ):
-            r = await ui_client.get("/reports/purchases", cookies=_authed())
+            r = await ui_client.get("/reports/purchases")
         assert r.status_code == 200
         assert b"supplier" in r.content.lower() or b"Supplier" in r.content
 
@@ -841,11 +884,12 @@ class TestReportDisplayConsistency:
             ],
             "buckets": {"current": 300},
         }
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY_THB)),
             patch("ui.api_client.get_ar_aging", new=AsyncMock(return_value=aging_data)),
         ):
-            r = await ui_client.get("/reports/ar-aging?sort=outstanding&dir=asc", cookies=_authed())
+            r = await ui_client.get("/reports/ar-aging?sort=outstanding&dir=asc")
         assert r.status_code == 200
         assert b"sort" in r.content or b"sort-link" in r.content
 
@@ -864,6 +908,7 @@ class TestAccountingCurrencyRegression:
             "expenses": {"lines": [], "total": 0},
             "gross_profit": 5000, "net_profit": 5000,
         }
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY_USD)),
             patch("ui.api_client.get_pnl", new=AsyncMock(return_value=pnl_data)),
@@ -876,7 +921,7 @@ class TestAccountingCurrencyRegression:
                 "accounts": [], "total_debit": 0, "total_credit": 0,
             })),
         ):
-            r = await ui_client.get("/reports/pnl", cookies=_authed())
+            r = await ui_client.get("/reports/pnl")
         assert r.status_code == 200
         # USD accounting: should not show ฿5000
         assert "฿5000" not in r.text or "$" in r.text
@@ -889,6 +934,7 @@ class TestAccountingCurrencyRegression:
             "equity": {"lines": [], "total": 0},
             "total_assets": 10000, "total_liabilities": 0, "total_equity": 0,
         }
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY_EUR)),
             patch("ui.api_client.get_balance_sheet", new=AsyncMock(return_value=bs_data)),
@@ -900,6 +946,6 @@ class TestAccountingCurrencyRegression:
                 "accounts": [], "total_debit": 0, "total_credit": 0,
             })),
         ):
-            r = await ui_client.get("/reports/balance-sheet", cookies=_authed())
+            r = await ui_client.get("/reports/balance-sheet")
         assert r.status_code == 200
         assert "฿10000" not in r.text

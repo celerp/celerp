@@ -2279,8 +2279,8 @@ async def _stream_get(token: str, path: str, *, params: dict | None = None,
     interactive connection slots ordinary page requests need. The UI must not
     re-read the whole body into memory (that would defeat the backend's streaming
     and pin a connection for the full read); the caller pipes the iterator
-    straight into a StreamingResponse, and the httpx client + response stay open
-    until the iterator is exhausted. Content-Length is forwarded so the browser
+    straight into a ClosingStreamingResponse, and the httpx client + response stay
+    open until the iterator ends or is closed. Content-Length is forwarded so the browser
     shows a real download progress bar. PoolTimeout (bulk pool saturated -> 503
     retryable) is caught before TimeoutException (slow upstream -> 504), the same
     order the shared error mapping uses, because PoolTimeout subclasses it."""
@@ -2313,15 +2313,32 @@ async def _stream_get(token: str, path: str, *, params: dict | None = None,
         if k in resp.headers
     }
 
-    async def _iter():
-        try:
-            async for chunk in resp.aiter_bytes():
-                yield chunk
-        finally:
-            await resp.aclose()
-            await client.aclose()
+    return _OpenStream(resp, client), headers
 
-    return _iter(), headers
+
+class _OpenStream:
+    """The body of an opened streaming response, chunk by chunk. It owns the response and
+    its client: both close when the body ends, when reading fails, or when it is closed,
+    also before reading begins (a generator closed before its first chunk would skip its
+    cleanup and leave the connection open)."""
+
+    def __init__(self, resp: httpx.Response, client: httpx.AsyncClient):
+        self._resp, self._client = resp, client
+        self._chunks = resp.aiter_bytes()
+
+    def __aiter__(self) -> "_OpenStream":
+        return self
+
+    async def __anext__(self) -> bytes:
+        try:
+            return await self._chunks.__anext__()
+        except BaseException:
+            await self.aclose()
+            raise
+
+    async def aclose(self) -> None:
+        await self._resp.aclose()
+        await self._client.aclose()
 
 
 async def export_items_csv(token: str, params: dict | None = None) -> bytes:

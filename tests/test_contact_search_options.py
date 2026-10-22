@@ -119,9 +119,9 @@ class TestContactSearchOptionsEndpoint:
     @pytest.mark.asyncio
     async def test_empty_q_returns_empty_body(self, ui_client):
         """GET /contacts/search-options without q → 200 with empty body."""
+        ui_client.cookies.update(_authed())
         r = await ui_client.get(
             "/contacts/search-options",
-            cookies=_authed(),
         )
         assert r.status_code == 200
         assert r.content == b""
@@ -129,9 +129,9 @@ class TestContactSearchOptionsEndpoint:
     @pytest.mark.asyncio
     async def test_blank_q_returns_empty_body(self, ui_client):
         """GET /contacts/search-options?q= (whitespace only) → empty body."""
+        ui_client.cookies.update(_authed())
         r = await ui_client.get(
             "/contacts/search-options?q=   ",
-            cookies=_authed(),
         )
         assert r.status_code == 200
         assert r.content.strip() == b""
@@ -150,10 +150,10 @@ class TestContactSearchOptionsEndpoint:
             {"entity_id": "ct:1", "name": "Alice Smith", "company_name": "ACME"},
             {"entity_id": "ct:2", "name": "Alice Jones", "company_name": ""},
         ]
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.list_contacts", new=AsyncMock(return_value={"items": contacts, "total": 2})):
             r = await ui_client.get(
                 "/contacts/search-options?q=alice&contact_type=customer",
-                cookies=_authed(),
             )
         assert r.status_code == 200
         assert b"combobox-option" in r.content
@@ -166,10 +166,10 @@ class TestContactSearchOptionsEndpoint:
     async def test_default_field_includes_add_new_option(self, ui_client):
         """contact_id field variant includes '+ Add new contact' option."""
         contacts = [{"entity_id": "ct:1", "name": "Alice"}]
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.list_contacts", new=AsyncMock(return_value={"items": contacts, "total": 1})):
             r = await ui_client.get(
                 "/contacts/search-options?q=alice",
-                cookies=_authed(),
             )
         assert r.status_code == 200
         assert b"__new__" in r.content
@@ -179,10 +179,10 @@ class TestContactSearchOptionsEndpoint:
     async def test_contact_company_name_field_excludes_add_new(self, ui_client):
         """contact_company_name field variant must NOT include '+ Add new contact'."""
         contacts = [{"entity_id": "ct:1", "name": "Alice", "company_name": "ACME Ltd"}]
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.list_contacts", new=AsyncMock(return_value={"items": contacts, "total": 1})):
             r = await ui_client.get(
                 "/contacts/search-options?q=acme&field=contact_company_name",
-                cookies=_authed(),
             )
         assert r.status_code == 200
         assert b"ACME Ltd" in r.content
@@ -192,10 +192,10 @@ class TestContactSearchOptionsEndpoint:
     async def test_contact_company_name_field_uses_company_name_as_label(self, ui_client):
         """contact_company_name variant shows company_name, not contact name."""
         contacts = [{"entity_id": "ct:1", "name": "Alice Smith", "company_name": "Globex Corp"}]
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.list_contacts", new=AsyncMock(return_value={"items": contacts, "total": 1})):
             r = await ui_client.get(
                 "/contacts/search-options?q=globex&field=contact_company_name",
-                cookies=_authed(),
             )
         assert b"Globex Corp" in r.content
         # The entity_id is the value (for resolving to contact_id)
@@ -209,10 +209,10 @@ class TestContactSearchOptionsEndpoint:
             {"entity_id": "ct:2", "name": "Bob", "company_name": ""},
             {"entity_id": "ct:3", "name": "Carol", "company_name": None},
         ]
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.list_contacts", new=AsyncMock(return_value={"items": contacts, "total": 3})):
             r = await ui_client.get(
                 "/contacts/search-options?q=a&field=contact_company_name",
-                cookies=_authed(),
             )
         assert b"ACME" in r.content
         assert b'data-value="ct:2"' not in r.content
@@ -227,10 +227,10 @@ class TestContactSearchOptionsEndpoint:
             captured.append(params)
             return {"items": [], "total": 0}
 
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.list_contacts", new=AsyncMock(side_effect=mock_list)):
             r = await ui_client.get(
                 "/contacts/search-options?q=test&contact_type=hacker",
-                cookies=_authed(),
             )
         assert r.status_code == 200
         assert captured[0].get("contact_type") == "customer"
@@ -238,10 +238,10 @@ class TestContactSearchOptionsEndpoint:
     @pytest.mark.asyncio
     async def test_no_results_shows_empty_option(self, ui_client):
         """When search returns no contacts, the no-results option is visible."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.list_contacts", new=AsyncMock(return_value={"items": [], "total": 0})):
             r = await ui_client.get(
                 "/contacts/search-options?q=zzz_nobody",
-                cookies=_authed(),
             )
         assert r.status_code == 200
         assert b"combobox-option--empty" in r.content
@@ -256,10 +256,10 @@ class TestContactSearchOptionsEndpoint:
     async def test_api_error_returns_empty_fragment(self, ui_client):
         """When the API raises, the endpoint returns only the no-results option."""
         from ui.api_client import APIError
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.list_contacts", new=AsyncMock(side_effect=APIError(500, "error"))):
             r = await ui_client.get(
                 "/contacts/search-options?q=error",
-                cookies=_authed(),
             )
         assert r.status_code == 200
         # Still a valid response: just empty options with no-results visible
@@ -274,10 +274,10 @@ class TestContactSearchOptionsEndpoint:
             captured.append(params)
             return {"items": [], "total": 0}
 
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.list_contacts", new=AsyncMock(side_effect=mock_list)):
             await ui_client.get(
                 "/contacts/search-options?q=alice",
-                cookies=_authed(),
             )
         assert captured, "list_contacts was not called"
         params = captured[0]

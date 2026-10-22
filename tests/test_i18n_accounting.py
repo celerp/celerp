@@ -66,10 +66,10 @@ async def test_accounting_browser_title_translates(ui_client):
     render time. get_company is forced to 403 so the page renders its error branch
     (no journal/fiscal fetch needed); the full shell still carries the title."""
     boom = AsyncMock(side_effect=APIError(403, "forbidden"))
+    ui_client.cookies.update({"celerp_token": make_test_token(), "celerp_lang": "xx"})
     with patch("ui.api_client.get_company", new=boom):
         r = await ui_client.get(
             "/accounting",
-            cookies={"celerp_token": make_test_token(), "celerp_lang": "xx"},
         )
     assert r.status_code == 200
     # The R5 browser title (my conversion) reaches the <title> element in the

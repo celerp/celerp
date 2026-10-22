@@ -247,7 +247,8 @@ async def seeded(client):
 
 async def _fetch(ui, tok, url: str, fragment: bool = False) -> str:
     headers = {"HX-Request": "true"} if fragment else {}
-    r = await ui.get(url, cookies={"celerp_token": tok}, headers=headers)
+    ui.cookies.update({"celerp_token": tok})
+    r = await ui.get(url, headers=headers)
     assert r.status_code == 200, f"{url}: {r.status_code} {r.text[:400]}"
     return r.text
 

@@ -852,7 +852,7 @@ def _external_identity_candidates(cid: uuid.UUID, platform: str, product_id: str
     """Rows that may carry one external product identity: an explicit link or
     a legacy connector idempotency key. Callers decide with the exact Python
     identity check; this only keeps the scan off the whole catalog."""
-    idem = Projection.state.op("->>")("idempotency_key")
+    idem = Projection.state["idempotency_key"].as_string()
     prefix = f"{platform}:{product_id}"
     return select(Projection).where(
         Projection.company_id == cid,

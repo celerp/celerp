@@ -222,8 +222,9 @@ class TestDashboard404Redirect:
         """REG-003a: 404 from API → redirect to /setup, not error banner."""
         from ui.api_client import APIError
 
+        ui_client.cookies.update(self._authed())
         with patch("ui.api_client.get_company", new=AsyncMock(side_effect=APIError(404, "Not found"))):
-            r = await ui_client.get("/dashboard", cookies=self._authed())
+            r = await ui_client.get("/dashboard")
 
         assert r.status_code in (302, 303), (
             f"Expected redirect on 404, got {r.status_code}"
@@ -238,8 +239,9 @@ class TestDashboard404Redirect:
         """REG-003b: 401 from API → redirect to /login (pre-existing, regression guard)."""
         from ui.api_client import APIError
 
+        ui_client.cookies.update(self._authed())
         with patch("ui.api_client.get_company", new=AsyncMock(side_effect=APIError(401, "Invalid token"))):
-            r = await ui_client.get("/dashboard", cookies=self._authed())
+            r = await ui_client.get("/dashboard")
 
         assert r.status_code in (302, 303)
         location = r.headers.get("location", "")
@@ -252,12 +254,13 @@ class TestDashboard404Redirect:
         """REG-003c: Non-404/401 errors show the error banner (not crash)."""
         from ui.api_client import APIError
 
+        ui_client.cookies.update(self._authed())
         with (
             patch("ui.api_client.get_company", new=AsyncMock(side_effect=APIError(503, "Service unavailable"))),
             # Also mock bootstrap_status so the auth middleware doesn't interfere
             patch("ui.routes.auth.bootstrap_status", new=AsyncMock(return_value=True)),
         ):
-            r = await ui_client.get("/dashboard", cookies=self._authed())
+            r = await ui_client.get("/dashboard")
 
         # Should render a page (200 or redirect), not crash (500)
         assert r.status_code != 500, "Unhandled APIError caused a 500"
@@ -291,11 +294,12 @@ class TestStaleTokenRedirectLoop:
         """REG-004a: GET /login with an invalid token → shows login page, clears cookie."""
         from ui.api_client import APIError
 
+        ui_client.cookies.update({"celerp_token": "stale-token"})
         with (
             patch("ui.routes.auth.api_get_company", new=AsyncMock(side_effect=APIError(401, "Invalid token"))),
             patch("ui.routes.auth.bootstrap_status", new=AsyncMock(return_value=True)),
         ):
-            r = await ui_client.get("/login", cookies={"celerp_token": "stale-token"})
+            r = await ui_client.get("/login")
 
         # Must NOT redirect back to dashboard (that causes the loop)
         assert r.status_code not in (302, 303) or "/login" not in r.headers.get("location", ""), (
@@ -312,11 +316,12 @@ class TestStaleTokenRedirectLoop:
     @pytest.mark.asyncio
     async def test_valid_token_still_redirects_to_dashboard(self, ui_client):
         """REG-004b: GET /login with a valid token still redirects to / (no regression)."""
+        ui_client.cookies.update({"celerp_token": "valid-token"})
         with (
             patch("ui.routes.auth.api_get_company", new=AsyncMock(return_value={"name": "Co", "settings": {}})),
             patch("ui.routes.auth.bootstrap_status", new=AsyncMock(return_value=True)),
         ):
-            r = await ui_client.get("/login", cookies={"celerp_token": "valid-token"})
+            r = await ui_client.get("/login")
 
         assert r.status_code in (302, 303), f"Expected redirect for valid token, got {r.status_code}"
         assert r.headers.get("location", "") == "/", (

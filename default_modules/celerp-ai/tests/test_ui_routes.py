@@ -79,8 +79,9 @@ def _stop(patches):
 async def test_ai_page_empty_state_without_conversation(ui_client):
     patches = _patch_page()
     _apply(patches)
+    ui_client.cookies.update(_authed())
     try:
-        r = await ui_client.get("/ai", cookies=_authed())
+        r = await ui_client.get("/ai")
     finally:
         _stop(patches)
     assert r.status_code == 200
@@ -118,10 +119,10 @@ async def test_ai_page_unknown_conversation_redirects_to_empty_chat(ui_client):
         ai_conversation_get=AsyncMock(side_effect=APIError(404, "Conversation not found")),
     )
     _apply(patches)
+    ui_client.cookies.update(_authed())
     try:
         r = await ui_client.get(
             "/ai?conversation=11111111-1111-4111-8111-111111111111",
-            cookies=_authed(),
         )
     finally:
         _stop(patches)
@@ -134,8 +135,9 @@ async def test_ai_page_malformed_conversation_redirects_without_api_call(ui_clie
     get_conversation = AsyncMock()
     patches = _patch_page(ai_conversation_get=get_conversation)
     _apply(patches)
+    ui_client.cookies.update(_authed())
     try:
-        r = await ui_client.get("/ai?conversation=not-a-uuid", cookies=_authed())
+        r = await ui_client.get("/ai?conversation=not-a-uuid")
     finally:
         _stop(patches)
     assert r.status_code == 302
@@ -157,8 +159,9 @@ async def test_ai_page_renders_thread_with_action_card(ui_client):
     }
     patches = _patch_page(ai_conversation_get=AsyncMock(return_value=detail))
     _apply(patches)
+    ui_client.cookies.update(_authed())
     try:
-        r = await ui_client.get("/ai?conversation=11111111-1111-4111-8111-111111111111", cookies=_authed())
+        r = await ui_client.get("/ai?conversation=11111111-1111-4111-8111-111111111111")
     finally:
         _stop(patches)
     assert r.status_code == 200
@@ -176,9 +179,10 @@ async def test_ai_page_renders_thread_with_action_card(ui_client):
 async def test_chat_returns_user_and_assistant_bubbles(ui_client):
     result = {"answer": "Here is your summary.", "model_used": "m",
               "tools_called": [], "pending_actions": []}
+    ui_client.cookies.update(_authed())
     with patch("celerp_ai.ui_routes.api.ai_conversation_query",
                AsyncMock(return_value=result)):
-        r = await ui_client.post("/ai/chat", cookies=_authed(),
+        r = await ui_client.post("/ai/chat",
                                  data={"query": "summarize", "conversation_id": "conv-1"})
     assert r.status_code == 200
     assert "ai-msg--user" in r.text
@@ -197,9 +201,10 @@ async def test_chat_renders_agent_error_instead_of_blank_bubble(ui_client):
         "answer": "", "error": message, "model_used": "m",
         "tools_called": [], "pending_actions": [],
     }
+    ui_client.cookies.update(_authed())
     with patch("celerp_ai.ui_routes.api.ai_conversation_query",
                AsyncMock(return_value=result)):
-        r = await ui_client.post("/ai/chat", cookies=_authed(),
+        r = await ui_client.post("/ai/chat",
                                  data={"query": "summarize", "conversation_id": "conv-1"})
     assert r.status_code == 200
     assert "ai-msg--user" in r.text
@@ -210,11 +215,12 @@ async def test_chat_renders_agent_error_instead_of_blank_bubble(ui_client):
 @pytest.mark.asyncio
 async def test_chat_creates_conversation_on_first_turn(ui_client):
     result = {"answer": "ok", "model_used": "m", "tools_called": [], "pending_actions": []}
+    ui_client.cookies.update(_authed())
     with patch("celerp_ai.ui_routes.api.ai_conversation_create",
                AsyncMock(return_value={"id": "conv-new"})) as create, \
          patch("celerp_ai.ui_routes.api.ai_conversation_query",
                AsyncMock(return_value=result)) as query:
-        r = await ui_client.post("/ai/chat", cookies=_authed(),
+        r = await ui_client.post("/ai/chat",
                                  data={"query": "hi", "conversation_id": ""})
     create.assert_awaited_once()
     assert create.await_args.kwargs["title"] == "hi"
@@ -224,12 +230,13 @@ async def test_chat_creates_conversation_on_first_turn(ui_client):
 
 @pytest.mark.asyncio
 async def test_first_turn_query_failure_keeps_created_conversation(ui_client):
+    ui_client.cookies.update(_authed())
     with patch("celerp_ai.ui_routes.api.ai_conversation_create",
                AsyncMock(return_value={"id": "conv-new"})), \
          patch("celerp_ai.ui_routes.api.ai_conversation_query",
                AsyncMock(side_effect=APIError(502, "down"))):
         r = await ui_client.post(
-            "/ai/chat", cookies=_authed(),
+            "/ai/chat",
             data={"query": "keep this question", "conversation_id": ""},
         )
     assert r.status_code == 200
@@ -243,9 +250,10 @@ async def test_first_turn_query_failure_keeps_created_conversation(ui_client):
 async def test_chat_renders_action_card(ui_client):
     result = {"answer": "I'll add it once you confirm.", "model_used": "m",
               "tools_called": [], "pending_actions": [{**_ACTION, "message_id": "m2"}]}
+    ui_client.cookies.update(_authed())
     with patch("celerp_ai.ui_routes.api.ai_conversation_query",
                AsyncMock(return_value=result)):
-        r = await ui_client.post("/ai/chat", cookies=_authed(),
+        r = await ui_client.post("/ai/chat",
                                  data={"query": "add widget", "conversation_id": "conv-1"})
     assert r.status_code == 200
     assert "ai-action__card" in r.text
@@ -257,8 +265,9 @@ async def test_chat_renders_action_card(ui_client):
 @pytest.mark.asyncio
 async def test_chat_quota_exceeded_renders_upgrade_card(ui_client):
     err = APIError(402, {"base_limit": 200, "tier": "ai"})
+    ui_client.cookies.update(_authed())
     with patch("celerp_ai.ui_routes.api.ai_conversation_query", AsyncMock(side_effect=err)):
-        r = await ui_client.post("/ai/chat", cookies=_authed(),
+        r = await ui_client.post("/ai/chat",
                                  data={"query": "hi", "conversation_id": "conv-1"})
     assert r.status_code == 200
     assert "ai-upgrade-cta" in r.text
@@ -267,8 +276,9 @@ async def test_chat_quota_exceeded_renders_upgrade_card(ui_client):
 @pytest.mark.asyncio
 async def test_chat_rate_limited_renders_busy_message(ui_client):
     err = APIError(429, "rate limited")
+    ui_client.cookies.update(_authed())
     with patch("celerp_ai.ui_routes.api.ai_conversation_query", AsyncMock(side_effect=err)):
-        r = await ui_client.post("/ai/chat", cookies=_authed(),
+        r = await ui_client.post("/ai/chat",
                                  data={"query": "hi", "conversation_id": "conv-1"})
     assert r.status_code == 200
     assert "The assistant is busy right now" in r.text
@@ -278,8 +288,9 @@ async def test_chat_rate_limited_renders_busy_message(ui_client):
 
 @pytest.mark.asyncio
 async def test_new_conversation_is_navigation_only(ui_client):
+    ui_client.cookies.update(_authed())
     with patch("celerp_ai.ui_routes.api.ai_conversation_create", AsyncMock()) as create:
-        r = await ui_client.post("/ai/conversations", cookies=_authed())
+        r = await ui_client.post("/ai/conversations")
     create.assert_not_awaited()
     assert r.headers["HX-Redirect"] == "/ai"
 
@@ -290,8 +301,9 @@ async def test_new_conversation_is_navigation_only(ui_client):
 async def test_confirm_success_names_entity(ui_client):
     result = {"ok": True, "status": 200, "title": "Create item",
               "data": {"name": "Agent Widget", "id": "item:9"}, "error": None}
+    ui_client.cookies.update(_authed())
     with patch("celerp_ai.ui_routes.api.ai_confirm_action", AsyncMock(return_value=result)):
-        r = await ui_client.post("/ai/confirm-action-ui", cookies=_authed(), data={
+        r = await ui_client.post("/ai/confirm-action-ui", data={
             "conversation_id": "conv-1", "message_id": "m2", "tool_call_id": "call-1",
         })
     assert r.status_code == 200
@@ -304,8 +316,9 @@ async def test_confirm_success_names_entity(ui_client):
 @pytest.mark.asyncio
 async def test_confirm_expired_shows_neutral_panel(ui_client):
     err = APIError(409, {"code": "action_not_pending"})
+    ui_client.cookies.update(_authed())
     with patch("celerp_ai.ui_routes.api.ai_confirm_action", AsyncMock(side_effect=err)):
-        r = await ui_client.post("/ai/confirm-action-ui", cookies=_authed(), data={
+        r = await ui_client.post("/ai/confirm-action-ui", data={
             "conversation_id": "conv-1", "message_id": "m2", "tool_call_id": "call-1",
         })
     assert r.status_code == 200
@@ -316,8 +329,9 @@ async def test_confirm_expired_shows_neutral_panel(ui_client):
 async def test_confirm_failure_shows_error(ui_client):
     result = {"ok": False, "status": 422,
               "data": None, "error": {"code": "validation_failed", "message": "sku is required"}}
+    ui_client.cookies.update(_authed())
     with patch("celerp_ai.ui_routes.api.ai_confirm_action", AsyncMock(return_value=result)):
-        r = await ui_client.post("/ai/confirm-action-ui", cookies=_authed(), data={
+        r = await ui_client.post("/ai/confirm-action-ui", data={
             "conversation_id": "conv-1", "message_id": "m2", "tool_call_id": "call-1",
         })
     assert r.status_code == 200
@@ -333,9 +347,10 @@ async def test_action_card_strings_resolve_in_thai(ui_client):
     the composer placeholder show the Thai text, not the English source."""
     result = {"answer": "ยืนยันไหม", "model_used": "m",
               "tools_called": [], "pending_actions": [{**_ACTION, "message_id": "m2"}]}
+    ui_client.cookies.update(_authed(lang="th"))
     with patch("celerp_ai.ui_routes.api.ai_conversation_query",
                AsyncMock(return_value=result)):
-        r = await ui_client.post("/ai/chat", cookies=_authed(lang="th"),
+        r = await ui_client.post("/ai/chat",
                                  data={"query": "เพิ่มสินค้า", "conversation_id": "conv-1"})
     assert r.status_code == 200
     assert "การดำเนินการที่เสนอ" in r.text   # ai.action_proposal (th)
@@ -347,8 +362,9 @@ async def test_action_card_strings_resolve_in_thai(ui_client):
 @pytest.mark.asyncio
 async def test_busy_message_resolves_in_thai(ui_client):
     err = APIError(429, "rate limited")
+    ui_client.cookies.update(_authed(lang="th"))
     with patch("celerp_ai.ui_routes.api.ai_conversation_query", AsyncMock(side_effect=err)):
-        r = await ui_client.post("/ai/chat", cookies=_authed(lang="th"),
+        r = await ui_client.post("/ai/chat",
                                  data={"query": "hi", "conversation_id": "conv-1"})
     assert r.status_code == 200
     assert "ผู้ช่วยกำลังไม่ว่างในขณะนี้" in r.text  # ai.busy (th)
@@ -521,8 +537,9 @@ def _ok(i: int) -> dict:
 async def test_confirm_all_runs_the_first_chunk_and_chains_the_rest(ui_client):
     ids = [f"p{i}" for i in range(1, 13)]
     result = {"results": [_ok(i) for i in range(1, 11)], "completed": 10, "failed": 0}
+    ui_client.cookies.update(_authed())
     with patch("celerp_ai.ui_routes.api.ai_confirm_all", AsyncMock(return_value=result)) as call:
-        r = await ui_client.post("/ai/confirm-all-ui/conv-1/m2?view=table", cookies=_authed(),
+        r = await ui_client.post("/ai/confirm-all-ui/conv-1/m2?view=table",
                                  data={"selected": ids})
     assert r.status_code == 200, r.text
     assert call.await_args.args[2:] == ("conv-1", "m2")
@@ -545,8 +562,9 @@ async def test_confirm_all_runs_the_first_chunk_and_chains_the_rest(ui_client):
 @pytest.mark.asyncio
 async def test_confirm_all_last_chunk_shows_tally_and_drafts_link(ui_client):
     result = {"results": [_ok(11), _ok(12)], "completed": 2, "failed": 0}
+    ui_client.cookies.update(_authed())
     with patch("celerp_ai.ui_routes.api.ai_confirm_all", AsyncMock(return_value=result)):
-        r = await ui_client.post("/ai/confirm-all-ui/conv-1/m2?view=table", cookies=_authed(), data={
+        r = await ui_client.post("/ai/confirm-all-ui/conv-1/m2?view=table", data={
             "selected": ["p11", "p12"], "completed": "10", "failed": "0",
             "doc_ids": ",".join(f"doc:{i}" for i in range(1, 11)),
         })
@@ -570,8 +588,9 @@ async def test_confirm_all_cards_view_replaces_each_card(ui_client):
         ],
         "completed": 1, "failed": 1,
     }
+    ui_client.cookies.update(_authed())
     with patch("celerp_ai.ui_routes.api.ai_confirm_all", AsyncMock(return_value=result)) as call:
-        r = await ui_client.post("/ai/confirm-all-ui/conv-1/m2?view=cards", cookies=_authed(),
+        r = await ui_client.post("/ai/confirm-all-ui/conv-1/m2?view=cards",
                                  data={"selected": ["p1", "p2"]})
     assert call.await_args.kwargs["tool_call_ids"] == ["p1", "p2"]
     assert r.status_code == 200
@@ -586,13 +605,14 @@ async def test_confirm_all_cards_view_replaces_each_card(ui_client):
 @pytest.mark.asyncio
 async def test_confirm_all_nothing_pending_shows_expired_tail(ui_client):
     err = APIError(409, "Nothing is pending.", {"code": "action_not_pending"})
+    ui_client.cookies.update(_authed())
     with patch("celerp_ai.ui_routes.api.ai_confirm_all", AsyncMock(side_effect=err)):
-        r = await ui_client.post("/ai/confirm-all-ui/conv-1/m2?view=cards", cookies=_authed(),
+        r = await ui_client.post("/ai/confirm-all-ui/conv-1/m2?view=cards",
                                  data={"selected": "p1"})
     assert r.status_code == 200
     assert "already handled or has expired" in r.text
     assert "hx-trigger" not in r.text
-    empty = await ui_client.post("/ai/confirm-all-ui/conv-1/m2?view=table", cookies=_authed(), data={})
+    empty = await ui_client.post("/ai/confirm-all-ui/conv-1/m2?view=table", data={})
     assert "already handled or has expired" in empty.text
 
 
@@ -608,9 +628,10 @@ async def test_confirm_all_pending_dependency_stays_actionable(ui_client):
         }],
         "completed": 0, "failed": 0, "attention": 1,
     }
+    ui_client.cookies.update(_authed())
     with patch("celerp_ai.ui_routes.api.ai_confirm_all", AsyncMock(return_value=result)):
         r = await ui_client.post(
-            "/ai/confirm-all-ui/conv-1/m2?view=table", cookies=_authed(),
+            "/ai/confirm-all-ui/conv-1/m2?view=table",
             data={"selected": ["p1"]},
         )
     assert "0 applied, 0 failed, 1 need attention." in r.text
@@ -620,10 +641,11 @@ async def test_confirm_all_pending_dependency_stays_actionable(ui_client):
 
 @pytest.mark.asyncio
 async def test_dismiss_all_refreshes_canonical_thread(ui_client):
+    ui_client.cookies.update(_authed())
     with patch("celerp_ai.ui_routes.api.ai_dismiss_all",
                AsyncMock(return_value={"dismissed": ["p1", "p2"]})) as dismiss:
         r = await ui_client.post(
-            "/ai/dismiss-all-ui/conv-1/m2", cookies=_authed(),
+            "/ai/dismiss-all-ui/conv-1/m2",
             data={"selected": ["p1", "p2"]},
         )
     assert r.headers["HX-Refresh"] == "true"
@@ -633,8 +655,9 @@ async def test_dismiss_all_refreshes_canonical_thread(ui_client):
 @pytest.mark.asyncio
 async def test_confirm_all_api_failure_stops_the_run_with_the_tally(ui_client):
     err = APIError(502, "The API is down.", {"code": "upstream_unavailable", "message": "The API is down."})
+    ui_client.cookies.update(_authed())
     with patch("celerp_ai.ui_routes.api.ai_confirm_all", AsyncMock(side_effect=err)):
-        r = await ui_client.post("/ai/confirm-all-ui/conv-1/m2?view=table", cookies=_authed(), data={
+        r = await ui_client.post("/ai/confirm-all-ui/conv-1/m2?view=table", data={
             "selected": ["p11", "p12"], "completed": "9", "failed": "1", "doc_ids": "doc:1",
         })
     assert t("ai.confirm_all_result", "en", completed=9, failed=1) in r.text
@@ -647,9 +670,10 @@ async def test_confirm_all_api_failure_stops_the_run_with_the_tally(ui_client):
 
 @pytest.mark.asyncio
 async def test_conversations_list_failure_is_not_empty_state(ui_client):
+    ui_client.cookies.update(_authed())
     with patch("celerp_ai.ui_routes.api.ai_conversations_list",
                AsyncMock(side_effect=APIError(502, "down"))):
-        r = await ui_client.get("/ai/conversations-list", cookies=_authed())
+        r = await ui_client.get("/ai/conversations-list")
     assert t("ai.conversations_load_failed", "en") in r.text
     assert "Retry" in r.text
     assert "No conversations yet." not in r.text
@@ -657,9 +681,10 @@ async def test_conversations_list_failure_is_not_empty_state(ui_client):
 
 @pytest.mark.asyncio
 async def test_memory_failure_has_retry_and_no_clear(ui_client):
+    ui_client.cookies.update(_authed())
     with patch("celerp_ai.ui_routes.api.ai_memory_get",
                AsyncMock(side_effect=APIError(502, "down"))):
-        r = await ui_client.get("/ai/memory-panel", cookies=_authed())
+        r = await ui_client.get("/ai/memory-panel")
     assert t("ai.memory_load_failed", "en") in r.text
     assert "Retry" in r.text
     assert "Clear All Memory" not in r.text
@@ -669,8 +694,9 @@ async def test_memory_failure_has_retry_and_no_clear(ui_client):
 async def test_conversations_list_shows_pending_count(ui_client):
     convs = [{"id": "c1", "title": "Receipts", "pending_count": 7},
              {"id": "c2", "title": "Questions", "pending_count": 0}]
+    ui_client.cookies.update(_authed())
     with patch("celerp_ai.ui_routes.api.ai_conversations_list", AsyncMock(return_value=convs)):
-        r = await ui_client.get("/ai/conversations-list", cookies=_authed())
+        r = await ui_client.get("/ai/conversations-list")
     assert r.status_code == 200
     assert r.text.count("ai-sidebar__badge") == 1
     assert '>7</span>' in r.text and "7 open proposals" in r.text
@@ -682,8 +708,9 @@ async def test_conversations_list_shows_pending_count(ui_client):
 async def test_ai_page_status_failure_is_not_showcase(ui_client):
     patches = _patch_page(ai_quota_status=AsyncMock(side_effect=APIError(502, "down")))
     _apply(patches)
+    ui_client.cookies.update(_authed())
     try:
-        r = await ui_client.get("/ai", cookies=_authed())
+        r = await ui_client.get("/ai")
     finally:
         _stop(patches)
     assert t("ai.service_unavailable", "en") in r.text
@@ -692,18 +719,20 @@ async def test_ai_page_status_failure_is_not_showcase(ui_client):
 
 @pytest.mark.asyncio
 async def test_quota_status_proxy_failure_is_unknown(ui_client):
+    ui_client.cookies.update(_authed())
     with patch("celerp_ai.ui_routes.api.ai_quota_status",
                AsyncMock(side_effect=APIError(502, "down"))):
-        r = await ui_client.get("/ai/quota-status", cookies=_authed())
+        r = await ui_client.get("/ai/quota-status")
     assert r.status_code == 200
     assert r.json() == {"unknown": True}
 
 
 @pytest.mark.asyncio
 async def test_chat_with_receipts_renders_progress_bubble(ui_client):
+    ui_client.cookies.update(_authed())
     with patch("celerp_ai.ui_routes.api.ai_conversation_query",
                AsyncMock(return_value={"job_id": "job-1", "message_id": "m1"})):
-        r = await ui_client.post("/ai/chat", cookies=_authed(), data={
+        r = await ui_client.post("/ai/chat", data={
             "query": "", "conversation_id": "conv-1", "file_ids": "f1,f2,f3",
         })
     assert r.status_code == 200
@@ -717,9 +746,10 @@ async def test_chat_with_receipts_renders_progress_bubble(ui_client):
 async def test_proposals_ui_keeps_polling_while_running(ui_client):
     job = {"id": "job-1", "status": "running", "total_files": 4,
            "completed_files": 1, "failed_files": 1, "proposal_message_id": None}
+    ui_client.cookies.update(_authed())
     with patch("celerp_ai.ui_routes.api.ai_batch_status", AsyncMock(return_value=job)), \
          patch("celerp_ai.ui_routes.api.ai_job_proposals", AsyncMock()) as proposals:
-        r = await ui_client.get("/ai/proposals-ui?conversation=conv-1&job=job-1", cookies=_authed())
+        r = await ui_client.get("/ai/proposals-ui?conversation=conv-1&job=job-1")
     proposals.assert_not_awaited()
     assert "Reading files: 2 of 4 finished." in r.text
     assert "load delay:5s" in r.text
@@ -737,9 +767,10 @@ async def test_proposals_ui_renders_summary_and_cards_when_done(ui_client):
                      {"id": "prop_2", "name": "create_bill_bills_post", "title": "Create bill from b.jpg",
                       "arguments": {"body": {"total": 20}}, "warnings": ["No date was found."], "file_id": "f2"},
                  ]}
+    ui_client.cookies.update(_authed())
     with patch("celerp_ai.ui_routes.api.ai_batch_status", AsyncMock(return_value=job)), \
          patch("celerp_ai.ui_routes.api.ai_job_proposals", AsyncMock(return_value=proposals)):
-        r = await ui_client.get("/ai/proposals-ui?conversation=conv-1&job=job-1", cookies=_authed())
+        r = await ui_client.get("/ai/proposals-ui?conversation=conv-1&job=job-1")
     assert r.status_code == 200
     assert "2 of 2 files were read." in r.text
     assert "Two bills are ready to confirm." in r.text
@@ -753,8 +784,9 @@ async def test_proposals_ui_renders_summary_and_cards_when_done(ui_client):
 async def test_proposals_ui_failed_job_is_an_error_bubble(ui_client):
     job = {"id": "job-1", "status": "failed", "total_files": 2, "completed_files": 0,
            "failed_files": 2, "error": "Every file failed to read."}
+    ui_client.cookies.update(_authed())
     with patch("celerp_ai.ui_routes.api.ai_batch_status", AsyncMock(return_value=job)):
-        r = await ui_client.get("/ai/proposals-ui?conversation=conv-1&job=job-1", cookies=_authed())
+        r = await ui_client.get("/ai/proposals-ui?conversation=conv-1&job=job-1")
     assert "ai-msg--error" in r.text
     assert "Every file failed to read." in r.text
     assert "Attach files and try again" in r.text
@@ -766,9 +798,10 @@ async def test_proposals_ui_api_error_shows_message(ui_client):
     job = {"id": "job-1", "status": "completed", "total_files": 1,
            "completed_files": 1, "failed_files": 0, "proposal_message_id": None}
     err = APIError(409, "The bill capability is not available.", {"code": "capability_unavailable"})
+    ui_client.cookies.update(_authed())
     with patch("celerp_ai.ui_routes.api.ai_batch_status", AsyncMock(return_value=job)), \
          patch("celerp_ai.ui_routes.api.ai_job_proposals", AsyncMock(side_effect=err)):
-        r = await ui_client.get("/ai/proposals-ui?conversation=conv-1&job=job-1", cookies=_authed())
+        r = await ui_client.get("/ai/proposals-ui?conversation=conv-1&job=job-1")
     assert "1 of 1 files were read." in r.text
     assert ">The bill capability is not available.<" in r.text
 
@@ -789,8 +822,9 @@ async def test_thread_orders_jobs_between_messages_and_marks_errors(ui_client):
     }
     patches = _patch_page(ai_conversation_get=AsyncMock(return_value=detail))
     _apply(patches)
+    ui_client.cookies.update(_authed())
     try:
-        r = await ui_client.get("/ai?conversation=11111111-1111-4111-8111-111111111111", cookies=_authed())
+        r = await ui_client.get("/ai?conversation=11111111-1111-4111-8111-111111111111")
     finally:
         _stop(patches)
     assert r.status_code == 200

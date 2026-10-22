@@ -175,7 +175,8 @@ async def _get(ui_client, url, role: str = "owner", **overrides):
     for p in ps:
         p.start()
     try:
-        resp = await ui_client.get(url, cookies=_cookies(role))
+        ui_client.cookies.update(_cookies(role))
+        resp = await ui_client.get(url)
     finally:
         for p in ps:
             p.stop()
@@ -444,8 +445,9 @@ async def test_report_pages_return_a_fragment_to_htmx(ui_client):
     made, ps = _mocks()
     for p in ps:
         p.start()
+    ui_client.cookies.update(_cookies())
     try:
-        r = await ui_client.get("/reports/pnl", cookies=_cookies(),
+        r = await ui_client.get("/reports/pnl",
                                 headers={"HX-Request": "true"})
     finally:
         for p in ps:
@@ -912,8 +914,9 @@ async def _get_without_the_reports_module(ui_client, url):
     for p in ps:
         p.start()
     try:
+        ui_client.cookies.update({"celerp_token": make_test_token(modules=_ACCOUNTING_ONLY)})
         return await ui_client.get(
-            url, cookies={"celerp_token": make_test_token(modules=_ACCOUNTING_ONLY)})
+            url)
     finally:
         for p in ps:
             p.stop()
@@ -1068,8 +1071,9 @@ async def test_gl_csv_single_call_with_backend_lines(ui_client):
     made, ps = _mocks(get_general_ledger=gl)
     for p in ps:
         p.start()
+    ui_client.cookies.update(_cookies())
     try:
-        r = await ui_client.get("/reports/export/general-ledger/csv", cookies=_cookies())
+        r = await ui_client.get("/reports/export/general-ledger/csv")
     finally:
         for p in ps:
             p.stop()

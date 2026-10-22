@@ -137,6 +137,7 @@ async def test_connector_backlinks_target_cloud_tab():
         base_url="http://ui",
         follow_redirects=False,
     ) as ui_client:
+        ui_client.cookies.update(cookies)
         with patch("ui.routes.settings_connectors._fetch_catalog",
                    AsyncMock(return_value=([], None, False))), \
              patch("ui.routes.settings_connectors._get_connector_config",
@@ -147,9 +148,8 @@ async def test_connector_backlinks_target_cloud_tab():
                    AsyncMock(return_value={"id": "00000000-0000-0000-0000-000000000002", "settings": {}, "current_role": "owner"})), \
              patch("ui.api_client.get_bank_accounts", AsyncMock(return_value={"items": []})), \
              patch("celerp.config.ensure_instance_id", return_value="iid-x"):
-            r = await ui_client.get("/settings/connectors/woocommerce", cookies=cookies)
-            r_invalid = await ui_client.get("/settings/connectors/not-a-platform",
-                                            cookies=cookies)
+            r = await ui_client.get("/settings/connectors/woocommerce")
+            r_invalid = await ui_client.get("/settings/connectors/not-a-platform")
 
     assert r.status_code == 200
     html = r.content.decode()
@@ -187,9 +187,9 @@ async def test_disconnect_keeps_local_owner_when_relay_revoke_fails():
         async with AsyncClient(
             transport=ASGITransport(app=ui_app), base_url="http://ui"
         ) as client:
+            client.cookies.update({"celerp_token": token})
             response = await client.delete(
                 "/settings/connectors/woocommerce/disconnect",
-                cookies={"celerp_token": token},
             )
     assert response.status_code == 200
 
@@ -214,13 +214,12 @@ async def test_failed_disconnect_offers_disconnect_anyway_with_a_warning(redirec
         async with AsyncClient(
             transport=ASGITransport(app=ui_app), base_url="http://ui"
         ) as client:
+            client.cookies.update({"celerp_token": token})
             normal = await client.delete(
                 f"/settings/connectors/woocommerce/disconnect?x=1{redirect}",
-                cookies={"celerp_token": token},
             )
             forced = await client.delete(
                 f"/settings/connectors/woocommerce/disconnect?force=1{redirect}",
-                cookies={"celerp_token": token},
             )
 
     html = normal.content.decode()
@@ -351,9 +350,9 @@ async def test_celerp_connector_returns_to_the_accounting_tab():
             patch.object(routes, "_attention", AsyncMock(return_value=[])), \
             patch.object(routes, "_from_accountant_section", AsyncMock(return_value="")):
         async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as client:
-            page = await client.get("/settings/connectors/celerp", cookies={"celerp_token": token})
-            gone = await client.delete("/settings/connectors/celerp/disconnect?redirect=1",
-                                       cookies={"celerp_token": token})
+            client.cookies.update({"celerp_token": token})
+            page = await client.get("/settings/connectors/celerp")
+            gone = await client.delete("/settings/connectors/celerp/disconnect?redirect=1")
 
     assert 'href="/settings/cloud?tab=accounting"' in page.text
     assert "tab=website" not in page.text
@@ -372,10 +371,9 @@ async def test_connector_refusals_show_the_reason_without_the_status_code():
     with _ui_owner_patches(), patch("ui.api_client.delete_connector_credentials", refused), \
             patch("ui.api_client.start_connector_sync", refused):
         async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as client:
-            gone = await client.delete("/settings/connectors/celerp/disconnect?redirect=1",
-                                       cookies={"celerp_token": token})
-            sync = await client.post("/settings/connectors/celerp/sync",
-                                     cookies={"celerp_token": token})
+            client.cookies.update({"celerp_token": token})
+            gone = await client.delete("/settings/connectors/celerp/disconnect?redirect=1")
+            sync = await client.post("/settings/connectors/celerp/sync")
 
     for html in (gone.text, sync.text):
         assert "API 401" not in html
@@ -399,9 +397,9 @@ async def test_accountant_pairing_refused_without_connect_offers_connect():
             patch("celerp.services.peer_access.parse_pairing_link",
                   return_value=("https://firm.example", "key")):
         async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as client:
+            client.cookies.update({"celerp_token": token})
             paired = await client.post("/settings/connectors/celerp/connect-apikey",
-                                       data={"pairing_link": "cpl.x.y"},
-                                       cookies={"celerp_token": token})
+                                       data={"pairing_link": "cpl.x.y"})
 
     assert "Accountant Sync needs Celerp Connect" in paired.text
     assert "Get Celerp Connect" in paired.text
@@ -476,13 +474,12 @@ async def test_failed_reset_changes_nothing_and_offers_to_reset_anyway():
         async with AsyncClient(
             transport=ASGITransport(app=ui_app), base_url="http://ui"
         ) as client:
+            client.cookies.update({"celerp_token": make_test_token(role="owner")})
             normal = await client.delete(
                 "/settings/connectors/woocommerce/reset",
-                cookies={"celerp_token": make_test_token(role="owner")},
             )
             forced = await client.delete(
                 "/settings/connectors/woocommerce/reset?force=1",
-                cookies={"celerp_token": make_test_token(role="owner")},
             )
 
     html = normal.content.decode()
@@ -569,8 +566,9 @@ def deposit_ui():
 async def test_deposit_account_route_saves_a_known_account(deposit_ui):
     client, cookies, patch_company = deposit_ui
     async with client:
+        client.cookies.update(cookies)
         r = await client.post("/settings/connectors/woocommerce/deposit-account",
-                              data={"woocommerce_deposit_account": "1200"}, cookies=cookies)
+                              data={"woocommerce_deposit_account": "1200"})
     assert r.status_code == 200
     patch_company.assert_awaited_once_with(cookies["celerp_token"], {"woocommerce_deposit_account": "1200"})
     assert "flash--success" in r.text and 'id="connector-deposit-woocommerce"' in r.text
@@ -580,8 +578,9 @@ async def test_deposit_account_route_saves_a_known_account(deposit_ui):
 async def test_deposit_account_route_rejects_an_unknown_account(deposit_ui):
     client, cookies, patch_company = deposit_ui
     async with client:
+        client.cookies.update(cookies)
         r = await client.post("/settings/connectors/woocommerce/deposit-account",
-                              data={"woocommerce_deposit_account": "9999"}, cookies=cookies)
+                              data={"woocommerce_deposit_account": "9999"})
     assert r.status_code == 200
     assert "9999 isn't an active bank account." in r.text
     patch_company.assert_not_awaited()
@@ -591,8 +590,9 @@ async def test_deposit_account_route_rejects_an_unknown_account(deposit_ui):
 async def test_deposit_account_route_add_new_redirects_to_bank_accounts(deposit_ui):
     client, cookies, patch_company = deposit_ui
     async with client:
+        client.cookies.update(cookies)
         r = await client.post("/settings/connectors/woocommerce/deposit-account",
-                              data={"woocommerce_deposit_account": "__new__"}, cookies=cookies)
+                              data={"woocommerce_deposit_account": "__new__"})
     assert r.status_code == 204
     assert r.headers["HX-Redirect"] == "/settings/accounting/bank-accounts/new"
     patch_company.assert_not_awaited()
@@ -602,8 +602,9 @@ async def test_deposit_account_route_add_new_redirects_to_bank_accounts(deposit_
 async def test_deposit_account_route_is_woocommerce_only(deposit_ui):
     client, cookies, patch_company = deposit_ui
     async with client:
+        client.cookies.update(cookies)
         r = await client.post("/settings/connectors/shopify/deposit-account",
-                              data={"woocommerce_deposit_account": "1200"}, cookies=cookies)
+                              data={"woocommerce_deposit_account": "1200"})
     assert r.status_code == 200
     patch_company.assert_not_awaited()
     assert "flash--success" not in r.text
@@ -631,8 +632,9 @@ def reconcile_ui():
 async def test_mark_reconciled_route_sends_the_reviewed_signature(reconcile_ui):
     client, cookies, setter = reconcile_ui
     async with client:
+        client.cookies.update(cookies)
         r = await client.post("/settings/connectors/woocommerce/attention/7/reconciled",
-                              data={"signature": "sig-7"}, cookies=cookies)
+                              data={"signature": "sig-7"})
     assert r.status_code == 200
     setter.assert_awaited_once_with(cookies["celerp_token"], "7", "sig-7")
     assert 'id="connector-attention-woocommerce-7"' in r.text
@@ -647,8 +649,8 @@ async def test_undo_reconciled_route_withdraws_the_mark(reconcile_ui):
         "reconciled": False,
     }}
     async with client:
-        r = await client.delete("/settings/connectors/woocommerce/attention/7/reconciled",
-                                cookies=cookies)
+        client.cookies.update(cookies)
+        r = await client.delete("/settings/connectors/woocommerce/attention/7/reconciled")
     assert r.status_code == 200
     setter.assert_awaited_once_with(cookies["celerp_token"], "7", None)
     assert 'hx-post="/settings/connectors/woocommerce/attention/7/reconciled"' in r.text
@@ -663,8 +665,9 @@ async def test_mark_reconciled_route_explains_a_refusal(reconcile_ui):
     entry = {"id": "7", "label": "Order 7", "reason": "has a refund", "signature": "sig-8"}
     with patch("celerp.connectors.sync_runner.attention_entries", AsyncMock(return_value=[entry])):
         async with client:
+            client.cookies.update(cookies)
             r = await client.post("/settings/connectors/woocommerce/attention/7/reconciled",
-                                  data={"signature": "sig-7"}, cookies=cookies)
+                                  data={"signature": "sig-7"})
     assert r.status_code == 200
     assert "This order changed in WooCommerce" in r.text
     assert "sig-8" in r.text
@@ -719,8 +722,9 @@ async def test_attention_read_failure_shows_no_list():
 async def test_mark_reconciled_route_is_woocommerce_only(reconcile_ui):
     client, cookies, setter = reconcile_ui
     async with client:
+        client.cookies.update(cookies)
         r = await client.post("/settings/connectors/shopify/attention/7/reconciled",
-                              data={"signature": "sig-7"}, cookies=cookies)
+                              data={"signature": "sig-7"})
     assert r.status_code == 200
     assert "flash--warning" in r.text
     setter.assert_not_awaited()
@@ -738,8 +742,9 @@ async def test_a_refused_direction_keeps_the_buttons_and_says_why():
     refused = AsyncMock(side_effect=ConnectorOwnershipError("Another company holds this connection."))
     with _ui_owner_patches(), patch("celerp.connectors.ownership.lock_connector_operation", refused):
         async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as client:
+            client.cookies.update({"celerp_token": token})
             r = await client.post("/settings/connectors/celerp/direction?detail=1",
-                                  data={"direction": "outbound"}, cookies={"celerp_token": token})
+                                  data={"direction": "outbound"})
 
     # Nothing is swapped, so the toggle stays where it was, and the reason is a toast.
     assert r.headers.get("HX-Reswap") == "none"
