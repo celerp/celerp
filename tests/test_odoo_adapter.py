@@ -183,11 +183,65 @@ def test_translated_names_from_odoo_16_are_read_in_english(tmp_path):
     assert sorted(t.name for t in scan.bundle.tax_codes) == ["15%", "15% [2]", "PST 7%", "WHT 3%", "WHT 3% [5]"]
 
     with Backup(tmp_path / "harbour.zip") as backup:
-        assert backup.text('{"es_ES": "Banco"}') == "Banco"     # no English name: the first one stored
-        assert backup.text("plain") == "plain"
         backup.version = 15
-        assert backup.text('{"en_US": "Bank"}') == '{"en_US": "Bank"}'   # before 16 a name is plain text
         assert backup.lot_table == "stock_production_lot"
+
+
+def test_the_manifest_names_its_version_as_text_or_none():
+    from celerp.importers.adapters.odoo.dump import _major
+
+    assert _major({"version": "17.0"}) == 17 and _major({"major_version": "saas~16.3", "version": "16.3"}) == 16
+    assert _major({"version": ["17.0"]}) is None and _major({"version": {"17.": 1}}) is None and _major({}) is None
+
+
+def test_a_translated_name_is_its_english_one_else_the_first_stored():
+    from celerp.importers.adapters.odoo.dump import translation
+
+    assert translation('{"en_US": "Bank", "th_TH": "ธนาคาร"}') == "Bank"
+    assert translation('{"es_ES": "Banco", "fr_FR": "Banque"}') == "Banco"   # no English name: the first one stored
+    assert translation('{"en_US": "\\u0e18"}') == "\u0e18"
+
+
+# Translations Odoo never writes: each refuses the backup as damaged.
+_NOT_TRANSLATED = {"object": '{"en_US": {"a": 1}}', "list": '{"en_US": ["Widget", "Gadget"]}', "number": '{"en_US": 12}',
+                   "null and bool": '{"en_US": null, "th_TH": true}', "empty": "{}", "a string": '"Widget"',
+                   "an array": '["Widget"]', "not JSON": '{"en_US": "Widget"', "NaN": '{"en_US": NaN}'}
+
+
+@pytest.mark.parametrize("shape", list(_NOT_TRANSLATED))
+def test_a_translated_name_of_another_shape_is_refused(shape):
+    from celerp.importers.adapters.odoo.dump import translation
+
+    assert translation(_NOT_TRANSLATED[shape]) is None
+
+
+@pytest.mark.parametrize("version", (16, 17))
+def test_every_translated_column_read_refuses_a_name_not_of_its_shape(tmp_path, version):
+    """Every name and description the dump declares jsonb is checked as its row is read: one of
+    another shape (here the review's four, which were imported as a Python repr, a number or an
+    empty name) refuses the backup as damaged before anything is imported."""
+    from celerp.importers.adapters.odoo.book import COLUMN_KINDS, COLUMNS, TABLES
+
+    jsonb = [(table, column) for table, columns in build.tables(version).jsonb.items() if table in TABLES
+             for column in columns if column in COLUMNS]
+    assert all(column in COLUMN_KINDS for _, column in jsonb)   # every jsonb column kept has a kind
+    translated = [(table, column) for table, column in jsonb if COLUMN_KINDS[column] == "translated"]
+    assert {c for _, c in translated} == {"name", "description_sale"} and len(translated) == 7
+    for table, column in translated:
+        for shape in ("object", "list", "number", "null and bool"):
+            tables = build.tables(version)
+            _damage(tables, table, column, _NOT_TRANSLATED[shape])
+            with pytest.raises(ScanError, match="incomplete or damaged"):
+                _adapter().build_manifest(_file(tmp_path, build.backup(version, tables), f"{table}.zip"), FULL)
+
+
+def test_a_name_the_dump_declares_text_is_read_as_written_at_every_version(tmp_path):
+    """Only a column the dump declares jsonb holds a translation: a contact's name that happens
+    to be written as JSON is that contact's name, never decoded."""
+    tables = build.tables(17)
+    _damage(tables, "res_partner", "name", '{"en_US": {"a": 1}}', 7)
+    scan = _adapter().build_manifest(_file(tmp_path, build.backup(17, tables)), FULL)
+    assert '{"en_US": {"a": 1}}' in {c.name for c in scan.bundle.contacts}
 
 
 def _uninstall(version: int, *modules: str, tables: tuple[str, ...]) -> bytes:

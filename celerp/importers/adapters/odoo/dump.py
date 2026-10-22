@@ -113,6 +113,7 @@ class Row(tuple):
 
 
 _CREATE = re.compile(r'^CREATE TABLE (?:"?public"?\.)?"?(\w+)"? \($')
+_COLUMN = re.compile(r'^\s+"?(\w+)"? (\w+)')  # a column as CREATE TABLE declares it: its name and type
 _COPY = re.compile(r'^COPY (?:"?public"?\.)?"?(\w+)"? \((.*)\) FROM stdin;$')
 _ESCAPE = re.compile(r"\\(?:([0-7]{1,3})|x([0-9a-fA-F]{1,2})|(.))")
 _ESCAPED = {"b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t", "v": "\v"}
@@ -170,6 +171,19 @@ def json_value(text: str):
     return json.loads(text, parse_float=_json_number, parse_int=_json_number, parse_constant=_no_constant)
 
 
+def translation(value: str) -> str | None:
+    """The English name in a translated value, JSON keyed by language as Odoo keeps a translated
+    name from 16 on, else the first one stored; None when the value is not a non-empty object
+    whose every name is a string."""
+    try:
+        names = json_value(value)
+    except (ValueError, RecursionError):
+        return None
+    if not isinstance(names, dict) or not names or not all(isinstance(name, str) for name in names.values()):
+        return None
+    return names.get(LANGUAGE) or next(iter(names.values()))
+
+
 def _json(value: str) -> bool:
     try:
         json_value(value)
@@ -189,6 +203,9 @@ def _bytes(value: str) -> bool:
 # What each kind of column holds when the database wrote it.
 KINDS: dict[str, Callable[[str], bool]] = {"id": _id, "number": _number, "date": _date, "bytes": _bytes,
                                           "json": _json}
+# The kind of a column holding a name Odoo translates: from 16 a jsonb column (see translation),
+# before that, and in a table where Odoo does not translate it, plain text.
+TRANSLATED = "translated"
 
 
 _ASCII_HEADER = sys.getsizeof("")
@@ -225,7 +242,9 @@ def _field(value: str) -> str | None:
 
 
 def _major(manifest: dict) -> int | None:
-    found = re.search(r"(\d+)\.", str(manifest.get("major_version") or manifest.get("version") or ""))
+    """The Odoo major version the manifest names, as text ("17.0"); None when it names none."""
+    version = manifest.get("major_version") or manifest.get("version")
+    found = re.search(r"(\d+)\.", version) if isinstance(version, str) else None
     return int(found.group(1)) if found else None
 
 
@@ -474,12 +493,17 @@ class Backup:
         than MAX_HELD of memory, or when the dump is cut short or damaged: it does not unpack,
         has no closing line, a table's data never ends or never starts, a row has more or fewer
         fields than its table, a kept column of a kind in `kinds` (column -> a key of KINDS) holds
-        a value not of that kind, or a `required` table (one an installed module makes) is missing."""
+        a value not of that kind, or a `required` table (one an installed module makes) is missing.
+        A kept column of the TRANSLATED kind that the dump declares jsonb is read as its English
+        name (the first stored when it has none): one that is not a non-empty JSON object of
+        strings is damaged."""
         wanted, where, capped, may_leave_out = set(names) | set(required), where or {}, capped or {}, set(may_leave_out)
         kinds = kinds or {}
         self.left_out: dict[str, list[str]] = {}
         out: dict[str, list[Row]] = {}
         made: set[str] = set()
+        jsonb: dict[str, set[str]] = {}            # wanted table -> its kept columns declared jsonb
+        declaring: str | None = None
         copying: str | None = None
         complete = False
         with _intact(), _open(self.archive, self.root + DUMP) as raw:
@@ -514,21 +538,37 @@ class Backup:
                         for n, valid in checked:
                             if fields[n] is not None and not valid(fields[n]):
                                 raise ScanError(t(DAMAGED))
+                        for n in translated:
+                            if fields[n] is not None:
+                                # The name decoded is no longer than its JSON; an escape (\u) may widen its characters.
+                                self.hold_text(fields[n], width=4 if "\\u" in fields[n] else 1)
+                                if (name := translation(fields[n])) is None:
+                                    raise ScanError(t(DAMAGED))
+                                fields[n] = name
                         if keep is not None and not keep(shape(fields)):
                             continue
                         self.hold(row_bytes + sum(map(sys.getsizeof, {f for f in fields if f is not None and f not in seen})))
                         rows.append(shape(map(seen.setdefault, fields, fields)))
                     continue
+                if declaring is not None:
+                    if line.startswith(")"):
+                        declaring = None
+                    elif (column := _COLUMN.match(line)) and column.group(2) == "jsonb" and column.group(1) in columns:
+                        jsonb.setdefault(declaring, set()).add(column.group(1))
+                    continue
                 if line.startswith(DUMP_COMPLETE):
                     complete = True
                 elif created := _CREATE.match(line):
                     made.add(created.group(1))
+                    declaring = created.group(1) if created.group(1) in wanted else None
                 elif line.startswith("COPY ") and (match := _COPY.match(line.rstrip("\n"))):
                     copying = match.group(1)
                     if copying in wanted:
                         header = [c.strip().strip('"') for c in match.group(2).split(",")]
                         width, kept = len(header), [i for i, name in enumerate(header) if name in columns]
-                        checked = [(n, KINDS[kinds[header[i]]]) for n, i in enumerate(kept) if header[i] in kinds]
+                        checked = [(n, KINDS[kinds[header[i]]]) for n, i in enumerate(kept) if kinds.get(header[i]) in KINDS]
+                        translated = [n for n, i in enumerate(kept)
+                                      if kinds.get(header[i]) == TRANSLATED and header[i] in jsonb.get(copying, ())]
                         limits = [capped.get(header[i], math.inf) for i in kept]
                         shape = type("Row", (Row,), {"__slots__": (), "index": {header[i]: n for n, i in enumerate(kept)}})
                         keep, seen = where.get(copying), {}
@@ -537,23 +577,6 @@ class Backup:
         if copying is not None or not complete or ((made & wanted) | set(required)) - set(out):
             raise ScanError(t(DAMAGED))
         return out
-
-    def text(self, value: str | None) -> str:
-        """A name as Odoo shows it in English. From Odoo 16 a translated name is stored as
-        JSON keyed by language; earlier names are plain text. A decoded name is a new string
-        on every call, so a value read for many records is decoded once."""
-        if not value:
-            return ""
-        if self.version >= 16 and value.startswith("{"):
-            # The name decoded is no longer than its JSON; an escape (\u) may widen its characters.
-            self.hold_text(value, width=4 if "\\u" in value else 1)
-            try:
-                names = json.loads(value)
-            except ValueError:
-                return value
-            if isinstance(names, dict) and names:
-                return str(names.get(LANGUAGE) or next(iter(names.values())) or "")
-        return value
 
     def stored_file(self, store_fname: str, limit: int) -> bytes | None:
         """The content of one filestore file, or None when the backup does not hold it or it
