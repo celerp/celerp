@@ -23,8 +23,7 @@ from test_export_set_adapters import _broken_workbook, _qbo, _set, _xero
 from test_migration_e2e import _passing, migrate_set
 from ui.i18n import t
 
-# The books are in Birr, which Celerp does not keep books in yet; they are imported in the currency chosen.
-USD = MigrationDecisions(mode=CIFMode.FULL_HISTORY, mappings={"currency": "USD"})
+ETB = MigrationDecisions(mode=CIFMode.FULL_HISTORY, mappings={"currency": "ETB"})
 CUTOVER = date(2024, 6, 30)
 
 
@@ -85,12 +84,12 @@ def test_a_sage50_export_set_is_recognised_by_its_columns_alone(tmp_path):
     scan = _adapter().inspect(files)
     assert scan.company_name == build.COMPANY
     assert (scan.period_start, scan.period_end) == (build.OPENED, build.END)
-    # The exports state no currency: the user chooses one Celerp keeps books in. Celerp keeps
-    # none in Birr, the currency the reports' Br names, so none is suggested.
+    # The exports state no currency: the user chooses one Celerp keeps books in, and the Br the
+    # reports print suggests Birr.
     from celerp.services.currencies import CURRENCIES
-    assert scan.currencies == () and scan.base_currency is None
+    assert scan.currencies == ("ETB",) and scan.base_currency == "ETB"
     [question] = scan.questions
-    assert (question.key, question.suggested, question.options) == ("currency", None, CURRENCIES)
+    assert (question.key, question.suggested, question.options) == ("currency", "ETB", CURRENCIES)
     # Neither of the other export-set readers claims a Sage 50 set, nor this one theirs.
     from test_export_set_adapters import _adapter as xero, _qbo_adapter as qbo
     assert xero().detect(files).matched is False and qbo().detect(files).matched is False
@@ -115,11 +114,12 @@ def test_the_checklist_lists_every_template_and_report_with_its_menu():
     assert "Peachtree" in _adapter().accepts and "Include Headings" in _adapter().accepts
 
 
-def test_older_column_names_and_four_digit_years_read_the_same(tmp_path):
-    """Peachtree 2010 heads the invoice and check number columns differently, and a set may
-    print four-digit years."""
-    old = _adapter().build_manifest(_set(tmp_path, build.files(_books(), old=True, four=True).items()), USD)
-    new = _adapter().build_manifest(_set(tmp_path, _files()), USD)
+def test_other_column_names_filled_applied_lines_and_four_digit_years_read_the_same(tmp_path):
+    """Other releases and templates head the tax agency, invoice and check number columns
+    differently and fill the G/L Account of a line applied to an invoice; a set may print
+    four-digit years."""
+    old = _adapter().build_manifest(_set(tmp_path, build.files(_books(), alternate=True, four=True).items()), ETB)
+    new = _adapter().build_manifest(_set(tmp_path, _files()), ETB)
     assert old.bundle == new.bundle
 
 
@@ -146,12 +146,12 @@ def _manifest():
     import tempfile
     from pathlib import Path
 
-    return _adapter().build_manifest(_set(Path(tempfile.mkdtemp()), _files()), USD)
+    return _adapter().build_manifest(_set(Path(tempfile.mkdtemp()), _files()), ETB)
 
 
 def test_sage50_masters_carry_into_cif():
     bundle = _manifest().bundle
-    assert bundle.company.name == build.COMPANY and bundle.company.base_currency == "USD"
+    assert bundle.company.name == build.COMPANY and bundle.company.base_currency == "ETB"
     accounts = {a.code: a for a in bundle.accounts}
     assert set(accounts) == {code for code, *_ in build.CHART}
     assert [accounts[c].control for c in ("1010", "1020", "1100", "1200", "2000", "2310", "3900")] == [
@@ -202,6 +202,116 @@ def test_sage50_documents_carry_with_their_lines_tax_and_settlements():
     # A discount taken on a receipt is booked by Celerp's rules, the rest as a fallback on it.
     assert coverage["Receipt (journal fallback)"].coverage_class == CoverageClass.MAPPED_WITH_LOSS
     assert all(r.coverage_class != CoverageClass.UNSUPPORTED_FINANCIAL_BLOCKER for r in manifest.coverage)
+    # An invoice selling goods (Tax Type 1) and services (Tax Type 2) keeps its VAT as one tax line:
+    # which tax types are taxable is not exported, so no line is given a share it may not owe.
+    mixed = [d for d in docs.values() if d.doc_type == "invoice" and d.tax_total
+             and len({ln.account_external_id for ln in d.line_items if ln.total_price}) > 1]
+    assert mixed and all([ln.taxes for ln in d.line_items if ln.total_price] == [[]] * sum(
+        1 for ln in d.line_items if ln.total_price) for d in mixed)
+    assert all(sum(1 for ln in d.line_items if not ln.total_price and ln.taxes) == 1 for d in mixed)
+    assert (coverage["Invoice with its sales tax on one line"].count,
+            coverage["Invoice with its sales tax on one line"].coverage_class,
+            coverage["Invoice with its sales tax on one line"].note) == (
+        len(mixed), CoverageClass.MAPPED_WITH_LOSS, t("migration.sage50_tax_unassigned_note"))
+
+
+# ── Layouts as Sage 50's field definitions name them ─────────────────────────
+#
+# Written here by hand from the field names Sage 50's "Import/Export Field Definition Lists"
+# give (Sales Journal: Sales Tax Agency, Tax Type 0 for a tax distribution; Purchases Journal:
+# Invoice #, Apply to Invoice #; Cash Receipts and Payments Journals: a line applied to an
+# invoice leaves its G/L Account empty), not from the fixture above, so the reader is checked
+# against the documented layout rather than against a writer made to match it.
+
+PUBLISHED = {
+    "CHART.CSV": "Account ID,Account Description,Inactive,Account Type\r\n"
+                 "1020,Bank,FALSE,0\r\n1100,Receivables,FALSE,1\r\n2000,Payables,FALSE,10\r\n"
+                 "2310,VAT Payable,FALSE,12\r\n3000,Capital,FALSE,16\r\n3900,Retained Earnings,FALSE,18\r\n"
+                 "4000,Goods Sales,FALSE,21\r\n4100,Service Sales,FALSE,21\r\n6000,Rent,FALSE,24\r\n",
+    "CUSTOMER.CSV": "Customer ID,Customer Name,Inactive\r\nC1,First Customer,FALSE\r\n",
+    "VENDOR.CSV": "Vendor ID,Vendor Name,Inactive\r\nV1,First Vendor,FALSE\r\n",
+    "SALES.CSV": (
+        "Customer ID,Customer Name,Invoice/CM #,Apply to Invoice Number,Credit Memo,Date,Date Due,"
+        "Accounts Receivable Account,Sales Tax ID,Number of Distributions,Invoice/CM Distribution,Quantity,"
+        "Item ID,Description,G/L Account,Unit Price,Tax Type,Amount,Sales Tax Agency\r\n"
+        # Goods taxable, a service exempt: 100.00 + 100.00 and 10.00 tax on the goods alone.
+        "C1,First Customer,1001,,FALSE,01/10/25,02/09/25,1100,ST,3,1,1,,Goods,4000,100.00,1,-100.00,\r\n"
+        "C1,First Customer,1001,,FALSE,01/10/25,02/09/25,1100,ST,3,2,1,,Service,4100,100.00,2,-100.00,\r\n"
+        "C1,First Customer,1001,,FALSE,01/10/25,02/09/25,1100,ST,3,0,,,Sales tax,2310,,0,-10.00,AGENCY\r\n"
+        # Two goods lines of one tax type: the tax is theirs, in proportion.
+        "C1,First Customer,1002,,FALSE,01/12/25,02/11/25,1100,ST,3,1,1,,Goods,4000,300.00,1,-300.00,\r\n"
+        "C1,First Customer,1002,,FALSE,01/12/25,02/11/25,1100,ST,3,2,1,,Goods,4000,100.00,1,-100.00,\r\n"
+        "C1,First Customer,1002,,FALSE,01/12/25,02/11/25,1100,ST,3,0,,,Sales tax,2310,,0,-40.00,AGENCY\r\n"),
+    "RECEIPTS.CSV": (
+        "Customer ID,Customer Name,Reference,Receipt Number,Date,Cash Account,Cash Amount,Number of Distributions,"
+        "Invoice Paid,Description,G/L Account,Amount\r\n"
+        "C1,First Customer,R1,R1,01/20/25,1020,210.00,1,1001,Payment,,-210.00\r\n"),
+    "PURCHASE.CSV": (
+        "Vendor ID,Vendor Name,Invoice #,Apply to Invoice #,Credit Memo,Date,Date Due,Accounts Payable Account,"
+        "Number of Distributions,Invoice/CM Distribution,Quantity,Item ID,Description,G/L Account,Unit Price,Amount\r\n"
+        "V1,First Vendor,B-1,,FALSE,01/05/25,02/04/25,2000,1,1,,,January rent,6000,,500.00\r\n"),
+    "PAYMENTS.CSV": (
+        "Vendor ID,Vendor Name,Check Number,Date,Cash Account,Cash Amount,Number of Distributions,Invoice Paid,"
+        "Description,G/L Account,Amount\r\n"
+        "V1,First Vendor,101,01/25/25,1020,-500.00,1,B-1,Rent,,500.00\r\n"),
+    "TB.CSV": (
+        "First Company\r\nGeneral Ledger Trial Balance\r\n\"As of Jan 31, 2025\"\r\n\r\n"
+        "Account ID,Account Description,Debit Amt,Credit Amt\r\n"
+        "1020,Bank,\"Br 9,710.00\",\r\n1100,Receivables,440.00,\r\n2310,VAT Payable,,50.00\r\n"
+        "3000,Capital,,\"10,000.00\"\r\n4000,Goods Sales,,500.00\r\n4100,Service Sales,,100.00\r\n"
+        "6000,Rent,500.00,\r\n"),
+    "TB-OPENING.CSV": (
+        "First Company\r\nGeneral Ledger Trial Balance\r\n\"As of Dec 31, 2024\"\r\n\r\n"
+        "Account ID,Account Description,Debit Amt,Credit Amt\r\n1020,Bank,\"10,000.00\",\r\n"
+        "3000,Capital,,\"10,000.00\"\r\n"),
+    "AR.CSV": (
+        "First Company\r\nAged Receivables\r\n\"As of Jan 31, 2025\"\r\n\r\n"
+        "Customer ID,Customer,Invoice/CM #,Date,Amount Due\r\nC1,First Customer,1002,01/12/25,440.00\r\n"),
+    "AP.CSV": (
+        "First Company\r\nAged Payables\r\n\"As of Jan 31, 2025\"\r\n\r\nVendor ID,Vendor,Invoice/CM #,Date,Amount Due\r\n"),
+}
+
+
+@cache
+def _published():
+    import tempfile
+    from pathlib import Path
+
+    files = _set(Path(tempfile.mkdtemp()), [(n, d.encode("cp1252")) for n, d in PUBLISHED.items()])
+    adapter = _adapter()
+    return adapter.inspect(files), adapter.build_manifest(files, ETB), adapter.source_expectations(files, ETB)
+
+
+def test_the_documented_sales_tax_agency_heading_keeps_sales_tax():
+    _, manifest, _ = _published()
+    docs = {d.ref: d for d in manifest.bundle.documents}
+    assert (docs["1001"].tax_total, docs["1002"].tax_total) == (Decimal("10.00"), Decimal("40.00"))
+    assert [(tc.name, tc.account_external_id) for tc in manifest.bundle.tax_codes] == [("AGENCY", "2310")]
+    assert {a.code: a.control for a in manifest.bundle.accounts}["2310"] == "tax"
+
+
+def test_taxable_and_exempt_lines_keep_their_tax_unassigned_and_one_tax_type_shares_it():
+    scan, manifest, _ = _published()
+    docs = {d.ref: d for d in manifest.bundle.documents}
+    # 100.00 taxable and 100.00 exempt with 10.00 tax: never 5.00 on each, nor a 5% rate.
+    assert [(ln.total_price, [x.amount for x in ln.taxes]) for ln in docs["1001"].line_items] == [
+        (Decimal("100.00"), []), (Decimal("100.00"), []), (Decimal("0"), [Decimal("10.00")])]
+    assert [(ln.total_price, [x.amount for x in ln.taxes]) for ln in docs["1002"].line_items] == [
+        (Decimal("300.00"), [Decimal("30.00")]), (Decimal("100.00"), [Decimal("10.00")])]
+    assert [tc.rate_percent for tc in manifest.bundle.tax_codes] == [Decimal("10.0")]
+    assert {r.source_type: r.count for r in scan.coverage}["Invoice with its sales tax on one line"] == 1
+
+
+def test_receipts_and_payments_applied_with_an_empty_g_l_account_settle_their_documents():
+    _, manifest, expectations = _published()
+    settled = {(s.settlement_type, s.bank_account_external_id, tuple((a.document_external_id, a.amount)
+                                                                     for a in s.allocations))
+               for s in manifest.bundle.settlements}
+    assert settled == {("receipt", "1020", (("S:1001", Decimal("210.00")),)),
+                       ("payment", "1020", (("P:B-1", Decimal("500.00")),))}
+    by = {(e.measure, e.key): e.expected for e in expectations.expectations}
+    assert by[(M.DOCUMENT_RESIDUAL, "S:1002")] == Decimal("440.00")
+    assert by[(M.AR_BY_CUSTOMER, "First Customer")] == Decimal("440.00")
 
 
 def test_the_beginning_balances_are_one_journal_on_the_opening_trial_balance_date():
@@ -217,7 +327,7 @@ def test_sage50_expectations_come_from_the_reports():
     import tempfile
     from pathlib import Path
 
-    expectations = _adapter().source_expectations(_set(Path(tempfile.mkdtemp()), _files()), USD).expectations
+    expectations = _adapter().source_expectations(_set(Path(tempfile.mkdtemp()), _files()), ETB).expectations
     by = {(e.measure, e.key): e.expected for e in expectations}
     books = _books()
     end = books.balances(build.END)
@@ -243,24 +353,14 @@ def _signed(sign: str) -> list[tuple[str, bytes]]:
     """The trial balances printing `sign` where they print Br, without the other reports."""
     return [(n, d.replace(b"Br ", sign.encode() + (b" " if sign else b"")) if n.endswith(".csv") else d)
             for n, d in _without("Aged Receivables.xlsx", "Aged Payables.xlsx", "SALES.CSV", "PURCHASE.CSV",
-                                 "CASHRCPT.CSV", "PAYMENTS.CSV", "CUSTOMER.CSV", "VENDOR.CSV")]
+                                 "RECEIPTS.CSV", "PAYMENTS.CSV", "CUSTOMER.CSV", "VENDOR.CSV")]
 
 
-@pytest.mark.parametrize("sign, suggested", [("$", "USD"), ("€", "EUR"), ("", None)])
+@pytest.mark.parametrize("sign, suggested", [("Br", "ETB"), ("ETB", "ETB"), ("ብር", "ETB"), ("$", "USD"),
+                                             ("€", "EUR"), ("", None)])
 def test_the_currency_the_reports_print_is_suggested_and_none_when_they_print_none(tmp_path, sign, suggested):
     scan = _adapter().inspect(_set(tmp_path, _signed(sign)))
     assert scan.questions[0].suggested == suggested and scan.base_currency == suggested
-
-
-@pytest.mark.parametrize("sign", ["Br", "ETB", "ብር"])
-def test_a_birr_sign_suggests_birr_once_celerp_keeps_books_in_it(tmp_path, monkeypatch, sign):
-    from celerp.services import currencies
-
-    assert _adapter().inspect(_set(tmp_path, _signed(sign))).questions[0].suggested is None
-    monkeypatch.setattr(currencies, "CURRENCIES", (*currencies.CURRENCIES, "ETB"))
-    monkeypatch.setattr(currencies, "CURRENCY_CODES", frozenset(currencies.CURRENCIES))
-    scan = _adapter().inspect(_set(tmp_path, _signed(sign)))
-    assert scan.questions[0].suggested == "ETB" and "ETB" in scan.questions[0].options
 
 
 # ── Hostile and damaged input ─────────────────────────────────────────────────
@@ -316,7 +416,7 @@ def test_an_account_type_sage50_does_not_have_is_refused(tmp_path):
 
 def test_a_formula_looking_name_is_kept_as_text_and_never_evaluated(tmp_path):
     files = _edited("CUSTOMER.CSV", "TENA01,Tena Clinic", 'TENA01,"=HYPERLINK(""http://x"",""y"")"')
-    names = {c.name for c in _adapter().build_manifest(_set(tmp_path, files), USD).bundle.contacts}
+    names = {c.name for c in _adapter().build_manifest(_set(tmp_path, files), ETB).bundle.contacts}
     assert '=HYPERLINK("http://x","y")' in names
 
 
@@ -428,7 +528,7 @@ async def test_a_sage50_set_migrates_with_every_check_passing(real_engine, monke
     """The set migrates through the real runner with nothing rejected: the ledger ties out
     against every exported trial balance, and open receivables and payables against the aged
     reports, per customer, vendor and document."""
-    run, rejected = await migrate_set(real_engine, list(_files()), {**decisions, "mappings": {"currency": "USD"}},
+    run, rejected = await migrate_set(real_engine, list(_files()), {**decisions, "mappings": {"currency": "ETB"}},
                                       monkeypatch, tmp_path)
     assert rejected == []
     _passing(run)

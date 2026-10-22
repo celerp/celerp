@@ -1,0 +1,554 @@
+{
+  "locales": [
+    "am",
+    "ar",
+    "de",
+    "es",
+    "fr",
+    "id",
+    "it",
+    "ja",
+    "pt",
+    "th",
+    "vi"
+  ],
+  "keys": {
+    "migration.export_warning_sage50": {
+      "en": "Tick Include Headings on the Options tab of each template before exporting: Celerp recognises every file by its column names.",
+      "params": []
+    },
+    "migration.export_range_sage50_trial_balance": {
+      "en": "As of the last day of each fiscal year and of the last transaction, and the day before the first transaction if the books have beginning balances",
+      "params": []
+    },
+    "migration.err_export_damaged": {
+      "en": "These {source} files cannot be read: a value in them is not one {source} writes, so they are damaged or were changed after exporting. Nothing was imported. Export the files again from {source} and upload the new ones.",
+      "params": [
+        "source"
+      ]
+    },
+    "migration.err_sage50_distributions": {
+      "en": "{where}: the transaction says it holds {count} lines, but the rows that follow do not hold that many lines of the same transaction. Export the {label} again.",
+      "params": [
+        "count",
+        "label",
+        "where"
+      ]
+    },
+    "migration.err_sage50_unbalanced": {
+      "en": "{where} does not balance: its lines differ by {difference}. Export the {label} again.",
+      "params": [
+        "difference",
+        "label",
+        "where"
+      ]
+    },
+    "migration.err_sage50_contact_missing": {
+      "en": "The {label} names IDs the {list} does not list: {ids}. Export the {list} again with inactive records included.",
+      "params": [
+        "ids",
+        "label",
+        "list"
+      ]
+    },
+    "migration.err_sage50_tb_last": {
+      "en": "No {label} is as of {date}, the date of the last transaction, or later. Add one as of that day.",
+      "params": [
+        "date",
+        "label"
+      ]
+    },
+    "migration.err_sage50_currency": {
+      "en": "Choose the currency these books are kept in before importing them.",
+      "params": []
+    },
+    "migration.sage50_currency_question": {
+      "en": "Currency these books are kept in",
+      "params": []
+    },
+    "migration.sage50_currency_source": {
+      "en": "Company",
+      "params": []
+    },
+    "migration.sage50_employee_note": {
+      "en": "Celerp does not keep employee records. Payroll checks are not in Sage 50's exports; the import check shows where they leave the trial balance.",
+      "params": []
+    },
+    "migration.sage50_stock_note": {
+      "en": "Sage 50 does not export quantities on hand. The items are imported; count their stock in Celerp after the import.",
+      "params": []
+    },
+    "migration.sage50_tax_unassigned_note": {
+      "en": "The lines of these invoices have different Sage 50 tax types, and Sage 50 does not export which tax types are taxable, so each invoice's sales tax is imported as one tax line on it. Its total and its tax total are unchanged.",
+      "params": []
+    },
+    "migration.sage50_absent_general": {
+      "en": "No general journal entries are imported. Upload the General Journal if the business made any.",
+      "params": []
+    },
+    "migration.sage50_absent_sales": {
+      "en": "No invoice or credit memo history is imported. Upload the Sales Journal if the business invoiced customers.",
+      "params": []
+    },
+    "migration.sage50_absent_receipts": {
+      "en": "No receipts are imported, so invoices stay unpaid. Upload the Cash Receipts Journal if the business received money.",
+      "params": []
+    },
+    "migration.sage50_absent_purchases": {
+      "en": "No purchase or vendor credit memo history is imported. Upload the Purchase Journal if the business entered purchases.",
+      "params": []
+    },
+    "migration.sage50_absent_payments": {
+      "en": "No payments are imported, so purchases stay unpaid. Upload the Cash Disbursements Journal if the business paid money out.",
+      "params": []
+    },
+    "migration.sage50_accepts": {
+      "en": "From Sage 50 or Peachtree (US edition, 2010 or later), export and upload together (as the files or one zip): 1. Open File > Select Import/Export. 2. For each template, choose it, select Export, tick Include Headings on the Options tab, set the date range to All, and save the file: the Chart of Accounts List, the Customer List, the Vendor List, the Inventory Item List, the Employee List, and the General, Sales, Cash Receipts, Purchase and Cash Disbursements Journals. 3. In Reports & Forms, export to Excel a General Ledger Trial Balance as of the last day of each fiscal year and of the last transaction (and the day before the first transaction if the books have beginning balances), and the Aged Receivables and Aged Payables reports as of the last transaction. Payroll checks, inventory adjustments and the cost of goods sold Sage 50 posts for stock items are not in these exports; the import check shows where they leave the trial balance.",
+      "params": []
+    },
+    "currency.name.AFN": {
+      "en": "Afghan Afghani",
+      "params": []
+    },
+    "currency.name.ALL": {
+      "en": "Albanian Lek",
+      "params": []
+    },
+    "currency.name.AMD": {
+      "en": "Armenian Dram",
+      "params": []
+    },
+    "currency.name.ANG": {
+      "en": "Netherlands Antillean Guilder",
+      "params": []
+    },
+    "currency.name.AOA": {
+      "en": "Angolan Kwanza",
+      "params": []
+    },
+    "currency.name.ARS": {
+      "en": "Argentine Peso",
+      "params": []
+    },
+    "currency.name.AWG": {
+      "en": "Aruban Florin",
+      "params": []
+    },
+    "currency.name.AZN": {
+      "en": "Azerbaijani Manat",
+      "params": []
+    },
+    "currency.name.BAM": {
+      "en": "Bosnia and Herzegovina Convertible Mark",
+      "params": []
+    },
+    "currency.name.BBD": {
+      "en": "Barbados Dollar",
+      "params": []
+    },
+    "currency.name.BGN": {
+      "en": "Bulgarian Lev",
+      "params": []
+    },
+    "currency.name.BHD": {
+      "en": "Bahraini Dinar",
+      "params": []
+    },
+    "currency.name.BIF": {
+      "en": "Burundian Franc",
+      "params": []
+    },
+    "currency.name.BMD": {
+      "en": "Bermudian Dollar",
+      "params": []
+    },
+    "currency.name.BND": {
+      "en": "Brunei Dollar",
+      "params": []
+    },
+    "currency.name.BOB": {
+      "en": "Bolivian Boliviano",
+      "params": []
+    },
+    "currency.name.BSD": {
+      "en": "Bahamian Dollar",
+      "params": []
+    },
+    "currency.name.BTN": {
+      "en": "Bhutanese Ngultrum",
+      "params": []
+    },
+    "currency.name.BWP": {
+      "en": "Botswana Pula",
+      "params": []
+    },
+    "currency.name.BYN": {
+      "en": "Belarusian Ruble",
+      "params": []
+    },
+    "currency.name.BZD": {
+      "en": "Belize Dollar",
+      "params": []
+    },
+    "currency.name.CDF": {
+      "en": "Congolese Franc",
+      "params": []
+    },
+    "currency.name.CRC": {
+      "en": "Costa Rican Colón",
+      "params": []
+    },
+    "currency.name.CUP": {
+      "en": "Cuban Peso",
+      "params": []
+    },
+    "currency.name.CVE": {
+      "en": "Cape Verdean Escudo",
+      "params": []
+    },
+    "currency.name.DJF": {
+      "en": "Djiboutian Franc",
+      "params": []
+    },
+    "currency.name.DOP": {
+      "en": "Dominican Peso",
+      "params": []
+    },
+    "currency.name.DZD": {
+      "en": "Algerian Dinar",
+      "params": []
+    },
+    "currency.name.ERN": {
+      "en": "Eritrean Nakfa",
+      "params": []
+    },
+    "currency.name.ETB": {
+      "en": "Ethiopian Birr",
+      "params": []
+    },
+    "currency.name.FJD": {
+      "en": "Fiji Dollar",
+      "params": []
+    },
+    "currency.name.FKP": {
+      "en": "Falkland Islands Pound",
+      "params": []
+    },
+    "currency.name.GEL": {
+      "en": "Georgian Lari",
+      "params": []
+    },
+    "currency.name.GHS": {
+      "en": "Ghanaian Cedi",
+      "params": []
+    },
+    "currency.name.GIP": {
+      "en": "Gibraltar Pound",
+      "params": []
+    },
+    "currency.name.GMD": {
+      "en": "Gambian Dalasi",
+      "params": []
+    },
+    "currency.name.GNF": {
+      "en": "Guinean Franc",
+      "params": []
+    },
+    "currency.name.GTQ": {
+      "en": "Guatemalan Quetzal",
+      "params": []
+    },
+    "currency.name.GYD": {
+      "en": "Guyanese Dollar",
+      "params": []
+    },
+    "currency.name.HNL": {
+      "en": "Honduran Lempira",
+      "params": []
+    },
+    "currency.name.HRK": {
+      "en": "Croatian Kuna",
+      "params": []
+    },
+    "currency.name.HTG": {
+      "en": "Haitian Gourde",
+      "params": []
+    },
+    "currency.name.IQD": {
+      "en": "Iraqi Dinar",
+      "params": []
+    },
+    "currency.name.ISK": {
+      "en": "Icelandic Króna",
+      "params": []
+    },
+    "currency.name.JMD": {
+      "en": "Jamaican Dollar",
+      "params": []
+    },
+    "currency.name.JOD": {
+      "en": "Jordanian Dinar",
+      "params": []
+    },
+    "currency.name.KES": {
+      "en": "Kenyan Shilling",
+      "params": []
+    },
+    "currency.name.KGS": {
+      "en": "Kyrgyzstani Som",
+      "params": []
+    },
+    "currency.name.KHR": {
+      "en": "Cambodian Riel",
+      "params": []
+    },
+    "currency.name.KMF": {
+      "en": "Comorian Franc",
+      "params": []
+    },
+    "currency.name.KPW": {
+      "en": "North Korean Won",
+      "params": []
+    },
+    "currency.name.KYD": {
+      "en": "Cayman Islands Dollar",
+      "params": []
+    },
+    "currency.name.KZT": {
+      "en": "Kazakhstani Tenge",
+      "params": []
+    },
+    "currency.name.LKR": {
+      "en": "Sri Lankan Rupee",
+      "params": []
+    },
+    "currency.name.LRD": {
+      "en": "Liberian Dollar",
+      "params": []
+    },
+    "currency.name.LSL": {
+      "en": "Lesotho Loti",
+      "params": []
+    },
+    "currency.name.LYD": {
+      "en": "Libyan Dinar",
+      "params": []
+    },
+    "currency.name.MAD": {
+      "en": "Moroccan Dirham",
+      "params": []
+    },
+    "currency.name.MDL": {
+      "en": "Moldovan Leu",
+      "params": []
+    },
+    "currency.name.MGA": {
+      "en": "Malagasy Ariary",
+      "params": []
+    },
+    "currency.name.MKD": {
+      "en": "Macedonian Denar",
+      "params": []
+    },
+    "currency.name.MMK": {
+      "en": "Myanmar Kyat",
+      "params": []
+    },
+    "currency.name.MNT": {
+      "en": "Mongolian Tögrög",
+      "params": []
+    },
+    "currency.name.MOP": {
+      "en": "Macanese Pataca",
+      "params": []
+    },
+    "currency.name.MRU": {
+      "en": "Mauritanian Ouguiya",
+      "params": []
+    },
+    "currency.name.MUR": {
+      "en": "Mauritian Rupee",
+      "params": []
+    },
+    "currency.name.MVR": {
+      "en": "Maldivian Rufiyaa",
+      "params": []
+    },
+    "currency.name.MWK": {
+      "en": "Malawian Kwacha",
+      "params": []
+    },
+    "currency.name.MZN": {
+      "en": "Mozambican Metical",
+      "params": []
+    },
+    "currency.name.NAD": {
+      "en": "Namibian Dollar",
+      "params": []
+    },
+    "currency.name.NIO": {
+      "en": "Nicaraguan Córdoba",
+      "params": []
+    },
+    "currency.name.NPR": {
+      "en": "Nepalese Rupee",
+      "params": []
+    },
+    "currency.name.OMR": {
+      "en": "Omani Rial",
+      "params": []
+    },
+    "currency.name.PAB": {
+      "en": "Panamanian Balboa",
+      "params": []
+    },
+    "currency.name.PGK": {
+      "en": "Papua New Guinean Kina",
+      "params": []
+    },
+    "currency.name.PYG": {
+      "en": "Paraguayan Guaraní",
+      "params": []
+    },
+    "currency.name.RSD": {
+      "en": "Serbian Dinar",
+      "params": []
+    },
+    "currency.name.RWF": {
+      "en": "Rwandan Franc",
+      "params": []
+    },
+    "currency.name.SBD": {
+      "en": "Solomon Islands Dollar",
+      "params": []
+    },
+    "currency.name.SCR": {
+      "en": "Seychelles Rupee",
+      "params": []
+    },
+    "currency.name.SDG": {
+      "en": "Sudanese Pound",
+      "params": []
+    },
+    "currency.name.SHP": {
+      "en": "Saint Helena Pound",
+      "params": []
+    },
+    "currency.name.SOS": {
+      "en": "Somali Shilling",
+      "params": []
+    },
+    "currency.name.SRD": {
+      "en": "Surinamese Dollar",
+      "params": []
+    },
+    "currency.name.SSP": {
+      "en": "South Sudanese Pound",
+      "params": []
+    },
+    "currency.name.STN": {
+      "en": "São Tomé and Príncipe Dobra",
+      "params": []
+    },
+    "currency.name.SVC": {
+      "en": "Salvadoran Colón",
+      "params": []
+    },
+    "currency.name.SYP": {
+      "en": "Syrian Pound",
+      "params": []
+    },
+    "currency.name.SZL": {
+      "en": "Eswatini Lilangeni",
+      "params": []
+    },
+    "currency.name.TJS": {
+      "en": "Tajikistani Somoni",
+      "params": []
+    },
+    "currency.name.TMT": {
+      "en": "Turkmenistan Manat",
+      "params": []
+    },
+    "currency.name.TND": {
+      "en": "Tunisian Dinar",
+      "params": []
+    },
+    "currency.name.TOP": {
+      "en": "Tongan Paʻanga",
+      "params": []
+    },
+    "currency.name.TTD": {
+      "en": "Trinidad and Tobago Dollar",
+      "params": []
+    },
+    "currency.name.TZS": {
+      "en": "Tanzanian Shilling",
+      "params": []
+    },
+    "currency.name.UGX": {
+      "en": "Ugandan Shilling",
+      "params": []
+    },
+    "currency.name.UYU": {
+      "en": "Uruguayan Peso",
+      "params": []
+    },
+    "currency.name.UZS": {
+      "en": "Uzbekistani Som",
+      "params": []
+    },
+    "currency.name.VED": {
+      "en": "Venezuelan Digital Bolívar",
+      "params": []
+    },
+    "currency.name.VES": {
+      "en": "Venezuelan Sovereign Bolívar",
+      "params": []
+    },
+    "currency.name.VUV": {
+      "en": "Vanuatu Vatu",
+      "params": []
+    },
+    "currency.name.WST": {
+      "en": "Samoan Tālā",
+      "params": []
+    },
+    "currency.name.XAF": {
+      "en": "Central African CFA Franc",
+      "params": []
+    },
+    "currency.name.XCD": {
+      "en": "East Caribbean Dollar",
+      "params": []
+    },
+    "currency.name.XCG": {
+      "en": "Caribbean Guilder",
+      "params": []
+    },
+    "currency.name.XOF": {
+      "en": "West African CFA Franc",
+      "params": []
+    },
+    "currency.name.XPF": {
+      "en": "CFP Franc",
+      "params": []
+    },
+    "currency.name.YER": {
+      "en": "Yemeni Rial",
+      "params": []
+    },
+    "currency.name.ZMW": {
+      "en": "Zambian Kwacha",
+      "params": []
+    },
+    "currency.name.ZWG": {
+      "en": "Zimbabwe Gold",
+      "params": []
+    },
+    "currency.name.ZWL": {
+      "en": "Zimbabwean Dollar (2009)",
+      "params": []
+    }
+  }
+}

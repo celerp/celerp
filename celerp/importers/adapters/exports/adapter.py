@@ -167,8 +167,10 @@ class Sage50Adapter(ExportSetAdapter):
     key = sage50.SOURCE_SYSTEM
     display_name = sage50.SOURCE_NAME
     accepts_key = "migration.sage50_accepts"
-    skipped = {sage50.EMPLOYEE: CoverageClass.UNSUPPORTED_NONFINANCIAL, sage50.STOCK: CoverageClass.UNSUPPORTED_NONFINANCIAL}
-    notes = {sage50.EMPLOYEE: "migration.sage50_employee_note", sage50.STOCK: "migration.sage50_stock_note"}
+    skipped = {sage50.EMPLOYEE: CoverageClass.UNSUPPORTED_NONFINANCIAL, sage50.STOCK: CoverageClass.UNSUPPORTED_NONFINANCIAL,
+               sage50.UNASSIGNED_TAX: CoverageClass.MAPPED_WITH_LOSS}
+    notes = {sage50.EMPLOYEE: "migration.sage50_employee_note", sage50.STOCK: "migration.sage50_stock_note",
+             sage50.UNASSIGNED_TAX: "migration.sage50_tax_unassigned_note"}
     matches = staticmethod(sage50.matches)
     check_files = staticmethod(sage50.check)
 

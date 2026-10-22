@@ -8,13 +8,17 @@ lines that balance, and the files are written in the layouts its templates and r
 
 - The import/export templates follow the field lists in Sage 50's help, "Import/Export
   Field Definition Lists" (Chart of Accounts, Customer List, Vendor List, Inventory Item
-  List, Employee List, General Journal, Sales Journal, Cash Receipts Journal, Purchase
-  Journal and Payments / Cash Disbursements Journal): one row per distribution, each row
-  repeating its transaction's header fields, Number of Distributions on every row, the
-  sales tax as a distribution with Invoice/CM Distribution 0 and its Sales Tax Agency ID,
-  dates as MM/DD/YY, True and False as TRUE and FALSE, ANSI (Windows-1252) text, and each
-  amount signed as it posts, debit positive. `old_names` writes the column names
-  Peachtree 2010 to 2012 used ("Invoice #", "Check #").
+  List, Employee List, General Journal, Sales Journal, Cash Receipts Journal, Purchases
+  Journal and Payments / Cash Disbursements Journal), under the names they give each
+  field: one row per distribution, each row repeating its transaction's header fields,
+  Number of Distributions on every row; the sales tax as a distribution with Invoice/CM
+  Distribution 0, Tax Type 0 and its Sales Tax Agency; the Purchases Journal's Invoice #
+  and Apply to Invoice #; a receipt or payment line applied to an invoice with its G/L
+  Account empty, as Sage 50 leaves it; dates as MM/DD/YY, True and False as TRUE and FALSE,
+  ANSI (Windows-1252) text, and each amount signed as it posts, debit positive. Goods are
+  Tax Type 1 and services Tax Type 2, the company exempting services. `alternate` writes the
+  names other releases and templates use ("Sales Tax Agency ID", "Invoice/CM #" and "Apply
+  to Invoice Number" on purchases, "Check #") and fills the G/L Account of applied lines.
 - The General Ledger Trial Balance and the Aged Receivables and Aged Payables reports
   follow Sage 50's own report layouts as Reports & Forms exports them: the company, the
   report title and "As of" date above the column headings, amounts with thousands
@@ -97,6 +101,7 @@ class Line:
     quantity: Decimal = ZERO
     unit: Decimal = ZERO
     agency: str = ""
+    kind: str = ""                    # the line's Tax Type: 0 tax, 1 goods, 2 services
     paid: str = ""                    # the invoice a receipt or payment line pays
     discount: Decimal = ZERO          # a discount taken on that invoice
 
@@ -202,13 +207,21 @@ def simulate() -> Books:
     checks = iter(range(5001, 99999))
     receipts = iter(range(1, 99999))
 
+    def line(code: str, amount: Decimal, description: str, quantity: Decimal) -> Line:
+        service = code.startswith("SRV")
+        return Line("4100" if service else "4000", amount, description, code, quantity, prices[code],
+                    kind="2" if service else "1")
+
+    def vat(customer: tuple[str, str, bool], lines: list[Line]) -> list[Line]:
+        """The VAT distribution on the goods lines, for a customer charged VAT."""
+        goods = -sum((ln.amount for ln in lines if ln.kind == "1"), ZERO)
+        return [Line("2310", -_vat(goods), "VAT 15%", agency=VAT, kind="0")] if customer[2] and goods else []
+
     def invoice(customer: tuple[str, str, bool], on: date, items: list[tuple[str, int]]) -> Transaction:
-        ident, _, charged = customer
-        lines = [Line("4100" if code.startswith("SRV") else "4000", -money(prices[code] * qty),
-                      dict((c, d) for c, d, _, _ in ITEMS)[code], code, Decimal(qty), prices[code])
+        ident = customer[0]
+        lines = [line(code, -money(prices[code] * qty), dict((c, d) for c, d, _, _ in ITEMS)[code], Decimal(qty))
                  for code, qty in items]
-        if charged:
-            lines.append(Line("2310", -_vat(-sum((ln.amount for ln in lines), ZERO)), "VAT 15%", agency=VAT))
+        lines += vat(customer, lines)
         return books.add(Transaction("sales", on, str(next(numbers)), lines, ident, "1100", due=on + timedelta(days=30)))
 
     def receive(doc: Transaction, value: Decimal, on: date, discount: Decimal = ZERO) -> None:
@@ -267,10 +280,8 @@ def simulate() -> Books:
                 receive(doc, total, on + timedelta(days=25))
             elif m % 5 == 2:
                 code, _ = items[0]
-                credit = [Line("4100" if code.startswith("SRV") else "4000", money(prices[code]), "Returned", code,
-                               Decimal(-1), prices[code])]
-                if customer[2]:
-                    credit.append(Line("2310", _vat(money(prices[code])), "VAT 15%", agency=VAT))
+                credit = [line(code, money(prices[code]), "Returned", Decimal(-1))]
+                credit += vat(customer, credit)
                 books.add(Transaction("sales", on + timedelta(days=3), str(next(numbers)), credit, customer[0], "1100",
                                       credit=True, apply_to=doc.reference))
                 receive(doc, books.open_amounts(True)[doc.reference], on + timedelta(days=20))
@@ -382,10 +393,6 @@ def employees() -> bytes:
                  "Pay Method"], [[i, n, "FALSE", "", "Addis Ababa", "", "", "", "Salary"] for i, n in EMPLOYEES])
 
 
-def _names(old: bool) -> tuple[str, str]:
-    return ("Invoice #", "Check #") if old else ("Invoice/CM #", "Check Number")
-
-
 def general(books: Books, four: bool = False) -> bytes:
     header = ["Date", "Reference", "Date Clear in Bank Rec", "Number of Distributions", "G/L Account", "Description",
               "Amount", "Job ID", "Used for Reimbursable Expense", "Transaction Period", "Transaction Number"]
@@ -396,15 +403,16 @@ def general(books: Books, four: bool = False) -> bytes:
     return _csv(header, rows)
 
 
-def documents(books: Books, sales: bool, four: bool = False, old: bool = False) -> bytes:
-    invoice, _ = _names(old)
+def documents(books: Books, sales: bool, four: bool = False, alternate: bool = False) -> bytes:
     if sales:
-        header = ["Customer ID", "Customer Name", invoice, "Apply to Invoice Number", "Credit Memo", "Date", "Date Due",
-                  "Accounts Receivable Account", "Accounts Receivable Amount", "Sales Tax ID", "Number of Distributions",
-                  "Invoice/CM Distribution", "Quantity", "Item ID", "Description", "G/L Account", "Unit Price",
-                  "Tax Type", "Amount", "Sales Tax Agency ID", "Transaction Period", "Transaction Number"]
+        header = ["Customer ID", "Customer Name", "Invoice/CM #", "Apply to Invoice Number", "Credit Memo", "Date",
+                  "Date Due", "Accounts Receivable Account", "Accounts Receivable Amount", "Sales Tax ID",
+                  "Number of Distributions", "Invoice/CM Distribution", "Quantity", "Item ID", "Description",
+                  "G/L Account", "Unit Price", "Tax Type", "Amount",
+                  "Sales Tax Agency ID" if alternate else "Sales Tax Agency", "Transaction Period", "Transaction Number"]
     else:
-        header = ["Vendor ID", "Vendor Name", invoice, "Apply to Invoice Number", "Credit Memo", "Date", "Date Due",
+        invoice, apply = ("Invoice/CM #", "Apply to Invoice Number") if alternate else ("Invoice #", "Apply to Invoice #")
+        header = ["Vendor ID", "Vendor Name", invoice, apply, "Credit Memo", "Date", "Date Due",
                   "Accounts Payable Account", "Accounts Payable Amount", "Number of Distributions",
                   "Invoice/CM Distribution", "Quantity", "Item ID", "Description", "G/L Account", "Unit Price",
                   "Amount", "Transaction Period", "Transaction Number"]
@@ -419,15 +427,15 @@ def documents(books: Books, sales: bool, four: bool = False, old: bool = False) 
             body = [len(x.lines), 0 if ln.agency else line_number, f"{ln.quantity:g}" if ln.item else "", ln.item,
                     ln.description, ln.account, _number(ln.unit) if ln.item else ""]
             if sales:
-                rows.append([*head, VAT if any(m.agency for m in x.lines) else "", *body,
-                             "1" if not ln.agency else "", _number(ln.amount), ln.agency, "", n])
+                rows.append([*head, VAT if any(m.agency for m in x.lines) else "", *body, ln.kind,
+                             _number(ln.amount), ln.agency, "", n])
             else:
                 rows.append([*head, *body, _number(ln.amount), "", n])
     return _csv(header, rows)
 
 
-def cash(books: Books, sales: bool, four: bool = False, old: bool = False) -> bytes:
-    _, check = _names(old)
+def cash(books: Books, sales: bool, four: bool = False, alternate: bool = False) -> bytes:
+    check = "Check #" if alternate else "Check Number"
     if sales:
         header = ["Deposit Ticket ID", "Customer ID", "Customer Name", "Reference", "Receipt Number", "Date",
                   "Payment Method", "Cash Account", "Cash Amount", "Discount Account", "Number of Distributions",
@@ -442,7 +450,7 @@ def cash(books: Books, sales: bool, four: bool = False, old: bool = False) -> by
     for n, x in enumerate(books.documents("receipts" if sales else "payments"), 1):
         for ln in x.lines:
             body = [len(x.lines), ln.paid, _number(ln.discount) if ln.discount else "", "", "", ln.description,
-                    ln.account, "", _number(ln.amount), "", n]
+                    "" if ln.paid and not alternate else ln.account, "", _number(ln.amount), "", n]
             if sales:
                 rows.append([_short(x.on, four), x.party, names.get(x.party, ""), x.reference, x.reference,
                              _short(x.on, four), "Check", x.head, _number(x.head_amount), x.discount_account, *body])
@@ -519,14 +527,14 @@ def aged(books: Books, sales: bool) -> bytes:
 TRIAL_BALANCE_DATES = (OPENED, date(2024, 6, 30), END)
 
 
-def files(books: Books | None = None, *, old: bool = False, four: bool = False) -> dict[str, bytes]:
-    """Every file of the export set, by the name Sage 50 gives it. `old` writes Peachtree
-    2010's column names, `four` four-digit years."""
+def files(books: Books | None = None, *, alternate: bool = False, four: bool = False) -> dict[str, bytes]:
+    """Every file of the export set, by the name Sage 50 gives it. `alternate` writes the
+    names other releases and templates use, `four` four-digit years."""
     books = books or simulate()
     out = {"CHART.CSV": chart(), "CUSTOMER.CSV": customers(), "VENDOR.CSV": vendors(), "INVENTRY.CSV": items(),
            "EMPLOYEE.CSV": employees(), "GENERAL.CSV": general(books, four),
-           "SALES.CSV": documents(books, True, four, old), "CASHRCPT.CSV": cash(books, True, four, old),
-           "PURCHASE.CSV": documents(books, False, four, old), "PAYMENTS.CSV": cash(books, False, four, old),
+           "SALES.CSV": documents(books, True, four, alternate), "RECEIPTS.CSV": cash(books, True, four, alternate),
+           "PURCHASE.CSV": documents(books, False, four, alternate), "PAYMENTS.CSV": cash(books, False, four, alternate),
            "Aged Receivables.xlsx": aged(books, True), "Aged Payables.xlsx": aged(books, False)}
     for on in TRIAL_BALANCE_DATES:
         out[f"Trial Balance {on.isoformat()}.csv"] = trial_balance(books, on)
