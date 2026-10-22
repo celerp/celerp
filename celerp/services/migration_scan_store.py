@@ -36,6 +36,7 @@ from celerp import config_store
 from celerp.config import settings
 from celerp.importers.adapters import registry
 from celerp.importers.adapters.base import (
+    COMPANY_QUESTION,
     Artifact,
     ArtifactSet,
     MappingQuestion,
@@ -635,14 +636,30 @@ def scan_owner(token: str) -> ScanOwner:
         raise ScanStoreError(410, EXPIRED) from exc
 
 
+def _rescanned(session: ScanSession, decisions: MigrationDecisions) -> SourceScan | None:
+    """The scan of the company the decisions choose, when the stored scan describes another,
+    so the counts and coverage the review shows are those of the company imported."""
+    question = next((q for q in session.scan.questions if q.key == COMPANY_QUESTION), None)
+    chosen = decisions.mappings.get(COMPANY_QUESTION)
+    if question is None or chosen is None or chosen == question.suggested:
+        return None
+    try:
+        return registry.get_adapter(session.adapter_key).inspect(session.artifacts, chosen)
+    except (ScanError, SourceRevisionError) as exc:
+        raise ScanStoreError(422, str(exc)) from exc
+
+
 def save_decisions(token: str, *, owner: ScanOwner, decisions: MigrationDecisions) -> ScanSession:
+    """Store the decisions, reading the source again first when they choose another company."""
     directory = _directory(token)
     with _token_lock(directory):
-        _read(token, directory, owner)
+        scan = _rescanned(_read(token, directory, owner), decisions)
         path = directory / "scan.json"
         try:
             data = json.loads(path.read_text())
             data["decisions"] = decisions_json(decisions)
+            if scan is not None:
+                data["scan"] = _scan_json(scan)
             _write_json(path, data)
         except OSError as exc:
             raise ScanStoreError(500, t(STORE_FAILED)) from exc

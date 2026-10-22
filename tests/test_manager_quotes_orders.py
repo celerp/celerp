@@ -67,7 +67,7 @@ def test_manager_imports_quotes_and_orders(tmp_path):
         date(2026, 1, 5), "2026-02-04", D("110"), D("10"))
     assert q1.contact_external_id == ref("CA")
     (line,) = q1.line_items
-    assert (line.description, line.quantity, line.unit_price, line.tax_code_external_id, line.total_price) == (
+    assert (line.description, line.quantity, line.unit_price, line.taxes[0].tax_code_external_id, line.total_price) == (
         "Consulting hours", D("2"), D("50"), ref("VAT"), D("100"))
     assert docs["SO-1"].line_items[0].item_external_id == ref("WID")
     po2 = docs["PO-2"].line_items[0]

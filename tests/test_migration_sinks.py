@@ -37,6 +37,7 @@ async def _sink_context(client, session, read_attachment):
     from celerp.models.accounting import UserCompany
     from celerp.models.company import User
     from celerp.models.migration import MigrationRun
+    from celerp.importers.schema import MIGRATION_CIF_VERSION
     from celerp.services import migration_core_sink
 
     token = await register_admin(client)
@@ -46,7 +47,8 @@ async def _sink_context(client, session, read_attachment):
     )).scalar_one()
     run = MigrationRun(
         company_id=company_id, created_by_user_id=user.id, scan_claim_sha256="1" * 64, source_system="manager_io",
-        source_artifact_sha256="0" * 64, adapter_version="test", cif_version="2", mode="full_history",
+        source_artifact_sha256="0" * 64, adapter_version="test", cif_version=MIGRATION_CIF_VERSION,
+        mode="full_history",
     )
     session.add(run)
     await session.flush()

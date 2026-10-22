@@ -14,10 +14,11 @@ the same line in the journal's currency when the source states one.
 
 from __future__ import annotations
 
-from collections import Counter
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
+from typing import ClassVar
 
 ZERO = Decimal(0)
 SALES = frozenset({"invoice", "credit_note"})
@@ -35,6 +36,13 @@ class Account:
     control: str | None = None
     currency: str | None = None                 # a bank account kept in a foreign currency
     active: bool = True
+    # Each account built, or its control changed, anywhere: Book.control rebuilds its index after one.
+    edits: ClassVar[int] = 0
+
+    def __setattr__(self, name: str, value: object) -> None:
+        if name == "control":
+            Account.edits += 1
+        super().__setattr__(name, value)
 
     @property
     def label(self) -> str:
@@ -62,11 +70,31 @@ class Item:
     active: bool = True
 
 
+@dataclass(frozen=True)
+class StockHolding:
+    """An item's stock kept apart from the item itself: one lot, or the stock at another location."""
+    key: str
+    item: str                                   # the item's code
+    location: str
+    lot: str | None = None
+
+
 @dataclass
 class TaxCode:
     name: str
     rate: Decimal
     account: str | None = None
+
+
+@dataclass
+class LineTax:
+    code: str | None
+    amount: Decimal                             # document currency
+
+
+def one_tax(code: str | None, amount: Decimal) -> list[LineTax]:
+    """The taxes of a line the source gives one tax code and amount."""
+    return [LineTax(code, amount)] if code or amount else []
 
 
 @dataclass
@@ -77,10 +105,13 @@ class DocLine:
     unit_price: Decimal
     discount: Decimal | None
     net: Decimal                                # tax exclusive, document currency
-    tax: Decimal
-    tax_code: str | None
+    taxes: list[LineTax]
     account: str
     tracking: dict[str, str] = field(default_factory=dict)
+
+    @property
+    def tax(self) -> Decimal:
+        return sum((x.amount for x in self.taxes), ZERO)
 
 
 @dataclass
@@ -102,8 +133,18 @@ class Document:
     amount_due: Decimal                         # as the export states it
     file: str = ""
     rate: Decimal | None = None                 # base per document unit, from its ledger journal
-    applies_to: str | None = None
+    # A note's applications as the source states them: document key -> amount in the note's
+    # currency. Empty when the source names the document only by the note's reference.
+    applied: dict[str, Decimal] = field(default_factory=dict)
+    applications: dict[str, Decimal] = field(default_factory=dict)  # those the ledger carries
     journal: str | None = None                  # the ledger journal that posts it
+    # Tax account -> amount (document currency) the customer kept back as tax withheld:
+    # part of the total, settled from that account.
+    withheld: dict[str, Decimal] = field(default_factory=dict)
+
+    @property
+    def withheld_total(self) -> Decimal:
+        return sum(self.withheld.values(), ZERO)
 
     @property
     def sales(self) -> bool:
@@ -117,6 +158,7 @@ class GLLine:
     foreign: Decimal | None                     # the same line in the journal's currency, when stated
     description: str
     tracking: dict[str, str] = field(default_factory=dict)
+    contact: str | None = None                  # the line's own contact, where it names one other than its journal's
 
 
 @dataclass
@@ -127,10 +169,17 @@ class GLJournal:
     source: str                                 # the source's own name for the kind of journal
     kind: str                                   # receivable invoice, receivable payment, bank transfer, ...
     reference: str
-    invoice: str
+    invoice: str                                # the document number the source names on the journal
     contact: str
     currency: str
     lines: list[GLLine]
+    # A receipt or payment journal's allocations: document key -> amount in that document's
+    # currency, or None for the journal's whole customer or supplier line (one document only).
+    settles: dict[str, Decimal | None] = field(default_factory=dict)
+    # The base amount those allocations applied, when the source states it.
+    settled_base: Decimal | None = None
+    # The key of the document the journal books, when the source links them itself rather than by number.
+    document: str | None = None
 
 
 @dataclass
@@ -150,7 +199,18 @@ class Book:
     aged: dict[str, tuple[date, dict[str, Decimal]]] = field(default_factory=dict)
     skipped: Counter = field(default_factory=Counter)       # coverage label -> count of records not carried
     tracking: set[str] = field(default_factory=set)          # tracking category names
+    # Item code or holding key -> (quantity on hand, inventory value or None when the source values no
+    # stock), as the source states it. An item's figures include those of its holdings.
+    stock: dict[str, tuple[Decimal, Decimal | None]] = field(default_factory=dict)
+    # Where the stock is kept, by name; each item itself is kept at the first.
+    locations: list[str] = field(default_factory=list)
+    holdings: dict[str, StockHolding] = field(default_factory=dict)
     object_counts: Counter = field(default_factory=Counter)
+    # Control -> its accounts' codes, and the accounts of each set of controls looked up, as the chart
+    # stood at (its size, Account.edits): every journal, document and settlement asks for one, so it is
+    # found without looking through the chart.
+    _controls: tuple[tuple[int, int], dict[str | None, tuple[str, ...]], dict[tuple[str, ...], frozenset[str]]] = \
+        field(default=((-1, -1), {}, {}), repr=False, compare=False)
 
     @property
     def currencies(self) -> tuple[str, ...]:
@@ -161,8 +221,29 @@ class Book:
     def is_foreign(self, currency: str | None) -> bool:
         return bool(currency) and currency != self.base
 
-    def control(self, kind: str) -> list[str]:
-        return [a.code for a in self.accounts.values() if a.control == kind]
+    def stock_item(self, key: str) -> str:
+        """The code of the item whose stock `key` is: a holding's item, else the item itself."""
+        holding = self.holdings.get(key)
+        return holding.item if holding else key
+
+    def _control_index(self) -> tuple[dict[str | None, tuple[str, ...]], dict[tuple[str, ...], frozenset[str]]]:
+        if self._controls[0] != (stood := (len(self.accounts), Account.edits)):
+            index: dict[str | None, list[str]] = defaultdict(list)
+            for a in self.accounts.values():
+                index[a.control].append(a.code)
+            self._controls = (stood, {k: tuple(codes) for k, codes in index.items()}, {})
+        return self._controls[1], self._controls[2]
+
+    def control(self, kind: str) -> tuple[str, ...]:
+        """The accounts of one control, in the chart's order."""
+        return self._control_index()[0].get(kind, ())
+
+    def controlled(self, *kinds: str) -> frozenset[str]:
+        """The accounts of any of `kinds`, to look an account up in."""
+        order, found = self._control_index()
+        if kinds not in found:
+            found[kinds] = frozenset(code for kind in kinds for code in order.get(kind, ()))
+        return found[kinds]
 
     @property
     def fx_account(self) -> str | None:

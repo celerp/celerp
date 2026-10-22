@@ -18,12 +18,13 @@ from decimal import Decimal
 from celerp.importers.adapters.base import ArtifactSet, ScanError
 from celerp.importers.adapters.exports import steps
 from celerp.importers.adapters.exports.book import (
-    ZERO, Account, Book, Contact, DocLine, Document, GLJournal, GLLine, Item, TaxCode,
+    ZERO, Account, Book, Contact, DocLine, Document, GLJournal, GLLine, Item, TaxCode, one_tax,
 )
 from celerp.importers.adapters.exports.files import (
     DateReader, Layout, SetCheck, Stranger, Table, amount, as_at, check_set, company_name, money, normalize, of,
     read_set, report_date,
 )
+from celerp.importers.adapters.exports.ledger import SETTLEMENT_KINDS, find_document
 from ui.i18n import t
 
 SOURCE_SYSTEM = "xero"
@@ -186,7 +187,8 @@ def _documents(book: Book, tables: list[Table], read_date: DateReader) -> None:
             net = money(tb.value(row, "lineamount"), where) if tb.value(row, "lineamount") else money(
                 str(quantity * unit * (1 - (discount or ZERO) / 100)))
             lines.append(DocLine(item, tb.value(row, "description"), quantity, unit, discount, net,
-                                 money(tb.value(row, "taxamount"), where), tax_code, tb.value(row, "accountcode"),
+                                 one_tax(tax_code, money(tb.value(row, "taxamount"), where)),
+                                 tb.value(row, "accountcode"),
                                  tracking))
         total = money(tb.value(first, "total"), where)
         if sum((ln.net + ln.tax for ln in lines), ZERO) != total:
@@ -313,6 +315,15 @@ def check(artifacts: ArtifactSet) -> SetCheck:
     return _check(*read_set(artifacts, LAYOUTS))
 
 
+def _settles(book: Book) -> None:
+    """A receipt or payment journal settles the invoice or bill its ledger lines name."""
+    for j in book.journals:
+        if j.kind in SETTLEMENT_KINDS and j.invoice:
+            doc = find_document(book, SETTLEMENT_KINDS[j.kind] == "receipt", j.invoice, j.contact)
+            if doc is not None:
+                j.settles = {doc.key: None}
+
+
 def read_xero(artifacts: ArtifactSet) -> Book:
     tables, strangers = read_set(artifacts, LAYOUTS)
     _check(tables, strangers).refuse()
@@ -328,6 +339,7 @@ def read_xero(artifacts: ArtifactSet) -> Book:
     _documents(book, tables, read_date)
     for doc in book.documents.values():
         doc.currency = doc.currency or book.base
+    _settles(book)
     steps.bank_currencies(book)
     _trial_balances(book, tables)
     _aged(book, tables)

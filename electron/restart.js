@@ -135,6 +135,31 @@ function classifyNavigation(url, uiPort, formerUiPorts = new Set()) {
 }
 
 /**
+ * Where the window goes once a restart has moved the UI to a new port: the same
+ * page it was showing (path, query and hash), so a page the restart interrupted,
+ * such as an import in progress, carries on. A URL that is not the app's own page
+ * (the loading screen, a blank window, another site) falls back to the root.
+ *
+ * @param {string} currentUrl - the window's URL before the reload
+ * @param {number} uiPort - the new UI port
+ * @param {Set<number>} [formerUiPorts] - UI ports used earlier in this app session
+ * @returns {string}
+ */
+function restartUrl(currentUrl, uiPort, formerUiPorts = new Set()) {
+  const root = `http://127.0.0.1:${uiPort}`;
+  let u;
+  try {
+    u = new URL(currentUrl);
+  } catch {
+    return root;
+  }
+  const port = Number(u.port);
+  const ownPage = u.protocol === "http:" && u.hostname === "127.0.0.1"
+    && (port === Number(uiPort) || formerUiPorts.has(port));
+  return ownPage ? `${root}${u.pathname}${u.search}${u.hash}` : root;
+}
+
+/**
  * Full application relaunch: queue a fresh instance, then quit the current one.
  * This is the only apply path for a DB-mode/url change, because a cold start
  * re-runs resolveDatabaseConfig(readConfig()) and opens the newly-saved database;
@@ -149,4 +174,4 @@ function fullRelaunch(appRef) {
   appRef.quit();
 }
 
-module.exports = { restartSentinelPath, watchForRestart, classifyNavigation, fullRelaunch };
+module.exports = { restartSentinelPath, watchForRestart, classifyNavigation, restartUrl, fullRelaunch };

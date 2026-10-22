@@ -974,14 +974,23 @@ def test_item_status_labels_are_distinct_per_locale(lang):
 _TU_FORMS = frozenset({
     "tienes", "puedes", "tu", "tus", "haz", "elige", "selecciona", "inténtalo",
     "necesitas", "quieres", "estás", "has", "puedas", "tengas", "contigo",
-    "tuyo", "tuya", "tuyos", "tuyas", "elegiste", "pulsa",
+    "tuyo", "tuya", "tuyos", "tuyas", "elegiste", "pulsa", "selecciónala",
+    "crea", "sube", "vuelve",
 })
+# Also the third-person present ("la migración crea su empresa", "vuelve a estar
+# activa"), so they count only beside another tú imperative in the same sentence.
+_ALSO_THIRD_PERSON = frozenset({"crea", "sube", "vuelve"})
 
 
 def _tu_forms(text: str) -> list[str]:
-    words = re.findall(r"\w+", re.sub(r"\{[^}]*\}", " ", text).lower())
-    return [w for i, w in enumerate(words)
-            if w in _TU_FORMS and not (i and words[i - 1] == "se")]
+    hits = []
+    for sentence in re.split(r"[.!?;:]", re.sub(r"\{[^}]*\}", " ", text).lower()):
+        words = re.findall(r"\w+", sentence)
+        found = [w for i, w in enumerate(words)
+                 if w in _TU_FORMS and not (i and words[i - 1] == "se")]
+        if len(found) > 1 or set(found) - _ALSO_THIRD_PERSON:
+            hits += found
+    return hits
 
 
 def test_es_uses_usted_register():

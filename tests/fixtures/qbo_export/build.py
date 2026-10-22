@@ -175,15 +175,15 @@ def applied(books: Books, sales: bool) -> bytes:
     for doc in _exported(books, sales):
         if doc.credit or doc.status == "Voided":
             continue
-        paid = [j for j in books.journals if j.source == payment and j.invoice == doc.number]
+        paid = [(j, j.applied[doc.number] if j.applied else _paid_in_document_currency(j, party))
+                for j in books.journals if j.source == payment and (j.invoice == doc.number or doc.number in j.applied)]
         if not paid and not notes[doc.number]:
             continue
         rows.append([_date(doc.issued), DOCUMENT_TYPES[doc.kind], doc.number, doc.contact, float(doc.total)])
         for note in notes[doc.number]:
             rows.append([_date(note.issued), DOCUMENT_TYPES[note.kind], note.number, doc.contact, float(note.total)])
-        for j in paid:
-            rows.append([_date(j.on), TRANSACTION_TYPES[payment], "", doc.contact,
-                         _paid_in_document_currency(j, party)])
+        for j, amount in paid:
+            rows.append([_date(j.on), TRANSACTION_TYPES[payment], "", doc.contact, float(amount)])
     title = "Invoices and Received Payments" if sales else "Bills and Applied Payments"
     return _xlsx(title, _period(), ["Date", "Transaction Type", "Num", "Customer" if sales else "Vendor", "Amount"],
                  rows)

@@ -135,6 +135,8 @@ class LineItem(BaseModel):
     asset_returned: bool | None = None
     # A credit note line: the invoice line it credits.
     source_line_id: str | None = None
+    # A migrated line: the tracking category -> option its source books gave it.
+    tracking: dict[str, str] | None = None
 
     @model_validator(mode="after")
     def _resolve_entity_id(self) -> "LineItem":
@@ -3676,9 +3678,10 @@ async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
     and cannot compute a duplicate or colliding payment_index.
 
     The money moves through ``bank_account``, which must be able to hold it. Only a
-    migration passes ``moves_cash=False``, for an imported debit note and for the
-    amount a document was paid before its source books started: each settles the
-    document against its own receivable or payable account, so no money moves.
+    migration passes ``moves_cash=False``, for an imported debit note, for the amount a
+    document was paid before its source books started, and for tax a customer withheld
+    from an invoice: each settles the document against its own receivable or payable
+    account, or the withholding tax account, so no money moves.
 
     *books* is the (base currency, document rate) the payment posts on when the caller
     already holds them - an online payment keeps the books its payment page opened with,

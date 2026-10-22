@@ -49,8 +49,8 @@ class ScanError(Exception):
 
 
 class SourceRevisionError(Exception):
-    """A source is recognised but saved at a file format revision this adapter does not
-    read. Not a ScanError: detection must refuse it with its own message rather than
+    """A source is recognised but cannot be read as it is: saved at a file format revision
+    this adapter does not read, or damaged. Not a ScanError: detection must refuse it with its own message rather than
     treat the file as unrecognised. The message is shown to the user as written."""
 
 
@@ -58,6 +58,11 @@ class SourceRevisionError(Exception):
 class DetectionResult:
     matched: bool
     reason: str | None = None                 # why the artifacts were not recognised, or a legacy-format note
+
+
+# A question with this key chooses which of the source's companies to import; its answer is
+# the company's name.
+COMPANY_QUESTION = "company"
 
 
 @dataclass(frozen=True)
@@ -108,7 +113,11 @@ class SourceAdapter(Protocol):
 
     def detect(self, artifacts: ArtifactSet) -> DetectionResult: ...
 
-    def inspect(self, artifacts: ArtifactSet) -> SourceScan: ...
+    def inspect(self, artifacts: ArtifactSet, company: str | None = None) -> SourceScan:
+        """The scan of a source. For a source that asks the COMPANY_QUESTION, `company` is the
+        answer the scan describes (None describes the suggested one); others ask nothing and
+        ignore it."""
+        ...
 
     def build_manifest(self, artifacts: ArtifactSet, decisions: MigrationDecisions) -> CIFImportManifest: ...
 
@@ -116,7 +125,7 @@ class SourceAdapter(Protocol):
         self, artifacts: ArtifactSet, decisions: MigrationDecisions
     ) -> ReconciliationExpectations: ...
 
-    def read_attachment(self, artifacts: ArtifactSet, key: str) -> bytes:
-        """The content of one attachment the manifest carries, by its source id.
-        Raises ScanError for any key the scan did not accept."""
+    def read_attachment(self, artifacts: ArtifactSet, decisions: MigrationDecisions, key: str) -> bytes:
+        """The content of one attachment the manifest built with these decisions carries, by
+        its source id. Raises ScanError for any key that manifest does not carry."""
         ...

@@ -214,3 +214,73 @@ async def test_login_passes_over_an_older_deactivated_company(real_client, real_
     assert r.status_code == 200, r.text
     landed = decode_access_token(r.json()["access_token"])["company_id"]
     assert landed == str(working.id if working_active else staged.id)
+
+
+@pytest.mark.asyncio
+async def test_open_runs_lead_their_creator_back_to_a_move(real_client, real_engine, migration_env):
+    """A move in progress is listed for the person who started it, from any company they are on,
+    until it completes or its kept source is gone; another owner never sees it."""
+    import shutil
+
+    from celerp.services import migration_scan_store as store
+    from celerp.models.company import User
+    from celerp.models.migration import MigrationRun
+
+    admin_token = await register_admin(real_client)
+    run_id = await migrate_as_owner(real_client, admin_token, company_name="Moved Co")
+    r = await real_client.get("/migrations/open", headers=auth(admin_token))
+    assert r.status_code == 200, r.text
+    assert r.json() == {"items": [{"id": run_id, "company_name": "Moved Co", "status": "running",
+                                   "preparing": False}]}
+
+    run = await load_run(real_engine, uuid.UUID(run_id))
+    async with maker(real_engine)() as s:
+        other = User(email="other-owner@example.com", name="Other")
+        s.add(other)
+        await s.commit()
+    await _link(real_engine, other.id, run.company_id)
+    other_token = await _token(real_engine, other.id, run.company_id)
+    assert (await real_client.get("/migrations/open", headers=auth(other_token))).json() == {"items": []}
+
+    async def _set_status(status: str) -> list:
+        async with maker(real_engine)() as s:
+            (await s.get(MigrationRun, uuid.UUID(run_id))).status = status
+            await s.commit()
+        return (await real_client.get("/migrations/open", headers=auth(admin_token))).json()["items"]
+
+    assert [i["status"] for i in await _set_status("failed")] == ["failed"]
+    assert await _set_status("completed") == []
+    shutil.rmtree(store.run_dir(uuid.UUID(run_id)))
+    assert await _set_status("failed") == [], "a stopped run whose source is gone cannot resume"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("revoke", ["membership", "role"])
+async def test_open_runs_stop_leading_back_once_the_person_may_no_longer_manage_the_company(
+        real_client, real_engine, migration_env, revoke):
+    """The list of moves in progress follows the run page's access rule: once the creator's
+    membership ends, or their role no longer manages the company, the move and its company's
+    name leave the list as the run page closes to them; restoring the access brings both back."""
+    from sqlalchemy import update
+
+    from celerp.models.accounting import UserCompany
+    from celerp.services.migrations import open_runs
+
+    admin_token = await register_admin(real_client)
+    run_id = await migrate_as_owner(real_client, admin_token, company_name="Moved Co")
+    run = await load_run(real_engine, uuid.UUID(run_id))
+    changed, restored = ({"is_active": False}, {"is_active": True}) if revoke == "membership" else (
+        {"role": "manager"}, {"role": "owner"})
+
+    async def _access(values: dict) -> tuple[list, list, int]:
+        async with maker(real_engine)() as s:
+            await s.execute(update(UserCompany).where(UserCompany.user_id == run.created_by_user_id,
+                                                      UserCompany.company_id == run.company_id).values(**values))
+            await s.commit()
+            listed = [i["id"] for i in await open_runs(s, run.created_by_user_id)]
+        served = (await real_client.get("/migrations/open", headers=auth(admin_token))).json()["items"]
+        page = (await real_client.get(f"/migrations/{run_id}", headers=auth(admin_token))).status_code
+        return listed, [i["id"] for i in served], page
+
+    assert await _access(changed) == ([], [], 404)
+    assert await _access(restored) == ([run_id], [run_id], 200)

@@ -15,13 +15,15 @@ from __future__ import annotations
 import csv
 import datetime
 import io
+import lzma
 import math
 import re
 import unicodedata
 import zipfile
+import zlib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Collection, Mapping
+from typing import IO, Any, Callable, Collection, Mapping
 
 import openpyxl
 from openpyxl.utils.exceptions import InvalidFileException
@@ -39,6 +41,36 @@ MAX_CELLS = 200_000
 MAX_TABLE_BYTES = 10 * 1024 * 1024
 MAX_XLSX_UNCOMPRESSED = 50 * 1024 * 1024
 MAX_XLSX_ENTRIES = 4096
+# Every way the zipfile module fails on a damaged archive, opening it or unpacking a file from
+# it: an index or header it cannot parse, a zip version or method it cannot unpack, a name
+# flagged UTF-8 that is not, a file packed with a password, or a stream that does not
+# decompress, ends early or fails its checksum.
+ZIP_ERRORS = (zipfile.BadZipFile, NotImplementedError, RuntimeError, ValueError, EOFError, OSError,
+              lzma.LZMAError, zlib.error)
+# What opening an uploaded zip may hold before anything in it is checked. zipfile reads the whole
+# central directory and builds an object for every entry it lists, about 600 bytes beside the
+# entry's name, which it holds twice (the directory read and the name decoded). The directory's
+# size is declared at the end of the file and its entry count is not trusted (zipfile ignores it),
+# but an entry takes at least 46 bytes of the directory, so its size bounds both. The budget
+# admits about 130,000 files of the roughly 100 bytes an Odoo filestore file takes, more than a
+# 2 GB backup holds, and refuses a file made of hundreds of thousands of empty entries.
+ZIP_METADATA_BUDGET = 192 * 1024 ** 2
+ZIP_ENTRY_BYTES = 600
+
+
+def zip_directory_fits(file: IO[bytes]) -> bool:
+    """Whether opening the zip `file` holds within ZIP_METADATA_BUDGET, from the end-of-directory
+    records alone (ZIP64 included), read as zipfile reads them. A file without them, or with
+    records zipfile cannot parse, is not ruled on: zipfile refuses it on its own when the caller
+    opens it, without reading a directory."""
+    try:
+        end = zipfile._EndRecData(file)  # the records zipfile itself parses, in a bounded read of the tail
+    except ZIP_ERRORS:
+        return True
+    if end is None:
+        return True
+    size = end[zipfile._ECD_SIZE]
+    return 2 * size + size // zipfile.sizeCentralDir * ZIP_ENTRY_BYTES <= ZIP_METADATA_BUDGET
 
 
 @dataclass(frozen=True)
@@ -754,8 +786,8 @@ def _sheet_is_empty(ws) -> bool:
 def _xlsx_lines(data: bytes, *, sheet: str | None, limits: Limits | None = None) -> list[list[str]]:
     """Every row of one workbook sheet as cells.
 
-    A zipfile pre-check bounds the entry count and total uncompressed size
-    before openpyxl parses anything, so a zip bomb is rejected up front. Exactly
+    A zipfile pre-check bounds the directory, entry count and total uncompressed
+    size before openpyxl parses anything, so a zip bomb is rejected up front. Exactly
     one non-empty sheet auto-selects; several with no chosen sheet raise with the
     available names. A formula cell raises with its position: formulas and
     external links are never evaluated.
@@ -764,9 +796,12 @@ def _xlsx_lines(data: bytes, *, sheet: str | None, limits: Limits | None = None)
     if len(data) > bounds.file_bytes:
         raise TabularError(t("import.err_file_too_large"))
 
+    file = io.BytesIO(data)
+    if not zip_directory_fits(file):
+        raise TabularError(t("import.err_xlsx_entries"))
     try:
-        archive = zipfile.ZipFile(io.BytesIO(data))
-    except zipfile.BadZipFile as exc:
+        archive = zipfile.ZipFile(file)
+    except ZIP_ERRORS as exc:
         raise TabularError(t("import.err_not_xlsx"), code="not_workbook") from exc
     infos = archive.infolist()
     if len(infos) > MAX_XLSX_ENTRIES:
@@ -776,7 +811,7 @@ def _xlsx_lines(data: bytes, *, sheet: str | None, limits: Limits | None = None)
 
     try:
         workbook = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=False)
-    except (InvalidFileException, zipfile.BadZipFile, KeyError) as exc:
+    except (InvalidFileException, KeyError, *ZIP_ERRORS) as exc:
         raise TabularError(t("import.err_xlsx_open"), code="not_workbook") from exc
 
     try:
