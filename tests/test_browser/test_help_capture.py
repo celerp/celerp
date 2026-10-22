@@ -2,7 +2,8 @@
 
 One case per page: each step's capture recipe opens its route on a company filled
 with demo data, runs its actions, and the step's selector and the English text of
-every label it names must be visible. With HELP_CAPTURE_WRITE=1 each step that
+every label it names must be visible (as text or as a field's placeholder; a hidden
+copy elsewhere on the page, such as in a closed menu, does not count). With HELP_CAPTURE_WRITE=1 each step that
 declares an image is written as a cropped webp carrying the capture marker, the
 only way a help image is made.
 """
@@ -133,6 +134,7 @@ def test_help_capture_every_page(demo_page, help_page):
         for key in step["labels"].values():
             label = _visible_label(key)
             if label:
-                expect(demo_page.get_by_text(label).first).to_be_visible()
+                shown = demo_page.get_by_text(label).or_(demo_page.get_by_placeholder(label))
+                expect(shown.filter(visible=True).first).to_be_visible()
         if _WRITE and step["image"]:
             _write_image(target, help_page.help_dir / step["image"])

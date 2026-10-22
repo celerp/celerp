@@ -11,7 +11,7 @@
       "text": "On any screen, click {help} in the top bar. {here} lists the help pages written for that screen.",
       "labels": {"help": "help.title", "here": "help.for_this_page"},
       "image": null,
-      "capture": {"route": "/help", "selector": "main", "actions": []}
+      "capture": {"route": "/help", "selector": "#topbar-help-panel", "actions": [{"wait": ".topbar-help__btn"}, {"click": ".topbar-help__btn"}]}
     },
     {
       "text": "To look further, open the help pages and type a few words into {search}. With nothing typed, {browse} lists every page, grouped by the module it belongs to.",
