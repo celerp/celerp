@@ -6292,7 +6292,7 @@
   "notice.xero_attachments_fetched.title": "تم جلب مرفقات Xero",
   "notice.xero_attachments_fetched.body": "تم إرفاق {attached} من أصل {total} ملفًا من {organisation} بالمستندات المستوردة.",
   "notice.tax_seed.in-default-2025.title": "India tax default to check",
-  "notice.tax_seed.in-default-2025.body": "Your taxes have both CGST 9% and SGST 9% set as the default, so a new line can be taxed twice. New companies now start with IGST 18% as the only default. Keep one default in Settings > Taxes.",
+  "notice.tax_seed.in-default-2025.body": "Your taxes have CGST 9% and SGST 9% both set as the default, so a new line takes both: 18% for a sale within your state. New companies now start with IGST 18% as the default. For a sale to another state, choose IGST 18% on the line.",
   "notice.tax_seed.et-wht-2025.title": "Ethiopia withholding rate changed",
   "notice.tax_seed.et-wht-2025.body": "Withholding on goods and services is now 3%, not 2%: on goods contracts above ETB 20,000 and services from ETB 10,000, and 30% when the supplier gives no TIN. Change the WHT 2% row in Settings > Taxes.",
   "notice.tax_seed.et-tot-2025.title": "Ethiopia turnover tax repealed",

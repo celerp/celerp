@@ -289,20 +289,17 @@ def taxes_for(taxes: list[dict], doc_type: str | None) -> list[dict]:
     return [x for x in taxes if (x.get("tax_type") or "both") in (side, "both")]
 
 
-def default_tax(taxes: list[dict], doc_type: str | None) -> dict | None:
-    """The tax a new line on a document of this type starts with: the company default, when it
-    applies to that side (a purchase document takes no sales-only tax, a sale no purchase-only one)."""
-    return next((x for x in taxes_for(taxes, doc_type) if x.get("is_default")), None)
-
-
-def default_line_taxes(taxes: list[dict], doc_type: str | None) -> list[dict]:
+def default_line_taxes(taxes: list[dict], doc_type: str | None, *, doc_taxes) -> list[dict]:
     """The taxes list a new line starts with, whichever way it is added (scan, from items, append,
-    reorder): the default tax of `default_tax` when its rate is not zero, else no tax."""
-    tax = default_tax(taxes, doc_type)
-    if not tax or not float(tax.get("rate") or 0):
+    reorder, the editor): every company default for the document's side with a rate that is not
+    zero, in list order (a company may hold two, such as CGST 9% and SGST 9%). None while the
+    document is taxed as a whole (`doc_taxes`, the target document's stored value, holds a tax),
+    so its tax is never charged twice; a new document passes None."""
+    if tax_entries(doc_taxes):
         return []
     return [{"code": tax.get("name"), "rate": float(tax["rate"]), "amount": 0, "order": 0,
-             "is_compound": bool(tax.get("is_compound")), "label": ""}]
+             "is_compound": bool(tax.get("is_compound")), "label": ""}
+            for tax in taxes_for(taxes, doc_type) if tax.get("is_default") and float(tax.get("rate") or 0)]
 
 
 def tax_entries(value) -> list[dict]:

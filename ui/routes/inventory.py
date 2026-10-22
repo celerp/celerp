@@ -4167,8 +4167,9 @@ function celerpPrintLabel(entityId, templateId) {
             if target_id and not target_id.startswith("__new__"):
                 # Add to existing document
                 if doc_type == "invoice":
-                    new_lines = await _line_items_from_inventory(token, entity_ids, doc_type="invoice")
                     doc = await api.get_doc(token, target_id)
+                    new_lines = await _line_items_from_inventory(token, entity_ids, doc_type="invoice",
+                                                                 doc_taxes=doc.get("doc_taxes"))
                     await api.patch_doc(token, target_id, {"line_items": (doc.get("line_items") or []) + new_lines})
                     return Response("", status_code=204, headers={"HX-Redirect": f"/docs/{target_id}"})
                 elif doc_type in ("list", "shipping_doc"):
@@ -4181,13 +4182,15 @@ function celerpPrintLabel(entityId, templateId) {
                     await api.patch_list(token, target_id, {"line_items": combined, "subtotal": subtotal, "total": subtotal}, expected_version=lst.get("version"))
                     return Response("", status_code=204, headers={"HX-Redirect": f"/lists/{target_id}"})
                 elif doc_type == "memo":
-                    new_lines = await _line_items_from_inventory(token, entity_ids, doc_type="memo")
                     doc = await api.get_doc(token, target_id)
+                    new_lines = await _line_items_from_inventory(token, entity_ids, doc_type="memo",
+                                                                 doc_taxes=doc.get("doc_taxes"))
                     await api.patch_doc(token, target_id, {"line_items": (doc.get("line_items") or []) + new_lines})
                     return Response("", status_code=204, headers={"HX-Redirect": f"/docs/{target_id}"})
                 elif doc_type == "purchase_order":
-                    new_lines = await _reorder_lines_from_inventory(token, entity_ids, doc_type="purchase_order")
                     doc = await api.get_doc(token, target_id)
+                    new_lines = await _reorder_lines_from_inventory(token, entity_ids, doc_type="purchase_order",
+                                                                    doc_taxes=doc.get("doc_taxes"))
                     await api.patch_doc(token, target_id, {"line_items": (doc.get("line_items") or []) + new_lines})
                     return Response("", status_code=204, headers={"HX-Redirect": f"/docs/{target_id}"})
             else:

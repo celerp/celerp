@@ -34,7 +34,7 @@ from celerp.services.business_time import business_today
 from celerp.services.doc_balance import awaiting_status_param, is_awaiting_payment, is_owed, outstanding_balance
 from celerp.services.money import to_decimal, to_stored_float, round_money, currency_dp, rate_dp
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, line_price_list, resolve_price
-from celerp.tax_regimes import default_line_taxes, default_tax, tax_entries, taxes_for
+from celerp.tax_regimes import default_line_taxes, tax_entries, taxes_for
 from celerp.services.payment_terms import due_date_for_terms
 from celerp.services.permissions import missing_permission_text, role_has_permission
 from ui.components.import_access import can_import_documents
@@ -1255,18 +1255,20 @@ def _form_version(form) -> int | None:
     return int(raw) if raw.isdigit() else None
 
 
-async def _new_line_taxes(token: str, doc_type: str | None) -> list[dict]:
-    """The taxes a new line on a document of this type starts with (see default_line_taxes); none
-    for a list (no doc_type). A failed read raises, so no line is added without its tax."""
+async def _new_line_taxes(token: str, doc_type: str | None, doc_taxes) -> list[dict]:
+    """The taxes a new line on a document of this type starts with (see default_line_taxes; `doc_taxes`
+    is the target document's when appending, None for a new one); none for a list (no doc_type). A
+    failed read raises, so no line is added without its tax."""
     if not doc_type:
         return []
-    return default_line_taxes(await api.get_document_taxes(token, doc_type), doc_type)
+    return default_line_taxes(await api.get_document_taxes(token, doc_type), doc_type, doc_taxes=doc_taxes)
 
 
 async def _line_items_from_inventory(token: str, entity_ids: list[str], price_list: str = DEFAULT_PRICE_LIST_NAME,
-                                     doc_type: str | None = None) -> list[dict]:
-    """Fetch inventory items and build doc/list line items; a document's lines start with its default tax."""
-    line_taxes = await _new_line_taxes(token, doc_type)
+                                     doc_type: str | None = None, doc_taxes=None) -> list[dict]:
+    """Fetch inventory items and build doc/list line items; a document's lines start with its default
+    taxes (see _new_line_taxes; pass the target's `doc_taxes` when appending)."""
+    line_taxes = await _new_line_taxes(token, doc_type, doc_taxes)
     line_items = []
     for eid in entity_ids:
         try:
@@ -1361,13 +1363,15 @@ def _reorder_po_line(item: dict, unit_decimals: int | None = None) -> dict:
     }
 
 
-async def _reorder_lines_from_inventory(token: str, entity_ids: list[str], doc_type: str | None = None) -> list[dict]:
+async def _reorder_lines_from_inventory(token: str, entity_ids: list[str], doc_type: str | None = None,
+                                        doc_taxes=None) -> list[dict]:
     """Fetch inventory items and build purchase-order reorder lines (see _reorder_po_line).
 
     Loads the company unit map once so each line's qty is ceil'd to its purchase
-    unit's precision. With a doc_type, each line starts with that document's default tax.
+    unit's precision. With a doc_type, each line starts with that document's default taxes
+    (see _new_line_taxes; pass the target's `doc_taxes` when appending).
     """
-    line_taxes = await _new_line_taxes(token, doc_type)
+    line_taxes = await _new_line_taxes(token, doc_type, doc_taxes)
     try:
         unit_map = build_unit_map(await api.get_units(token))
     except Exception:
@@ -1790,7 +1794,8 @@ def setup_routes(app):
             return Div(P(t("label.no_items_or_target_selected"), cls="flash flash--warning"), id="modal-container")
         try:
             doc = await api.get_doc(token, target_id)
-            new_lines = await _line_items_from_inventory(token, entity_ids, doc_type=doc.get("doc_type"))
+            new_lines = await _line_items_from_inventory(token, entity_ids, doc_type=doc.get("doc_type"),
+                                                         doc_taxes=doc.get("doc_taxes"))
             await api.patch_doc(token, target_id, {"line_items": (doc.get("line_items") or []) + new_lines})
         except APIError as e:
             return Div(P(error_message(e), cls="flash flash--error"), id="modal-container")
@@ -7387,8 +7392,6 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             )
 
         _taxes_list = taxes_for(company_taxes or [], doc_type)
-        _default_tax = default_tax(_taxes_list, doc_type)
-        _default_tax_value = f"{_default_tax.get('name', '')}|{float(_default_tax.get('rate', 0))}" if _default_tax else "|0"
 
         def _tax_select(li: dict | None = None) -> FT:
             """Build tax <select> + hidden custom-rate input + hidden label for a line item.
@@ -7686,7 +7689,8 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             _row_cls = "data-row--adjusted" if adjusted else ("data-row--audited" if audited else "")
             return Tr(*cells, cls=_row_cls) if _row_cls else Tr(*cells)
 
-        def _li_empty_row() -> FT:
+        def _li_empty_row(doc_taxes) -> FT:
+            """An empty line row starting with the default taxes (default_line_taxes) for `doc_taxes`."""
             _show_category = doc_type in ("bill", "purchase_order", "consignment_in")
             _show_receive_as = doc_type in ("bill", "purchase_order", "consignment_in")
             _cats = item_categories or {}
@@ -7755,7 +7759,8 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 Td(Input(type="number", value="0", step="0.01", data_name="discount_pct",
                          oninput="celerpFieldEdited(this)", onblur="celerpAutoSave()",
                          cls="cell-input cell-input--xs"), cls="col-disc"),
-                Td(_tax_select(), cls="col-tax"),
+                Td(_tax_select({"taxes": default_line_taxes(_taxes_list, doc_type, doc_taxes=doc_taxes)}),
+                   cls="col-tax"),
             ])
             if doc_type in ("purchase_order", "bill"):
                 cells.append(Td(_line_account_picker(chart_accounts, ""), cls="col-account"))
@@ -7787,7 +7792,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
 
         rows = [_li_editable_row(li, i) for i, li in enumerate(line_items)]
         if not rows:
-            rows = [_li_empty_row()]
+            rows = [_li_empty_row(doc.get("doc_taxes"))]
 
         is_invoice_layout = doc_type in _INVOICE_LAYOUT_DOC_TYPES
         # Single-level header. Invoice-layout docs (invoice / consignment-out / list) carry
@@ -7888,7 +7893,9 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         lines_section = Div(
             *_ai_dropzone,
             _csv_import_el,
-            Template(_li_empty_row(), id="line-row-tpl"),
+            # The added-row template carries the company defaults; celerpAddLine clears them while
+            # the page holds a document tax (_celerpDocTaxMode), which a removal can change live.
+            Template(_li_empty_row(None), id="line-row-tpl"),
             Div(
                 Span("📷", cls="scan-bar-icon"),
                 Input(type="text", id="scan-bar-input", placeholder=_scan_placeholder,
@@ -8010,7 +8017,6 @@ window._CELERP_LINE_LIMIT = {int(line_limit)};
    a longer one inserts; after each save it becomes the count just written. */
 window._CELERP_ORIGINAL_COUNT = {len(line_items)};
 window._CELERP_TAXES = {_json.dumps(_taxes_list)};
-window._CELERP_DEFAULT_TAX = {repr(_default_tax_value)};
 /* Currency precision: amounts use _CELERP_CDP decimals, unit prices may use up to _CELERP_RDP. */
 window._CELERP_CDP = {currency_dp(currency)};
 /* Shipping is part of the document total; the editor's live total adds it like the stored one. */
@@ -8430,9 +8436,13 @@ function celerpFillRow(row, data) {{
             linkEl.onclick = (e) => e.preventDefault();
         }}
     }}
-    // Set tax dropdown: use item tax_code/tax_rate, fall back to company default
+    // Set tax dropdown: none while the document is taxed as a whole, else the item's
+    // tax_code/tax_rate, else the company defaults the added-row template carries.
     const taxSel = row.querySelector('[data-name="tax_select"]');
-    if (taxSel) {{
+    if (taxSel && _celerpDocTaxMode()) {{
+        taxSel.value = '|0';
+        celerpTaxChange(taxSel);
+    }} else if (taxSel) {{
         let matched = false;
         if (data.tax_code) {{
             for (const opt of taxSel.options) {{
@@ -8446,8 +8456,13 @@ function celerpFillRow(row, data) {{
                 }}
             }}
         }}
-        if (!matched) taxSel.value = _CELERP_DEFAULT_TAX;
-        celerpTaxChange(taxSel);
+        if (matched) {{
+            celerpTaxChange(taxSel);
+        }} else {{
+            const tplTax = document.getElementById('line-row-tpl').content.querySelector('.col-tax');
+            taxSel.closest('.col-tax').replaceChildren(...tplTax.cloneNode(true).childNodes);
+            celerpUpdateTotals();
+        }}
     }}
 """ + ("""    // Item status column (status-column pages only): populate with the rest of the
     // row, same markup as the server-rendered cell (see _item_status_badge_cell),
@@ -8734,13 +8749,8 @@ function celerpAddLine() {{
     _celerpHadLines = true;  // once a line exists, emptying the table later must persist
     const tpl = document.getElementById('line-row-tpl').content.cloneNode(true);
     const row = tpl.querySelector('tr') || tpl.children[0];
-    if (row) {{
-        const taxSel = row.querySelector('[data-name="tax_select"]');
-        if (taxSel && _CELERP_DEFAULT_TAX) {{
-            taxSel.value = _CELERP_DEFAULT_TAX;
-            celerpTaxChange(taxSel);
-        }}
-    }}
+    const taxSel = row && row.querySelector('[data-name="tax_select"]');
+    if (taxSel && _celerpDocTaxMode()) taxSel.value = '|0';
     const tbody = document.getElementById('{line_body_id}');
     tbody.appendChild(tpl);
     // Re-init comboboxes in the newly-added row (cloneNode bypasses htmx:afterSettle)
@@ -8896,6 +8906,12 @@ function _celerpStoredTax() {{
         sum += parseFloat(r.dataset.amount) || 0;
     }});
     return sum;
+}}
+function _celerpDocTaxMode() {{
+    // The document is taxed as a whole while it holds a document tax not removed on this page;
+    // a line added meanwhile takes no tax of its own, so the tax is never charged twice.
+    const st = document.getElementById('doc-taxes-state');
+    return !!st && JSON.parse(st.value || '[]').some(Boolean);
 }}
 function celerpRemoveDocTax(i) {{
     const st = document.getElementById('doc-taxes-state');

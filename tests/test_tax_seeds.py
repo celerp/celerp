@@ -11,7 +11,7 @@ import inspect
 import pytest
 
 from celerp import tax_regimes
-from celerp.tax_regimes import TAX_REGIMES, default_tax
+from celerp.tax_regimes import TAX_REGIMES, default_line_taxes
 
 
 def _rows(country: str) -> dict[str, dict]:
@@ -26,8 +26,8 @@ def test_every_regime_has_exactly_one_default():
 
 def test_india_default_is_igst():
     taxes = TAX_REGIMES["IN"]["taxes"]
-    assert default_tax(taxes, "invoice")["name"] == "IGST 18%"
-    assert default_tax(taxes, "bill")["name"] == "IGST 18%"
+    assert [t["code"] for t in default_line_taxes(taxes, "invoice", doc_taxes=None)] == ["IGST 18%"]
+    assert [t["code"] for t in default_line_taxes(taxes, "bill", doc_taxes=None)] == ["IGST 18%"]
     rows = _rows("IN")
     assert not rows["CGST 9%"]["is_default"] and not rows["SGST 9%"]["is_default"]
     assert "CGST 9%" in rows["IGST 18%"]["description"] and "SGST 9%" in rows["IGST 18%"]["description"]
@@ -57,7 +57,8 @@ def test_quebec_qst_is_not_compound_and_charges_on_the_price():
 def test_malaysia_seeds_codes_in_force():
     rows = _rows("MY")
     assert "SST 6%" not in rows
-    assert default_tax(TAX_REGIMES["MY"]["taxes"], "invoice")["name"] == "Sales Tax 10%"
+    assert [t["code"] for t in default_line_taxes(TAX_REGIMES["MY"]["taxes"], "invoice", doc_taxes=None)] == [
+        "Sales Tax 10%"]
     assert rows["Sales Tax 10%"]["rate"] == 10.0 and rows["Sales Tax 10%"]["tax_type"] == "sales"
     assert rows["Sales Tax 5%"]["rate"] == 5.0 and not rows["Sales Tax 5%"]["is_default"]
     assert rows["Service Tax 8%"]["rate"] == 8.0
@@ -90,21 +91,45 @@ def test_no_seed_text_has_an_em_dash():
 
 
 def test_default_line_taxes_matches_the_scan_line():
-    """Every path that builds a new line (scan, from items, append, reorder) takes its tax
-    from one helper, so a line looks the same whichever way it was added."""
-    from celerp.tax_regimes import default_line_taxes
+    """Every path that builds a new line (scan, from items, append, reorder, the editor) takes its
+    tax from one helper, so a line looks the same whichever way it was added."""
     from celerp_docs import routes
 
     th = TAX_REGIMES["TH"]["taxes"]
-    assert default_line_taxes(th, "invoice") == [
+    assert default_line_taxes(th, "invoice", doc_taxes=None) == [
         {"code": "VAT 7%", "rate": 7.0, "amount": 0, "order": 0, "is_compound": False, "label": ""}]
-    assert default_line_taxes(TAX_REGIMES["IN"]["taxes"], "bill")[0]["code"] == "IGST 18%"
-    assert default_line_taxes(TAX_REGIMES["US"]["taxes"], "invoice") == []
-    assert default_line_taxes(TAX_REGIMES["MY"]["taxes"], "bill") == []
-    assert default_line_taxes(TAX_REGIMES["TH"]["taxes"], None)[0]["code"] == "VAT 7%"
-    # The scan line takes the helper's list as it is; it builds no tax dict of its own.
+    assert default_line_taxes(TAX_REGIMES["IN"]["taxes"], "bill", doc_taxes=None)[0]["code"] == "IGST 18%"
+    assert default_line_taxes(TAX_REGIMES["US"]["taxes"], "invoice", doc_taxes=None) == []
+    assert default_line_taxes(TAX_REGIMES["MY"]["taxes"], "bill", doc_taxes=None) == []
+    assert default_line_taxes(TAX_REGIMES["TH"]["taxes"], None, doc_taxes=[])[0]["code"] == "VAT 7%"
     assert "line_taxes" in inspect.signature(routes._scan_doc_line).parameters
     assert '"is_compound": bool(' not in inspect.getsource(routes._scan_doc_line)
+
+
+def test_a_new_line_takes_every_default_tax():
+    """A company set up before IGST became the India default holds CGST 9% and SGST 9% both as
+    defaults: a new line carries both (18%), never only the first. A zero-rate default adds
+    nothing."""
+    before = [
+        {"name": "CGST 9%", "rate": 9.0, "tax_type": "both", "is_default": True},
+        {"name": "SGST 9%", "rate": 9.0, "tax_type": "both", "is_default": True},
+        {"name": "Exempt", "rate": 0.0, "tax_type": "both", "is_default": True},
+        {"name": "IGST 18%", "rate": 18.0, "tax_type": "both", "is_default": False},
+    ]
+    assert [(t["code"], t["rate"]) for t in default_line_taxes(before, "invoice", doc_taxes=None)] == [
+        ("CGST 9%", 9.0), ("SGST 9%", 9.0)]
+    assert [t["code"] for t in default_line_taxes(before, "bill", doc_taxes=None)] == ["CGST 9%", "SGST 9%"]
+
+
+def test_a_document_taxed_as_a_whole_gives_a_new_line_no_tax():
+    """While a document carries document taxes, a new line takes no tax of its own, so the
+    document's tax is never charged twice. A stored value of another shape is no document tax."""
+    th = TAX_REGIMES["TH"]["taxes"]
+    whole = [{"code": "VAT 7%", "rate": 7.0, "amount": 7.0, "order": 0, "is_compound": False}]
+    assert default_line_taxes(th, "invoice", doc_taxes=whole) == []
+    assert default_line_taxes(th, "invoice", doc_taxes="7%")[0]["code"] == "VAT 7%"
+    with pytest.raises(TypeError):
+        default_line_taxes(th, "invoice")
 
 
 def _settings(sales: list[dict] | None = None, purchasing: list[dict] | None = None) -> dict:

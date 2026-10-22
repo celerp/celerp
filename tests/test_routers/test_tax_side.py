@@ -148,5 +148,5 @@ def test_a_new_line_starts_with_the_default_tax_for_its_side():
     from celerp.tax_regimes import default_line_taxes
 
     th = TAX_REGIMES["TH"]["taxes"]
-    assert [t["code"] for t in default_line_taxes(th, "invoice")] == ["VAT 7%"]
-    assert [t["code"] for t in default_line_taxes(th, "bill")] == ["VAT 7%"]
+    assert [t["code"] for t in default_line_taxes(th, "invoice", doc_taxes=None)] == ["VAT 7%"]
+    assert [t["code"] for t in default_line_taxes(th, "bill", doc_taxes=None)] == ["VAT 7%"]
