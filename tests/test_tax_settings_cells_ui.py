@@ -132,3 +132,15 @@ async def test_numbering_tab_shows_the_timezone_error(ui_client, page):
         r = await ui_client.get(page)
     assert r.status_code == 200
     assert re.search(r'<p class="cell-error">' + re.escape(message) + r'</p>\s*<a href="/finance/company-details"', r.text)
+
+
+@pytest.mark.parametrize("prefix", ["taxes", "purchasing-taxes"])
+async def test_taxes_tab_rate_column_is_right_aligned(prefix):
+    # Rate is a number column: its header and every cell sit right, over the figures.
+    from fasthtml.common import to_xml
+    from ui.routes.settings import _tax_display_cell, _taxes_tab
+    html = to_xml(_taxes_tab(_taxes(), prefix=prefix))
+    header = re.search(r"<th[^>]*>" + re.escape(t("th.rate")) + "</th>", html)
+    assert header and "cell--number" in header.group(0), html
+    assert 'class="cell cell--clickable cell--number"' in to_xml(_tax_display_cell(0, "rate", _taxes()[0], prefix=prefix))
+    assert "cell--number" not in to_xml(_tax_display_cell(0, "name", _taxes()[0], prefix=prefix))

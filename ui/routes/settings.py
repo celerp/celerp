@@ -2890,7 +2890,7 @@ def _tax_display_cell(idx: int, field: str, tax: dict, prefix: str = "taxes") ->
         title=t("settings.click_to_edit"),
         hx_get=f"/settings/{prefix}/{idx}/{field}/edit",
         hx_target="this", hx_swap="outerHTML", hx_trigger="click",
-        cls="cell cell--clickable",
+        cls="cell cell--clickable" + (" cell--number" if field == "rate" else ""),
     )
 
 
@@ -3503,7 +3503,7 @@ def _taxes_tab(taxes: list[dict], lang: str = "en", prefix: str = "taxes", impor
     return Div(
         Div(*actions, cls="page-actions mb-md"),
         Table(
-            Thead(Tr(Th(t("th.name")), Th(t("th.rate")), Th(t("label.tax_type")), Th(t("th.default")), Th(t("th.compound")), Th(t("th.description")), Th(""))),
+            Thead(Tr(Th(t("th.name")), Th(t("th.rate"), cls="cell--number"), Th(t("label.tax_type")), Th(t("th.default")), Th(t("th.compound")), Th(t("th.description")), Th(""))),
             Tbody(*[_row(i, tax) for i, tax in enumerate(taxes)]),
             cls="data-table",
         ),
