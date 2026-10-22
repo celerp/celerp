@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import IO
 
 from celerp.importers.adapters.base import ScanError, SourceRevisionError
-from celerp.importers.tabular import ZIP_ERRORS
+from celerp.importers.tabular import ZIP_ERRORS, zip_directory_fits
 from ui.i18n import t
 
 MANIFEST = "manifest.json"
@@ -81,6 +81,7 @@ TEXT_COPIES = 2
 # fields): the longest line read is charged LINE_COPIES times its size, once.
 LINE_COPIES = 4
 PASSWORD = 0x1  # the zip flag of a file packed with a password
+METHODS = (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED)  # what Odoo, and a zip made again from its backup, packs with
 OLDEST, NEWEST = 13, 17
 LANGUAGE = "en_US"
 
@@ -198,10 +199,14 @@ def _long_row(first: str, lines: IO[str], limits: Mapping[int, float]) -> tuple[
 
 def _open(archive: zipfile.ZipFile, name: str) -> IO[bytes]:
     """One file of the zip, open for reading. Raises SourceRevisionError when it is packed with
-    a password, which a backup must be made again without."""
+    a password, which a backup must be made again without, or with a method Odoo does not zip
+    with: LZMA keeps as much of the unpacked file resident as the dictionary its entry declares,
+    up to 4 GB, outside any budget."""
     info = archive.getinfo(name)
     if info.flag_bits & PASSWORD:
         raise SourceRevisionError(t(ENCRYPTED))
+    if info.compress_type not in METHODS:
+        raise SourceRevisionError(t(UNREADABLE))
     return archive.open(info)
 
 
@@ -278,6 +283,10 @@ class Backup:
 
     def __init__(self, path: Path) -> None:
         try:
+            with open(path, "rb") as file:
+                fits = zip_directory_fits(file)
+            if not fits:
+                raise SourceRevisionError(t(TOO_LARGE))
             self.archive = zipfile.ZipFile(path)
         except OSError as exc:
             raise ScanError(t("migration.err_odoo_not_backup")) from exc
@@ -286,6 +295,11 @@ class Backup:
             if _cut_short(path):
                 raise SourceRevisionError(t(UNREADABLE)) from exc
             raise ScanError(t("migration.err_odoo_not_backup")) from exc
+        except MemoryError as exc:
+            freed(exc)
+            fits = False
+        if not fits:
+            raise too_large(SourceRevisionError)
         # A damaged backup is still recognised as one, so detection gives the reason it cannot be read.
         try:
             with _intact(SourceRevisionError):

@@ -30,7 +30,7 @@ from celerp.importers.adapters.odoo.adapter import OTHER_COMPANY, OTHER_COMPANY_
 from celerp.importers.schema import CIFMode, CoverageClass, ReconciliationMeasure as M
 from fixtures.manager_io.support import BASIC, artifact
 from fixtures.odoo_backup import build
-from migration_support import count, load_run, maker, real_engine, scan_upload  # noqa: F401
+from migration_support import count, load_run, maker, real_engine, recognition_peak, scan_upload  # noqa: F401
 from test_migration_e2e import _passing, migrate_set
 from ui.i18n import t
 
@@ -479,11 +479,42 @@ async def test_any_changed_byte_in_the_index_of_the_zip_is_refused_with_a_reason
     assert not escaped, escaped[:8]
 
 
-def test_a_backup_zipped_with_bzip2_or_lzma_is_read_as_one_zipped_by_odoo(tmp_path):
+def _lzma_dictionary(data: bytes, size: int) -> bytes:
+    """`data`, a zip whose dump is packed with LZMA, with the dictionary size its entry declares
+    set to `size`: the decoder keeps up to that much of the unpacked dump resident."""
+    info = zipfile.ZipFile(io.BytesIO(data)).getinfo("dump.sql")
+    header = info.header_offset
+    start = header + 30 + int.from_bytes(data[header + 26:header + 28], "little") + int.from_bytes(
+        data[header + 28:header + 30], "little")
+    # The entry's LZMA properties: version (2 bytes), their size (2), lc/lp/pb (1), then the dictionary size.
+    return data[:start + 5] + size.to_bytes(4, "little") + data[start + 9:]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", ["odoo", None])
+@pytest.mark.parametrize("method", [zipfile.ZIP_BZIP2, zipfile.ZIP_LZMA])
+async def test_a_dump_packed_with_a_method_odoo_does_not_use_is_refused_before_it_is_unpacked(
+        client, monkeypatch, tmp_path, method, source):
+    """Odoo zips its backup with deflate. A dump packed otherwise is refused as one Celerp cannot
+    open, before a byte is unpacked: an LZMA entry declares its own dictionary, up to 4 GB, and
+    the decoder keeps that much of the dump resident whatever the import's budget."""
+    from celerp.config import settings
+    from celerp.importers.adapters.odoo import dump
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
     sql = build.dump_sql(build.tables(17))
-    whole = _adapter().build_manifest(_file(tmp_path, _packed(sql)), FULL).bundle
-    for method in (zipfile.ZIP_BZIP2, zipfile.ZIP_LZMA):
-        assert _adapter().build_manifest(_file(tmp_path, _packed(sql, method), f"{method}.zip"), FULL).bundle == whole
+    padded = sql.replace("SET statement_timeout", "".join(
+        f"-- {random.Random(k).getrandbits(512):0128x}\n" for k in range(40_000)) + "SET statement_timeout", 1)
+    data = _packed(padded, method)
+    if method == zipfile.ZIP_LZMA:
+        data = _lzma_dictionary(data, 1024 ** 3)
+    opened = []
+    monkeypatch.setattr(dump.Backup, "tables", lambda *a, **k: opened.append(a) or {})
+    peaks = recognition_peak(monkeypatch)
+    r = await scan_upload(client, data, name="harbour.zip", source=source)
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"] == t("migration.err_odoo_backup_damaged", "en") and not opened
+    assert peaks and max(peaks) < 16 * MI, peaks
 
 
 @pytest.mark.parametrize("method", [zipfile.ZIP_DEFLATED, zipfile.ZIP_BZIP2, zipfile.ZIP_LZMA])
@@ -521,6 +552,53 @@ async def test_a_dump_that_unpacks_far_larger_than_its_zip_is_refused_before_it_
     r = await scan_upload(client, _packed(padded), name="harbour.zip", source="odoo")
     assert r.status_code == 422, r.text
     assert r.json()["detail"] == t("migration.err_file_too_large", "en") and not opened
+
+
+def _many_entries(count: int, name=lambda k: f"filestore/{k:08d}", backup: bool = True) -> bytes:
+    """A zip of `count` empty files named by `name`, after a whole backup when `backup`."""
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_STORED) as z:
+        if backup:
+            z.writestr("manifest.json", json.dumps(build.manifest(17)))
+            z.writestr("dump.sql", build.dump_sql(build.tables(17)))
+        for k in range(count):
+            z.writestr(name(k), b"")
+    return out.getvalue()
+
+
+CRAFTED_DIRECTORIES = {
+    "300,000 empty files": lambda backup: _many_entries(300_000, backup=backup),
+    "2,000 files with 30,000 character names": lambda backup: _many_entries(
+        2_000, lambda k: f"filestore/{k:08d}" + "a" * 30_000, backup),
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", ["odoo", None])
+@pytest.mark.parametrize("backup", [True, False])
+@pytest.mark.parametrize("shape", list(CRAFTED_DIRECTORIES))
+async def test_a_zip_whose_directory_lists_more_than_the_server_holds_is_refused_before_it_is_parsed(
+        client, monkeypatch, tmp_path, shape, backup, source):
+    """Opening a zip builds an object for every file its directory lists. A directory larger than
+    the server holds for one upload is refused from the size the end of the zip declares, before
+    it is parsed, whether the zip holds a backup or not and whether Odoo was chosen or detected."""
+    from celerp.config import settings
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    data = CRAFTED_DIRECTORIES[shape](backup)
+    peaks = recognition_peak(monkeypatch)
+    r = await scan_upload(client, data, name="harbour.zip", source=source)
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"] == t("migration.err_file_too_large", "en")
+    assert peaks and max(peaks) < 16 * MI, f"{len(data) / MI:.0f} MiB upload, peaks {peaks}"
+
+
+def test_a_backup_with_a_large_filestore_is_read(tmp_path):
+    """A filestore of 120,000 files, named as Odoo names them, is more than a 2 GB backup of real
+    files holds: its directory is within the budget and the backup is read."""
+    data = _many_entries(120_000, lambda k: f"filestore/{k % 256:02x}/{k:040x}")
+    assert _adapter().detect(_file(tmp_path, data)).matched
+    assert _adapter().inspect(_file(tmp_path, data, "again.zip")).object_counts
 
 
 def test_a_dump_larger_than_the_budget_is_refused_and_one_within_it_is_read(tmp_path, monkeypatch):

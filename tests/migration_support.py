@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import tracemalloc
 import uuid
 from collections.abc import AsyncIterator, Sequence
 from datetime import date, datetime, timezone
@@ -503,6 +504,26 @@ async def scan_upload(client, data: bytes, *, token: str | None = None, source: 
     return await client.post(path, files=multipart((name, data)),
                              data={"source": source} if source else None,
                              headers={**(auth(token) if token else {}), **(headers or {})})
+
+
+def recognition_peak(monkeypatch) -> list[int]:
+    """The peak memory each scan traces while it recognises its upload (or refuses it), from zero:
+    the upload itself, which the test client and the route hold, is not counted."""
+    from celerp.services import migration_scan_store as store
+
+    peaks: list[int] = []
+    recognise = store._recognise
+
+    def traced(*args):
+        tracemalloc.start()
+        try:
+            return recognise(*args)
+        finally:
+            peaks.append(tracemalloc.get_traced_memory()[1])
+            tracemalloc.stop()
+
+    monkeypatch.setattr(store, "_recognise", traced)
+    return peaks
 
 
 async def save_decisions(client, scan_token: str, *, token: str | None = None, **decisions):

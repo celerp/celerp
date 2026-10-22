@@ -123,6 +123,63 @@ def test_an_unreadable_file_is_named_and_not_also_called_missing(tmp_path):
     assert "Contacts is missing" not in message
 
 
+def _many_files(count: int) -> bytes:
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_STORED) as z:
+        for k in range(count):
+            z.writestr(f"{k:08d}.csv", b"")
+    return out.getvalue()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", [None, "xero", "quickbooks_online"])
+async def test_a_zip_listing_more_files_than_the_server_holds_is_refused_without_reading_it(client, monkeypatch,
+                                                                                            tmp_path, source):
+    """A zip of 300,000 empty files, offered to every reader or to one chosen: each refuses it from
+    the size its directory declares, without holding the upload or its directory."""
+    from celerp.config import settings
+    from migration_support import recognition_peak, scan_upload
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    data = _many_files(300_000)
+    peaks = recognition_peak(monkeypatch)
+    r = await scan_upload(client, data, name="books.zip", source=source)
+    assert r.status_code == 422, r.text
+    assert peaks and max(peaks) < 16 * 1024 ** 2, f"{len(data) / 2 ** 20:.0f} MiB upload, peaks {peaks}"
+
+
+def test_a_file_beyond_what_an_export_set_reads_is_named_without_being_read(tmp_path, monkeypatch):
+    from celerp.importers.adapters.exports import files
+
+    many = _set(tmp_path, [("many.zip", _many_files(300_000))])
+    _, strangers = files.read_set(many, ())
+    assert [s.reason for s in strangers] == [t("migration.err_export_archive_too_large", name="many.zip")]
+    whole = _set(tmp_path, [("Contacts.csv", dict(_xero())["Contacts.csv"])])
+    monkeypatch.setattr(files, "LIMITS", files.tabular.Limits(files.LIMITS.rows, files.LIMITS.cells,
+                                                              whole[0].size_bytes - 1, files.LIMITS.uncompressed))
+    monkeypatch.setattr(type(whole[0].path), "read_bytes", lambda self: pytest.fail(f"{self.name} was read"))
+    _, strangers = files.read_set(whole, ())
+    assert [s.reason for s in strangers] == [t("migration.err_file_too_large")]
+
+
+def test_a_workbook_listing_more_entries_than_the_server_holds_is_refused_before_it_is_parsed():
+    import tracemalloc
+
+    from celerp.importers import tabular
+    from celerp.importers.adapters.exports import files
+
+    data = _many_files(300_000)
+    tracemalloc.start()
+    try:
+        with pytest.raises(tabular.TabularError) as refused:
+            tabular.workbook_lines(data, files.LIMITS)
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    assert str(refused.value) == t("import.err_xlsx_entries")
+    assert peak < 16 * 1024 ** 2, f"{peak / 2 ** 20:.0f} MiB peak"
+
+
 def test_overlapping_batches_are_refused(tmp_path):
     first = dict(_xero())["Invoices 1.csv"]
     with pytest.raises(ScanError, match="Invoices 1.csv.*Invoices 9.csv"):
