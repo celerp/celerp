@@ -11,6 +11,7 @@ import gzip
 import io
 import json
 import random
+import time
 import tracemalloc
 import zipfile
 from collections import defaultdict
@@ -666,6 +667,54 @@ def test_a_large_book_kept_in_thai_reads_with_twice_the_room_it_needs(tmp_path, 
         read = backup.tables((*book.TABLES, backup.lot_table), book.COLUMNS, book.KEPT_ROWS,
                              book.required_tables(backup.modules, backup.version))
     assert len(read["account_move_line"]) > 20_000 and len(read["res_partner"]) > 400
+
+
+def _shaped(path, monkeypatch, shape: str, lines: int):
+    """The fixture's backup with about `lines` journal items more, in one of the shapes a book
+    can take: one entry of items each with its own label and amount ("ordinary"), the same in
+    Thai, one entry of items sharing every value but their id ("shared"), or one-line invoices
+    of three items each ("invoices")."""
+    if shape == "invoices":
+        bulk = lambda n: [build._invoice(1000 + k, f"INV/2025/{k:07d}", "out_invoice", "2024-04-01", 9,  # noqa: E731
+                                         [(build.CONSULTING, 1, D(100), build.SALE_TAX)]) for k in range(n // 3)]
+    elif shape == "shared":
+        bulk = lambda n: [build.Move(25, "MISC/2024/05/0001", "entry", "posted", "2024-05-01",  # noqa: E731
+                                     [build.Line(a, s * D("1.00"), name="Transfer")
+                                      for _ in range(n // 2) for a, s in ((1, 1), (14, -1))], ref="Bulk")]
+    elif shape == "thai":
+        bulk = lambda n: [build.Move(25, "MISC/2024/05/0001", "entry", "posted", "2024-05-01",  # noqa: E731
+                                     [build.Line(a, s * D(f"{k % 9973 + 1}.{k % 100:02d}"),
+                                                 name=f"โอนเงินระหว่างบัญชี {k} จาก {n // 2}")
+                                      for k in range(n // 2) for a, s in ((1, 1), (14, -1))], ref="โอนเงินจำนวนมาก")]
+    else:
+        bulk = build._bulk
+    monkeypatch.setattr(build, "_bulk", bulk)
+    path.write_bytes(build.backup(17, build.tables(17, bulk_lines=lines)))
+    return path
+
+
+def _read_whole(path):
+    from celerp.importers.adapters.odoo import OdooAdapter
+    from celerp.importers.adapters.odoo import adapter as odoo_adapter
+
+    odoo_adapter._books.cache_clear()
+    try:
+        return OdooAdapter().build_manifest([artifact(path)], FULL)
+    finally:
+        odoo_adapter._books.cache_clear()
+
+
+def test_reading_four_times_the_invoices_takes_about_four_times_as_long(tmp_path, monkeypatch):
+    """Reading a book takes time in proportion to it: each journal finds the document it books
+    by key, never by looking through every document. Four times the invoices within six times
+    the time (in the square of them it was eleven times at this size)."""
+    took = {}
+    for n in (10_000, 40_000):
+        path = _shaped(tmp_path / f"{n}.zip", monkeypatch, "invoices", 3 * n)
+        began = time.perf_counter()
+        _read_whole(path)
+        took[n] = time.perf_counter() - began
+    assert took[40_000] < 6 * took[10_000], took
 
 
 @pytest.mark.asyncio

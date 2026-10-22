@@ -414,11 +414,11 @@ def build_ledger(book: Book, decisions: MigrationDecisions) -> Ledger:
         doc.journal, doc.rate, doc.applications = None, None, {}
     _link_notes(book)
     ledger = Ledger(book, cutover)
-    booked: dict[str, list[Posting]] = {}
+    booked: dict[str, tuple[Document, list[Posting]]] = {}
     for j in book.journals:
         doc = _document_journal(book, j)
         if doc is not None:
-            booked[j.key] = _actual(book, j, doc.key, "document", doc.key)
+            booked[j.key] = doc, _actual(book, j, doc.key, "document", doc.key)
     for doc in book.documents.values():
         # A note applies only to documents that post. Celerp carries a debit note as a payment of
         # its whole total on one bill; any other is booked as the journal it is.
@@ -437,9 +437,9 @@ def build_ledger(book: Book, decisions: MigrationDecisions) -> Ledger:
 
     for j in book.journals:
         if j.key in booked:
-            doc = next(d for d in book.documents.values() if d.journal == j.key)
+            doc, actual = booked[j.key]
             predicted = _document_postings(book, doc)
-            ledger.postings += predicted + _fallback(booked[j.key], predicted, doc.key, j.date, doc.key)
+            ledger.postings += predicted + _fallback(actual, predicted, doc.key, j.date, doc.key)
         elif (s := _settlement(book, j, owing)) is not None:
             ledger.settlements[j.key] = s
             predicted = _settlement_postings(book, s)
