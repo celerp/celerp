@@ -19,7 +19,7 @@ import re
 import sys
 import traceback
 import zipfile
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import datetime
 from decimal import Decimal
@@ -54,6 +54,10 @@ ID_DIGITS = 19  # the most a PostgreSQL bigint id writes
 # The largest amount or quantity read, as a power of ten: no book holds one larger, and one
 # larger cannot be carried to the cent in Decimal's 28 digits.
 MAX_MAGNITUDE = 20
+# The most fraction digits of a number read. PostgreSQL writes a float in at most 17 significant
+# digits, so this reads any down to 1e-31, far below a cent of any amount; a number written with
+# more, such as 1e-999999, is not one a database holds, and would be spelled in as many digits.
+MAX_SCALE = 48
 # What the rows read may take of the server's memory, in bytes, counted as Python holds them:
 # each row a tuple of its kept values, each distinct value a string held once in its table, at
 # its own size (one, two or four bytes a character, by its widest one, and its header).
@@ -82,6 +86,9 @@ STOCK_MOVE_BYTES, HOLDING_BYTES, MONTH_ACCOUNT_BYTES = 700, 1200, 600
 # TEXT_COPIES times: the shared exports code copies it again (a holding key into its inventory
 # label and opening adjustment, a document key into its fallback journal, a label per month end).
 TEXT_COPIES = 2
+# Each id of an analytic distribution's key is split out to be looked up: a string of its own,
+# its place in a list and in the set of those seen, about this many bytes.
+KEY_ID_BYTES = 120
 # Reading a line holds it a few times over while it is split (the decoded text, the line, its
 # fields): the longest line read is charged LINE_COPIES times its size, once.
 LINE_COPIES = 4
@@ -115,18 +122,19 @@ def _id(value: str) -> bool:
     return value.isascii() and value.isdigit() and len(value) <= ID_DIGITS
 
 
-_PLAIN = re.compile(rf"-?\d{{1,{MAX_MAGNITUDE}}}(?:\.\d+)?").fullmatch  # how most numbers are written
+_PLAIN = re.compile(rf"-?\d{{1,{MAX_MAGNITUDE}}}(?:\.\d{{1,{MAX_SCALE}}})?").fullmatch  # how most numbers are written
 
 
 def _number(value: str) -> bool:
-    """A finite number below MAX_MAGNITUDE, as PostgreSQL writes a numeric or a float."""
+    """A finite number below MAX_MAGNITUDE with at most MAX_SCALE fraction digits, as PostgreSQL
+    writes a numeric or a float."""
     if _PLAIN(value):
         return True
     try:
         number = Decimal(value)
     except ArithmeticError:
         return False
-    return number.is_finite() and number.adjusted() < MAX_MAGNITUDE
+    return number.is_finite() and number.adjusted() < MAX_MAGNITUDE and number.as_tuple().exponent >= -MAX_SCALE
 
 
 # The forms PostgreSQL writes a date and a timestamp in. datetime.fromisoformat also reads ISO week
@@ -181,6 +189,24 @@ def _bytes(value: str) -> bool:
 # What each kind of column holds when the database wrote it.
 KINDS: dict[str, Callable[[str], bool]] = {"id": _id, "number": _number, "date": _date, "bytes": _bytes,
                                           "json": _json}
+
+
+_ASCII_HEADER = sys.getsizeof("")
+_HEADER = sys.getsizeof("\u0100") - 4  # of a string with a character outside ASCII: less it and its end
+
+
+def _width(text: str) -> int:
+    """The bytes each character of `text` takes as Python holds it: one, two or four, by its widest."""
+    return 1 if text.isascii() else min(4, (sys.getsizeof(text) - _HEADER) // (len(text) + 1))
+
+
+def text_size(parts: Sequence[str], sep: str = "", width: int = 1) -> int:
+    """The size, as Python holds it, of `parts` joined by `sep`: one, two or four bytes a character
+    by the widest of theirs (at least `width`), and its header."""
+    length = sum(map(len, parts)) + len(sep) * max(len(parts) - 1, 0)
+    if width == 1 and sep.isascii() and all(map(str.isascii, parts)):
+        return _ASCII_HEADER + length
+    return _HEADER + (length + 1) * max(width, _width(sep), *map(_width, parts))
 
 
 def _unescape(match: re.Match) -> str:
@@ -410,10 +436,16 @@ class Backup:
         if self.held > MAX_HELD:
             raise too_large()
 
-    def held_text(self, text: str) -> str:
-        """`text`, a string built per record from values the backup holds, charged as held."""
-        self.hold(TEXT_COPIES * sys.getsizeof(text))
-        return text
+    def hold_text(self, *parts: str, sep: str = "", width: int = 1) -> None:
+        """Counts a string built per record from values the backup holds, `parts` joined by `sep`,
+        before it is built, so building it never takes more than the budget allows."""
+        self.hold(TEXT_COPIES * text_size(parts, sep, width))
+
+    def held_text(self, *parts: str, sep: str = "") -> str:
+        """`parts` joined by `sep`, a string built per record from values the backup holds,
+        charged as held before it is built."""
+        self.hold_text(*parts, sep=sep)
+        return sep.join(parts)
 
     def __enter__(self) -> Backup:
         return self
@@ -513,12 +545,14 @@ class Backup:
         if not value:
             return ""
         if self.version >= 16 and value.startswith("{"):
+            # The name decoded is no longer than its JSON; an escape (\u) may widen its characters.
+            self.hold_text(value, width=4 if "\\u" in value else 1)
             try:
                 names = json.loads(value)
             except ValueError:
                 return value
             if isinstance(names, dict) and names:
-                return self.held_text(str(names.get(LANGUAGE) or next(iter(names.values())) or ""))
+                return str(names.get(LANGUAGE) or next(iter(names.values())) or "")
         return value
 
     def stored_file(self, store_fname: str, limit: int) -> bytes | None:

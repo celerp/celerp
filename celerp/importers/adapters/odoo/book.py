@@ -33,8 +33,8 @@ from celerp.importers.adapters.exports.book import (
     TaxCode,
 )
 from celerp.importers.adapters.odoo.dump import (
-    DAMAGED, DOCUMENT_BYTES, DOCUMENT_LINE_BYTES, HOLDING_BYTES, MONTH_ACCOUNT_BYTES, STOCK_MOVE_BYTES, Backup, Row,
-    freed, json_value,
+    DAMAGED, DOCUMENT_BYTES, DOCUMENT_LINE_BYTES, HOLDING_BYTES, KEY_ID_BYTES, MONTH_ACCOUNT_BYTES, STOCK_MOVE_BYTES,
+    Backup, Row, freed, json_value,
 )
 from celerp.services.money import allocate_pro_rata, round_money
 from ui.i18n import t
@@ -286,12 +286,15 @@ class _Reader:
         first: dict[str, str] = {}
         for i in sorted(names, key=int):
             first.setdefault(names[i], i)
-        return {i: (name if first[name] == i else self.backup.held_text(f"{name} [{i}]")) for i, name in names.items()}
+        return {i: (name if first[name] == i else self.backup.held_text(name, " [", i, "]")) for i, name in names.items()}
 
     def _name(self, value: str | None, fallback: str) -> str:
         """A name without its outer spaces, else `fallback`."""
-        name = (value or "").strip()
-        return (name if name is value else self.backup.held_text(name)) or fallback
+        name = value or ""
+        if name[:1].isspace() or name[-1:].isspace():
+            self.backup.hold_text(name)
+            name = name.strip()
+        return name or fallback
 
     def _company(self, chosen: str | None) -> tuple[Row, tuple[str, ...]]:
         """The company whose books are read: `chosen` by name, else the oldest with books; and
@@ -345,8 +348,8 @@ class _Reader:
             currency = self.currency(row["currency_id"]) if control == "bank" else None
             account = Account(row["code"], self.text(row["name"]), account_type, control,
                               currency if self.book.is_foreign(currency) else None, not _true(row["deprecated"]))
-            # Its label is built again for each figure checked against it.
-            self.backup.held_text(account.label)
+            # Its label (code and name) is built again for each figure checked against it.
+            self.backup.hold_text(account.code, account.name, sep=" ")
             self.book.accounts[row["code"]] = account
             self.accounts[row["id"]] = row["code"]
 
@@ -363,8 +366,10 @@ class _Reader:
         keys = self._unique({i: self._name(rows[i]["name"], f"Partner {i}") for i in carried})
         for i in carried:
             r = rows[i]
-            address = self.backup.held_text(", ".join(p for p in (r.get("street"), r.get("street2"), " ".join(
-                p for p in (r.get("zip"), r.get("city")) if p)) if p))
+            street = [p for p in (r.get("street"), r.get("street2")) if p]
+            place = [p for p in (r.get("zip"), r.get("city")) if p]
+            self.backup.hold_text(*street, *place, sep=", ")
+            address = ", ".join([*street, " ".join(place)] if place else street)
             contact = Contact(keys[i], email=r.get("email") or None, phone=r.get("phone") or r.get("mobile") or None,
                               address=address or None, tax_id=r.get("vat") or None)
             if _dec(r.get("customer_rank")) > 0:
@@ -439,14 +444,18 @@ class _Reader:
         for keys, percent in json_value(distribution or "{}").items():
             if not isinstance(percent, Decimal):
                 raise TypeError("an analytic share that is not a number")
+            self.backup.hold(KEY_ID_BYTES * (keys.count(",") + 1))
+            ids = keys.split(",")
+            if len(set(ids)) < len(ids):
+                raise ValueError("an analytic key naming an account twice")  # Odoo writes each once
             share = format(percent.normalize(), "f")
-            for i in (k for k in keys.split(",") if k in accounts):
+            for i in (k for k in ids if k in accounts):
                 name, plan = accounts[i]
-                options[plan].append(name if percent == 100 else f"{name} {share}%")
+                options[plan].append(name if percent == 100 else self.backup.held_text(name, " ", share, "%"))
         if account in accounts:
             options[ANALYTIC_ACCOUNT].append(accounts[account][0])
         options[ANALYTIC_TAG] += tags
-        return {k: self.backup.held_text(", ".join(v)) for k, v in options.items() if v}
+        return {k: self.backup.held_text(*v, sep=", ") for k, v in options.items() if v}
 
     def _tracking(self, row: Row) -> dict[str, str]:
         """A carried line's tracking; its categories are counted in the coverage report."""
@@ -638,10 +647,10 @@ class _Reader:
         if sum((ln.net + ln.tax for ln in lines), ZERO) != total:
             raise ScanError(t("migration.err_odoo_doc_total", number=number))
         side = "S" if doc_type in ("invoice", "credit_note") else "P"
-        key = f"{side}:{number}"
-        for candidate in (key, f"{key}|{contact}", f"{key}|{contact}|{move['id']}"):
-            if candidate not in book.documents:
-                key = self.backup.held_text(candidate)
+        numbered = (side, ":", number)
+        for parts in (numbered, (*numbered, "|", contact), (*numbered, "|", contact, "|", move["id"])):
+            key = self.backup.held_text(*parts)
+            if key not in book.documents:
                 break
         due = _dec(move["amount_residual"])
         book.documents[key] = Document(
@@ -729,8 +738,8 @@ class _Reader:
             self.backup.hold(MONTH_ACCOUNT_BYTES * len(book.accounts))
             # Each month end's balances are checked under every account's code and label again.
             for code, account in book.accounts.items():
-                self.backup.held_text(code)
-                self.backup.held_text(account.label)
+                self.backup.hold_text(code)
+                self.backup.hold_text(code, account.name, sep=" ")
             for j in months.get(on, []):
                 for ln in j.lines:
                     running[ln.account] += ln.amount
@@ -765,6 +774,7 @@ class _Reader:
         book.locations = [names[i] for i in internal]
         lots = {r["id"]: r["name"] or r["id"] for r in self.table(self.backup.lot_table)}
         stocked: set[str] = set()
+        holding_of: dict[tuple[str, str, str | None], str] = {}  # its key is built once, not per move
 
         def bucket(product: str, location: str, lot: str | None) -> str:
             """The item, or the holding, that keeps a product's stock of one lot at one location."""
@@ -772,16 +782,18 @@ class _Reader:
             lot = lot if lot in lots else None
             if location == internal[0] and lot is None:
                 return code
-            key = code + (f"#{lots[lot]}" if lot else "") + ("" if location == internal[0] else f"@{names[location]}")
-            if key not in book.holdings:
-                # Its inventory count is labelled with the item's name, the lot and the location.
-                self.backup.hold(HOLDING_BYTES)
-                self.backup.held_text(key)
-                self.backup.held_text(book.items[code].name)
-                book.holdings[key] = StockHolding(key, code, names[location], lots[lot] if lot else None)
+            if (found := holding_of.get((code, location, lot))) is None:
+                key = self.backup.held_text(code, *(("#", lots[lot]) if lot else ()),
+                                            *(() if location == internal[0] else ("@", names[location])))
+                if key not in book.holdings:
+                    # Its inventory count is labelled with the item's name, the lot and the location.
+                    self.backup.hold(HOLDING_BYTES)
+                    self.backup.hold_text(book.items[code].name)
+                    book.holdings[key] = StockHolding(key, code, names[location], lots[lot] if lot else None)
+                found = holding_of[code, location, lot] = book.holdings[key].key
             if lot:
                 stocked.add(lot)
-            return book.holdings[key].key
+            return found
 
         valued = "stock_valuation_layer" in self.rows
         layers = [r for r in self.table("stock_valuation_layer") if r["product_id"] in self.products]
@@ -823,7 +835,7 @@ class _Reader:
                     else [_dec(r["value"])]
                 description = self.text(r.get("description"))
                 for target, share in zip(holders or [code], shares):
-                    add(record, self.backup.held_text(f"{record}:{target}") if holders else record, "Stock valuation",
+                    add(record, self.backup.held_text(record, ":", target) if holders else record, "Stock valuation",
                         description, on, target, ZERO, share)
                 continue
             # A move Odoo recorded without lines moves as one line of its own.
@@ -920,7 +932,8 @@ class _Reader:
             extension = mimetypes.guess_extension(r["mimetype"] or "")
             if res_field and target and extension:
                 # Odoo names a picture after its field; name it after its record instead.
-                name = self.backup.held_text(target.replace("/", "-").replace("\\", "-") + extension)
+                self.backup.hold_text(target, extension)
+                name = target.replace("/", "-").replace("\\", "-") + extension
             # A file kept in the database is held only when it can be imported: attached to a
             # record Celerp holds and within the size limit (one larger is read as absent). It is
             # held as the database wrote it, once however many records share it, and decoded when used.
