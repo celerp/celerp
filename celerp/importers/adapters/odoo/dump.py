@@ -138,6 +138,31 @@ def _date(value: str) -> bool:
     return True
 
 
+def _json_number(text: str) -> Decimal:
+    if not _number(text):
+        raise ValueError("a number no database column holds")
+    return Decimal(text)
+
+
+def _no_constant(name: str) -> None:
+    raise ValueError(f"{name} is not a number")
+
+
+def json_value(text: str):
+    """JSON as PostgreSQL holds it, every number a finite Decimal of the number kind. Python's
+    json reads NaN, Infinity and 1e999 (as an infinite float), which PostgreSQL never writes:
+    each raises ValueError, as does text that is not JSON."""
+    return json.loads(text, parse_float=_json_number, parse_int=_json_number, parse_constant=_no_constant)
+
+
+def _json(value: str) -> bool:
+    try:
+        json_value(value)
+    except (ValueError, RecursionError):
+        return False
+    return True
+
+
 _HEX = re.compile(r"[0-9a-fA-F]*").fullmatch
 
 
@@ -147,7 +172,8 @@ def _bytes(value: str) -> bool:
 
 
 # What each kind of column holds when the database wrote it.
-KINDS: dict[str, Callable[[str], bool]] = {"id": _id, "number": _number, "date": _date, "bytes": _bytes}
+KINDS: dict[str, Callable[[str], bool]] = {"id": _id, "number": _number, "date": _date, "bytes": _bytes,
+                                          "json": _json}
 
 
 def _unescape(match: re.Match) -> str:
