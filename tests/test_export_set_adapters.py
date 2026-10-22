@@ -187,11 +187,15 @@ def _zip64_tail(disk: int, record_at: int) -> bytes:
             + struct.pack("<4s4H2LH", b"PK\x05\x06", 0, 0, 0, 0, 0, 0, 0))
 
 
-# End records zipfile cannot parse: it refuses each when it opens the file.
+# End records zipfile cannot parse, or whose directory is larger than the file holding it: zipfile
+# refuses each when it opens the file, so each is damaged, never too large.
 DAMAGED_TAILS = {
     "on_two_disks": _zip64_tail(1, 0),
     "record_outside_the_file": _zip64_tail(0, 10 ** 9),
     "record_missing": _zip64_tail(0, 0),
+    "directory_of_4_gib_in_22_bytes": struct.pack("<4s4H2LH", b"PK\x05\x06", 0, 0, 5, 5, 0xFFFFFFF0, 0, 0),
+    "directory_of_300_mib_after_a_body": b"PK\x03\x04" + bytes(200)
+    + struct.pack("<4s4H2LH", b"PK\x05\x06", 0, 0, 9, 9, 300 * 1024 ** 2, 0, 0),
 }
 
 # Every function that runs the zip preflight, and each way an upload reaches it.
