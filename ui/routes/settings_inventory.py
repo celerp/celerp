@@ -119,14 +119,19 @@ def _units_tab(units: list[dict], from_import: str = "") -> FT:
             cls="data-row",
         ))
 
+    # The add row belongs to its own form (form="units-add") so Enter in a row's inline editor
+    # sends only that editor's change, never the add form and its required unit name.
+    unit_type = _unit_type_select("unit_type")
+    unit_type.attrs["form"] = "units-add"
     add_row = Tr(
         Td(Input(name="name", placeholder=t("settings_inventory.unit_name_placeholder"), required=True, cls="input-sm",
-                 pattern="[a-z0-9_]+", title=t("settings_inventory.unit_name_pattern_title")),
+                 pattern="[a-z0-9_]+", title=t("settings_inventory.unit_name_pattern_title"), form="units-add"),
            cls="cell"),
         Td(Span(t("settings_inventory.unit_label_auto"), style="color:var(--c-text2);font-size:12px"), cls="cell"),
-        Td(Input(name="decimals", type="number", min="0", max="6", value="0", cls="input-sm"), cls="cell"),
-        Td(_unit_type_select("unit_type"), cls="cell"),
-        Td(Button(t("btn._add"), type="submit", cls="btn btn--primary btn--xs"), cls="cell"),
+        Td(Input(name="decimals", type="number", min="0", max="6", value="0", cls="input-sm", form="units-add"),
+           cls="cell"),
+        Td(unit_type, cls="cell"),
+        Td(Button(t("btn._add"), type="submit", cls="btn btn--primary btn--xs", form="units-add"), cls="cell"),
         cls="data-row",
     )
 
@@ -145,19 +150,14 @@ def _units_tab(units: list[dict], from_import: str = "") -> FT:
         return_banner,
         H3(t("page.units"), cls="settings-section-title"),
         P(t("inv.configure_measurement_units_available_for_inventor"), cls="settings-hint"),
-        Form(
-            Table(
-                Thead(Tr(Th(t("th.name")), Th(t("th.label")), Th(t("th.decimals")), Th(t("th.type")), Th(""))),
-                Tbody(*rows),
-                Tfoot(add_row),
-                cls="data-table",
-            ),
-            # The table's inline editors sit inside this form, so it never reloads on a request:
-            # a saved or deleted unit redirects (HX-Redirect), a refused one shows why below.
-            hx_post="/settings/units/add",
-            hx_target="#units-add-result",
-            hx_swap="innerHTML",
+        Table(
+            Thead(Tr(Th(t("th.name")), Th(t("th.label")), Th(t("th.decimals")), Th(t("th.type")), Th(""))),
+            Tbody(*rows),
+            Tfoot(add_row),
+            cls="data-table",
         ),
+        # A saved or deleted unit redirects (HX-Redirect), a refused one shows why below.
+        Form(id="units-add", hx_post="/settings/units/add", hx_target="#units-add-result", hx_swap="innerHTML"),
         Div(id="units-add-result"),
         P(t("settings_inventory.unit_name_hint"), cls="form-hint"),
         cls="settings-card",
