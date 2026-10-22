@@ -2104,8 +2104,9 @@ def setup_routes(app):
         from celerp.services.line_measures import resolve_line_measures
         from celerp.services.shipping import SHIPPING_LIST_TYPE, customs_backfill, line_gross_weight
         _is_shipping = doc.get("list_type") == SHIPPING_LIST_TYPE
-        # Issue saves the customs codes on the lines; only a draft still reads them from the item.
-        _is_draft = doc.get("status") == "draft"
+        # Issue saves the customs codes on the lines; a draft, or an issued list not saved yet,
+        # reads them from the item.
+        _read_item_codes = doc.get("status") == "draft" or not doc.get("customs_saved")
         try:
             _umap = build_unit_map(await api.get_units(token))
         except Exception:
@@ -2126,7 +2127,7 @@ def setup_routes(app):
             meta = item_measure_meta(item, _umap)
             li["pieces"], li["weight"], li["weight_unit"], _, _ = resolve_line_measures(li, item_meta=meta)
             if _is_shipping:
-                if _is_draft:
+                if _read_item_codes:
                     customs_backfill(li, item)
                 # Net weight = the line's actual weight (above); gross adds the item's packaging.
                 li["gross_weight"], li["gross_weight_unit"] = line_gross_weight(

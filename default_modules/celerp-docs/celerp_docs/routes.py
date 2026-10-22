@@ -9227,7 +9227,7 @@ async def finalize_list_record(entity_id: str, company_id: str, user, session: A
     elif milestone:
         data[milestone] = now
     if behavior(lt).customs:
-        data["line_items"] = await freeze_customs_lines(session, company_id, state.get("line_items") or [])
+        data.update(await customs_snapshot(session, company_id, state.get("line_items") or []))
     entry = await _emit_list(session, company_id, entity_id, "list.finalized", data, user)
     if commit:
         await session.commit()
@@ -12191,10 +12191,11 @@ def _locked_manifest_failure(code: str, item: Projection | None, lines: list[dic
 _AUDIT_IDENTITY_FIELDS = ("sku", "name", "barcode")
 
 
-async def freeze_customs_lines(session: AsyncSession, company_id: str, lines: list[dict]) -> list[dict]:
-    """Copies of ``lines`` with each linked line's customs codes (HS code, country of origin)
-    filled from its item where the line has none. An issued customs document keeps these, so a
-    later change to the item never reaches what was already issued."""
+async def customs_snapshot(session: AsyncSession, company_id: str, lines: list[dict]) -> dict:
+    """The fields an issued customs document saves: copies of ``lines`` with each linked line's
+    customs codes (HS code, country of origin) filled from its item where the line has none, and
+    ``customs_saved``. A document keeps these, so a later change to the item never reaches what
+    was already issued; one without ``customs_saved`` still reads its items' codes, never blank."""
     frozen = []
     for line in lines or []:
         line = dict(line)
@@ -12203,7 +12204,7 @@ async def freeze_customs_lines(session: AsyncSession, company_id: str, lines: li
         if item is not None and item.entity_type == "item":
             customs_backfill(line, item.state or {})
         frozen.append(line)
-    return frozen
+    return {"line_items": frozen, "customs_saved": True}
 
 
 async def _issued_import_data(session: AsyncSession, company_id: str, data: dict) -> dict:
@@ -12211,7 +12212,7 @@ async def _issued_import_data(session: AsyncSession, company_id: str, data: dict
     would have given it. A draft takes them at Issue."""
     if (data.get("status") or DRAFT) == DRAFT or not behavior(data.get("list_type") or DEFAULT_LIST_TYPE).customs:
         return data
-    return {**data, "line_items": await freeze_customs_lines(session, company_id, data.get("line_items") or [])}
+    return {**data, **await customs_snapshot(session, company_id, data.get("line_items") or [])}
 
 
 async def _lock_audit_lines(session: AsyncSession, company_id: str, lines: list[dict],
@@ -13436,7 +13437,7 @@ async def change_list_type(
         await _lock_audit_lines(session, company_id, lines, keep_unlinked_on_hand=True)
         fields["line_items"] = lines
     elif behavior(new_type).customs and status == FINALIZED:
-        fields["line_items"] = await freeze_customs_lines(session, company_id, state.get("line_items") or [])
+        fields.update(await customs_snapshot(session, company_id, state.get("line_items") or []))
     await _set_list_fields(session, company_id, entity_id, user, fields)
     await session.commit()
     return {"ok": True, "list_type": new_type}

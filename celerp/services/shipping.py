@@ -64,7 +64,8 @@ def customs_backfill(line: dict, item_state: dict) -> None:
 
     The item is the durable home of HS code / country of origin; a line only
     overrides it. A draft's printout and share view read them from the item;
-    Issue saves them on the lines (celerp-docs), so an issued document keeps them.
+    Issue saves them on the lines (celerp-docs, ``customs_saved``), so an issued
+    document keeps them; one not saved yet still reads them from the item.
     ``item_state`` is the stored item or its flattened read: a field the item has no
     column for (country of origin) is stored in its attributes.
     """

@@ -573,8 +573,9 @@ async def _enrich_share_lines(session: AsyncSession, company_id, state: dict) ->
     units = settings.get("units") or DEFAULT_UNITS
     umap = build_unit_map(units)
     is_shipping = state.get("list_type") == SHIPPING_LIST_TYPE
-    # Issue saves the customs codes on the lines; only a draft still reads them from the item.
-    is_draft = state.get("status") == DRAFT
+    # Issue saves the customs codes on the lines; a draft, or an issued list not saved yet, reads
+    # them from the item.
+    read_item_codes = state.get("status") == DRAFT or not state.get("customs_saved")
     for li in state.get("line_items") or []:
         eid = li.get("entity_id") or li.get("item_id")
         if not eid:
@@ -589,7 +590,7 @@ async def _enrich_share_lines(session: AsyncSession, company_id, state: dict) ->
         meta = item_measure_meta(irow.state or {}, umap)
         li["pieces"], li["weight"], li["weight_unit"], _, _ = resolve_line_measures(li, item_meta=meta)
         if is_shipping:
-            if is_draft:
+            if read_item_codes:
                 customs_backfill(li, irow.state or {})
             li["gross_weight"], li["gross_weight_unit"] = line_gross_weight(
                 li, irow.state or {}, bool(meta.get("qty_is_weight")))

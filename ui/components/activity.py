@@ -297,7 +297,7 @@ _ORIGIN_EVENT_TYPES = frozenset({
 })
 
 # scan_runs is the scan bar's idempotency ledger, not something the user edited.
-_SYSTEM_FIELDS = frozenset({"updated_at", "created_at", SCAN_RUNS_FIELD})
+_SYSTEM_FIELDS = frozenset({"updated_at", "created_at", "customs_saved", SCAN_RUNS_FIELD})
 
 # Document totals that are computed from line_items + header fields (see _recalc_list_totals).
 # Editing an item's price or quantity recalculates these, but the user's action was the line

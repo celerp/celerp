@@ -4,9 +4,11 @@
 """One-time save of customs codes on shipping documents issued by an earlier release.
 
 Issue now copies each line's HS code and country of origin from its item
-(routes.freeze_customs_lines), so later item edits never reach an issued document. An earlier
+(routes.customs_snapshot), so later item edits never reach an issued document. An earlier
 release saved none: its issued documents printed the item's current codes. This pass gives each
-of them the codes it prints today, so nothing on paper changes, and tells each company once.
+of them the codes it prints today, so nothing on paper changes, and tells each company once. Until
+a list is saved (``customs_saved``) its print and share read the item's codes, so a list this pass
+could not save never prints blank.
 
 Runs at startup, gated by a marker so it runs once per database. A company staged for a
 migration is skipped. Each list is saved in its own savepoint: a list that fails is rolled back
@@ -35,7 +37,7 @@ async def freeze_issued_customs_lists(session: AsyncSession) -> dict:
     from celerp.notifications.service import notify_once
     from celerp.services.list_behavior import DRAFT, LIST_TYPES, behavior
     from celerp.services.migrations import is_company_migration_staged
-    from celerp_docs.routes import freeze_customs_lines
+    from celerp_docs.routes import customs_snapshot
     from ui.i18n import t
 
     conn = await session.connection()
@@ -61,13 +63,14 @@ async def freeze_issued_customs_lists(session: AsyncSession) -> dict:
         try:
             async with session.begin_nested():
                 row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
-                lines = list((row.state or {}).get("line_items") or [])
-                filled = await freeze_customs_lines(session, company_id, lines)
-                if filled == lines:
+                if (row.state or {}).get("customs_saved"):
                     continue
+                lines = list((row.state or {}).get("line_items") or [])
+                saved = await customs_snapshot(session, company_id, lines)
                 await emit_event(
                     session, company_id=company_id, entity_id=entity_id, entity_type="list",
-                    event_type="list.updated", data={"fields_changed": {"line_items": {"new": filled}}},
+                    event_type="list.updated",
+                    data={"fields_changed": {k: {"new": v} for k, v in saved.items()}},
                     actor_id=None, location_id=None, source="system",
                     idempotency_key=f"customs-freeze:{entity_id}",
                 )
@@ -75,7 +78,8 @@ async def freeze_issued_customs_lists(session: AsyncSession) -> dict:
             failed += 1
             log.exception("Could not save customs codes on issued list %s", entity_id)
             continue
-        frozen[company_id] = frozen.get(company_id, 0) + 1
+        if saved["line_items"] != lines:
+            frozen[company_id] = frozen.get(company_id, 0) + 1
 
     for company_id, count in frozen.items():
         await notify_once(session, company_id, "system", t(f"{_NOTICE}.title", "en"),

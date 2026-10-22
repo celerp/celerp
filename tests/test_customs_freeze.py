@@ -76,6 +76,8 @@ async def test_issue_freezes_customs_codes_from_the_item(client, auth):
     line = (await _lines(client, auth, ship))[0]
     assert line["hs_code"] == "1234"
     assert line["country_of_origin"] == "TH"
+    r = await client.get(f"/lists/{ship}", headers=auth["headers"])
+    assert r.json()["customs_saved"] is True
 
 
 async def test_print_of_issued_shipping_doc_does_not_take_later_item_edits(client, auth, session):
@@ -88,9 +90,14 @@ async def test_print_of_issued_shipping_doc_does_not_take_later_item_edits(clien
     assert (await _shared_lines(session, auth, ship))[0]["hs_code"] == "1234"
 
 
-@pytest.mark.parametrize("status, shown", [("finalized", False), ("draft", True)])
-async def test_print_view_of_issued_shipping_doc_does_not_take_later_item_edits(ui_client, status, shown):
+@pytest.mark.parametrize("status, saved, shown", [
+    ("finalized", True, False),   # issued with its codes saved: the item's later edit never shows
+    ("finalized", False, True),   # issued, codes not saved yet: the item's codes show, never a blank
+    ("draft", False, True),
+])
+async def test_print_view_of_issued_shipping_doc_does_not_take_later_item_edits(ui_client, status, saved, shown):
     stored = {"entity_id": "list:SHIP-1", "ref_id": "SHIP-1", "list_type": "shipping_doc", "status": status,
+              **({"customs_saved": True} if saved else {}),
               "line_items": [{"name": "Teak bowl", "quantity": 1, "item_id": "item:bowl"}]}
     ui_client.cookies.update(_authed())
     with patch("ui.api_client.get_list", new=AsyncMock(return_value=stored)), \
@@ -165,7 +172,7 @@ async def _issued_by_an_earlier_release(client, auth, session, item_id: str) -> 
     row = await session.get(Projection, (auth["company_id"], ship))
     lines = [{k: v for k, v in li.items() if k not in ("hs_code", "country_of_origin")}
              for li in row.state["line_items"]]
-    row.state = {**row.state, "line_items": lines}
+    row.state = {**{k: v for k, v in row.state.items() if k != "customs_saved"}, "line_items": lines}
     await session.commit()
     return ship
 
@@ -256,3 +263,47 @@ async def test_startup_freeze_failed_list_rolls_back_alone_and_leaves_marker_uns
     assert not (await _lines(client, auth, failing))[0].get("hs_code")
     assert (await _lines(client, auth, frozen))[0]["hs_code"] == "1234"
     assert await _marker(session) is None
+
+
+async def test_an_issued_list_whose_codes_failed_to_save_prints_the_items_codes_until_saved(client, auth, session):
+    """A list the startup pass could not save never prints blank: share and print read the item's
+    codes until a later start saves them, and from then on the saved codes stand."""
+    import celerp_docs.customs_freeze as customs_freeze
+
+    await _reset_marker(session)
+    item_id = await _item(client, auth)
+    failing = await _issued_by_an_earlier_release(client, auth, session, item_id)
+    real_emit = customs_freeze.emit_event
+
+    async def _emit(sess, **kwargs):
+        if kwargs.get("entity_id") == failing:
+            raise RuntimeError("ledger write failed")
+        return await real_emit(sess, **kwargs)
+
+    with patch.object(customs_freeze, "emit_event", new=_emit):
+        await _start(session)
+    assert not (await _lines(client, auth, failing))[0].get("hs_code")
+    assert (await _shared_lines(session, auth, failing))[0]["hs_code"] == "1234"
+
+    await _start(session)
+    assert await _marker(session)
+    assert (await _lines(client, auth, failing))[0]["hs_code"] == "1234"
+    await _set_item_code(client, auth, item_id, "1234", "9999")
+    assert (await _shared_lines(session, auth, failing))[0]["hs_code"] == "1234"
+
+
+async def test_startup_saves_the_flag_on_an_issued_list_whose_lines_already_hold_codes(client, auth, session):
+    """An issued list whose lines carry their own codes is marked saved too, so a later item edit
+    never fills a code the line left empty."""
+    await _reset_marker(session)
+    item_id = await _item(client, auth)
+    ship = await _issued_by_an_earlier_release(client, auth, session, item_id)
+    row = await session.get(Projection, (auth["company_id"], ship))
+    row.state = {**row.state, "line_items": [{**li, "hs_code": "5555", "country_of_origin": "VN"}
+                                             for li in row.state["line_items"]]}
+    await session.commit()
+
+    await _start(session)
+    r = await client.get(f"/lists/{ship}", headers=auth["headers"])
+    assert r.json()["customs_saved"] is True
+    assert r.json()["line_items"][0]["hs_code"] == "5555"
