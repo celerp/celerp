@@ -16073,7 +16073,6 @@
 "tests/test_routers/test_system_update.py::test_updating_still_works_while_records_are_held_back": 0.187,
 "tests/test_routers/test_tax_side.py::test_a_bill_with_withholding_tax_reduces_what_is_payable_and_finalizes": 0.11,
 "tests/test_routers/test_tax_side.py::test_a_negative_rate_no_tax_list_names_is_refused_on_a_sale": 0.101,
-"tests/test_routers/test_tax_side.py::test_a_new_invoice_from_items_starts_with_sales_taxes_only": 0.002,
 "tests/test_routers/test_tax_side.py::test_a_no_tax_invoice_posts_no_zero_lines": 0.121,
 "tests/test_routers/test_tax_side.py::test_a_sale_whose_taxes_come_to_less_than_zero_does_not_finalize": 0.117,
 "tests/test_routers/test_tax_side.py::test_a_sales_document_with_withholding_tax_is_refused_naming_the_tax[credit_note]": 0.077,
