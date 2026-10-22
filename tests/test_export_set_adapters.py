@@ -447,3 +447,103 @@ def test_a_document_number_is_found_only_on_its_own_contacts_document():
     assert find_document(book, True, "INV-1", "").key == "S:INV-1"    # a journal naming no contact
     assert find_document(book, False, "INV-1", "Cy").key == "P:INV-1|Cy"
     assert find_document(book, False, "INV-1", "Ann") is None
+
+
+# ── Values an export set holds ────────────────────────────────────────────────
+
+@pytest.mark.parametrize("text, expected", [
+    ("1,234.50", Decimal("1234.50")), ("$1,234.50", Decimal("1234.50")), ("-$5.00", Decimal("-5.00")),
+    ("Br 1,234.50", Decimal("1234.50")), ("1,234.50 Br", Decimal("1234.50")), ("ETB 10", Decimal("10")),
+    ("(Br 2.00)", Decimal("-2.00")), ("ብር 3.25", Decimal("3.25")), ("1e-05", Decimal("0.00001")), ("", Decimal(0)),
+])
+def test_an_amount_is_read_with_its_currency_sign_and_separators(text, expected):
+    from celerp.importers.adapters.exports.files import amount
+
+    assert amount(text) == expected
+
+
+@pytest.mark.parametrize("text", ["NaN", "Infinity", "-inf", "1e999999", "9" * 40, "=1+1", "12..5", "Br", "1 2"])
+def test_an_amount_that_is_not_a_plain_number_in_range_is_refused_by_name(text):
+    from celerp.importers.adapters.exports.files import amount, money
+
+    for read in (amount, money):
+        with pytest.raises(ScanError, match="is not a number"):
+            read(text, "Sales.csv INV-1")
+
+
+def test_dates_with_a_two_digit_year_read_in_the_order_the_source_writes():
+    from celerp.importers.adapters.exports.files import DateReader
+
+    month_first = DateReader(["03/04/25", "01/02/2025"], day_first=False)
+    assert month_first("03/04/25") == date(2025, 3, 4)
+    assert month_first("12/31/99") == date(1999, 12, 31)
+    with pytest.raises(ScanError, match="day or the month"):
+        DateReader(["03/04/25"])
+    with pytest.raises(ScanError, match="is not a date"):
+        month_first("02/30/25", "General.csv")
+
+
+def test_a_cell_longer_than_the_reader_takes_names_its_file_as_unreadable(tmp_path):
+    from celerp.importers.adapters.exports import files
+
+    huge = b"Code,Name\r\n200,\"" + b"x" * (1024 * 1024) + b"\"\r\n"
+    _, strangers = files.read_set(_set(tmp_path, [("Chart.csv", huge)]), ())
+    assert [s.name for s in strangers] == ["Chart.csv"]
+    assert strangers[0].reason.startswith("Chart.csv could not be read")
+
+
+def test_a_delimited_file_is_refused_at_its_row_bound_without_holding_every_row():
+    import tracemalloc
+
+    from celerp.importers import tabular
+
+    text = "a,b,c\r\n" * 400_000
+    tracemalloc.start()
+    try:
+        with pytest.raises(tabular.TabularError):
+            tabular.delimited_lines(text, ",", tabular.Limits(rows=1000, cells=10_000, file_bytes=10 ** 9,
+                                                              uncompressed=10 ** 9))
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    assert peak < 4 * 1024 ** 2, f"{peak / 2 ** 20:.1f} MiB peak"
+
+
+@pytest.mark.parametrize("error", [ValueError("bad"), KeyError("x"), TypeError("y"), ArithmeticError("z")])
+def test_a_value_an_export_set_reader_cannot_convert_refuses_the_set_as_damaged(tmp_path, error):
+    from celerp.importers.adapters.base import SourceRevisionError
+
+    adapter = _adapter()
+
+    def broken(artifacts):
+        raise error
+
+    adapter.read = broken
+    files = _set(tmp_path, _xero())
+    for step in (lambda: adapter.inspect(files), lambda: adapter.build_manifest(files, FULL),
+                 lambda: adapter.source_expectations(files, FULL)):
+        with pytest.raises(SourceRevisionError) as refused:
+            step()
+        assert str(refused.value) == t("migration.err_export_damaged", source="Xero")
+
+
+def _broken_workbook() -> bytes:
+    """A workbook whose sheet is not well-formed XML: a file damaged in copying."""
+    book = openpyxl.Workbook()
+    book.active.append(["Account", "Debit"])
+    saved = io.BytesIO()
+    book.save(saved)
+    source = zipfile.ZipFile(io.BytesIO(saved.getvalue()))
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w") as z:
+        for info in source.infolist():
+            data = source.read(info)
+            z.writestr(info, b"<worksheet><sheetData><row><<<" if info.filename == "xl/worksheets/sheet1.xml" else data)
+    return out.getvalue()
+
+
+def test_a_damaged_workbook_is_named_as_unreadable(tmp_path):
+    from celerp.importers.adapters.exports import files
+
+    _, strangers = files.read_set(_set(tmp_path, [("Trial Balance.xlsx", _broken_workbook())]), ())
+    assert [s.reason for s in strangers] == [t("migration.err_export_unreadable", name="Trial Balance.xlsx")]

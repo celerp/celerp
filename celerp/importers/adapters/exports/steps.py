@@ -66,9 +66,10 @@ def tax_rates(book: Book) -> None:
                      for ln in d.lines for x in ln.taxes if x.code == code.name and ln.net}
             code.rate = rates.pop() if len(rates) == 1 else ZERO
         if code.rate:
-            if book.tax_account is None:
+            # A source that names each rate's own account keeps it; others post to the tax account.
+            code.account = code.account or book.tax_account
+            if code.account is None:
                 raise ScanError(t("migration.err_export_tax_account", tax=code.name))
-            code.account = book.tax_account
 
 
 def roll_up_trial_balances(book: Book, years: list[dict[date, dict[str, Decimal]]]) -> None:

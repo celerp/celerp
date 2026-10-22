@@ -14,6 +14,7 @@ refused with a message naming each file and what to export instead.
 
 from __future__ import annotations
 
+import csv
 import re
 import zipfile
 from dataclasses import dataclass, field
@@ -22,7 +23,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from celerp.importers import tabular
-from celerp.importers.adapters.base import ArtifactSet, ScanError
+from celerp.importers.adapters.base import CONVERSION_ERRORS, ArtifactSet, ScanError
 from ui.i18n import t
 
 # A ledger export runs to several hundred thousand rows; the set as a whole is bounded
@@ -82,6 +83,10 @@ def _lines(name: str, data: bytes) -> list[list[str]]:
         return tabular.delimited_lines(text, "\t" if first.count("\t") > first.count(",") else ",", LIMITS)
     except tabular.TabularError as exc:
         raise ScanError(t("migration.err_export_unreadable_because", name=name, reason=str(exc))) from exc
+    except (csv.Error, SyntaxError, *CONVERSION_ERRORS) as exc:
+        # A cell past the parser's size limit, a workbook part that is not well-formed XML
+        # (ElementTree's ParseError is a SyntaxError), or a value its parser cannot hold.
+        raise ScanError(t("migration.err_export_unreadable", name=name)) from exc
 
 
 def _is_workbook(archive: zipfile.ZipFile) -> bool:
@@ -136,8 +141,11 @@ class Stranger:
     reason: str = ""
 
 
-def read_set(artifacts: ArtifactSet, layouts: tuple[Layout, ...]) -> tuple[list[Table], list[Stranger]]:
-    """Every file of the set matched to its layout, and the files no layout matches."""
+def read_set(artifacts: ArtifactSet, layouts: tuple[Layout, ...],
+             aliases: dict[str, str] | None = None) -> tuple[list[Table], list[Stranger]]:
+    """Every file of the set matched to its layout, and the files no layout matches. `aliases`
+    names a column by the name its layouts use where another version of the source heads it
+    differently (normalized names)."""
     tables: list[Table] = []
     strangers: list[Stranger] = []
     for artifact in artifacts:
@@ -154,6 +162,8 @@ def read_set(artifacts: ArtifactSet, layouts: tuple[Layout, ...]) -> tuple[list[
             except ScanError as exc:
                 strangers.append(Stranger(name, [], str(exc)))
                 continue
+            if aliases:
+                lines[:HEADER_SEARCH] = [[aliases.get(normalize(c), c) for c in line] for line in lines[:HEADER_SEARCH]]
             matched = _match(lines, layouts)
             if matched is None:
                 strangers.append(Stranger(name, lines[:HEADER_SEARCH]))
@@ -367,23 +377,46 @@ def period(tb: Table) -> tuple[date, date]:
 # ── Cell values ───────────────────────────────────────────────────────────────
 
 _ISO = re.compile(r"^(\d{4})-(\d{2})-(\d{2})(?:[ T].*)?$")
-_SLASHED = re.compile(r"^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})$")
+_SLASHED = re.compile(r"^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4}|\d{2})$")
+# A plain number, as a file prints it once its sign, brackets, separators and currency are
+# taken off; a workbook writes a tiny fraction with an exponent.
+_NUMBER = re.compile(r"^[-+]?(\d+\.?\d*|\.\d+)(e[-+]?\d+)?$", re.IGNORECASE)
+# The currency signs and codes a source prints beside an amount.
+CURRENCY_SIGNS = ("$", "£", "€", "¥", "ETB", "Br", "ብር")
+# The largest amount read, in digits before the point: no book holds a quadrillion, and a
+# longer one is a damaged value that would overflow the money arithmetic.
+MAX_DIGITS = 15
 _PERIOD = re.compile(r"^(\d{1,2} \w+ \d{4}|\w+ \d{1,2}, \d{4}) ?[-\u2013] ?(\d{1,2} \w+ \d{4}|\w+ \d{1,2}, \d{4})$")
 
 
+def _unsigned(text: str) -> str:
+    """`text` without a currency sign or code printed before or after it."""
+    for sign in CURRENCY_SIGNS:
+        if text.startswith(sign):
+            return text[len(sign):].strip()
+        if text.endswith(sign):
+            return text[:-len(sign)].strip()
+    return text
+
+
 def amount(value: str, where: str = "") -> Decimal:
-    """A number as the source prints it: thousands separators, a leading currency sign and
-    a negative in brackets are accepted; an empty cell is zero."""
+    """A number as the source prints it: thousands separators, a currency sign or code before
+    or after it and a negative in brackets are accepted; an empty cell is zero. Anything else,
+    or a number of more than MAX_DIGITS digits, is refused by name."""
     text = value.strip().replace(",", "")
     if not text:
         return ZERO
     negative = text.startswith("(") and text.endswith(")")
-    text = text.strip("()").lstrip("$£€¥").strip()
+    text = text.strip("()").strip()
+    sign = text[0] if text[:1] in "-+" else ""
+    text = sign + _unsigned(text[len(sign):].strip())
+    if not _NUMBER.match(text):
+        raise ScanError(t("migration.err_export_number", value=value, where=where))
     try:
         number = Decimal(text)
     except InvalidOperation as exc:
         raise ScanError(t("migration.err_export_number", value=value, where=where)) from exc
-    if not number.is_finite():
+    if number and number.adjusted() >= MAX_DIGITS:
         raise ScanError(t("migration.err_export_number", value=value, where=where))
     return -number if negative else number
 
@@ -395,9 +428,14 @@ def money(value: str, where: str = "") -> Decimal:
 
 class DateReader:
     """Reads the set's slashed dates in one order, day first or month first, decided from
-    every date the set prints: a part above 12 can only be a day."""
+    every date the set prints: a part above 12 can only be a day. A source that always writes
+    one order states it as `day_first`. A two-digit year is read as Python reads one: 69 to 99
+    in the 1900s, 00 to 68 in the 2000s."""
 
-    def __init__(self, samples: list[str]) -> None:
+    def __init__(self, samples: list[str], day_first: bool | None = None) -> None:
+        if day_first is not None:
+            self.day_first = day_first
+            return
         day_first = month_first = False
         for text in samples:
             m = _SLASHED.match(text.strip())
@@ -421,6 +459,8 @@ class DateReader:
             m = _SLASHED.match(text)
             if m:
                 a, b, year = int(m.group(1)), int(m.group(2)), int(m.group(3))
+                if len(m.group(3)) == 2:
+                    year += 1900 if year >= 69 else 2000
                 return date(year, b, a) if self.day_first else date(year, a, b)
             return report_date(text)
         except (ValueError, ScanError) as exc:

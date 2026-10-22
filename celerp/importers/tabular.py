@@ -23,7 +23,7 @@ import zipfile
 import zlib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import IO, Any, Callable, Collection, Mapping
+from typing import IO, Any, Callable, Collection, Iterator, Mapping
 
 import openpyxl
 from openpyxl.utils.exceptions import InvalidFileException
@@ -667,10 +667,27 @@ def _csv_lines(text: str, delimiter: str = ",") -> list[list[str]]:
     return list(csv.reader(io.StringIO(text), delimiter=delimiter))
 
 
+def _text_lines(text: str) -> Iterator[str]:
+    """The lines of `text`, each with its line end, one at a time and without copying it whole."""
+    start = 0
+    while start < len(text):
+        end = text.find("\n", start)
+        end = len(text) if end < 0 else end + 1
+        yield text[start:end]
+        start = end
+
+
 def delimited_lines(text: str, delimiter: str, limits: Limits) -> list[list[str]]:
-    """Every line of comma or tab separated text as cells, within ``limits``."""
-    lines = _csv_lines(text, delimiter)
-    _enforce_bounds(max((_filled_width(line) for line in lines), default=0), len(lines), limits)
+    """Every line of comma or tab separated text as cells, within ``limits``: checked line by
+    line as they are parsed, so text past the bounds is refused before its lines are held."""
+    if text.startswith("\ufeff"):
+        text = text[1:]
+    lines: list[list[str]] = []
+    width = 0
+    for line in csv.reader(_text_lines(text), delimiter=delimiter):
+        width = max(width, _filled_width(line))
+        lines.append(line)
+        _enforce_bounds(width, len(lines), limits)
     return lines
 
 
