@@ -5379,6 +5379,7 @@
   "company.err_permission_floor": "この権限は {role} より下のロールには付与できません。{role} 以上のロールを選んでください。",
   "company.err_location_invalid": "その場所は無効です。「再試行」を選んでから、もう一度選んでください。",
   "company.err_location_not_found": "Celerp でこの場所が見つかりませんでした。削除された可能性があります。「再試行」を選んでください。",
+  "company.err_location_name_taken": "A location called {name} already exists. Choose a different name.",
   "company.err_location_default": "これは既定の場所なので削除できません。先に別の場所を既定にしてください。",
   "company.err_location_in_use": "この場所にはまだ {count} 件の品目があるため、削除できません。先に別の場所へ移動してください。",
   "company.err_location_has_assets": "この場所にはまだ {count} 件の資産があるため、削除できません。先に別の場所へ移動してください。",

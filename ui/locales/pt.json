@@ -5379,6 +5379,7 @@
   "company.err_permission_floor": "Esta permissão não pode ser dada a funções abaixo de {role}. Escolha {role} ou uma função superior.",
   "company.err_location_invalid": "Esse local não é válido. Selecione Tentar novamente e depois escolha de novo.",
   "company.err_location_not_found": "O Celerp não encontrou este local. Ele pode ter sido excluído. Selecione Tentar novamente.",
+  "company.err_location_name_taken": "A location called {name} already exists. Choose a different name.",
   "company.err_location_default": "Este é o seu local padrão, então não pode ser excluído. Primeiro defina outro local como padrão.",
   "company.err_location_in_use": "Ainda há {count} item(ns) neste local, então ele não pode ser excluído. Primeiro mova-os para outro local.",
   "company.err_location_has_assets": "Ainda há {count} ativo(s) neste local, então ele não pode ser excluído. Primeiro mova-os para outro local.",

@@ -5379,6 +5379,7 @@
   "company.err_permission_floor": "สิทธิ์นี้มอบให้บทบาทที่ต่ำกว่า {role} ไม่ได้ เลือก {role} หรือบทบาทที่สูงกว่า",
   "company.err_location_invalid": "สถานที่นั้นไม่ถูกต้อง เลือก ลองอีกครั้ง แล้วเลือกอีกครั้ง",
   "company.err_location_not_found": "Celerp ไม่พบสถานที่นี้ อาจถูกลบไปแล้ว เลือก ลองอีกครั้ง",
+  "company.err_location_name_taken": "A location called {name} already exists. Choose a different name.",
   "company.err_location_default": "นี่คือสถานที่ตั้งต้นของคุณ จึงลบไม่ได้ ตั้งสถานที่อื่นเป็นค่าตั้งต้นก่อน",
   "company.err_location_in_use": "ยังมีสินค้า {count} รายการอยู่ที่สถานที่นี้ จึงลบไม่ได้ ย้ายไปยังสถานที่อื่นก่อน",
   "company.err_location_has_assets": "ยังมีสินทรัพย์ {count} รายการอยู่ที่สถานที่นี้ จึงลบไม่ได้ ย้ายไปยังสถานที่อื่นก่อน",

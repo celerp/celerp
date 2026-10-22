@@ -5379,6 +5379,7 @@
   "company.err_permission_floor": "Cette autorisation ne peut pas être donnée aux rôles inférieurs à {role}. Choisissez {role} ou un rôle supérieur.",
   "company.err_location_invalid": "Cet emplacement n'est pas valide. Sélectionnez « Réessayer », puis refaites votre choix.",
   "company.err_location_not_found": "Celerp n'a pas trouvé cet emplacement. Il a peut-être été supprimé. Sélectionnez « Réessayer ».",
+  "company.err_location_name_taken": "A location called {name} already exists. Choose a different name.",
   "company.err_location_default": "C'est votre emplacement par défaut, il ne peut donc pas être supprimé. Définissez d'abord un autre emplacement par défaut.",
   "company.err_location_in_use": "{count} article(s) se trouvent encore à cet emplacement, il ne peut donc pas être supprimé. Déplacez-les d'abord vers un autre emplacement.",
   "company.err_location_has_assets": "{count} immobilisation(s) se trouvent encore à cet emplacement, il ne peut donc pas être supprimé. Déplacez-les d'abord vers un autre emplacement.",

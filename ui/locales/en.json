@@ -5379,6 +5379,7 @@
   "company.err_permission_floor": "This permission can't be given to roles below {role}. Choose {role} or a higher role.",
   "company.err_location_invalid": "That location isn't valid. Select Try again, then choose it again.",
   "company.err_location_not_found": "Celerp couldn't find this location. It may have been deleted. Select Try again.",
+  "company.err_location_name_taken": "A location called {name} already exists. Choose a different name.",
   "company.err_location_default": "This is your default location, so it can't be deleted. Make another location the default first.",
   "company.err_location_in_use": "{count} item(s) are still at this location, so it can't be deleted. Move them to another location first.",
   "company.err_location_has_assets": "{count} asset(s) are still at this location, so it can't be deleted. Move them to another location first.",

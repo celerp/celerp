@@ -5379,6 +5379,7 @@
   "company.err_permission_floor": "Diese Berechtigung kann keinen Rollen unterhalb von {role} gegeben werden. Wählen Sie {role} oder eine höhere Rolle.",
   "company.err_location_invalid": "Dieser Standort ist ungültig. Wählen Sie „Erneut versuchen“ und dann ihn erneut.",
   "company.err_location_not_found": "Celerp konnte diesen Standort nicht finden. Er wurde möglicherweise gelöscht. Wählen Sie „Erneut versuchen“.",
+  "company.err_location_name_taken": "A location called {name} already exists. Choose a different name.",
   "company.err_location_default": "Dies ist Ihr Standardstandort und kann daher nicht gelöscht werden. Machen Sie zuerst einen anderen Standort zum Standard.",
   "company.err_location_in_use": "An diesem Standort befinden sich noch {count} Artikel, daher kann er nicht gelöscht werden. Verschieben Sie sie zuerst an einen anderen Standort.",
   "company.err_location_has_assets": "An diesem Standort befinden sich noch {count} Anlagegüter, daher kann er nicht gelöscht werden. Verschieben Sie sie zuerst an einen anderen Standort.",

@@ -5379,6 +5379,7 @@
   "company.err_permission_floor": "Este permiso no se puede dar a roles por debajo de {role}. Elija {role} o un rol superior.",
   "company.err_location_invalid": "Esa ubicación no es válida. Seleccione Reintentar y vuelva a elegirla.",
   "company.err_location_not_found": "Celerp no encontró esta ubicación. Puede que se haya eliminado. Seleccione Reintentar.",
+  "company.err_location_name_taken": "A location called {name} already exists. Choose a different name.",
   "company.err_location_default": "Esta es su ubicación predeterminada, así que no se puede eliminar. Primero haga que otra ubicación sea la predeterminada.",
   "company.err_location_in_use": "Todavía hay {count} artículo(s) en esta ubicación, así que no se puede eliminar. Muévalos primero a otra ubicación.",
   "company.err_location_has_assets": "Todavía hay {count} activo(s) en esta ubicación, así que no se puede eliminar. Muévalos primero a otra ubicación.",

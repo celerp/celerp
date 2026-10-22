@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Uplo
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session, sqlstate
@@ -579,8 +580,20 @@ async def create_location(
     session.add(loc)
     if payload.is_default:
         await _maybe_apply_regime(session, company_id, payload.address)
-    await session.commit()
+    await _commit_location(session, payload.name)
     return {"id": str(loc.id)}
+
+
+async def _commit_location(session: AsyncSession, name: str) -> None:
+    """Commit a location write, refusing a name the company already uses with a message
+    naming it."""
+    try:
+        await session.commit()
+    except IntegrityError as exc:
+        await session.rollback()
+        if "uq_location_company_name" not in str(exc.orig):
+            raise
+        raise HTTPException(status_code=409, detail=t("company.err_location_name_taken", name=name))
 
 
 class LocationBatchImportRequest(BaseModel):
@@ -669,7 +682,7 @@ async def patch_location(
     effective_address = payload.address if payload.address is not None else loc.address
     if effective_default:
         await _maybe_apply_regime(session, company_id, effective_address)
-    await session.commit()
+    await _commit_location(session, loc.name)
     return {"id": str(loc.id), "name": loc.name, "type": loc.type, "address": loc.address, "is_default": loc.is_default}
 
 

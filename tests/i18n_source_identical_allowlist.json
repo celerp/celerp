@@ -58,7 +58,8 @@
     "th.position",
     "th.sku",
     "error.company_timezone_unknown",
-    "documents.igst_note"
+    "documents.igst_note",
+    "company.err_location_name_taken"
   ],
   "ar": [
     "account.email_placeholder",
@@ -107,7 +108,8 @@
     "th.position",
     "th.sku",
     "error.company_timezone_unknown",
-    "documents.igst_note"
+    "documents.igst_note",
+    "company.err_location_name_taken"
   ],
   "de": [
     "acct.source_system",
@@ -227,7 +229,8 @@
     "th.text",
     "th.version",
     "error.company_timezone_unknown",
-    "documents.igst_note"
+    "documents.igst_note",
+    "company.err_location_name_taken"
   ],
   "es": [
     "account.plan",
@@ -320,7 +323,8 @@
     "th.sku",
     "th.total",
     "error.company_timezone_unknown",
-    "documents.igst_note"
+    "documents.igst_note",
+    "company.err_location_name_taken"
   ],
   "fr": [
     "acct.tab_journal",
@@ -454,7 +458,8 @@
     "th.total",
     "th.version",
     "error.company_timezone_unknown",
-    "documents.igst_note"
+    "documents.igst_note",
+    "company.err_location_name_taken"
   ],
   "id": [
     "acct.source_manual",
@@ -572,7 +577,8 @@
     "th.status",
     "th.total",
     "error.company_timezone_unknown",
-    "documents.igst_note"
+    "documents.igst_note",
+    "company.err_location_name_taken"
   ],
   "it": [
     "attr.volume_l",
@@ -662,7 +668,8 @@
     "th.position",
     "th.sku",
     "error.company_timezone_unknown",
-    "documents.igst_note"
+    "documents.igst_note",
+    "company.err_location_name_taken"
   ],
   "ja": [
     "account.email_placeholder",
@@ -721,7 +728,8 @@
     "th.position",
     "th.sku",
     "error.company_timezone_unknown",
-    "documents.igst_note"
+    "documents.igst_note",
+    "company.err_location_name_taken"
   ],
   "pt": [
     "acct.source_manual",
@@ -825,7 +833,8 @@
     "th.status",
     "th.total",
     "error.company_timezone_unknown",
-    "documents.igst_note"
+    "documents.igst_note",
+    "company.err_location_name_taken"
   ],
   "th": [
     "account.email_placeholder",
@@ -882,7 +891,8 @@
     "th.position",
     "th.sku",
     "error.company_timezone_unknown",
-    "documents.igst_note"
+    "documents.igst_note",
+    "company.err_location_name_taken"
   ],
   "vi": [
     "btn.u00d7",
@@ -943,6 +953,7 @@
     "th.position",
     "th.sku",
     "error.company_timezone_unknown",
-    "documents.igst_note"
+    "documents.igst_note",
+    "company.err_location_name_taken"
   ]
 }

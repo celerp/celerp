@@ -5379,6 +5379,7 @@
   "company.err_permission_floor": "Izin ini tidak dapat diberikan ke peran di bawah {role}. Pilih {role} atau peran yang lebih tinggi.",
   "company.err_location_invalid": "Lokasi itu tidak valid. Pilih Coba lagi, lalu pilih lagi.",
   "company.err_location_not_found": "Celerp tidak dapat menemukan lokasi ini. Mungkin sudah dihapus. Pilih Coba lagi.",
+  "company.err_location_name_taken": "A location called {name} already exists. Choose a different name.",
   "company.err_location_default": "Ini adalah lokasi default Anda, jadi tidak dapat dihapus. Jadikan lokasi lain sebagai default terlebih dahulu.",
   "company.err_location_in_use": "Masih ada {count} barang di lokasi ini, jadi tidak dapat dihapus. Pindahkan ke lokasi lain terlebih dahulu.",
   "company.err_location_has_assets": "Masih ada {count} aset di lokasi ini, jadi tidak dapat dihapus. Pindahkan ke lokasi lain terlebih dahulu.",

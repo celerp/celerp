@@ -5379,6 +5379,7 @@
   "company.err_permission_floor": "لا يمكن منح هذه الصلاحية لأدوار أدنى من {role}. اختر {role} أو دورًا أعلى.",
   "company.err_location_invalid": "هذا الموقع غير صالح. اختر إعادة المحاولة ثم اختره مرة أخرى.",
   "company.err_location_not_found": "تعذّر على Celerp العثور على هذا الموقع. ربما تم حذفه. اختر إعادة المحاولة.",
+  "company.err_location_name_taken": "A location called {name} already exists. Choose a different name.",
   "company.err_location_default": "هذا هو موقعك الافتراضي، لذا لا يمكن حذفه. اجعل موقعًا آخر هو الافتراضي أولًا.",
   "company.err_location_in_use": "لا يزال {count} صنف في هذا الموقع، لذا لا يمكن حذفه. انقلها إلى موقع آخر أولًا.",
   "company.err_location_has_assets": "لا يزال {count} أصل في هذا الموقع، لذا لا يمكن حذفه. انقلها إلى موقع آخر أولًا.",

@@ -5379,6 +5379,7 @@
   "company.err_permission_floor": "ይህ ፈቃድ ከ{role} በታች ላሉ ሚናዎች ሊሰጥ አይችልም። {role} ወይም ከፍ ያለ ሚና ይምረጡ።",
   "company.err_location_invalid": "ያ ቦታ ትክክል አይደለም። እንደገና ሞክር ይምረጡና እንደገና ይምረጡት።",
   "company.err_location_not_found": "Celerp ይህን ቦታ ማግኘት አልቻለም። ተሰርዞ ሊሆን ይችላል። እንደገና ሞክር ይምረጡ።",
+  "company.err_location_name_taken": "A location called {name} already exists. Choose a different name.",
   "company.err_location_default": "ይህ ነባሪ ቦታዎ ስለሆነ ሊሰረዝ አይችልም። መጀመሪያ ሌላ ቦታ ነባሪ ያድርጉ።",
   "company.err_location_in_use": "በዚህ ቦታ አሁንም {count} ዕቃ(ዎች) ስላሉ ሊሰረዝ አይችልም። መጀመሪያ ወደ ሌላ ቦታ ያዛውሯቸው።",
   "company.err_location_has_assets": "በዚህ ቦታ አሁንም {count} ንብረት(ዎች) ስላሉ ሊሰረዝ አይችልም። መጀመሪያ ወደ ሌላ ቦታ ያዛውሯቸው።",

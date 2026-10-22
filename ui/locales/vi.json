@@ -5379,6 +5379,7 @@
   "company.err_permission_floor": "Không thể cấp quyền này cho vai trò thấp hơn {role}. Hãy chọn {role} hoặc vai trò cao hơn.",
   "company.err_location_invalid": "Địa điểm đó không hợp lệ. Hãy chọn Thử lại, rồi chọn lại.",
   "company.err_location_not_found": "Celerp không tìm thấy địa điểm này. Có thể nó đã bị xóa. Hãy chọn Thử lại.",
+  "company.err_location_name_taken": "A location called {name} already exists. Choose a different name.",
   "company.err_location_default": "Đây là địa điểm mặc định của bạn nên không thể xóa. Hãy đặt một địa điểm khác làm mặc định trước.",
   "company.err_location_in_use": "Vẫn còn {count} mặt hàng ở địa điểm này nên không thể xóa. Hãy chuyển chúng sang địa điểm khác trước.",
   "company.err_location_has_assets": "Vẫn còn {count} tài sản ở địa điểm này nên không thể xóa. Hãy chuyển chúng sang địa điểm khác trước.",
