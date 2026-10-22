@@ -45,12 +45,14 @@ def _sales_tabs(active: str, lang: str = "en") -> FT:
 
 
 async def _numbering_content(token: str, doc_types: frozenset[str]) -> FT:
-    """The Numbering tab for ``doc_types``, or the reason the counters cannot be shown
-    (for example a company timezone Celerp does not recognize)."""
+    """The Numbering tab for ``doc_types``, or the reason the counters cannot be shown,
+    with a link to Company Details when the company time zone is the reason."""
     try:
         sequences = await api.get_doc_sequences(token)
     except APIError as e:
-        return P(str(e.detail), cls="cell-error")
+        fix = (A(t("nav.company_details"), href="/finance/company-details", cls="btn btn--secondary btn--xs")
+               if (e.data or {}).get("code") == "company_timezone" else "")
+        return Div(P(str(e.detail), cls="cell-error"), fix)
     return _numbering_tab([s for s in sequences if s.get("doc_type") in doc_types])
 
 

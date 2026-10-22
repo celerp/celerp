@@ -71,7 +71,8 @@
     "th.compound",
     "settings.value_must_be_yes_or_no",
     "notice.customs_freeze.title",
-    "notice.customs_freeze.body"
+    "notice.customs_freeze.body",
+    "error.company_timezone_unknown"
   ],
   "ar": [
     "account.email_placeholder",
@@ -133,7 +134,8 @@
     "th.compound",
     "settings.value_must_be_yes_or_no",
     "notice.customs_freeze.title",
-    "notice.customs_freeze.body"
+    "notice.customs_freeze.body",
+    "error.company_timezone_unknown"
   ],
   "de": [
     "acct.source_system",
@@ -266,7 +268,8 @@
     "th.compound",
     "settings.value_must_be_yes_or_no",
     "notice.customs_freeze.title",
-    "notice.customs_freeze.body"
+    "notice.customs_freeze.body",
+    "error.company_timezone_unknown"
   ],
   "es": [
     "account.plan",
@@ -372,7 +375,8 @@
     "th.compound",
     "settings.value_must_be_yes_or_no",
     "notice.customs_freeze.title",
-    "notice.customs_freeze.body"
+    "notice.customs_freeze.body",
+    "error.company_timezone_unknown"
   ],
   "fr": [
     "acct.tab_journal",
@@ -519,7 +523,8 @@
     "th.compound",
     "settings.value_must_be_yes_or_no",
     "notice.customs_freeze.title",
-    "notice.customs_freeze.body"
+    "notice.customs_freeze.body",
+    "error.company_timezone_unknown"
   ],
   "id": [
     "acct.source_manual",
@@ -650,7 +655,8 @@
     "th.compound",
     "settings.value_must_be_yes_or_no",
     "notice.customs_freeze.title",
-    "notice.customs_freeze.body"
+    "notice.customs_freeze.body",
+    "error.company_timezone_unknown"
   ],
   "it": [
     "attr.volume_l",
@@ -753,7 +759,8 @@
     "th.compound",
     "settings.value_must_be_yes_or_no",
     "notice.customs_freeze.title",
-    "notice.customs_freeze.body"
+    "notice.customs_freeze.body",
+    "error.company_timezone_unknown"
   ],
   "ja": [
     "account.email_placeholder",
@@ -825,7 +832,8 @@
     "th.compound",
     "settings.value_must_be_yes_or_no",
     "notice.customs_freeze.title",
-    "notice.customs_freeze.body"
+    "notice.customs_freeze.body",
+    "error.company_timezone_unknown"
   ],
   "pt": [
     "acct.source_manual",
@@ -942,7 +950,8 @@
     "th.compound",
     "settings.value_must_be_yes_or_no",
     "notice.customs_freeze.title",
-    "notice.customs_freeze.body"
+    "notice.customs_freeze.body",
+    "error.company_timezone_unknown"
   ],
   "th": [
     "account.email_placeholder",
@@ -1012,7 +1021,8 @@
     "th.compound",
     "settings.value_must_be_yes_or_no",
     "notice.customs_freeze.title",
-    "notice.customs_freeze.body"
+    "notice.customs_freeze.body",
+    "error.company_timezone_unknown"
   ],
   "vi": [
     "btn.u00d7",
@@ -1086,6 +1096,7 @@
     "th.compound",
     "settings.value_must_be_yes_or_no",
     "notice.customs_freeze.title",
-    "notice.customs_freeze.body"
+    "notice.customs_freeze.body",
+    "error.company_timezone_unknown"
   ]
 }

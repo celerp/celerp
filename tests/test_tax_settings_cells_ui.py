@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, patch
 
+import re
+
 import pytest
 
 from test_ui import _authed, ui_client  # noqa: F401  (ui_client is a fixture)
@@ -118,14 +120,15 @@ async def test_tax_cell_escape_restores_the_display_cell(ui_client, prefix, gnam
 
 @pytest.mark.parametrize("page", ["/settings/sales?tab=numbering", "/settings/purchasing?tab=numbering"])
 async def test_numbering_tab_shows_the_timezone_error(ui_client, page):
-    message = "Mars/Olympus isn't a time zone Celerp recognizes. Choose one from the list."
+    """The tab names the company time zone as the reason and links to the page that sets it."""
+    message = t("error.company_timezone_unknown", "en")
+    refusal = APIError(422, message, data={"detail": message, "code": "company_timezone"})
     ui_client.cookies.update(_authed())
-    with patch("ui.api_client.get_doc_sequences", new=AsyncMock(side_effect=APIError(422, message))), \
+    with patch("ui.api_client.get_doc_sequences", new=AsyncMock(side_effect=refusal)), \
          patch("ui.api_client.get_taxes", new=AsyncMock(side_effect=lambda *_: _taxes())), \
          patch("ui.api_client.get_purchasing_taxes", new=AsyncMock(side_effect=lambda *_: _taxes())), \
          patch("ui.api_client.get_purchasing_payment_terms", new=AsyncMock(return_value=[])), \
          patch("ui.api_client.get_company", new=AsyncMock(return_value={"current_role": "owner", "settings": {}})):
         r = await ui_client.get(page)
     assert r.status_code == 200
-    assert message in r.text
-    assert "cell-error" in r.text
+    assert re.search(r'<p class="cell-error">' + re.escape(message) + r'</p>\s*<a href="/finance/company-details"', r.text)

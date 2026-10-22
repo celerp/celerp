@@ -811,8 +811,10 @@ async def code_conflict_handler(_request: Request, exc: CodeConflictError):
 @app.exception_handler(InvalidTimezoneError)
 async def invalid_timezone_handler(_request: Request, exc: InvalidTimezoneError):
     # Any request that needs the business day (numbering a document, previewing a counter)
-    # is refused with the reason before it stores anything, without a try in every route.
-    return JSONResponse(status_code=422, content={"detail": str(exc)})
+    # is refused before it stores anything, without a try in every route. The message names
+    # the page that sets the time zone, and the code lets a page link there.
+    return JSONResponse(status_code=422, content={
+        "detail": t("error.company_timezone_unknown"), "code": "company_timezone"})
 
 
 @app.exception_handler(UnhandledEventsError)
