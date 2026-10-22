@@ -567,6 +567,8 @@ async def apply_firm_journal(company_id: uuid.UUID, grant_id: uuid.UUID, firm: s
         hold = dict(company_id=company_id, source_company_id=firm_company, entity_type="journals",
                     source_entity_id=firm_je)
         if reason is not None:
+            # Read before the rollback, which expires every row the session holds.
+            told = held is not None and held.refused == reason
             await session.rollback()
             await _notify(session, company_id, "notice.peer_journal_declined", memo=memo,
                           date=str(item.get("ts"))[:10], firm=firm, reason=reason,
@@ -576,7 +578,6 @@ async def apply_firm_journal(company_id: uuid.UUID, grant_id: uuid.UUID, firm: s
             else:
                 await peer_attention.clear(session, **hold)
             await session.commit()
-            told = held is not None and held.refused == reason
             return Fetched("skipped", None if told else _answer_record(item, reason), reason, placed.locked)
         await peer_attention.clear(session, **hold)
         entries = placed.entries

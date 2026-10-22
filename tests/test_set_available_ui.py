@@ -42,8 +42,9 @@ def _cookies():
 @pytest.mark.parametrize("base,is_list", [("docs", False), ("lists", True)])
 async def test_the_proxy_sends_one_request_by_line_id_with_its_key(ui_client, base, is_list):
     sent = AsyncMock(return_value={})
+    ui_client.cookies.update(_cookies())
     with patch("ui.api_client.set_lines_available", new=sent):
-        r = await ui_client.post(f"/{base}/x:1/set-available", cookies=_cookies(), data={
+        r = await ui_client.post(f"/{base}/x:1/set-available", data={
             "line_id": [_L0, _L1], f"qty[{_L1}]": "2", "idempotency_key": "k-1"})
     assert r.status_code == 204, r.text
     sent.assert_awaited_once()
@@ -59,8 +60,9 @@ async def test_the_proxy_shows_the_refusal(ui_client):
                        "message": "Cannot take back: S-1: nothing is out on this line",
                        "params": {"reasons": "S-1: nothing is out on this line"}}}
     refused = AsyncMock(side_effect=_api_error(422, body, json.dumps(body)))
+    ui_client.cookies.update(_cookies())
     with patch("ui.api_client.set_lines_available", new=refused):
-        r = await ui_client.post("/docs/x:1/set-available", cookies=_cookies(),
+        r = await ui_client.post("/docs/x:1/set-available",
                                  data={"line_id": [_L0], "idempotency_key": "k"})
     assert r.status_code != 204
     assert "nothing is out on this line" in (r.text + r.headers.get("HX-Trigger", ""))
@@ -69,8 +71,9 @@ async def test_the_proxy_shows_the_refusal(ui_client):
 @pytest.mark.asyncio
 async def test_an_action_sent_without_the_pages_key_is_refused_as_out_of_date(ui_client):
     sent = AsyncMock(return_value={})
+    ui_client.cookies.update(_cookies())
     with patch("ui.api_client.set_lines_available", new=sent):
-        r = await ui_client.post("/docs/x:1/set-available", cookies=_cookies(), data={"line_id": [_L0]})
+        r = await ui_client.post("/docs/x:1/set-available", data={"line_id": [_L0]})
     sent.assert_not_awaited()
     assert r.status_code != 204
 
@@ -85,11 +88,12 @@ async def test_the_toolbar_carries_the_pages_key():
 async def test_reserve_and_fulfil_proxies_send_line_ids_and_the_key(ui_client):
     reserve = AsyncMock(return_value={})
     fulfil = AsyncMock(return_value={})
+    ui_client.cookies.update(_cookies())
     with patch("ui.api_client.reserve_lines", new=reserve), patch("ui.api_client.fulfill_lines", new=fulfil):
-        r = await ui_client.post("/docs/x:1/reserve-lines", cookies=_cookies(), data={
+        r = await ui_client.post("/docs/x:1/reserve-lines", data={
             "line_id": [_L0], "new_status": "reserved", "idempotency_key": "k-r"})
         assert r.status_code == 204, r.text
-        r = await ui_client.post("/docs/x:1/fulfill-lines", cookies=_cookies(), data={
+        r = await ui_client.post("/docs/x:1/fulfill-lines", data={
             "line_id": [_L0], "idempotency_key": "k-f"})
         assert r.status_code == 204, r.text
     assert reserve.await_args.kwargs == {"line_ids": [_L0], "line_entity_ids": [], "new_status": "reserved",

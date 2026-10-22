@@ -96,9 +96,8 @@ _ACTIONS = [
 async def _toast(ui_client, method, path, api_fn, form, code, error) -> str:
     call = AsyncMock(side_effect=error)
     with patch(f"ui.api_client.{api_fn}", new=call):
-        kwargs = {"cookies": {**_authed(), "celerp_lang": code}}
-        if form is not None:
-            kwargs["data"] = form
+        ui_client.cookies.update({**_authed(), "celerp_lang": code})
+        kwargs = {"data": form} if form is not None else {}
         r = await getattr(ui_client, method)(path, **kwargs)
     call.assert_awaited_once()
     assert r.status_code == 200, r.text

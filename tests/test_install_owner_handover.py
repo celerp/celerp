@@ -49,7 +49,8 @@ def _api(install_owner: bool, transfer=None):
 async def _users_tab(client, install_owner: bool, role: str = "owner") -> str:
     a, b, c, d = _api(install_owner)
     with a, b, c, d:
-        r = await client.get("/settings/general?tab=users", cookies=_cookies(role))
+        client.cookies.update(_cookies(role))
+        r = await client.get("/settings/general?tab=users")
     assert r.status_code == 200
     return r.text
 
@@ -75,8 +76,9 @@ async def test_handover_is_hidden_from_anyone_but_the_installation_owner(ui_clie
 async def test_handover_redraws_the_card_in_place_and_drops_the_control(ui_client):
     transfer = AsyncMock(return_value={"ok": True})
     a, b, c, d = _api(install_owner=False, transfer=transfer)
+    ui_client.cookies.update(_cookies())
     with a, b, c, d:
-        r = await ui_client.post(f"/settings/users/{_HEIR}/installation-owner", cookies=_cookies(), headers=_HX)
+        r = await ui_client.post(f"/settings/users/{_HEIR}/installation-owner", headers=_HX)
     transfer.assert_awaited_once()
     assert transfer.await_args.args[1] == _HEIR
     assert r.status_code == 200
@@ -91,8 +93,9 @@ async def test_handover_redraws_the_card_in_place_and_drops_the_control(ui_clien
 async def test_refused_handover_says_why_and_changes_nothing(ui_client):
     transfer = AsyncMock(side_effect=APIError(403, "Installation owner access required"))
     a, b, c, d = _api(install_owner=False, transfer=transfer)
+    ui_client.cookies.update(_cookies("admin"))
     with a, b, c, d:
-        r = await ui_client.post(f"/settings/users/{_HEIR}/installation-owner", cookies=_cookies("admin"), headers=_HX)
+        r = await ui_client.post(f"/settings/users/{_HEIR}/installation-owner", headers=_HX)
     assert "Installation owner access required" in r.text
     assert "flash--error" in r.text
     assert "is now the installation owner" not in r.text
@@ -105,8 +108,9 @@ async def test_users_table_shows_who_owns_the_installation(ui_client, install_ow
     rights, and only that user carries the mark."""
     users = {"items": [{**u, "is_install_owner": u["id"] == _ME} for u in _USERS["items"]]}
     a, b, c, d = _api(install_owner)
+    ui_client.cookies.update(_cookies(role))
     with a, b, c, d, patch("ui.api_client.get_users", new=AsyncMock(return_value=users)):
-        r = await ui_client.get("/settings/general?tab=users", cookies=_cookies(role))
+        r = await ui_client.get("/settings/general?tab=users")
     rows = r.text.split('class="data-row"')[1:]
     owner_row = next(row for row in rows if "me@example.com" in row)
     assert 'class="badge badge--neutral ml-sm">Installation owner</span>' in owner_row

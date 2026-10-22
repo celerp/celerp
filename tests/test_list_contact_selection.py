@@ -63,12 +63,13 @@ def _company():
 @pytest.mark.parametrize("field", ["contact_id", "contact_company_name"])
 async def test_list_contact_edit_renders_document_customer_selector(ui_client, field):
     lists_contacts = AsyncMock(return_value={"items": _CONTACTS, "total": len(_CONTACTS)})
+    ui_client.cookies.update(_authed())
     with (
         patch("ui.api_client.get_company", new=_company()),
         patch("ui.api_client.get_list", new=AsyncMock(return_value=_list(contact_id="contact:3"))),
         patch("ui.api_client.list_contacts", new=lists_contacts),
     ):
-        r = await ui_client.get(f"/lists/list:Q-1/field/{field}/edit", cookies=_authed())
+        r = await ui_client.get(f"/lists/list:Q-1/field/{field}/edit")
     assert r.status_code == 200
     html = r.text
     assert "combobox-wrap" in html
@@ -85,14 +86,15 @@ async def test_list_contact_edit_renders_document_customer_selector(ui_client, f
 async def test_list_and_document_editors_render_the_same_selector(ui_client):
     """One shared renderer: only the save wiring differs between a doc and a List."""
     doc = {"entity_id": "doc:INV-1", "doc_type": "invoice", "status": "draft", "contact_id": "contact:3"}
+    ui_client.cookies.update(_authed())
     with (
         patch("ui.api_client.get_company", new=_company()),
         patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)),
         patch("ui.api_client.get_list", new=AsyncMock(return_value=_list(contact_id="contact:3"))),
         patch("ui.api_client.list_contacts", new=AsyncMock(return_value={"items": _CONTACTS})),
     ):
-        doc_html = (await ui_client.get("/docs/doc:INV-1/field/contact_id/edit", cookies=_authed())).text
-        list_html = (await ui_client.get("/lists/list:Q-1/field/contact_id/edit", cookies=_authed())).text
+        doc_html = (await ui_client.get("/docs/doc:INV-1/field/contact_id/edit")).text
+        list_html = (await ui_client.get("/lists/list:Q-1/field/contact_id/edit")).text
     for html in (doc_html, list_html):
         assert "Customer 11" in html
         assert 'data-value="__new__"' in html
@@ -101,9 +103,9 @@ async def test_list_and_document_editors_render_the_same_selector(ui_client):
 
 @pytest.mark.asyncio
 async def test_list_contact_add_new_goes_to_customers(ui_client):
+    ui_client.cookies.update(_authed())
     with patch("ui.api_client.patch_list", new=AsyncMock()) as mock_patch:
-        r = await ui_client.patch("/lists/list:Q-1/field/contact_id", data={"value": "__new__"},
-                                  cookies=_authed())
+        r = await ui_client.patch("/lists/list:Q-1/field/contact_id", data={"value": "__new__"})
     assert r.status_code == 204
     assert r.headers["HX-Redirect"] == "/contacts/customers"
     mock_patch.assert_not_awaited()
@@ -111,9 +113,10 @@ async def test_list_contact_add_new_goes_to_customers(ui_client):
 
 @pytest.mark.asyncio
 async def test_list_contact_display_shows_name_not_id(ui_client):
+    ui_client.cookies.update(_authed())
     with patch("ui.api_client.get_list", new=AsyncMock(
             return_value=_list(contact_id="contact:alice", contact_name="Alice"))):
-        r = await ui_client.get("/lists/list:Q-1/field/contact_id/display", cookies=_authed())
+        r = await ui_client.get("/lists/list:Q-1/field/contact_id/display")
     assert "Alice" in r.text
     assert "contact:alice" not in r.text.replace("/lists/list:Q-1", "")
 
@@ -122,14 +125,14 @@ async def test_list_contact_display_shows_name_not_id(ui_client):
 
 @pytest.mark.asyncio
 async def test_list_contact_selection_sends_only_contact_and_version(ui_client):
+    ui_client.cookies.update(_authed())
     with (
         patch("ui.api_client.patch_list", new=AsyncMock(return_value={"version": 11})) as mock_patch,
         patch("ui.api_client.get_contact", new=AsyncMock(return_value=_CONTACT)) as mock_contact,
         patch("ui.api_client.reprice_list", new=AsyncMock()) as mock_reprice,
     ):
         r = await ui_client.patch("/lists/list:Q-1/field/contact_id",
-                                  data={"value": "contact:alice", "expected_version": "10"},
-                                  cookies=_authed())
+                                  data={"value": "contact:alice", "expected_version": "10"})
     assert r.status_code == 204
     # Whole page refresh so customer details and repriced lines update together.
     assert r.headers["HX-Redirect"] == "/lists/list:Q-1"
@@ -144,11 +147,11 @@ async def test_list_contact_selection_sends_only_contact_and_version(ui_client):
 async def test_list_selection_error_is_reported(ui_client):
     """A refused selection (stale version, missing price permission) surfaces, never a silent redirect."""
     from ui.api_client import APIError
+    ui_client.cookies.update(_authed())
     with patch("ui.api_client.patch_list",
                new=AsyncMock(side_effect=APIError(403, "Requires the set_sales_doc_prices permission"))):
         r = await ui_client.patch("/lists/list:Q-1/field/contact_id",
-                                  data={"value": "contact:alice", "expected_version": "10"},
-                                  cookies=_authed())
+                                  data={"value": "contact:alice", "expected_version": "10"})
     assert "HX-Redirect" not in r.headers
     assert "set_sales_doc_prices" in r.headers["HX-Trigger"]
 
@@ -156,6 +159,7 @@ async def test_list_selection_error_is_reported(ui_client):
 @pytest.mark.asyncio
 async def test_document_contact_selection_sends_only_contact_and_version(ui_client):
     doc = {"entity_id": "doc:INV-1", "doc_type": "invoice", "status": "draft", "version": 6}
+    ui_client.cookies.update(_authed())
     with (
         patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)),
         patch("ui.api_client.get_contact", new=AsyncMock(return_value=_CONTACT)) as mock_contact,
@@ -163,8 +167,7 @@ async def test_document_contact_selection_sends_only_contact_and_version(ui_clie
         patch("ui.api_client.reprice_doc", new=AsyncMock()) as mock_reprice,
     ):
         r = await ui_client.patch("/docs/doc:INV-1/field/contact_id",
-                                  data={"value": "contact:alice", "expected_version": "5"},
-                                  cookies=_authed())
+                                  data={"value": "contact:alice", "expected_version": "5"})
     assert r.status_code == 204
     assert r.headers["HX-Redirect"] == "/docs/doc:INV-1"
     assert mock_patch.await_args.args[1:] == ("doc:INV-1", {"contact_id": "contact:alice"})
@@ -176,12 +179,13 @@ async def test_document_contact_selection_sends_only_contact_and_version(ui_clie
 @pytest.mark.asyncio
 async def test_contact_pickers_post_the_page_version(ui_client):
     doc = {"entity_id": "doc:INV-1", "doc_type": "invoice", "status": "draft", "contact_id": "contact:3"}
+    ui_client.cookies.update(_authed())
     with (
         patch("ui.api_client.get_company", new=_company()),
         patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)),
         patch("ui.api_client.list_contacts", new=AsyncMock(return_value={"items": _CONTACTS})),
     ):
-        html = (await ui_client.get("/docs/doc:INV-1/field/contact_id/edit", cookies=_authed())).text
+        html = (await ui_client.get("/docs/doc:INV-1/field/contact_id/edit")).text
     assert "js:{expected_version: window._celerpEntityVersion}" in html
 
 

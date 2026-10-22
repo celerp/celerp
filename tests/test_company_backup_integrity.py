@@ -41,8 +41,6 @@ from test_company_backup import (
     _r_with_rows,
 )
 
-pytestmark = pytest.mark.asyncio
-
 
 def _cb():
     from celerp.services import company_backup

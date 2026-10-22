@@ -36,31 +36,35 @@ def _unlisted():
 
 async def test_the_worksheet_marks_a_deleted_component(ui_client):
     recipe_item = {**_ITEM, "id": "item:cake", "recipe": {"components": [{"item_id": "item:flour", "quantity": 2}]}}
+    ui_client.cookies.update(_authed())
     with (patch("ui.api_client.get_item", new=AsyncMock(return_value=recipe_item)), _unlisted(), _items(FLOUR),
           patch("ui.api_client.get_category_labels", new=AsyncMock(return_value={}))):
-        r = await ui_client.get("/inventory/item:cake/worksheet/print", cookies=_authed())
+        r = await ui_client.get("/inventory/item:cake/worksheet/print")
     assert r.status_code == 200, r.text
     assert "FLOUR [Deleted]" in r.text
 
 
 async def test_the_run_sheet_marks_a_deleted_input(ui_client):
+    ui_client.cookies.update(_authed())
     with patch("ui.api_client.get_mfg_order", new=AsyncMock(return_value=RUN)), _unlisted(), _items(FLOUR):
-        r = await ui_client.get(f"/manufacturing/{RUN['id']}/run-sheet/print", cookies=_authed())
+        r = await ui_client.get(f"/manufacturing/{RUN['id']}/run-sheet/print")
     assert r.status_code == 200, r.text
     assert "FLOUR [Deleted]" in r.text
 
 
 async def test_the_run_queue_marks_a_deleted_product(ui_client):
+    ui_client.cookies.update(_authed())
     with patch("ui.api_client.list_mfg_orders", new=AsyncMock(return_value={"items": [RUN]})), _items(CAKE):
-        r = await ui_client.get("/manufacturing/production", cookies=_authed())
+        r = await ui_client.get("/manufacturing/production")
     assert r.status_code == 200, r.text
     assert "CAKE [Deleted]" in r.text
 
 
 async def test_the_run_queue_leaves_a_product_that_is_not_deleted_unmarked(ui_client):
+    ui_client.cookies.update(_authed())
     with (patch("ui.api_client.list_mfg_orders", new=AsyncMock(return_value={"items": [RUN]})),
           _items({**CAKE, "status": "draft"})):
-        r = await ui_client.get("/manufacturing/production", cookies=_authed())
+        r = await ui_client.get("/manufacturing/production")
     assert r.status_code == 200, r.text
     assert "CAKE" in r.text and "[Deleted]" not in r.text
 
@@ -68,11 +72,12 @@ async def test_the_run_queue_leaves_a_product_that_is_not_deleted_unmarked(ui_cl
 async def test_the_reconcile_screen_marks_a_deleted_component_and_product(ui_client):
     needs = {"reason": "books disagree", "components": [{"item_id": "item:flour", "quantity": 2.5, "sku": "FLOUR",
                                                           "name": "Flour"}]}
+    ui_client.cookies.update(_authed())
     with (patch("ui.api_client.get_mfg_order", new=AsyncMock(return_value=RUN)),
           patch("ui.api_client.mfg_reconcile_needs", new=AsyncMock(return_value=needs)),
           patch("ui.api_client.get_posting_accounts", new=AsyncMock(return_value={"roles": [], "older_stock": {}})),
           _items(FLOUR, CAKE)):
-        r = await ui_client.get(f"/manufacturing/runs/{RUN['id']}/reconcile", cookies=_authed())
+        r = await ui_client.get(f"/manufacturing/runs/{RUN['id']}/reconcile")
     assert r.status_code == 200, r.text
     assert "FLOUR [Deleted]" in r.text
     assert "CAKE [Deleted]" in r.text
@@ -84,6 +89,7 @@ _MUM = {"id": "item:mum", "sku": "MUM", "name": "Mother", "status": "deleted"}
 
 
 async def test_the_activity_tab_marks_a_deleted_split_parent(ui_client):
+    ui_client.cookies.update(_authed())
     with (
         patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
         patch("ui.api_client.get_item", new=AsyncMock(return_value={**_ITEM, "split_from": "item:mum"})),
@@ -97,13 +103,14 @@ async def test_the_activity_tab_marks_a_deleted_split_parent(ui_client):
         patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         _items(_MUM),
     ):
-        r = await ui_client.get("/inventory/gc:123?tab=activity", cookies=_authed())
+        r = await ui_client.get("/inventory/gc:123?tab=activity")
     assert r.status_code == 200, r.text
     assert "MUM [Deleted]" in r.text
 
 
 async def test_the_full_history_marks_a_deleted_transform_parent(ui_client):
     event = {**_SPLIT_FROM, "event_type": "item.transformed_from"}
+    ui_client.cookies.update(_authed())
     with (
         patch("ui.api_client.get_item", new=AsyncMock(return_value={**_ITEM, "transformed_from": "item:mum"})),
         patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
@@ -111,6 +118,6 @@ async def test_the_full_history_marks_a_deleted_transform_parent(ui_client):
         patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [event], "total": 1})),
         _items(_MUM),
     ):
-        r = await ui_client.get("/inventory/gc:123/history", cookies=_authed())
+        r = await ui_client.get("/inventory/gc:123/history")
     assert r.status_code == 200, r.text
     assert "MUM [Deleted]" in r.text

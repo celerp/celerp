@@ -74,6 +74,14 @@ def test_v1_low_level_records_and_batches_still_validate():
     assert record.cif_version == "1"
 
 
+def test_a_batch_records_when_it_was_made_in_utc():
+    from datetime import timedelta
+
+    from celerp.importers.schema import CIFBatch
+
+    assert CIFBatch(source="s", source_system="x").created_at.utcoffset() == timedelta(0)
+
+
 def test_the_migration_manifest_has_its_own_version_and_guard():
     from celerp.importers.schema import CIF_VERSION, MIGRATION_CIF_VERSION, CIFImportManifest
 

@@ -156,10 +156,10 @@ async def test_the_tab_ignores_a_page_it_cannot_read(ui_client):
 
 async def test_the_bulk_correction_posts_the_ticked_placements(ui_client):
     correct = AsyncMock(return_value={**_PAGED, "result": {"corrected": 1}})
+    ui_client.cookies.update(_cookies())
     with patch("ui.api_client.correct_older_stock", new=correct), \
          patch("ui.api_client.get_older_stock", new=AsyncMock(return_value=_PAGED)):
-        r = await ui_client.post("/settings/accounting/older-stock/corrections?kind=recognize&lots_offset=50",
-                                 cookies=_cookies(), data={"selected": ["p1", "p1", "p2"]})
+        r = await ui_client.post("/settings/accounting/older-stock/corrections?kind=recognize&lots_offset=50", data={"selected": ["p1", "p1", "p2"]})
 
     assert r.status_code == 200
     assert correct.await_args.args[1:] == (["p1", "p2"], "recognize")

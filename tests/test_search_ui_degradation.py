@@ -63,7 +63,8 @@ async def _search(ui_client, monkeypatch, answer, q="widget"):
         if hasattr(search_route.api, name):
             monkeypatch.setattr(search_route.api, name, _list_forbidden)
 
-    r = await ui_client.get("/search", params={"q": q}, cookies=_cookie())
+    ui_client.cookies.update(_cookie())
+    r = await ui_client.get("/search", params={"q": q})
     return r, calls
 
 

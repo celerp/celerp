@@ -1686,7 +1686,9 @@ def setup_routes(app):
             return RedirectResponse("/login", status_code=302)
         # The export is the list the user is looking at, in full: every filter and the
         # date window travel; the page does not.
-        from starlette.responses import Response, StreamingResponse
+        from starlette.responses import Response
+
+        from ui.streaming import ClosingStreamingResponse
         state = _doc_list_state(request)
         try:
             company = await api.get_company(token)
@@ -1702,7 +1704,7 @@ def setup_routes(app):
         out_headers = {"Content-Disposition": "attachment; filename=documents.csv"}
         if "content-length" in headers:
             out_headers["Content-Length"] = headers["content-length"]
-        return StreamingResponse(stream, media_type="text/csv", headers=out_headers)
+        return ClosingStreamingResponse(stream, media_type="text/csv", headers=out_headers)
 
     @app.post("/docs/create-blank")
     async def create_blank_doc(request: Request):
@@ -4361,7 +4363,9 @@ celerpUpdateBulkAlloc();
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
-        from starlette.responses import Response, StreamingResponse
+        from starlette.responses import Response
+
+        from ui.streaming import ClosingStreamingResponse
         state = _list_page_state(request)
         try:
             company = await api.get_company(token)
@@ -4376,7 +4380,7 @@ celerpUpdateBulkAlloc();
         out_headers = {"Content-Disposition": "attachment; filename=lists.csv"}
         if "content-length" in headers:
             out_headers["Content-Length"] = headers["content-length"]
-        return StreamingResponse(stream, media_type="text/csv", headers=out_headers)
+        return ClosingStreamingResponse(stream, media_type="text/csv", headers=out_headers)
 
     @app.post("/lists/create-blank")
     async def create_blank_list(request: Request):

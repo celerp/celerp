@@ -92,9 +92,9 @@ def _list_page_stub(payload: dict) -> AsyncMock:
 async def _inventory_import_with_mapping(ui_client, csv_bytes: bytes, plan: dict | None = None):
     """Post CSV to preview, apply the default column mapping, and return the review
     of the saved draft, planned by the server as ``plan`` (a clean plan by default)."""
+    ui_client.cookies.update(_authed())
     r = await ui_client.post(
         "/inventory/import/preview",
-        cookies=_authed(),
         files={"csv_file": ("items.csv", csv_bytes, "text/csv")},
     )
     assert r.status_code == 200
@@ -118,14 +118,15 @@ async def _inventory_import_with_mapping(ui_client, csv_bytes: bytes, plan: dict
 
     with patch("ui.api_client.plan_import_rows", new=AsyncMock(return_value=plan or _CLEAN_ROWS_PREVIEW)), \
          patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])):
+        ui_client.cookies.update(_authed())
         r = await ui_client.post(
             "/inventory/import/mapped",
-            cookies=_authed(),
             data=form_data,
         )
         if r.status_code != 303:
             return r
-        return await ui_client.get(r.headers["location"], cookies=_authed())
+        ui_client.cookies.update(_authed())
+        return await ui_client.get(r.headers["location"])
 
 
 # A clean server plan of one mapped inventory row, and the hash its import echoes.
@@ -138,9 +139,9 @@ async def _generic_import_with_mapping(ui_client, csv_bytes: bytes, preview_url:
 
     Generic helper for any import flow that uses the column mapping step.
     """
+    ui_client.cookies.update(_authed())
     r = await ui_client.post(
         preview_url,
-        cookies=_authed(),
         files={"csv_file": ("data.csv", csv_bytes, "text/csv")},
     )
     assert r.status_code == 200
@@ -161,9 +162,9 @@ async def _generic_import_with_mapping(ui_client, csv_bytes: bytes, preview_url:
         else:
             form_data[f"map__{col}"] = MAPPING_ATTRIBUTE
 
+    ui_client.cookies.update(_authed())
     return await ui_client.post(
         mapped_url,
-        cookies=_authed(),
         data=form_data,
     )
 
@@ -409,7 +410,8 @@ class TestAuthRouting:
     @pytest.mark.asyncio
     async def test_activating_page_renders(self, ui_client):
         """GET /setup/activating shows the module-load spinner page."""
-        r = await ui_client.get("/setup/activating", cookies=_authed())
+        ui_client.cookies.update(_authed())
+        r = await ui_client.get("/setup/activating")
         assert r.status_code == 200
         assert b"Activating" in r.content
         assert b"poll" in r.content or b"/health" in r.content
@@ -426,8 +428,9 @@ class TestAuthRouting:
     @pytest.mark.asyncio
     async def test_authenticated_root_redirects_to_dashboard(self, ui_client):
         """GET / with auth cookie → /dashboard (no data gate)."""
+        ui_client.cookies.update(_authed())
         with patch("ui.routes.auth.bootstrap_status", new=AsyncMock(return_value=True)):
-            r = await ui_client.get("/", cookies=_authed())
+            r = await ui_client.get("/")
         assert r.status_code in (302, 303)
         assert "/dashboard" in r.headers.get("location", "")
 
@@ -455,15 +458,17 @@ class TestAuthRouting:
         import celerp.modules.slots as slots
         monkeypatch.setattr(slots, "get", lambda slot: [dict(i) for i in nav] if slot == "nav" else [])
         company = {"id": "c1", "name": "Acme", "settings": company_settings, "current_role": role}
+        ui_client.cookies.update(_authed(role=role))
         with patch("ui.routes.auth.api_get_company", new=AsyncMock(return_value=company)):
-            r = await ui_client.get("/", cookies=_authed(role=role))
+            r = await ui_client.get("/")
         assert r.status_code == 302
         assert r.headers["location"] == landing
 
     @pytest.mark.asyncio
     async def test_logout_post_clears_cookie_and_redirects(self, ui_client):
         """POST /logout → redirect to /login and clears auth cookie."""
-        r = await ui_client.post("/logout", cookies=_authed())
+        ui_client.cookies.update(_authed())
+        r = await ui_client.post("/logout")
         assert r.status_code in (302, 303)
         assert "/login" in r.headers.get("location", "")
         set_cookie = r.headers.get("set-cookie", "")
@@ -472,7 +477,8 @@ class TestAuthRouting:
     @pytest.mark.asyncio
     async def test_logout_get_fallback_clears_cookie(self, ui_client):
         """GET /logout (no-JS fallback) → redirect to /login and clears cookie."""
-        r = await ui_client.get("/logout", cookies=_authed())
+        ui_client.cookies.update(_authed())
+        r = await ui_client.get("/logout")
         assert r.status_code in (302, 303)
         assert "/login" in r.headers.get("location", "")
         set_cookie = r.headers.get("set-cookie", "")
@@ -603,13 +609,13 @@ class TestClickToEdit:
     @pytest.mark.asyncio
     async def test_edit_cell_text_returns_input(self, ui_client):
         """GET /api/items/{id}/field/{field}/edit for text field → HTML input."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
         ):
             r = await ui_client.get(
                 "/api/items/gc:123/field/name/edit",
-                cookies=_authed(),
             )
         assert r.status_code == 200
         assert b"<input" in r.content
@@ -617,13 +623,13 @@ class TestClickToEdit:
     @pytest.mark.asyncio
     async def test_edit_cell_status_returns_select(self, ui_client):
         """GET edit for a status field → <select> with all options."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
         ):
             r = await ui_client.get(
                 "/api/items/gc:123/field/status/edit",
-                cookies=_authed(),
             )
         assert r.status_code == 200
         assert b"<select" in r.content
@@ -638,13 +644,13 @@ class TestClickToEdit:
         This test documents current behavior. A future task should enforce 403 for
         non-editable fields and update this test.
         """
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
         ):
             r = await ui_client.get(
                 "/api/items/gc:123/field/total_cost/edit",
-                cookies=_authed(),
             )
         # Current behavior: returns 200 with an input (editable=False not enforced yet)
         assert r.status_code == 200
@@ -660,6 +666,7 @@ class TestClickToEdit:
         # Operator holds edit_inventory (default) but edit_inventory_amounts is
         # granted only to manager and up, so the amount cell must render read-only.
         company = {"settings": {"role_grants": {"edit_inventory_amounts": ["manager", "admin", "owner"]}}}
+        ui_client.cookies.update(_authed(role="operator"))
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=schema)),
             patch("ui.api_client.get_item", new=AsyncMock(return_value=item)),
@@ -669,7 +676,6 @@ class TestClickToEdit:
         ):
             r = await ui_client.get(
                 f"/api/items/gc:123/field/{field}/edit",
-                cookies=_authed(role="operator"),
             )
         assert r.status_code == 200
         assert b"<input" not in r.content
@@ -689,8 +695,10 @@ class TestClickToEdit:
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": []})),
             patch("ui.api_client.get_company", new=AsyncMock(return_value={"settings": {}})),
         ):
-            r = await ui_client.get(f"/api/items/gc:123/field/{field}/edit", cookies=_authed(role="operator"))
-            granted = await ui_client.get(f"/api/items/gc:123/field/{field}/edit", cookies=_authed(role="manager"))
+            ui_client.cookies.update(_authed(role="operator"))
+            r = await ui_client.get(f"/api/items/gc:123/field/{field}/edit")
+            ui_client.cookies.update(_authed(role="manager"))
+            granted = await ui_client.get(f"/api/items/gc:123/field/{field}/edit")
         assert r.status_code == 200
         assert b"<input" not in r.content
         assert b"<input" in granted.content
@@ -709,8 +717,10 @@ class TestClickToEdit:
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": []})),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=company)),
         ):
-            r = await ui_client.get("/api/items/gc:123/field/Wholesale/edit", cookies=_authed(role="operator"))
-            granted = await ui_client.get("/api/items/gc:123/field/Wholesale/edit", cookies=_authed(role="manager"))
+            ui_client.cookies.update(_authed(role="operator"))
+            r = await ui_client.get("/api/items/gc:123/field/Wholesale/edit")
+            ui_client.cookies.update(_authed(role="manager"))
+            granted = await ui_client.get("/api/items/gc:123/field/Wholesale/edit")
         assert r.status_code == 200
         assert b"<input" not in r.content
         assert b"<input" in granted.content
@@ -737,8 +747,10 @@ class TestClickToEdit:
             patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
-            operator = (await ui_client.get("/inventory/gc:123", cookies=_authed(role="operator"))).content
-            manager = (await ui_client.get("/inventory/gc:123", cookies=_authed(role="manager"))).content
+            ui_client.cookies.update(_authed(role="operator"))
+            operator = (await ui_client.get("/inventory/gc:123")).content
+            ui_client.cookies.update(_authed(role="manager"))
+            manager = (await ui_client.get("/inventory/gc:123")).content
         for key in (b"retail_price", b"wholesale_price"):
             assert b"/field/" + key + b"/edit" in manager
             assert b"/field/" + key + b"/edit" not in operator
@@ -766,6 +778,7 @@ class TestClickToEdit:
         # only to manager and up, so the sell_by cell must render read-only.
         company = {"settings": {"role_grants": {"edit_inventory_amounts": ["manager", "admin", "owner"]}}}
         units = [{"name": "piece", "unit_type": "count"}, {"name": "gram", "unit_type": "weight"}]
+        ui_client.cookies.update(_authed(role="operator"))
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=schema)),
             patch("ui.api_client.get_item", new=AsyncMock(return_value=item)),
@@ -776,7 +789,6 @@ class TestClickToEdit:
         ):
             r = await ui_client.get(
                 "/api/items/gc:123/field/sell_by/edit",
-                cookies=_authed(role="operator"),
             )
         assert r.status_code == 200
         assert b"<input" not in r.content
@@ -795,6 +807,7 @@ class TestClickToEdit:
         # only to manager and up, so the paired sell_by cell must render read-only.
         company = {"settings": {"role_grants": {"edit_inventory_amounts": ["manager", "admin", "owner"]}}}
         units = [{"name": "piece", "unit_type": "count"}, {"name": "gram", "unit_type": "weight"}]
+        ui_client.cookies.update(_authed(role="operator"))
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=schema)),
             patch("ui.api_client.get_item", new=AsyncMock(return_value=item)),
@@ -805,7 +818,6 @@ class TestClickToEdit:
         ):
             r = await ui_client.get(
                 "/api/items/gc:123/field/sell_by/paired-edit",
-                cookies=_authed(role="operator"),
             )
         assert r.status_code == 200
         assert b"<input" not in r.content
@@ -847,6 +859,7 @@ class TestClickToEdit:
     async def test_patch_item_field_returns_display_td(self, ui_client):
         """PATCH /api/items/{id}/field/{field} → saves, returns display <td> with new value."""
         updated = {**_ITEM, "name": "Sapphire"}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.patch_item", new=AsyncMock(return_value=updated)),
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
@@ -855,7 +868,6 @@ class TestClickToEdit:
             r = await ui_client.patch(
                 "/api/items/gc:123/field/name",
                 data={"value": "Sapphire"},
-                cookies=_authed(),
             )
         assert r.status_code == 200
         assert b"<td" in r.content
@@ -865,6 +877,7 @@ class TestClickToEdit:
     async def test_patch_cell_rewires_htmx_click_to_edit(self, ui_client):
         """The returned <td> after PATCH must include hx-get to re-enable click-to-edit."""
         updated = {**_ITEM, "name": "Emerald"}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.patch_item", new=AsyncMock(return_value=updated)),
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
@@ -873,7 +886,6 @@ class TestClickToEdit:
             r = await ui_client.patch(
                 "/api/items/gc:123/field/name",
                 data={"value": "Emerald"},
-                cookies=_authed(),
             )
         assert r.status_code == 200
         assert b"hx-get" in r.content
@@ -909,6 +921,7 @@ class TestClickToEdit:
     async def test_patch_item_empty_string_does_not_raise_dict_type_error(self, ui_client):
         """Blur with empty value on short_description must not return validation error."""
         updated = {**_ITEM, "short_description": ""}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.patch_item", new=AsyncMock(return_value=updated)),
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
@@ -917,7 +930,6 @@ class TestClickToEdit:
             r = await ui_client.patch(
                 "/api/items/gc:123/field/short_description",
                 data={"value": ""},
-                cookies=_authed(),
             )
         assert r.status_code == 200
         assert b"dict_type" not in r.content
@@ -931,6 +943,7 @@ class TestSearchPartials:
     @pytest.mark.asyncio
     async def test_inventory_search_htmx_returns_fragment(self, ui_client):
         """GET /inventory/search?q=... with HX-Request header → table fragment, not full page."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
@@ -943,7 +956,6 @@ class TestSearchPartials:
         ):
             r = await ui_client.get(
                 "/inventory/search?q=ruby",
-                cookies=_authed(),
                 headers={"HX-Request": "true"},
             )
         assert r.status_code == 200
@@ -953,6 +965,7 @@ class TestSearchPartials:
     @pytest.mark.asyncio
     async def test_inventory_search_empty_shows_empty_state(self, ui_client):
         """Search with no results → empty-state element, not blank or error."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
@@ -965,7 +978,6 @@ class TestSearchPartials:
         ):
             r = await ui_client.get(
                 "/inventory/search?q=xxxxxxnotfound",
-                cookies=_authed(),
                 headers={"HX-Request": "true"},
             )
         assert r.status_code == 200
@@ -974,6 +986,7 @@ class TestSearchPartials:
     @pytest.mark.asyncio
     async def test_inventory_search_without_htmx_returns_full_page(self, ui_client):
         """GET /inventory/search without HX-Request → full HTML page (for direct nav)."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
@@ -986,7 +999,6 @@ class TestSearchPartials:
         ):
             r = await ui_client.get(
                 "/inventory/search?q=ruby",
-                cookies=_authed(),
             )
         assert r.status_code == 200
         # Full page has doctype or <html>
@@ -996,6 +1008,7 @@ class TestSearchPartials:
     async def test_inventory_search_carries_active_status_filter(self, ui_client):
         """#167: the search box must carry the active status filter, so searching inside Sold
         inventory stays scoped to sold instead of falling back to the default active set."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
@@ -1008,7 +1021,7 @@ class TestSearchPartials:
             patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
             patch("ui.api_client.get_category_display_names", new=AsyncMock(return_value={})),
         ):
-            r = await ui_client.get("/inventory?status=sold", cookies=_authed())
+            r = await ui_client.get("/inventory?status=sold")
         assert r.status_code == 200
         # Assert specifically on the SEARCH INPUT's hx-get (status=sold also appears in other
         # content-fragment links like sort/pagination, so a bare `in content` check is not enough).
@@ -1023,6 +1036,7 @@ class TestSearchPartials:
         """#168: pagination must reflect the search-filtered list total, not the valuation's
         unfiltered item_count — otherwise a search shows phantom pages that render blank."""
         valuation = {**_VALUATION, "item_count": 137}  # unfiltered count
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
@@ -1035,7 +1049,7 @@ class TestSearchPartials:
             patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
             patch("ui.api_client.get_category_display_names", new=AsyncMock(return_value={})),
         ):
-            r = await ui_client.get("/inventory?status=sold&q=ruby", cookies=_authed())
+            r = await ui_client.get("/inventory?status=sold&q=ruby")
         assert r.status_code == 200
         assert b"1-3 of 3" in r.content, "pagination did not use the filtered list total"
         assert b"of 137" not in r.content, "pagination still uses the unfiltered valuation count"
@@ -1053,9 +1067,10 @@ class TestCompanySwitcher:
     @pytest.mark.asyncio
     async def test_switch_company_picker_renders(self, ui_client):
         """Topbar switcher fragment → renders company select with all company names."""
+        ui_client.cookies.update(_authed())
         with patch("ui.routes.settings.api") as mock_api:
             mock_api.my_companies = AsyncMock(return_value={"items": self._COMPANIES})
-            r = await ui_client.get("/topbar-company-switcher", cookies=_authed())
+            r = await ui_client.get("/topbar-company-switcher")
         assert r.status_code == 200
         assert b"Acme Trading Co" in r.content
         assert b"Acme Corp" in r.content
@@ -1074,8 +1089,9 @@ class TestCompanySwitcher:
             from ui.api_client import switch_company as api_switch
         so it must be patched at ui.api_client.switch_company.
         """
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.switch_company", new=AsyncMock(return_value=("new-token-xyz", "new-refresh-xyz"))):
-            r = await ui_client.post("/switch-company/c2", cookies=_authed())
+            r = await ui_client.post("/switch-company/c2")
         assert r.status_code in (302, 303)
         set_cookie = r.headers.get("set-cookie", "")
         assert "celerp_token" in set_cookie
@@ -1084,12 +1100,13 @@ class TestCompanySwitcher:
     @pytest.mark.asyncio
     async def test_switch_company_returns_to_a_local_next_and_never_off_site(self, ui_client):
         """?next= leads back to the page that offered the switch; anything not a local path leads home."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.switch_company", new=AsyncMock(return_value=("new-token-xyz", "new-refresh-xyz"))):
-            back = await ui_client.get("/switch-company/c2?next=/fixed-assets/assets/a1/dispose", cookies=_authed())
-            away = await ui_client.get("/switch-company/c2?next=//evil.example/x", cookies=_authed())
-            plain = await ui_client.get("/switch-company/c2", cookies=_authed())
+            back = await ui_client.get("/switch-company/c2?next=/fixed-assets/assets/a1/dispose")
+            away = await ui_client.get("/switch-company/c2?next=//evil.example/x")
+            plain = await ui_client.get("/switch-company/c2")
             # A dot segment would let the browser resolve a listed prefix to an unlisted page.
-            climbs = [await ui_client.get(f"/switch-company/c2?next={n}", cookies=_authed())
+            climbs = [await ui_client.get(f"/switch-company/c2?next={n}")
                       for n in ("/fixed-assets/../settings/users", "/fixed-assets/%2e%2e/settings/users",
                                 "/fixed-assets/./assets")]
         assert back.headers["location"] == "/fixed-assets/assets/a1/dispose"
@@ -1106,6 +1123,7 @@ class TestCompanySwitcher:
     @pytest.mark.asyncio
     async def test_company_picker_has_create_form(self, ui_client):
         """Settings company tab → 'New company' button links to setup wizard."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "Acme", "currency": "USD", "timezone": "UTC", "fiscal_year_start": "01-01", "tax_id": "", "phone": "", "email": "", "address": "", "settings": {}})),
             patch("ui.api_client.get_taxes", new=AsyncMock(return_value=[])),
@@ -1117,7 +1135,7 @@ class TestCompanySwitcher:
             patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
-            r = await ui_client.get("/settings/general?tab=company", cookies=_authed())
+            r = await ui_client.get("/settings/general?tab=company")
         assert r.status_code == 200
         assert b"setup/new-company" in r.content
 
@@ -1127,10 +1145,10 @@ class TestCompanySwitcher:
     @pytest.mark.asyncio
     async def test_create_company_empty_name_rejected(self, ui_client):
         """POST /setup/new-company with blank name → redirect with error."""
+        ui_client.cookies.update(_authed())
         r = await ui_client.post(
             "/setup/new-company",
             data={"company_name": "  "},
-            cookies=_authed(),
         )
         assert r.status_code in (302, 303)
         assert "error" in r.headers.get("location", "")
@@ -1145,6 +1163,7 @@ class TestCompanySwitcher:
     @pytest.mark.asyncio
     async def test_setup_company_invalid_currency_shows_error(self, ui_client):
         """POST /setup/company with free-text garbage currency → re-render form with error, no API call."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.patch_company", new=AsyncMock()) as mock_patch,
             patch("ui.api_client.get_company", new=AsyncMock(return_value={})),
@@ -1152,7 +1171,6 @@ class TestCompanySwitcher:
             r = await ui_client.post(
                 "/setup/company",
                 data={"currency": "FFF", "timezone": "UTC"},
-                cookies=_authed(),
             )
         assert r.status_code == 200
         assert b"Invalid currency" in r.content
@@ -1161,6 +1179,7 @@ class TestCompanySwitcher:
     @pytest.mark.asyncio
     async def test_setup_company_valid_currency_accepted(self, ui_client):
         """POST /setup/company with a valid ISO code → patch called, redirect."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.patch_company", new=AsyncMock()),
             patch("ui.api_client.get_company", new=AsyncMock(return_value={})),
@@ -1168,7 +1187,6 @@ class TestCompanySwitcher:
             r = await ui_client.post(
                 "/setup/company",
                 data={"currency": "THB", "timezone": "Asia/Bangkok"},
-                cookies=_authed(),
                 follow_redirects=False,
             )
         assert r.status_code in (200, 302, 303)
@@ -1209,6 +1227,7 @@ _USERS = [{"id": "u1", "name": "Owner", "email": "owner@test.example", "role": "
 class TestDashboardPage:
     @pytest.mark.asyncio
     async def test_dashboard_renders(self, ui_client):
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value=_VALUATION)),
@@ -1217,7 +1236,7 @@ class TestDashboardPage:
             patch("ui.api_client.my_companies", new=AsyncMock(return_value=_COMPANIES)),
             patch("ui.api_client.get_ar_aging", new=AsyncMock(return_value={"buckets": {"current": 100, "1-30": 50}, "lines": []})),
         ):
-            r = await ui_client.get("/dashboard", cookies=_authed())
+            r = await ui_client.get("/dashboard")
         assert r.status_code == 200
         assert b"Dashboard" in r.content
         assert b"Inventory" in r.content
@@ -1365,13 +1384,14 @@ class TestActivityFeed:
 class TestInventoryPage:
     @pytest.mark.asyncio
     async def test_inventory_renders(self, ui_client):
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [_ITEM], "total": 1})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value=_VALUATION)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
         ):
-            r = await ui_client.get("/inventory", cookies=_authed())
+            r = await ui_client.get("/inventory")
         assert r.status_code == 200
         assert b"Inventory" in r.content
         assert b"Ruby" in r.content
@@ -1384,13 +1404,14 @@ class TestInventoryPage:
         sold = {"entity_id": "gc:200", "name": "Sapphire", "status": "sold",
                 "status_doc_id": "doc:INV-2026-0001", "status_doc_number": "INV-2026-0001",
                 "total_cost": "900.00"}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [sold, _ITEM], "total": 2})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value=_VALUATION)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
         ):
-            r = await ui_client.get("/inventory", cookies=_authed())
+            r = await ui_client.get("/inventory")
         assert r.status_code == 200
         body = r.content.decode()
         assert 'href="/docs/doc:INV-2026-0001"' in body
@@ -1412,13 +1433,14 @@ class TestInventoryPage:
         and names how many sold rows have no recorded price."""
         sold = {**_ITEM, "entity_id": "gc:200", "status": "sold", "sold_price": 4200.0}
         resp = {"items": [sold], "total": 1, "sold_total": 4200.0, "sold_total_missing": 2}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.list_items", new=AsyncMock(return_value=resp)),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value=_VALUATION)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
         ):
-            r = await ui_client.get("/inventory?status=sold", cookies=_authed())
+            r = await ui_client.get("/inventory?status=sold")
         assert r.status_code == 200
         html = r.content.decode()
         card = html.split('class="status-cards"', 1)[1].split("</div>", 1)[0]
@@ -1436,13 +1458,14 @@ class TestInventoryPage:
             captured.update(params or {})
             return {"items": [{**_ITEM, "holding_value": 4200.0}], "total": 1, "value_total": 4200.0}
 
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.list_items", new=AsyncMock(side_effect=_fake_list_items)),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value=_VALUATION)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
         ):
-            r = await ui_client.get("/inventory?on_memo_to=ct:1", cookies=_authed())
+            r = await ui_client.get("/inventory?on_memo_to=ct:1")
         assert r.status_code == 200
         assert captured.get("on_memo_to") == "ct:1", "scope must reach the API call"
         body = r.content
@@ -1458,13 +1481,14 @@ class TestInventoryPage:
             captured.update(params or {})
             return {"items": [{**_ITEM, "holding_value": 1750.5}], "total": 1, "value_total": 1750.5}
 
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.list_items", new=AsyncMock(side_effect=_fake_list_items)),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value=_VALUATION)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
         ):
-            r = await ui_client.get("/inventory?consigned_from=ct:9", cookies=_authed())
+            r = await ui_client.get("/inventory?consigned_from=ct:9")
         assert r.status_code == 200
         assert captured.get("consigned_from") == "ct:9"
         assert b"Held on consignment from this supplier" in r.content
@@ -1473,13 +1497,14 @@ class TestInventoryPage:
     @pytest.mark.asyncio
     async def test_inventory_unscoped_has_no_holdings_banner(self, ui_client):
         """The banner and the scope column appear only under a contact scope."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [_ITEM], "total": 1})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value=_VALUATION)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
         ):
-            r = await ui_client.get("/inventory", cookies=_authed())
+            r = await ui_client.get("/inventory")
         assert r.status_code == 200
         assert b"holdings-scope-banner" not in r.content
 
@@ -1487,18 +1512,20 @@ class TestInventoryPage:
     async def test_inventory_empty_values_show_double_dash(self, ui_client):
         """Empty cell values must render as '--' not '-' or blank."""
         item_empty = {"entity_id": "gc:999", "name": "", "status": "", "total_cost": ""}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [item_empty], "total": 1})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value=_VALUATION)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
         ):
-            r = await ui_client.get("/inventory", cookies=_authed())
+            r = await ui_client.get("/inventory")
         assert r.status_code == 200
         assert b"--" in r.content
 
     @pytest.mark.asyncio
     async def test_inventory_sort_param_passes(self, ui_client):
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [_ITEM], "total": 1})),
@@ -1509,41 +1536,44 @@ class TestInventoryPage:
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value=_VALUATION)),
         ):
-            r = await ui_client.get("/inventory/search?sort=name&dir=asc", cookies=_authed())
+            r = await ui_client.get("/inventory/search?sort=name&dir=asc")
         assert r.status_code == 200
 
     @pytest.mark.asyncio
     async def test_inventory_per_page_param(self, ui_client):
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [_ITEM], "total": 1})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value=_VALUATION)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
         ):
-            r = await ui_client.get("/inventory?per_page=25", cookies=_authed())
+            r = await ui_client.get("/inventory?per_page=25")
         assert r.status_code == 200
 
     @pytest.mark.asyncio
     async def test_inventory_row_menu_present(self, ui_client):
         """Data table rows should have a three-dot action menu."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [_ITEM], "total": 1})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value=_VALUATION)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
         ):
-            r = await ui_client.get("/inventory", cookies=_authed())
+            r = await ui_client.get("/inventory")
         assert b"row-menu-btn" in r.content
 
 
 class TestCRMPage:
     @pytest.mark.asyncio
     async def test_crm_renders(self, ui_client):
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.list_contacts", new=AsyncMock(return_value={"items": _CONTACTS, "total": len(_CONTACTS)})),
             patch("ui.api_client.get_ar_aging", new=AsyncMock(return_value={"buckets": {}, "lines": []})),
         ):
-            r = await ui_client.get("/contacts/customers", cookies=_authed())
+            r = await ui_client.get("/contacts/customers")
         assert r.status_code == 200
         assert b"Customers" in r.content or b"Contacts" in r.content or b"CRM" in r.content
         assert b"Alice" in r.content
@@ -1551,28 +1581,31 @@ class TestCRMPage:
     @pytest.mark.asyncio
     async def test_crm_search(self, ui_client):
         # /contacts/search now redirects to /contacts/content (HTMX partial)
-        r = await ui_client.get("/contacts/search?q=alice", cookies=_authed(), follow_redirects=False)
+        ui_client.cookies.update(_authed())
+        r = await ui_client.get("/contacts/search?q=alice", follow_redirects=False)
         assert r.status_code == 302
         assert "/contacts/content" in r.headers.get("location", "")
 
     @pytest.mark.asyncio
     async def test_crm_empty(self, ui_client):
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.list_contacts", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_ar_aging", new=AsyncMock(return_value={"buckets": {}, "lines": []})),
         ):
-            r = await ui_client.get("/contacts/customers", cookies=_authed())
+            r = await ui_client.get("/contacts/customers")
         assert r.status_code == 200
         assert b"No customers" in r.content or b"No contacts" in r.content
 
     @pytest.mark.asyncio
     async def test_contact_detail(self, ui_client):
         contact = {**_CONTACTS[0], "address": "123 St", "payment_terms": "Net 30"}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_contact", new=AsyncMock(return_value=contact)),
             patch("ui.api_client.list_contact_docs", new=AsyncMock(return_value={"items": [], "total": 0})),
         ):
-            r = await ui_client.get("/contacts/ct:1", cookies=_authed())
+            r = await ui_client.get("/contacts/ct:1")
         assert r.status_code == 200
         assert b"Alice" in r.content
 
@@ -1590,12 +1623,13 @@ class TestCRMPage:
                 return {"items": [], "total": 0, "value_total": 1750.5}
             return {"items": [], "total": 0}
 
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_contact", new=AsyncMock(return_value=contact)),
             patch("ui.api_client.list_contact_docs", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_items", new=AsyncMock(side_effect=_fake_list_items)),
         ):
-            r = await ui_client.get("/contacts/ct:1", cookies=_authed())
+            r = await ui_client.get("/contacts/ct:1")
         assert r.status_code == 200
         body = r.content
         assert b"On Memo" in body
@@ -1609,12 +1643,13 @@ class TestCRMPage:
         Consignment card falls back to the document-derived total."""
         contact = {**_CONTACTS[0], "contact_type": "vendor"}
         docs = [{"doc_type": "consignment_in", "status": "received", "total_amount": 900.0}]
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_contact", new=AsyncMock(return_value=contact)),
             patch("ui.api_client.list_contact_docs", new=AsyncMock(return_value={"items": docs, "total": 1})),
             patch("ui.api_client.list_items", new=AsyncMock(side_effect=RuntimeError("api down"))),
         ):
-            r = await ui_client.get("/contacts/ct:1", cookies=_authed())
+            r = await ui_client.get("/contacts/ct:1")
         assert r.status_code == 200
         assert b"900.00" in r.content
         # Falls back to the document list, not a broken holdings link.
@@ -1624,22 +1659,24 @@ class TestCRMPage:
     async def test_crm_empty_values_show_double_dash(self, ui_client):
         contact = {"entity_id": "ct:2", "name": "Bob", "phone": None, "email": "",
                    "tax_id": "", "credit_limit": None, "contact_type": "customer"}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_contact", new=AsyncMock(return_value=contact)),
             patch("ui.api_client.list_contact_docs", new=AsyncMock(return_value={"items": [], "total": 0})),
         ):
-            r = await ui_client.get("/contacts/ct:2", cookies=_authed())
+            r = await ui_client.get("/contacts/ct:2")
         assert b"--" in r.content
 
 
 class TestDocsPage:
     @pytest.mark.asyncio
     async def test_docs_renders(self, ui_client):
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.list_docs", new=AsyncMock(return_value={"items": _DOCS, "total": len(_DOCS)})),
             patch("ui.api_client.get_doc_summary", new=AsyncMock(return_value=_DOC_SUMMARY)),
         ):
-            r = await ui_client.get("/docs", cookies=_authed())
+            r = await ui_client.get("/docs")
         assert r.status_code == 200
         assert b"Documents" in r.content
         assert b"INV-001" in r.content
@@ -1648,11 +1685,12 @@ class TestDocsPage:
     async def test_docs_drafts_view_with_ids_lists_only_that_batch(self, ui_client):
         """The drafts link from a bulk confirm passes the batch ids through and
         drops the date preset, since receipt dates may fall outside it."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.list_docs", new=AsyncMock(return_value={"items": _DOCS, "total": len(_DOCS)})) as listed,
             patch("ui.api_client.get_doc_summary", new=AsyncMock(return_value=_DOC_SUMMARY)),
         ):
-            r = await ui_client.get("/docs?view=drafts&ids=doc:1,doc:2", cookies=_authed())
+            r = await ui_client.get("/docs?view=drafts&ids=doc:1,doc:2")
         assert r.status_code == 200
         params = listed.await_args.kwargs.get("params") or listed.await_args.args[-1]
         assert params["ids"] == "doc:1,doc:2"
@@ -1661,23 +1699,26 @@ class TestDocsPage:
 
     @pytest.mark.asyncio
     async def test_docs_search(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.list_docs", new=AsyncMock(return_value={"items": _DOCS, "total": len(_DOCS)})):
-            r = await ui_client.get("/docs/search?q=INV", cookies=_authed())
+            r = await ui_client.get("/docs/search?q=INV")
         assert r.status_code == 200
 
     @pytest.mark.asyncio
     async def test_docs_empty(self, ui_client):
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.list_docs", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_doc_summary", new=AsyncMock(return_value=_DOC_SUMMARY)),
         ):
-            r = await ui_client.get("/docs", cookies=_authed())
+            r = await ui_client.get("/docs")
         assert b"No documents yet." in r.content
 
     @pytest.mark.asyncio
     async def test_doc_detail(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_DOC_DETAIL)):
-            r = await ui_client.get("/docs/d:1", cookies=_authed())
+            r = await ui_client.get("/docs/d:1")
         assert r.status_code == 200
         assert b"INV-001" in r.content
         # Doc number should be click-to-edit (editable-cell)
@@ -1696,8 +1737,9 @@ class TestDocsPage:
             "status": "draft",
             "line_items": [{"description": "Widget", "quantity": 1, "unit_price": 50}],
         }
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=draft_doc)):
-            r = await ui_client.get("/docs/d:1", cookies=_authed())
+            r = await ui_client.get("/docs/d:1")
         assert r.status_code == 200
         html = r.content
         assert b"catalog-ac-input" in html, (
@@ -1729,8 +1771,9 @@ class TestDocsPage:
                  "unit_price": 5, "line_total": 5},
             ],
         }
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=final_doc)):
-            r = await ui_client.get("/docs/d:1", cookies=_authed())
+            r = await ui_client.get("/docs/d:1")
         assert r.status_code == 200
         html = r.content.decode()
         # Catalog line: active eye linking to the item.
@@ -1747,11 +1790,12 @@ class TestDocsPage:
 
     @pytest.mark.asyncio
     async def test_docs_type_filter(self, ui_client):
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.list_docs", new=AsyncMock(return_value={"items": _DOCS, "total": len(_DOCS)})),
             patch("ui.api_client.get_doc_summary", new=AsyncMock(return_value=_DOC_SUMMARY)),
         ):
-            r = await ui_client.get("/docs?type=invoice", cookies=_authed())
+            r = await ui_client.get("/docs?type=invoice")
         assert r.status_code == 200
 
 
@@ -1767,8 +1811,9 @@ class TestDocCatalogSearch:
             "id": "item:abc",  # _flatten_item sets 'id', never 'entity_id'
             "sku": "SKU-1", "name": "Widget", "retail_price": 100,
         }
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [item], "total": 1})):
-            r = await ui_client.get("/docs/catalog-search?q=SKU-1", cookies=_authed())
+            r = await ui_client.get("/docs/catalog-search?q=SKU-1")
         assert r.status_code == 200
         results = r.json()
         assert results, "Expected at least one result"
@@ -1782,10 +1827,11 @@ class TestAccountingPage:
     @pytest.mark.asyncio
     async def test_accounting_renders(self, ui_client):
         """The accounting page is the journal; the reports moved to /reports."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_journal",
                    new=AsyncMock(return_value={"entries": [], "total_debit": 0,
                                                "total_credit": 0})):
-            r = await ui_client.get("/accounting", cookies=_authed())
+            r = await ui_client.get("/accounting")
         assert r.status_code == 200
         assert b"Accounting" in r.content
         assert b"/reports/pnl" in r.content
@@ -1793,9 +1839,10 @@ class TestAccountingPage:
     @pytest.mark.asyncio
     async def test_accounting_chart_in_settings(self, ui_client):
         """Chart of Accounts is in Finance Settings, not main accounting page."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_bank_accounts", new=AsyncMock(return_value={"items": []})), \
              patch("ui.api_client.get_chart", new=AsyncMock(return_value={"items": _CHART, "total": len(_CHART)})):
-            r = await ui_client.get("/settings/accounting?tab=chart", cookies=_authed())
+            r = await ui_client.get("/settings/accounting?tab=chart")
         assert r.status_code == 200
         assert b"Cash" in r.content
 
@@ -1808,12 +1855,13 @@ class TestAccountingPage:
         level with a message naming the line, not by a control the user cannot
         reach past (GDR 2e).
         """
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_chart",
                    new=AsyncMock(return_value={"items": _CHART, "total": len(_CHART)})), \
              patch("ui.api_client.get_company", new=AsyncMock(return_value={"currency": "THB"})), \
              patch("ui.api_client.list_contacts",
                    new=AsyncMock(return_value={"items": [], "total": 0})):
-            r = await ui_client.get("/accounting/journal/new", cookies=_authed())
+            r = await ui_client.get("/accounting/journal/new")
         assert r.status_code == 200
         html = r.content.decode()
         assert 'name="rate_' in html, "the journal form should offer a per-line rate"
@@ -1828,13 +1876,14 @@ class TestAccountingPage:
         Client companies, where Post again was chosen; there is no journal here to refresh."""
         from ui.api_client import APIError
         missing = AsyncMock(side_effect=APIError(404, t("acct.err_je_not_found")))
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.journal_prefill", new=missing), \
              patch("ui.api_client.get_chart",
                    new=AsyncMock(return_value={"items": _CHART, "total": len(_CHART)})), \
              patch("ui.api_client.get_company", new=AsyncMock(return_value={"currency": "THB"})), \
              patch("ui.api_client.list_contacts",
                    new=AsyncMock(return_value={"items": [], "total": 0})):
-            r = await ui_client.get("/accounting/journal/new?from=je-gone", cookies=_authed())
+            r = await ui_client.get("/accounting/journal/new?from=je-gone")
         assert r.status_code == 200
         page = html.unescape(r.content.decode())
         assert "The entry to post again is no longer in these books, so nothing was filled in." in page
@@ -1848,13 +1897,14 @@ class TestAccountingPage:
         copied = {"ts": "2026-10-18", "source_ts": "2026-09-30", "memo": "Rent", "entries": [
             {"account": "1000", "debit": 45.0, "credit": 0, "contact": None},
             {"account": "1000", "debit": 0, "credit": 45.0, "contact": None}]}
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.journal_prefill", new=AsyncMock(return_value=copied)), \
              patch("ui.api_client.get_chart",
                    new=AsyncMock(return_value={"items": _CHART, "total": len(_CHART)})), \
              patch("ui.api_client.get_company", new=AsyncMock(return_value={"currency": currency})), \
              patch("ui.api_client.list_contacts",
                    new=AsyncMock(return_value={"items": [], "total": 0})):
-            r = await ui_client.get("/accounting/journal/new?from=je-1", cookies=_authed())
+            r = await ui_client.get("/accounting/journal/new?from=je-1")
         assert r.status_code == 200
         page = r.content.decode()
         assert page.count(f'value="{shown}"') == 2
@@ -1867,14 +1917,15 @@ class TestAccountingPage:
         copied = {"ts": "2026-10-18", "source_ts": "2026-09-30", "memo": "Rent", "entries": [
             {"account": "1000", "debit": 45.0, "credit": 0, "contact": None},
             {"account": "1000", "debit": 0, "credit": 45.0, "contact": None}]}
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.journal_prefill", new=AsyncMock(return_value=copied)), \
              patch("ui.api_client.get_chart",
                    new=AsyncMock(return_value={"items": _CHART, "total": len(_CHART)})), \
              patch("ui.api_client.get_company", new=AsyncMock(return_value={"currency": "THB"})), \
              patch("ui.api_client.list_contacts",
                    new=AsyncMock(return_value={"items": [], "total": 0})):
-            r = await ui_client.get("/accounting/journal/new?from=je-1", cookies=_authed())
-            plain = await ui_client.get("/accounting/journal/new", cookies=_authed())
+            r = await ui_client.get("/accounting/journal/new?from=je-1")
+            plain = await ui_client.get("/accounting/journal/new")
         page = html.unescape(r.content.decode())
         assert 'value="2026-10-18"' in page
         assert ("Dated on the first open day. The entry it copies is dated 2026-09-30; "
@@ -1883,13 +1934,15 @@ class TestAccountingPage:
 
     @pytest.mark.asyncio
     async def test_pnl_shortcut_redirects_to_the_report(self, ui_client):
-        r = await ui_client.get("/accounting/pnl", cookies=_authed())
+        ui_client.cookies.update(_authed())
+        r = await ui_client.get("/accounting/pnl")
         assert r.status_code == 302
         assert r.headers.get("location", "").startswith("/reports/pnl")
 
     @pytest.mark.asyncio
     async def test_balance_sheet_shortcut_redirects_to_the_report(self, ui_client):
-        r = await ui_client.get("/accounting/balance-sheet", cookies=_authed())
+        ui_client.cookies.update(_authed())
+        r = await ui_client.get("/accounting/balance-sheet")
         assert r.status_code == 302
         assert r.headers.get("location", "").startswith("/reports/balance-sheet")
 
@@ -1898,9 +1951,10 @@ class TestPeriodLockAndCloseBooks:
     @pytest.mark.asyncio
     async def test_settings_accounting_period_lock_tab(self, ui_client):
         """Period Lock tab renders the lock form."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_bank_accounts", new=AsyncMock(return_value={"items": []})), \
              patch("ui.api_client.get_period_lock", new=AsyncMock(return_value={})):
-            r = await ui_client.get("/settings/accounting?tab=period-lock", cookies=_authed())
+            r = await ui_client.get("/settings/accounting?tab=period-lock")
         assert r.status_code == 200
         assert b"Period Lock" in r.content
         assert b"Close Fiscal Year" in r.content
@@ -1908,20 +1962,21 @@ class TestPeriodLockAndCloseBooks:
     @pytest.mark.asyncio
     async def test_settings_accounting_period_lock_shows_date(self, ui_client):
         """When a lock date is set, it shows in the UI."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_bank_accounts", new=AsyncMock(return_value={"items": []})), \
              patch("ui.api_client.get_period_lock", new=AsyncMock(return_value={"lock_date": "2025-12-31", "lock_date_set_at": "2026-01-15T10:00:00Z"})):
-            r = await ui_client.get("/settings/accounting?tab=period-lock", cookies=_authed())
+            r = await ui_client.get("/settings/accounting?tab=period-lock")
         assert r.status_code == 200
         assert b"2025-12-31" in r.content
 
     @pytest.mark.asyncio
     async def test_post_period_lock(self, ui_client):
         """POST sets the lock date."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.set_period_lock", new=AsyncMock(return_value={"lock_date": "2025-12-31"})):
             r = await ui_client.post(
                 "/settings/accounting/period-lock",
                 data={"lock_date": "2025-12-31"},
-                cookies=_authed(),
             )
         assert r.status_code == 200
         assert b"2025-12-31" in r.content
@@ -1929,6 +1984,7 @@ class TestPeriodLockAndCloseBooks:
     @pytest.mark.asyncio
     async def test_post_close_year(self, ui_client):
         """POST close-year returns success message."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.close_fiscal_year", new=AsyncMock(return_value={
             "je_id": "je:close:2025-12-31", "year_end": "2025-12-31",
             "net_income": 15000.0, "entries_count": 5, "lock_date": "2025-12-31",
@@ -1936,7 +1992,6 @@ class TestPeriodLockAndCloseBooks:
             r = await ui_client.post(
                 "/settings/accounting/close-year",
                 data={"fiscal_year_end": "2025-12-31"},
-                cookies=_authed(),
             )
         assert r.status_code == 200
         assert b"Fiscal year closed" in r.content
@@ -1945,10 +2000,10 @@ class TestPeriodLockAndCloseBooks:
     @pytest.mark.asyncio
     async def test_post_close_year_no_date_error(self, ui_client):
         """Missing date returns error."""
+        ui_client.cookies.update(_authed())
         r = await ui_client.post(
             "/settings/accounting/close-year",
             data={"fiscal_year_end": ""},
-            cookies=_authed(),
         )
         assert r.status_code == 200
         assert b"Choose the date your financial year ends" in r.content
@@ -1957,39 +2012,45 @@ class TestPeriodLockAndCloseBooks:
 class TestReportsPage:
     @pytest.mark.asyncio
     async def test_reports_index(self, ui_client):
-        r = await ui_client.get("/reports", cookies=_authed())
+        ui_client.cookies.update(_authed())
+        r = await ui_client.get("/reports")
         assert r.status_code == 200
         assert b"Reports" in r.content
 
     @pytest.mark.asyncio
     async def test_ar_aging(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_ar_aging", new=AsyncMock(return_value=_AGING)):
-            r = await ui_client.get("/reports/ar-aging", cookies=_authed())
+            r = await ui_client.get("/reports/ar-aging")
         assert r.status_code == 200
         assert b"AR Aging" in r.content
 
     @pytest.mark.asyncio
     async def test_ap_aging(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_ap_aging", new=AsyncMock(return_value=_AGING)):
-            r = await ui_client.get("/reports/ap-aging", cookies=_authed())
+            r = await ui_client.get("/reports/ap-aging")
         assert r.status_code == 200
 
     @pytest.mark.asyncio
     async def test_sales_report(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_sales_report", new=AsyncMock(return_value=_SALES)):
-            r = await ui_client.get("/reports/sales?group_by=customer", cookies=_authed())
+            r = await ui_client.get("/reports/sales?group_by=customer")
         assert r.status_code == 200
 
     @pytest.mark.asyncio
     async def test_purchases_report(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_purchases_report", new=AsyncMock(return_value=_SALES)):
-            r = await ui_client.get("/reports/purchases?group_by=supplier", cookies=_authed())
+            r = await ui_client.get("/reports/purchases?group_by=supplier")
         assert r.status_code == 200
 
     @pytest.mark.asyncio
     async def test_expiring_report(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_expiring", new=AsyncMock(return_value=_EXPIRING)):
-            r = await ui_client.get("/reports/expiring?days=30", cookies=_authed())
+            r = await ui_client.get("/reports/expiring?days=30")
         assert r.status_code == 200
         assert b"Expiring" in r.content
 
@@ -1997,6 +2058,7 @@ class TestReportsPage:
 class TestSettingsPage:
     @pytest.mark.asyncio
     async def test_settings_company_tab(self, ui_client):
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_taxes", new=AsyncMock(return_value=_TAXES)),
@@ -2008,12 +2070,13 @@ class TestSettingsPage:
             patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
-            r = await ui_client.get("/settings/general?tab=company", cookies=_authed())
+            r = await ui_client.get("/settings/general?tab=company")
         assert r.status_code == 200
         assert b"Global Config" in r.content
 
     @pytest.mark.asyncio
     async def test_settings_users_tab(self, ui_client):
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_taxes", new=AsyncMock(return_value=_TAXES)),
@@ -2025,7 +2088,7 @@ class TestSettingsPage:
             patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
-            r = await ui_client.get("/settings/general?tab=users", cookies=_authed())
+            r = await ui_client.get("/settings/general?tab=users")
         assert r.status_code == 200
         assert b"Owner" in r.content
 
@@ -2037,6 +2100,7 @@ class TestSettingsPage:
         carried the click-to-edit hx-get that posts an unsupported field."""
         admins = [{"id": "u1", "name": "Test User", "email": "user@example.com",
                    "role": "owner", "is_active": True}]
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_taxes", new=AsyncMock(return_value=_TAXES)),
@@ -2048,7 +2112,7 @@ class TestSettingsPage:
             patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
-            r = await ui_client.get("/settings/general?tab=users", cookies=_authed())
+            r = await ui_client.get("/settings/general?tab=users")
         assert r.status_code == 200
         # Role and status stay click-to-edit.
         assert b"/settings/users/u1/role/edit" in r.content
@@ -2059,6 +2123,7 @@ class TestSettingsPage:
 
     @pytest.mark.asyncio
     async def test_settings_taxes_tab(self, ui_client):
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_taxes", new=AsyncMock(return_value=_TAXES)),
@@ -2070,12 +2135,13 @@ class TestSettingsPage:
             patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
-            r = await ui_client.get("/settings/sales?tab=taxes", cookies=_authed())
+            r = await ui_client.get("/settings/sales?tab=taxes")
         assert r.status_code == 200
         assert b"VAT" in r.content
 
     @pytest.mark.asyncio
     async def test_settings_schema_tab(self, ui_client):
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_taxes", new=AsyncMock(return_value=_TAXES)),
@@ -2090,7 +2156,7 @@ class TestSettingsPage:
             patch("ui.api_client.list_verticals_categories", new=AsyncMock(return_value=[])),
             patch("ui.api_client.list_verticals_presets", new=AsyncMock(return_value=[])),
         ):
-            r = await ui_client.get("/settings/inventory?tab=categories", cookies=_authed())
+            r = await ui_client.get("/settings/inventory?tab=categories")
         assert r.status_code == 200
 
     @pytest.mark.asyncio
@@ -2100,6 +2166,7 @@ class TestSettingsPage:
             {"name": "colored_stone", "display_name": "Colored Stone", "vertical_tags": ["gems_jewelry"]},
             {"name": "laptop", "display_name": "Laptop", "vertical_tags": ["electronics"]},
         ]
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
@@ -2109,7 +2176,7 @@ class TestSettingsPage:
             patch("ui.api_client.list_verticals_categories", new=AsyncMock(return_value=vert_cats)),
             patch("ui.api_client.list_verticals_presets", new=AsyncMock(return_value=[])),
         ):
-            r = await ui_client.get("/settings/inventory?tab=categories", cookies=_authed())
+            r = await ui_client.get("/settings/inventory?tab=categories")
         assert r.status_code == 200
         assert b"Gems" in r.content or b"gems" in r.content.lower()
         assert b"Electronics" in r.content
@@ -2120,6 +2187,7 @@ class TestTableComponent:
 
     @pytest.mark.asyncio
     async def test_empty_table_shows_empty_state(self, ui_client):
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
@@ -2130,30 +2198,32 @@ class TestTableComponent:
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value=_VALUATION)),
         ):
-            r = await ui_client.get("/inventory/search", cookies=_authed())
+            r = await ui_client.get("/inventory/search")
         assert r.status_code == 200
         assert b"No items" in r.content
 
     @pytest.mark.asyncio
     async def test_table_headers_exist(self, ui_client):
         """Table should have th elements from schema."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [_ITEM], "total": 1})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value=_VALUATION)),
         ):
-            r = await ui_client.get("/inventory", cookies=_authed())
+            r = await ui_client.get("/inventory")
         assert b"<th" in r.content
 
     @pytest.mark.asyncio
     async def test_esc_handler_js_included(self, ui_client):
         """The shell should include Escape key handler JavaScript."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [_ITEM], "total": 1})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value=_VALUATION)),
         ):
-            r = await ui_client.get("/inventory", cookies=_authed())
+            r = await ui_client.get("/inventory")
         assert b"Escape" in r.content
 
 
@@ -2169,6 +2239,7 @@ class TestInventoryCategoryTabs:
     async def test_category_tabs_render_when_counts_present(self, ui_client):
         """Inventory page shows category tabs when valuation has category_counts."""
         valuation = {**_VALUATION, "category_counts": {"C&P Gemstone": 100, "Jewelry": 10}}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [_ITEM], "total": 1})),
@@ -2179,7 +2250,7 @@ class TestInventoryCategoryTabs:
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value=valuation)),
         ):
-            r = await ui_client.get("/inventory", cookies=_authed())
+            r = await ui_client.get("/inventory")
         assert r.status_code == 200
         assert b"category-tab" in r.content
         assert b"C&amp;P Gemstone" in r.content or b"C&P Gemstone" in r.content
@@ -2188,6 +2259,7 @@ class TestInventoryCategoryTabs:
     @pytest.mark.asyncio
     async def test_category_tabs_hidden_when_no_counts(self, ui_client):
         """No category_counts → no category-specific tabs. Status filter moved to sidebar."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [_ITEM], "total": 1})),
@@ -2198,7 +2270,7 @@ class TestInventoryCategoryTabs:
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value=_VALUATION)),
         ):
-            r = await ui_client.get("/inventory", cookies=_authed())
+            r = await ui_client.get("/inventory")
         # Status cards always render (Available/Reserved counts)
         assert b"status-card" in r.content
         # No category-specific tab content (no category names from valuation)
@@ -2206,6 +2278,7 @@ class TestInventoryCategoryTabs:
 
     @pytest.mark.asyncio
     async def test_category_filter_passes_to_search(self, ui_client):
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [_ITEM], "total": 1})),
@@ -2216,13 +2289,14 @@ class TestInventoryCategoryTabs:
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value=_VALUATION)),
         ):
-            r = await ui_client.get("/inventory/search?category=Jewelry", cookies=_authed())
+            r = await ui_client.get("/inventory/search?category=Jewelry")
         assert r.status_code == 200
 
     @pytest.mark.asyncio
     async def test_inventory_content_endpoint_returns_fragment(self, ui_client):
         """/inventory/content returns #inventory-content element (for HTMX outerHTML swap)."""
         valuation = {**_VALUATION, "category_counts": {"Ruby": 5}, "count_by_status": {"available": 5}}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [_ITEM], "total": 1})),
@@ -2233,7 +2307,7 @@ class TestInventoryCategoryTabs:
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value=valuation)),
         ):
-            r = await ui_client.get("/inventory/content", cookies=_authed(), headers={"HX-Request": "true"})
+            r = await ui_client.get("/inventory/content", headers={"HX-Request": "true"})
         assert r.status_code == 200
         # The #inventory-content div must be present for HTMX outerHTML swap
         assert b"inventory-content" in r.content
@@ -2243,9 +2317,9 @@ class TestInventoryCategoryTabs:
     @pytest.mark.asyncio
     async def test_inventory_content_direct_nav_redirects(self, ui_client):
         """GET /inventory/content without HX-Request header redirects to /inventory (preserving QS)."""
+        ui_client.cookies.update(_authed())
         r = await ui_client.get(
             "/inventory/content?sort=name&dir=desc&q=ruby",
-            cookies=_authed(),
             follow_redirects=False,
         )
         assert r.status_code == 302
@@ -2256,6 +2330,7 @@ class TestInventoryCategoryTabs:
     async def test_category_tabs_target_inventory_content(self, ui_client):
         """Category tabs must use hx-target=#inventory-content so highlight updates on click."""
         valuation = {**_VALUATION, "category_counts": {"Ruby": 5}, "count_by_status": {"available": 5}}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [_ITEM], "total": 1})),
@@ -2266,7 +2341,7 @@ class TestInventoryCategoryTabs:
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value=valuation)),
         ):
-            r = await ui_client.get("/inventory", cookies=_authed())
+            r = await ui_client.get("/inventory")
         assert r.status_code == 200
         assert b"inventory-content" in r.content
         # Category tab links must NOT use the stale #data-table as an hx-target
@@ -2279,6 +2354,7 @@ class TestInventoryCategoryTabs:
     @pytest.mark.asyncio
     async def test_status_tabs_target_inventory_content(self, ui_client):
         """Status cards link to /inventory with status param (replaced status-tabs with sidebar links)."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [_ITEM], "total": 1})),
@@ -2289,7 +2365,7 @@ class TestInventoryCategoryTabs:
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value=_VALUATION)),
         ):
-            r = await ui_client.get("/inventory", cookies=_authed())
+            r = await ui_client.get("/inventory")
         assert r.status_code == 200
         # Status cards still render (Available/Reserved)
         assert b"status-card" in r.content
@@ -2301,6 +2377,7 @@ class TestInventoryCategoryTabs:
     async def test_status_cards_preserve_category_in_url(self, ui_client):
         """Status cards must include category param in their href so clicking one doesn't reset the category filter."""
         valuation = {**_VALUATION, "category_counts": {"Ruby": 5}, "count_by_status": {"available": 5}}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [_ITEM], "total": 1})),
@@ -2311,7 +2388,7 @@ class TestInventoryCategoryTabs:
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value=valuation)),
         ):
-            r = await ui_client.get("/inventory?category=Ruby", cookies=_authed())
+            r = await ui_client.get("/inventory?category=Ruby")
         assert r.status_code == 200
         html = r.text
         import re
@@ -2330,6 +2407,7 @@ class TestInventoryCategoryTabs:
         """When ?category=Ruby is set, Ruby tab gets category-tab--active and All does not."""
         valuation = {**_VALUATION, "category_counts": {"Ruby": 5}, "count_by_status": {"available": 5}}
         listed = {"items": [_ITEM], "total": 1, "aggregates": {"item_count": 1}}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.list_items", new=AsyncMock(return_value=listed)),
@@ -2340,7 +2418,7 @@ class TestInventoryCategoryTabs:
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value=valuation)),
         ):
-            r = await ui_client.get("/inventory?category=Ruby", cookies=_authed())
+            r = await ui_client.get("/inventory?category=Ruby")
         assert r.status_code == 200
         html = r.text
         # The Ruby tab should have active class; verify order: Ruby tab comes after All tab
@@ -2352,27 +2430,30 @@ class TestInventoryCategoryTabs:
         assert b"Items: 1" in r.content
     @pytest.mark.asyncio
     async def test_company_field_edit_returns_input(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)):
-            r = await ui_client.get("/settings/company/name/edit", cookies=_authed())
+            r = await ui_client.get("/settings/company/name/edit")
         assert r.status_code == 200
         assert b"<input" in r.content
 
     @pytest.mark.asyncio
     async def test_company_field_patch_returns_clickable(self, ui_client):
         updated = {**_COMPANY, "name": "New Corp"}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.patch_company", new=AsyncMock(return_value=updated)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=updated)),
         ):
-            r = await ui_client.patch("/settings/company/name", data={"value": "New Corp"}, cookies=_authed())
+            r = await ui_client.patch("/settings/company/name", data={"value": "New Corp"})
         assert r.status_code == 200
         assert b"New Corp" in r.content
         assert b"cell--clickable" in r.content
 
     @pytest.mark.asyncio
     async def test_user_field_edit_role_returns_select(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_users", new=AsyncMock(return_value={"items": _USERS, "total": len(_USERS)})):
-            r = await ui_client.get("/settings/users/u1/role/edit", cookies=_authed())
+            r = await ui_client.get("/settings/users/u1/role/edit")
         assert r.status_code == 200
         assert b"<select" in r.content
 
@@ -2381,6 +2462,7 @@ class TestInventoryCategoryTabs:
         updated = [{**_USERS[0], "role": "manager"}]
         # Two owners - downgrade is allowed
         two_owners = [_USERS[0], {**_USERS[0], "id": "u2", "name": "Bob", "role": "owner"}]
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.patch_user", new=AsyncMock(return_value=updated[0])),
             patch("ui.api_client.get_users", side_effect=[
@@ -2388,15 +2470,16 @@ class TestInventoryCategoryTabs:
                 {"items": updated, "total": 1},       # post-patch refresh
             ]),
         ):
-            r = await ui_client.patch("/settings/users/u1/role", data={"value": "manager"}, cookies=_authed())
+            r = await ui_client.patch("/settings/users/u1/role", data={"value": "manager"})
         assert r.status_code == 200
         assert b"manager" in r.content
 
     @pytest.mark.asyncio
     async def test_user_role_last_owner_guard(self, ui_client):
         """Cannot demote the last owner."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_users", new=AsyncMock(return_value={"items": _USERS, "total": 1})):
-            r = await ui_client.patch("/settings/users/u1/role", data={"value": "admin"}, cookies=_authed())
+            r = await ui_client.patch("/settings/users/u1/role", data={"value": "admin"})
         assert r.status_code == 200
         assert t("company.err_last_owner_demote") in html.unescape(r.text)
 
@@ -2405,6 +2488,7 @@ class TestInventoryCategoryTabs:
         """Can demote a non-owner user freely (guard only fires for last owner)."""
         non_owner = [{**_USERS[0], "id": "u2", "role": "admin"}]
         updated = [{**non_owner[0], "role": "viewer"}]
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.patch_user", new=AsyncMock(return_value=updated[0])),
             patch("ui.api_client.get_users", side_effect=[
@@ -2412,39 +2496,43 @@ class TestInventoryCategoryTabs:
                 {"items": updated, "total": 1},       # post-patch refresh
             ]),
         ):
-            r = await ui_client.patch("/settings/users/u2/role", data={"value": "viewer"}, cookies=_authed())
+            r = await ui_client.patch("/settings/users/u2/role", data={"value": "viewer"})
         assert r.status_code == 200
 
     @pytest.mark.asyncio
     async def test_tax_field_edit_returns_input(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_taxes", new=AsyncMock(return_value=_TAXES)):
-            r = await ui_client.get("/settings/taxes/0/name/edit", cookies=_authed())
+            r = await ui_client.get("/settings/taxes/0/name/edit")
         assert r.status_code == 200
         assert b"<input" in r.content
 
     @pytest.mark.asyncio
     async def test_tax_field_patch(self, ui_client):
         updated = [{**_TAXES[0], "name": "GST"}]
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_taxes", new=AsyncMock(return_value=_TAXES)),
             patch("ui.api_client.patch_taxes", new=AsyncMock(return_value={})),
         ):
             # Re-patch get_taxes for the post-save read
             with patch("ui.api_client.get_taxes", new=AsyncMock(return_value=updated)):
-                r = await ui_client.patch("/settings/taxes/0/name", data={"value": "GST"}, cookies=_authed())
+                r = await ui_client.patch("/settings/taxes/0/name", data={"value": "GST"})
         assert r.status_code == 200
 
     @pytest.mark.asyncio
     async def test_term_field_edit(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_payment_terms", new=AsyncMock(return_value=_TERMS)):
-            r = await ui_client.get("/settings/terms/0/name/edit", cookies=_authed())
+            r = await ui_client.get("/settings/terms/0/name/edit")
         assert r.status_code == 200
         assert b"<input" in r.content
 
     @pytest.mark.asyncio
     async def test_schema_field_edit(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)):
-            r = await ui_client.get("/settings/schema/0/label/edit", cookies=_authed())
+            r = await ui_client.get("/settings/schema/0/label/edit")
         assert r.status_code == 200
         assert b"<input" in r.content
 
@@ -2453,7 +2541,8 @@ class TestInventoryCategoryTabs:
     @pytest.mark.asyncio
     async def test_tax_rate_empty_returns_cell_error(self, ui_client):
         """PATCH /settings/taxes/{idx}/rate with empty string must return cell-error, not 500."""
-        r = await ui_client.patch("/settings/taxes/0/rate", data={"value": ""}, cookies=_authed())
+        ui_client.cookies.update(_authed())
+        r = await ui_client.patch("/settings/taxes/0/rate", data={"value": ""})
         assert r.status_code == 200
         assert b"cell-error" in r.content
         assert b"number" in r.content.lower()
@@ -2461,14 +2550,16 @@ class TestInventoryCategoryTabs:
     @pytest.mark.asyncio
     async def test_tax_rate_nonnumeric_returns_cell_error(self, ui_client):
         """PATCH /settings/taxes/{idx}/rate with non-numeric value returns cell-error."""
-        r = await ui_client.patch("/settings/taxes/0/rate", data={"value": "abc"}, cookies=_authed())
+        ui_client.cookies.update(_authed())
+        r = await ui_client.patch("/settings/taxes/0/rate", data={"value": "abc"})
         assert r.status_code == 200
         assert b"cell-error" in r.content
 
     @pytest.mark.asyncio
     async def test_schema_position_empty_returns_cell_error(self, ui_client):
         """PATCH /settings/schema/{idx}/position with empty string must return cell-error, not 500."""
-        r = await ui_client.patch("/settings/schema/0/position", data={"value": ""}, cookies=_authed())
+        ui_client.cookies.update(_authed())
+        r = await ui_client.patch("/settings/schema/0/position", data={"value": ""})
         assert r.status_code == 200
         assert b"cell-error" in r.content
         assert b"whole number" in r.content.lower()
@@ -2476,15 +2567,17 @@ class TestInventoryCategoryTabs:
     @pytest.mark.asyncio
     async def test_schema_position_nonnumeric_returns_cell_error(self, ui_client):
         """PATCH /settings/schema/{idx}/position with non-numeric value returns cell-error."""
-        r = await ui_client.patch("/settings/schema/0/position", data={"value": "abc"}, cookies=_authed())
+        ui_client.cookies.update(_authed())
+        r = await ui_client.patch("/settings/schema/0/position", data={"value": "abc"})
         assert r.status_code == 200
         assert b"cell-error" in r.content
 
     @pytest.mark.asyncio
     async def test_cat_schema_position_empty_returns_cell_error(self, ui_client):
         """PATCH /settings/cat-schema/{cat}/{idx}/position with empty string must return cell-error, not 500."""
+        ui_client.cookies.update(_authed())
         r = await ui_client.patch(
-            "/settings/cat-schema/Gemstone/0/position", data={"value": ""}, cookies=_authed()
+            "/settings/cat-schema/Gemstone/0/position", data={"value": ""}
         )
         assert r.status_code == 200
         assert b"cell-error" in r.content
@@ -2493,8 +2586,9 @@ class TestInventoryCategoryTabs:
     @pytest.mark.asyncio
     async def test_cat_schema_position_nonnumeric_returns_cell_error(self, ui_client):
         """PATCH /settings/cat-schema/{cat}/{idx}/position with non-numeric value returns cell-error."""
+        ui_client.cookies.update(_authed())
         r = await ui_client.patch(
-            "/settings/cat-schema/Gemstone/0/position", data={"value": "abc"}, cookies=_authed()
+            "/settings/cat-schema/Gemstone/0/position", data={"value": "abc"}
         )
         assert r.status_code == 200
         assert b"cell-error" in r.content
@@ -2502,6 +2596,7 @@ class TestInventoryCategoryTabs:
     @pytest.mark.asyncio
     async def test_settings_company_tab_has_clickable_cells(self, ui_client):
         """Company tab should render click-to-edit cells, not static text."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_taxes", new=AsyncMock(return_value=_TAXES)),
@@ -2513,11 +2608,12 @@ class TestInventoryCategoryTabs:
             patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
-            r = await ui_client.get("/settings/general?tab=company", cookies=_authed())
+            r = await ui_client.get("/settings/general?tab=company")
         assert b"cell--clickable" in r.content
 
     @pytest.mark.asyncio
     async def test_settings_users_tab_has_clickable_cells(self, ui_client):
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_taxes", new=AsyncMock(return_value=_TAXES)),
@@ -2529,11 +2625,12 @@ class TestInventoryCategoryTabs:
             patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
-            r = await ui_client.get("/settings/general?tab=users", cookies=_authed())
+            r = await ui_client.get("/settings/general?tab=users")
         assert b"cell--clickable" in r.content
 
     @pytest.mark.asyncio
     async def test_settings_taxes_tab_has_clickable_cells(self, ui_client):
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_taxes", new=AsyncMock(return_value=_TAXES)),
@@ -2545,7 +2642,7 @@ class TestInventoryCategoryTabs:
             patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
-            r = await ui_client.get("/settings/sales?tab=taxes", cookies=_authed())
+            r = await ui_client.get("/settings/sales?tab=taxes")
         assert b"cell--clickable" in r.content
 
 
@@ -2561,8 +2658,9 @@ class TestSettingsInlineEditValidation:
     @pytest.mark.asyncio
     async def test_term_days_empty_returns_cell_error(self, ui_client):
         """PATCH /settings/terms/{idx}/days with empty string -> cell-error, not 500."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.patch_payment_terms", new=AsyncMock()) as mock_patch:
-            r = await ui_client.patch("/settings/terms/0/days", data={"value": ""}, cookies=_authed())
+            r = await ui_client.patch("/settings/terms/0/days", data={"value": ""})
         assert r.status_code == 200
         assert b"cell-error" in r.content
         assert b"whole number" in r.content.lower()
@@ -2571,8 +2669,9 @@ class TestSettingsInlineEditValidation:
     @pytest.mark.asyncio
     async def test_term_days_nonnumeric_returns_cell_error(self, ui_client):
         """PATCH /settings/terms/{idx}/days with non-numeric value -> cell-error."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.patch_payment_terms", new=AsyncMock()) as mock_patch:
-            r = await ui_client.patch("/settings/terms/0/days", data={"value": "abc"}, cookies=_authed())
+            r = await ui_client.patch("/settings/terms/0/days", data={"value": "abc"})
         assert r.status_code == 200
         assert b"cell-error" in r.content
         mock_patch.assert_not_called()
@@ -2580,8 +2679,9 @@ class TestSettingsInlineEditValidation:
     @pytest.mark.asyncio
     async def test_term_days_negative_returns_cell_error(self, ui_client):
         """PATCH /settings/terms/{idx}/days with negative value -> cell-error."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.patch_payment_terms", new=AsyncMock()) as mock_patch:
-            r = await ui_client.patch("/settings/terms/0/days", data={"value": "-5"}, cookies=_authed())
+            r = await ui_client.patch("/settings/terms/0/days", data={"value": "-5"})
         assert r.status_code == 200
         assert b"cell-error" in r.content
         assert t("error.days_negative") in html.unescape(r.text)
@@ -2592,8 +2692,9 @@ class TestSettingsInlineEditValidation:
     @pytest.mark.asyncio
     async def test_company_name_blank_returns_cell_error(self, ui_client):
         """PATCH /settings/company/name with blank string -> cell-error, not saved."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.patch_company", new=AsyncMock()) as mock_patch:
-            r = await ui_client.patch("/settings/company/name", data={"value": "   "}, cookies=_authed())
+            r = await ui_client.patch("/settings/company/name", data={"value": "   "})
         assert r.status_code == 200
         assert b"cell-error" in r.content
         assert t("error.company_name_blank") in html.unescape(r.text)
@@ -2602,9 +2703,10 @@ class TestSettingsInlineEditValidation:
     @pytest.mark.asyncio
     async def test_company_slug_invalid_returns_cell_error(self, ui_client):
         """PATCH /settings/company/slug with invalid format -> cell-error, not saved."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.patch_company", new=AsyncMock()) as mock_patch:
             r = await ui_client.patch(
-                "/settings/company/slug", data={"value": "My Company!"}, cookies=_authed()
+                "/settings/company/slug", data={"value": "My Company!"}
             )
         assert r.status_code == 200
         assert b"cell-error" in r.content
@@ -2620,11 +2722,11 @@ class TestSettingsInlineEditValidation:
         _header = base64.urlsafe_b64encode(_json.dumps({"alg": "HS256", "typ": "JWT"}).encode()).rstrip(b"=").decode()
         _payload = base64.urlsafe_b64encode(_json.dumps({"sub": "u1", "company_id": "c1"}).encode()).rstrip(b"=").decode()
         _jwt = f"{_header}.{_payload}.fakesig"
+        ui_client.cookies.update({"celerp_token": _jwt})
         with patch("ui.api_client.patch_user", new=AsyncMock()) as mock_patch:
             r = await ui_client.patch(
                 "/settings/users/u1/is_active",
                 data={"value": "false"},
-                cookies={"celerp_token": _jwt},
             )
         assert r.status_code == 200
         assert b"cell-error" in r.content
@@ -2636,9 +2738,10 @@ class TestSettingsInlineEditValidation:
     @pytest.mark.asyncio
     async def test_location_type_invalid_returns_cell_error(self, ui_client):
         """PATCH /settings/locations/{id}/type with unknown value -> cell-error, not saved."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.patch_location", new=AsyncMock()) as mock_patch:
             r = await ui_client.patch(
-                "/settings/locations/loc1/type", data={"value": "moon_base"}, cookies=_authed()
+                "/settings/locations/loc1/type", data={"value": "moon_base"}
             )
         assert r.status_code == 200
         assert b"cell-error" in r.content
@@ -2648,12 +2751,13 @@ class TestSettingsInlineEditValidation:
     async def test_location_type_address_is_valid(self, ui_client):
         """PATCH /settings/locations/{id}/type with 'address' must be accepted (Company Address type)."""
         _loc = {"id": "loc1", "name": "HQ", "type": "address", "address": {"text": "Phuket"}, "is_default": False}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.patch_location", new=AsyncMock()) as mock_patch,
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [_loc]})),
         ):
             r = await ui_client.patch(
-                "/settings/locations/loc1/type", data={"value": "address"}, cookies=_authed()
+                "/settings/locations/loc1/type", data={"value": "address"}
             )
         assert r.status_code == 200
         assert b"cell-error" not in r.content
@@ -2663,13 +2767,14 @@ class TestSettingsInlineEditValidation:
     async def test_location_address_display_unwraps_dict(self, ui_client):
         """Location address column must show plain text, not raw JSON dict repr."""
         _locs = [{"id": "loc1", "name": "HQ", "type": "warehouse", "address": {"text": "Phuket"}, "is_default": False}]
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": _locs})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
         ):
-            r = await ui_client.get("/settings/inventory?tab=locations", cookies=_authed())
+            r = await ui_client.get("/settings/inventory?tab=locations")
         assert r.status_code == 200
         assert b"Phuket" in r.content
         assert b'{"text"' not in r.content  # must NOT show raw dict repr
@@ -2678,12 +2783,13 @@ class TestSettingsInlineEditValidation:
     async def test_location_address_patch_wraps_plain_text_as_dict(self, ui_client):
         """PATCH /settings/locations/{id}/address with plain text must send {'text': ...} to backend."""
         _loc = {"id": "loc1", "name": "HQ", "type": "warehouse", "address": {"text": "Chiang Mai"}, "is_default": False}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.patch_location", new=AsyncMock()) as mock_patch,
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [_loc]})),
         ):
             r = await ui_client.patch(
-                "/settings/locations/loc1/address", data={"value": "Chiang Mai"}, cookies=_authed()
+                "/settings/locations/loc1/address", data={"value": "Chiang Mai"}
             )
         assert r.status_code == 200
         assert b"cell-error" not in r.content
@@ -2693,13 +2799,14 @@ class TestSettingsInlineEditValidation:
     async def test_location_type_display_shows_label_not_raw_value(self, ui_client):
         """Location type column must show 'Warehouse' not 'warehouse' (display label from _LOC_TYPES)."""
         _locs = [{"id": "loc1", "name": "HQ", "type": "warehouse", "address": None, "is_default": False}]
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": _locs})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
         ):
-            r = await ui_client.get("/settings/inventory?tab=locations", cookies=_authed())
+            r = await ui_client.get("/settings/inventory?tab=locations")
         assert r.status_code == 200
         assert b"Warehouse" in r.content  # capitalized label
         # Raw value "warehouse" may appear in HTMX attributes but not as cell-text
@@ -2713,9 +2820,10 @@ class TestSettingsInlineEditValidation:
     @pytest.mark.asyncio
     async def test_schema_type_invalid_returns_cell_error(self, ui_client):
         """PATCH /settings/schema/{idx}/type with unknown type -> cell-error, not saved."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.patch_item_schema", new=AsyncMock()) as mock_patch:
             r = await ui_client.patch(
-                "/settings/schema/0/type", data={"value": "blob"}, cookies=_authed()
+                "/settings/schema/0/type", data={"value": "blob"}
             )
         assert r.status_code == 200
         assert b"cell-error" in r.content
@@ -2726,9 +2834,10 @@ class TestSettingsInlineEditValidation:
     @pytest.mark.asyncio
     async def test_tax_type_invalid_returns_cell_error(self, ui_client):
         """PATCH /settings/taxes/{idx}/tax_type with unknown value -> cell-error, not saved."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.patch_taxes", new=AsyncMock()) as mock_patch:
             r = await ui_client.patch(
-                "/settings/taxes/0/tax_type", data={"value": "vat_exempt"}, cookies=_authed()
+                "/settings/taxes/0/tax_type", data={"value": "vat_exempt"}
             )
         assert r.status_code == 200
         assert b"cell-error" in r.content
@@ -2929,28 +3038,31 @@ class TestDocumentPolish:
     @pytest.mark.asyncio
     async def test_doc_table_status_uses_badge(self, ui_client):
         """Document list status column must render badge pills."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.list_docs", new=AsyncMock(return_value={"items": _DOCS, "total": len(_DOCS)})),
             patch("ui.api_client.get_doc_summary", new=AsyncMock(return_value=_DOC_SUMMARY)),
         ):
-            r = await ui_client.get("/docs", cookies=_authed())
+            r = await ui_client.get("/docs")
         assert b"badge--sent" in r.content
 
     @pytest.mark.asyncio
     async def test_doc_table_type_uses_badge(self, ui_client):
         """Document list type column must render badge pills."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.list_docs", new=AsyncMock(return_value={"items": _DOCS, "total": len(_DOCS)})),
             patch("ui.api_client.get_doc_summary", new=AsyncMock(return_value=_DOC_SUMMARY)),
         ):
-            r = await ui_client.get("/docs", cookies=_authed())
+            r = await ui_client.get("/docs")
         assert b"badge--invoice" in r.content
 
     @pytest.mark.asyncio
     async def test_doc_status_field_edit_returns_readonly_badge(self, ui_client):
         """Status field is a state-machine field; /edit endpoint must return a read-only badge, not a select."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_DOC_DETAIL)):
-            r = await ui_client.get("/docs/d:1/field/status/edit", cookies=_authed())
+            r = await ui_client.get("/docs/d:1/field/status/edit")
         assert r.status_code == 200
         # Must NOT contain a select (that would allow direct status manipulation)
         assert b"<select" not in r.content
@@ -2961,19 +3073,21 @@ class TestDocumentPolish:
     async def test_doc_table_awaiting_payment_status_uses_badge_class(self, ui_client):
         """Underscore statuses must normalize to hyphen badge classes."""
         docs = [{**_DOCS[0], "status": "awaiting_payment"}]
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.list_docs", new=AsyncMock(return_value=docs)),
             patch("ui.api_client.get_doc_summary", new=AsyncMock(return_value=_DOC_SUMMARY)),
         ):
-            r = await ui_client.get("/docs", cookies=_authed())
+            r = await ui_client.get("/docs")
         assert r.status_code == 200
         assert b"badge--awaiting-payment" in r.content
 
     @pytest.mark.asyncio
     async def test_doc_date_field_edit_returns_date_input(self, ui_client):
         """Editing issue_date on doc detail → <input type=date>."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_DOC_DETAIL)):
-            r = await ui_client.get("/docs/d:1/field/issue_date/edit", cookies=_authed())
+            r = await ui_client.get("/docs/d:1/field/issue_date/edit")
         assert r.status_code == 200
         assert b'type="date"' in r.content
 
@@ -2981,11 +3095,12 @@ class TestDocumentPolish:
     async def test_doc_contact_field_edit_returns_combobox(self, ui_client):
         """Editing contact_id on doc detail → searchable combobox."""
         contacts = [{"entity_id": f"ct:{i}", "name": f"C{i}"} for i in range(12)]
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_doc", new=AsyncMock(return_value=_DOC_DETAIL)),
             patch("ui.api_client.list_contacts", new=AsyncMock(return_value={"items": contacts, "total": len(contacts)})),
         ):
-            r = await ui_client.get("/docs/d:1/field/contact_id/edit", cookies=_authed())
+            r = await ui_client.get("/docs/d:1/field/contact_id/edit")
         assert r.status_code == 200
         assert b"combobox-wrap" in r.content
 
@@ -2993,8 +3108,9 @@ class TestDocumentPolish:
     @pytest.mark.asyncio
     async def test_doc_valid_until_field_edit_returns_date_input(self, ui_client):
         """Editing valid_until on doc detail → <input type=date>, not free text."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_DOC_DETAIL)):
-            r = await ui_client.get("/docs/d:1/field/valid_until/edit", cookies=_authed())
+            r = await ui_client.get("/docs/d:1/field/valid_until/edit")
         assert r.status_code == 200
         assert b'type="date"' in r.content
 
@@ -3002,19 +3118,21 @@ class TestDocumentPolish:
     async def test_doc_commission_contact_field_edit_returns_combobox(self, ui_client):
         """Editing commission_contact_id on doc detail → searchable combobox."""
         contacts = [{"entity_id": f"ct:{i}", "name": f"Agent{i}"} for i in range(12)]
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_doc", new=AsyncMock(return_value=_DOC_DETAIL)),
             patch("ui.api_client.list_contacts", new=AsyncMock(return_value={"items": contacts, "total": len(contacts)})),
         ):
-            r = await ui_client.get("/docs/d:1/field/commission_contact_id/edit", cookies=_authed())
+            r = await ui_client.get("/docs/d:1/field/commission_contact_id/edit")
         assert r.status_code == 200
         assert b"combobox-wrap" in r.content
 
     @pytest.mark.asyncio
     async def test_doc_detail_editable_cells_have_hx_get(self, ui_client):
         """All editable fields on doc detail page must have hx-get click triggers."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_DOC_DETAIL)):
-            r = await ui_client.get("/docs/d:1", cookies=_authed())
+            r = await ui_client.get("/docs/d:1")
         assert r.status_code == 200
         assert b'hx-get="/docs/d:1/field/' in r.content
         assert b'hx-trigger="click"' in r.content
@@ -3023,8 +3141,9 @@ class TestDocumentPolish:
     @pytest.mark.asyncio
     async def test_doc_detail_editable_cells_have_title(self, ui_client):
         """Editable cells must have title='Click to edit' tooltip."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_DOC_DETAIL)):
-            r = await ui_client.get("/docs/d:1", cookies=_authed())
+            r = await ui_client.get("/docs/d:1")
         assert r.status_code == 200
         assert b'title="Click to edit"' in r.content
 
@@ -3032,13 +3151,14 @@ class TestDocumentPolish:
     async def test_share_enabled_without_public_url(self, ui_client):
         """A free relay-bound instance (gateway_token_set true, no paid public_url)
         still shows the Share control. Gating on public_url alone hid it (GDR 2e)."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_doc", new=AsyncMock(return_value=_DOC_DETAIL)),
             patch("ui.api_client.get_relay_status", new=AsyncMock(
                 return_value={"connected": True, "gateway_token_set": True, "public_url": ""})),
             patch("ui.api_client.get_share_state", new=AsyncMock(return_value={"active": False})),
         ):
-            r = await ui_client.get("/docs/d:1", cookies=_authed())
+            r = await ui_client.get("/docs/d:1")
         assert r.status_code == 200
         assert b'hx-get="/docs/d:1/share"' in r.content
 
@@ -3048,13 +3168,14 @@ class TestDocumentPolish:
         lazy tunnel down (connected False) until a share exists. The real Send modal
         must still render - the send flow brings the tunnel up on demand - instead of
         the "connect your account" offer that gating on the live tunnel wrongly showed."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_doc", new=AsyncMock(return_value=_DOC_DETAIL)),
             patch("ui.api_client.get_relay_status", new=AsyncMock(
                 return_value={"connected": False, "gateway_token_set": True, "public_url": ""})),
             patch("ui.api_client.get_share_state", new=AsyncMock(return_value={"active": False})),
         ):
-            r = await ui_client.get("/docs/d:1", cookies=_authed())
+            r = await ui_client.get("/docs/d:1")
         assert r.status_code == 200
         # Real send modal present...
         assert b"send-modal-d-1" in r.content
@@ -3072,6 +3193,7 @@ class TestDocumentPolish:
         from ui.routes import documents
         documents._free_send_quota_cache.update(
             {"value": 3, "fetched_at": time.monotonic(), "pending": False})
+        ui_client.cookies.update(_authed())
         try:
             with (
                 patch("ui.api_client.get_doc", new=AsyncMock(return_value=_DOC_DETAIL)),
@@ -3079,7 +3201,7 @@ class TestDocumentPolish:
                     return_value={"connected": False, "relay_status": "error",
                                   "gateway_token_set": True, "public_url": ""})),
             ):
-                r = await ui_client.get("/docs/d:1", cookies=_authed())
+                r = await ui_client.get("/docs/d:1")
             assert r.status_code == 200
             content = r.content.decode()
             assert "send-modal-d-1" not in content
@@ -3104,6 +3226,7 @@ class TestDocumentPolish:
     async def test_send_modal_kept_while_relay_connecting(self, ui_client):
         """"connecting" is a transient state, not a rejection: the real Send modal
         stays and no failure notice renders."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_doc", new=AsyncMock(return_value=_DOC_DETAIL)),
             patch("ui.api_client.get_relay_status", new=AsyncMock(
@@ -3111,7 +3234,7 @@ class TestDocumentPolish:
                               "gateway_token_set": True, "public_url": ""})),
             patch("ui.api_client.get_share_state", new=AsyncMock(return_value={"active": False})),
         ):
-            r = await ui_client.get("/docs/d:1", cookies=_authed())
+            r = await ui_client.get("/docs/d:1")
         assert r.status_code == 200
         assert b"send-modal-d-1" in r.content
         assert b"next=doc-send" not in r.content
@@ -3127,6 +3250,7 @@ class TestDocumentPolish:
             "receiver_type": "contact", "receiver": "Acme", "currency": "USD",
             "discount": 0, "tax": 0, "subtotal": 0, "total": 0, "line_items": [],
         }
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_list", new=AsyncMock(return_value=quotation)),
             patch("ui.api_client.get_list_page", create=True, new=_list_page_stub(quotation)),
@@ -3135,7 +3259,7 @@ class TestDocumentPolish:
                               "gateway_token_set": True,
                               "public_url": "https://x.celerp.com"})),
         ):
-            r = await ui_client.get("/lists/list:1", cookies=_authed())
+            r = await ui_client.get("/lists/list:1")
         assert r.status_code == 200
         content = r.content.decode()
         assert "send-modal-list-1" not in content
@@ -3150,13 +3274,14 @@ class TestDocumentPolish:
     async def test_online_note_present(self, ui_client):
         """The online-only note renders in both the send modal and the share panel."""
         note = b"Please note this URL will only work while your terminal is online."
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_doc", new=AsyncMock(return_value=_DOC_DETAIL)),
             patch("ui.api_client.get_relay_status", new=AsyncMock(
                 return_value={"connected": True, "gateway_token_set": True, "public_url": ""})),
             patch("ui.api_client.get_share_state", new=AsyncMock(return_value={"active": False})),
         ):
-            page = await ui_client.get("/docs/d:1", cookies=_authed())
+            page = await ui_client.get("/docs/d:1")
         assert note in page.content
         with (
             patch("ui.api_client.get_share_status", new=AsyncMock(
@@ -3165,7 +3290,6 @@ class TestDocumentPolish:
         ):
             panel = await ui_client.get(
                 "/docs/d:1/share",
-                cookies=_authed(),
                 headers={"HX-Request": "true", "HX-Current-URL": "http://ui/docs/d:1"})
         assert note in panel.content
 
@@ -3173,8 +3297,9 @@ class TestDocumentPolish:
     async def test_doc_empty_editable_cell_still_clickable(self, ui_client):
         """A None/empty field value renders editable-cell with '--' but still has hx-get."""
         doc = {**_DOC_DETAIL, "reference": None, "payment_terms": None}
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)):
-            r = await ui_client.get("/docs/d:1", cookies=_authed())
+            r = await ui_client.get("/docs/d:1")
         assert r.status_code == 200
         # -- placeholder must appear (EMPTY constant)
         assert b"--" in r.content
@@ -3186,8 +3311,9 @@ class TestDocumentPolish:
     async def test_doc_field_display_contact_id_shows_name(self, ui_client):
         """GET /docs/{id}/field/contact_id/display → shows contact_name, not raw entity_id."""
         doc = {**_DOC_DETAIL, "contact_id": "ct:CUST-001", "contact_name": "Alice Smith"}
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)):
-            r = await ui_client.get("/docs/d:1/field/contact_id/display", cookies=_authed())
+            r = await ui_client.get("/docs/d:1/field/contact_id/display")
         assert r.status_code == 200
         assert b"Alice Smith" in r.content
         assert b"ct:CUST-001" not in r.content
@@ -3196,8 +3322,9 @@ class TestDocumentPolish:
     async def test_doc_field_display_contact_id_fallback_when_no_name(self, ui_client):
         """GET /docs/{id}/field/contact_id/display → falls back to contact_id if no name stored."""
         doc = {**_DOC_DETAIL, "contact_id": "ct:CUST-001", "contact_name": None}
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)):
-            r = await ui_client.get("/docs/d:1/field/contact_id/display", cookies=_authed())
+            r = await ui_client.get("/docs/d:1/field/contact_id/display")
         assert r.status_code == 200
         assert b"ct:CUST-001" in r.content
 
@@ -3228,13 +3355,14 @@ class TestWriteoffListDetail:
     async def test_draft_writeoff_renders_entry_cells_filtered_and_aligned(self, ui_client):
         from bs4 import BeautifulSoup
         lst = self._wo_list()
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_list", new=AsyncMock(return_value=lst)),
             patch("ui.api_client.get_list_page", create=True, new=_list_page_stub(lst)),
             patch("ui.api_client.get_chart",
                   new=AsyncMock(return_value={"items": self._WO_CHART, "total": len(self._WO_CHART)})),
         ):
-            r = await ui_client.get("/lists/list:WO-1", cookies=_authed())
+            r = await ui_client.get("/lists/list:WO-1")
         assert r.status_code == 200
         html = r.content.decode()
         # The three write-off entry columns are present as click-to-edit cells (GDR 2f).
@@ -3263,13 +3391,14 @@ class TestWriteoffListDetail:
         """A finalized write-off offers the registry-declared Write off stock terminal; finalize only
         locks the lines, so without this button the stock removal and journal entry are unreachable."""
         lst = {**self._wo_list(), "status": "finalized"}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_list", new=AsyncMock(return_value=lst)),
             patch("ui.api_client.get_list_page", create=True, new=_list_page_stub(lst)),
             patch("ui.api_client.get_chart",
                   new=AsyncMock(return_value={"items": self._WO_CHART, "total": len(self._WO_CHART)})),
         ):
-            r = await ui_client.get("/lists/list:WO-1", cookies=_authed())
+            r = await ui_client.get("/lists/list:WO-1")
         assert r.status_code == 200
         html = r.content.decode()
         assert "Write off stock" in html
@@ -3279,13 +3408,14 @@ class TestWriteoffListDetail:
     async def test_closed_writeoff_offers_undo_button(self, ui_client):
         """A closed (written_off) write-off offers Undo write-off: the terminal is reversible."""
         lst = {**self._wo_list(), "status": "closed", "result": "written_off"}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_list", new=AsyncMock(return_value=lst)),
             patch("ui.api_client.get_list_page", create=True, new=_list_page_stub(lst)),
             patch("ui.api_client.get_chart",
                   new=AsyncMock(return_value={"items": self._WO_CHART, "total": len(self._WO_CHART)})),
         ):
-            r = await ui_client.get("/lists/list:WO-1", cookies=_authed())
+            r = await ui_client.get("/lists/list:WO-1")
         assert r.status_code == 200
         html = r.content.decode()
         assert "Undo write-off" in html
@@ -3293,13 +3423,14 @@ class TestWriteoffListDetail:
 
     @pytest.mark.asyncio
     async def test_account_picker_limited_to_expense_and_equity(self, ui_client):
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_list", new=AsyncMock(return_value=self._wo_list())),
             patch("ui.api_client.get_chart",
                   new=AsyncMock(return_value={"items": self._WO_CHART, "total": len(self._WO_CHART)})),
         ):
             r = await ui_client.get(
-                "/lists/list:WO-1/writeoff-line/ln-abc/account/edit", cookies=_authed())
+                "/lists/list:WO-1/writeoff-line/ln-abc/account/edit")
         assert r.status_code == 200
         html = r.content.decode()
         # Expense and equity codes are offered; cost of sales (5100), asset (1130) and revenue (4000) are not.
@@ -3315,6 +3446,7 @@ class TestSettingsPolish:
     @pytest.mark.asyncio
     async def test_settings_detail_cells_are_clickable(self, ui_client):
         """All settings tabs must have cell--clickable cells."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_taxes", new=AsyncMock(return_value=_TAXES)),
@@ -3338,7 +3470,7 @@ class TestSettingsPolish:
             for tab in ("company", "users", "taxes", "terms"):
                 # schema/category-library uses schema-card not cell--clickable
                 url = _TAB_URLS[tab]
-                r = await ui_client.get(url, cookies=_authed())
+                r = await ui_client.get(url)
                 assert b"cell--clickable" in r.content, f"No clickable cells on tab={tab} (url={url})"
 
     def test_settings_cells_have_title_attribute(self):
@@ -3354,24 +3486,26 @@ class TestColumnManager:
     @pytest.mark.asyncio
     async def test_column_manager_renders(self, ui_client):
         """Inventory page must include 'Manage columns' button."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [_ITEM], "total": 1})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value=_VALUATION)),
         ):
-            r = await ui_client.get("/inventory", cookies=_authed())
+            r = await ui_client.get("/inventory")
         assert b"Manage columns" in r.content
         assert b"column-manager" in r.content
 
     @pytest.mark.asyncio
     async def test_column_manager_checkboxes_present(self, ui_client):
         """Column manager must have checkboxes for each schema field."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [_ITEM], "total": 1})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value=_VALUATION)),
         ):
-            r = await ui_client.get("/inventory", cookies=_authed())
+            r = await ui_client.get("/inventory")
         # Each schema field should have a checkbox
         assert r.content.count(b'type="checkbox"') >= len(_SCHEMA) + 1  # +1 for row selects
 
@@ -3379,12 +3513,13 @@ class TestColumnManager:
     async def test_column_manager_cols_param_filters(self, ui_client):
         """?cols=name passes show_cols to data_table; all columns still rendered in DOM
         (column visibility is JS-driven, not server-side HTML suppression)."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [_ITEM], "total": 1})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value=_VALUATION)),
         ):
-            r = await ui_client.get("/inventory?cols=name", cookies=_authed())
+            r = await ui_client.get("/inventory?cols=name")
         assert r.status_code == 200
         assert b"Ruby" in r.content  # name value visible
         # All columns are always rendered in DOM; visibility controlled by JS.
@@ -3395,6 +3530,7 @@ class TestColumnManager:
     async def test_sort_link_does_not_include_cols_from_dom(self, ui_client):
         """Sort links must NOT include [name='cols'] in hx-include.
         Cols must come exclusively from extra_params (URL state), not DOM checkboxes."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [_ITEM], "total": 1})),
@@ -3405,7 +3541,7 @@ class TestColumnManager:
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
         ):
-            r = await ui_client.get("/inventory", cookies=_authed())
+            r = await ui_client.get("/inventory")
         assert r.status_code == 200
         # [name='cols'] must not appear inside any hx-include on sort links
         content = r.content.decode()
@@ -3428,6 +3564,7 @@ class TestColumnManager:
         ]
         saved_prefs = {"__all__": ["name"]}  # col_prefs has 'name' only
         valuation_big = {**_VALUATION, "item_count": 100}  # enough for pagination
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=schema_with_cols)),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [_ITEM], "total": 100})),
@@ -3438,7 +3575,7 @@ class TestColumnManager:
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
         ):
-            r = await ui_client.get("/inventory", cookies=_authed())
+            r = await ui_client.get("/inventory")
         assert r.status_code == 200
         content = r.content.decode()
         # Pagination links must contain cols=name (resolved from col_prefs)
@@ -3448,6 +3585,7 @@ class TestColumnManager:
 class TestPhase2DeepPolish:
     @pytest.mark.asyncio
     async def test_inventory_item_detail_page_renders(self, ui_client):
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
@@ -3460,7 +3598,7 @@ class TestPhase2DeepPolish:
             patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
-            r = await ui_client.get("/inventory/gc:123", cookies=_authed())
+            r = await ui_client.get("/inventory/gc:123")
         assert r.status_code == 200
         assert b"Back to inventory" in r.content
 
@@ -3470,12 +3608,13 @@ class TestPhase2DeepPolish:
         events = [{"id": i, "event_type": "item.created", "entity_id": "gc:123",
                    "ts": "2026-06-21T10:00:00+00:00", "data": {"sku": "S", "name": "n"}}
                   for i in range(50)]
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": events, "total": 120})),
         ):
-            r = await ui_client.get("/inventory/gc:123/history", cookies=_authed())
+            r = await ui_client.get("/inventory/gc:123/history")
         assert r.status_code == 200
         assert b"Ruby" in r.content and b"Back to item" in r.content
         # total 120 > per_page 50 -> pager with a page-2 link.
@@ -3485,11 +3624,12 @@ class TestPhase2DeepPolish:
     async def test_crm_contact_field_patch(self, ui_client):
         contact = {**_CONTACTS[0], "address": "x", "payment_terms": "Net 30"}
         updated = {**contact, "phone": "999"}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.patch_contact", new=AsyncMock(return_value=updated)),
             patch("ui.api_client.get_contact", new=AsyncMock(return_value=updated)),
         ):
-            r = await ui_client.patch("/contacts/ct:1/field/phone", data={"value": "999"}, cookies=_authed())
+            r = await ui_client.patch("/contacts/ct:1/field/phone", data={"value": "999"})
         assert r.status_code == 200
         assert b"cell--clickable" in r.content
 
@@ -3497,8 +3637,9 @@ class TestPhase2DeepPolish:
     async def test_contact_currency_field_edit_returns_combobox(self, ui_client):
         """GET /contacts/{id}/field/currency/edit must return a currency combobox, not plain text input."""
         contact = {**_CONTACTS[0], "currency": "THB"}
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_contact", new=AsyncMock(return_value=contact)):
-            r = await ui_client.get("/contacts/ct:1/field/currency/edit", cookies=_authed())
+            r = await ui_client.get("/contacts/ct:1/field/currency/edit")
         assert r.status_code == 200
         assert b"combobox-wrap" in r.content
         assert b"THB" in r.content
@@ -3511,8 +3652,9 @@ class TestPhase2DeepPolish:
     @pytest.mark.asyncio
     async def test_contact_currency_field_patch_rejects_invalid_code(self, ui_client):
         """PATCH /contacts/{id}/field/currency with garbage must return cell-error."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.patch_contact", new=AsyncMock()) as mock_patch:
-            r = await ui_client.patch("/contacts/ct:1/field/currency", data={"value": "FFF"}, cookies=_authed())
+            r = await ui_client.patch("/contacts/ct:1/field/currency", data={"value": "FFF"})
         assert r.status_code == 200
         assert b"cell-error" in r.content
         mock_patch.assert_not_called()
@@ -3521,8 +3663,9 @@ class TestPhase2DeepPolish:
     async def test_contact_phone_field_edit_returns_iti_widget(self, ui_client):
         """GET /contacts/{id}/field/phone/edit must return an intl-tel-input widget."""
         contact = {**_CONTACTS[0], "phone": "+66812345678"}
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_contact", new=AsyncMock(return_value=contact)):
-            r = await ui_client.get("/contacts/ct:1/field/phone/edit", cookies=_authed())
+            r = await ui_client.get("/contacts/ct:1/field/phone/edit")
         assert r.status_code == 200
         assert b"iti-wrap" in r.content           # wrapper div
         assert b"iti-input" in r.content          # visible tel input
@@ -3539,8 +3682,9 @@ class TestPhase2DeepPolish:
     async def test_contact_phone_field_edit_empty_value(self, ui_client):
         """Phone edit with no stored phone renders widget with empty value (no crash)."""
         contact = {**_CONTACTS[0], "phone": None}
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_contact", new=AsyncMock(return_value=contact)):
-            r = await ui_client.get("/contacts/ct:1/field/phone/edit", cookies=_authed())
+            r = await ui_client.get("/contacts/ct:1/field/phone/edit")
         assert r.status_code == 200
         assert b"iti-wrap" in r.content
 
@@ -3548,8 +3692,9 @@ class TestPhase2DeepPolish:
     async def test_company_phone_field_edit_returns_iti_widget(self, ui_client):
         """GET /settings/company/phone/edit must return an intl-tel-input widget."""
         company = {"phone": "+6621234567", "currency": "THB", "settings": {}}
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_company", new=AsyncMock(return_value=company)):
-            r = await ui_client.get("/settings/company/phone/edit", cookies=_authed())
+            r = await ui_client.get("/settings/company/phone/edit")
         assert r.status_code == 200
         assert b"iti-wrap" in r.content
         assert b"intlTelInput" in r.content
@@ -3559,6 +3704,7 @@ class TestPhase2DeepPolish:
     async def test_contact_detail_page_includes_phone_assets(self, ui_client):
         """Contact detail page must include intl-tel-input CSS and JS in <head>."""
         contact = {**_CONTACTS[0]}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_contact", new=AsyncMock(return_value=contact)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value={"currency": "THB"})),
@@ -3566,7 +3712,7 @@ class TestPhase2DeepPolish:
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": []})),
             patch("ui.api_client.get_contact_tags_vocabulary", new=AsyncMock(return_value=[])),
         ):
-            r = await ui_client.get("/contacts/ct:1", cookies=_authed())
+            r = await ui_client.get("/contacts/ct:1")
         assert r.status_code == 200
         assert b"intlTelInput" in r.content       # JS asset in head
         assert b"intlTelInput.min.css" in r.content  # CSS asset in head
@@ -3574,11 +3720,12 @@ class TestPhase2DeepPolish:
     @pytest.mark.asyncio
     async def test_docs_detail_field_patch(self, ui_client):
         updated = {**_DOC_DETAIL, "status": "paid"}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.patch_doc", new=AsyncMock(return_value=updated)),
             patch("ui.api_client.get_doc", new=AsyncMock(return_value=updated)),
         ):
-            r = await ui_client.patch("/docs/d:1/field/status", data={"value": "paid"}, cookies=_authed())
+            r = await ui_client.patch("/docs/d:1/field/status", data={"value": "paid"})
         assert r.status_code == 200
         assert b"paid" in r.content
 
@@ -3658,6 +3805,7 @@ class TestCollapsibleSidebar:
     @pytest.mark.asyncio
     async def test_sidebar_has_groups(self, ui_client):
         """Dashboard page sidebar contains collapsible group sections."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "Test"})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value={"item_count": 0, "cost_total": 0, "retail_total": 0, "wholesale_total": 0, "active_item_count": 0})),
@@ -3665,7 +3813,7 @@ class TestCollapsibleSidebar:
             patch("ui.api_client.get_ar_aging", new=AsyncMock(return_value={"buckets": {}, "lines": []})),
             patch("ui.api_client.my_companies", new=AsyncMock(return_value={"items": [], "total": 0})),
         ):
-            r = await ui_client.get("/dashboard", cookies=_authed())
+            r = await ui_client.get("/dashboard")
         assert r.status_code == 200
         html = r.text
         assert "sidebar-group" in html
@@ -3677,6 +3825,7 @@ class TestCollapsibleSidebar:
     @pytest.mark.asyncio
     async def test_sidebar_dashboard_active(self, ui_client):
         """Dashboard nav link is active, no group is auto-expanded for it."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "Test"})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value={"item_count": 0, "cost_total": 0, "retail_total": 0, "wholesale_total": 0, "active_item_count": 0})),
@@ -3684,13 +3833,14 @@ class TestCollapsibleSidebar:
             patch("ui.api_client.get_ar_aging", new=AsyncMock(return_value={"buckets": {}, "lines": []})),
             patch("ui.api_client.my_companies", new=AsyncMock(return_value={"items": [], "total": 0})),
         ):
-            r = await ui_client.get("/dashboard", cookies=_authed())
+            r = await ui_client.get("/dashboard")
         assert b"nav-link--active" in r.content
         assert b"Dashboard" in r.content
 
     @pytest.mark.asyncio
     async def test_sidebar_hamburger_button(self, ui_client):
         """Topbar has hamburger toggle for mobile."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "Test"})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value={"item_count": 0, "cost_total": 0, "retail_total": 0, "wholesale_total": 0, "active_item_count": 0})),
@@ -3698,12 +3848,13 @@ class TestCollapsibleSidebar:
             patch("ui.api_client.get_ar_aging", new=AsyncMock(return_value={"buckets": {}, "lines": []})),
             patch("ui.api_client.my_companies", new=AsyncMock(return_value={"items": [], "total": 0})),
         ):
-            r = await ui_client.get("/dashboard", cookies=_authed())
+            r = await ui_client.get("/dashboard")
         assert b"sidebar-toggle" in r.content
 
     @pytest.mark.asyncio
     async def test_sidebar_settings_group_present(self, ui_client):
         """Sidebar has a Settings footer link and module settings under their groups."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "Test"})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value={"item_count": 0, "cost_total": 0, "retail_total": 0, "wholesale_total": 0, "active_item_count": 0})),
@@ -3711,7 +3862,7 @@ class TestCollapsibleSidebar:
             patch("ui.api_client.get_ar_aging", new=AsyncMock(return_value={"buckets": {}, "lines": []})),
             patch("ui.api_client.my_companies", new=AsyncMock(return_value={"items": [], "total": 0})),
         ):
-            r = await ui_client.get("/dashboard", cookies=_authed())
+            r = await ui_client.get("/dashboard")
         assert r.status_code == 200
         html = r.text
         # Global settings accessible via footer link
@@ -3734,6 +3885,7 @@ class TestCollapsibleSidebar:
     @pytest.mark.asyncio
     async def test_sidebar_no_duplicate_settings_links(self, ui_client):
         """Settings nav links are deduplicated - each key appears exactly once."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "Test"})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value={"item_count": 0, "cost_total": 0, "retail_total": 0, "wholesale_total": 0, "active_item_count": 0})),
@@ -3741,7 +3893,7 @@ class TestCollapsibleSidebar:
             patch("ui.api_client.get_ar_aging", new=AsyncMock(return_value={"buckets": {}, "lines": []})),
             patch("ui.api_client.my_companies", new=AsyncMock(return_value={"items": [], "total": 0})),
         ):
-            r = await ui_client.get("/dashboard", cookies=_authed())
+            r = await ui_client.get("/dashboard")
         html = r.text
         # /settings/inventory should appear exactly once under its group
         assert html.count('href="/settings/inventory"') == 1
@@ -3749,13 +3901,14 @@ class TestCollapsibleSidebar:
     @pytest.mark.asyncio
     async def test_sidebar_inventory_settings_highlighted(self, ui_client):
         """Visiting /settings/inventory shows inventory settings link in sidebar group header."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": []})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
         ):
-            r = await ui_client.get("/settings/inventory", cookies=_authed())
+            r = await ui_client.get("/settings/inventory")
         assert r.status_code == 200
         html = r.text
         # The settings link is now in the sidebar group header (sidebar-group-settings-link)
@@ -3769,13 +3922,14 @@ class TestCollapsibleSidebar:
     @pytest.mark.asyncio
     async def test_sidebar_accounting_settings_highlighted(self, ui_client):
         """Visiting /settings/accounting shows accounting settings link in sidebar group header."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "Test", "base_currency": "USD", "current_role": "owner"})),
             patch("ui.api_client.get_bank_accounts", new=AsyncMock(return_value={"items": []})),
             patch("ui.api_client.get_recon_rules", new=AsyncMock(return_value={"rules": []})),
             patch("ui.api_client.get_period_lock", new=AsyncMock(return_value={})),
         ):
-            r = await ui_client.get("/settings/accounting", cookies=_authed())
+            r = await ui_client.get("/settings/accounting")
         assert r.status_code == 200
         html = r.text
         # The settings link is now in the sidebar group header (sidebar-group-settings-link)
@@ -3787,6 +3941,7 @@ class TestCollapsibleSidebar:
 
     @pytest.mark.asyncio
     async def test_sidebar_highlights_sold_inventory_entry(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_valuation", new=AsyncMock(return_value={"category_counts": {}, "count_by_status": {"sold": 1}, "item_count": 1})), \
              patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})), \
              patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": []})), \
@@ -3795,7 +3950,7 @@ class TestCollapsibleSidebar:
              patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})), \
              patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=[])), \
              patch("ui.api_client.get_company", new=AsyncMock(return_value={"currency": "USD", "settings": {}, "current_role": "owner"})):
-            r = await ui_client.get("/inventory?status=sold", cookies=_authed())
+            r = await ui_client.get("/inventory?status=sold")
         assert r.status_code == 200
         html = r.text
         assert 'href="/inventory?status=sold"' in html
@@ -3804,6 +3959,7 @@ class TestCollapsibleSidebar:
 
     @pytest.mark.asyncio
     async def test_sidebar_highlights_archived_inventory_entry(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_valuation", new=AsyncMock(return_value={"category_counts": {}, "count_by_status": {"archived": 1}, "item_count": 1})), \
              patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})), \
              patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": []})), \
@@ -3812,7 +3968,7 @@ class TestCollapsibleSidebar:
              patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})), \
              patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=[])), \
              patch("ui.api_client.get_company", new=AsyncMock(return_value={"currency": "USD", "settings": {}, "current_role": "owner"})):
-            r = await ui_client.get("/inventory?status=archived", cookies=_authed())
+            r = await ui_client.get("/inventory?status=archived")
         assert r.status_code == 200
         html = r.text
         assert 'href="/inventory?status=archived"' in html
@@ -3821,11 +3977,12 @@ class TestCollapsibleSidebar:
 
     @pytest.mark.asyncio
     async def test_sidebar_highlights_reconcile_entry(self, ui_client):
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value={"currency": "USD", "current_role": "owner"})),
             patch("ui.api_client.get_bank_accounts", new=AsyncMock(return_value={"items": [{"id": "b1", "bank_name": "Kasikorn", "account_number": "1234", "is_active": True}]})),
         ):
-            r = await ui_client.get("/accounting/reconcile/start", cookies=_authed())
+            r = await ui_client.get("/accounting/reconcile/start")
         assert r.status_code == 200
         html = r.text
         assert 'href="/accounting/reconcile/start" class="nav-link nav-link--active"' in html
@@ -3838,38 +3995,43 @@ class TestDateRangeFilters:
 
     @pytest.mark.asyncio
     async def test_ar_aging_has_date_filter(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_ar_aging", new=AsyncMock(return_value={"lines": [], "buckets": {}})):
-            r = await ui_client.get("/reports/ar-aging", cookies=_authed())
+            r = await ui_client.get("/reports/ar-aging")
         assert r.status_code == 200
         assert b"date-filter-bar" in r.content
         assert b"preset-btn" in r.content
 
     @pytest.mark.asyncio
     async def test_sales_report_has_date_filter(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_sales_report", new=AsyncMock(return_value={"lines": [], "group_by": "customer", "total": 0})):
-            r = await ui_client.get("/reports/sales", cookies=_authed())
+            r = await ui_client.get("/reports/sales")
         assert r.status_code == 200
         assert b"date-filter-bar" in r.content
         assert b"Last 12 months" in r.content
 
     @pytest.mark.asyncio
     async def test_date_filter_custom_params_in_url(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_sales_report", new=AsyncMock(return_value={"lines": [], "group_by": "customer", "total": 0})):
-            r = await ui_client.get("/reports/sales?from=2025-01-01&to=2025-12-31", cookies=_authed())
+            r = await ui_client.get("/reports/sales?from=2025-01-01&to=2025-12-31")
         assert r.status_code == 200
         assert b"2025-01-01" in r.content
 
     @pytest.mark.asyncio
     async def test_pnl_tab_has_date_filter(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_pnl", new=AsyncMock(return_value={"revenue": {"total": 0, "lines": []}, "cogs": {"total": 0, "lines": []}, "gross_profit": 0, "expenses": {"total": 0, "lines": []}, "net_profit": 0})):
-            r = await ui_client.get("/reports/pnl", cookies=_authed())
+            r = await ui_client.get("/reports/pnl")
         assert r.status_code == 200
         assert b"date-filter-bar" in r.content
 
     @pytest.mark.asyncio
     async def test_settings_gear_link(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_ar_aging", new=AsyncMock(return_value={"lines": [], "buckets": {}})):
-            r = await ui_client.get("/reports/ar-aging", cookies=_authed())
+            r = await ui_client.get("/reports/ar-aging")
         # The gear opens the payment terms tab on the Contacts settings page.
         assert b'href="/settings/contacts?tab=payment-terms" class="settings-gear"' in r.content
 
@@ -3886,20 +4048,23 @@ class TestGlobalSearch:
                 {"id": "i:1", "sku": "SKU1", "name": "Gold Ring", "status": "available"}]}},
             "degraded_modules": [],
         }
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.global_search", new=AsyncMock(return_value=answer)):
-            r = await ui_client.get("/search?q=gold", cookies=_authed())
+            r = await ui_client.get("/search?q=gold")
         assert r.status_code == 200
         assert b"Gold Ring" in r.content
         assert b"search-result-item" in r.content
 
     @pytest.mark.asyncio
     async def test_search_short_query_returns_empty(self, ui_client):
-        r = await ui_client.get("/search?q=a", cookies=_authed())
+        ui_client.cookies.update(_authed())
+        r = await ui_client.get("/search?q=a")
         assert r.status_code == 200
         assert b"search-result-item" not in r.content
 
     @pytest.mark.asyncio
     async def test_topbar_has_search_input(self, ui_client):
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "Test"})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value={"item_count": 0, "cost_total": 0, "retail_total": 0, "wholesale_total": 0, "active_item_count": 0})),
@@ -3907,7 +4072,7 @@ class TestGlobalSearch:
             patch("ui.api_client.my_companies", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_ar_aging", new=AsyncMock(return_value={"buckets": {}, "lines": []})),
         ):
-            r = await ui_client.get("/dashboard", cookies=_authed())
+            r = await ui_client.get("/dashboard")
         assert b"global-search-input" in r.content
 
 
@@ -3918,28 +4083,31 @@ class TestSortableColumns:
     @pytest.mark.asyncio
     async def test_docs_table_has_sort_links(self, ui_client):
         docs = [{"entity_id": "d:1", "doc_number": "INV-1", "doc_type": "invoice", "contact_name": "Acme", "issue_date": "2026-01-01", "due_date": "2026-01-15", "total": 1000, "amount_outstanding": 500, "status": "sent"}]
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.list_docs", new=AsyncMock(return_value=docs)),
             patch("ui.api_client.get_doc_summary", new=AsyncMock(return_value={"total_count": 1})),
         ):
-            r = await ui_client.get("/docs", cookies=_authed())
+            r = await ui_client.get("/docs")
         assert r.status_code == 200
         assert b"sort-link" in r.content
 
     @pytest.mark.asyncio
     async def test_crm_table_has_sort_links(self, ui_client):
         contacts = [{"entity_id": "c:1", "name": "Acme", "phone": "1", "email": "a@a.example", "tax_id": "", "credit_limit": 1000, "contact_type": "customer"}]
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.list_contacts", new=AsyncMock(return_value={"items": contacts, "total": len(contacts)})),
         ):
-            r = await ui_client.get("/contacts/customers", cookies=_authed())
+            r = await ui_client.get("/contacts/customers")
         assert r.status_code == 200
         assert b"sort-link" in r.content
 
     @pytest.mark.asyncio
     async def test_reports_table_has_sort_links(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_sales_report", new=AsyncMock(return_value={"lines": [{"label": "Acme", "count": 2, "total": 1200}], "group_by": "customer", "total": 1200})):
-            r = await ui_client.get("/reports/sales", cookies=_authed())
+            r = await ui_client.get("/reports/sales")
         assert r.status_code == 200
         assert b"sort-link" in r.content
 
@@ -3956,11 +4124,12 @@ class TestManufacturingPage:
                  "docs": [{"doc_id": "doc:i1", "doc_number": "INV-1", "doc_type": "invoice",
                            "contact_name": "Acme", "due": None, "quantity": 2.0,
                            "shortfall": 2.0, "coverage": "short"}]}]
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.manufacturing_to_make", new=AsyncMock(return_value={"items": rows, "total": 1})),
             patch("ui.api_client.get_company", new=AsyncMock(return_value={"settings": {"currency": "USD"}, "current_role": "owner"})),
         ):
-            r = await ui_client.get("/manufacturing", cookies=_authed())
+            r = await ui_client.get("/manufacturing")
         assert r.status_code == 200
         assert b"Demand Planning" in r.content
         # Flat demand line: product, document, and a Needed coverage badge.
@@ -3969,11 +4138,12 @@ class TestManufacturingPage:
 
     @pytest.mark.asyncio
     async def test_manufacturing_list_empty(self, ui_client):
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.manufacturing_to_make", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_company", new=AsyncMock(return_value={})),
         ):
-            r = await ui_client.get("/manufacturing", cookies=_authed())
+            r = await ui_client.get("/manufacturing")
         assert r.status_code == 200
         assert b"Nothing to make" in r.content  # empty state
 
@@ -3988,11 +4158,12 @@ class TestManufacturingPage:
 
     @pytest.mark.asyncio
     async def test_manufacturing_sidebar_link_present(self, ui_client):
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.manufacturing_to_make", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_company", new=AsyncMock(return_value={})),
         ):
-            r = await ui_client.get("/manufacturing", cookies=_authed())
+            r = await ui_client.get("/manufacturing")
         assert b"/manufacturing" in r.content
 
     # Detail-page BOM/start/cancel tests removed with the opaque detail page; run status actions
@@ -4006,36 +4177,40 @@ class TestCSVExport:
 
     @pytest.mark.asyncio
     async def test_inventory_page_has_export_button(self, ui_client):
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=[])),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value={"item_count": 0, "cost_total": 0, "retail_total": 0, "wholesale_total": 0, "active_item_count": 0, "category_counts": {}})),
         ):
-            r = await ui_client.get("/inventory", cookies=_authed())
+            r = await ui_client.get("/inventory")
         assert b"Export CSV" in r.content
 
     @pytest.mark.asyncio
     async def test_docs_page_has_export_button(self, ui_client):
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.list_docs", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_doc_summary", new=AsyncMock(return_value={})),
         ):
-            r = await ui_client.get("/docs", cookies=_authed())
+            r = await ui_client.get("/docs")
         assert b"Export CSV" in r.content
 
     @pytest.mark.asyncio
     async def test_crm_page_has_export_button(self, ui_client):
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.list_contacts", new=AsyncMock(return_value={"items": [], "total": 0})),
         ):
-            r = await ui_client.get("/contacts/customers", cookies=_authed())
+            r = await ui_client.get("/contacts/customers")
         assert b"Export CSV" in r.content
 
     @pytest.mark.asyncio
     async def test_inventory_export_csv_returns_csv(self, ui_client):
         csv_bytes = b"entity_id,sku,name\nitem:1,SKU-1,Widget\n"
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.export_items_csv", new=AsyncMock(return_value=csv_bytes)):
-            r = await ui_client.get("/inventory/export/csv", cookies=_authed())
+            r = await ui_client.get("/inventory/export/csv")
         assert r.status_code == 200
         assert b"sku" in r.content or b"attachment" in r.headers.get("content-disposition", "").encode()
 
@@ -4044,13 +4219,13 @@ class TestCSVExport:
         """Export what you see: the inventory Export link carries the page's whole filter,
         sort and column state, and each export route forwards that state to the API with
         the pagination stripped."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value={"item_count": 0, "cost_total": 0, "retail_total": 0, "wholesale_total": 0, "active_item_count": 0, "category_counts": {}})),
         ):
             r = await ui_client.get(
-                "/inventory?status=sold&category=Rings&q=ruby&sort=name&dir=asc&cols=name,sku&page=2",
-                cookies=_authed())
+                "/inventory?status=sold&category=Rings&q=ruby&sort=name&dir=asc&cols=name,sku&page=2")
         assert r.status_code == 200
         href = re.search(r'href="(/inventory/export/csv[^"]*)"', r.text)
         assert href, "Export CSV link missing"
@@ -4062,8 +4237,7 @@ class TestCSVExport:
         items_mock = AsyncMock(return_value=b"name,sku\n")
         with patch("ui.api_client.export_items_csv", items_mock):
             r = await ui_client.get(
-                "/inventory/export/csv?status=sold&category=Rings&q=ruby&sort=name&dir=asc&cols=name,sku&page=3&per_page=25",
-                cookies=_authed())
+                "/inventory/export/csv?status=sold&category=Rings&q=ruby&sort=name&dir=asc&cols=name,sku&page=3&per_page=25")
         assert r.status_code == 200
         params = items_mock.call_args.args[1]
         assert params == {"status": "sold", "category": "Rings", "q": "ruby", "sort": "name",
@@ -4076,8 +4250,7 @@ class TestCSVExport:
         with patch("ui.api_client.export_docs_csv", docs_mock):
             r = await ui_client.get(
                 "/docs/export/csv?type=invoice&status_in=paid,partial&contact_id=c:9&preset=custom"
-                "&from=2026-01-01&to=2026-02-01&page=2&per_page=25&sort=total&dir=asc",
-                cookies=_authed())
+                "&from=2026-01-01&to=2026-02-01&page=2&per_page=25&sort=total&dir=asc")
         assert r.status_code == 200
         params = docs_mock.call_args.args[1]
         assert params == {"doc_type": "invoice", "status_in": "paid,partial", "contact_id": "c:9",
@@ -4087,8 +4260,7 @@ class TestCSVExport:
         lists_mock = AsyncMock(return_value=(_stream(), {}))
         with patch("ui.api_client.export_lists_csv", lists_mock):
             r = await ui_client.get(
-                "/lists/export/csv?type=quotation&preset=custom&from=2026-01-01&to=2026-02-01&page=2",
-                cookies=_authed())
+                "/lists/export/csv?type=quotation&preset=custom&from=2026-01-01&to=2026-02-01&page=2")
         assert r.status_code == 200
         params = lists_mock.call_args.args[1]
         assert params == {"list_type": "quotation", "all_issued": "1",
@@ -4110,8 +4282,9 @@ class TestCSVExport:
         async def _fake_export(token, params=None):
             return _fake_stream(), {"content-length": str(total), "content-type": "text/csv"}
 
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.export_docs_csv", _fake_export):
-            r = await ui_client.get("/docs/export/csv", cookies=_authed())
+            r = await ui_client.get("/docs/export/csv")
         assert r.status_code == 200
         assert r.content == b"".join(chunks)                    # streamed through intact
         assert r.headers["content-length"] == str(total)        # browser progress bar
@@ -4121,13 +4294,15 @@ class TestCSVExport:
     @pytest.mark.asyncio
     async def test_crm_export_csv_returns_csv(self, ui_client):
         csv_bytes = b"entity_id,name,email\ncontact:1,Acme,acme@a.example\n"
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.export_contacts_csv", new=AsyncMock(return_value=csv_bytes)):
-            r = await ui_client.get("/crm/export/csv", cookies=_authed())
+            r = await ui_client.get("/crm/export/csv")
         assert r.status_code == 200
 
     @pytest.mark.asyncio
     async def test_inventory_import_page_renders(self, ui_client):
-        r = await ui_client.get("/inventory/import", cookies=_authed())
+        ui_client.cookies.update(_authed())
+        r = await ui_client.get("/inventory/import")
         assert r.status_code == 200
         assert b"Import Inventory" in r.content
         assert b"csv_file" in r.content
@@ -4144,14 +4319,16 @@ class TestPriceRangeReports:
 
     @pytest.mark.asyncio
     async def test_sales_report_has_price_range_option(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_sales_report", new=AsyncMock(return_value={"lines": [], "group_by": "customer", "total_revenue": 0})):
-            r = await ui_client.get("/reports/sales", cookies=_authed())
+            r = await ui_client.get("/reports/sales")
         assert b"price_range" in r.content or b"Price Range" in r.content
 
     @pytest.mark.asyncio
     async def test_purchases_report_has_price_range_option(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_purchases_report", new=AsyncMock(return_value={"lines": [], "group_by": "supplier", "total_spend": 0})):
-            r = await ui_client.get("/reports/purchases", cookies=_authed())
+            r = await ui_client.get("/reports/purchases")
         assert b"price_range" in r.content or b"Price Range" in r.content
 
     @pytest.mark.asyncio
@@ -4166,8 +4343,9 @@ class TestPriceRangeReports:
             ],
             "total_revenue": 24500,
         }
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_sales_report", new=AsyncMock(return_value=data)):
-            r = await ui_client.get("/reports/sales?group_by=price_range", cookies=_authed())
+            r = await ui_client.get("/reports/sales?group_by=price_range")
         assert r.status_code == 200
         assert b"0-1000" in r.content
         assert b"Price Range" in r.content
@@ -4179,8 +4357,9 @@ class TestPriceRangeReports:
             "lines": [{"price_range": "0-1000", "invoice_count": 2, "total_revenue": 800}],
             "total_revenue": 800,
         }
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_sales_report", new=AsyncMock(return_value=data)):
-            r = await ui_client.get("/reports/sales?group_by=price_range", cookies=_authed())
+            r = await ui_client.get("/reports/sales?group_by=price_range")
         assert b"href" in r.content
 
 
@@ -4192,30 +4371,32 @@ class TestColumnDefaults:
     async def test_data_table_has_resize_script(self, ui_client):
         schema = [{"key": "sku", "label": "SKU", "type": "text", "editable": True}]
         items = [{"entity_id": "item:1", "sku": "SKU-1", "name": "Widget"}]
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=schema)),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": items, "total": len(items)})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value={"item_count": 1, "cost_total": 0, "retail_total": 0, "wholesale_total": 0, "active_item_count": 1, "category_counts": {}})),
         ):
-            r = await ui_client.get("/inventory", cookies=_authed())
+            r = await ui_client.get("/inventory")
         assert b"col-resize-handle" in r.content or b"colEmpty" in r.content
 
     @pytest.mark.asyncio
     async def test_data_table_has_localstorage_script(self, ui_client):
         schema = [{"key": "sku", "label": "SKU", "type": "text", "editable": True}]
         items = [{"entity_id": "item:1", "sku": "SKU-1", "name": "Widget"}]
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=schema)),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": items, "total": len(items)})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value={"item_count": 1, "cost_total": 0, "retail_total": 0, "wholesale_total": 0, "active_item_count": 1, "category_counts": {}})),
         ):
-            r = await ui_client.get("/inventory", cookies=_authed())
+            r = await ui_client.get("/inventory")
         assert b"localStorage" in r.content
         assert b"celerp_cols_" in r.content
 
     @pytest.mark.asyncio
     async def test_col_resize_handle_css_exists(self):
-        css = open(pathlib.Path(__file__).parent.parent / "ui/static/app.css").read()
+        css = (pathlib.Path(__file__).parent.parent / "ui/static/app.css").read_text()
         assert "col-resize-handle" in css
         assert "cursor: col-resize" in css
 
@@ -4228,12 +4409,13 @@ class TestColumnDefaults:
         """
         schema = [{"key": "sku", "label": "SKU", "type": "text", "editable": True}]
         items = [{"entity_id": "item:1", "sku": "SKU-1", "name": "Widget"}]
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=schema)),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": items, "total": len(items)})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value={"item_count": 1, "cost_total": 0, "retail_total": 0, "wholesale_total": 0, "active_item_count": 1, "category_counts": {}})),
         ):
-            r = await ui_client.get("/inventory", cookies=_authed())
+            r = await ui_client.get("/inventory")
         assert b"sticky-head" in r.content
         assert b"table.data-table.sticky-head" in r.content
 
@@ -4268,9 +4450,10 @@ class TestSprint4DocCreation:
     @pytest.mark.asyncio
     async def test_create_blank_returns_hx_redirect(self, ui_client):
         """POST /docs/create-blank returns 204 with HX-Redirect header."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.create_doc",
                    new=AsyncMock(return_value={"entity_id": "doc:INV-2026-0001"})):
-            r = await ui_client.post("/docs/create-blank?type=invoice", cookies=_authed())
+            r = await ui_client.post("/docs/create-blank?type=invoice")
         assert r.status_code == 204
         assert "HX-Redirect" in r.headers
         assert "/docs/doc:INV-2026-0001" in r.headers["HX-Redirect"]
@@ -4284,11 +4467,12 @@ class TestSprint4DocCreation:
     @pytest.mark.asyncio
     async def test_docs_page_new_invoice_uses_htmx(self, ui_client):
         """The New Invoice button on /docs uses hx-post for quick create."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.list_docs", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_doc_summary", new=AsyncMock(return_value=_DOC_SUMMARY)),
         ):
-            r = await ui_client.get("/docs", cookies=_authed())
+            r = await ui_client.get("/docs")
         assert r.status_code == 200
         assert b"hx-post" in r.content or b"hx_post" in r.content
         assert b"create-blank" in r.content
@@ -4296,12 +4480,13 @@ class TestSprint4DocCreation:
     @pytest.mark.asyncio
     async def test_docs_page_memo_renders_create_button(self, ui_client):
         """GET /docs?type=memo renders a create-blank button pointing to type=memo."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.list_docs", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_doc_summary", new=AsyncMock(return_value=_DOC_SUMMARY)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "Test", "currency": "USD", "current_role": "owner"})),
         ):
-            r = await ui_client.get("/docs?type=memo", cookies=_authed())
+            r = await ui_client.get("/docs?type=memo")
         assert r.status_code == 200
         content = r.content.decode()
         assert "create-blank" in content, "New memo button must have create-blank URL"
@@ -4310,27 +4495,30 @@ class TestSprint4DocCreation:
     @pytest.mark.asyncio
     async def test_create_blank_memo_redirects(self, ui_client):
         """POST /docs/create-blank?type=memo returns 204 with HX-Redirect."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.create_doc",
                    new=AsyncMock(return_value={"id": "doc:MEM-001"})):
-            r = await ui_client.post("/docs/create-blank?type=memo", cookies=_authed())
+            r = await ui_client.post("/docs/create-blank?type=memo")
         assert r.status_code == 204
         assert "/docs/doc:MEM-001" in r.headers.get("HX-Redirect", "")
 
     @pytest.mark.asyncio
     async def test_create_blank_uses_id_key(self, ui_client):
         """API returns {id: ...} not {entity_id: ...}; UI must handle both."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.create_doc",
                    new=AsyncMock(return_value={"id": "doc:INV-NEW"})):
-            r = await ui_client.post("/docs/create-blank?type=invoice", cookies=_authed())
+            r = await ui_client.post("/docs/create-blank?type=invoice")
         assert r.status_code == 204
         assert "HX-Redirect" in r.headers
         assert "/docs/doc:INV-NEW" in r.headers["HX-Redirect"]
 
     async def test_create_blank_quotation_uses_id_key(self, ui_client):
         """Same fix for quotation type."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.create_doc",
                    new=AsyncMock(return_value={"id": "doc:QUO-NEW", "event_id": "evt:2"})):
-            r = await ui_client.post("/docs/create-blank?type=quotation", cookies=_authed())
+            r = await ui_client.post("/docs/create-blank?type=quotation")
         assert r.status_code == 204
         assert "/docs/doc:QUO-NEW" in r.headers.get("HX-Redirect", "")
 
@@ -4341,40 +4529,44 @@ class TestListsCreateBlank:
     @pytest.mark.asyncio
     async def test_create_blank_list_uses_id_key(self, ui_client):
         """POST /lists/create-blank handles API returning {id: ...} not {entity_id: ...}."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.create_list",
                    new=AsyncMock(return_value={"id": "list:VIEW-001", "event_id": "evt:3"})):
-            r = await ui_client.post("/lists/create-blank", cookies=_authed())
+            r = await ui_client.post("/lists/create-blank")
         assert r.status_code == 204
         assert "/lists/list:VIEW-001" in r.headers.get("HX-Redirect", "")
 
     @pytest.mark.asyncio
     async def test_lists_new_get_redirects_without_interim_page(self, ui_client):
         """/lists/new GET no longer shows a form - creates immediately and redirects."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.create_list",
                    new=AsyncMock(return_value={"id": "list:VIEW-002"})):
-            r = await ui_client.get("/lists/new", cookies=_authed(), follow_redirects=False)
+            r = await ui_client.get("/lists/new", follow_redirects=False)
         assert r.status_code == 302
         assert "/lists/list:VIEW-002" in r.headers.get("location", "")
 
     @pytest.mark.asyncio
     async def test_lists_page_no_href_new(self, ui_client):
         """'New List' button on /lists uses hx-post, not href='/lists/new'."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.list_lists", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_list_summary", new=AsyncMock(return_value={})),
         ):
-            r = await ui_client.get("/lists", cookies=_authed())
+            r = await ui_client.get("/lists")
         assert r.status_code == 200
         assert b'href="/lists/new"' not in r.content
 
     @pytest.mark.asyncio
     async def test_lists_page_has_correct_types(self, ui_client):
         """List type dropdown includes quotation, transfer, audit."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.list_lists", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_list_summary", new=AsyncMock(return_value={})),
         ):
-            r = await ui_client.get("/lists", cookies=_authed())
+            r = await ui_client.get("/lists")
         assert r.status_code == 200
         assert b"quotation" in r.content
         assert b"transfer" in r.content
@@ -4391,16 +4583,18 @@ class TestListsCreateBlank:
     @pytest.mark.asyncio
     async def test_doc_detail_draft_shows_add_line_button(self, ui_client):
         """Draft doc detail page has + Add Line button."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_BLANK_DOC)):
-            r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+            r = await ui_client.get("/docs/doc:INV-2026-0001")
         assert r.status_code == 200
         assert b"Add item" in r.content
 
     @pytest.mark.asyncio
     async def test_doc_detail_draft_shows_add_line_button(self, ui_client):
         """Draft doc detail page has Add item button (auto-saves on blur, no Save button)."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_BLANK_DOC)):
-            r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+            r = await ui_client.get("/docs/doc:INV-2026-0001")
         assert r.status_code == 200
         assert b"Add item" in r.content
         assert b"Save lines" not in r.content
@@ -4408,8 +4602,9 @@ class TestListsCreateBlank:
     @pytest.mark.asyncio
     async def test_doc_detail_finalized_no_add_line(self, ui_client):
         """Finalized doc shows no + Add Line button."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_FINAL_DOC)):
-            r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+            r = await ui_client.get("/docs/doc:INV-2026-0001")
         assert r.status_code == 200
         assert b"Add item" not in r.content
 
@@ -4418,11 +4613,11 @@ class TestListsCreateBlank:
         """POST /docs/{id}/lines calls api.patch_doc and returns JSON ok."""
         lines = [{"description": "Test", "sku": "T-01", "quantity": 1, "unit_price": 100,
                   "tax_rate": 0, "line_total": 100}]
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.patch_doc", new=AsyncMock(return_value={})):
             r = await ui_client.post(
                 "/docs/doc:INV-2026-0001/lines",
                 json={"line_items": lines, "subtotal": 100, "tax": 0, "total": 100},
-                cookies=_authed(),
             )
         assert r.status_code == 200
         assert r.json()["ok"] is True
@@ -4435,11 +4630,11 @@ class TestListsCreateBlank:
         from ui.api_client import _api_error
         detail = {"message_key": key, "message": "Line 1 (W-1) holds reserved stock.", "params": {}}
         refused = _api_error(409, {"detail": detail}, "")
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.patch_doc", new=AsyncMock(side_effect=refused)):
             r = await ui_client.post(
                 "/docs/doc:INV-2026-0001/lines",
                 json={"line_items": [], "subtotal": 0, "tax": 0, "total": 0},
-                cookies=_authed(),
             )
         assert r.status_code == 400
         assert r.json() == {"error": r.json()["error"]} and r.json()["error"]
@@ -4452,11 +4647,11 @@ class TestListsCreateBlank:
         (optimistic concurrency). original_count is the 5th positional argument (defaulting to the
         submitted page's length when the body omits it) and expected_version the 6th."""
         mock = AsyncMock(return_value={"event_id": 42, "version": 42})
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.patch_list_line_page", create=True, new=mock):
             r = await ui_client.post(
                 "/lists/list:WO-1/lines",
                 json={"line_items": [], "subtotal": 0, "tax": 0, "total": 0, "expected_version": 7},
-                cookies=_authed(),
             )
         assert r.status_code == 200
         assert r.json()["ok"] is True
@@ -4471,11 +4666,11 @@ class TestListsCreateBlank:
         English message text."""
         from ui.api_client import APIError
         mock = AsyncMock(side_effect=APIError(409, "This list was changed by someone else. Select Try again to get the latest before saving."))
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.patch_list_line_page", create=True, new=mock):
             r = await ui_client.post(
                 "/lists/list:WO-1/lines",
                 json={"line_items": [], "subtotal": 0, "tax": 0, "total": 0, "expected_version": 1},
-                cookies=_authed(),
             )
         assert r.status_code == 409
         assert r.json()["code"] == "stale_version"
@@ -4484,8 +4679,9 @@ class TestListsCreateBlank:
     async def test_line_confirms_read_right_for_one_line(self, ui_client):
         """The line-action confirms carry a one-line form, so selecting one line never reads
         "Set 1 lines", and Delete selected has a confirm of its own."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_BLANK_DOC)):
-            r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+            r = await ui_client.get("/docs/doc:INV-2026-0001")
         assert r.status_code == 200
         for text in ("Set 1 line as reserved?", "Set {n} lines as reserved?",
                      "Set 1 line as available?", "Delete 1 line?", "Delete {n} lines?"):
@@ -4504,8 +4700,9 @@ class TestListsCreateBlank:
     @pytest.mark.asyncio
     async def test_doc_detail_empty_state_message(self, ui_client):
         """Draft doc with no lines pre-opens one empty editable row."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_BLANK_DOC)):
-            r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+            r = await ui_client.get("/docs/doc:INV-2026-0001")
         assert b"Add item" in r.content
 
 
@@ -4515,10 +4712,10 @@ class TestSprint4DocActions:
     @pytest.mark.asyncio
     async def test_action_finalize_redirects(self, ui_client):
         """POST /docs/{id}/action/finalize returns HX-Redirect."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.finalize_doc", new=AsyncMock(return_value={})):
             r = await ui_client.post(
                 "/docs/doc:INV-2026-0001/action/finalize",
-                cookies=_authed(),
             )
         assert r.status_code == 204
         assert "HX-Redirect" in r.headers
@@ -4526,10 +4723,10 @@ class TestSprint4DocActions:
     @pytest.mark.asyncio
     async def test_action_send_redirects(self, ui_client):
         """POST /docs/{id}/action/send returns HX-Redirect."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.send_doc", new=AsyncMock(return_value={})):
             r = await ui_client.post(
                 "/docs/doc:INV-2026-0001/action/send",
-                cookies=_authed(),
             )
         assert r.status_code == 204
         assert "HX-Redirect" in r.headers
@@ -4537,11 +4734,11 @@ class TestSprint4DocActions:
     @pytest.mark.asyncio
     async def test_action_void_with_reason_redirects(self, ui_client):
         """POST /docs/{id}/action/void with reason returns HX-Redirect."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.void_doc", new=AsyncMock(return_value={})):
             r = await ui_client.post(
                 "/docs/doc:INV-2026-0001/action/void",
                 data={"reason": "Duplicate"},
-                cookies=_authed(),
             )
         assert r.status_code == 204
         assert "HX-Redirect" in r.headers
@@ -4549,42 +4746,45 @@ class TestSprint4DocActions:
     @pytest.mark.asyncio
     async def test_action_unknown_returns_400(self, ui_client):
         """Unknown action returns 400."""
+        ui_client.cookies.update(_authed())
         r = await ui_client.post(
             "/docs/doc:INV-2026-0001/action/bogus-action",
-            cookies=_authed(),
         )
         assert r.status_code == 400
 
     @pytest.mark.asyncio
     async def test_doc_detail_draft_shows_finalize_button(self, ui_client):
         """Draft doc detail shows context-appropriate finalize button (Issue Invoice for invoices)."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_BLANK_DOC)):
-            r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+            r = await ui_client.get("/docs/doc:INV-2026-0001")
         assert b"Issue Invoice" in r.content
 
     @pytest.mark.asyncio
     async def test_doc_detail_draft_shows_void_form(self, ui_client):
         """Draft doc detail does NOT show Void button (only Delete is shown for drafts)."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_BLANK_DOC)):
-            r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+            r = await ui_client.get("/docs/doc:INV-2026-0001")
         assert r.status_code == 200
         assert b"Void" not in r.content
 
     @pytest.mark.asyncio
     async def test_doc_detail_draft_shows_delete_button(self, ui_client):
         """Draft doc detail shows Delete button/form."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_BLANK_DOC)):
-            r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+            r = await ui_client.get("/docs/doc:INV-2026-0001")
         assert b"Confirm Delete" in r.content
 
     @pytest.mark.asyncio
     async def test_action_delete_draft_redirects(self, ui_client):
         """POST /docs/{id}/action/delete returns HX-Redirect to docs list."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.delete_doc", new=AsyncMock(return_value={"deleted": "doc:INV-2026-0001"})):
             r = await ui_client.post(
                 "/docs/doc:INV-2026-0001/action/delete",
                 data={"doc_type": "invoice"},
-                cookies=_authed(),
             )
         assert r.status_code == 204
         assert "/docs?type=invoice" in r.headers.get("HX-Redirect", "")
@@ -4593,8 +4793,9 @@ class TestSprint4DocActions:
     async def test_doc_detail_draft_invoice_unit_merged_into_qty(self, ui_client):
         """Draft invoice merges the unit into the qty cell (read-only label), so the
         unit is still rendered but there is no standalone Unit column header."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_BLANK_DOC)):
-            r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+            r = await ui_client.get("/docs/doc:INV-2026-0001")
         html = r.text
         assert 'data-name="unit"' in html
 
@@ -4609,9 +4810,10 @@ class TestSprint4DocActions:
         status is pinned so the test is deterministic even with a live dev
         server running."""
         _no_relay = AsyncMock(return_value={"connected": False, "public_url": ""})
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_BLANK_DOC)), \
              patch("ui.api_client.get_relay_status", new=_no_relay):
-            r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+            r = await ui_client.get("/docs/doc:INV-2026-0001")
         content = r.content.lower()
         assert b"<dialog" not in content
         # Two exceptional dialogs are legal on a draft: reserved-conflict
@@ -4626,11 +4828,11 @@ class TestSprint4Payment:
     @pytest.mark.asyncio
     async def test_payment_route_calls_api(self, ui_client):
         """POST /docs/{id}/payment calls api.record_payment and returns HX-Redirect."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.record_payment", new=AsyncMock(return_value={})):
             r = await ui_client.post(
                 "/docs/doc:INV-2026-0001/payment",
                 data={"amount": "5000", "method": "transfer", "reference": "TXN-99"},
-                cookies=_authed(),
             )
         assert r.status_code == 204
         assert "HX-Redirect" in r.headers
@@ -4638,8 +4840,9 @@ class TestSprint4Payment:
     @pytest.mark.asyncio
     async def test_payment_section_visible_for_sent_invoice(self, ui_client):
         """Sent invoice detail shows Record Payment section."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_SENT_DOC)):
-            r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+            r = await ui_client.get("/docs/doc:INV-2026-0001")
         assert b"Record Payment" in r.content or b"payment" in r.content.lower()
 
     @pytest.mark.asyncio
@@ -4652,8 +4855,9 @@ class TestSprint4Payment:
         refused by the server with a message, not by a control the user cannot
         reach past (GDR 2e).
         """
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_SENT_DOC)):
-            r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+            r = await ui_client.get("/docs/doc:INV-2026-0001")
         html = r.content.decode()
         i = html.find('name="conversion_rate"')
         assert i != -1, "the payment section should offer a conversion rate"
@@ -4665,8 +4869,9 @@ class TestSprint4Payment:
     @pytest.mark.asyncio
     async def test_payment_section_not_visible_for_draft(self, ui_client):
         """Draft invoice has no Record Payment section."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_BLANK_DOC)):
-            r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+            r = await ui_client.get("/docs/doc:INV-2026-0001")
         assert b"Record Payment" not in r.content
 
     @pytest.mark.asyncio
@@ -4695,8 +4900,9 @@ class TestSprint4Payment:
                 }
             ],
         }
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc_with_payment)):
-            r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+            r = await ui_client.get("/docs/doc:INV-2026-0001")
         assert r.status_code == 200, f"Invoice page crashed after payment: {r.status_code}"
         assert b"1,000" in r.content or b"payment" in r.content.lower()
 
@@ -4707,22 +4913,25 @@ class TestSprint4Polish:
     @pytest.mark.asyncio
     async def test_doc_detail_shows_status_badge(self, ui_client):
         """Doc detail page shows a status badge."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_BLANK_DOC)):
-            r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+            r = await ui_client.get("/docs/doc:INV-2026-0001")
         assert b"badge--draft" in r.content
 
     @pytest.mark.asyncio
     async def test_doc_detail_shows_doc_type(self, ui_client):
         """Doc detail shows doc type label (e.g. 'Invoice')."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_BLANK_DOC)):
-            r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+            r = await ui_client.get("/docs/doc:INV-2026-0001")
         assert b"Invoice" in r.content
 
     @pytest.mark.asyncio
     async def test_doc_detail_shows_ref(self, ui_client):
         """Doc detail shows the document reference number prominently."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_BLANK_DOC)):
-            r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+            r = await ui_client.get("/docs/doc:INV-2026-0001")
         assert b"INV-2026-0001" in r.content
 
 
@@ -4797,11 +5006,11 @@ class TestSprint5POReceive:
     @pytest.mark.asyncio
     async def test_po_receive_route_calls_api(self, ui_client):
         """POST /docs/{id}/receive calls api.receive_po."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.receive_po", new=AsyncMock(return_value={"event_id": "ev1"})):
             r = await ui_client.post(
                 "/docs/doc:PO-2026-0001/receive",
                 data={"location_id": "loc:1", "item_id_0": "item:w1", "qty_0": "10"},
-                cookies=_authed(),
             )
         assert r.status_code == 204
         assert "HX-Redirect" in r.headers
@@ -4809,8 +5018,9 @@ class TestSprint5POReceive:
     @pytest.mark.asyncio
     async def test_invoice_no_receive_section(self, ui_client):
         """Invoice detail does not show Receive Goods."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_DOC_DETAIL)):
-            r = await ui_client.get("/docs/d:1", cookies=_authed())
+            r = await ui_client.get("/docs/d:1")
         assert b"Receive Goods" not in r.content
 
 
@@ -4820,6 +5030,7 @@ class TestSprint5ItemActions:
     @pytest.mark.asyncio
     async def test_item_detail_has_actions_panel(self, ui_client):
         """Item detail page shows compact action cards grid."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
@@ -4832,7 +5043,7 @@ class TestSprint5ItemActions:
             patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
-            r = await ui_client.get("/inventory/gc:123", cookies=_authed())
+            r = await ui_client.get("/inventory/gc:123")
         assert r.status_code == 200
         assert b"action-cards-grid" in r.content
         assert b"Split" in r.content
@@ -4844,6 +5055,7 @@ class TestSprint5ItemActions:
     @pytest.mark.asyncio
     async def test_item_detail_has_adjust_stock(self, ui_client):
         """Adjust Stock is removed; quantity is editable inline on the Details tab."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
@@ -4856,13 +5068,14 @@ class TestSprint5ItemActions:
             patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
-            r = await ui_client.get("/inventory/gc:123", cookies=_authed())
+            r = await ui_client.get("/inventory/gc:123")
         assert r.status_code == 200
         assert b"Adjust Stock" not in r.content
 
     @pytest.mark.asyncio
     async def test_item_detail_has_update_prices(self, ui_client):
         """Update Prices is removed; prices are editable inline on the Pricing tab."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
@@ -4875,13 +5088,14 @@ class TestSprint5ItemActions:
             patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
-            r = await ui_client.get("/inventory/gc:123", cookies=_authed())
+            r = await ui_client.get("/inventory/gc:123")
         assert r.status_code == 200
         assert b"Update Prices" not in r.content
 
     @pytest.mark.asyncio
     async def test_item_detail_has_change_status(self, ui_client):
         """Change Status is removed; status is editable inline."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
@@ -4894,13 +5108,14 @@ class TestSprint5ItemActions:
             patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
-            r = await ui_client.get("/inventory/gc:123", cookies=_authed())
+            r = await ui_client.get("/inventory/gc:123")
         assert r.status_code == 200
         assert b"Change Status" not in r.content
 
     @pytest.mark.asyncio
     async def test_item_detail_has_write_off(self, ui_client):
         """Expire and Dispose remain in the Advanced panel (require a reason)."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
@@ -4913,7 +5128,7 @@ class TestSprint5ItemActions:
             patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
-            r = await ui_client.get("/inventory/gc:123", cookies=_authed())
+            r = await ui_client.get("/inventory/gc:123")
         assert r.status_code == 200
         assert b"Write Off" not in r.content   # old section heading gone
         assert b"Expire" in r.content
@@ -4921,64 +5136,73 @@ class TestSprint5ItemActions:
 
     @pytest.mark.asyncio
     async def test_adjust_item_route(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.adjust_item", new=AsyncMock(return_value={"event_id": "e1"})):
-            r = await ui_client.post("/api/items/gc:123/adjust", data={"new_qty": "50"}, cookies=_authed())
+            r = await ui_client.post("/api/items/gc:123/adjust", data={"new_qty": "50"})
         assert r.status_code == 204
         assert "HX-Redirect" in r.headers
 
     @pytest.mark.asyncio
     async def test_transfer_item_route(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.transfer_item", new=AsyncMock(return_value={"event_id": "e1"})):
-            r = await ui_client.post("/api/items/gc:123/transfer", data={"location_id": "loc:1"}, cookies=_authed())
+            r = await ui_client.post("/api/items/gc:123/transfer", data={"location_id": "loc:1"})
         assert r.status_code == 204
 
     @pytest.mark.asyncio
     async def test_reserve_item_route(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.reserve_item", new=AsyncMock(return_value={"event_id": "e1"})):
-            r = await ui_client.post("/api/items/gc:123/reserve", data={"quantity": "5", "reference": "ORD-1"}, cookies=_authed())
+            r = await ui_client.post("/api/items/gc:123/reserve", data={"quantity": "5", "reference": "ORD-1"})
         assert r.status_code == 204
 
     @pytest.mark.asyncio
     async def test_unreserve_item_route(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.unreserve_item", new=AsyncMock(return_value={"event_id": "e1"})):
-            r = await ui_client.post("/api/items/gc:123/unreserve", data={"quantity": "3"}, cookies=_authed())
+            r = await ui_client.post("/api/items/gc:123/unreserve", data={"quantity": "3"})
         assert r.status_code == 204
 
     @pytest.mark.asyncio
     async def test_price_item_route(self, ui_client):
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[{"name": "Retail"}, {"name": "Wholesale"}, {"name": "Cost"}])),
             patch("ui.api_client.get_item", new=AsyncMock(return_value={**_ITEM, "quantity": 5.0})),
             patch("ui.api_client.set_item_price", new=AsyncMock(return_value={"event_id": "e1"})),
             patch("ui.api_client.patch_item", new=AsyncMock(return_value={"event_id": "e1"})),
         ):
-            r = await ui_client.post("/api/items/gc:123/price", data={"retail_price": "300", "wholesale_price": "200", "cost_price": "100"}, cookies=_authed())
+            r = await ui_client.post("/api/items/gc:123/price", data={"retail_price": "300", "wholesale_price": "200", "cost_price": "100"})
         # Autosave: 200 + OOB saved status (no 204/redirect).
         assert r.status_code == 200
         assert b"pricing-save-status" in r.content
 
     @pytest.mark.asyncio
     async def test_status_item_route(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.set_item_status", new=AsyncMock(return_value={"event_id": "e1"})):
-            r = await ui_client.post("/api/items/gc:123/status", data={"status": "inactive"}, cookies=_authed())
+            r = await ui_client.post("/api/items/gc:123/status", data={"status": "inactive"})
         assert r.status_code == 204
 
     @pytest.mark.asyncio
     async def test_expire_item_route(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.expire_item", new=AsyncMock(return_value={"event_id": "e1"})):
-            r = await ui_client.post("/api/items/gc:123/expire", data={"reason": "past date"}, cookies=_authed())
+            r = await ui_client.post("/api/items/gc:123/expire", data={"reason": "past date"})
         assert r.status_code == 204
 
     @pytest.mark.asyncio
     async def test_archive_item_route(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.set_item_status", new=AsyncMock(return_value={"updated": 1})):
-            r = await ui_client.post("/api/items/gc:123/archive", data={"reason": "damaged"}, cookies=_authed())
+            r = await ui_client.post("/api/items/gc:123/archive", data={"reason": "damaged"})
         assert r.status_code == 204
 
     # ── Split ─────────────────────────────────────────────────────────────────
 
     @pytest.mark.asyncio
     async def test_item_detail_has_split_section(self, ui_client):
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
@@ -4991,16 +5215,17 @@ class TestSprint5ItemActions:
             patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
-            r = await ui_client.get("/inventory/gc:123", cookies=_authed())
+            r = await ui_client.get("/inventory/gc:123")
         assert b"Split" in r.content
 
     @pytest.mark.asyncio
     async def test_split_item_route_success(self, ui_client):
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value={"sku": "PARENT-001", "quantity": 10})),
             patch("ui.api_client.split_item", new=AsyncMock(return_value={"event_id": "e1"})),
         ):
-            r = await ui_client.post("/api/items/gc:123/split", data={"parts": "3,2"}, cookies=_authed())
+            r = await ui_client.post("/api/items/gc:123/split", data={"parts": "3,2"})
         assert r.status_code == 204
         assert "HX-Redirect" in r.headers
 
@@ -5010,12 +5235,13 @@ class TestSprint5ItemActions:
         async def _mock(token, entity_id, payload):
             captured['payload'] = payload
             return {"event_id": "e1"}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value={"sku": "PARENT-001", "quantity": 10})),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.split_item", new=_mock),
         ):
-            r = await ui_client.post("/api/items/gc:123/split", data={"parts": "3"}, cookies=_authed())
+            r = await ui_client.post("/api/items/gc:123/split", data={"parts": "3"})
         assert r.status_code == 204
         children = captured['payload']["children"]
         assert len(children) == 1
@@ -5031,6 +5257,7 @@ class TestSprint5ItemActions:
         async def _mock(token, entity_id, payload):
             captured['payload'] = payload
             return {"event_id": "e1"}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value={"sku": "PARENT-001", "quantity": 10})),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
@@ -5039,7 +5266,6 @@ class TestSprint5ItemActions:
             r = await ui_client.post(
                 "/api/items/gc:123/split",
                 json={"children": [{"sku": "SKU", "quantity": 3.0, "pieces": 3}]},
-                cookies=_authed(),
             )
         assert r.status_code == 204, r.text
         payload = captured['payload']
@@ -5050,28 +5276,31 @@ class TestSprint5ItemActions:
 
     @pytest.mark.asyncio
     async def test_split_item_route_invalid_quantities(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_item", new=AsyncMock(return_value={"sku": "P-001", "quantity": 10})):
-            r = await ui_client.post("/api/items/gc:123/split", data={"parts": "abc"}, cookies=_authed())
+            r = await ui_client.post("/api/items/gc:123/split", data={"parts": "abc"})
         assert r.status_code == 200
         assert t("inv.invalid_quantities_use_commaseparated_numbers").encode() in r.content
 
     @pytest.mark.asyncio
     async def test_split_item_route_too_few_parts(self, ui_client):
         """Split with no children (empty form) returns error."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_item", new=AsyncMock(return_value={"sku": "P-001", "quantity": 10})):
-            r = await ui_client.post("/api/items/gc:123/split", data={}, cookies=_authed())
+            r = await ui_client.post("/api/items/gc:123/split", data={})
         assert r.status_code == 200
         assert b"Enter" in r.content
 
     @pytest.mark.asyncio
     async def test_split_item_route_api_error(self, ui_client):
         from ui.api_client import APIError
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value={"sku": "P-001", "quantity": 10})),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.split_item", new=AsyncMock(side_effect=APIError(400, "bad split"))),
         ):
-            r = await ui_client.post("/api/items/gc:123/split", data={"parts": "3,2"}, cookies=_authed())
+            r = await ui_client.post("/api/items/gc:123/split", data={"parts": "3,2"})
         assert r.status_code == 200
         assert b"bad split" in r.content
 
@@ -5082,18 +5311,20 @@ class TestSprint5ItemActions:
         """UI split route must surface allow_splitting=No backend error to user."""
         from ui.api_client import APIError
         err_detail = "Allow splitting is set to No for this item. Change Allow Splitting to Yes in the item details to enable splitting."
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value={"sku": "NS-001", "quantity": 10, "allow_splitting": False})),
             patch("ui.api_client.split_item", new=AsyncMock(side_effect=APIError(422, err_detail))),
         ):
             r = await ui_client.post("/api/items/gc:999/split", data={
                 "parts": "3",
-            }, cookies=_authed())
+            })
         assert r.status_code == 200
         assert b"Allow Splitting" in r.content
 
     @pytest.mark.asyncio
     async def test_item_detail_has_merge_section(self, ui_client):
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
@@ -5106,13 +5337,14 @@ class TestSprint5ItemActions:
             patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
-            r = await ui_client.get("/inventory/gc:123", cookies=_authed())
+            r = await ui_client.get("/inventory/gc:123")
         assert b"Merging" in r.content
 
     # ── Duplicate ─────────────────────────────────────────────────────────────
 
     @pytest.mark.asyncio
     async def test_item_detail_has_duplicate_section(self, ui_client):
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
@@ -5125,18 +5357,19 @@ class TestSprint5ItemActions:
             patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
-            r = await ui_client.get("/inventory/gc:123", cookies=_authed())
+            r = await ui_client.get("/inventory/gc:123")
         assert b"Duplicate" in r.content
         assert b"New SKU" in r.content
 
     @pytest.mark.asyncio
     async def test_duplicate_item_route_success(self, ui_client):
         new_id = "item:new-copy"
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
             patch("ui.api_client.create_item", new=AsyncMock(return_value={"id": new_id, "event_id": "e1"})),
         ):
-            r = await ui_client.post("/api/items/gc:123/duplicate", data={"new_sku": "D4627-COPY"}, cookies=_authed())
+            r = await ui_client.post("/api/items/gc:123/duplicate", data={"new_sku": "D4627-COPY"})
         assert r.status_code == 204
         assert r.headers.get("HX-Redirect", "").endswith(new_id)
 
@@ -5147,11 +5380,12 @@ class TestSprint5ItemActions:
         async def _mock_create(token, data):
             captured.update(data)
             return {"id": "item:copy", "event_id": "e1"}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
             patch("ui.api_client.create_item", new=_mock_create),
         ):
-            await ui_client.post("/api/items/gc:123/duplicate", data={"new_sku": "NEW-SKU"}, cookies=_authed())
+            await ui_client.post("/api/items/gc:123/duplicate", data={"new_sku": "NEW-SKU"})
         assert captured.get("sku") == "NEW-SKU"
         assert captured.get("name") == _ITEM.get("name")
         # status and id must NOT be carried over
@@ -5168,11 +5402,12 @@ class TestSprint5ItemActions:
         async def _mock_create(token, data):
             captured.update(data)
             return {"id": "item:copy", "event_id": "e1"}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value=src)),
             patch("ui.api_client.create_item", new=_mock_create),
         ):
-            await ui_client.post("/api/items/gc:123/duplicate", data={"new_sku": "GEM-001-copy"}, cookies=_authed())
+            await ui_client.post("/api/items/gc:123/duplicate", data={"new_sku": "GEM-001-copy"})
         assert "barcode" not in captured, f"source barcode must not be copied top-level: {captured!r}"
         assert "barcode" not in captured.get("attributes", {}), f"source barcode must not be copied via attributes: {captured!r}"
         assert captured.get("auto_barcode") is True
@@ -5187,12 +5422,13 @@ class TestSprint5ItemActions:
         async def _mock_create(token, data):
             captured.append(dict(data))
             return {"id": "item:copy", "event_id": "e1"}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value=src)),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.create_item", new=_mock_create),
         ):
-            await ui_client.post("/api/items/bulk/duplicate", data={"selected": "gc:123"}, cookies=_authed())
+            await ui_client.post("/api/items/bulk/duplicate", data={"selected": "gc:123"})
         assert len(captured) == 1, f"expected one copy, got {captured!r}"
         assert "barcode" not in captured[0], f"source barcode must not be copied top-level: {captured[0]!r}"
         assert "barcode" not in captured[0].get("attributes", {}), f"source barcode must not be copied via attributes: {captured[0]!r}"
@@ -5201,30 +5437,33 @@ class TestSprint5ItemActions:
     @pytest.mark.asyncio
     async def test_duplicate_item_route_missing_sku(self, ui_client):
         """Empty new_sku → auto-generates a copy SKU and creates the item."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value={**_ITEM, "sku": "ABC"})),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.create_item", new=AsyncMock(return_value={**_ITEM, "sku": "ABC-copy", "id": "gc:456"})),
         ):
-            r = await ui_client.post("/api/items/gc:123/duplicate", data={"new_sku": ""}, cookies=_authed())
+            r = await ui_client.post("/api/items/gc:123/duplicate", data={"new_sku": ""})
         assert r.status_code in (200, 204, 302)
 
     @pytest.mark.asyncio
     async def test_duplicate_item_route_source_fetch_error(self, ui_client):
         from ui.api_client import APIError
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_item", new=AsyncMock(side_effect=APIError(404, "not found"))):
-            r = await ui_client.post("/api/items/gc:123/duplicate", data={"new_sku": "COPY-1"}, cookies=_authed())
+            r = await ui_client.post("/api/items/gc:123/duplicate", data={"new_sku": "COPY-1"})
         assert r.status_code == 200
         assert b"not found" in r.content
 
     @pytest.mark.asyncio
     async def test_duplicate_item_route_create_error(self, ui_client):
         from ui.api_client import APIError
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
             patch("ui.api_client.create_item", new=AsyncMock(side_effect=APIError(422, "sku already exists"))),
         ):
-            r = await ui_client.post("/api/items/gc:123/duplicate", data={"new_sku": "DUPE-SKU"}, cookies=_authed())
+            r = await ui_client.post("/api/items/gc:123/duplicate", data={"new_sku": "DUPE-SKU"})
         assert r.status_code == 200
         assert b"sku already exists" in r.content
 
@@ -5237,8 +5476,9 @@ class TestItemActionRouteCompleteness:
 
     @pytest.mark.asyncio
     async def test_adjust_redirects_to_item(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.adjust_item", new=AsyncMock(return_value={"event_id": "e1"})):
-            r = await ui_client.post("/api/items/gc:123/adjust", data={"new_qty": "7"}, cookies=_authed())
+            r = await ui_client.post("/api/items/gc:123/adjust", data={"new_qty": "7"})
         assert r.headers.get("HX-Redirect") == "/inventory/gc:123"
 
     @pytest.mark.asyncio
@@ -5247,15 +5487,17 @@ class TestItemActionRouteCompleteness:
         async def _mock(token, entity_id, new_qty):
             captured["qty"] = new_qty
             return {"event_id": "e1"}
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.adjust_item", new=_mock):
-            await ui_client.post("/api/items/gc:123/adjust", data={"new_qty": "42.5"}, cookies=_authed())
+            await ui_client.post("/api/items/gc:123/adjust", data={"new_qty": "42.5"})
         assert captured["qty"] == 42.5
 
     @pytest.mark.asyncio
     async def test_adjust_api_error_shown(self, ui_client):
         from ui.api_client import APIError
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.adjust_item", new=AsyncMock(side_effect=APIError(400, "qty invalid"))):
-            r = await ui_client.post("/api/items/gc:123/adjust", data={"new_qty": "-1"}, cookies=_authed())
+            r = await ui_client.post("/api/items/gc:123/adjust", data={"new_qty": "-1"})
         assert r.status_code == 200
         assert b"qty invalid" in r.content
 
@@ -5263,8 +5505,9 @@ class TestItemActionRouteCompleteness:
 
     @pytest.mark.asyncio
     async def test_transfer_redirects_to_item(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.transfer_item", new=AsyncMock(return_value={"event_id": "e1"})):
-            r = await ui_client.post("/api/items/gc:123/transfer", data={"location_id": "loc:1"}, cookies=_authed())
+            r = await ui_client.post("/api/items/gc:123/transfer", data={"location_id": "loc:1"})
         assert r.headers.get("HX-Redirect") == "/inventory/gc:123"
 
     @pytest.mark.asyncio
@@ -5273,15 +5516,17 @@ class TestItemActionRouteCompleteness:
         async def _mock(token, entity_id, location_id):
             captured["location_id"] = location_id
             return {"event_id": "e1"}
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.transfer_item", new=_mock):
-            await ui_client.post("/api/items/gc:123/transfer", data={"location_id": "loc:abc"}, cookies=_authed())
+            await ui_client.post("/api/items/gc:123/transfer", data={"location_id": "loc:abc"})
         assert captured["location_id"] == "loc:abc"
 
     @pytest.mark.asyncio
     async def test_transfer_api_error_shown(self, ui_client):
         from ui.api_client import APIError
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.transfer_item", new=AsyncMock(side_effect=APIError(404, "location not found"))):
-            r = await ui_client.post("/api/items/gc:123/transfer", data={"location_id": "loc:bad"}, cookies=_authed())
+            r = await ui_client.post("/api/items/gc:123/transfer", data={"location_id": "loc:bad"})
         assert r.status_code == 200
         assert b"location not found" in r.content
 
@@ -5289,8 +5534,9 @@ class TestItemActionRouteCompleteness:
 
     @pytest.mark.asyncio
     async def test_reserve_redirects_to_item(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.reserve_item", new=AsyncMock(return_value={"event_id": "e1"})):
-            r = await ui_client.post("/api/items/gc:123/reserve", data={"quantity": "3", "reference": "ORD-1"}, cookies=_authed())
+            r = await ui_client.post("/api/items/gc:123/reserve", data={"quantity": "3", "reference": "ORD-1"})
         assert r.headers.get("HX-Redirect") == "/inventory/gc:123"
 
     @pytest.mark.asyncio
@@ -5299,8 +5545,9 @@ class TestItemActionRouteCompleteness:
         async def _mock(token, entity_id, quantity, reference):
             captured.update({"qty": quantity, "ref": reference})
             return {"event_id": "e1"}
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.reserve_item", new=_mock):
-            await ui_client.post("/api/items/gc:123/reserve", data={"quantity": "5", "reference": "PO-99"}, cookies=_authed())
+            await ui_client.post("/api/items/gc:123/reserve", data={"quantity": "5", "reference": "PO-99"})
         assert captured["qty"] == 5.0
         assert captured["ref"] == "PO-99"
 
@@ -5310,15 +5557,17 @@ class TestItemActionRouteCompleteness:
         async def _mock(token, entity_id, quantity, reference):
             captured["ref"] = reference
             return {"event_id": "e1"}
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.reserve_item", new=_mock):
-            await ui_client.post("/api/items/gc:123/reserve", data={"quantity": "2", "reference": ""}, cookies=_authed())
+            await ui_client.post("/api/items/gc:123/reserve", data={"quantity": "2", "reference": ""})
         assert captured["ref"] is None
 
     @pytest.mark.asyncio
     async def test_reserve_api_error_shown(self, ui_client):
         from ui.api_client import APIError
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.reserve_item", new=AsyncMock(side_effect=APIError(422, "exceeds available"))):
-            r = await ui_client.post("/api/items/gc:123/reserve", data={"quantity": "999"}, cookies=_authed())
+            r = await ui_client.post("/api/items/gc:123/reserve", data={"quantity": "999"})
         assert r.status_code == 200
         assert b"exceeds available" in r.content
 
@@ -5326,15 +5575,17 @@ class TestItemActionRouteCompleteness:
 
     @pytest.mark.asyncio
     async def test_unreserve_redirects_to_item(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.unreserve_item", new=AsyncMock(return_value={"event_id": "e1"})):
-            r = await ui_client.post("/api/items/gc:123/unreserve", data={"quantity": "2"}, cookies=_authed())
+            r = await ui_client.post("/api/items/gc:123/unreserve", data={"quantity": "2"})
         assert r.headers.get("HX-Redirect") == "/inventory/gc:123"
 
     @pytest.mark.asyncio
     async def test_unreserve_api_error_shown(self, ui_client):
         from ui.api_client import APIError
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.unreserve_item", new=AsyncMock(side_effect=APIError(422, "no reservation"))):
-            r = await ui_client.post("/api/items/gc:123/unreserve", data={"quantity": "5"}, cookies=_authed())
+            r = await ui_client.post("/api/items/gc:123/unreserve", data={"quantity": "5"})
         assert r.status_code == 200
         assert b"no reservation" in r.content
 
@@ -5343,13 +5594,14 @@ class TestItemActionRouteCompleteness:
     @pytest.mark.asyncio
     async def test_price_autosaves_without_reload(self, ui_client):
         """Prices autosave: a transient saved status (OOB), no full-page reload."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[{"name": "Retail"}, {"name": "Wholesale"}, {"name": "Cost"}])),
             patch("ui.api_client.get_item", new=AsyncMock(return_value={**_ITEM, "quantity": 5.0})),
             patch("ui.api_client.set_item_price", new=AsyncMock(return_value={"event_id": "e1"})),
             patch("ui.api_client.patch_item", new=AsyncMock(return_value={"event_id": "e1"})),
         ):
-            r = await ui_client.post("/api/items/gc:123/price", data={"retail_price": "30"}, cookies=_authed())
+            r = await ui_client.post("/api/items/gc:123/price", data={"retail_price": "30"})
         assert r.status_code == 200
         assert "HX-Redirect" not in r.headers
         assert b"pricing-save-status" in r.content and b"Saved" in r.content
@@ -5366,13 +5618,14 @@ class TestItemActionRouteCompleteness:
         async def _mock_patch(token, entity_id, fields):
             patch_calls.append(fields)
             return {"event_id": "e1"}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[{"name": "Retail"}, {"name": "Wholesale"}, {"name": "Cost"}])),
             patch("ui.api_client.get_item", new=AsyncMock(return_value={**_ITEM, "quantity": 2.0})),
             patch("ui.api_client.set_item_price", new=_mock_set),
             patch("ui.api_client.patch_item", new=_mock_patch),
         ):
-            await ui_client.post("/api/items/gc:123/price", data={"cost_price": "50", "wholesale_price": "", "retail_price": "99"}, cookies=_authed())
+            await ui_client.post("/api/items/gc:123/price", data={"cost_price": "50", "wholesale_price": "", "retail_price": "99"})
         # cost_price saved via patch_item as cost_total = 50 * 2 = 100
         assert any("cost_total" in f for f in patch_calls)
         cost_total_val = next(f["cost_total"]["new"] for f in patch_calls if "cost_total" in f)
@@ -5384,12 +5637,13 @@ class TestItemActionRouteCompleteness:
     @pytest.mark.asyncio
     async def test_price_api_error_shown(self, ui_client):
         from ui.api_client import APIError
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[{"name": "Cost"}])),
             patch("ui.api_client.get_item", new=AsyncMock(return_value={**_ITEM, "quantity": 1.0})),
             patch("ui.api_client.patch_item", new=AsyncMock(side_effect=APIError(400, "bad price"))),
         ):
-            r = await ui_client.post("/api/items/gc:123/price", data={"cost_price": "10"}, cookies=_authed())
+            r = await ui_client.post("/api/items/gc:123/price", data={"cost_price": "10"})
         assert r.status_code == 200
         assert b"bad price" in r.content
 
@@ -5402,7 +5656,8 @@ class TestItemActionRouteCompleteness:
             patch("ui.api_client.patch_item", new=AsyncMock(return_value=result)),
             patch("ui.api_client.recost_dependents", new=AsyncMock(return_value={})),
         ):
-            return await ui_client.post("/api/items/gc:123/price", data={"cost_price": "130"}, cookies=_authed())
+            ui_client.cookies.update(_authed())
+            return await ui_client.post("/api/items/gc:123/price", data={"cost_price": "130"})
 
     @staticmethod
     def _toast(r) -> dict:
@@ -5435,8 +5690,9 @@ class TestItemActionRouteCompleteness:
 
     @pytest.mark.asyncio
     async def test_status_redirects_to_item(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.set_item_status", new=AsyncMock(return_value={"event_id": "e1"})):
-            r = await ui_client.post("/api/items/gc:123/status", data={"status": "inactive"}, cookies=_authed())
+            r = await ui_client.post("/api/items/gc:123/status", data={"status": "inactive"})
         assert r.headers.get("HX-Redirect") == "/inventory/gc:123"
 
     @pytest.mark.asyncio
@@ -5445,15 +5701,17 @@ class TestItemActionRouteCompleteness:
         async def _mock(token, entity_id, status):
             captured["status"] = status
             return {"event_id": "e1"}
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.set_item_status", new=_mock):
-            await ui_client.post("/api/items/gc:123/status", data={"status": "reserved"}, cookies=_authed())
+            await ui_client.post("/api/items/gc:123/status", data={"status": "reserved"})
         assert captured["status"] == "reserved"
 
     @pytest.mark.asyncio
     async def test_status_api_error_shown(self, ui_client):
         from ui.api_client import APIError
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.set_item_status", new=AsyncMock(side_effect=APIError(422, "invalid status"))):
-            r = await ui_client.post("/api/items/gc:123/status", data={"status": "bogus"}, cookies=_authed())
+            r = await ui_client.post("/api/items/gc:123/status", data={"status": "bogus"})
         assert r.status_code == 200
         assert b"invalid status" in r.content
 
@@ -5461,8 +5719,9 @@ class TestItemActionRouteCompleteness:
 
     @pytest.mark.asyncio
     async def test_expire_redirects_to_item(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.expire_item", new=AsyncMock(return_value={"event_id": "e1"})):
-            r = await ui_client.post("/api/items/gc:123/expire", data={"reason": "old"}, cookies=_authed())
+            r = await ui_client.post("/api/items/gc:123/expire", data={"reason": "old"})
         assert r.headers.get("HX-Redirect") == "/inventory/gc:123"
 
     @pytest.mark.asyncio
@@ -5471,8 +5730,9 @@ class TestItemActionRouteCompleteness:
         async def _mock(token, entity_id, reason):
             captured["reason"] = reason
             return {"event_id": "e1"}
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.expire_item", new=_mock):
-            await ui_client.post("/api/items/gc:123/expire", data={"reason": "past date"}, cookies=_authed())
+            await ui_client.post("/api/items/gc:123/expire", data={"reason": "past date"})
         assert captured["reason"] == "past date"
 
     @pytest.mark.asyncio
@@ -5481,15 +5741,17 @@ class TestItemActionRouteCompleteness:
         async def _mock(token, entity_id, reason):
             captured["reason"] = reason
             return {"event_id": "e1"}
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.expire_item", new=_mock):
-            await ui_client.post("/api/items/gc:123/expire", data={"reason": ""}, cookies=_authed())
+            await ui_client.post("/api/items/gc:123/expire", data={"reason": ""})
         assert captured["reason"] is None
 
     @pytest.mark.asyncio
     async def test_expire_api_error_shown(self, ui_client):
         from ui.api_client import APIError
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.expire_item", new=AsyncMock(side_effect=APIError(400, "already expired"))):
-            r = await ui_client.post("/api/items/gc:123/expire", data={"reason": ""}, cookies=_authed())
+            r = await ui_client.post("/api/items/gc:123/expire", data={"reason": ""})
         assert r.status_code == 200
         assert b"already expired" in r.content
 
@@ -5497,8 +5759,9 @@ class TestItemActionRouteCompleteness:
 
     @pytest.mark.asyncio
     async def test_archive_redirects_to_item(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.set_item_status", new=AsyncMock(return_value={"updated": 1})):
-            r = await ui_client.post("/api/items/gc:123/archive", data={"reason": "broken"}, cookies=_authed())
+            r = await ui_client.post("/api/items/gc:123/archive", data={"reason": "broken"})
         assert r.headers.get("HX-Redirect") == "/inventory/gc:123"
 
     @pytest.mark.asyncio
@@ -5507,8 +5770,9 @@ class TestItemActionRouteCompleteness:
         async def _mock(token, entity_id, status, reason=None):
             captured.update({"status": status, "reason": reason})
             return {"updated": 1}
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.set_item_status", new=_mock):
-            await ui_client.post("/api/items/gc:123/archive", data={"reason": "damaged"}, cookies=_authed())
+            await ui_client.post("/api/items/gc:123/archive", data={"reason": "damaged"})
         assert captured["status"] == "archived"
         assert captured["reason"] == "damaged"
 
@@ -5518,15 +5782,17 @@ class TestItemActionRouteCompleteness:
         async def _mock(token, entity_id, status, reason=None):
             captured["reason"] = reason
             return {"updated": 1}
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.set_item_status", new=_mock):
-            await ui_client.post("/api/items/gc:123/archive", data={"reason": ""}, cookies=_authed())
+            await ui_client.post("/api/items/gc:123/archive", data={"reason": ""})
         assert captured["reason"] is None
 
     @pytest.mark.asyncio
     async def test_archive_api_error_shown(self, ui_client):
         from ui.api_client import APIError
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.set_item_status", new=AsyncMock(side_effect=APIError(400, "already archived"))):
-            r = await ui_client.post("/api/items/gc:123/archive", data={"reason": "broken"}, cookies=_authed())
+            r = await ui_client.post("/api/items/gc:123/archive", data={"reason": "broken"})
         assert r.status_code == 200
         assert b"already archived" in r.content
 
@@ -5535,8 +5801,9 @@ class TestItemActionRouteCompleteness:
     @pytest.mark.asyncio
     async def test_row_menu_delete_returns_200_removes_row(self, ui_client):
         """DELETE /api/items/{id} returns 200 empty body so htmx removes the row."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.bulk_delete", new=AsyncMock(return_value=_delete_answer(1))):
-            r = await ui_client.delete("/api/items/gc:abc", cookies=_authed())
+            r = await ui_client.delete("/api/items/gc:abc")
         assert r.status_code == 200
         assert r.content == b""
 
@@ -5551,8 +5818,9 @@ class TestItemActionRouteCompleteness:
     async def test_row_menu_delete_api_error_keeps_the_row_and_raises_a_toast(self, ui_client):
         """On API error, DELETE leaves the row in place and says why in an error toast."""
         from ui.api_client import APIError
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.bulk_delete", new=AsyncMock(side_effect=APIError(403, "permission denied"))):
-            r = await ui_client.delete("/api/items/gc:abc", cookies=_authed())
+            r = await ui_client.delete("/api/items/gc:abc")
         assert r.status_code == 200
         assert r.headers["HX-Reswap"] == "none"
         assert "permission denied" in r.headers["HX-Trigger"]
@@ -5576,8 +5844,9 @@ class TestItemActionRouteCompleteness:
         async def _mock(token, entity_ids):
             captured["entity_ids"] = entity_ids
             return _delete_answer(len(entity_ids))
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.bulk_delete", new=_mock):
-            await ui_client.delete("/api/items/gc:TEST-001", cookies=_authed())
+            await ui_client.delete("/api/items/gc:TEST-001")
         assert captured["entity_ids"] == ["gc:TEST-001"]
 
     def test_row_menu_delete_html_targets_correct_endpoint(self):
@@ -5610,12 +5879,13 @@ class TestItemActionRouteCompleteness:
 
     @pytest.mark.asyncio
     async def test_split_redirects_to_filtered_view(self, ui_client):
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value={"sku": "PARENT-001", "quantity": 10})),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.split_item", new=AsyncMock(return_value={"event_id": "e1"})),
         ):
-            r = await ui_client.post("/api/items/gc:123/split", data={"parts": "3,2"}, cookies=_authed())
+            r = await ui_client.post("/api/items/gc:123/split", data={"parts": "3,2"})
         assert "/inventory?q=PARENT-001" in r.headers.get("HX-Redirect", "")
 
     @pytest.mark.asyncio
@@ -5624,12 +5894,13 @@ class TestItemActionRouteCompleteness:
         async def _mock(token, entity_id, payload):
             captured.update({"payload": payload})
             return {"event_id": "e1"}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value={"sku": "P-001", "quantity": 20})),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.split_item", new=_mock),
         ):
-            await ui_client.post("/api/items/gc:123/split", data={"parts": "5,3,2"}, cookies=_authed())
+            await ui_client.post("/api/items/gc:123/split", data={"parts": "5,3,2"})
         children = captured["payload"]["children"]
         assert len(children) == 3
         assert sorted(c["quantity"] for c in children) == [2.0, 3.0, 5.0]
@@ -5661,12 +5932,13 @@ class TestSplitCardLiveRefresh:
     async def test_advanced_panel_endpoint_renders_card(self, ui_client):
         """GET /api/items/{id}/advanced-panel returns the actions card fragment; for a
         splittable item it contains the split table."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value=self._SPLITTABLE_ITEM)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value={"settings": {}})),
             patch("ui.api_client.split_preview", new=AsyncMock(return_value=_SPLIT_PREVIEW_WEIGHT)),
         ):
-            r = await ui_client.get("/api/items/gc:123/advanced-panel", cookies=_authed())
+            r = await ui_client.get("/api/items/gc:123/advanced-panel")
         assert r.status_code == 200
         html = r.text
         assert "item-advanced-panel" in html
@@ -5677,6 +5949,7 @@ class TestSplitCardLiveRefresh:
         """Saving allow_splitting on a detail URL returns the toggled cell plus an OOB div that
         reloads the actions card via /api/items/{id}/advanced-panel."""
         updated = {**self._SPLITTABLE_ITEM, "allow_splitting": True}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.patch_item", new=AsyncMock(return_value=updated)),
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=self._SPLIT_SCHEMA)),
@@ -5686,7 +5959,6 @@ class TestSplitCardLiveRefresh:
                 "/api/items/gc:123/field/allow_splitting",
                 data={"value": "true"},
                 headers={"HX-Current-URL": "http://x/inventory/item:gc:123"},
-                cookies=_authed(),
             )
         assert r.status_code == 200
         html = r.text
@@ -5698,11 +5970,12 @@ class TestSplitCardLiveRefresh:
     async def test_advanced_panel_endpoint_get_item_failure(self, ui_client):
         """When api.get_item raises, the endpoint returns 500 carrying the error detail."""
         from ui.api_client import APIError
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item", new=AsyncMock(side_effect=APIError(404, "no such item"))),
             patch("ui.api_client.get_company", new=AsyncMock(return_value={"settings": {}})),
         ):
-            r = await ui_client.get("/api/items/gc:404/advanced-panel", cookies=_authed())
+            r = await ui_client.get("/api/items/gc:404/advanced-panel")
         assert r.status_code == 500
         assert "no such item" in r.text
 
@@ -5711,11 +5984,12 @@ class TestSplitCardLiveRefresh:
         """When api.split_preview raises for an otherwise-splittable item, the endpoint degrades
         to the disabled hint (no split table)."""
         from ui.api_client import APIError
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value=self._SPLITTABLE_ITEM)),
             patch("ui.api_client.split_preview", new=AsyncMock(side_effect=APIError(400, "cannot preview"))),
         ):
-            r = await ui_client.get("/api/items/gc:123/advanced-panel", cookies=_authed())
+            r = await ui_client.get("/api/items/gc:123/advanced-panel")
         assert r.status_code == 200
         html = r.text
         assert "action-card--disabled" in html
@@ -5760,6 +6034,7 @@ class TestBatchSplit:
             split_calls.append(payload)
             return {}
 
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value=self._SPLIT_ITEM)),
             patch("ui.api_client.split_item", new=mock_split),
@@ -5768,7 +6043,6 @@ class TestBatchSplit:
             r = await ui_client.post(
                 "/api/items/gc:123/batch-split",
                 data={"batch_qty": "1", "batch_count": "5"},
-                cookies=_authed(),
                 follow_redirects=False,
             )
         # HTMX redirect: 204 + HX-Redirect header
@@ -5783,13 +6057,13 @@ class TestBatchSplit:
     @pytest.mark.asyncio
     async def test_batch_split_total_exceeds_available_rejected(self, ui_client):
         """qty=3, count=5 → total=15 > available=10: must return error span, not redirect."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value=self._SPLIT_ITEM)),
         ):
             r = await ui_client.post(
                 "/api/items/gc:123/batch-split",
                 data={"batch_qty": "3", "batch_count": "5"},
-                cookies=_authed(),
             )
         assert r.status_code == 200
         assert b"exceeds" in r.content.lower() or b"flash--error" in r.content
@@ -5797,13 +6071,13 @@ class TestBatchSplit:
     @pytest.mark.asyncio
     async def test_batch_split_count_1_rejected(self, ui_client):
         """count=1 must return error (use normal split for single child)."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value=self._SPLIT_ITEM)),
         ):
             r = await ui_client.post(
                 "/api/items/gc:123/batch-split",
                 data={"batch_qty": "1", "batch_count": "1"},
-                cookies=_authed(),
             )
         assert r.status_code == 200
         assert b"flash--error" in r.content
@@ -5811,13 +6085,13 @@ class TestBatchSplit:
     @pytest.mark.asyncio
     async def test_batch_split_nonnumeric_qty_rejected(self, ui_client):
         """Non-numeric batch_qty must return error span."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value=self._SPLIT_ITEM)),
         ):
             r = await ui_client.post(
                 "/api/items/gc:123/batch-split",
                 data={"batch_qty": "abc", "batch_count": "5"},
-                cookies=_authed(),
             )
         assert r.status_code == 200
         assert b"flash--error" in r.content
@@ -5842,6 +6116,7 @@ class TestItemActionHtmlContracts:
     @pytest.mark.asyncio
     async def test_action_card_split_url(self, ui_client):
         """Item detail page renders split form targeting /api/items/{id}/split."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
@@ -5854,13 +6129,14 @@ class TestItemActionHtmlContracts:
             patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
-            r = await ui_client.get("/inventory/gc:123", cookies=_authed())
+            r = await ui_client.get("/inventory/gc:123")
         assert r.status_code == 200
         assert b'hx-post="/api/items/gc:123/split-inline"' in r.content or b'split' in r.content
 
     @pytest.mark.asyncio
     async def test_action_card_duplicate_url(self, ui_client):
         """Item detail page renders duplicate form targeting /api/items/{id}/duplicate."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
@@ -5873,13 +6149,14 @@ class TestItemActionHtmlContracts:
             patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
-            r = await ui_client.get("/inventory/gc:123", cookies=_authed())
+            r = await ui_client.get("/inventory/gc:123")
         assert r.status_code == 200
         assert b'hx-post="/api/items/gc:123/duplicate"' in r.content
 
     @pytest.mark.asyncio
     async def test_action_card_expire_url(self, ui_client):
         """Item detail page renders expire form targeting /api/items/{id}/expire."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
@@ -5892,7 +6169,7 @@ class TestItemActionHtmlContracts:
             patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
-            r = await ui_client.get("/inventory/gc:123", cookies=_authed())
+            r = await ui_client.get("/inventory/gc:123")
         assert r.status_code == 200
         assert b'hx-post="/api/items/gc:123/expire"' in r.content
         assert b'hx-target="#item-action-error"' in r.content
@@ -5901,6 +6178,7 @@ class TestItemActionHtmlContracts:
     @pytest.mark.asyncio
     async def test_action_card_archive_url(self, ui_client):
         """Item detail page renders archive form targeting /api/items/{id}/archive."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
@@ -5913,7 +6191,7 @@ class TestItemActionHtmlContracts:
             patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
-            r = await ui_client.get("/inventory/gc:123", cookies=_authed())
+            r = await ui_client.get("/inventory/gc:123")
         assert r.status_code == 200
         assert b'hx-post="/api/items/gc:123/archive"' in r.content
         assert b'hx-target="#item-action-error"' in r.content
@@ -5924,6 +6202,7 @@ class TestItemActionHtmlContracts:
         """Item detail page renders return-to-vendor form targeting /api/items/{id}/return-to-vendor
         when the item has consignment_flag='in'."""
         consigned_item = {**_ITEM, "consignment_flag": "in", "quantity": 5}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_item", new=AsyncMock(return_value=consigned_item)),
@@ -5937,7 +6216,7 @@ class TestItemActionHtmlContracts:
             patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
-            r = await ui_client.get("/inventory/gc:123", cookies=_authed())
+            r = await ui_client.get("/inventory/gc:123")
         assert r.status_code == 200
         assert b'hx-post="/api/items/gc:123/return-to-vendor"' in r.content
 
@@ -5946,6 +6225,7 @@ class TestItemActionHtmlContracts:
         """Item detail page renders bring-back-in form targeting /api/items/{id}/bring-back-in
         when the item has consignment_flag='out'."""
         consigned_out = {**_ITEM, "consignment_flag": "out", "quantity": 5}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_item", new=AsyncMock(return_value=consigned_out)),
@@ -5959,7 +6239,7 @@ class TestItemActionHtmlContracts:
             patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
-            r = await ui_client.get("/inventory/gc:123", cookies=_authed())
+            r = await ui_client.get("/inventory/gc:123")
         assert r.status_code == 200
         assert b'hx-post="/api/items/gc:123/bring-back-in"' in r.content
 
@@ -5969,6 +6249,7 @@ class TestItemReturnToVendor:
 
     @pytest.mark.asyncio
     async def test_rtv_success_redirects(self, ui_client):
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value={"quantity": 10.0})),
             patch("ui.api_client.adjust_item", new=AsyncMock(return_value={"event_id": "e1"})),
@@ -5976,7 +6257,6 @@ class TestItemReturnToVendor:
             r = await ui_client.post(
                 "/api/items/gc:123/return-to-vendor",
                 data={"quantity": "3"},
-                cookies=_authed(),
             )
         assert r.status_code == 204
         assert r.headers.get("HX-Redirect") == "/inventory/gc:123"
@@ -5988,6 +6268,7 @@ class TestItemReturnToVendor:
         async def _mock_adjust(token, entity_id, new_qty):
             captured["new_qty"] = new_qty
             return {"event_id": "e1"}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value={"quantity": 10.0})),
             patch("ui.api_client.adjust_item", new=_mock_adjust),
@@ -5995,26 +6276,25 @@ class TestItemReturnToVendor:
             await ui_client.post(
                 "/api/items/gc:123/return-to-vendor",
                 data={"quantity": "3"},
-                cookies=_authed(),
             )
         assert captured["new_qty"] == 7.0
 
     @pytest.mark.asyncio
     async def test_rtv_zero_quantity_returns_error(self, ui_client):
+        ui_client.cookies.update(_authed())
         r = await ui_client.post(
             "/api/items/gc:123/return-to-vendor",
             data={"quantity": "0"},
-            cookies=_authed(),
         )
         assert r.status_code == 200
         assert b"greater than 0" in r.content.lower() or b"quantity" in r.content.lower()
 
     @pytest.mark.asyncio
     async def test_rtv_invalid_quantity_returns_error(self, ui_client):
+        ui_client.cookies.update(_authed())
         r = await ui_client.post(
             "/api/items/gc:123/return-to-vendor",
             data={"quantity": "notanumber"},
-            cookies=_authed(),
         )
         assert r.status_code == 200
         assert b"greater than 0" in r.content.lower() or b"quantity" in r.content.lower()
@@ -6022,6 +6302,7 @@ class TestItemReturnToVendor:
     @pytest.mark.asyncio
     async def test_rtv_api_error_shown(self, ui_client):
         from ui.api_client import APIError
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value={"quantity": 10.0})),
             patch("ui.api_client.adjust_item", new=AsyncMock(side_effect=APIError(400, "cannot return"))),
@@ -6029,7 +6310,6 @@ class TestItemReturnToVendor:
             r = await ui_client.post(
                 "/api/items/gc:123/return-to-vendor",
                 data={"quantity": "5"},
-                cookies=_authed(),
             )
         assert r.status_code == 200
         assert b"cannot return" in r.content
@@ -6040,6 +6320,7 @@ class TestItemBringBackIn:
 
     @pytest.mark.asyncio
     async def test_bbi_success_redirects(self, ui_client):
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value={"quantity": 5.0})),
             patch("ui.api_client.adjust_item", new=AsyncMock(return_value={"event_id": "e1"})),
@@ -6048,7 +6329,6 @@ class TestItemBringBackIn:
             r = await ui_client.post(
                 "/api/items/gc:123/bring-back-in",
                 data={"quantity": "5"},
-                cookies=_authed(),
             )
         assert r.status_code == 204
         assert r.headers.get("HX-Redirect") == "/inventory/gc:123"
@@ -6060,6 +6340,7 @@ class TestItemBringBackIn:
         async def _mock_adjust(token, entity_id, new_qty):
             captured["new_qty"] = new_qty
             return {"event_id": "e1"}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value={"quantity": 3.0})),
             patch("ui.api_client.adjust_item", new=_mock_adjust),
@@ -6068,7 +6349,6 @@ class TestItemBringBackIn:
             await ui_client.post(
                 "/api/items/gc:123/bring-back-in",
                 data={"quantity": "4"},
-                cookies=_authed(),
             )
         assert captured["new_qty"] == 7.0
 
@@ -6078,6 +6358,7 @@ class TestItemBringBackIn:
         async def _mock_status(token, entity_id, status):
             captured["status"] = status
             return {}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value={"quantity": 3.0})),
             patch("ui.api_client.adjust_item", new=AsyncMock(return_value={})),
@@ -6086,16 +6367,15 @@ class TestItemBringBackIn:
             await ui_client.post(
                 "/api/items/gc:123/bring-back-in",
                 data={"quantity": "2"},
-                cookies=_authed(),
             )
         assert captured["status"] == "available"
 
     @pytest.mark.asyncio
     async def test_bbi_zero_quantity_returns_error(self, ui_client):
+        ui_client.cookies.update(_authed())
         r = await ui_client.post(
             "/api/items/gc:123/bring-back-in",
             data={"quantity": "0"},
-            cookies=_authed(),
         )
         assert r.status_code == 200
         assert b"greater than 0" in r.content.lower() or b"quantity" in r.content.lower()
@@ -6103,6 +6383,7 @@ class TestItemBringBackIn:
     @pytest.mark.asyncio
     async def test_bbi_api_error_shown(self, ui_client):
         from ui.api_client import APIError
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value={"quantity": 3.0})),
             patch("ui.api_client.adjust_item", new=AsyncMock(side_effect=APIError(400, "item locked"))),
@@ -6110,7 +6391,6 @@ class TestItemBringBackIn:
             r = await ui_client.post(
                 "/api/items/gc:123/bring-back-in",
                 data={"quantity": "2"},
-                cookies=_authed(),
             )
         assert r.status_code == 200
         assert b"item locked" in r.content
@@ -6121,31 +6401,31 @@ class TestBulkTransferRoute:
 
     @pytest.mark.asyncio
     async def test_bulk_transfer_success(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.bulk_transfer", new=AsyncMock(return_value={"updated": 2})):
             r = await ui_client.post(
                 "/api/items/bulk/transfer",
                 data={"selected": ["item:a", "item:b"], "bulk_location_id": "loc:1"},
-                cookies=_authed(),
             )
         assert r.status_code == 200
         assert b"Transferred: 2." in r.content
 
     @pytest.mark.asyncio
     async def test_bulk_transfer_no_items_selected(self, ui_client):
+        ui_client.cookies.update(_authed())
         r = await ui_client.post(
             "/api/items/bulk/transfer",
             data={"selected": [], "bulk_location_id": "loc:1"},
-            cookies=_authed(),
         )
         assert r.status_code == 200
         assert b"selected" in r.content.lower()
 
     @pytest.mark.asyncio
     async def test_bulk_transfer_no_location(self, ui_client):
+        ui_client.cookies.update(_authed())
         r = await ui_client.post(
             "/api/items/bulk/transfer",
             data={"selected": ["item:a"], "bulk_location_id": ""},
-            cookies=_authed(),
         )
         assert r.status_code == 200
         assert b"location" in r.content.lower()
@@ -6156,11 +6436,11 @@ class TestBulkTransferRoute:
         async def _mock(token, entity_ids, location_id):
             captured.update({"ids": entity_ids, "loc": location_id})
             return {"updated": len(entity_ids)}
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.bulk_transfer", new=_mock):
             await ui_client.post(
                 "/api/items/bulk/transfer",
                 data={"selected": ["item:a", "item:b"], "bulk_location_id": "loc:warehouse"},
-                cookies=_authed(),
             )
         assert captured["ids"] == ["item:a", "item:b"]
         assert captured["loc"] == "loc:warehouse"
@@ -6168,11 +6448,11 @@ class TestBulkTransferRoute:
     @pytest.mark.asyncio
     async def test_bulk_transfer_api_error_shown(self, ui_client):
         from ui.api_client import APIError
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.bulk_transfer", new=AsyncMock(side_effect=APIError(403, "not allowed"))):
             r = await ui_client.post(
                 "/api/items/bulk/transfer",
                 data={"selected": ["item:a"], "bulk_location_id": "loc:1"},
-                cookies=_authed(),
             )
         assert r.status_code == 200
         assert b"not allowed" in r.content
@@ -6204,8 +6484,9 @@ class TestFilesSectionErrorReplies:
     @pytest.mark.parametrize("method,url,call", _ROUTES)
     async def test_a_rejected_session_is_a_401_with_the_sign_in_link(self, ui_client, method, url, call):
         from ui.api_client import APIError
+        ui_client.cookies.update(_authed())
         with patch(f"ui.api_client.{call}", new=AsyncMock(side_effect=APIError(401, "Not authenticated"))):
-            r = await ui_client.request(method.upper(), url, cookies=_authed(),
+            r = await ui_client.request(method.upper(), url,
                                         **({"files": {"file": ("a.pdf", b"%PDF-1.0", "application/pdf")}}
                                            if url.endswith("/files") else {"data": {"document_tag": "x"}}))
         assert r.status_code == 401, (url, r.status_code)
@@ -6216,14 +6497,16 @@ class TestFilesSectionErrorReplies:
     @pytest.mark.parametrize("method,url,call", [r for r in _ROUTES if r[0] == "get"])
     async def test_a_refused_refresh_is_an_error_reply_not_a_paragraph(self, ui_client, method, url, call):
         from ui.api_client import APIError
+        ui_client.cookies.update(_authed())
         with patch(f"ui.api_client.{call}", new=AsyncMock(side_effect=APIError(404, "not here"))):
-            r = await ui_client.get(url, cookies=_authed())
+            r = await ui_client.get(url)
         assert r.status_code == 404 and "not here" in r.text and "files-section-" not in r.text
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("url", ["/contacts/c1/files", "/docs/d1/files", "/items/i1/files"])
     async def test_an_upload_without_a_file_is_an_error_reply(self, ui_client, url):
-        r = await ui_client.post(url, data={}, cookies=_authed())
+        ui_client.cookies.update(_authed())
+        r = await ui_client.post(url, data={})
         assert r.status_code == 400 and "files-section-" not in r.text
 
 
@@ -6254,70 +6537,79 @@ class TestCompanyFilesAggregation:
     async def test_an_expired_session_is_a_401_with_the_sign_in_link(self, ui_client):
         from ui.api_client import APIError
         gone = AsyncMock(side_effect=APIError(401, "Not authenticated"))
+        ui_client.cookies.update(_authed())
         with self._patches(get_company=gone, list_contacts=gone, get_contact=gone, list_items=gone, list_docs=gone):
-            r = await ui_client.get(self._URL, cookies=_authed())
+            r = await ui_client.get(self._URL)
         assert r.status_code == 401 and '<a href="/login?reason=expired">' in r.text
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("failing", ["get_contact", "list_items", "list_docs"])
     async def test_one_failed_read_is_an_error_reply_not_a_partial_list(self, ui_client, failing):
         from ui.api_client import APIError
+        ui_client.cookies.update(_authed())
         with self._patches(**{failing: AsyncMock(side_effect=APIError(503, "down"))}):
-            r = await ui_client.get(self._URL, cookies=_authed())
+            r = await ui_client.get(self._URL)
         assert r.status_code == 503 and "down" in r.text and "files-section-" not in r.text
 
     @pytest.mark.asyncio
     async def test_a_failed_company_lookup_is_an_error_reply(self, ui_client):
         from ui.api_client import APIError
+        ui_client.cookies.update(_authed())
         with self._patches(get_company=AsyncMock(side_effect=APIError(503, "down"))):
-            r = await ui_client.get(self._URL, cookies=_authed())
+            r = await ui_client.get(self._URL)
         assert r.status_code == 503 and "files-section-" not in r.text
 
     @pytest.mark.asyncio
     async def test_a_company_with_no_files_answers_200_with_the_empty_state(self, ui_client):
+        ui_client.cookies.update(_authed())
         with self._patches(get_contact=AsyncMock(return_value={"entity_id": "c-self", "is_self": True})):
-            r = await ui_client.get(self._URL, cookies=_authed())
+            r = await ui_client.get(self._URL)
         assert r.status_code == 200 and "files-section-" in r.text
 
     @pytest.mark.asyncio
     async def test_a_company_with_no_self_contact_yet_answers_200_with_the_empty_state(self, ui_client):
+        ui_client.cookies.update(_authed())
         with self._patches(get_company=AsyncMock(return_value={"settings": {}}),
                            list_contacts=AsyncMock(return_value={"items": []})):
-            r = await ui_client.get(self._URL, cookies=_authed())
+            r = await ui_client.get(self._URL)
         assert r.status_code == 200 and "files-section-" in r.text
 
     @pytest.mark.asyncio
     async def test_an_upload_without_a_file_is_a_400(self, ui_client):
+        ui_client.cookies.update(_authed())
         with self._patches():
-            r = await ui_client.post("/finance/company-files", data={}, cookies=_authed())
+            r = await ui_client.post("/finance/company-files", data={})
         assert r.status_code == 400 and "files-section-" not in r.text
 
 
     @pytest.mark.asyncio
     async def test_a_failed_contact_documents_tab_read_is_an_error_not_an_empty_tab(self, ui_client):
         from ui.api_client import APIError
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.list_contact_docs", new=AsyncMock(side_effect=APIError(503, "down"))), \
              patch("ui.api_client.get_contact", new=AsyncMock(return_value={"entity_id": "c1"})):
-            r = await ui_client.get("/contacts/c1/tab/documents", cookies=_authed())
+            r = await ui_client.get("/contacts/c1/tab/documents")
         assert "down" in r.text and "documents could not be loaded" in r.text and "Open Documents again" in r.text
 
 
     @pytest.mark.asyncio
     async def test_the_contact_page_with_a_failed_contact_read_shows_the_error_not_a_blank_contact(self, ui_client):
         from ui.api_client import APIError
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.list_contact_docs", new=AsyncMock(return_value={"items": []})), \
              patch("ui.api_client.get_contact", new=AsyncMock(side_effect=APIError(503, "down"))):
-            r = await ui_client.get("/contacts/c1", cookies=_authed())
+            r = await ui_client.get("/contacts/c1")
         assert "down" in r.text and "contact could not be loaded" in r.text and "Select Try again." in r.text
         assert "eload" not in r.text.split("contact could not be loaded", 1)[1].split("</div>", 1)[0]
 
     @pytest.mark.asyncio
     async def test_a_failed_documents_read_keeps_the_contact_page_and_shows_the_notice_in_the_documents_tab(self, ui_client):
         from ui.api_client import APIError
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.list_contact_docs", new=AsyncMock(side_effect=APIError(503, "down"))), \
              patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": []})), \
              patch("ui.api_client.get_contact", new=AsyncMock(return_value={"entity_id": "c1", "name": "Acme Trading", "contact_type": "customer"})):
-            r = await ui_client.get("/contacts/c1", cookies=_authed())
+            r = await ui_client.get("/contacts/c1")
         assert r.status_code == 200
         assert "Acme Trading" in r.text and "tab-bar" in r.text
         tab = r.text.split('id="tab-content"', 1)[1]
@@ -6333,19 +6625,21 @@ class TestCompanyFilesAggregation:
 
     @pytest.mark.asyncio
     async def test_a_contact_page_whose_documents_loaded_keeps_the_htmx_documents_tab(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.list_contact_docs", new=AsyncMock(return_value={"items": []})), \
              patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": []})), \
              patch("ui.api_client.get_contact", new=AsyncMock(return_value={"entity_id": "c1", "name": "Acme Trading", "contact_type": "customer"})):
-            r = await ui_client.get("/contacts/c1", cookies=_authed())
+            r = await ui_client.get("/contacts/c1")
         assert 'hx-get="/contacts/c1/tab/documents"' in r.text and 'href="/contacts/c1"' not in r.text.split('id="tab-content"', 1)[1]
 
     @pytest.mark.asyncio
     async def test_a_contact_not_found_shows_the_api_sentence_alone_under_a_heading(self, ui_client):
         from ui.api_client import APIError
         sentence = "Celerp couldn't find this contact. It may have been deleted."
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.list_contact_docs", new=AsyncMock(return_value={"items": []})), \
              patch("ui.api_client.get_contact", new=AsyncMock(side_effect=APIError(404, sentence))):
-            r = await ui_client.get("/contacts/c1", cookies=_authed())
+            r = await ui_client.get("/contacts/c1")
         assert sentence in r.text and "could not be loaded" not in r.text
         assert 'class="page-title"' in r.text
         assert "Select Try again" not in r.text.split('class="page-title"', 1)[1].split("<script", 1)[0]
@@ -6353,28 +6647,32 @@ class TestCompanyFilesAggregation:
     @pytest.mark.asyncio
     async def test_a_temporary_contact_failure_keeps_the_wrapper_and_has_a_heading(self, ui_client):
         from ui.api_client import APIError
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_contact", new=AsyncMock(side_effect=APIError(503, "down"))):
-            r = await ui_client.get("/contacts/c1", cookies=_authed())
+            r = await ui_client.get("/contacts/c1")
         assert "Select Try again." in r.text and 'class="page-title"' in r.text
 
     @pytest.mark.asyncio
     async def test_a_contact_with_no_documents_still_shows_none_yet(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.list_contact_docs", new=AsyncMock(return_value={"items": []})), \
              patch("ui.api_client.get_contact", new=AsyncMock(return_value={"entity_id": "c1", "name": "Acme"})):
-            r = await ui_client.get("/contacts/c1", cookies=_authed())
+            r = await ui_client.get("/contacts/c1")
         assert r.status_code == 200 and "None yet" in r.text and "could not be loaded" not in r.text
 
     @pytest.mark.asyncio
     async def test_a_failed_company_files_read_says_the_list_could_not_load_and_how_to_retry(self, ui_client):
         from ui.api_client import APIError
+        ui_client.cookies.update(_authed())
         with self._patches(list_docs=AsyncMock(side_effect=APIError(503, "down"))):
-            r = await ui_client.get(self._URL, cookies=_authed())
+            r = await ui_client.get(self._URL)
         assert "down" in r.text and "could not be loaded" in r.text and "Open Files again" in r.text
 
     @pytest.mark.asyncio
     async def test_an_upload_with_no_file_says_to_choose_one(self, ui_client):
+        ui_client.cookies.update(_authed())
         with self._patches():
-            r = await ui_client.post("/finance/company-files", data={}, cookies=_authed())
+            r = await ui_client.post("/finance/company-files", data={})
         assert "Choose a file to upload." in r.text
 
 
@@ -6386,6 +6684,7 @@ class TestAttachmentRoutes:
         """POST /api/items/{id}/files returns updated files panel on success."""
         import io
         file_content = b"fake image data"
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.upload_item_file", new=AsyncMock(return_value={"id": "file:1"})),
             patch("ui.api_client.get_item", new=AsyncMock(return_value={**_ITEM, "files": [{"id": "file:1", "filename": "photo.jpg", "url": "/static/files/photo.jpg", "mime": "image/jpeg", "size": 15, "document_tag": "product_images", "is_hero": False, "uploaded_at": None, "description": None}]})),
@@ -6393,7 +6692,6 @@ class TestAttachmentRoutes:
             r = await ui_client.post(
                 "/items/gc:123/files",
                 files={"file": ("photo.jpg", io.BytesIO(file_content), "image/jpeg")},
-                cookies=_authed(),
             )
         assert r.status_code == 200
         # Returns the files panel HTML (not a redirect)
@@ -6402,10 +6700,10 @@ class TestAttachmentRoutes:
     @pytest.mark.asyncio
     async def test_upload_attachment_no_file_returns_error(self, ui_client):
         """POST /api/items/{id}/files with no file field returns an error message."""
+        ui_client.cookies.update(_authed())
         r = await ui_client.post(
             "/items/gc:123/files",
             data={},
-            cookies=_authed(),
         )
         assert r.status_code == 400
         assert b"choose a file" in r.content.lower()
@@ -6425,11 +6723,11 @@ class TestAttachmentRoutes:
     async def test_upload_attachment_api_error_shown(self, ui_client):
         from ui.api_client import APIError
         import io
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.upload_item_file", new=AsyncMock(side_effect=APIError(413, "file too large"))):
             r = await ui_client.post(
                 "/items/gc:123/files",
                 files={"file": ("big.jpg", io.BytesIO(b"data"), "image/jpeg")},
-                cookies=_authed(),
             )
         assert r.status_code == 413
         assert b"file too large" in r.content
@@ -6437,10 +6735,10 @@ class TestAttachmentRoutes:
     @pytest.mark.asyncio
     async def test_delete_attachment_success(self, ui_client):
         """DELETE /api/items/{id}/attachments/{att_id} returns 204 with HX-Refresh."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.delete_attachment", new=AsyncMock(return_value={})):
             r = await ui_client.delete(
                 "/api/items/gc:123/attachments/att:1",
-                cookies=_authed(),
             )
         assert r.status_code == 204
         assert r.headers.get("HX-Refresh") == "true"
@@ -6458,10 +6756,10 @@ class TestAttachmentRoutes:
         async def _mock(token, entity_id, att_id):
             captured.update({"entity_id": entity_id, "att_id": att_id})
             return {}
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.delete_attachment", new=_mock):
             await ui_client.delete(
                 "/api/items/gc:XYZ-999/attachments/att:abc",
-                cookies=_authed(),
             )
         assert captured["entity_id"] == "gc:XYZ-999"
         assert captured["att_id"] == "att:abc"
@@ -6470,10 +6768,10 @@ class TestAttachmentRoutes:
     async def test_delete_attachment_api_error_still_returns_204(self, ui_client):
         """API error on delete is logged but the response is still 204 (graceful)."""
         from ui.api_client import APIError
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.delete_attachment", new=AsyncMock(side_effect=APIError(404, "not found"))):
             r = await ui_client.delete(
                 "/api/items/gc:123/attachments/att:missing",
-                cookies=_authed(),
             )
         assert r.status_code == 204
 
@@ -6484,6 +6782,7 @@ class TestInventoryBulkActions:
     @pytest.mark.asyncio
     async def test_inventory_page_has_bulk_toolbar(self, ui_client):
         """Inventory list page renders bulk toolbar element."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
@@ -6497,7 +6796,7 @@ class TestInventoryBulkActions:
             patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
-            r = await ui_client.get("/inventory", cookies=_authed())
+            r = await ui_client.get("/inventory")
         assert r.status_code == 200
         assert b"bulk-toolbar" in r.content
         assert b"bulk-count" in r.content
@@ -6506,6 +6805,7 @@ class TestInventoryBulkActions:
     async def test_bulk_toolbar_shows_location_options(self, ui_client):
         """When locations exist, bulk toolbar includes transfer dropdown."""
         loc = {"id": "loc:main", "name": "Main Office"}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
@@ -6519,7 +6819,7 @@ class TestInventoryBulkActions:
             patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
-            r = await ui_client.get("/inventory", cookies=_authed())
+            r = await ui_client.get("/inventory")
         assert b"Main Office" in r.content
         assert b"bulk/transfer" in r.content
 
@@ -6527,11 +6827,11 @@ class TestInventoryBulkActions:
 
     @pytest.mark.asyncio
     async def test_bulk_status_success(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.bulk_set_status", new=AsyncMock(return_value={"updated": 2})):
             r = await ui_client.post(
                 "/api/items/bulk/status",
                 content=b"selected=item%3Aa&selected=item%3Ab&bulk_status=inactive", headers={"content-type": "application/x-www-form-urlencoded"},
-                cookies=_authed(),
             )
         assert r.status_code == 200
         assert b"Updated to 'Inactive': 2." in r.content
@@ -6542,31 +6842,31 @@ class TestInventoryBulkActions:
         async def _mock(token, entity_ids, status):
             captured.update({"ids": entity_ids, "status": status})
             return {"updated": 2}
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.bulk_set_status", new=_mock):
             await ui_client.post(
                 "/api/items/bulk/status",
                 content=b"selected=item%3Aa&selected=item%3Ab&bulk_status=reserved", headers={"content-type": "application/x-www-form-urlencoded"},
-                cookies=_authed(),
             )
         assert captured["ids"] == ["item:a", "item:b"]
         assert captured["status"] == "reserved"
 
     @pytest.mark.asyncio
     async def test_bulk_status_no_selection(self, ui_client):
+        ui_client.cookies.update(_authed())
         r = await ui_client.post(
             "/api/items/bulk/status",
             content=b"bulk_status=inactive", headers={"content-type": "application/x-www-form-urlencoded"},
-            cookies=_authed(),
         )
         assert r.status_code == 200
         assert b"No items selected" in r.content
 
     @pytest.mark.asyncio
     async def test_bulk_status_no_status_value(self, ui_client):
+        ui_client.cookies.update(_authed())
         r = await ui_client.post(
             "/api/items/bulk/status",
             content=b"selected=item%3Aa&bulk_status=", headers={"content-type": "application/x-www-form-urlencoded"},
-            cookies=_authed(),
         )
         assert r.status_code == 200
         assert b"No status selected" in r.content
@@ -6574,11 +6874,11 @@ class TestInventoryBulkActions:
     @pytest.mark.asyncio
     async def test_bulk_status_api_error(self, ui_client):
         from ui.api_client import APIError
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.bulk_set_status", new=AsyncMock(side_effect=APIError(500, "server error"))):
             r = await ui_client.post(
                 "/api/items/bulk/status",
                 content=b"selected=item%3Aa&bulk_status=inactive", headers={"content-type": "application/x-www-form-urlencoded"},
-                cookies=_authed(),
             )
         assert r.status_code == 200
         assert b"server error" in r.content
@@ -6587,11 +6887,11 @@ class TestInventoryBulkActions:
 
     @pytest.mark.asyncio
     async def test_bulk_transfer_success(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.bulk_transfer", new=AsyncMock(return_value={"updated": 3})):
             r = await ui_client.post(
                 "/api/items/bulk/transfer",
                 content=b"selected=item%3Aa&selected=item%3Ab&selected=item%3Ac&bulk_location_id=loc%3A1", headers={"content-type": "application/x-www-form-urlencoded"},
-                cookies=_authed(),
             )
         assert r.status_code == 200
         assert b"Transferred: 3." in r.content
@@ -6602,31 +6902,31 @@ class TestInventoryBulkActions:
         async def _mock(token, entity_ids, to_location_id):
             captured.update({"ids": entity_ids, "loc": to_location_id})
             return {"updated": 2}
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.bulk_transfer", new=_mock):
             await ui_client.post(
                 "/api/items/bulk/transfer",
                 content=b"selected=item%3Aa&selected=item%3Ab&bulk_location_id=loc%3Amain", headers={"content-type": "application/x-www-form-urlencoded"},
-                cookies=_authed(),
             )
         assert captured["ids"] == ["item:a", "item:b"]
         assert captured["loc"] == "loc:main"
 
     @pytest.mark.asyncio
     async def test_bulk_transfer_no_selection(self, ui_client):
+        ui_client.cookies.update(_authed())
         r = await ui_client.post(
             "/api/items/bulk/transfer",
             content=b"bulk_location_id=loc%3A1", headers={"content-type": "application/x-www-form-urlencoded"},
-            cookies=_authed(),
         )
         assert r.status_code == 200
         assert b"No items selected" in r.content
 
     @pytest.mark.asyncio
     async def test_bulk_transfer_no_location(self, ui_client):
+        ui_client.cookies.update(_authed())
         r = await ui_client.post(
             "/api/items/bulk/transfer",
             content=b"selected=item%3Aa&bulk_location_id=", headers={"content-type": "application/x-www-form-urlencoded"},
-            cookies=_authed(),
         )
         assert r.status_code == 200
         assert b"No location selected" in r.content
@@ -6634,11 +6934,11 @@ class TestInventoryBulkActions:
     @pytest.mark.asyncio
     async def test_bulk_transfer_api_error(self, ui_client):
         from ui.api_client import APIError
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.bulk_transfer", new=AsyncMock(side_effect=APIError(422, "invalid location"))):
             r = await ui_client.post(
                 "/api/items/bulk/transfer",
                 content=b"selected=item%3Aa&bulk_location_id=loc%3Abad", headers={"content-type": "application/x-www-form-urlencoded"},
-                cookies=_authed(),
             )
         assert r.status_code == 200
         assert b"invalid location" in r.content
@@ -6647,11 +6947,11 @@ class TestInventoryBulkActions:
 
     @pytest.mark.asyncio
     async def test_bulk_delete_success(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.bulk_delete", new=AsyncMock(return_value=_delete_answer(2))):
             r = await ui_client.post(
                 "/api/items/bulk/delete",
                 content=b"selected=item%3Aa&selected=item%3Ab", headers={"content-type": "application/x-www-form-urlencoded"},
-                cookies=_authed(),
             )
         assert r.status_code == 200
         assert b"Deleted: 2." in r.content
@@ -6660,12 +6960,12 @@ class TestInventoryBulkActions:
     async def test_bulk_delete_names_each_item_moved_to_deleted(self, ui_client):
         moved = [{"entity_id": "item:r", "sku": "REF-1", "referenced_by": ["QUO-7"], "has_files": False},
                  {"entity_id": "item:f", "sku": "FILE-1", "referenced_by": [], "has_files": True}]
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.bulk_delete", new=AsyncMock(return_value=_delete_answer(1, moved))):
             r = await ui_client.post(
                 "/api/items/bulk/delete",
                 content=b"selected=item%3A0&selected=item%3Ar&selected=item%3Af",
                 headers={"content-type": "application/x-www-form-urlencoded"},
-                cookies=_authed(),
             )
         assert r.status_code == 200
         assert b"Deleted: 1. Moved to Deleted: 2." in r.content
@@ -6677,8 +6977,9 @@ class TestInventoryBulkActions:
     @pytest.mark.asyncio
     async def test_row_menu_delete_says_when_the_item_moved_to_deleted(self, ui_client):
         moved = [{"entity_id": "item:r", "sku": "REF-1", "referenced_by": ["QUO-7"], "has_files": False}]
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.bulk_delete", new=AsyncMock(return_value=_delete_answer(0, moved))):
-            r = await ui_client.delete("/api/items/item:r", cookies=_authed())
+            r = await ui_client.delete("/api/items/item:r")
         assert r.status_code == 200
         toast = json.loads(r.headers["hx-trigger"])["celerpToast"]
         assert toast["message"] == "REF-1 moved to Deleted, still referenced by QUO-7."
@@ -6686,12 +6987,12 @@ class TestInventoryBulkActions:
     @pytest.mark.asyncio
     async def test_bulk_restore_deleted_reports_the_count(self, ui_client):
         restore = AsyncMock(return_value={"restored": 2})
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.bulk_restore_deleted", new=restore):
             r = await ui_client.post(
                 "/api/items/bulk/restore-deleted",
                 content=b"selected=item%3Aa&selected=item%3Ab",
                 headers={"content-type": "application/x-www-form-urlencoded"},
-                cookies=_authed(),
             )
         assert r.status_code == 200
         assert b"Restored to draft: 2." in r.content
@@ -6703,28 +7004,29 @@ class TestInventoryBulkActions:
         async def _mock(token, entity_ids, untouched_samples_only=False):
             captured["ids"] = entity_ids
             return _delete_answer(2)
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.bulk_delete", new=_mock):
             await ui_client.post(
                 "/api/items/bulk/delete",
                 content=b"selected=item%3Ax&selected=item%3Ay", headers={"content-type": "application/x-www-form-urlencoded"},
-                cookies=_authed(),
             )
         assert captured["ids"] == ["item:x", "item:y"]
 
     @pytest.mark.asyncio
     async def test_bulk_delete_no_selection(self, ui_client):
-        r = await ui_client.post("/api/items/bulk/delete", content=b"", headers={"content-type": "application/x-www-form-urlencoded"}, cookies=_authed())
+        ui_client.cookies.update(_authed())
+        r = await ui_client.post("/api/items/bulk/delete", content=b"", headers={"content-type": "application/x-www-form-urlencoded"})
         assert r.status_code == 200
         assert b"No items selected" in r.content
 
     @pytest.mark.asyncio
     async def test_bulk_delete_api_error(self, ui_client):
         from ui.api_client import APIError
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.bulk_delete", new=AsyncMock(side_effect=APIError(500, "delete failed"))):
             r = await ui_client.post(
                 "/api/items/bulk/delete",
                 content=b"selected=item%3Aa", headers={"content-type": "application/x-www-form-urlencoded"},
-                cookies=_authed(),
             )
         assert r.status_code == 200
         assert b"delete failed" in r.content
@@ -6757,17 +7059,20 @@ class TestBulkDuplicate:
     async def test_bulk_duplicate_option_gated_on_edit_permission(self, ui_client):
         """Duplicate option is offered to an edit_inventory role and withheld from one without it."""
         with self._page_patches():
-            owner = await ui_client.get("/inventory", cookies=_authed())
+            ui_client.cookies.update(_authed())
+            owner = await ui_client.get("/inventory")
         assert owner.status_code == 200
         assert b'value="duplicate"' in owner.content
         with self._page_patches():
-            viewer = await ui_client.get("/inventory", cookies=_authed(role="viewer"))
+            ui_client.cookies.update(_authed(role="viewer"))
+            viewer = await ui_client.get("/inventory")
         assert viewer.status_code == 200
         assert b'value="duplicate"' not in viewer.content
 
     @pytest.mark.asyncio
     async def test_bulk_duplicate_creates_a_copy_per_selected_item(self, ui_client):
         create = AsyncMock(return_value={"id": "item:new", "event_id": "e1"})
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
@@ -6777,7 +7082,6 @@ class TestBulkDuplicate:
             r = await ui_client.post(
                 "/api/items/bulk/duplicate",
                 content=b"selected=gc%3A123&selected=gc%3A456", headers={"content-type": "application/x-www-form-urlencoded"},
-                cookies=_authed(),
             )
         assert r.status_code == 200
         assert b"Duplicated: 2." in r.content
@@ -6790,6 +7094,7 @@ class TestBulkDuplicate:
         async def _cap(token, data):
             skus.append(data.get("sku"))
             return {"id": "item:copy", "event_id": "e1"}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value={**_ITEM, "sku": "ABC"})),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
@@ -6799,7 +7104,6 @@ class TestBulkDuplicate:
             await ui_client.post(
                 "/api/items/bulk/duplicate",
                 content=b"selected=gc%3A123&selected=gc%3A456", headers={"content-type": "application/x-www-form-urlencoded"},
-                cookies=_authed(),
             )
         assert sorted(skus) == ["ABC-copy", "ABC-copy2"]
 
@@ -6807,6 +7111,7 @@ class TestBulkDuplicate:
     async def test_bulk_duplicate_reports_partial_failure(self, ui_client):
         from ui.api_client import APIError
         create = AsyncMock(side_effect=[{"id": "item:ok", "event_id": "e1"}, APIError(500, "create failed")])
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
@@ -6816,7 +7121,6 @@ class TestBulkDuplicate:
             r = await ui_client.post(
                 "/api/items/bulk/duplicate",
                 content=b"selected=gc%3A123&selected=gc%3A456", headers={"content-type": "application/x-www-form-urlencoded"},
-                cookies=_authed(),
             )
         assert r.status_code == 200
         assert t("inventory.bulk_duplicated_partial", ok=1, failed=1).encode() in r.content
@@ -6827,6 +7131,7 @@ class TestBulkDuplicate:
     async def test_bulk_duplicate_all_fail_error_flash(self, ui_client):
         from ui.api_client import APIError
         create = AsyncMock(side_effect=APIError(500, "create failed"))
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
@@ -6836,7 +7141,6 @@ class TestBulkDuplicate:
             r = await ui_client.post(
                 "/api/items/bulk/duplicate",
                 content=b"selected=gc%3A123&selected=gc%3A456", headers={"content-type": "application/x-www-form-urlencoded"},
-                cookies=_authed(),
             )
         assert r.status_code == 200
         assert b"flash--error" in r.content
@@ -6847,11 +7151,11 @@ class TestBulkDuplicate:
     @pytest.mark.asyncio
     async def test_bulk_duplicate_rejects_empty_selection(self, ui_client):
         create = AsyncMock(return_value={"id": "item:new"})
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.create_item", new=create):
             r = await ui_client.post(
                 "/api/items/bulk/duplicate",
                 content=b"", headers={"content-type": "application/x-www-form-urlencoded"},
-                cookies=_authed(),
             )
         assert r.status_code == 200
         assert b"No items selected" in r.content
@@ -6861,6 +7165,7 @@ class TestBulkDuplicate:
     async def test_bulk_duplicate_dedupes_repeated_ids(self, ui_client):
         """The same id repeated in the POST creates exactly one copy, not one per repeat."""
         create = AsyncMock(return_value={"id": "item:new", "event_id": "e1"})
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
@@ -6870,7 +7175,6 @@ class TestBulkDuplicate:
             r = await ui_client.post(
                 "/api/items/bulk/duplicate",
                 content=b"selected=gc%3A123&selected=gc%3A123", headers={"content-type": "application/x-www-form-urlencoded"},
-                cookies=_authed(),
             )
         assert r.status_code == 200
         assert b"Duplicated: 1." in r.content
@@ -6879,6 +7183,7 @@ class TestBulkDuplicate:
     @pytest.mark.asyncio
     async def test_bulk_duplicate_denied_without_edit_permission(self, ui_client):
         create = AsyncMock(return_value={"id": "item:new"})
+        ui_client.cookies.update(_authed(role="viewer"))
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value={"settings": {}})),
             patch("ui.api_client.create_item", new=create),
@@ -6886,7 +7191,6 @@ class TestBulkDuplicate:
             r = await ui_client.post(
                 "/api/items/bulk/duplicate",
                 content=b"selected=gc%3A123", headers={"content-type": "application/x-www-form-urlencoded"},
-                cookies=_authed(role="viewer"),
             )
         assert r.status_code == 200
         assert missing_permission_text("edit_inventory") in html.unescape(r.text)
@@ -6907,19 +7211,21 @@ class TestBulkActionsPhase1to5:
     @pytest.mark.asyncio
     async def test_row_checkbox_has_data_attributes(self, ui_client):
         item = {**_ITEM, "sku": "RB-01", "quantity": 5, "weight": "2.5", "weight_unit": "ct", "sell_by": "piece"}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [item], "total": 1})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value=_VALUATION)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
         ):
-            r = await ui_client.get("/inventory", cookies=_authed())
+            r = await ui_client.get("/inventory")
         assert r.status_code == 200
         assert b'data-entity-id="gc:123"' in r.content
         assert b'data-sku="RB-01"' in r.content
 
     @pytest.mark.asyncio
     async def test_bulk_toolbar_has_clear_button(self, ui_client):
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
@@ -6933,7 +7239,7 @@ class TestBulkActionsPhase1to5:
             patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
-            r = await ui_client.get("/inventory", cookies=_authed())
+            r = await ui_client.get("/inventory")
         assert r.status_code == 200
         assert b"bulk-clear-btn" in r.content
 
@@ -6942,6 +7248,7 @@ class TestBulkActionsPhase1to5:
     @pytest.mark.asyncio
     async def test_bulk_toolbar_has_action_dropdown(self, ui_client):
         """New toolbar uses a single Action dropdown instead of individual buttons."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
@@ -6955,7 +7262,7 @@ class TestBulkActionsPhase1to5:
             patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
-            r = await ui_client.get("/inventory", cookies=_authed())
+            r = await ui_client.get("/inventory")
         assert r.status_code == 200
         # Single action dropdown with options for all actions
         assert b"bulk-action-select" in r.content
@@ -6978,6 +7285,7 @@ class TestBulkActionsPhase1to5:
             "form_action": "/api/labels/bulk-print",
             "_module": "test",
         })
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
@@ -6991,7 +7299,7 @@ class TestBulkActionsPhase1to5:
             patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
-            r = await ui_client.get("/inventory", cookies=_authed())
+            r = await ui_client.get("/inventory")
         clear_slots()
         assert r.status_code == 200
         assert b"Print Labels" in r.content
@@ -7000,22 +7308,22 @@ class TestBulkActionsPhase1to5:
 
     @pytest.mark.asyncio
     async def test_bulk_merge_rejects_single_item(self, ui_client):
+        ui_client.cookies.update(_authed())
         r = await ui_client.post(
             "/api/items/bulk/merge",
             content=b"selected=item%3Aa",
             headers={"content-type": "application/x-www-form-urlencoded"},
-            cookies=_authed(),
         )
         assert r.status_code == 200
         assert b"at least 2" in r.content
 
     @pytest.mark.asyncio
     async def test_bulk_merge_requires_target(self, ui_client):
+        ui_client.cookies.update(_authed())
         r = await ui_client.post(
             "/api/items/bulk/merge",
             content=b"selected=item%3Aa&selected=item%3Ab",
             headers={"content-type": "application/x-www-form-urlencoded"},
-            cookies=_authed(),
         )
         assert r.status_code == 200
         assert t("inv.target_item_selection_is_required").encode() in r.content
@@ -7024,22 +7332,22 @@ class TestBulkActionsPhase1to5:
 
     @pytest.mark.asyncio
     async def test_bulk_split_rejects_multiple_items(self, ui_client):
+        ui_client.cookies.update(_authed())
         r = await ui_client.post(
             "/api/items/bulk/split",
             content=b"selected=item%3Aa&selected=item%3Ab",
             headers={"content-type": "application/x-www-form-urlencoded"},
-            cookies=_authed(),
         )
         assert r.status_code == 200
         assert t("inv.select_exactly_1_item_to_split").encode() in r.content
 
     @pytest.mark.asyncio
     async def test_bulk_split_rejects_invalid_qty(self, ui_client):
+        ui_client.cookies.update(_authed())
         r = await ui_client.post(
             "/api/items/bulk/split",
             content=b"selected=item%3Ax&child_qty=abc",
             headers={"content-type": "application/x-www-form-urlencoded"},
-            cookies=_authed(),
         )
         assert r.status_code == 200
         assert t("inv.invalid_split_quantity").encode() in r.content
@@ -7048,23 +7356,23 @@ class TestBulkActionsPhase1to5:
 
     @pytest.mark.asyncio
     async def test_bulk_expire_success(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.bulk_expire", new=AsyncMock(return_value={"expired": 2})):
             r = await ui_client.post(
                 "/api/items/bulk/expire",
                 content=b"selected=item%3Aa&selected=item%3Ab",
                 headers={"content-type": "application/x-www-form-urlencoded"},
-                cookies=_authed(),
             )
         assert r.status_code == 200
         assert b"Expired: 2." in r.content
 
     @pytest.mark.asyncio
     async def test_bulk_expire_no_selection(self, ui_client):
+        ui_client.cookies.update(_authed())
         r = await ui_client.post(
             "/api/items/bulk/expire",
             content=b"",
             headers={"content-type": "application/x-www-form-urlencoded"},
-            cookies=_authed(),
         )
         assert r.status_code == 200
         assert b"No items selected" in r.content
@@ -7076,10 +7384,10 @@ class TestBulkActionsPhase1to5:
     async def test_bulk_split_preview_has_data_parent_weight(self, ui_client):
         """Form element must carry data-parent-weight and data-weight-decimals
         when preview has has_weight=True."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.split_preview", new=AsyncMock(return_value=_SPLIT_PREVIEW_WEIGHT)):
             r = await ui_client.get(
                 "/api/items/bulk/split-preview?entity_id=item%3A1&qty=3",
-                cookies=_authed(),
             )
         assert r.status_code == 200
         html = r.text
@@ -7090,10 +7398,10 @@ class TestBulkActionsPhase1to5:
     @pytest.mark.asyncio
     async def test_bulk_split_preview_has_data_parent_pieces(self, ui_client):
         """data-parent-pieces rendered when has_pieces=True; data-parent-weight absent."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.split_preview", new=AsyncMock(return_value=_SPLIT_PREVIEW_PIECES)):
             r = await ui_client.get(
                 "/api/items/bulk/split-preview?entity_id=item%3A2&qty=5",
-                cookies=_authed(),
             )
         assert r.status_code == 200
         html = r.text
@@ -7103,10 +7411,10 @@ class TestBulkActionsPhase1to5:
     @pytest.mark.asyncio
     async def test_bulk_split_preview_child_weight_has_oninput(self, ui_client):
         """child_weight input must trigger splitRecalcMotherWeight."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.split_preview", new=AsyncMock(return_value=_SPLIT_PREVIEW_WEIGHT)):
             r = await ui_client.get(
                 "/api/items/bulk/split-preview?entity_id=item%3A3&qty=3",
-                cookies=_authed(),
             )
         html = r.text
         assert 'name="child_weight"' in html
@@ -7115,10 +7423,10 @@ class TestBulkActionsPhase1to5:
     @pytest.mark.asyncio
     async def test_bulk_split_preview_mother_weight_no_recalc_oninput(self, ui_client):
         """Mother weight must be static display (not editable input); child_weight triggers splitRecalcMotherWeight."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.split_preview", new=AsyncMock(return_value=_SPLIT_PREVIEW_WEIGHT)):
             r = await ui_client.get(
                 "/api/items/bulk/split-preview?entity_id=item%3A4&qty=3",
-                cookies=_authed(),
             )
         html = r.text
         assert 'type="number"' not in html.split('name="mother_weight"')[1].split('>')[0] if 'name="mother_weight"' in html else True, "mother_weight must not be a visible editable input"
@@ -7131,10 +7439,10 @@ class TestBulkActionsPhase1to5:
         """The split preview renders a live delta badge (sp-delta) beside Confirm,
         always visible (never hidden) and never as an extra column header."""
         import re
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.split_preview", new=AsyncMock(return_value=_SPLIT_PREVIEW_WEIGHT)):
             r = await ui_client.get(
                 "/api/items/bulk/split-preview?entity_id=item%3A9&qty=3",
-                cookies=_authed(),
             )
         assert r.status_code == 200
         html = r.text
@@ -7150,6 +7458,7 @@ class TestBulkActionsPhase1to5:
     @pytest.mark.asyncio
     async def test_bulk_split_preview_js_contains_new_functions(self, ui_client):
         """splitRecalcMother functions must be in the inventory page JS. Save/restore removed."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
@@ -7163,7 +7472,7 @@ class TestBulkActionsPhase1to5:
             patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
-            r = await ui_client.get("/inventory", cookies=_authed())
+            r = await ui_client.get("/inventory")
         assert b"splitRecalcMother" in r.content
         assert b"_bulkSplitSavedEdits" not in r.content
         assert b"_bulkSplitRestoreEdits" not in r.content
@@ -7172,10 +7481,10 @@ class TestBulkActionsPhase1to5:
     async def test_bulk_split_preview_child_pieces_has_oninput(self, ui_client):
         """child_pieces input must have splitRecalcMother; mother_weight must be absent
         when item has pieces but no weight."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.split_preview", new=AsyncMock(return_value=_SPLIT_PREVIEW_PIECES)):
             r = await ui_client.get(
                 "/api/items/bulk/split-preview?entity_id=item%3A5&qty=5",
-                cookies=_authed(),
             )
         html = r.text
         assert 'name="child_pieces"' in html
@@ -7187,6 +7496,7 @@ class TestBulkActionsPhase1to5:
         """splitRecalcMother must use explicit input.name checks (not a generic ternary)
         to avoid cross-contamination when both weight and pieces columns are visible.
         Verified against the inventory page which embeds _BULK_SPLIT_JS."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
@@ -7200,7 +7510,7 @@ class TestBulkActionsPhase1to5:
             patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
-            r = await ui_client.get("/inventory", cookies=_authed())
+            r = await ui_client.get("/inventory")
         assert r.status_code == 200
         html = r.text
         # Separate functions must be present (not a combined ternary)
@@ -7211,6 +7521,7 @@ class TestBulkActionsPhase1to5:
 
     async def test_bulk_split_save_edits_captures_all_number_inputs(self, ui_client):
         """Save/restore pattern is removed. bulkSplitChildQtyChanged must be pure JS with no htmx.ajax."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
@@ -7224,7 +7535,7 @@ class TestBulkActionsPhase1to5:
             patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
-            r = await ui_client.get("/inventory", cookies=_authed())
+            r = await ui_client.get("/inventory")
         assert r.status_code == 200
         html = r.text
         assert "_bulkSplitSavedEdits" not in html
@@ -7238,10 +7549,10 @@ class TestBulkActionsPhase1to5:
     @pytest.mark.asyncio
     async def test_bulk_split_preview_child_qty_has_max_attr(self, ui_client):
         """child_qty input must carry a max= attribute equal to parent_qty - 1 step."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.split_preview", new=AsyncMock(return_value=_SPLIT_PREVIEW_PIECES)):
             r = await ui_client.get(
                 "/api/items/bulk/split-preview?entity_id=item%3A9&qty=5",
-                cookies=_authed(),
             )
         assert r.status_code == 200
         html = r.text
@@ -7253,10 +7564,10 @@ class TestBulkActionsPhase1to5:
     @pytest.mark.asyncio
     async def test_bulk_split_preview_child_pieces_has_max_attr(self, ui_client):
         """child_pieces input must carry max= parent_pieces - 1 when pieces column shown."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.split_preview", new=AsyncMock(return_value=_SPLIT_PREVIEW_PIECES)):
             r = await ui_client.get(
                 "/api/items/bulk/split-preview?entity_id=item%3A10&qty=5",
-                cookies=_authed(),
             )
         assert r.status_code == 200
         html = r.text
@@ -7271,6 +7582,7 @@ class TestBulkActionsPhase1to5:
             "entity_id": "item:pieces-1", "sku": "BOX-001", "quantity": 20.0,
             "weight": None, "attributes": {"pieces": 40},
         }
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value=item)),
             patch("ui.api_client.split_item", new=AsyncMock()),
@@ -7279,7 +7591,6 @@ class TestBulkActionsPhase1to5:
                 "/api/items/bulk/split",
                 content=b"entity_id=item%3Apieces-1&child_qty=5&child_pieces=40",
                 headers={"content-type": "application/x-www-form-urlencoded"},
-                cookies=_authed(),
             )
         assert r.status_code == 200
         assert "flash--warning" in r.text
@@ -7301,6 +7612,7 @@ class TestBulkSelectionClear:
             {"entity_id": "item:a", "sku": "A", "quantity": 5, "attributes": {}},
             {"entity_id": "item:b", "sku": "B", "quantity": 3, "attributes": {}},
         ]
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item", new=AsyncMock(side_effect=items_data)),
             patch("ui.api_client.merge_items", new=AsyncMock(return_value=merge_result)),
@@ -7309,7 +7621,6 @@ class TestBulkSelectionClear:
                 "/api/items/bulk/merge",
                 content=b"selected=item%3Aa&selected=item%3Ab&target_sku_from=item%3Aa",
                 headers={"content-type": "application/x-www-form-urlencoded"},
-                cookies=_authed(),
             )
         assert r.status_code == 200
         trigger = r.headers.get("hx-trigger", "")
@@ -7321,12 +7632,12 @@ class TestBulkSelectionClear:
     @pytest.mark.asyncio
     async def test_bulk_delete_success_sends_selection_clear_trigger(self, ui_client):
         """Delete success response must include HX-Trigger: celerpSelectionClear."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.bulk_delete", new=AsyncMock(return_value=_delete_answer(2))):
             r = await ui_client.post(
                 "/api/items/bulk/delete",
                 content=b"selected=item%3Aa&selected=item%3Ab",
                 headers={"content-type": "application/x-www-form-urlencoded"},
-                cookies=_authed(),
             )
         assert r.status_code == 200
         trigger = r.headers.get("hx-trigger", "")
@@ -7337,12 +7648,12 @@ class TestBulkSelectionClear:
     @pytest.mark.asyncio
     async def test_bulk_expire_success_sends_selection_clear_trigger(self, ui_client):
         """Expire success response must include HX-Trigger: celerpSelectionClear."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.bulk_expire", new=AsyncMock(return_value={"expired": 1})):
             r = await ui_client.post(
                 "/api/items/bulk/expire",
                 content=b"selected=item%3Aa",
                 headers={"content-type": "application/x-www-form-urlencoded"},
-                cookies=_authed(),
             )
         assert r.status_code == 200
         trigger = r.headers.get("hx-trigger", "")
@@ -7353,12 +7664,12 @@ class TestBulkSelectionClear:
     @pytest.mark.asyncio
     async def test_bulk_archive_success_sends_selection_clear_trigger(self, ui_client):
         """Archive (status) success response must include HX-Trigger: celerpSelectionClear."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.bulk_set_status", new=AsyncMock(return_value={"updated": 2})):
             r = await ui_client.post(
                 "/api/items/bulk/status",
                 content=b"selected=item%3Aa&selected=item%3Ab&bulk_status=archived",
                 headers={"content-type": "application/x-www-form-urlencoded"},
-                cookies=_authed(),
             )
         assert r.status_code == 200
         trigger = r.headers.get("hx-trigger", "")
@@ -7369,12 +7680,12 @@ class TestBulkSelectionClear:
     @pytest.mark.asyncio
     async def test_bulk_transfer_success_sends_selection_clear_trigger(self, ui_client):
         """Transfer success response must include HX-Trigger: celerpSelectionClear."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.bulk_transfer", new=AsyncMock(return_value={"updated": 1})):
             r = await ui_client.post(
                 "/api/items/bulk/transfer",
                 content=b"selected=item%3Aa&bulk_location_id=loc%3A1",
                 headers={"content-type": "application/x-www-form-urlencoded"},
-                cookies=_authed(),
             )
         assert r.status_code == 200
         trigger = r.headers.get("hx-trigger", "")
@@ -7397,21 +7708,23 @@ class TestSprint5ContactCreation:
     @pytest.mark.asyncio
     async def test_crm_page_has_new_contact_button(self, ui_client):
         """CRM page has a New Contact button."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.list_contacts", new=AsyncMock(return_value={"items": _CONTACTS, "total": len(_CONTACTS)})),
         ):
-            r = await ui_client.get("/contacts/customers", cookies=_authed())
+            r = await ui_client.get("/contacts/customers")
         assert r.status_code == 200
         assert b"New Contact" in r.content or b"New Customer" in r.content
 
     @pytest.mark.asyncio
     async def test_create_blank_contact(self, ui_client):
         """POST /crm/create-blank creates contact and redirects."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.list_contacts", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.create_contact", new=AsyncMock(return_value={"entity_id": "ct:new1"})),
         ):
-            r = await ui_client.post("/contacts/create?type=customer", cookies=_authed())
+            r = await ui_client.post("/contacts/create?type=customer")
         assert r.status_code == 204
         assert "/contacts/ct:new1" in r.headers["HX-Redirect"]
 
@@ -7428,16 +7741,18 @@ class TestSprint5PaymentRefund:
     @pytest.mark.asyncio
     async def test_paid_invoice_shows_refund_section(self, ui_client):
         """Paid invoice detail shows payment section with 'Paid in Full'."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_PAID_INVOICE)):
-            r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+            r = await ui_client.get("/docs/doc:INV-2026-0001")
         assert r.status_code == 200
         assert b"Payments" in r.content or b"Paid in Full" in r.content
 
     @pytest.mark.asyncio
     async def test_draft_invoice_no_refund(self, ui_client):
         """Draft invoice does not show refund section."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_BLANK_DOC)):
-            r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+            r = await ui_client.get("/docs/doc:INV-2026-0001")
         assert b"Refund" not in r.content
 
     @pytest.mark.asyncio
@@ -7449,8 +7764,9 @@ class TestSprint5PaymentRefund:
             {"index": 1, "amount": 4000, "method": "transfer", "bank_account": "1112",
              "payment_date": "2026-03-03", "status": "active"},
         ]}
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)):
-            r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+            r = await ui_client.get("/docs/doc:INV-2026-0001")
         assert r.status_code == 200
         html = r.text
         assert html.count('hx-post="/docs/doc:INV-2026-0001/refund"') == 2
@@ -7460,12 +7776,12 @@ class TestSprint5PaymentRefund:
     async def test_refund_route_calls_api(self, ui_client):
         """POST /docs/{id}/refund sends the chosen payment, amount and date."""
         mock = AsyncMock(return_value={"event_id": "ev1"})
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.refund_payment", new=mock):
             r = await ui_client.post(
                 "/docs/doc:INV-2026-0001/refund",
                 data={"payment_index": "1", "amount": "5000", "payment_date": "2026-03-09",
                       "method": "transfer", "reference": "REF-1"},
-                cookies=_authed(),
             )
         assert r.status_code == 204
         assert "HX-Redirect" in r.headers
@@ -7475,8 +7791,9 @@ class TestSprint5PaymentRefund:
     @pytest.mark.asyncio
     async def test_refund_shows_amount_paid(self, ui_client):
         """Payment section shows total paid info."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_PAID_INVOICE)):
-            r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+            r = await ui_client.get("/docs/doc:INV-2026-0001")
         assert b"10,000" in r.content
 
 
@@ -7488,6 +7805,7 @@ class TestSprint5NoPopups:
 
     @pytest.mark.asyncio
     async def test_no_dialog_in_item_detail(self, ui_client):
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
@@ -7497,16 +7815,17 @@ class TestSprint5NoPopups:
             patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
-            r = await ui_client.get("/inventory/gc:123", cookies=_authed())
+            r = await ui_client.get("/inventory/gc:123")
         assert b"<dialog" not in r.content.lower()
         assert b"modal" not in r.content.lower()
 
     @pytest.mark.asyncio
     async def test_no_dialog_in_deals(self, ui_client):
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.list_deals", new=AsyncMock(return_value={"items": [_DEAL], "total": 1})),
         ):
-            r = await ui_client.get("/contacts/sales", cookies=_authed())
+            r = await ui_client.get("/contacts/sales")
         assert b"<dialog" not in r.content.lower()
 
     @pytest.mark.asyncio
@@ -7514,9 +7833,10 @@ class TestSprint5NoPopups:
         """Relay status pinned off: the quotation page's Send/Share dialogs
         are relay-gated, so none may render."""
         _no_relay = AsyncMock(return_value={"connected": False, "public_url": ""})
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_QUOTATION_DOC)), \
              patch("ui.api_client.get_relay_status", new=_no_relay):
-            r = await ui_client.get("/docs/doc:QUO-2026-0001", cookies=_authed())
+            r = await ui_client.get("/docs/doc:QUO-2026-0001")
         assert b"<dialog" not in r.content.lower()
 
 
@@ -7822,9 +8142,9 @@ class TestColumnMappingHTTPFlow:
         """Two CSV columns mapped to same target -> re-renders mapping form with error."""
         csv_bytes = _make_csv([{"col_a": "x", "col_b": "y"}])
         # Step 1: upload to get csv_ref
+        ui_client.cookies.update(_authed())
         r = await ui_client.post(
             "/inventory/import/preview",
-            cookies=_authed(),
             files={"csv_file": ("items.csv", csv_bytes, "text/csv")},
         )
         assert r.status_code == 200
@@ -7840,7 +8160,6 @@ class TestColumnMappingHTTPFlow:
         }
         r = await ui_client.post(
             "/inventory/import/mapped",
-            cookies=_authed(),
             data=form_data,
         )
         assert r.status_code == 200
@@ -7854,9 +8173,9 @@ class TestColumnMappingHTTPFlow:
     async def test_attr_name_core_collision_returns_error(self, ui_client):
         """Attribute named same as core field -> re-renders mapping form with error."""
         csv_bytes = _make_csv([{"category": "Stone"}])
+        ui_client.cookies.update(_authed())
         r = await ui_client.post(
             "/inventory/import/preview",
-            cookies=_authed(),
             files={"csv_file": ("items.csv", csv_bytes, "text/csv")},
         )
         assert r.status_code == 200
@@ -7872,7 +8191,6 @@ class TestColumnMappingHTTPFlow:
         }
         r = await ui_client.post(
             "/inventory/import/mapped",
-            cookies=_authed(),
             data=form_data,
         )
         assert r.status_code == 200
@@ -7883,9 +8201,9 @@ class TestColumnMappingHTTPFlow:
     async def test_attr_rename_avoids_collision_succeeds(self, ui_client):
         """Attribute renamed to non-core name -> passes validation, proceeds to preview."""
         csv_bytes = _make_csv([{"sku": "S1", "name": "Widget", "category": "Stone"}])
+        ui_client.cookies.update(_authed())
         r = await ui_client.post(
             "/inventory/import/preview",
-            cookies=_authed(),
             files={"csv_file": ("items.csv", csv_bytes, "text/csv")},
         )
         assert r.status_code == 200
@@ -7902,7 +8220,6 @@ class TestColumnMappingHTTPFlow:
         }
         r = await ui_client.post(
             "/inventory/import/mapped",
-            cookies=_authed(),
             data=form_data,
         )
         # No mapping errors: the mapped rows are saved as a draft for review
@@ -7913,9 +8230,9 @@ class TestColumnMappingHTTPFlow:
     async def test_no_500_on_duplicate_mapping(self, ui_client):
         """Regression: duplicate target mapping must never produce 500."""
         csv_bytes = _make_csv([{"a": "1", "b": "2", "c": "3"}])
+        ui_client.cookies.update(_authed())
         r = await ui_client.post(
             "/inventory/import/preview",
-            cookies=_authed(),
             files={"csv_file": ("items.csv", csv_bytes, "text/csv")},
         )
         m = re.search(r'name="csv_ref"\s+value="([^"]+)"', r.text)
@@ -7931,7 +8248,6 @@ class TestColumnMappingHTTPFlow:
         }
         r = await ui_client.post(
             "/inventory/import/mapped",
-            cookies=_authed(),
             data=form_data,
         )
         assert r.status_code == 200  # Not 500
@@ -8115,10 +8431,10 @@ class TestInventoryImportFlow:
         csv_ref = _stage_csv("sku,name,location_name\nS1,,Main Office\n")
         plan = {"errors": [{"row": 1, "field": "name", "code": "required", "message": "Missing name"}],
                 "locations_to_create": [], "preview_hash": _PREVIEW_HASH}
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.plan_import_rows", new=AsyncMock(return_value=plan)):
             r = await ui_client.post(
                 "/inventory/import/errors",
-                cookies=_authed(),
                 data={"csv_ref": csv_ref},
             )
         assert r.status_code == 200
@@ -8128,7 +8444,8 @@ class TestInventoryImportFlow:
 
     @pytest.mark.asyncio
     async def test_import_template_download(self, ui_client):
-        r = await ui_client.get("/inventory/import/template", cookies=_authed())
+        ui_client.cookies.update(_authed())
+        r = await ui_client.get("/inventory/import/template")
         assert r.status_code == 200
         assert b"sku" in r.content
         assert b"name" in r.content
@@ -8138,10 +8455,10 @@ class TestInventoryImportFlow:
     async def test_import_confirm_all_valid_imports(self, ui_client):
         """Confirm forwards mapped rows to the server importer and renders the outcome."""
         csv_ref = _stage_csv("sku,name,location_name,sell_by\nS1,Widget,Main Office,piece\nS2,Ring,Main Office,piece\n")
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.import_rows", new=AsyncMock(return_value={"created": 2, "skipped": 0, "updated": 0, "errors": []})):
             r = await ui_client.post(
                 "/inventory/import/confirm",
-                cookies=_authed(),
                 data={"csv_ref": csv_ref, "preview_hash": _PREVIEW_HASH},
             )
         assert r.status_code == 200
@@ -8152,10 +8469,10 @@ class TestInventoryImportFlow:
     async def test_import_confirm_unknown_location_auto_created(self, ui_client):
         """An unknown location_name is resolved server-side; the browser just renders the result."""
         csv_ref = _stage_csv("sku,name,location_name,sell_by\nS1,Widget,New Warehouse,piece\n")
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.import_rows", new=AsyncMock(return_value={"created": 1, "skipped": 0, "updated": 0, "errors": []})):
             r = await ui_client.post(
                 "/inventory/import/confirm",
-                cookies=_authed(),
                 data={"csv_ref": csv_ref, "preview_hash": _PREVIEW_HASH},
             )
         assert r.status_code == 200
@@ -8165,10 +8482,10 @@ class TestInventoryImportFlow:
     async def test_import_confirm_no_location_column_uses_default(self, ui_client):
         """A CSV with no location_name column relies on the server's default-location resolution."""
         csv_ref = _stage_csv("sku,name,sell_by\nS1,Widget,piece\n")
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.import_rows", new=AsyncMock(return_value={"created": 1, "skipped": 0, "updated": 0, "errors": []})):
             r = await ui_client.post(
                 "/inventory/import/confirm",
-                cookies=_authed(),
                 data={"csv_ref": csv_ref, "preview_hash": _PREVIEW_HASH},
             )
         assert r.status_code == 200
@@ -8182,10 +8499,10 @@ class TestInventoryImportFlow:
             "created": 0, "skipped": 0, "updated": 0,
             "errors": ["Row 1: No location resolved: add a location_name column or set a default location"],
         }
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.import_rows", new=AsyncMock(return_value=server_result)):
             r = await ui_client.post(
                 "/inventory/import/confirm",
-                cookies=_authed(),
                 data={"csv_ref": csv_ref, "preview_hash": _PREVIEW_HASH},
             )
         assert r.status_code == 200
@@ -8200,10 +8517,10 @@ class TestInventoryImportFlow:
         csv_ref = _stage_csv(f"sku,name,location_name,sell_by\n{rows}\n")
 
         import_rows_mock = AsyncMock(return_value={"created": 600, "skipped": 0, "updated": 0, "errors": []})
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.import_rows", new=import_rows_mock):
             r = await ui_client.post(
                 "/inventory/import/confirm",
-                cookies=_authed(),
                 data={"csv_ref": csv_ref, "preview_hash": _PREVIEW_HASH},
             )
         assert r.status_code == 200
@@ -8219,10 +8536,10 @@ class TestInventoryImportFlow:
         """A 504 APIError (timeout) from the server importer renders an informative error message."""
         from ui.api_client import APIError
         csv_ref = _stage_csv("sku,name,location_name,sell_by\nS1,Widget,Main Office,piece\n")
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.import_rows", new=AsyncMock(side_effect=APIError(504, "Request timed out"))):
             r = await ui_client.post(
                 "/inventory/import/confirm",
-                cookies=_authed(),
                 data={"csv_ref": csv_ref, "preview_hash": _PREVIEW_HASH},
             )
         assert r.status_code == 200
@@ -8233,6 +8550,7 @@ class TestInventoryImportFlow:
         """weight_unit value not in company units fails preview validation and renders the fix path."""
         from celerp.services.units import DEFAULT_UNITS
         csv_bytes = b"sku,name,sell_by,weight,weight_unit\nS1,Ring,carat,100,badunit\n"
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_units", new=AsyncMock(return_value=DEFAULT_UNITS)),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
@@ -8240,7 +8558,6 @@ class TestInventoryImportFlow:
         ):
             r = await ui_client.post(
                 "/inventory/import/preview",
-                cookies=_authed(),
                 files={"csv_file": ("items.csv", csv_bytes, "text/csv")},
             )
         assert r.status_code == 200
@@ -8277,9 +8594,9 @@ class TestInventoryImportFlow:
     async def test_locations_errors_download(self, ui_client):
         import csv as _csv, io as _io
         csv_ref = _stage_csv("name,type\n,store\n")
+        ui_client.cookies.update(_authed())
         r = await ui_client.post(
             "/settings/import/locations/errors",
-            cookies=_authed(),
             data={"csv_ref": csv_ref},
         )
         assert r.status_code == 200
@@ -8302,9 +8619,9 @@ class TestInventoryImportFlow:
     async def test_taxes_errors_download(self, ui_client):
         import csv as _csv, io as _io
         csv_ref = _stage_csv("name,rate,tax_type,is_default,description\n,notanumber,both,true,\n")
+        ui_client.cookies.update(_authed())
         r = await ui_client.post(
             "/settings/import/taxes/errors",
-            cookies=_authed(),
             data={"csv_ref": csv_ref},
         )
         assert r.status_code == 200
@@ -8327,9 +8644,9 @@ class TestInventoryImportFlow:
     async def test_terms_errors_download(self, ui_client):
         import csv as _csv, io as _io
         csv_ref = _stage_csv("name,days,description\nNet 30,notanumber,\n")
+        ui_client.cookies.update(_authed())
         r = await ui_client.post(
             "/settings/import/payment-terms/errors",
-            cookies=_authed(),
             data={"csv_ref": csv_ref},
         )
         assert r.status_code == 200
@@ -8386,11 +8703,12 @@ class TestHtmxPartialAttrContract:
             "created_at": "", "updated_at": "",
         }
         _schema = [{"key": "name", "type": "text", "label": "Name", "editable": True}]
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_item)),
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_schema)),
         ):
-            r = await ui_client.get("/api/items/item:x/field/name/edit", cookies=_authed())
+            r = await ui_client.get("/api/items/item:x/field/name/edit")
         assert r.status_code == 200
         # Must have hx-post or hx-get to re-wire itself
         assert b"hx-" in r.content or b"hx_" in r.content
@@ -8405,6 +8723,7 @@ class TestHtmxPartialAttrContract:
             "created_at": "", "updated_at": "",
         }
         _schema = [{"key": "name", "type": "text", "label": "Name", "editable": True}]
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.patch_item", new=AsyncMock(return_value=_item)),
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_item)),
@@ -8412,7 +8731,6 @@ class TestHtmxPartialAttrContract:
         ):
             r = await ui_client.patch(
                 "/api/items/item:x/field/name",
-                cookies=_authed(),
                 data={"value": "New Name"},
             )
         assert r.status_code == 200
@@ -8435,6 +8753,7 @@ class TestHtmxPartialAttrContract:
             captured.update(fields_changed)
             return _item
 
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.patch_item", new=mock_patch),
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_item)),
@@ -8444,7 +8763,6 @@ class TestHtmxPartialAttrContract:
         ):
             r = await ui_client.patch(
                 "/api/items/item:x/field/symmetry",
-                cookies=_authed(),
                 data={"value": "Excellent"},
             )
         assert r.status_code == 200
@@ -8463,6 +8781,7 @@ class TestCurrencyThreading:
 
     @pytest.mark.asyncio
     async def test_inventory_page_uses_company_currency(self, ui_client):
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value={
                 "name": "Test Corp", "currency": "USD", "timezone": "UTC", "fiscal_year_start": "01-01"
@@ -8479,7 +8798,7 @@ class TestCurrencyThreading:
             patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
-            r = await ui_client.get("/inventory", cookies=_authed())
+            r = await ui_client.get("/inventory")
         assert r.status_code == 200
         # Must not have raw hardcoded ฿ — currency must come from company settings
         # (Allow $ or USD but not ฿ when currency is USD)
@@ -8487,6 +8806,7 @@ class TestCurrencyThreading:
 
     @pytest.mark.asyncio
     async def test_accounting_page_uses_company_currency(self, ui_client):
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value={
                 "name": "Test Corp", "currency": "USD", "timezone": "UTC", "fiscal_year_start": "01-01"
@@ -8495,7 +8815,7 @@ class TestCurrencyThreading:
                 "entries": [], "total_debit": 1234.5, "total_credit": 1234.5,
             })),
         ):
-            r = await ui_client.get("/accounting", cookies=_authed())
+            r = await ui_client.get("/accounting")
         assert r.status_code == 200
         body = r.content.decode()
         # Journal totals must be formatted with the company currency, not a hardcoded symbol
@@ -8505,6 +8825,7 @@ class TestCurrencyThreading:
     @pytest.mark.asyncio
     async def test_crm_deal_value_uses_fmt_money(self, ui_client):
         """Deals value column must use fmt_money, not hardcoded symbol."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.list_deals", new=AsyncMock(return_value={
                 "items": [{"id": "d1", "name": "Big Deal", "stage": "Lead",
@@ -8512,7 +8833,7 @@ class TestCurrencyThreading:
                 "total": 1,
             })),
         ):
-            r = await ui_client.get("/contacts/sales", cookies=_authed())
+            r = await ui_client.get("/contacts/sales")
         assert r.status_code == 200
         # Raw hardcoded ฿50000 must not appear when currency is THB via fmt_money
         # (fmt_money would format it as ฿50,000 or similar, not ฿50000)
@@ -8556,7 +8877,6 @@ class TestNikolaiFixedBugs:
 
     # ── Currency display ──────────────────────────────────────────────────────
 
-    @pytest.mark.asyncio
     def test_company_tab_shows_currency_code(self):
         """Currency must show the currency code (e.g. THB) on the company settings card."""
         from ui.routes.settings import _company_settings_card
@@ -8567,8 +8887,9 @@ class TestNikolaiFixedBugs:
     @pytest.mark.asyncio
     async def test_company_tab_currency_edit_shows_select(self, ui_client):
         """Editing currency must return a searchable combobox with currency options."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_company", new=AsyncMock(return_value={**_COMPANY, "currency": "USD"})):
-            r = await ui_client.get("/settings/company/currency/edit", cookies=_authed())
+            r = await ui_client.get("/settings/company/currency/edit")
         assert r.status_code == 200
         assert b"combobox-wrap" in r.content
         assert b"USD" in r.content
@@ -8576,6 +8897,7 @@ class TestNikolaiFixedBugs:
     @pytest.mark.asyncio
     async def test_company_tab_currency_patch_validates(self, ui_client):
         """PATCH with an invalid currency code must return an error, not save."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.patch_company", new=AsyncMock()) as mock_patch,
@@ -8583,7 +8905,6 @@ class TestNikolaiFixedBugs:
             r = await ui_client.patch(
                 "/settings/company/currency",
                 data={"value": "BOGUS"},
-                cookies=_authed(),
             )
         assert r.status_code == 200
         assert b"error" in r.content.lower() or b"Invalid" in r.content
@@ -8591,7 +8912,6 @@ class TestNikolaiFixedBugs:
 
     # ── Fiscal year display ───────────────────────────────────────────────────
 
-    @pytest.mark.asyncio
     def test_company_tab_shows_fiscal_year_human_label(self):
         """fiscal_year_start must render as a human month name on the company settings card."""
         from ui.routes.settings import _company_settings_card
@@ -8602,14 +8922,16 @@ class TestNikolaiFixedBugs:
     @pytest.mark.asyncio
     async def test_company_tab_fiscal_year_edit_shows_select(self, ui_client):
         """Editing fiscal_year_start must return a <select>."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_company", new=AsyncMock(return_value={**_COMPANY, "fiscal_year_start": "04"})):
-            r = await ui_client.get("/settings/company/fiscal_year_start/edit", cookies=_authed())
+            r = await ui_client.get("/settings/company/fiscal_year_start/edit")
         assert r.status_code == 200
         assert b"<select" in r.content or b"Select" in r.content
 
     @pytest.mark.asyncio
     async def test_company_tab_fiscal_year_patch_validates(self, ui_client):
         """PATCH with invalid fiscal_year_start must reject, not save."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.patch_company", new=AsyncMock()) as mock_patch,
@@ -8617,7 +8939,6 @@ class TestNikolaiFixedBugs:
             r = await ui_client.patch(
                 "/settings/company/fiscal_year_start",
                 data={"value": "99"},
-                cookies=_authed(),
             )
         assert r.status_code == 200
         assert b"error" in r.content.lower() or b"Invalid" in r.content
@@ -8637,21 +8958,23 @@ class TestNikolaiFixedBugs:
 
     @pytest.mark.asyncio
     async def test_company_tab_opening_balance_date_edit_is_a_date_input(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_company",
                    new=AsyncMock(return_value={**_COMPANY, "opening_balance_date": "2026-03-31"})):
-            r = await ui_client.get("/settings/company/opening_balance_date/edit", cookies=_authed())
+            r = await ui_client.get("/settings/company/opening_balance_date/edit")
         assert r.status_code == 200
         assert b'type="date"' in r.content and b'value="2026-03-31"' in r.content
 
     @pytest.mark.asyncio
     async def test_company_tab_opening_balance_date_saves_through_the_books(self, ui_client):
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_company",
                   new=AsyncMock(return_value={**_COMPANY, "opening_balance_date": "2026-03-31"})),
             patch("ui.api_client.patch_company", new=AsyncMock()) as mock_patch,
         ):
             r = await ui_client.patch("/settings/company/opening_balance_date",
-                                      data={"value": "2026-03-31"}, cookies=_authed())
+                                      data={"value": "2026-03-31"})
         assert r.status_code == 200
         mock_patch.assert_awaited_once()
         assert mock_patch.await_args.args[1] == {"opening_balance_date": "2026-03-31"}
@@ -8659,7 +8982,6 @@ class TestNikolaiFixedBugs:
 
     # ── Timezone display ──────────────────────────────────────────────────────
 
-    @pytest.mark.asyncio
     def test_company_tab_shows_timezone(self):
         """Timezone must render on the company settings card (not blank)."""
         from ui.routes.settings import _company_settings_card
@@ -8670,8 +8992,9 @@ class TestNikolaiFixedBugs:
     @pytest.mark.asyncio
     async def test_company_tab_timezone_edit_shows_combobox(self, ui_client):
         """Editing timezone must return the timezone combobox widget."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_company", new=AsyncMock(return_value={**_COMPANY, "timezone": "UTC"})):
-            r = await ui_client.get("/settings/company/timezone/edit", cookies=_authed())
+            r = await ui_client.get("/settings/company/timezone/edit")
         assert r.status_code == 200
         assert b'name="value"' in r.content
         assert b"combobox" in r.content or b"UTC" in r.content
@@ -8679,6 +9002,7 @@ class TestNikolaiFixedBugs:
     @pytest.mark.asyncio
     async def test_company_tab_timezone_patch_validates(self, ui_client):
         """PATCH with unknown timezone must reject, not save."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.patch_company", new=AsyncMock()) as mock_patch,
@@ -8686,7 +9010,6 @@ class TestNikolaiFixedBugs:
             r = await ui_client.patch(
                 "/settings/company/timezone",
                 data={"value": "Fake/Zone"},
-                cookies=_authed(),
             )
         assert r.status_code == 200
         assert b"error" in r.content.lower() or b"Unknown" in r.content
@@ -8697,16 +9020,18 @@ class TestNikolaiFixedBugs:
     @pytest.mark.asyncio
     async def test_locations_tab_shows_is_default(self, ui_client):
         """Locations settings tab must surface which location is the default."""
+        ui_client.cookies.update(_authed())
         with self._stack():
-            r = await ui_client.get("/settings/inventory?tab=locations", cookies=_authed())
+            r = await ui_client.get("/settings/inventory?tab=locations")
         assert r.status_code == 200
         assert b"Default" in r.content or b"default" in r.content
 
     @pytest.mark.asyncio
     async def test_locations_tab_lists_both_locations(self, ui_client):
         """All locations must appear in the locations tab."""
+        ui_client.cookies.update(_authed())
         with self._stack():
-            r = await ui_client.get("/settings/inventory?tab=locations", cookies=_authed())
+            r = await ui_client.get("/settings/inventory?tab=locations")
         assert r.status_code == 200
         assert b"Main Vault" in r.content
         assert b"Showroom" in r.content
@@ -8722,6 +9047,7 @@ class TestNikolaiFixedBugs:
         payload_b64 = base64.b64encode(_json.dumps(payload_dict).encode()).decode().rstrip("=")
         fake_token = f"header.{payload_b64}.sig"
 
+        ui_client.cookies.update({"celerp_token": fake_token})
         with (
             patch("ui.api_client.patch_user", new=AsyncMock()) as mock_patch,
             patch("ui.api_client.get_users", new=AsyncMock(return_value={"items": _USERS, "total": 1})),
@@ -8729,7 +9055,6 @@ class TestNikolaiFixedBugs:
             r = await ui_client.patch(
                 f"/settings/users/{user_id}/is_active",
                 data={"value": "false"},
-                cookies={"celerp_token": fake_token},
             )
         assert r.status_code == 200
         assert b"cannot deactivate" in r.content.lower() or b"own account" in r.content.lower()
@@ -8745,6 +9070,7 @@ class TestNikolaiFixedBugs:
         payload_b64 = base64.b64encode(_json.dumps(payload_dict).encode()).decode().rstrip("=")
         fake_token = f"header.{payload_b64}.sig"
 
+        ui_client.cookies.update({"celerp_token": fake_token})
         with (
             patch("ui.api_client.patch_user", new=AsyncMock(return_value={"ok": True})),
             patch("ui.api_client.get_users", new=AsyncMock(return_value={"items": [
@@ -8754,7 +9080,6 @@ class TestNikolaiFixedBugs:
             r = await ui_client.patch(
                 f"/settings/users/{target_user_id}/is_active",
                 data={"value": "false"},
-                cookies={"celerp_token": fake_token},
             )
         assert r.status_code == 200
         assert b"cannot deactivate" not in r.content.lower()
@@ -8765,7 +9090,8 @@ class TestInviteUser:
 
     @pytest.mark.asyncio
     async def test_invite_user_page_renders(self, ui_client):
-        r = await ui_client.get("/settings/users/new", cookies=_authed())
+        ui_client.cookies.update(_authed())
+        r = await ui_client.get("/settings/users/new")
         assert r.status_code == 200
         assert b"Invite User" in r.content or b"New User" in r.content
         # Form fields present
@@ -8782,11 +9108,11 @@ class TestInviteUser:
 
     @pytest.mark.asyncio
     async def test_invite_user_post_success_redirects(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.create_user", new=AsyncMock(return_value={"id": "user:1", "name": "Tester"})):
             r = await ui_client.post(
                 "/settings/users/new",
                 data={"name": "Tester", "email": "tester@a.example", "password": "pw123val", "role": "operator"},
-                cookies=_authed(),
             )
         # 204 with HX-Redirect header on success
         assert r.status_code == 204
@@ -8794,10 +9120,10 @@ class TestInviteUser:
 
     @pytest.mark.asyncio
     async def test_invite_user_post_missing_fields_returns_error(self, ui_client):
+        ui_client.cookies.update(_authed())
         r = await ui_client.post(
             "/settings/users/new",
             data={"name": "", "email": "", "password": "", "role": "operator"},
-            cookies=_authed(),
         )
         assert r.status_code == 200
         assert t("error.name_email_password_required", "en").encode() in r.content
@@ -8805,11 +9131,11 @@ class TestInviteUser:
     @pytest.mark.asyncio
     async def test_invite_user_post_api_error_shows_message(self, ui_client):
         from ui.api_client import APIError
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.create_user", new=AsyncMock(side_effect=APIError(409, "Email already in use"))):
             r = await ui_client.post(
                 "/settings/users/new",
                 data={"name": "Dup", "email": "dup@a.example", "password": "pwvalid1", "role": "operator"},
-                cookies=_authed(),
             )
         assert r.status_code == 200
         assert b"Email already in use" in r.content
@@ -9015,6 +9341,7 @@ class TestSettingsFieldValidationServerSide:
     @pytest.mark.asyncio
     async def test_slug_patch_rejects_invalid_chars(self, ui_client):
         """Company slug must reject spaces and special chars."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.patch_company", new=AsyncMock()) as mock_patch,
@@ -9022,7 +9349,6 @@ class TestSettingsFieldValidationServerSide:
             r = await ui_client.patch(
                 "/settings/company/slug",
                 data={"value": "my company slug!"},
-                cookies=_authed(),
             )
         assert r.status_code == 200
         assert b"error" in r.content.lower() or b"invalid" in r.content.lower() or b"slug" in r.content.lower()
@@ -9031,6 +9357,7 @@ class TestSettingsFieldValidationServerSide:
     @pytest.mark.asyncio
     async def test_name_patch_rejects_empty(self, ui_client):
         """Company name cannot be blank — must return error and not call API."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.patch_company", new=AsyncMock()) as mock_patch,
@@ -9038,7 +9365,6 @@ class TestSettingsFieldValidationServerSide:
             r = await ui_client.patch(
                 "/settings/company/name",
                 data={"value": "   "},
-                cookies=_authed(),
             )
         assert r.status_code == 200
         assert b"blank" in r.content.lower() or b"error" in r.content.lower() or b"cannot" in r.content.lower()
@@ -9047,6 +9373,7 @@ class TestSettingsFieldValidationServerSide:
     @pytest.mark.asyncio
     async def test_valid_slug_patch_calls_api(self, ui_client):
         """A valid slug must be accepted and call the API."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.patch_company", new=AsyncMock(return_value=None)) as mock_patch,
@@ -9054,7 +9381,6 @@ class TestSettingsFieldValidationServerSide:
             r = await ui_client.patch(
                 "/settings/company/slug",
                 data={"value": "my-valid-slug"},
-                cookies=_authed(),
             )
         assert r.status_code == 200
         mock_patch.assert_called_once()
@@ -9077,6 +9403,7 @@ class TestMultiTenantIsolation:
             calls.append(token)
             return {"items": [], "total": 0, "category_counts": {}}
 
+        ui_client.cookies.update({"celerp_token": "tenant-A-token"})
         with (
             patch("ui.api_client.list_items", new=_capture_list_items),
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=[])),
@@ -9086,7 +9413,7 @@ class TestMultiTenantIsolation:
             patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
-            await ui_client.get("/inventory", cookies={"celerp_token": "tenant-A-token"})
+            await ui_client.get("/inventory")
         assert calls == ["tenant-A-token"]
 
     @pytest.mark.asyncio
@@ -9098,8 +9425,9 @@ class TestMultiTenantIsolation:
             calls.append(token)
             return {"items": [], "total": 0}
 
+        ui_client.cookies.update({"celerp_token": "tenant-B-token"})
         with patch("ui.api_client.list_contacts", new=_capture):
-            await ui_client.get("/contacts/customers", cookies={"celerp_token": "tenant-B-token"})
+            await ui_client.get("/contacts/customers")
         assert calls == ["tenant-B-token"]
 
     @pytest.mark.asyncio
@@ -9112,6 +9440,7 @@ class TestMultiTenantIsolation:
             calls.append(token)
             return _COMPANY
 
+        ui_client.cookies.update({"celerp_token": tenant_token})
         with (
             patch("ui.api_client.get_company", new=_capture),
             patch("ui.api_client.get_taxes", new=AsyncMock(return_value=_TAXES)),
@@ -9123,7 +9452,7 @@ class TestMultiTenantIsolation:
             patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
-            await ui_client.get("/settings/general?tab=company", cookies={"celerp_token": tenant_token})
+            await ui_client.get("/settings/general?tab=company")
         assert calls[0] == tenant_token
 
 
@@ -9133,6 +9462,7 @@ class TestDashboardCurrencyThreading:
     @pytest.mark.asyncio
     async def test_dashboard_renders_for_usd_company(self, ui_client):
         """Dashboard must load for a USD company without crashing."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value={
                 "name": "USD Corp", "currency": "USD", "timezone": "UTC",
@@ -9142,12 +9472,13 @@ class TestDashboardCurrencyThreading:
             patch("ui.api_client.get_doc_summary", new=AsyncMock(return_value={})),
             patch("ui.api_client.my_companies", new=AsyncMock(return_value={"items": [], "total": 0})),
         ):
-            r = await ui_client.get("/", cookies=_authed())
+            r = await ui_client.get("/")
         assert r.status_code in (200, 302, 303)
 
     @pytest.mark.asyncio
     async def test_reports_page_loads_with_company_currency(self, ui_client):
         """Reports page must load for a non-THB company without crashing."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value={
                 "name": "EUR Corp", "currency": "EUR", "timezone": "Europe/Berlin",
@@ -9169,7 +9500,7 @@ class TestDashboardCurrencyThreading:
                 "accounts": [], "total_debit": 0, "total_credit": 0,
             })),
         ):
-            r = await ui_client.get("/reports", cookies=_authed())
+            r = await ui_client.get("/reports")
         assert r.status_code == 200
 
 
@@ -9183,8 +9514,9 @@ class TestHtmxSwapAttrContractExtended:
     @pytest.mark.asyncio
     async def test_settings_inline_edit_field_returns_hx_post(self, ui_client):
         """Settings inline edit response must contain hx-post/patch for save."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)):
-            r = await ui_client.get("/settings/company/name/edit", cookies=_authed())
+            r = await ui_client.get("/settings/company/name/edit")
         assert r.status_code == 200
         # Must have an hx-post or hx-patch pointing to the save endpoint
         assert b"hx-post" in r.content or b"hx_post" in r.content or b'hx-patch' in r.content or b'hx_patch' in r.content
@@ -9193,8 +9525,9 @@ class TestHtmxSwapAttrContractExtended:
     async def test_settings_inline_edit_has_input_with_value(self, ui_client):
         """Settings inline edit must pre-populate the field value."""
         company = {**_COMPANY, "name": "Acme Co"}
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_company", new=AsyncMock(return_value=company)):
-            r = await ui_client.get("/settings/company/name/edit", cookies=_authed())
+            r = await ui_client.get("/settings/company/name/edit")
         assert r.status_code == 200
         assert b"Acme Co" in r.content
 
@@ -9208,11 +9541,12 @@ class TestHtmxSwapAttrContractExtended:
             "created_at": "", "updated_at": "",
         }
         _schema = [{"key": "name", "type": "text", "label": "Name", "editable": True}]
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_item)),
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_schema)),
         ):
-            r = await ui_client.get("/api/items/item:x/field/name/edit", cookies=_authed())
+            r = await ui_client.get("/api/items/item:x/field/name/edit")
         assert r.status_code == 200
         assert b"input" in r.content.lower() or b"textarea" in r.content.lower() or b"select" in r.content.lower()
 
@@ -9224,6 +9558,7 @@ class TestApiErrorHandling:
     async def test_inventory_api_error_shows_page_not_crash(self, ui_client):
         """If list_items raises APIError, inventory must show error state not 500."""
         from ui.api_client import APIError
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.list_items", new=AsyncMock(side_effect=APIError(500, "DB down"))),
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=[])),
@@ -9233,7 +9568,7 @@ class TestApiErrorHandling:
             patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
-            r = await ui_client.get("/inventory", cookies=_authed())
+            r = await ui_client.get("/inventory")
         # Must not 500 — redirect or graceful error page
         assert r.status_code in (200, 302, 303)
 
@@ -9241,16 +9576,18 @@ class TestApiErrorHandling:
     async def test_settings_api_error_shows_page_not_crash(self, ui_client):
         """If get_company raises APIError(503) on settings, must not 500."""
         from ui.api_client import APIError
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_company", new=AsyncMock(side_effect=APIError(503, "Service unavailable"))):
-            r = await ui_client.get("/settings/general", cookies=_authed())
+            r = await ui_client.get("/settings/general")
         assert r.status_code in (200, 302, 303)
 
     @pytest.mark.asyncio
     async def test_settings_api_401_redirects_to_login(self, ui_client):
         """APIError 401 on settings/general must redirect to /login."""
         from ui.api_client import APIError
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_company", new=AsyncMock(side_effect=APIError(401, "Unauthorized"))):
-            r = await ui_client.get("/settings/general", cookies=_authed())
+            r = await ui_client.get("/settings/general")
         assert r.status_code in (302, 303)
         assert "/login" in r.headers.get("location", "")
 
@@ -9340,12 +9677,12 @@ class TestCategorySchemaUI:
         """Settings?tab=schema&cat_tab=Gemstone shows category sub-tab UI."""
         from contextlib import ExitStack
         mocks = {k: patch(k, new=v) for k, v in _SETTINGS_MOCKS_CAT.items()}
+        ui_client.cookies.update(_authed())
         with ExitStack() as stack:
             for m in mocks.values():
                 stack.enter_context(m)
             r = await ui_client.get(
                 "/settings/inventory?tab=categories&cat=Gemstone",
-                cookies=_authed(),
             )
         assert r.status_code == 200
         assert b"Gemstone" in r.content
@@ -9354,12 +9691,12 @@ class TestCategorySchemaUI:
     @pytest.mark.asyncio
     async def test_cat_schema_field_edit_renders_input(self, ui_client):
         """GET /settings/cat-schema/{category}/{idx}/{field}/edit returns an editable Td."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_category_schema", new=AsyncMock(return_value=_CAT_FIELDS)),
         ):
             r = await ui_client.get(
                 "/settings/cat-schema/Gemstone/0/label/edit",
-                cookies=_authed(),
             )
         assert r.status_code == 200
         assert b"input" in r.content.lower() or b"select" in r.content.lower()
@@ -9368,12 +9705,12 @@ class TestCategorySchemaUI:
     @pytest.mark.asyncio
     async def test_cat_schema_field_edit_bool_renders_select(self, ui_client):
         """Boolean fields (required/editable/show_in_table) use a Yes/No select."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_category_schema", new=AsyncMock(return_value=_CAT_FIELDS)),
         ):
             r = await ui_client.get(
                 "/settings/cat-schema/Gemstone/0/required/edit",
-                cookies=_authed(),
             )
         assert r.status_code == 200
         assert b"Yes" in r.content
@@ -9382,12 +9719,12 @@ class TestCategorySchemaUI:
     @pytest.mark.asyncio
     async def test_cat_schema_field_edit_type_renders_type_select(self, ui_client):
         """'type' field shows schema type options."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_category_schema", new=AsyncMock(return_value=_CAT_FIELDS)),
         ):
             r = await ui_client.get(
                 "/settings/cat-schema/Gemstone/0/type/edit",
-                cookies=_authed(),
             )
         assert r.status_code == 200
         assert b"text" in r.content
@@ -9398,6 +9735,7 @@ class TestCategorySchemaUI:
         """PATCH /settings/cat-schema/{category}/{idx}/{field} updates and returns display cell."""
         updated = [dict(f) for f in _CAT_FIELDS]
         updated[0] = {**updated[0], "label": "Hue"}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_category_schema", new=AsyncMock(return_value=_CAT_FIELDS)),
             patch("ui.api_client.patch_category_schema", new=AsyncMock(return_value={"ok": True})),
@@ -9407,7 +9745,6 @@ class TestCategorySchemaUI:
                 r = await ui_client.patch(
                     "/settings/cat-schema/Gemstone/0/label",
                     data={"value": "Hue"},
-                    cookies=_authed(),
                 )
         assert r.status_code == 200
         assert b"Hue" in r.content
@@ -9415,6 +9752,7 @@ class TestCategorySchemaUI:
     @pytest.mark.asyncio
     async def test_cat_schema_field_patch_invalid_type_rejected(self, ui_client):
         """PATCH with invalid type value returns an error cell."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_category_schema", new=AsyncMock(return_value=_CAT_FIELDS)),
             patch("ui.api_client.patch_category_schema", new=AsyncMock(return_value={"ok": True})),
@@ -9422,7 +9760,6 @@ class TestCategorySchemaUI:
             r = await ui_client.patch(
                 "/settings/cat-schema/Gemstone/0/type",
                 data={"value": "notavalidtype"},
-                cookies=_authed(),
             )
         assert r.status_code == 200
         assert b"Invalid field type" in r.content or b"notavalidtype" in r.content
@@ -9430,13 +9767,13 @@ class TestCategorySchemaUI:
     @pytest.mark.asyncio
     async def test_cat_schema_field_delete(self, ui_client):
         """DELETE /settings/cat-schema/{category}/{idx} returns 204."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_category_schema", new=AsyncMock(return_value=_CAT_FIELDS)),
             patch("ui.api_client.patch_category_schema", new=AsyncMock(return_value={"ok": True})),
         ):
             r = await ui_client.delete(
                 "/settings/cat-schema/Gemstone/0",
-                cookies=_authed(),
             )
         assert r.status_code == 204
 
@@ -9449,13 +9786,13 @@ class TestCategorySchemaUI:
             captured.append(list(fields))
             return {"ok": True}
 
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_category_schema", new=AsyncMock(return_value=list(_CAT_FIELDS))),
             patch("ui.api_client.patch_category_schema", new=AsyncMock(side_effect=_patch)),
         ):
             r = await ui_client.post(
                 "/settings/cat-schema/Gemstone/add",
-                cookies=_authed(),
             )
         assert r.status_code == 204
         assert len(captured) == 1
@@ -9535,10 +9872,11 @@ class TestModulesUI:
     async def test_modules_page_lists_modules(self, ui_client):
         from contextlib import ExitStack
         mocks = {k: patch(k, new=v) for k, v in _SETTINGS_MOCKS_MODULES.items()}
+        ui_client.cookies.update(_authed())
         with ExitStack() as stack:
             for m in mocks.values():
                 stack.enter_context(m)
-            r = await ui_client.get("/modules", cookies=_authed())
+            r = await ui_client.get("/modules")
         assert r.status_code == 200
         assert b"celerp-labels" in r.content or b"Celerp Labels" in r.content
         assert b"celerp-verticals" in r.content or b"Celerp Verticals" in r.content
@@ -9547,10 +9885,11 @@ class TestModulesUI:
     async def test_modules_page_shows_badges_and_buttons(self, ui_client):
         from contextlib import ExitStack
         mocks = {k: patch(k, new=v) for k, v in _SETTINGS_MOCKS_MODULES.items()}
+        ui_client.cookies.update(_authed())
         with ExitStack() as stack:
             for m in mocks.values():
                 stack.enter_context(m)
-            r = await ui_client.get("/modules", cookies=_authed())
+            r = await ui_client.get("/modules")
         assert r.status_code == 200
         assert b"running" in r.content
         assert b"disabled" in r.content
@@ -9568,10 +9907,11 @@ class TestModulesUI:
         ]
         from contextlib import ExitStack
         mocks = {**_SETTINGS_MOCKS_MODULES, "ui.api_client.get_modules": AsyncMock(return_value=ordered)}
+        ui_client.cookies.update(_authed())
         with ExitStack() as stack:
             for k, v in mocks.items():
                 stack.enter_context(patch(k, new=v))
-            r = await ui_client.get("/modules", cookies=_authed())
+            r = await ui_client.get("/modules")
         assert r.status_code == 200
         body = r.content.decode()
         assert body.index("Alpha On") < body.index("Zeta Off")   # enabled ahead of disabled
@@ -9583,7 +9923,8 @@ class TestModulesUI:
         with ExitStack() as stack:
             for k, v in mocks.items():
                 stack.enter_context(patch(k, new=v))
-            r = await ui_client.get("/modules", cookies=_authed())
+            ui_client.cookies.update(_authed())
+            r = await ui_client.get("/modules")
         assert r.status_code == 200
         return r.content.decode()
 
@@ -9724,10 +10065,11 @@ class TestModulesUI:
         """The Installed table opts into the shared sort/filter behavior."""
         from contextlib import ExitStack
         mocks = {k: patch(k, new=v) for k, v in _SETTINGS_MOCKS_MODULES.items()}
+        ui_client.cookies.update(_authed())
         with ExitStack() as stack:
             for m in mocks.values():
                 stack.enter_context(m)
-            r = await ui_client.get("/modules", cookies=_authed())
+            r = await ui_client.get("/modules")
         assert r.status_code == 200
         assert b"data-table js-table" in r.content   # click-header sorting
         assert b"sortable-th" in r.content
@@ -9739,10 +10081,11 @@ class TestModulesUI:
         """Import Module and the modules-folder row lead, above the table."""
         from contextlib import ExitStack
         mocks = {k: patch(k, new=v) for k, v in _SETTINGS_MOCKS_MODULES.items()}
+        ui_client.cookies.update(_authed())
         with ExitStack() as stack:
             for m in mocks.values():
                 stack.enter_context(m)
-            r = await ui_client.get("/modules", cookies=_authed())
+            r = await ui_client.get("/modules")
         body = r.content.decode()
         assert body.index("module-import") < body.index("data-table js-table")
 
@@ -9752,10 +10095,11 @@ class TestModulesUI:
         control comes directly after the Import Module heading."""
         from contextlib import ExitStack
         mocks = {k: patch(k, new=v) for k, v in _SETTINGS_MOCKS_MODULES.items()}
+        ui_client.cookies.update(_authed())
         with ExitStack() as stack:
             for m in mocks.values():
                 stack.enter_context(m)
-            r = await ui_client.get("/modules", cookies=_authed())
+            r = await ui_client.get("/modules")
         body = r.content.decode()
         assert body.index("module-import-form") < body.index("same access as Celerp itself")
 
@@ -9773,10 +10117,11 @@ class TestModulesUI:
         from contextlib import ExitStack
         mocks = {**_SETTINGS_MOCKS_MODULES,
                  "ui.api_client.get_modules": AsyncMock(return_value=mods)}
+        ui_client.cookies.update(_authed())
         with ExitStack() as stack:
             for k, v in mocks.items():
                 stack.enter_context(patch(k, new=v))
-            r = await ui_client.get("/modules", cookies=_authed())
+            r = await ui_client.get("/modules")
         body = r.content.decode()
         assert ">Dependencies<" in body
         assert body.index(">Module<") < body.index(">Dependencies<") < body.index(">Version<")
@@ -9790,20 +10135,22 @@ class TestModulesUI:
         """Build-your-own moved to the Community tab; it is gone from Installed."""
         from contextlib import ExitStack
         mocks = {k: patch(k, new=v) for k, v in _SETTINGS_MOCKS_MODULES.items()}
+        ui_client.cookies.update(_authed())
         with ExitStack() as stack:
             for m in mocks.values():
                 stack.enter_context(m)
-            r = await ui_client.get("/modules", cookies=_authed())
+            r = await ui_client.get("/modules")
         assert b"module-build-card" not in r.content
 
     @pytest.mark.asyncio
     async def test_modules_page_empty_shows_empty_state(self, ui_client):
         from contextlib import ExitStack
         mocks = {**_SETTINGS_MOCKS_MODULES, "ui.api_client.get_modules": AsyncMock(return_value=[])}
+        ui_client.cookies.update(_authed())
         with ExitStack() as stack:
             for k, v in mocks.items():
                 stack.enter_context(patch(k, new=v))
-            r = await ui_client.get("/modules", cookies=_authed())
+            r = await ui_client.get("/modules")
         assert r.status_code == 200
         assert b"No modules installed" in r.content
         # the empty state still offers the import path; building your own now lives
@@ -9814,7 +10161,8 @@ class TestModulesUI:
     @pytest.mark.asyncio
     async def test_modules_page_requires_admin(self, ui_client):
         """Viewer/operator/manager roles never see the page."""
-        r = await ui_client.get("/modules", cookies=_authed(role="manager"))
+        ui_client.cookies.update(_authed(role="manager"))
+        r = await ui_client.get("/modules")
         assert r.status_code in (302, 303)
         assert "/dashboard" in r.headers.get("location", "")
 
@@ -9827,10 +10175,11 @@ class TestModulesUI:
                    "load_error": "Failed to import (RuntimeError: boom)"}]
         from contextlib import ExitStack
         mocks = {**_SETTINGS_MOCKS_MODULES, "ui.api_client.get_modules": AsyncMock(return_value=broken)}
+        ui_client.cookies.update(_authed())
         with ExitStack() as stack:
             for k, v in mocks.items():
                 stack.enter_context(patch(k, new=v))
-            r = await ui_client.get("/modules", cookies=_authed())
+            r = await ui_client.get("/modules")
         assert r.status_code == 200
         assert b"badge--danger" in r.content                 # still fails loudly
         assert b"module-load-error" not in r.content         # reason left the table
@@ -9844,10 +10193,11 @@ class TestModulesUI:
         from contextlib import ExitStack
         mocks = {**_SETTINGS_MOCKS_MODULES,
                  "ui.api_client.get_modules": AsyncMock(return_value=_MODULES_LIST)}
+        ui_client.cookies.update(_authed())
         with ExitStack() as stack:
             for k, v in mocks.items():
                 stack.enter_context(patch(k, new=v))
-            r = await ui_client.get("/modules", cookies=_authed())
+            r = await ui_client.get("/modules")
         assert r.status_code == 200
         assert b"badge--active" in r.content      # the running module
         assert b"badge--inactive" in r.content    # the disabled module
@@ -9868,10 +10218,11 @@ class TestModulesUI:
         from contextlib import ExitStack
         mocks = {**_SETTINGS_MOCKS_MODULES,
                  "ui.api_client.get_modules": AsyncMock(return_value=deps)}
+        ui_client.cookies.update(_authed())
         with ExitStack() as stack:
             for k, v in mocks.items():
                 stack.enter_context(patch(k, new=v))
-            r = await ui_client.get("/modules", cookies=_authed())
+            r = await ui_client.get("/modules")
         assert r.status_code == 200
         assert b"Other modules need this one" in r.content and b"Child" in r.content  # tooltip rendered
 
@@ -9884,10 +10235,11 @@ class TestModulesUI:
                   "load_error": "Premium module: no valid license."}]
         from contextlib import ExitStack
         mocks = {**_SETTINGS_MOCKS_MODULES, "ui.api_client.get_modules": AsyncMock(return_value=moved)}
+        ui_client.cookies.update(_authed())
         with ExitStack() as stack:
             for k, v in mocks.items():
                 stack.enter_context(patch(k, new=v))
-            r = await ui_client.get("/modules", cookies=_authed())
+            r = await ui_client.get("/modules")
         assert r.status_code == 200
         assert b"module-license-upsell" in r.content        # the upsell block
         assert b"Get Celerp Connect" in r.content           # the CTA
@@ -9903,10 +10255,11 @@ class TestModulesUI:
         pending = [{**_MODULES_LIST[1], "enabled": True, "running": False}]
         from contextlib import ExitStack
         mocks = {**_SETTINGS_MOCKS_MODULES, "ui.api_client.get_modules": AsyncMock(return_value=pending)}
+        ui_client.cookies.update(_authed())
         with ExitStack() as stack:
             for k, v in mocks.items():
                 stack.enter_context(patch(k, new=v))
-            r = await ui_client.get("/modules", cookies=_authed())
+            r = await ui_client.get("/modules")
         assert r.status_code == 200
         assert b"/modules/restart" in r.content
 
@@ -9916,11 +10269,12 @@ class TestModulesUI:
             {**_MODULES_LIST[0], "enabled": True, "running": False},
             {**_MODULES_LIST[1], "enabled": True, "running": False},
         ]
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.enable_module", new=AsyncMock(return_value={"ok": True, "restart_required": True})),
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=refreshed)),
         ):
-            r = await ui_client.post("/modules/celerp-verticals/enable", cookies=_authed())
+            r = await ui_client.post("/modules/celerp-verticals/enable")
         assert r.status_code == 200
         assert b"local-modules-panel" in r.content
         assert b"restart" in r.content.lower()
@@ -9931,23 +10285,26 @@ class TestModulesUI:
             {**_MODULES_LIST[0], "enabled": False, "running": True},
             _MODULES_LIST[1],
         ]
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.disable_module", new=AsyncMock(return_value={"ok": True, "restart_required": True})),
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=refreshed)),
         ):
-            r = await ui_client.post("/modules/celerp-labels/disable", cookies=_authed())
+            r = await ui_client.post("/modules/celerp-labels/disable")
         assert r.status_code == 200
         assert b"local-modules-panel" in r.content
 
     @pytest.mark.asyncio
     async def test_module_restart_returns_restarting_panel(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.restart_system", new=AsyncMock(return_value={"ok": True, "restarting": True})):
-            r = await ui_client.post("/modules/restart", cookies=_authed())
+            r = await ui_client.post("/modules/restart")
         assert r.status_code == 200
         assert b"local-modules-panel" in r.content
 
     @pytest.mark.asyncio
     async def test_module_import_zip_success_flash(self, ui_client):
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.import_module_zip", new=AsyncMock(return_value={"ok": True, "name": "my-module", "display_name": "My Module"})),
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=_MODULES_LIST)),
@@ -9955,7 +10312,6 @@ class TestModulesUI:
             r = await ui_client.post(
                 "/modules/import",
                 files={"file": ("my-module.zip", b"fake-zip-bytes", "application/zip")},
-                cookies=_authed(),
             )
         assert r.status_code == 200
         assert b"My Module" in r.content
@@ -10018,11 +10374,12 @@ class TestMarketplaceUI:
 
     @pytest.mark.asyncio
     async def test_panel_lists_trusted_only(self, ui_client):
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
         ):
-            r = await ui_client.get("/modules/marketplace-panel", cookies=_authed())
+            r = await ui_client.get("/modules/marketplace-panel")
         assert r.status_code == 200
         assert b"Budgeting" in r.content
         assert b"$15/mo" in r.content
@@ -10053,38 +10410,42 @@ class TestMarketplaceUI:
         cell, so nothing is bought without its prerequisites in view."""
         cat = [{**_CATALOG_FIXTURE[0],
                 "depends_on": ["celerp-accounting", "celerp-inventory"]}]
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(cat, False))),
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
         ):
-            r = await ui_client.get("/modules/marketplace-panel", cookies=_authed())
+            r = await ui_client.get("/modules/marketplace-panel")
         assert r.status_code == 200
         assert b"celerp-accounting, celerp-inventory" in r.content
 
     @pytest.mark.asyncio
     async def test_panel_cache_banner(self, ui_client):
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, True))),
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
         ):
-            r = await ui_client.get("/modules/marketplace-panel", cookies=_authed())
+            r = await ui_client.get("/modules/marketplace-panel")
         assert b"saved copy" in r.content
 
     @pytest.mark.asyncio
     async def test_panel_unreachable_shows_error(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(side_effect=OSError("offline"))):
-            r = await ui_client.get("/modules/marketplace-panel", cookies=_authed())
+            r = await ui_client.get("/modules/marketplace-panel")
         assert r.status_code == 200
         assert b"could not be loaded" in r.content
 
     @pytest.mark.asyncio
     async def test_community_reveal_is_one_step_no_checkbox(self, ui_client):
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.marketplace_catalog.community_acked", new=lambda: False),
             patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
         ):
-            r = await ui_client.get("/modules/community-panel", cookies=_authed())
+            r = await ui_client.get("/modules/community-panel")
         assert r.status_code == 200
         # the single acknowledgment block, its count, and the two buttons
         assert b"Show Community Modules (1)" in r.content
@@ -10099,12 +10460,13 @@ class TestMarketplaceUI:
     @pytest.mark.asyncio
     async def test_community_ack_reveals_table_no_hide(self, ui_client):
         acks = []
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.marketplace_catalog.set_community_ack", new=lambda: acks.append(1)),
             patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
         ):
-            r = await ui_client.post("/modules/community-ack", cookies=_authed())
+            r = await ui_client.post("/modules/community-ack")
         assert r.status_code == 200
         assert acks == [1]
         assert b"Equipment Maintenance" in r.content
@@ -10130,12 +10492,13 @@ class TestMarketplaceUI:
 
     @pytest.mark.asyncio
     async def test_already_acked_shows_table_not_prompt(self, ui_client):
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.marketplace_catalog.community_acked", new=lambda: True),
             patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
         ):
-            r = await ui_client.get("/modules/community-panel", cookies=_authed())
+            r = await ui_client.get("/modules/community-panel")
         assert b"Equipment Maintenance" in r.content
         assert b"same access as Celerp itself" not in r.content
 
@@ -10143,12 +10506,13 @@ class TestMarketplaceUI:
     async def test_cancel_returns_prompt(self, ui_client):
         """Cancel re-requests the panel with ?prompt=1 and gets the acknowledgment
         block back, never the listings."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.marketplace_catalog.community_acked", new=lambda: True),
             patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
         ):
-            r = await ui_client.get("/modules/community-panel?prompt=1", cookies=_authed())
+            r = await ui_client.get("/modules/community-panel?prompt=1")
         assert b"Show Community Modules (1)" in r.content
         assert b"Equipment Maintenance" not in r.content
 
@@ -10156,7 +10520,8 @@ class TestMarketplaceUI:
     async def test_community_tab_shows_build_card_first(self, ui_client):
         """The Community tab leads with the build-your-own card, above the
         listings zone."""
-        r = await ui_client.get("/modules?tab=community", cookies=_authed())
+        ui_client.cookies.update(_authed())
+        r = await ui_client.get("/modules?tab=community")
         assert r.status_code == 200
         body = r.content.decode()
         assert "module-build-card" in body
@@ -10167,6 +10532,7 @@ class TestMarketplaceUI:
     async def test_community_download_stages_and_offers_import(self, ui_client):
         """Download stages the author's archive and swaps the row to a Downloaded
         state with an Import button carrying the download reference."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
@@ -10176,7 +10542,7 @@ class TestMarketplaceUI:
                   new=AsyncMock(return_value={"email_verified": True})),
         ):
             r = await ui_client.post("/modules/community-download",
-                                     data={"id": "equipment-maintenance"}, cookies=_authed())
+                                     data={"id": "equipment-maintenance"})
         assert r.status_code == 200
         assert b">Downloaded<" in r.content
         assert b"/modules/community-import" in r.content
@@ -10222,6 +10588,7 @@ class TestMarketplaceUI:
 
         download = "equipment-maintenance-0123456789abcdef0123456789abcdef01234567-" + "1" * 32
         session = _authed()
+        ui_client.cookies.update(session)
         with (
             patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
             patch("ui.api_client.get_modules", new=get_modules),
@@ -10229,7 +10596,7 @@ class TestMarketplaceUI:
             patch("ui.api_client.account_status", new=AsyncMock(return_value={"email_verified": True})),
         ):
             r = await ui_client.post("/modules/community-download",
-                                     data={"id": "equipment-maintenance", "zone": zone}, cookies=session)
+                                     data={"id": "equipment-maintenance", "zone": zone})
         assert r.status_code == 200
         assert seen and set(seen) == {session["celerp_token"]}
         assert download in r.content.decode()
@@ -10241,6 +10608,7 @@ class TestMarketplaceUI:
         repository's latest code."""
         monkeypatch.setenv("CELERP_DATA_DIR", str(tmp_path))
         seen: list[str] = []
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
@@ -10248,7 +10616,7 @@ class TestMarketplaceUI:
             _archive_host(seen),
         ):
             r = await ui_client.post("/modules/community-download",
-                                     data={"id": "equipment-maintenance"}, cookies=_authed())
+                                     data={"id": "equipment-maintenance"})
         assert seen == ["https://codeload.github.com/celerp/celerp-module-template/zip/"
                         "0123456789abcdef0123456789abcdef01234567"]
         assert b">Downloaded<" in r.content
@@ -10264,6 +10632,7 @@ class TestMarketplaceUI:
         if commit is not None:
             entry["commit"] = commit
         seen: list[str] = []
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=([entry], False))),
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
@@ -10271,7 +10640,7 @@ class TestMarketplaceUI:
             _archive_host(seen),
         ):
             r = await ui_client.post("/modules/community-download",
-                                     data={"id": "equipment-maintenance"}, cookies=_authed())
+                                     data={"id": "equipment-maintenance"})
         assert seen == []
         assert b">Downloaded<" not in r.content
         assert b"/modules/community-download" in r.content   # Download button still there
@@ -10280,6 +10649,7 @@ class TestMarketplaceUI:
     @pytest.mark.asyncio
     async def test_community_download_failure_keeps_download_button(self, ui_client):
         """A failed download raises a corner toast and keeps the Download button."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
@@ -10289,7 +10659,7 @@ class TestMarketplaceUI:
                   new=AsyncMock(return_value={"email_verified": True})),
         ):
             r = await ui_client.post("/modules/community-download",
-                                     data={"id": "equipment-maintenance"}, cookies=_authed())
+                                     data={"id": "equipment-maintenance"})
         assert r.status_code == 200
         assert b"/modules/community-download" in r.content   # Download button still there
         assert b"/modules/community-import" not in r.content
@@ -10299,6 +10669,7 @@ class TestMarketplaceUI:
     async def test_community_import_installs_and_redirects_to_installed_tab(self, ui_client):
         """Import reads the staged archive, installs it, and redirects to the
         Installed tab so the new module is immediately visible and enableable."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
             patch("ui.marketplace_catalog.read_staged_archive", new=lambda i, t: b"zip-bytes"),
@@ -10307,8 +10678,7 @@ class TestMarketplaceUI:
         ):
             r = await ui_client.post("/modules/community-import",
                                      data={"id": "equipment-maintenance",
-                                           "token": "equipment-maintenance-0123456789abcdef0123456789abcdef01234567-00000000000000000000000000000000"},
-                                     cookies=_authed())
+                                           "token": "equipment-maintenance-0123456789abcdef0123456789abcdef01234567-00000000000000000000000000000000"})
         assert r.status_code == 200
         assert r.headers.get("HX-Redirect") == "/modules?tab=local"
 
@@ -10317,6 +10687,7 @@ class TestMarketplaceUI:
         """A failed install keeps the row in the Downloaded state and raises the
         real error as a corner toast, so a retry is still one click away."""
         from ui.api_client import APIError
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
@@ -10326,8 +10697,7 @@ class TestMarketplaceUI:
         ):
             r = await ui_client.post("/modules/community-import",
                                      data={"id": "equipment-maintenance",
-                                           "token": "equipment-maintenance-0123456789abcdef0123456789abcdef01234567-00000000000000000000000000000000"},
-                                     cookies=_authed())
+                                           "token": "equipment-maintenance-0123456789abcdef0123456789abcdef01234567-00000000000000000000000000000000"})
         assert r.status_code == 200
         assert b"/modules/community-import" in r.content   # Import still offered for retry
         trigger = r.headers.get("HX-Trigger", "")
@@ -10340,14 +10710,14 @@ class TestMarketplaceUI:
         says so, and puts the Download button back."""
         monkeypatch.setenv("CELERP_DATA_DIR", str(tmp_path))
         imported = AsyncMock()
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
             patch("ui.api_client.import_module_zip", new=imported),
         ):
             r = await ui_client.post("/modules/community-import",
-                                     data={"id": "equipment-maintenance", "token": "equipment-maintenance-0123456789abcdef0123456789abcdef01234567-00000000000000000000000000000000"},
-                                     cookies=_authed())
+                                     data={"id": "equipment-maintenance", "token": "equipment-maintenance-0123456789abcdef0123456789abcdef01234567-00000000000000000000000000000000"})
         assert r.status_code == 200
         imported.assert_not_awaited()
         assert b"/modules/community-download" in r.content
@@ -10356,18 +10726,19 @@ class TestMarketplaceUI:
 
     @pytest.mark.asyncio
     async def test_panel_requires_admin(self, ui_client):
-        r = await ui_client.get("/modules/marketplace-panel",
-                                cookies=_authed(role="manager"))
+        ui_client.cookies.update(_authed(role="manager"))
+        r = await ui_client.get("/modules/marketplace-panel")
         assert b"Budgeting" not in r.content
 
     @pytest.mark.asyncio
     async def test_paid_module_shows_buy_when_unlicensed(self, ui_client):
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
             patch("ui.api_client.module_licenses", new=AsyncMock(return_value=[])),
         ):
-            r = await ui_client.get("/modules/marketplace-panel", cookies=_authed())
+            r = await ui_client.get("/modules/marketplace-panel")
         assert b"/modules/buy?slug=celerp-budgeting" in r.content
         assert b"$15/mo" in r.content
         # Purchase disclosures moved to the Checkout page; the listing stays clean.
@@ -10382,12 +10753,13 @@ class TestMarketplaceUI:
             "id": "acme-crm", "name": "Acme CRM", "description": "CRM by Acme.",
             "tier": "verified", "author": "Acme Ltd", "license": "Proprietary",
             "price_monthly": 9.0}]
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(third_party, False))),
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
             patch("ui.api_client.module_licenses", new=AsyncMock(return_value=[])),
         ):
-            r = await ui_client.get("/modules/marketplace-panel", cookies=_authed())
+            r = await ui_client.get("/modules/marketplace-panel")
         assert b"/modules/buy?slug=acme-crm" in r.content
         assert b"Sold by" not in r.content
         assert b"controls that data independently" not in r.content
@@ -10402,6 +10774,7 @@ class TestMarketplaceUI:
             "tier": "verified", "author": "Acme Ltd", "license": "Proprietary",
             "price_monthly": 9.0}]
         buy = AsyncMock(return_value={"url": "https://checkout.stripe.com/pay/cs_test_acme"})
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(third_party, False))),
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
@@ -10410,7 +10783,7 @@ class TestMarketplaceUI:
                   new=AsyncMock(return_value=dict(self._VERIFIED_STATUS))),
             patch("ui.api_client.buy_module", new=buy),
         ):
-            r = await ui_client.post("/modules/buy?slug=acme-crm&kind=monthly", cookies=_authed())
+            r = await ui_client.post("/modules/buy?slug=acme-crm&kind=monthly")
         assert r.status_code == 200
         consent = buy.call_args.args[3]
         assert "Sold by Acme Ltd" in consent
@@ -10419,16 +10792,18 @@ class TestMarketplaceUI:
 
     @pytest.mark.asyncio
     async def test_paid_module_shows_owned_when_licensed(self, ui_client):
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
             patch("ui.api_client.module_licenses", new=AsyncMock(return_value=["celerp-budgeting"])),
         ):
-            r = await ui_client.get("/modules/marketplace-panel", cookies=_authed())
+            r = await ui_client.get("/modules/marketplace-panel")
         assert b"/modules/buy?slug=celerp-budgeting" not in r.content   # no buy button once owned
 
     @pytest.mark.asyncio
     async def test_buy_returns_waiting_panel_with_checkout_url(self, ui_client):
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
@@ -10438,8 +10813,7 @@ class TestMarketplaceUI:
             patch("ui.api_client.buy_module",
                   new=AsyncMock(return_value={"url": "https://checkout.stripe.com/pay/cs_test_9"})),
         ):
-            r = await ui_client.post("/modules/buy?slug=celerp-budgeting&kind=monthly",
-                                     cookies=_authed())
+            r = await ui_client.post("/modules/buy?slug=celerp-budgeting&kind=monthly")
         assert r.status_code == 200
         assert b"checkout.stripe.com/pay/cs_test_9" in r.content
         assert b"every 5s" in r.content                    # polls until the license lands
@@ -10456,11 +10830,12 @@ class TestMarketplaceUI:
                 "tier": "official", "author": "Celerp", "license": "Proprietary",
                 "price_monthly": 15.0}]
         # not yet licensed -> still waiting, poll continues (n advances)
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.module_licenses", new=AsyncMock(return_value=[])),
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
         ):
-            r1 = await ui_client.get("/modules/buy-poll?slug=celerp-budgeting&n=1", cookies=_authed())
+            r1 = await ui_client.get("/modules/buy-poll?slug=celerp-budgeting&n=1")
         assert b"buy-cancel" in r1.content
         # the poll div re-targets buy-poll with the counter advanced (& is
         # html-escaped in the attribute); anchor on the div id + next n
@@ -10472,7 +10847,7 @@ class TestMarketplaceUI:
             patch("ui.api_client.module_licenses", new=AsyncMock(return_value=["celerp-budgeting"])),
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
         ):
-            r2 = await ui_client.get("/modules/buy-poll?slug=celerp-budgeting&n=2", cookies=_authed())
+            r2 = await ui_client.get("/modules/buy-poll?slug=celerp-budgeting&n=2")
         # the request URL echoes in the canonical <link>, so match the poll DIV,
         # not the bare string
         assert b'id="buy-poll"' not in r2.content            # poll stopped
@@ -10481,17 +10856,19 @@ class TestMarketplaceUI:
     @pytest.mark.asyncio
     async def test_buy_poll_stops_after_timeout(self, ui_client):
         """Past the counter bound the poll stops and shows the still-waiting note."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.module_licenses", new=AsyncMock(return_value=[])),
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
         ):
-            r = await ui_client.get("/modules/buy-poll?slug=celerp-budgeting&n=120", cookies=_authed())
+            r = await ui_client.get("/modules/buy-poll?slug=celerp-budgeting&n=120")
         assert b'id="buy-poll"' not in r.content   # no further polling
         assert b"buy-cancel" in r.content          # but still a way back
 
     @pytest.mark.asyncio
     async def test_buy_error_stays_on_screen(self, ui_client):
         from ui.api_client import APIError
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
@@ -10501,8 +10878,7 @@ class TestMarketplaceUI:
             patch("ui.api_client.buy_module",
                   new=AsyncMock(side_effect=APIError(409, "This module's author is not able to accept payments right now."))),
         ):
-            r = await ui_client.post("/modules/buy?slug=celerp-budgeting&kind=monthly",
-                                     cookies=_authed())
+            r = await ui_client.post("/modules/buy?slug=celerp-budgeting&kind=monthly")
         assert r.status_code == 200
         assert b"not able to accept payments" in r.content
         # No auto-reload that would wipe the message before the user reads it.
@@ -10512,12 +10888,13 @@ class TestMarketplaceUI:
     async def test_owned_module_shows_download_button(self, ui_client):
         """An owned paid module drops the Buy step: it shows an ownership badge
         and offers Download, the same first step a free or community module has."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
             patch("ui.api_client.module_licenses", new=AsyncMock(return_value=["celerp-budgeting"])),
         ):
-            r = await ui_client.get("/modules/marketplace-panel", cookies=_authed())
+            r = await ui_client.get("/modules/marketplace-panel")
         assert b"/modules/marketplace-download" in r.content
         assert b">Download<" in r.content
         assert b">Owned<" in r.content                       # ownership still shown
@@ -10527,6 +10904,7 @@ class TestMarketplaceUI:
     async def test_marketplace_download_stages_and_offers_install(self, ui_client):
         """Download stages the licensed archive and swaps the row to an Install
         button carrying the download reference."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
@@ -10535,7 +10913,7 @@ class TestMarketplaceUI:
                   new=AsyncMock(return_value={"ok": True, "ref": _PAID_REF})),
         ):
             r = await ui_client.post("/modules/marketplace-download",
-                                     data={"slug": "celerp-budgeting"}, cookies=_authed())
+                                     data={"slug": "celerp-budgeting"})
         assert r.status_code == 200
         assert b"/modules/marketplace-install" in r.content
         assert _PAID_REF.encode() in r.content                # reference passed to install
@@ -10545,6 +10923,7 @@ class TestMarketplaceUI:
     async def test_marketplace_download_failure_keeps_download_button(self, ui_client):
         """A failed download raises a corner toast and keeps the Download button."""
         from ui.api_client import APIError
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
@@ -10553,7 +10932,7 @@ class TestMarketplaceUI:
                   new=AsyncMock(side_effect=APIError(502, "The module download failed. Try again."))),
         ):
             r = await ui_client.post("/modules/marketplace-download",
-                                     data={"slug": "celerp-budgeting"}, cookies=_authed())
+                                     data={"slug": "celerp-budgeting"})
         assert r.status_code == 200
         assert b"/modules/marketplace-download" in r.content   # Download button still there
         assert b"/modules/marketplace-install" not in r.content
@@ -10566,14 +10945,14 @@ class TestMarketplaceUI:
         terminal state a community import reaches."""
         install = AsyncMock(return_value={"ok": True, "name": "celerp-budgeting",
                                           "display_name": "Budgeting"})
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
             patch("ui.api_client.module_licenses", new=AsyncMock(return_value=["celerp-budgeting"])),
             patch("ui.api_client.marketplace_install", new=install),
         ):
             r = await ui_client.post("/modules/marketplace-install",
-                                     data={"slug": "celerp-budgeting", "ref": _PAID_REF},
-                                     cookies=_authed())
+                                     data={"slug": "celerp-budgeting", "ref": _PAID_REF})
         assert r.status_code == 200
         assert r.headers.get("HX-Redirect") == "/modules?tab=local"
         assert install.await_args.args[1] == _PAID_REF          # exactly this download
@@ -10584,6 +10963,7 @@ class TestMarketplaceUI:
         offered) and raises the real error as a corner toast, so a retry is one
         click away and the error is never auto-wiped."""
         from ui.api_client import APIError
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
@@ -10592,8 +10972,7 @@ class TestMarketplaceUI:
                   new=AsyncMock(side_effect=APIError(422, "The downloaded package does not match the requested module."))),
         ):
             r = await ui_client.post("/modules/marketplace-install",
-                                     data={"slug": "celerp-budgeting", "ref": _PAID_REF},
-                                     cookies=_authed())
+                                     data={"slug": "celerp-budgeting", "ref": _PAID_REF})
         assert r.status_code == 200
         assert b"/modules/marketplace-install" in r.content   # Install button still there
         assert "celerpToast" in r.headers.get("HX-Trigger", "")
@@ -10604,6 +10983,7 @@ class TestMarketplaceUI:
         """An expired or unknown download cannot be installed by retrying, so the
         row goes back to Download and the reason is shown as a corner toast."""
         from ui.api_client import APIError
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
@@ -10612,8 +10992,7 @@ class TestMarketplaceUI:
                   new=AsyncMock(side_effect=APIError(410, "This download has expired. Download it again."))),
         ):
             r = await ui_client.post("/modules/marketplace-install",
-                                     data={"slug": "celerp-budgeting", "ref": _PAID_REF},
-                                     cookies=_authed())
+                                     data={"slug": "celerp-budgeting", "ref": _PAID_REF})
         assert r.status_code == 200
         assert b"/modules/marketplace-download" in r.content
         assert b"/modules/marketplace-install" not in r.content
@@ -10629,6 +11008,7 @@ class TestMarketplaceUI:
         """Buy with no verified email swaps in the account panel instead of
         starting checkout; the panel stages the purchase to resume after."""
         buy = AsyncMock(return_value={"url": "https://checkout.stripe.com/pay/cs_test_9"})
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.account_status",
                   new=AsyncMock(return_value={"email_verified": False})),
@@ -10636,8 +11016,7 @@ class TestMarketplaceUI:
                   new=AsyncMock(return_value={"google": False})),
             patch("ui.api_client.buy_module", new=buy),
         ):
-            r = await ui_client.post("/modules/buy?slug=celerp-budgeting&kind=monthly",
-                                     cookies=_authed())
+            r = await ui_client.post("/modules/buy?slug=celerp-budgeting&kind=monthly")
         assert r.status_code == 200
         content = r.content.decode()
         assert "Continue with email" in content
@@ -10657,6 +11036,7 @@ class TestMarketplaceUI:
     async def test_buy_proceeds_unchanged_when_email_already_verified(self, ui_client):
         """A bound, verified account sees no gate: the same waiting-panel
         contract as before the account check existed."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
@@ -10666,8 +11046,7 @@ class TestMarketplaceUI:
             patch("ui.api_client.buy_module",
                   new=AsyncMock(return_value={"url": "https://checkout.stripe.com/pay/cs_test_9"})),
         ):
-            r = await ui_client.post("/modules/buy?slug=celerp-budgeting&kind=monthly",
-                                     cookies=_authed())
+            r = await ui_client.post("/modules/buy?slug=celerp-budgeting&kind=monthly")
         assert r.status_code == 200
         assert b"checkout.stripe.com/pay/cs_test_9" in r.content
         assert b"every 5s" in r.content
@@ -10678,6 +11057,7 @@ class TestMarketplaceUI:
     async def test_buy_gate_resume_fires_after_verify_and_activation(self, ui_client):
         """Once the poll sees the verified account and activation ran, it
         returns a fragment that re-posts the staged purchase."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.account_status",
                   new=AsyncMock(return_value=dict(self._VERIFIED_STATUS))),
@@ -10686,7 +11066,7 @@ class TestMarketplaceUI:
         ):
             r = await ui_client.get(
                 "/account/poll?panel=account-gate-panel&mode=email&n=3"
-                "&next=buy:celerp-budgeting:monthly", cookies=_authed())
+                "&next=buy:celerp-budgeting:monthly")
         content = r.content.decode()
         assert "Signed in as" in content
         assert 'hx-post="/modules/buy?slug=celerp-budgeting&amp;kind=monthly"' in content
@@ -10698,13 +11078,14 @@ class TestMarketplaceUI:
         the staged purchase; the action is deferred behind the claim step, and
         the continuation is carried on the claim link, not dropped."""
         status = dict(self._VERIFIED_STATUS, pending_selection=True)
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.account_status", new=AsyncMock(return_value=status)),
             patch("ui.api_client.activate_relay", new=AsyncMock(return_value={})),
         ):
             r = await ui_client.get(
                 "/account/poll?panel=account-gate-panel&mode=email&n=3"
-                "&next=buy:celerp-budgeting:monthly", cookies=_authed())
+                "&next=buy:celerp-budgeting:monthly")
         content = r.content.decode()
         assert "more than one subscription" in content
         assert 'hx-post="/modules/buy' not in content        # not auto-fired
@@ -10715,13 +11096,14 @@ class TestMarketplaceUI:
     @pytest.mark.asyncio
     async def test_buy_gate_resume_withheld_on_linked_elsewhere(self, ui_client):
         status = dict(self._VERIFIED_STATUS, linked_elsewhere=True)
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.account_status", new=AsyncMock(return_value=status)),
             patch("ui.api_client.activate_relay", new=AsyncMock(return_value={})),
         ):
             r = await ui_client.get(
                 "/account/poll?panel=account-gate-panel&mode=email&n=3"
-                "&next=buy:celerp-budgeting:monthly", cookies=_authed())
+                "&next=buy:celerp-budgeting:monthly")
         content = r.content.decode()
         assert "another computer" in content
         assert 'hx-post="/modules/buy' not in content
@@ -10733,13 +11115,13 @@ class TestMarketplaceUI:
         """If the account status cannot be checked, Buy stops with an error
         panel and a way back - checkout never starts on an unknown account."""
         buy = AsyncMock(return_value={"url": "https://checkout.stripe.com/pay/x"})
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.account_status",
                   new=AsyncMock(return_value={"error": "unreachable"})),
             patch("ui.api_client.buy_module", new=buy),
         ):
-            r = await ui_client.post("/modules/buy?slug=celerp-budgeting&kind=monthly",
-                                     cookies=_authed())
+            r = await ui_client.post("/modules/buy?slug=celerp-budgeting&kind=monthly")
         assert r.status_code == 200
         assert buy.await_count == 0
         assert b"flash--error" in r.content
@@ -10751,6 +11133,7 @@ class TestMarketplaceUI:
         """Every Buy click checks the live account status - a stale cached
         value at the payment moment could skip the email binding."""
         status = AsyncMock(return_value=dict(self._VERIFIED_STATUS))
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
@@ -10759,10 +11142,8 @@ class TestMarketplaceUI:
             patch("ui.api_client.buy_module",
                   new=AsyncMock(return_value={"url": "https://checkout.stripe.com/pay/x"})),
         ):
-            await ui_client.post("/modules/buy?slug=celerp-budgeting&kind=monthly",
-                                 cookies=_authed())
-            await ui_client.post("/modules/buy?slug=celerp-budgeting&kind=monthly",
-                                 cookies=_authed())
+            await ui_client.post("/modules/buy?slug=celerp-budgeting&kind=monthly")
+            await ui_client.post("/modules/buy?slug=celerp-budgeting&kind=monthly")
         assert status.await_count == 2
 
     # ── Account check before community downloads ─────────────────────────────
@@ -10770,6 +11151,7 @@ class TestMarketplaceUI:
     @pytest.mark.asyncio
     async def test_community_download_gate_blocks_unverified_email(self, ui_client):
         dl = AsyncMock(return_value="equipment-maintenance-0123456789abcdef0123456789abcdef01234567-00000000000000000000000000000000")
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
@@ -10780,7 +11162,7 @@ class TestMarketplaceUI:
             patch("ui.marketplace_catalog.download_community_archive", new=dl),
         ):
             r = await ui_client.post("/modules/community-download",
-                                     data={"id": "equipment-maintenance"}, cookies=_authed())
+                                     data={"id": "equipment-maintenance"})
         assert r.status_code == 200
         content = r.content.decode()
         assert dl.await_count == 0                              # nothing downloaded
@@ -10794,6 +11176,7 @@ class TestMarketplaceUI:
 
     @pytest.mark.asyncio
     async def test_community_download_gate_skips_for_signed_in_admin(self, ui_client):
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
@@ -10805,7 +11188,7 @@ class TestMarketplaceUI:
                   new=AsyncMock(return_value={"email_verified": True})),
         ):
             r = await ui_client.post("/modules/community-download",
-                                     data={"id": "equipment-maintenance"}, cookies=_authed())
+                                     data={"id": "equipment-maintenance"})
         assert r.status_code == 200
         assert b">Downloaded<" in r.content
         assert b"/modules/community-import" in r.content
@@ -10816,6 +11199,7 @@ class TestMarketplaceUI:
         """The poll's resume fragment re-posts the download at zone level, and
         the zone-level download response restores the listings with the staged
         row offering Import."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.account_status",
                   new=AsyncMock(return_value=dict(self._VERIFIED_STATUS))),
@@ -10824,7 +11208,7 @@ class TestMarketplaceUI:
         ):
             r = await ui_client.get(
                 "/account/poll?panel=account-gate-panel&mode=email&n=3"
-                "&next=community:equipment-maintenance", cookies=_authed())
+                "&next=community:equipment-maintenance")
         content = r.content.decode()
         assert 'hx-post="/modules/community-download"' in content
         assert "equipment-maintenance" in content
@@ -10842,8 +11226,7 @@ class TestMarketplaceUI:
                   new=AsyncMock(return_value={"email_verified": True})),
         ):
             r2 = await ui_client.post("/modules/community-download",
-                                      data={"id": "equipment-maintenance", "zone": "1"},
-                                      cookies=_authed())
+                                      data={"id": "equipment-maintenance", "zone": "1"})
         assert b'id="community-zone"' in r2.content
         assert b">Import<" in r2.content
         assert b"equipment-maintenance-0123456789abcdef0123456789abcdef01234567-00000000000000000000000000000000" in r2.content
@@ -10861,6 +11244,7 @@ class TestMarketplaceUI:
         download = "equipment-maintenance-0123456789abcdef0123456789abcdef01234567-" + "0" * 32
         installed = {**_CATALOG_FIXTURE[1], "id": "fleet-log", "name": "Fleet Log"}
         session = _authed()
+        ui_client.cookies.update(session)
         with (
             patch("ui.marketplace_catalog.fetch_catalog",
                   new=AsyncMock(return_value=(_CATALOG_FIXTURE + [installed], False))),
@@ -10871,8 +11255,7 @@ class TestMarketplaceUI:
                   new=AsyncMock(return_value={"email_verified": True})),
         ):
             r = await ui_client.post("/modules/community-download",
-                                     data={"id": "equipment-maintenance", "zone": "1"},
-                                     cookies=session)
+                                     data={"id": "equipment-maintenance", "zone": "1"})
         assert r.status_code == 200
         assert seen and set(seen) == {session["celerp_token"]}
         body = r.content.decode()
@@ -10883,6 +11266,7 @@ class TestMarketplaceUI:
     async def test_community_download_gate_fails_open_when_relay_unreachable(self, ui_client):
         """A relay outage never blocks a free download - the account check is
         skipped and the download proceeds."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
@@ -10894,7 +11278,7 @@ class TestMarketplaceUI:
                   new=AsyncMock(return_value={"email_verified": True})),
         ):
             r = await ui_client.post("/modules/community-download",
-                                     data={"id": "equipment-maintenance"}, cookies=_authed())
+                                     data={"id": "equipment-maintenance"})
         assert r.status_code == 200
         assert b">Downloaded<" in r.content
         assert b"/modules/community-import" in r.content
@@ -10904,6 +11288,7 @@ class TestMarketplaceUI:
     async def test_community_download_github_failure_after_gate_keeps_toast(self, ui_client):
         """A GitHub fetch failure after the account check passes keeps the
         existing toast contract: Download button intact, error in the corner."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
@@ -10915,7 +11300,7 @@ class TestMarketplaceUI:
                   new=AsyncMock(return_value={"email_verified": True})),
         ):
             r = await ui_client.post("/modules/community-download",
-                                     data={"id": "equipment-maintenance"}, cookies=_authed())
+                                     data={"id": "equipment-maintenance"})
         assert r.status_code == 200
         assert b"/modules/community-download" in r.content
         assert b"/modules/community-import" not in r.content
@@ -10925,6 +11310,7 @@ class TestMarketplaceUI:
 
     @pytest.mark.asyncio
     async def test_marketplace_heading_shows_signed_in_line_when_bound(self, ui_client):
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
@@ -10932,12 +11318,13 @@ class TestMarketplaceUI:
             patch("ui.api_client.account_status",
                   new=AsyncMock(return_value=dict(self._VERIFIED_STATUS))),
         ):
-            r = await ui_client.get("/modules/marketplace-panel", cookies=_authed())
+            r = await ui_client.get("/modules/marketplace-panel")
         assert b"Signed in as" in r.content
         assert b"o@shop.example" in r.content
 
     @pytest.mark.asyncio
     async def test_marketplace_heading_omits_line_when_no_account(self, ui_client):
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
@@ -10945,13 +11332,14 @@ class TestMarketplaceUI:
             patch("ui.api_client.account_status",
                   new=AsyncMock(return_value={"email_verified": False})),
         ):
-            r = await ui_client.get("/modules/marketplace-panel", cookies=_authed())
+            r = await ui_client.get("/modules/marketplace-panel")
         assert b"Budgeting" in r.content            # catalog renders
         assert b"Signed in as" not in r.content     # no nag, no call to action
 
     @pytest.mark.asyncio
     async def test_marketplace_heading_omits_line_on_status_error(self, ui_client):
         from ui.api_client import APIError
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
@@ -10959,7 +11347,7 @@ class TestMarketplaceUI:
             patch("ui.api_client.account_status",
                   new=AsyncMock(side_effect=APIError(502, "relay down"))),
         ):
-            r = await ui_client.get("/modules/marketplace-panel", cookies=_authed())
+            r = await ui_client.get("/modules/marketplace-panel")
         assert b"Budgeting" in r.content
         assert b"Signed in as" not in r.content
 
@@ -10990,13 +11378,14 @@ class TestModuleSlotInjection:
             "icon": "⚡",
             "_module": "test-module",
         })
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [_ITEM], "total": 1})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value=_VALUATION)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
         ):
-            r = await ui_client.get("/inventory", cookies=_authed())
+            r = await ui_client.get("/inventory")
         assert r.status_code == 200
         assert b"Custom Module Action" in r.content
 
@@ -11010,13 +11399,14 @@ class TestModuleSlotInjection:
             "icon": "🖨",
             "_module": "celerp-labels",
         })
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [_ITEM], "total": 1})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value=_VALUATION)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
         ):
-            r = await ui_client.get("/inventory", cookies=_authed())
+            r = await ui_client.get("/inventory")
         assert r.status_code == 200
         assert b"/labels/print-bulk" in r.content
 
@@ -11029,6 +11419,7 @@ class TestModuleSlotInjection:
             "href_template": "/labels/print/{entity_id}",
             "_module": "celerp-labels",
         })
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
@@ -11041,7 +11432,7 @@ class TestModuleSlotInjection:
             patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
-            r = await ui_client.get("/inventory/gc:123", cookies=_authed())
+            r = await ui_client.get("/inventory/gc:123")
         assert r.status_code == 200
         assert b"Print Label" in r.content
 
@@ -11054,6 +11445,7 @@ class TestModuleSlotInjection:
             "href_template": "/labels/print/{entity_id}",
             "_module": "celerp-labels",
         })
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
@@ -11066,7 +11458,7 @@ class TestModuleSlotInjection:
             patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
-            r = await ui_client.get("/inventory/gc:123", cookies=_authed())
+            r = await ui_client.get("/inventory/gc:123")
         assert r.status_code == 200
         # entity_id gc:123 should be in the href
         assert b"gc:123" in r.content or b"labels/print" in r.content
@@ -11077,13 +11469,14 @@ class TestModuleSlotInjection:
         from celerp.modules.slots import register as register_slot
         register_slot("bulk_action", {"label": "Action Alpha", "form_action": "/api/alpha", "_module": "mod-a"})
         register_slot("bulk_action", {"label": "Action Beta", "form_action": "/api/beta", "_module": "mod-b"})
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [_ITEM], "total": 1})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value=_VALUATION)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
         ):
-            r = await ui_client.get("/inventory", cookies=_authed())
+            r = await ui_client.get("/inventory")
         assert r.status_code == 200
         assert b"Action Alpha" in r.content
         assert b"Action Beta" in r.content
@@ -11092,13 +11485,14 @@ class TestModuleSlotInjection:
     async def test_no_slots_inventory_renders_clean(self, ui_client):
         """With no module slots, inventory renders without errors."""
         # clean_slots fixture ensures empty registry
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [_ITEM], "total": 1})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value=_VALUATION)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
         ):
-            r = await ui_client.get("/inventory", cookies=_authed())
+            r = await ui_client.get("/inventory")
         assert r.status_code == 200
         assert b"Inventory" in r.content
 
@@ -11164,19 +11558,21 @@ class TestAuditHighlightScoping:
     @pytest.mark.asyncio
     async def test_audit_renders_scanned_highlight(self, ui_client):
         lst = self._list("audit")
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_list", new=AsyncMock(return_value=lst)),
             patch("ui.api_client.get_list_page", create=True, new=_list_page_stub(lst)),
         ):
-            r = await ui_client.get("/lists/list:1", cookies=_authed())
+            r = await ui_client.get("/lists/list:1")
         assert r.status_code == 200
         assert "data-row--audited" in r.text
 
     @pytest.mark.asyncio
     async def test_non_audit_drops_scanned_highlight(self, ui_client):
         # Same audited_at in the data, but a quotation must not paint the highlight.
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_list", new=AsyncMock(return_value=self._list("quotation"))):
-            r = await ui_client.get("/lists/list:1", cookies=_authed())
+            r = await ui_client.get("/lists/list:1")
         assert r.status_code == 200
         assert "data-row--audited" not in r.text
 
@@ -11201,10 +11597,11 @@ class TestListScanInPlace:
         # A building list answers with the JSON scan result (scanned count, no failures, empty html so
         # the client refetches the editable tbody itself), never a full-page refresh.
         _res = {"scanned": 1, "results": [{"code": "A1", "state": "added"}], "failed": []}
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.scan_codes", new=AsyncMock(return_value=_res)), \
              patch("ui.api_client.get_list_page",
                    new=AsyncMock(return_value={"list": self._DRAFT, "version": 1})):
-            r = await ui_client.post("/lists/list:1/scan", data={"barcode": "A1"}, cookies=_authed())
+            r = await ui_client.post("/lists/list:1/scan", data={"barcode": "A1"})
         assert r.status_code == 200
         assert "HX-Refresh" not in r.headers
         body = r.json()
@@ -11216,8 +11613,9 @@ class TestListScanInPlace:
     async def test_list_page_scan_script_swaps_tbody_in_place(self, ui_client):
         # The list scan branch refetches the page of lines being viewed and swaps #line-body instead
         # of reloading. In-place paging never changes the URL, so the refetch cannot use location.href.
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_list", new=AsyncMock(return_value=self._DRAFT)):
-            r = await ui_client.get("/lists/list:1", cookies=_authed())
+            r = await ui_client.get("/lists/list:1")
         assert r.status_code == 200
         assert "DOMParser" in r.text
         assert "'?offset=' + _CELERP_LINE_OFFSET" in r.text
@@ -11227,8 +11625,9 @@ class TestListScanInPlace:
     async def test_list_page_has_scan_add_button(self, ui_client):
         # A list accumulates scans client-side and submits the whole run with one Add button; Enter
         # only appends a comma, so the submit button is the sole thing that hits the server.
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_list", new=AsyncMock(return_value=self._DRAFT)):
-            r = await ui_client.get("/lists/list:1", cookies=_authed())
+            r = await ui_client.get("/lists/list:1")
         assert r.status_code == 200
         assert 'id="scan-bar-add"' in r.text
 
@@ -11242,10 +11641,11 @@ class TestListScanInPlace:
         _bad = "ዕቃ-99"
         _res = {"scanned": 1, "results": [{"code": "A1", "state": "added"}],
                 "failed": [{"code": _bad, "reason": "unknown_code", "label": f"{_bad}: no matching barcode or SKU"}]}
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.scan_codes", new=AsyncMock(return_value=_res)), \
              patch("ui.api_client.get_list_page",
                    new=AsyncMock(return_value={"list": self._DRAFT, "version": 1})):
-            r = await ui_client.post("/lists/list:1/scan", data={"barcode": f"A1, {_bad}"}, cookies=_authed())
+            r = await ui_client.post("/lists/list:1/scan", data={"barcode": f"A1, {_bad}"})
         assert r.status_code == 200
         assert "X-Scan-Failed-Codes" not in r.headers
         body = r.json()
@@ -11274,8 +11674,9 @@ class TestAuditColumnAlignment:
     @pytest.mark.asyncio
     async def test_draft_audit_rows_align_with_header_and_drop_unit(self, ui_client):
         import re
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_list", new=AsyncMock(return_value=self._AUDIT)):
-            r = await ui_client.get("/lists/list:1", cookies=_authed())
+            r = await ui_client.get("/lists/list:1")
         assert r.status_code == 200
         headers = re.findall(r'<th[^>]*class="[^"]*?(col-[\w-]+)', r.text)
         body = re.search(r'id="line-body"(.*?)</tbody>', r.text, re.S).group(1)
@@ -11292,16 +11693,17 @@ class TestAuditColumnAlignment:
         # A draft audit is editable, so it keeps the Add item affordance; a finalized (counting) audit
         # locks the manifest and hides it.
         counting_list = {**self._AUDIT, "status": "finalized"}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_list", new=AsyncMock(return_value=self._AUDIT)),
             patch("ui.api_client.get_list_page", create=True, new=_list_page_stub(self._AUDIT)),
         ):
-            draft = await ui_client.get("/lists/list:1", cookies=_authed())
+            draft = await ui_client.get("/lists/list:1")
         with (
             patch("ui.api_client.get_list", new=AsyncMock(return_value=counting_list)),
             patch("ui.api_client.get_list_page", create=True, new=_list_page_stub(counting_list)),
         ):
-            counting = await ui_client.get("/lists/list:1", cookies=_authed())
+            counting = await ui_client.get("/lists/list:1")
         assert draft.status_code == 200 and counting.status_code == 200
         # Match the button's onclick (the celerpAddLine() helper is always defined in the page script).
         assert 'onclick="celerpAddLine()"' in draft.text
@@ -11335,8 +11737,9 @@ class TestCompanyDetailsPage:
 
     @pytest.mark.asyncio
     async def test_renders_info_settings_addresses_tabs(self, ui_client):
+        ui_client.cookies.update(_authed(role="admin"))
         with self._patches():
-            r = await ui_client.get("/finance/company-details", cookies=_authed(role="admin"))
+            r = await ui_client.get("/finance/company-details")
         assert r.status_code == 200, r.text
         assert "Total Invoiced" not in r.text                     # no financial cards
         assert "Company Details" in r.text
@@ -11349,8 +11752,10 @@ class TestCompanyDetailsPage:
     @pytest.mark.asyncio
     async def test_admin_allowed_below_admin_redirected(self, ui_client):
         with self._patches():
-            ok = await ui_client.get("/finance/company-details", cookies=_authed(role="admin"), follow_redirects=False)
-            low = await ui_client.get("/finance/company-details", cookies=_authed(role="operator"), follow_redirects=False)
+            ui_client.cookies.update(_authed(role="admin"))
+            ok = await ui_client.get("/finance/company-details", follow_redirects=False)
+            ui_client.cookies.update(_authed(role="operator"))
+            low = await ui_client.get("/finance/company-details", follow_redirects=False)
         assert ok.status_code == 200
         assert_not_permitted_redirect(low)
 
@@ -11399,12 +11804,13 @@ class TestFilesExcelFunnels:
     async def test_item_file_description_route_accepts_post(self, ui_client):
         """The files component saves descriptions with POST; the item UI route must accept POST (was
         PATCH -> 405, which blocked describing a product image)."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.describe_item_file", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_item", new=AsyncMock(return_value={"id": "item:1", "files": []})),
         ):
             r = await ui_client.post("/items/item:1/files/f1/description",
-                                     data={"description": "front view"}, cookies=_authed())
+                                     data={"description": "front view"})
         assert r.status_code == 200, r.text  # not 405
 
 
@@ -11439,8 +11845,9 @@ class TestWebAccessPlansAd:
         'Active' status with nothing to tell it apart from a paid connection.
         No public_url means no backup entitlement, so the backup summary card
         (scheduler state, next-run countdown) must not render at all."""
+        ui_client.cookies.update(_authed(role="admin"))
         with self._mocks(tier="free"):
-            r = await ui_client.get("/settings/cloud", cookies=_authed(role="admin"))
+            r = await ui_client.get("/settings/cloud")
         assert r.status_code == 200
         assert "Free Tier" in r.text
         assert "10 emails per month" in r.text
@@ -11459,28 +11866,29 @@ class TestWebAccessPlansAd:
     async def test_claim_notice_shows_on_the_page_once(self, ui_client):
         """A known claim notice renders its translated copy; an unknown code
         in the address shows nothing."""
+        ui_client.cookies.update(_authed(role="admin"))
         with self._mocks(tier="cloud", public_url="https://abc.celerp.com"):
-            r = await ui_client.get("/settings/cloud?notice=shopify_store_not_linked",
-                                    cookies=_authed(role="admin"))
+            r = await ui_client.get("/settings/cloud?notice=shopify_store_not_linked")
             assert r.status_code == 200
             assert "Your Shopify store was not connected" in r.text
-            r = await ui_client.get("/settings/cloud?notice=<b>made-up</b>",
-                                    cookies=_authed(role="admin"))
+            r = await ui_client.get("/settings/cloud?notice=<b>made-up</b>")
         assert "made-up" not in r.text
         assert "Your Shopify store was not connected" not in r.text
 
     @pytest.mark.asyncio
     async def test_paid_tier_no_free_tier_note_shows_backup_card(self, ui_client):
+        ui_client.cookies.update(_authed(role="admin"))
         with self._mocks(tier="cloud", public_url="https://abc.celerp.com"):
-            r = await ui_client.get("/settings/cloud", cookies=_authed(role="admin"))
+            r = await ui_client.get("/settings/cloud")
         assert r.status_code == 200
         assert "Free Tier" not in r.text
         assert "Next DB backup" in r.text
 
     @pytest.mark.asyncio
     async def test_free_tier_sees_tabs_and_plans_ad(self, ui_client):
+        ui_client.cookies.update(_authed(role="admin"))
         with self._mocks(tier="free"):
-            r = await ui_client.get("/settings/cloud", cookies=_authed(role="admin"))
+            r = await ui_client.get("/settings/cloud")
         assert r.status_code == 200
         assert "settings-tabs" in r.text          # free keeps its tab bar
         assert "cloud-plans" in r.text            # the plan cards render
@@ -11489,8 +11897,9 @@ class TestWebAccessPlansAd:
 
     @pytest.mark.asyncio
     async def test_paid_tier_sees_no_plans_ad(self, ui_client):
+        ui_client.cookies.update(_authed(role="admin"))
         with self._mocks(tier="cloud"):
-            r = await ui_client.get("/settings/cloud", cookies=_authed(role="admin"))
+            r = await ui_client.get("/settings/cloud")
         assert r.status_code == 200
         assert "settings-tabs" in r.text
         assert "cloud-plans" not in r.text
@@ -11501,15 +11910,17 @@ class TestWebAccessPlansAd:
         must never hide the free-tier note and sales funnel - only a confirmed
         paid tier suppresses it (regression: this previously hid the upsell
         entirely whenever tier came back empty)."""
+        ui_client.cookies.update(_authed(role="admin"))
         with self._mocks(tier=None):
-            r = await ui_client.get("/settings/cloud", cookies=_authed(role="admin"))
+            r = await ui_client.get("/settings/cloud")
         assert r.status_code == 200
         assert "cloud-plans" in r.text
 
     @pytest.mark.asyncio
     async def test_not_connected_still_gets_full_value_prop(self, ui_client):
+        ui_client.cookies.update(_authed(role="admin"))
         with self._mocks(tier=None, relay_status="inactive"):
-            r = await ui_client.get("/settings/cloud", cookies=_authed(role="admin"))
+            r = await ui_client.get("/settings/cloud")
         assert r.status_code == 200
         assert "cloud-hero" in r.text
         assert "cloud-plans" in r.text
@@ -11524,6 +11935,7 @@ class TestWebAccessPlansAd:
         so a signed-in free account was dropped onto the subscribe/claim landing
         with no way to log out and no upgrade ad."""
         from contextlib import ExitStack
+        ui_client.cookies.update(_authed(role="admin"))
         with ExitStack() as stack:
             stack.enter_context(patch(
                 "ui.api_client.get_relay_status",
@@ -11534,7 +11946,7 @@ class TestWebAccessPlansAd:
             stack.enter_context(patch(
                 "ui.api_client.get_backup_status",
                 new=AsyncMock(return_value={"db": {}, "next_db_utc": None, "public_url": ""})))
-            r = await ui_client.get("/settings/cloud", cookies=_authed(role="admin"))
+            r = await ui_client.get("/settings/cloud")
         assert r.status_code == 200
         assert "cloud-hero" not in r.text                 # NOT the landing page
         assert "/settings/cloud-disconnect" in r.text     # log-out / disconnect control
@@ -11564,8 +11976,9 @@ class TestPaymentsSettingsPage:
 
     @pytest.mark.asyncio
     async def test_sales_state_single_cta_no_admin_controls(self, ui_client):
+        ui_client.cookies.update(_authed(role="admin"))
         with self._mocks(relay=True, enabled=False):
-            r = await ui_client.get("/settings/payments", cookies=_authed(role="admin"))
+            r = await ui_client.get("/settings/payments")
         assert r.status_code == 200, f"expected the payments page, got {r.status_code}"
         assert "stripe" in r.text.lower()
         # Web Access placement: cloud tab bar, not Global Config tabs.
@@ -11578,8 +11991,9 @@ class TestPaymentsSettingsPage:
 
     @pytest.mark.asyncio
     async def test_no_relay_state_shows_upgrade_banner(self, ui_client):
+        ui_client.cookies.update(_authed(role="admin"))
         with self._mocks(relay=False, enabled=False):
-            r = await ui_client.get("/settings/payments", cookies=_authed(role="admin"))
+            r = await ui_client.get("/settings/payments")
         assert r.status_code == 200
         assert "upgrade-banner" in r.text
         assert "/settings/payments/connect" not in r.text
@@ -11587,8 +12001,9 @@ class TestPaymentsSettingsPage:
     @pytest.mark.asyncio
     async def test_connected_state_deposit_dropdown_with_add_new(self, ui_client):
         banks = [{"chart_account_code": "1120", "bank_name": "Kasikorn"}]
+        ui_client.cookies.update(_authed(role="admin"))
         with self._mocks(relay=True, enabled=True, banks=banks, deposit="1120"):
-            r = await ui_client.get("/settings/payments", cookies=_authed(role="admin"))
+            r = await ui_client.get("/settings/payments")
         assert r.status_code == 200
         # Dropdown, not a free-text field: bank option selected, Cash default, add-new.
         assert "1120 - Kasikorn" in r.text
@@ -11600,8 +12015,9 @@ class TestPaymentsSettingsPage:
     async def test_disconnecting_asks_first_and_says_where_later_refunds_are_recorded(self, ui_client):
         import html as _html
         from ui.i18n import t
+        ui_client.cookies.update(_authed(role="admin"))
         with self._mocks(relay=True, enabled=True):
-            r = await ui_client.get("/settings/payments", cookies=_authed(role="admin"))
+            r = await ui_client.get("/settings/payments")
         assert r.status_code == 200
         confirm = t("pay.disconnect_confirm")
         assert "no longer linked to Stripe" in confirm and "record any refund of them here" in confirm
@@ -11611,13 +12027,15 @@ class TestPaymentsSettingsPage:
 
     @pytest.mark.asyncio
     async def test_non_admin_cannot_open(self, ui_client):
-        r = await ui_client.get("/settings/payments", cookies=_authed(role="staff"))
+        ui_client.cookies.update(_authed(role="staff"))
+        r = await ui_client.get("/settings/payments")
         assert r.status_code in (302, 303)
 
     @pytest.mark.asyncio
     async def test_disconnecting_state_says_existing_payments_finish(self, ui_client):
+        ui_client.cookies.update(_authed(role="admin"))
         with self._mocks(relay=True, enabled=False, state="disconnecting"):
-            r = await ui_client.get("/settings/payments", cookies=_authed(role="admin"))
+            r = await ui_client.get("/settings/payments")
         assert r.status_code == 200
         assert "Stripe is disconnecting while existing payments finish." in r.text
         # Neither connect (Cloud refuses it until the disconnect finishes) nor disconnect again.
@@ -11627,8 +12045,9 @@ class TestPaymentsSettingsPage:
 
     @pytest.mark.asyncio
     async def test_revoked_access_asks_to_reconnect_the_same_account(self, ui_client):
+        ui_client.cookies.update(_authed(role="admin"))
         with self._mocks(relay=True, enabled=False, state="revoked"):
-            r = await ui_client.get("/settings/payments", cookies=_authed(role="admin"))
+            r = await ui_client.get("/settings/payments")
         assert r.status_code == 200
         assert "Use Reconnect Stripe in Web Access, Online Payments to finish checking them." in r.text
         # One action: reconnect. No sales pitch, no disconnect, no deposit settings.
@@ -11652,8 +12071,9 @@ class TestPaymentsSettingsPage:
     @pytest.mark.parametrize("enabled, state", [
         (True, None), (False, "disconnecting"), (False, "revoked"), (False, None)])
     async def test_unmatched_payments_are_listed_in_every_state(self, ui_client, enabled, state):
+        ui_client.cookies.update(_authed(role="admin"))
         with self._mocks(relay=True, enabled=enabled, state=state, unmatched=self._UNMATCHED):
-            r = await ui_client.get("/settings/payments", cookies=_authed(role="admin"))
+            r = await ui_client.get("/settings/payments")
         assert r.status_code == 200
         assert "Payments not matched to an invoice" in r.text
         assert r.text.index("pi_new") < r.text.index("pi_old")  # newest first
@@ -11667,8 +12087,9 @@ class TestPaymentsSettingsPage:
 
     @pytest.mark.asyncio
     async def test_no_unmatched_payments_shows_nothing(self, ui_client):
+        ui_client.cookies.update(_authed(role="admin"))
         with self._mocks(relay=True, enabled=True):
-            r = await ui_client.get("/settings/payments", cookies=_authed(role="admin"))
+            r = await ui_client.get("/settings/payments")
         assert "Payments not matched to an invoice" not in r.text
         assert "Refunds not applied yet" not in r.text
 
@@ -11682,8 +12103,9 @@ class TestPaymentsSettingsPage:
              "currency": "USD", "company_id": "c-old", "company_name": "Old Co", "document_id": "doc:1",
              "document_ref": "INV-0001", "received_on": "2026-09-28",
              "refunded_on": "2026-09-27"}]
+        ui_client.cookies.update(_authed(role="admin"))
         with self._mocks(relay=True, enabled=True, refunds=refunds):
-            r = await ui_client.get("/settings/payments", cookies=_authed(role="admin"))
+            r = await ui_client.get("/settings/payments")
         assert r.status_code == 200
         assert "Payments not matched to an invoice" not in r.text
         assert "Refunds not applied yet" in r.text and "Refunded on" in r.text
@@ -11696,32 +12118,35 @@ class TestPaymentsSettingsPage:
     @pytest.mark.asyncio
     async def test_unmatched_payments_hidden_from_a_login_that_may_not_see_them(self, ui_client):
         from ui.api_client import APIError
+        ui_client.cookies.update(_authed(role="admin"))
         with self._mocks(relay=True, enabled=True), \
                 patch("ui.api_client.get_unmatched_payments",
                       new=AsyncMock(side_effect=APIError(403, "Installation owner only"))):
-            r = await ui_client.get("/settings/payments", cookies=_authed(role="admin"))
+            r = await ui_client.get("/settings/payments")
         assert r.status_code == 200
         assert "Payments not matched to an invoice" not in r.text
         assert "/settings/payments/disconnect" in r.text
 
     @pytest.mark.asyncio
     async def test_a_disconnect_that_waits_for_payments_shows_it(self, ui_client):
+        ui_client.cookies.update(_authed(role="admin"))
         with self._mocks(relay=True, enabled=False, state="disconnecting"), \
                 patch("ui.api_client.disconnect_payments",
                       new=AsyncMock(return_value={"disconnected": False, "state": "disconnecting"})):
-            r = await ui_client.post("/settings/payments/disconnect", cookies=_authed(role="admin"))
+            r = await ui_client.post("/settings/payments/disconnect")
             assert r.status_code == 302 and r.headers["location"] == "/settings/payments"
-            r = await ui_client.get("/settings/payments", cookies=_authed(role="admin"))
+            r = await ui_client.get("/settings/payments")
         assert "Stripe is disconnecting while existing payments finish." in r.text
         assert "/settings/payments/connect" not in r.text
 
     @pytest.mark.asyncio
     async def test_a_failed_disconnect_is_shown(self, ui_client):
         from ui.api_client import APIError
+        ui_client.cookies.update(_authed(role="admin"))
         with self._mocks(relay=True, enabled=True), \
                 patch("ui.api_client.disconnect_payments",
                       new=AsyncMock(side_effect=APIError(503, "Payments are not configured"))):
-            r = await ui_client.post("/settings/payments/disconnect", cookies=_authed(role="admin"))
+            r = await ui_client.post("/settings/payments/disconnect")
         assert r.status_code == 200
         assert "Payments are not configured" in r.text
         assert "/settings/payments/disconnect" in r.text
@@ -11742,12 +12167,13 @@ class TestCompanyAllFilesView:
                                       {"id": "if2", "filename": "spec.pdf", "document_tag": "spec_sheets", "uploaded_at": "2026-06-18"}]}]}
         docs = {"items": [{"id": "doc:1", "ref_id": "INV-001",
                            "files": [{"id": "df1", "filename": "scan.pdf", "document_tag": "receipts", "uploaded_at": "2026-06-18"}]}]}
+        ui_client.cookies.update(_authed(role="admin"))
         with ExitStack() as stack:
             for name, val in (("get_company", company), ("get_contact", self_contact),
                               ("list_items", items), ("list_docs", docs),
                               ("list_contacts", {"items": [self_contact]})):
                 stack.enter_context(patch(f"ui.api_client.{name}", new=AsyncMock(return_value=val)))
-            r = await ui_client.get("/finance/company-files/_section", cookies=_authed(role="admin"))
+            r = await ui_client.get("/finance/company-files/_section")
         assert r.status_code == 200, r.text
         # All three sources present, each linking back to its owning entity.
         assert "reg.pdf" in r.text and "Company" in r.text
@@ -11866,6 +12292,7 @@ class TestDocPaymentTermsAutoPopulate:
         """Patching payment_terms field recalculates due_date from issue_date."""
         doc_pre = {**_DOC_DETAIL, "issue_date": "2026-01-01", "payment_terms": None}
         doc_post = {**doc_pre, "payment_terms": "Net 30", "due_date": "2026-01-31"}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_doc", new=AsyncMock(side_effect=[doc_pre, doc_post])),
             patch("ui.api_client.get_payment_terms", new=AsyncMock(return_value=_TERMS)),
@@ -11874,7 +12301,6 @@ class TestDocPaymentTermsAutoPopulate:
             r = await ui_client.patch(
                 "/docs/d:1/field/payment_terms",
                 data={"value": "Net 30"},
-                cookies=_authed(),
             )
         assert r.status_code == 200
         called_patch = mock_patch.call_args[0][2]
@@ -11886,6 +12312,7 @@ class TestDocPaymentTermsAutoPopulate:
         """If doc has no issue_date, changing payment_terms does not set due_date."""
         doc_pre = {**_DOC_DETAIL, "issue_date": None, "payment_terms": None}
         doc_post = {**doc_pre, "payment_terms": "Net 30"}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_doc", new=AsyncMock(side_effect=[doc_pre, doc_post])),
             patch("ui.api_client.get_payment_terms", new=AsyncMock(return_value=_TERMS)),
@@ -11894,7 +12321,6 @@ class TestDocPaymentTermsAutoPopulate:
             r = await ui_client.patch(
                 "/docs/d:1/field/payment_terms",
                 data={"value": "Net 30"},
-                cookies=_authed(),
             )
         assert r.status_code == 200
         called_patch = mock_patch.call_args[0][2]
@@ -11905,6 +12331,7 @@ class TestDocPaymentTermsAutoPopulate:
         """If the selected payment_terms name is not in company terms list, no due_date."""
         doc_pre = {**_DOC_DETAIL, "issue_date": "2026-01-01", "payment_terms": None}
         doc_post = {**doc_pre, "payment_terms": "Custom 45"}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_doc", new=AsyncMock(side_effect=[doc_pre, doc_post])),
             patch("ui.api_client.get_payment_terms", new=AsyncMock(return_value=_TERMS)),
@@ -11913,7 +12340,6 @@ class TestDocPaymentTermsAutoPopulate:
             r = await ui_client.patch(
                 "/docs/d:1/field/payment_terms",
                 data={"value": "Custom 45"},
-                cookies=_authed(),
             )
         assert r.status_code == 200
         called_patch = mock_patch.call_args[0][2]
@@ -11927,13 +12353,14 @@ class TestDocContactBoxLayout:
     async def test_payment_terms_in_contact_section(self, ui_client):
         """payment_terms editable cell appears in the Contact box (before list items)."""
         doc = {**_DOC_DETAIL, "payment_terms": "Net 30", "status": "sent"}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)),
             patch("ui.api_client.list_contacts", new=AsyncMock(return_value={"items": _CONTACTS, "total": 1})),
             patch("ui.api_client.get_payment_terms", new=AsyncMock(return_value=_TERMS)),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
         ):
-            r = await ui_client.get("/docs/d:1", cookies=_authed())
+            r = await ui_client.get("/docs/d:1")
         assert r.status_code == 200
         html = r.content.decode()
         # payment_terms cell must be present
@@ -11947,13 +12374,14 @@ class TestDocContactBoxLayout:
     async def test_totals_section_is_full_width(self, ui_client):
         """Totals section uses doc-section--totals (not the old half-width payment info split)."""
         doc = {**_DOC_DETAIL, "payment_terms": "Net 30", "status": "sent"}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)),
             patch("ui.api_client.list_contacts", new=AsyncMock(return_value={"items": _CONTACTS, "total": 1})),
             patch("ui.api_client.get_payment_terms", new=AsyncMock(return_value=_TERMS)),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
         ):
-            r = await ui_client.get("/docs/d:1", cookies=_authed())
+            r = await ui_client.get("/docs/d:1")
         assert r.status_code == 200
         # old left-panel class must NOT appear anymore
         assert b"doc-section--totals-compact" not in r.content
@@ -11964,6 +12392,7 @@ class TestDocContactBoxLayout:
         These elements must not break the Total column layout.
         """
         doc = {**_DOC_DETAIL, "status": "draft", "price_list": "Retail"}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)),
             patch("ui.api_client.list_contacts", new=AsyncMock(return_value={"items": _CONTACTS, "total": 1})),
@@ -11972,7 +12401,7 @@ class TestDocContactBoxLayout:
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[{"name": "Retail"}, {"name": "Wholesale"}])),
             patch("ui.api_client.get_default_price_list", new=AsyncMock(return_value="Retail")),
         ):
-            r = await ui_client.get("/docs/d:1", cookies=_authed())
+            r = await ui_client.get("/docs/d:1")
         assert r.status_code == 200
         html = r.content.decode()
         # scan-bar must be present above line items
@@ -12015,13 +12444,14 @@ class TestDocContactBoxLayout:
     async def test_doc_detail_shows_company_field(self, ui_client):
         """Doc detail page: Bill To section shows Company: from contact_company_name."""
         doc = {**_DOC_DETAIL, "contact_company_name": "Acme Corp", "contact_id": "ct:1"}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)),
             patch("ui.api_client.list_contacts", new=AsyncMock(return_value={"items": _CONTACTS, "total": 1})),
             patch("ui.api_client.get_payment_terms", new=AsyncMock(return_value=_TERMS)),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
         ):
-            r = await ui_client.get("/docs/d:1", cookies=_authed())
+            r = await ui_client.get("/docs/d:1")
         assert r.status_code == 200
         html = r.content.decode()
         assert "Company:" in html
@@ -12031,13 +12461,14 @@ class TestDocContactBoxLayout:
     async def test_doc_detail_phone_and_tax_id_are_editable(self, ui_client):
         """Doc detail page: Phone and Tax ID fields have hx-get edit triggers."""
         doc = {**_DOC_DETAIL, "contact_phone": "555-1234", "contact_tax_id": "TX-9999"}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)),
             patch("ui.api_client.list_contacts", new=AsyncMock(return_value={"items": _CONTACTS, "total": 1})),
             patch("ui.api_client.get_payment_terms", new=AsyncMock(return_value=_TERMS)),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
         ):
-            r = await ui_client.get("/docs/d:1", cookies=_authed())
+            r = await ui_client.get("/docs/d:1")
         assert r.status_code == 200
         html = r.content.decode()
         assert 'hx-get="/docs/d:1/field/contact_phone/edit"' in html
@@ -12047,13 +12478,14 @@ class TestDocContactBoxLayout:
     async def test_doc_detail_ship_to_section_present(self, ui_client):
         """Doc detail page: Ship To section is rendered with address and attn fields."""
         doc = {**_DOC_DETAIL, "contact_id": "ct:1", "contact_shipping_address": "123 Ship St", "shipping_attn": "Bob"}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)),
             patch("ui.api_client.list_contacts", new=AsyncMock(return_value={"items": _CONTACTS, "total": 1})),
             patch("ui.api_client.get_payment_terms", new=AsyncMock(return_value=_TERMS)),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
         ):
-            r = await ui_client.get("/docs/d:1", cookies=_authed())
+            r = await ui_client.get("/docs/d:1")
         assert r.status_code == 200
         html = r.content.decode()
         assert "Ship To" in html
@@ -12072,11 +12504,12 @@ class TestDocContactBoxLayout:
             ],
         }
         doc = {**_DOC_DETAIL, "contact_id": "ct:1", "contact_billing_address": "1 Main St"}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)),
             patch("ui.api_client.get_contact", new=AsyncMock(return_value=contact)),
         ):
-            r = await ui_client.get("/docs/d:1/field/contact_billing_address/edit", cookies=_authed())
+            r = await ui_client.get("/docs/d:1/field/contact_billing_address/edit")
         assert r.status_code == 200
         assert b"<select" in r.content
         assert b"1 Main St" in r.content
@@ -12087,11 +12520,12 @@ class TestDocContactBoxLayout:
         """Editing contact_billing_address: falls back to text input when no addresses stored."""
         contact = {"entity_id": "ct:1", "name": "Alice", "addresses": []}
         doc = {**_DOC_DETAIL, "contact_id": "ct:1", "contact_billing_address": ""}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)),
             patch("ui.api_client.get_contact", new=AsyncMock(return_value=contact)),
         ):
-            r = await ui_client.get("/docs/d:1/field/contact_billing_address/edit", cookies=_authed())
+            r = await ui_client.get("/docs/d:1/field/contact_billing_address/edit")
         assert r.status_code == 200
         assert b'type="text"' in r.content
 
@@ -12128,6 +12562,7 @@ class TestInventoryItemDetailFixes:
     async def test_item_detail_renders_print_label_loader_without_crashing(self, ui_client):
         """GET /inventory/{id} should render print-label dropdown loader without crashing."""
         item = {**_ITEM_WITH_LOCATION, "sku": "SKU-PRINT-1"}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA_WITH_LOCATION)),
             patch("ui.api_client.get_item", new=AsyncMock(return_value=item)),
@@ -12139,7 +12574,7 @@ class TestInventoryItemDetailFixes:
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
-            r = await ui_client.get("/inventory/item:abc1", cookies=_authed())
+            r = await ui_client.get("/inventory/item:abc1")
         assert r.status_code == 200
         assert b'/api/items/item:abc1/label-templates' in r.content
 
@@ -12155,6 +12590,7 @@ class TestInventoryItemDetailFixes:
     async def test_location_field_editable_on_item_detail(self, ui_client):
         """GET /inventory/{id}: location_name field rendered as editable (click-to-edit).
         GET /api/items/{id}/field/location_name/edit: returns select with location options."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA_WITH_LOCATION)),
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM_WITH_LOCATION)),
@@ -12166,7 +12602,7 @@ class TestInventoryItemDetailFixes:
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[{"name": "Retail"}, {"name": "Wholesale"}, {"name": "Cost"}])),
         ):
-            r = await ui_client.get("/inventory/item:abc1", cookies=_authed())
+            r = await ui_client.get("/inventory/item:abc1")
         assert r.status_code == 200
         html = r.content.decode()
         # location_name cell must be clickable/editable (hx-get edit endpoint present)
@@ -12182,7 +12618,7 @@ class TestInventoryItemDetailFixes:
             patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": _LOCATIONS, "total": 2})),
         ):
-            r2 = await ui_client.get("/api/items/item:abc1/field/location_name/edit", cookies=_authed())
+            r2 = await ui_client.get("/api/items/item:abc1/field/location_name/edit")
         assert r2.status_code == 200
         edit_html = r2.content.decode()
         # location_name renders as a plain <select> with "Add new location" link
@@ -12195,10 +12631,10 @@ class TestInventoryItemDetailFixes:
     async def test_attachment_proxy_route(self, ui_client):
         """GET /static/attachments/... proxies to API instead of serving from UI static dir."""
         patcher, calls = _api_get_mock()
+        ui_client.cookies.update(_authed())
         with patcher:
             r = await ui_client.get(
                 f"/static/attachments/{_TEST_COMPANY}/att1.jpg",
-                cookies=_authed(),
             )
         assert r.status_code == 200
         assert r.content == b"fake-image-bytes"
@@ -12209,6 +12645,7 @@ class TestInventoryItemDetailFixes:
     @pytest.mark.asyncio
     async def test_actions_panel_removed(self, ui_client):
         """GET /inventory/{id}: no 'Actions' section; Advanced panel present instead."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA_WITH_LOCATION)),
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM_WITH_LOCATION)),
@@ -12220,7 +12657,7 @@ class TestInventoryItemDetailFixes:
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[{"name": "Retail"}, {"name": "Wholesale"}, {"name": "Cost"}])),
         ):
-            r = await ui_client.get("/inventory/item:abc1", cookies=_authed())
+            r = await ui_client.get("/inventory/item:abc1")
         assert r.status_code == 200
         html = r.content.decode()
         # Old "Actions" heading/section must not appear
@@ -12232,6 +12669,7 @@ class TestInventoryItemDetailFixes:
     @pytest.mark.asyncio
     async def test_location_edit_no_locations_returns_select_not_text(self, ui_client):
         """When get_locations returns empty list, /field/location_name/edit returns a combobox (allow_custom=True), not plain text input."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA_WITH_LOCATION)),
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM_WITH_LOCATION)),
@@ -12239,7 +12677,7 @@ class TestInventoryItemDetailFixes:
             patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
         ):
-            r = await ui_client.get("/api/items/item:abc1/field/location_name/edit", cookies=_authed())
+            r = await ui_client.get("/api/items/item:abc1/field/location_name/edit")
         assert r.status_code == 200
         html = r.content.decode()
         # location_name renders as a plain <select> with "Add new location" link (even with 0 options)
@@ -12250,6 +12688,7 @@ class TestInventoryItemDetailFixes:
     @pytest.mark.asyncio
     async def test_location_display_endpoint_returns_clickable_cell(self, ui_client):
         """GET /field/location_name/display returns a display_cell with hx-get edit trigger (ESC cancel works)."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA_WITH_LOCATION)),
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM_WITH_LOCATION)),
@@ -12257,7 +12696,7 @@ class TestInventoryItemDetailFixes:
             patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": _LOCATIONS, "total": 2})),
         ):
-            r = await ui_client.get("/api/items/item:abc1/field/location_name/display", cookies=_authed())
+            r = await ui_client.get("/api/items/item:abc1/field/location_name/display")
         assert r.status_code == 200
         html = r.content.decode()
         # Must render as a clickable display cell (not editing state)
@@ -12268,6 +12707,7 @@ class TestInventoryItemDetailFixes:
     async def test_patch_qty_invalid_returns_editable_td_with_error_class(self, ui_client):
         """PATCH quantity with non-numeric value must return editable <td class='... cell--error'> so
         user can correct inline — not a bare <p> that breaks layout and requires page reload."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
@@ -12277,7 +12717,6 @@ class TestInventoryItemDetailFixes:
             r = await ui_client.patch(
                 "/api/items/gc:123/field/quantity",
                 data={"value": "abc"},
-                cookies=_authed(),
             )
         assert r.status_code == 200
         html = r.content.decode()
@@ -12292,6 +12731,7 @@ class TestInventoryItemDetailFixes:
     @pytest.mark.asyncio
     async def test_patch_price_invalid_returns_editable_td_with_error_class(self, ui_client):
         """PATCH a price field with non-numeric value must return editable <td cell--error>."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
@@ -12301,7 +12741,6 @@ class TestInventoryItemDetailFixes:
             r = await ui_client.patch(
                 "/api/items/gc:123/field/retail_price",
                 data={"value": "notanumber"},
-                cookies=_authed(),
             )
         assert r.status_code == 200
         html = r.content.decode()
@@ -12315,6 +12754,7 @@ class TestInventoryItemDetailFixes:
         item = {**_ITEM, "allow_splitting": True, "quantity": 100, "sell_by": "piece"}
         preview = _split_preview_dict(sell_by="piece", sell_by_label="Piece", sell_by_type="pieces",
                                       parent_qty=100.0, has_weight=False, parent_weight=None)
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_item", new=AsyncMock(return_value=item)),
@@ -12327,7 +12767,7 @@ class TestInventoryItemDetailFixes:
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
-            r = await ui_client.get(f"/inventory/{item['entity_id']}", cookies=_authed())
+            r = await ui_client.get(f"/inventory/{item['entity_id']}")
         assert r.status_code == 200
         html = r.content.decode()
         assert "batch_qty" in html
@@ -12340,6 +12780,7 @@ class TestInventoryItemDetailFixes:
         item = {**_ITEM, "allow_splitting": False, "quantity": 100, "sell_by": "piece"}
         preview = _split_preview_dict(sell_by="piece", sell_by_label="Piece", sell_by_type="pieces",
                                       parent_qty=100.0, has_weight=False, parent_weight=None)
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_item", new=AsyncMock(return_value=item)),
@@ -12352,7 +12793,7 @@ class TestInventoryItemDetailFixes:
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
-            r = await ui_client.get(f"/inventory/{item['entity_id']}", cookies=_authed())
+            r = await ui_client.get(f"/inventory/{item['entity_id']}")
         assert r.status_code == 200
         assert b"batch_qty" not in r.content
 
@@ -12371,20 +12812,22 @@ class TestListFieldPatch:
         # Changing list type restructures the column set, so the handler re-renders the page
         # (HX-Redirect to the same list) rather than swapping a single display cell. It routes
         # through change_list_type (allowed while issued), not the draft-only patch.
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.change_list_type", new=AsyncMock(return_value={"ok": True, "list_type": "transfer"})):
             r = await ui_client.patch("/lists/list:1/field/list_type",
-                                      data={"value": "transfer"}, cookies=_authed())
+                                      data={"value": "transfer"})
         assert r.status_code == 204, r.text
         assert r.headers.get("HX-Redirect") == "/lists/list:1"
 
     @pytest.mark.asyncio
     async def test_patch_receiver_type_returns_display_cell(self, ui_client):
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.patch_list", new=AsyncMock(return_value={"event_id": "e1"})),
             patch("ui.api_client.get_list", new=AsyncMock(return_value={**self._LST, "receiver_type": "supplier"})),
         ):
             r = await ui_client.patch("/lists/list:1/field/receiver_type",
-                                      data={"value": "supplier"}, cookies=_authed())
+                                      data={"value": "supplier"})
         assert r.status_code == 200, r.text
         assert "supplier" in r.text.lower()
 
@@ -12411,12 +12854,12 @@ class TestBulkActionsPhase6SendTo:
 
     @pytest.mark.asyncio
     async def test_docs_from_items_shows_modal(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.list_docs", new=AsyncMock(return_value={"items": [], "total": 0})):
             r = await ui_client.post(
                 "/docs/from-items",
                 content=b"selected=item%3Ap1",
                 headers={"content-type": "application/x-www-form-urlencoded"},
-                cookies=_authed(),
             )
         assert r.status_code == 200
         assert b"Send to Invoice" in r.content
@@ -12426,11 +12869,11 @@ class TestBulkActionsPhase6SendTo:
 
     @pytest.mark.asyncio
     async def test_docs_from_items_no_selection(self, ui_client):
+        ui_client.cookies.update(_authed())
         r = await ui_client.post(
             "/docs/from-items",
             content=b"",
             headers={"content-type": "application/x-www-form-urlencoded"},
-            cookies=_authed(),
         )
         assert r.status_code == 200
         assert b"No items selected" in r.content
@@ -12440,6 +12883,7 @@ class TestBulkActionsPhase6SendTo:
     @pytest.mark.asyncio
     async def test_docs_from_items_new_creates_draft_invoice(self, ui_client):
         mock_create = AsyncMock(return_value={"id": "doc:INV-001"})
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value=self._PIECE_ITEM)),
             patch("ui.api_client.create_doc", new=mock_create),
@@ -12448,7 +12892,6 @@ class TestBulkActionsPhase6SendTo:
                 "/docs/from-items/new",
                 content=b"selected=item%3Ap1",
                 headers={"content-type": "application/x-www-form-urlencoded"},
-                cookies=_authed(),
             )
         assert r.status_code == 204
         assert "doc:INV-001" in r.headers.get("hx-redirect", "")
@@ -12466,6 +12909,7 @@ class TestBulkActionsPhase6SendTo:
             "sale_price": 500, "attributes": {},
         }
         mock_create = AsyncMock(return_value={"id": "doc:INV-002"})
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value=item)),
             patch("ui.api_client.create_doc", new=mock_create),
@@ -12474,7 +12918,6 @@ class TestBulkActionsPhase6SendTo:
                 "/docs/from-items/new",
                 content=b"selected=item%3Aw1",
                 headers={"content-type": "application/x-www-form-urlencoded"},
-                cookies=_authed(),
             )
         assert r.status_code == 204
         line = mock_create.call_args[0][1]["line_items"][0]
@@ -12490,6 +12933,7 @@ class TestBulkActionsPhase6SendTo:
             "attributes": {},
         }
         mock_create = AsyncMock(return_value={"id": "doc:INV-003"})
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value=item)),
             patch("ui.api_client.create_doc", new=mock_create),
@@ -12498,7 +12942,6 @@ class TestBulkActionsPhase6SendTo:
                 "/docs/from-items/new",
                 content=b"selected=item%3Ar1",
                 headers={"content-type": "application/x-www-form-urlencoded"},
-                cookies=_authed(),
             )
         assert r.status_code == 204
         line = mock_create.call_args[0][1]["line_items"][0]
@@ -12510,6 +12953,7 @@ class TestBulkActionsPhase6SendTo:
     @pytest.mark.asyncio
     async def test_docs_from_items_add_appends_lines(self, ui_client):
         existing_doc = {"line_items": [{"description": "Old line", "quantity": 1, "unit_price": 100}]}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value=self._PIECE_ITEM)),
             patch("ui.api_client.get_doc", new=AsyncMock(return_value=existing_doc)),
@@ -12519,7 +12963,6 @@ class TestBulkActionsPhase6SendTo:
                 "/docs/from-items/add",
                 content=b"selected=item%3Ap1&target_id=doc%3AINV-001",
                 headers={"content-type": "application/x-www-form-urlencoded"},
-                cookies=_authed(),
             )
         assert r.status_code == 204
         assert "doc:INV-001" in r.headers.get("hx-redirect", "")
@@ -12528,11 +12971,11 @@ class TestBulkActionsPhase6SendTo:
 
     @pytest.mark.asyncio
     async def test_docs_from_items_add_no_target(self, ui_client):
+        ui_client.cookies.update(_authed())
         r = await ui_client.post(
             "/docs/from-items/add",
             content=b"selected=item%3Ap1",
             headers={"content-type": "application/x-www-form-urlencoded"},
-            cookies=_authed(),
         )
         assert r.status_code == 200
         assert b"No items or target selected" in r.content
@@ -12541,12 +12984,12 @@ class TestBulkActionsPhase6SendTo:
 
     @pytest.mark.asyncio
     async def test_lists_from_items_shows_modal(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.list_lists", new=AsyncMock(return_value={"items": [], "total": 0})):
             r = await ui_client.post(
                 "/lists/from-items",
                 content=b"selected=item%3Ap1",
                 headers={"content-type": "application/x-www-form-urlencoded"},
-                cookies=_authed(),
             )
         assert r.status_code == 200
         assert b"Send to List" in r.content
@@ -12554,6 +12997,7 @@ class TestBulkActionsPhase6SendTo:
     @pytest.mark.asyncio
     async def test_lists_from_items_new_creates_draft(self, ui_client):
         mock_create = AsyncMock(return_value={"id": "list:L-001"})
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value=self._PIECE_ITEM)),
             patch("ui.api_client.create_list", new=mock_create),
@@ -12562,7 +13006,6 @@ class TestBulkActionsPhase6SendTo:
                 "/lists/from-items/new",
                 content=b"selected=item%3Ap1",
                 headers={"content-type": "application/x-www-form-urlencoded"},
-                cookies=_authed(),
             )
         assert r.status_code == 204
         assert "list:L-001" in r.headers.get("hx-redirect", "")
@@ -12570,6 +13013,7 @@ class TestBulkActionsPhase6SendTo:
     @pytest.mark.asyncio
     async def test_lists_from_items_add_appends_lines(self, ui_client):
         existing_list = {"line_items": [{"description": "Old", "quantity": 1, "unit_price": 50}], "version": 7}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value=self._PIECE_ITEM)),
             patch("ui.api_client.get_list", new=AsyncMock(return_value=existing_list)),
@@ -12579,7 +13023,6 @@ class TestBulkActionsPhase6SendTo:
                 "/lists/from-items/add",
                 content=b"selected=item%3Ap1&target_id=list%3AL-001",
                 headers={"content-type": "application/x-www-form-urlencoded"},
-                cookies=_authed(),
             )
         assert r.status_code == 204
         assert "list:L-001" in r.headers.get("hx-redirect", "")
@@ -12592,10 +13035,10 @@ class TestBulkActionsPhase6SendTo:
     @pytest.mark.asyncio
     async def test_docs_from_items_search_returns_options(self, ui_client):
         docs = [{"id": "doc:INV-001", "ref_id": "INV-001", "status": "draft", "contact_name": "Alice"}]
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.list_docs", new=AsyncMock(return_value={"items": docs, "total": 1})):
             r = await ui_client.get(
                 "/docs/from-items/search?q=INV",
-                cookies=_authed(),
             )
         assert r.status_code == 200
         assert b"INV-001" in r.content
@@ -12603,10 +13046,10 @@ class TestBulkActionsPhase6SendTo:
     @pytest.mark.asyncio
     async def test_lists_from_items_search_returns_options(self, ui_client):
         lists = [{"id": "list:L-001", "ref_id": "L-001", "status": "draft"}]
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.list_lists", new=AsyncMock(return_value={"items": lists, "total": 1})):
             r = await ui_client.get(
                 "/lists/from-items/search?q=L-001",
-                cookies=_authed(),
             )
         assert r.status_code == 200
         assert b"L-001" in r.content
@@ -12816,12 +13259,13 @@ class TestCatalogConsolidationEndpoint:
             {"sku": "W", "entity_id": "item:old", "name": "W", "quantity": 60, "allow_splitting": True,
              "created_at": "2026-01-01", "sell_by": "piece"},
         ]
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_units", new=AsyncMock(return_value=self._UNITS)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value={"settings": {"inventory_method": "fifo"}})),
             patch("ui.api_client.list_items", new=AsyncMock(side_effect=self._by_text(items))),
         ):
-            r = await ui_client.get("/docs/catalog-search?q=W", cookies=_authed())
+            r = await ui_client.get("/docs/catalog-search?q=W")
         assert r.status_code == 200
         data = r.json()
         assert len(data) == 1                          # collapsed to one option
@@ -12835,12 +13279,13 @@ class TestCatalogConsolidationEndpoint:
             {"sku": "DIA", "entity_id": "item:b", "name": "DIA", "quantity": 1, "allow_splitting": False,
              "batch_no": "B", "sell_by": "piece"},
         ]
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_units", new=AsyncMock(return_value=self._UNITS)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value={"settings": {}})),
             patch("ui.api_client.list_items", new=AsyncMock(side_effect=self._by_text(items))),
         ):
-            r = await ui_client.get("/docs/catalog-search?q=DIA", cookies=_authed())
+            r = await ui_client.get("/docs/catalog-search?q=DIA")
         assert r.status_code == 200
         assert len(r.json()) == 2                       # each unique lot stays selectable
 
@@ -12861,12 +13306,13 @@ class TestCatalogConsolidationEndpoint:
                 return {"items": []}
             return {"items": sold if params.get("status") == "sold" else []}
 
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_units", new=AsyncMock(return_value=self._UNITS)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value={"settings": {"inventory_method": "fifo"}})),
             patch("ui.api_client.list_items", new=AsyncMock(side_effect=_list)),
         ):
-            r = await ui_client.get("/docs/catalog-search?q=W&doc_type=credit_note", cookies=_authed())
+            r = await ui_client.get("/docs/catalog-search?q=W&doc_type=credit_note")
         assert r.status_code == 200
         data = r.json()
         assert len(data) == 2                                    # NOT collapsed -> both lots offered
@@ -12936,6 +13382,7 @@ class TestSendToPurchaseOrder:
     @pytest.mark.asyncio
     async def test_send_to_new_po_builds_purchase_lines(self, ui_client):
         mock_create = AsyncMock(return_value={"id": "doc:PO-001"})
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value=self._PO_ITEM)),
             patch("ui.api_client.get_units", new=AsyncMock(return_value=self._UNITS)),
@@ -12945,7 +13392,6 @@ class TestSendToPurchaseOrder:
                 "/api/items/send-to",
                 content=b"selected=item%3Apo1&send_to_doc_type=purchase_order&send_to_target=__new__",
                 headers={"content-type": "application/x-www-form-urlencoded"},
-                cookies=_authed(),
             )
         assert r.status_code == 204
         assert "doc:PO-001" in r.headers.get("hx-redirect", "")
@@ -12963,6 +13409,7 @@ class TestSendToPurchaseOrder:
         item = dict(self._PO_ITEM)
         item.pop("reorder_qty")
         mock_create = AsyncMock(return_value={"id": "doc:PO-002"})
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value=item)),
             patch("ui.api_client.get_units", new=AsyncMock(return_value=self._UNITS)),
@@ -12972,7 +13419,6 @@ class TestSendToPurchaseOrder:
                 "/api/items/send-to",
                 content=b"selected=item%3Apo1&send_to_doc_type=purchase_order&send_to_target=__new__",
                 headers={"content-type": "application/x-www-form-urlencoded"},
-                cookies=_authed(),
             )
         assert r.status_code == 204
         line = mock_create.call_args[0][1]["line_items"][0]
@@ -12981,6 +13427,7 @@ class TestSendToPurchaseOrder:
     @pytest.mark.asyncio
     async def test_send_to_existing_po_appends_lines(self, ui_client):
         existing = {"line_items": [{"description": "Old", "quantity": 1, "unit_price": 5}]}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value=self._PO_ITEM)),
             patch("ui.api_client.get_units", new=AsyncMock(return_value=self._UNITS)),
@@ -12991,7 +13438,6 @@ class TestSendToPurchaseOrder:
                 "/api/items/send-to",
                 content=b"selected=item%3Apo1&send_to_doc_type=purchase_order&send_to_target=doc%3APO-001",
                 headers={"content-type": "application/x-www-form-urlencoded"},
-                cookies=_authed(),
             )
         assert r.status_code == 204
         assert "doc:PO-001" in r.headers.get("hx-redirect", "")
@@ -13001,10 +13447,10 @@ class TestSendToPurchaseOrder:
     @pytest.mark.asyncio
     async def test_send_to_search_lists_draft_pos(self, ui_client):
         pos = [{"id": "doc:PO-001", "ref_id": "PO-001", "status": "draft"}]
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.list_docs", new=AsyncMock(return_value={"items": pos, "total": 1})):
             r = await ui_client.get(
                 "/api/items/send-to/search?doc_type=purchase_order&q=PO",
-                cookies=_authed(),
             )
         assert r.status_code == 200
         assert b"PO-001" in r.content
@@ -13027,6 +13473,7 @@ class TestSendToPurchaseOrder:
             {"id": "doc:PO-A", "event_id": "evt-A"},
             {"id": "doc:PO-B", "event_id": "evt-B"},
         ])
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item", new=_get_item),
             patch("ui.api_client.get_units", new=AsyncMock(return_value=self._UNITS)),
@@ -13037,7 +13484,6 @@ class TestSendToPurchaseOrder:
                 content=b"selected=item%3Apo1&selected=item%3Apo2"
                         b"&send_to_doc_type=purchase_order&send_to_target=__new__",
                 headers={"content-type": "application/x-www-form-urlencoded"},
-                cookies=_authed(),
             )
         assert r.status_code == 200
         assert mock_create.call_count == 2                    # one PO per supplier group
@@ -13083,6 +13529,7 @@ class TestSendToPurchaseOrder:
             {"id": "doc:PO-A", "event_id": "evt-A"},
             APIError(500, "supplier create failed"),
         ])
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item", new=_get_item),
             patch("ui.api_client.get_units", new=AsyncMock(return_value=self._UNITS)),
@@ -13093,7 +13540,6 @@ class TestSendToPurchaseOrder:
                 content=b"selected=item%3Apo1&selected=item%3Apo2"
                         b"&send_to_doc_type=purchase_order&send_to_target=__new__",
                 headers={"content-type": "application/x-www-form-urlencoded"},
-                cookies=_authed(),
             )
         assert r.status_code == 200
         assert mock_create.call_count == 2                  # both groups attempted
@@ -13117,6 +13563,7 @@ class TestSendToPurchaseOrder:
             APIError(500, "acme failed"),
             APIError(500, "beta failed"),
         ])
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item", new=_get_item),
             patch("ui.api_client.get_units", new=AsyncMock(return_value=self._UNITS)),
@@ -13127,7 +13574,6 @@ class TestSendToPurchaseOrder:
                 content=b"selected=item%3Apo1&selected=item%3Apo2"
                         b"&send_to_doc_type=purchase_order&send_to_target=__new__",
                 headers={"content-type": "application/x-www-form-urlencoded"},
-                cookies=_authed(),
             )
         assert r.status_code == 200
         assert b"No draft purchase orders could be created" in r.content
@@ -13148,6 +13594,7 @@ class TestSendToExistingList:
     async def test_send_to_existing_list_forwards_expected_version(self, ui_client):
         existing = {"line_items": [{"description": "Old", "quantity": 1, "unit_price": 5}], "version": 4}
         mock_patch = AsyncMock(return_value={"event_id": "e1"})
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value=self._ITEM)),
             patch("ui.api_client.get_list", new=AsyncMock(return_value=existing)),
@@ -13157,7 +13604,6 @@ class TestSendToExistingList:
                 "/api/items/send-to",
                 content=b"selected=item%3Al1&send_to_doc_type=list&send_to_target=list%3AL-001",
                 headers={"content-type": "application/x-www-form-urlencoded"},
-                cookies=_authed(),
             )
         assert r.status_code == 204
         assert "list:L-001" in r.headers.get("hx-redirect", "")
@@ -13178,47 +13624,52 @@ class TestSettingsPurchasing:
 
     @pytest.mark.asyncio
     async def test_settings_purchasing_page(self, ui_client):
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_purchasing_taxes", new=AsyncMock(return_value=_TAXES)),
             patch("ui.api_client.get_purchasing_payment_terms", new=AsyncMock(return_value=_TERMS)),
         ):
-            r = await ui_client.get("/settings/purchasing", cookies=_authed())
+            r = await ui_client.get("/settings/purchasing")
         assert r.status_code == 200
         assert b"Purchasing Documents Settings" in r.content
 
     @pytest.mark.asyncio
     async def test_settings_purchasing_taxes_tab(self, ui_client):
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_purchasing_taxes", new=AsyncMock(return_value=_TAXES)),
             patch("ui.api_client.get_purchasing_payment_terms", new=AsyncMock(return_value=_TERMS)),
         ):
-            r = await ui_client.get("/settings/purchasing?tab=taxes", cookies=_authed())
+            r = await ui_client.get("/settings/purchasing?tab=taxes")
         assert r.status_code == 200
         assert b"VAT" in r.content
 
     @pytest.mark.asyncio
     async def test_settings_purchasing_terms_conditions_tab(self, ui_client):
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_purchasing_taxes", new=AsyncMock(return_value=_TAXES)),
             patch("ui.api_client.get_terms_conditions", new=AsyncMock(return_value=[
                 {"name": "Standard Purchase Terms", "text": "Goods must conform...", "doc_types": ["purchase_order"], "is_default": True},
             ])),
         ):
-            r = await ui_client.get("/settings/purchasing?tab=terms-conditions", cookies=_authed())
+            r = await ui_client.get("/settings/purchasing?tab=terms-conditions")
         assert r.status_code == 200
         assert b"Standard Purchase Terms" in r.content
 
     @pytest.mark.asyncio
     async def test_purchasing_tax_inline_edit(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_purchasing_taxes", new=AsyncMock(return_value=_TAXES)):
-            r = await ui_client.get("/settings/purchasing-taxes/0/name/edit", cookies=_authed())
+            r = await ui_client.get("/settings/purchasing-taxes/0/name/edit")
         assert r.status_code == 200
         assert b"<input" in r.content
 
     @pytest.mark.asyncio
     async def test_purchasing_term_inline_edit(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_purchasing_payment_terms", new=AsyncMock(return_value=_TERMS)):
-            r = await ui_client.get("/settings/purchasing-terms/0/name/edit", cookies=_authed())
+            r = await ui_client.get("/settings/purchasing-terms/0/name/edit")
         assert r.status_code == 200
         assert b"<input" in r.content
 
@@ -13301,10 +13752,11 @@ class TestUnitsSettings:
         """GET /settings/inventory?tab=units renders units table."""
         from contextlib import ExitStack
         mocks = {k: patch(k, new=v) for k, v in _SETTINGS_MOCKS_UNITS.items()}
+        ui_client.cookies.update(_authed())
         with ExitStack() as stack:
             for m in mocks.values():
                 stack.enter_context(m)
-            r = await ui_client.get("/settings/inventory?tab=units", cookies=_authed())
+            r = await ui_client.get("/settings/inventory?tab=units")
         assert r.status_code == 200
         assert b"piece" in r.content
         assert b"carat" in r.content
@@ -13322,6 +13774,7 @@ class TestUnitsSettings:
         new_unit = {"name": "tola", "label": "Tola", "decimals": 3}
         mock_get = AsyncMock(return_value=current)
         mock_put = AsyncMock(return_value=current + [new_unit])
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_units", new=mock_get),
             patch("ui.api_client.patch_units", new=mock_put),
@@ -13330,7 +13783,6 @@ class TestUnitsSettings:
                 "/settings/units/add",
                 content=b"name=tola&label=Tola&decimals=3",
                 headers={"content-type": "application/x-www-form-urlencoded"},
-                cookies=_authed(),
             )
         assert r.status_code == 204
         assert r.headers.get("hx-redirect") == "/settings/inventory?tab=units"
@@ -13370,13 +13822,13 @@ class TestUnitsSettings:
         ]
         mock_get = AsyncMock(return_value=current)
         mock_put = AsyncMock(return_value=[current[0]])
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_units", new=mock_get),
             patch("ui.api_client.patch_units", new=mock_put),
         ):
             r = await ui_client.delete(
                 "/settings/units/gram",
-                cookies=_authed(),
             )
         assert r.status_code == 204
         assert r.headers.get("hx-redirect") == "/settings/inventory?tab=units"
@@ -13406,6 +13858,7 @@ class TestUnitsSettings:
         updated = [{"name": "gram", "label": "Gramme", "decimals": 2}]
         mock_get = AsyncMock(side_effect=[current, updated])
         mock_put = AsyncMock(return_value=updated)
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_units", new=mock_get),
             patch("ui.api_client.patch_units", new=mock_put),
@@ -13414,7 +13867,6 @@ class TestUnitsSettings:
                 "/settings/units/gram/label",
                 content=b"value=Gramme",
                 headers={"content-type": "application/x-www-form-urlencoded"},
-                cookies=_authed(),
             )
         assert r.status_code == 200
         assert b"Gramme" in r.content
@@ -13426,6 +13878,7 @@ class TestUnitsSettings:
         updated = [{"name": "carat", "label": "Carat", "decimals": 4}]
         mock_get = AsyncMock(side_effect=[current, updated])
         mock_put = AsyncMock(return_value=updated)
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_units", new=mock_get),
             patch("ui.api_client.patch_units", new=mock_put),
@@ -13434,7 +13887,6 @@ class TestUnitsSettings:
                 "/settings/units/carat/decimals",
                 content=b"value=4",
                 headers={"content-type": "application/x-www-form-urlencoded"},
-                cookies=_authed(),
             )
         assert r.status_code == 200
         assert b"4" in r.content
@@ -13921,11 +14373,11 @@ class TestCsvImportSellByValidation:
 
         p_review = patch("ui.api_client.plan_import_rows", new=AsyncMock(return_value=_CLEAN_ROWS_PREVIEW))
 
+        ui_client.cookies.update(_authed())
         with p_price, p_schema, p_units, p_vert, p_review:
             # Step 1: upload CSV
             r = await ui_client.post(
                 "/inventory/import/preview",
-                cookies=_authed(),
                 files={"csv_file": ("items.csv", csv_bytes, "text/csv")},
             )
             assert r.status_code == 200
@@ -13936,7 +14388,6 @@ class TestCsvImportSellByValidation:
             # Step 2: apply column mapping (sell_by -> sell_by)
             r2 = await ui_client.post(
                 "/inventory/import/mapped",
-                cookies=_authed(),
                 data={
                     "csv_ref": csv_ref,
                     "map__sku": "sku",
@@ -13947,7 +14398,7 @@ class TestCsvImportSellByValidation:
                 },
             )
             assert r2.status_code == 303, r2.text[:800]
-            r2 = await ui_client.get(r2.headers["location"], cookies=_authed())
+            r2 = await ui_client.get(r2.headers["location"])
         assert r2.status_code == 200
         # Must NOT show fix-errors panel - sell_by=piece is a valid unit
         assert b"fix-errors" not in r2.content, (
@@ -13983,7 +14434,8 @@ class TestCsvImportSellByValidation:
     @pytest.mark.asyncio
     async def test_labels_shortcut_redirects_to_settings(self, label_client):
         """GET /labels redirects to /settings/labels (single page, no redundancy)."""
-        r = await label_client.get("/labels", cookies=_authed())
+        label_client.cookies.update(_authed())
+        r = await label_client.get("/labels")
         assert r.status_code == 302
         assert "/settings/labels" in r.headers.get("location", "")
 
@@ -14009,8 +14461,9 @@ class TestCsvImportSellByValidation:
             async def post(self, url, **kw):
                 return MockResponse()
 
+        label_client.cookies.update(_authed())
         with patch("httpx.AsyncClient", return_value=MockClient()):
-            r = await label_client.get("/settings/labels", cookies=_authed())
+            r = await label_client.get("/settings/labels")
         assert r.status_code == 302
         assert r.headers["location"] == "/settings/labels/t1"
 
@@ -14040,8 +14493,9 @@ class TestCsvImportSellByValidation:
             async def post(self, url, **kw):
                 return MockResponse()
 
+        label_client.cookies.update(_authed())
         with patch("httpx.AsyncClient", return_value=MockClient()):
-            r = await label_client.get("/settings/labels/t1", cookies=_authed())
+            r = await label_client.get("/settings/labels/t1")
         assert r.status_code == 200
         html = r.text
         # Canvas preview element
@@ -14091,8 +14545,9 @@ class TestCsvImportSellByValidation:
                 call_log.append(url)
                 return MockResponse(status=201)
 
+        label_client.cookies.update(_authed())
         with patch("httpx.AsyncClient", return_value=MockClient()):
-            r = await label_client.get("/settings/labels", cookies=_authed())
+            r = await label_client.get("/settings/labels")
         # After seeding, redirects to first template
         assert r.status_code == 302
         assert "/settings/labels/p1" in r.headers["location"]
@@ -14123,8 +14578,9 @@ class TestCsvImportSellByValidation:
             async def post(self, url, **kw):
                 return MockResponse()
 
+        label_client.cookies.update(_authed())
         with patch("httpx.AsyncClient", return_value=MockClient()):
-            r = await label_client.get("/settings/labels/t1", cookies=_authed())
+            r = await label_client.get("/settings/labels/t1")
         html = r.text
         # Global function assignment
         assert "window.labelEditorUpdatePreview" in html
@@ -14134,7 +14590,8 @@ class TestCsvImportSellByValidation:
     @pytest.mark.asyncio
     async def test_print_single_route_exists(self, label_client):
         """GET /labels/print/{id} must return 200 HTML (single-item print UI route)."""
-        r = await label_client.get("/labels/print/item-123", cookies=_authed())
+        label_client.cookies.update(_authed())
+        r = await label_client.get("/labels/print/item-123")
         # Returns printable HTML page (200) or 302 if auth fails in test env
         assert r.status_code in (200, 302), (
             f"Expected 200 or 302, got {r.status_code}: route may not be registered"
@@ -14163,8 +14620,9 @@ class TestCsvImportSellByValidation:
             async def post(self, url, **kw):
                 return MockResponse()
 
+        label_client.cookies.update(_authed())
         with patch("httpx.AsyncClient", return_value=MockClient()):
-            r = await label_client.get("/settings/labels/t1", cookies=_authed())
+            r = await label_client.get("/settings/labels/t1")
         html = r.text
         # JS creates barcode blocks with img + bc-text
         assert "bc-text" in html
@@ -14194,8 +14652,9 @@ class TestCsvImportSellByValidation:
             async def post(self, url, **kw):
                 return MockResponse()
 
+        label_client.cookies.update(_authed())
         with patch("httpx.AsyncClient", return_value=MockClient()):
-            r = await label_client.get("/settings/labels/t1", cookies=_authed())
+            r = await label_client.get("/settings/labels/t1")
         html = r.text
         assert 'name="copies"' not in html
 
@@ -14236,15 +14695,17 @@ class TestDocumentsOverhaul:
     @pytest.mark.asyncio
     async def test_pdf_proxy_route_exists(self, ui_client):
         """GET /docs/{id}/pdf proxies to API; returns 500 when API unreachable (no mock)."""
-        r = await ui_client.get("/docs/doc:TEST-001/pdf", cookies=_authed())
+        ui_client.cookies.update(_authed())
+        r = await ui_client.get("/docs/doc:TEST-001/pdf")
         # Without API mock, we expect a proxy error (500) or redirect - not 404
         assert r.status_code != 404
 
     @pytest.mark.asyncio
     async def test_doc_detail_print_link_exists(self, ui_client):
         """Print link on doc detail page points to /docs/{id}/print (not PDF proxy)."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_BLANK_DOC)):
-            r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+            r = await ui_client.get("/docs/doc:INV-2026-0001")
         content = r.content.decode()
         assert '/docs/doc:INV-2026-0001/print' in content
         assert '/api/docs/doc:INV-2026-0001/pdf' not in content
@@ -14255,8 +14716,9 @@ class TestDocumentsOverhaul:
         server's own explanation alone, never a bare 'Error:' prefix in front of it."""
         non_shipping_list = {**_BLANK_DOC, "entity_id": "list:L-001", "ref_id": "L-001", "doc_type": "list",
                              "list_type": "sales_order"}
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_list", new=AsyncMock(return_value=non_shipping_list)):
-            r = await ui_client.get("/lists/list:L-001/print?layout=commercial_invoice", cookies=_authed())
+            r = await ui_client.get("/lists/list:L-001/print?layout=commercial_invoice")
         assert r.status_code == 422
         content = r.content.decode()
         assert "layout is only valid for shipping documents" in content
@@ -14266,8 +14728,9 @@ class TestDocumentsOverhaul:
     async def test_po_shows_convert_to_bill_button(self, ui_client):
         """Draft PO shows 'Convert to Bill' instead of 'Finalize'."""
         po_doc = {**_BLANK_DOC, "doc_type": "purchase_order", "entity_id": "doc:PO-001", "ref_id": "PO-001"}
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=po_doc)):
-            r = await ui_client.get("/docs/doc:PO-001", cookies=_authed())
+            r = await ui_client.get("/docs/doc:PO-001")
         assert b"Convert to Bill" in r.content
         assert b"Finalize" not in r.content
 
@@ -14275,16 +14738,18 @@ class TestDocumentsOverhaul:
     async def test_credit_note_shows_issue_credit_note(self, ui_client):
         """Draft credit note shows 'Issue Credit Note'."""
         cn_doc = {**_BLANK_DOC, "doc_type": "credit_note", "entity_id": "doc:CN-001", "ref_id": "CN-001"}
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=cn_doc)):
-            r = await ui_client.get("/docs/doc:CN-001", cookies=_authed())
+            r = await ui_client.get("/docs/doc:CN-001")
         assert b"Issue Credit Note" in r.content
 
     @pytest.mark.asyncio
     async def test_memo_shows_issue_memo(self, ui_client):
         """Draft memo shows 'Issue Memo'."""
         memo_doc = {**_BLANK_DOC, "doc_type": "memo", "entity_id": "doc:MEM-001", "ref_id": "MEM-001"}
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=memo_doc)):
-            r = await ui_client.get("/docs/doc:MEM-001", cookies=_authed())
+            r = await ui_client.get("/docs/doc:MEM-001")
         assert b"Issue Memo" in r.content
 
     @pytest.mark.asyncio
@@ -14294,8 +14759,9 @@ class TestDocumentsOverhaul:
             {"event_type": "doc.created", "ts": "2026-03-20T10:00:00Z", "data": {}},
             {"event_type": "doc.finalized", "ts": "2026-03-21T14:30:00Z", "data": {}},
         ], "total": 2}
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.list_ledger", new=AsyncMock(return_value=ledger_data)):
-            r = await ui_client.get("/docs/doc:INV-2026-0001/history?page=1", cookies=_authed())
+            r = await ui_client.get("/docs/doc:INV-2026-0001/history?page=1")
         content = r.content.decode()
         assert "History" in content
         assert "Document created" in content
@@ -14304,8 +14770,9 @@ class TestDocumentsOverhaul:
     @pytest.mark.asyncio
     async def test_doc_detail_empty_history(self, ui_client):
         """Doc history endpoint shows empty state when no ledger entries."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})):
-            r = await ui_client.get("/docs/doc:INV-2026-0001/history?page=1", cookies=_authed())
+            r = await ui_client.get("/docs/doc:INV-2026-0001/history?page=1")
         assert b"No activity recorded yet." in r.content
 
     @pytest.mark.asyncio
@@ -14316,21 +14783,23 @@ class TestDocumentsOverhaul:
         async def _capture_summary(token, params=None):
             captured["doc_type"] = (params or {}).get("doc_type")
             return await original_summary(token)
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.list_docs", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_doc_summary", side_effect=_capture_summary),
             patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "Test", "currency": "USD", "current_role": "owner"})),
         ):
-            r = await ui_client.get("/docs?type=invoice", cookies=_authed())
+            r = await ui_client.get("/docs?type=invoice")
         assert captured.get("doc_type") == "invoice"
 
     @pytest.mark.asyncio
     async def test_send_form_shows_email_fields(self, ui_client):
         """Draft doc shows Send modal with To, Subject, Message, CC, BCC fields when relay connected."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_BLANK_DOC)), \
              patch("ui.api_client.get_relay_status",
                    new=AsyncMock(return_value={"connected": True, "gateway_token_set": True})):
-            r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+            r = await ui_client.get("/docs/doc:INV-2026-0001")
         content = r.content.decode()
         assert 'name="sent_to"' in content
         assert 'name="subject"' in content
@@ -14348,29 +14817,32 @@ class TestDocumentsOverhaul:
             "connected": True, "gateway_token_set": True,
             "email_quota": 10, "email_used": 1,
             "email_resets_on": "2026-08-01"})
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_BLANK_DOC)), \
              patch("ui.api_client.get_relay_status", new=_relay):
-            r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+            r = await ui_client.get("/docs/doc:INV-2026-0001")
         assert "(1/10) Resets 2026-08-01" in r.content.decode()
 
         _no_quota = AsyncMock(return_value={"connected": True, "gateway_token_set": True})
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_BLANK_DOC)), \
              patch("ui.api_client.get_relay_status", new=_no_quota):
-            r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+            r = await ui_client.get("/docs/doc:INV-2026-0001")
         assert "Resets" not in r.content.decode()
 
     @pytest.mark.asyncio
     async def test_mark_as_sent_button_on_draft(self, ui_client):
         """Draft doc shows 'Mark as Sent' button."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_BLANK_DOC)):
-            r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+            r = await ui_client.get("/docs/doc:INV-2026-0001")
         assert b"Mark as Sent" in r.content
 
     @pytest.mark.asyncio
     async def test_unmark_sent_button_on_sent_doc(self, ui_client):
         """Sent doc shows 'Unmark Sent' button (undo)."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_SENT_DOC)):
-            r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+            r = await ui_client.get("/docs/doc:INV-2026-0001")
         assert b"Unmark Sent" in r.content
 
     @pytest.mark.asyncio
@@ -14382,9 +14854,10 @@ class TestDocumentsOverhaul:
         pinned so the test is deterministic even with a live dev server running."""
         _self_hosted = AsyncMock(return_value={
             "connected": False, "public_url": "", "gateway_token_set": False})
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_BLANK_DOC)), \
              patch("ui.api_client.get_relay_status", new=_self_hosted):
-            r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+            r = await ui_client.get("/docs/doc:INV-2026-0001")
         content = r.content.decode()
         assert "Copy Link" not in content
         assert '>Share<' not in content
@@ -14395,7 +14868,7 @@ class TestDocumentsOverhaul:
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_BLANK_DOC)), \
              patch("ui.api_client.get_relay_status", new=_relay_bound), \
              patch("ui.api_client.get_share_state", new=AsyncMock(return_value={"active": False})):
-            r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+            r = await ui_client.get("/docs/doc:INV-2026-0001")
         assert '>Share<' in r.content.decode()
 
     @pytest.mark.asyncio
@@ -14407,7 +14880,8 @@ class TestDocumentsOverhaul:
         async def _get(doc):
             with patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)), \
                  patch("ui.api_client.get_relay_status", new=_no_relay):
-                r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+                ui_client.cookies.update(_authed())
+                r = await ui_client.get("/docs/doc:INV-2026-0001")
             return r.content.decode()
 
         # Draft proforma: Issue shows.
@@ -14433,9 +14907,10 @@ class TestDocumentsOverhaul:
         users understand what they do before clicking."""
         doc = dict(_BLANK_DOC, doc_type="invoice", status="draft")
         _no_relay = AsyncMock(return_value={"connected": False, "public_url": ""})
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)), \
              patch("ui.api_client.get_relay_status", new=_no_relay):
-            r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+            r = await ui_client.get("/docs/doc:INV-2026-0001")
         content = r.content.decode()
         assert "Issue Invoice" in content
         assert "becomes an official invoice you can send and collect payment on" in content
@@ -14448,10 +14923,11 @@ class TestDocumentsOverhaul:
         _relay = AsyncMock(return_value={
             "connected": True, "public_url": "https://x.celerp.com", "gateway_token_set": True})
         _active = AsyncMock(return_value={"active": True})
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)), \
              patch("ui.api_client.get_relay_status", new=_relay), \
              patch("ui.api_client.get_share_state", new=_active):
-            r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+            r = await ui_client.get("/docs/doc:INV-2026-0001")
         content = r.content.decode()
         assert 'name="share"' not in content            # toggle removed
         assert "active for 30 days" in content          # the note
@@ -14461,8 +14937,9 @@ class TestDocumentsOverhaul:
     async def test_send_action_forwards_subject_and_message(self, ui_client):
         """The modal's subject and message reach the API (they were dropped)."""
         sent = AsyncMock(return_value={})
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.send_doc", new=sent):
-            await ui_client.post("/docs/doc:INV-001/action/send", cookies=_authed(), data={
+            await ui_client.post("/docs/doc:INV-001/action/send", data={
                 "sent_to": "c@x.example", "subject": "Hi", "message": "See attached"})
         data = sent.call_args[1]["data"]
         assert data["subject"] == "Hi"
@@ -14476,9 +14953,10 @@ class TestDocumentsOverhaul:
         with it while staying replaceable."""
         doc = dict(_BLANK_DOC, contact_email="billing@acme.example", status="sent")
         _relay = AsyncMock(return_value={"connected": True, "gateway_token_set": True, "public_url": "https://x.celerp.com"})
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)), \
              patch("ui.api_client.get_relay_status", new=_relay):
-            r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+            r = await ui_client.get("/docs/doc:INV-2026-0001")
         content = r.content.decode()
         assert "/field/contact_email/edit" in content
         assert 'name="sent_to" value="billing@acme.example"' in content
@@ -14490,10 +14968,11 @@ class TestDocumentsOverhaul:
         doc = dict(_BLANK_DOC, contact_id="contact:c1", contact_name="ACME Corp")
         contact = {"name": "ACME Corp", "email": "billing@acme.example", "addresses": []}
         _relay = AsyncMock(return_value={"connected": False, "public_url": ""})
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)), \
              patch("ui.api_client.get_contact", new=AsyncMock(return_value=contact)), \
              patch("ui.api_client.get_relay_status", new=_relay):
-            r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+            r = await ui_client.get("/docs/doc:INV-2026-0001")
         assert "billing@acme.example" in r.content.decode()
 
     @pytest.mark.asyncio
@@ -14503,25 +14982,26 @@ class TestDocumentsOverhaul:
         _status = {"active": True, "revoked": False, "expired": False,
                    "token": "AbCdEfGhIjKl", "view_url": "https://x.celerp.com/share/AbCdEfGhIjKl",
                    "url": "", "expires_at": "2099-12-31"}
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.create_share_link", new=AsyncMock(return_value=_status)) as mock_create:
             r = await ui_client.post("/docs/doc:INV-001/share",
-                                     data={"expires_at": "2099-12-31"}, cookies=_authed())
+                                     data={"expires_at": "2099-12-31"})
         assert r.status_code == 200
         assert mock_create.call_args[0][2] == "2099-12-31"
 
         with patch("ui.api_client.create_share_link", new=AsyncMock(return_value=_status)) as mock_create:
             await ui_client.post("/docs/doc:INV-001/share",
-                                 data={"expires_at": ""}, cookies=_authed())
+                                 data={"expires_at": ""})
         assert mock_create.call_args[0][2] is None
 
     @pytest.mark.asyncio
     async def test_send_action_with_email(self, ui_client):
         """POST send action with sent_to calls api.send_doc with email data."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.send_doc", new=AsyncMock(return_value={})) as mock_send:
             r = await ui_client.post(
                 "/docs/doc:INV-001/action/send",
                 data={"sent_to": "test@example.com", "subject": "Invoice", "message": "Please pay"},
-                cookies=_authed(),
             )
         mock_send.assert_called_once()
         call_data = mock_send.call_args[1].get("data") or mock_send.call_args[0][2] if len(mock_send.call_args[0]) > 2 else mock_send.call_args[1].get("data")
@@ -14530,10 +15010,10 @@ class TestDocumentsOverhaul:
     @pytest.mark.asyncio
     async def test_send_action_no_email_redirects(self, ui_client):
         """POST send action without sent_to redirects to cloud relay settings."""
+        ui_client.cookies.update(_authed())
         r = await ui_client.post(
             "/docs/doc:INV-001/action/send",
             data={"sent_to": ""},
-            cookies=_authed(),
         )
         assert r.status_code == 204
         assert "/settings/general" in r.headers.get("hx-redirect", "")
@@ -14563,6 +15043,7 @@ class TestDocumentsOverhaul:
         quota cache. A never-fetched cache is unknown, not an advertised zero,
         so hiding it would be the "reload to appear" bug."""
         self._reset_send_quota_cache()
+        ui_client.cookies.update(_authed())
         try:
             doc = dict(_BLANK_DOC, contact_email="c@acme.example", status="sent")
             _no_relay = AsyncMock(return_value={"connected": False, "public_url": ""})
@@ -14571,7 +15052,7 @@ class TestDocumentsOverhaul:
                  patch("ui.api_client.get_relay_status", new=_no_relay), \
                  patch("ui.api_client.account_methods", new=_methods):
                 # single GET, no priming reload: cache is cold on this render
-                r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+                r = await ui_client.get("/docs/doc:INV-2026-0001")
             content = r.content.decode()
             assert "Send by email" in content
             assert "panel=account-gate-panel" in content
@@ -14585,6 +15066,7 @@ class TestDocumentsOverhaul:
     async def test_send_offer_absent_when_quota_zero(self, ui_client):
         """No free quota advertised → the offer never renders (no dead end)."""
         self._reset_send_quota_cache()
+        ui_client.cookies.update(_authed())
         try:
             doc = dict(_BLANK_DOC, contact_email="c@acme.example", status="sent")
             _no_relay = AsyncMock(return_value={"connected": False, "public_url": ""})
@@ -14592,9 +15074,9 @@ class TestDocumentsOverhaul:
             with patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)), \
                  patch("ui.api_client.get_relay_status", new=_no_relay), \
                  patch("ui.api_client.account_methods", new=_methods):
-                await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+                await ui_client.get("/docs/doc:INV-2026-0001")
                 await self._settle_quota_refresh()
-                r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+                r = await ui_client.get("/docs/doc:INV-2026-0001")
             content = r.content.decode()
             assert "Send by email" not in content
             assert "next=doc-send" not in content
@@ -14607,13 +15089,13 @@ class TestDocumentsOverhaul:
         with the doc-send continuation and the quota named in the benefit
         line."""
         _methods = AsyncMock(return_value={"google": False, "free_email_quota": 10})
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.account_status",
                    new=AsyncMock(return_value={"email_verified": False})), \
              patch("ui.api_client.account_methods", new=_methods):
             r = await ui_client.get(
                 "/account/panel?intent=signup&panel=account-gate-panel"
-                "&next=doc-send&modal=1",
-                cookies=_authed())
+                "&next=doc-send&modal=1")
         content = r.content.decode()
         assert 'id="account-gate-modal"' in content
         assert r.headers.get("HX-Retarget") == "#account-gate-host"
@@ -14626,10 +15108,10 @@ class TestDocumentsOverhaul:
     async def test_send_offer_non_admin_click_returns_explanatory_message(self, ui_client):
         """A non-admin who clicks the offer is told why nothing opens instead
         of getting a silent empty swap."""
+        ui_client.cookies.update(_authed(role="manager"))
         r = await ui_client.get(
             "/account/panel?intent=signup&panel=account-gate-panel"
-            "&next=doc-send&modal=1",
-            cookies=_authed(role="manager"))
+            "&next=doc-send&modal=1")
         assert r.status_code == 200
         assert b"Continue with email" not in r.content
         trigger = r.headers.get("HX-Trigger", "")
@@ -14643,12 +15125,12 @@ class TestDocumentsOverhaul:
         marker, and the connected page auto-opens the send dialog prefilled."""
         verified = {"email": "o@shop.example", "email_verified": True, "tier": "free",
                     "pending_selection": False, "linked_elsewhere": False}
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.account_status", new=AsyncMock(return_value=verified)), \
              patch("ui.api_client.activate_relay",
                    new=AsyncMock(return_value={"relay_status": "active"})):
             r = await ui_client.get(
-                "/account/poll?panel=account-gate-panel&mode=email&n=3&next=doc-send",
-                cookies=_authed())
+                "/account/poll?panel=account-gate-panel&mode=email&n=3&next=doc-send")
         content = r.content.decode()
         assert "celerp_open_send" in content
         assert "location.reload" in content
@@ -14657,7 +15139,7 @@ class TestDocumentsOverhaul:
         _relay = AsyncMock(return_value={"connected": True, "gateway_token_set": True, "public_url": "https://x.celerp.com"})
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)), \
              patch("ui.api_client.get_relay_status", new=_relay):
-            r2 = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+            r2 = await ui_client.get("/docs/doc:INV-2026-0001")
         content2 = r2.content.decode()
         assert "celerp_open_send" in content2
         assert "showModal" in content2
@@ -14825,8 +15307,9 @@ class TestFieldSchemaBarcode:
     async def test_po_detail_shows_convert_to_bill(self, ui_client):
         """Draft PO detail page shows 'Convert to Bill' button."""
         po_doc = {**_BLANK_DOC, "doc_type": "purchase_order", "entity_id": "doc:PO-001", "ref_id": "PO-001"}
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=po_doc)):
-            r = await ui_client.get("/docs/doc:PO-001", cookies=_authed())
+            r = await ui_client.get("/docs/doc:PO-001")
         assert b"Convert to Bill" in r.content
         assert b"Finalize" not in r.content
 
@@ -14849,6 +15332,7 @@ class TestPriceLists:
         so the pricing tab updates immediately without a page refresh."""
         item_after = {"entity_id": "item:1", "quantity": 2, "sell_by": "piece",
                       "retail_price": 100, "trade_price": 70}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[
                 {"name": "Retail"}, {"name": "Wholesale"},
@@ -14859,7 +15343,7 @@ class TestPriceLists:
             patch("ui.api_client.get_company", new=AsyncMock(return_value={"currency": "USD", "current_role": "owner"})),
         ):
             r = await ui_client.post("/api/items/item:1/price",
-                                     data={"retail_price": "100"}, cookies=_authed())
+                                     data={"retail_price": "100"})
         assert r.status_code == 200
         assert mock_set.await_count == 1
         html = r.text
@@ -14871,6 +15355,7 @@ class TestPriceLists:
     @pytest.mark.asyncio
     async def test_price_lists_settings_tab_renders(self, ui_client):
         """Contacts settings price-lists tab renders the table."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_taxes", new=AsyncMock(return_value=[])),
             patch("ui.api_client.get_payment_terms", new=AsyncMock(return_value=[])),
@@ -14882,7 +15367,7 @@ class TestPriceLists:
             patch("ui.api_client.get_default_price_list", new=AsyncMock(return_value="Retail")),
             patch("ui.api_client.get_base_price_list", new=AsyncMock(return_value="Retail")),
         ):
-            r = await ui_client.get("/settings/contacts?tab=price-lists", cookies=_authed())
+            r = await ui_client.get("/settings/contacts?tab=price-lists")
         assert r.status_code == 200
         html = r.content.decode()
         assert "Price Lists" in html
@@ -14898,12 +15383,13 @@ class TestPriceLists:
         contact = {"entity_id": "c:1", "name": "Acme", "email": "", "phone": "", "address": "",
                     "tax_id": "", "credit_limit": 0, "payment_terms": "", "contact_type": "customer",
                     "price_list": "Wholesale", "tags": []}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_contact", new=AsyncMock(return_value=contact)),
             patch("ui.api_client.list_contact_docs", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
         ):
-            r = await ui_client.get("/contacts/c:1", cookies=_authed())
+            r = await ui_client.get("/contacts/c:1")
         assert r.status_code == 200
         html = r.content.decode()
         assert "Price List" in html
@@ -14913,6 +15399,7 @@ class TestPriceLists:
     async def test_doc_detail_shows_price_list(self, ui_client):
         """Doc detail page includes a Price list field."""
         doc = {**_BLANK_DOC, "price_list": "Retail"}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)),
             patch("ui.api_client.get_taxes", new=AsyncMock(return_value=[])),
@@ -14921,7 +15408,7 @@ class TestPriceLists:
             patch("ui.api_client.get_payment_terms", new=AsyncMock(return_value=[])),
             patch("ui.api_client.list_contacts", new=AsyncMock(return_value={"items": [], "total": 0})),
         ):
-            r = await ui_client.get("/docs/doc:1", cookies=_authed())
+            r = await ui_client.get("/docs/doc:1")
         assert r.status_code == 200
         html = r.content.decode()
         assert "Price list:" in html
@@ -14933,6 +15420,7 @@ class TestPriceLists:
         dropdown: line prices are snapshots, and this repulls current prices without the
         switch-lists-and-back workaround."""
         doc = {**_BLANK_DOC, "price_list": "Retail"}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)),
             patch("ui.api_client.get_taxes", new=AsyncMock(return_value=[])),
@@ -14944,7 +15432,7 @@ class TestPriceLists:
                 {"name": "Retail"}, {"name": "Wholesale"},
             ])),
         ):
-            r = await ui_client.get("/docs/doc:1", cookies=_authed())
+            r = await ui_client.get("/docs/doc:1")
         assert r.status_code == 200
         html = r.content.decode()
         assert 'title="Get current prices"' in html
@@ -14956,6 +15444,7 @@ class TestPriceLists:
     async def test_finalized_doc_has_no_reprice_icon(self, ui_client):
         """Finalized docs are immutable snapshots; no reprice control is offered."""
         doc = {**_BLANK_DOC, "price_list": "Retail", "status": "sent"}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)),
             patch("ui.api_client.get_taxes", new=AsyncMock(return_value=[])),
@@ -14967,7 +15456,7 @@ class TestPriceLists:
                 {"name": "Retail"}, {"name": "Wholesale"},
             ])),
         ):
-            r = await ui_client.get("/docs/doc:1", cookies=_authed())
+            r = await ui_client.get("/docs/doc:1")
         assert r.status_code == 200
         assert 'title="Get current prices"' not in r.content.decode()
 
@@ -15001,13 +15490,13 @@ class TestPriceLists:
             "ok": True, "version": 42, "repriced": 1, "skipped": [],
             "price_list": "Wholesale",
         }
+        ui_client.cookies.update(_authed())
         with patch(
             "ui.api_client.reprice_doc", new=AsyncMock(return_value=result)
         ) as mock_reprice:
             r = await ui_client.post(
                 "/docs/doc:1/reprice",
                 json={"price_list": "Wholesale", "expected_version": 41},
-                cookies=_authed(),
             )
         assert r.status_code == 200
         assert r.json() == result
@@ -15021,13 +15510,13 @@ class TestPriceLists:
             "ok": True, "version": 42, "repriced": 0, "skipped": [],
             "price_list": "Wholesale",
         }
+        ui_client.cookies.update(_authed())
         with patch(
             "ui.api_client.reprice_doc", new=AsyncMock(return_value=result)
         ):
             r = await ui_client.post(
                 "/docs/doc:1/reprice",
                 json={"price_list": "Wholesale", "expected_version": 41},
-                cookies=_authed(),
             )
         assert r.status_code == 200
         assert r.json() == result
@@ -15036,6 +15525,7 @@ class TestPriceLists:
     async def test_doc_detail_shows_price_list_dropdown_above_lines(self, ui_client):
         """Doc detail page renders price list dropdown in the line items section."""
         doc = {**_BLANK_DOC, "price_list": "Wholesale"}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)),
             patch("ui.api_client.get_taxes", new=AsyncMock(return_value=[])),
@@ -15047,7 +15537,7 @@ class TestPriceLists:
                 {"name": "Retail"}, {"name": "Wholesale"}, {"name": "Cost"},
             ])),
         ):
-            r = await ui_client.get("/docs/doc:1", cookies=_authed())
+            r = await ui_client.get("/docs/doc:1")
         assert r.status_code == 200
         html = r.content.decode()
         assert 'id="doc-price-list"' in html
@@ -15099,6 +15589,7 @@ class TestBugFixesBatch25Mar:
     @pytest.mark.asyncio
     async def test_split_keeps_parent_sku(self, ui_client):
         """A bulk-split child keeps the parent SKU — no .N suffix (same product, distinct lot)."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value={"sku": "DEMO-001", "quantity": 10})),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
@@ -15107,7 +15598,7 @@ class TestBugFixesBatch25Mar:
             r = await ui_client.post("/api/items/bulk/split", data={
                 "selected": "item:1",
                 "child_qty": "3",
-            }, cookies=_authed())
+            })
         assert r.status_code == 200
         assert b"DEMO-001" in r.content
         assert b"DEMO-001.1" not in r.content
@@ -15116,6 +15607,7 @@ class TestBugFixesBatch25Mar:
     async def test_split_keeps_parent_sku_even_with_suffixed_sibling(self, ui_client):
         """Even when a DEMO-001.1 sibling already exists, the split child still keeps the
         parent SKU — no suffix, no incrementing (the old auto-.N behavior is gone)."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value={"sku": "DEMO-001", "quantity": 10})),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [{"sku": "DEMO-001.1"}], "total": 1})),
@@ -15124,7 +15616,7 @@ class TestBugFixesBatch25Mar:
             r = await ui_client.post("/api/items/bulk/split", data={
                 "selected": "item:1",
                 "child_qty": "3",
-            }, cookies=_authed())
+            })
         assert r.status_code == 200
         assert b"DEMO-001" in r.content
         assert b"DEMO-001.2" not in r.content
@@ -15132,6 +15624,7 @@ class TestBugFixesBatch25Mar:
     @pytest.mark.asyncio
     async def test_split_child_of_child_keeps_sku(self, ui_client):
         """Splitting a child (SKU DEMO-001.1) keeps that SKU — no further .N (DEMO-001.1.1)."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value={"sku": "DEMO-001.1", "quantity": 5})),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
@@ -15140,7 +15633,7 @@ class TestBugFixesBatch25Mar:
             r = await ui_client.post("/api/items/bulk/split", data={
                 "selected": "item:2",
                 "child_qty": "2",
-            }, cookies=_authed())
+            })
         assert r.status_code == 200
         assert b"DEMO-001.1" in r.content
         assert b"DEMO-001.1.1" not in r.content
@@ -15173,8 +15666,9 @@ class TestBugFixesBatch25Mar6Bugs:
     @pytest.mark.asyncio
     async def test_draft_doc_has_no_void_button(self, ui_client):
         """Draft documents do not show Void button (only Delete)."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_BLANK_DOC)):
-            r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+            r = await ui_client.get("/docs/doc:INV-2026-0001")
         assert r.status_code == 200
         assert b"Void" not in r.content
         assert b"Confirm Delete" in r.content
@@ -15182,8 +15676,9 @@ class TestBugFixesBatch25Mar6Bugs:
     @pytest.mark.asyncio
     async def test_sent_doc_has_void_button(self, ui_client):
         """Non-draft, non-void documents do show Void button."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_SENT_DOC)):
-            r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+            r = await ui_client.get("/docs/doc:INV-2026-0001")
         assert r.status_code == 200
         assert b"Void" in r.content
 
@@ -15191,8 +15686,9 @@ class TestBugFixesBatch25Mar6Bugs:
     @pytest.mark.asyncio
     async def test_doc_detail_script_defines_celerp_eid(self, ui_client):
         """Draft doc detail page contains _CELERP_EID JS constant."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_BLANK_DOC)):
-            r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+            r = await ui_client.get("/docs/doc:INV-2026-0001")
         assert b"_CELERP_EID" in r.content
 
     # Bug 4: Doc table row uses entity_id or id
@@ -15220,12 +15716,13 @@ class TestBugFixesBatch25Mar6Bugs:
         """Contact detail page renders Activity tab link."""
         contact = {**_CONTACTS[0], "address": "123 St"}
         ledger = [{"event_type": "contact.updated", "ts": "2026-03-25T10:00:00", "data": {}, "actor_id": "user:1"}]
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_contact", new=AsyncMock(return_value=contact)),
             patch("ui.api_client.list_contact_docs", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": ledger})),
         ):
-            r = await ui_client.get("/contacts/ct:1", cookies=_authed())
+            r = await ui_client.get("/contacts/ct:1")
         assert r.status_code == 200
         assert b"Activity" in r.content
 
@@ -15246,6 +15743,7 @@ class TestBugFixesBatch25Mar6Bugs:
         async def mock_split(token, eid, payload, **kwargs):
             captured.append(payload)
             return {"event_id": "e1"}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value={"sku": "RING-001", "quantity": 10})),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
@@ -15254,7 +15752,7 @@ class TestBugFixesBatch25Mar6Bugs:
             r = await ui_client.post("/api/items/bulk/split", data={
                 "selected": "item:1",
                 "child_qty": "3",
-            }, cookies=_authed())
+            })
         assert r.status_code == 200
         # Only 1 child should be sent (the new split-off item)
         assert len(captured) == 1
@@ -15519,10 +16017,10 @@ class TestInventoryUXFixes:
     @pytest.mark.asyncio
     async def test_bulk_print_preview_post_redirects_on_no_selection(self, ui_client):
         """POST /labels/print-bulk with no selected IDs redirects to /inventory."""
+        ui_client.cookies.update(_authed())
         r = await ui_client.post(
             "/labels/print-bulk",
             data={},
-            cookies=_authed(),
             follow_redirects=False,
         )
         assert r.status_code == 302
@@ -15623,6 +16121,7 @@ class TestInventoryUXFixes:
         spec.loader.exec_module(mod)
         bulk = mod.PLUGIN_MANIFEST["slots"]["bulk_action"]
         register_slot("bulk_action", {**bulk, "_module": "celerp-labels"})
+        ui_client.cookies.update(_authed())
         try:
             with (
                 patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
@@ -15630,7 +16129,7 @@ class TestInventoryUXFixes:
                 patch("ui.api_client.get_valuation", new=AsyncMock(return_value=_VALUATION)),
                 patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             ):
-                r = await ui_client.get("/inventory", cookies=_authed())
+                r = await ui_client.get("/inventory")
             assert r.status_code == 200
             body = r.text
             # Option value derived the same way as Python side
@@ -15650,13 +16149,14 @@ class TestInventoryUXFixes:
     @pytest.mark.asyncio
     async def test_print_list_redirects_on_empty_result(self, ui_client):
         """GET /labels/print-list with no matching items redirects to /inventory."""
+        ui_client.cookies.update(_authed())
         with patch("celerp_labels.ui_routes.httpx.AsyncClient") as mock_cls:
-            mock_resp = AsyncMock()
+            mock_resp = MagicMock()
             mock_resp.status_code = 200
             mock_resp.json.return_value = {"items": []}
             mock_cls.return_value.__aenter__ = AsyncMock(return_value=AsyncMock(get=AsyncMock(return_value=mock_resp)))
             mock_cls.return_value.__aexit__ = AsyncMock(return_value=False)
-            r = await ui_client.get("/labels/print-list", cookies=_authed(), follow_redirects=False)
+            r = await ui_client.get("/labels/print-list", follow_redirects=False)
         assert r.status_code == 302
         assert "/inventory" in r.headers["location"]
 
@@ -15666,21 +16166,23 @@ class TestInventoryUXFixes:
         captured_params = {}
 
         async def fake_get(url, params=None, headers=None, **kw):
-            captured_params.update(params or {})
-            mock_resp = AsyncMock()
+            mock_resp = MagicMock()
             mock_resp.status_code = 200
-            mock_resp.json.return_value = {"items": [{"entity_id": "gc:abc"}]}
+            if url.endswith("/items"):
+                captured_params.update(params or {})
+                mock_resp.json.return_value = {"items": [{"entity_id": "gc:abc"}]}
+            else:
+                mock_resp.json.return_value = {"items": []}
             return mock_resp
 
+        ui_client.cookies.update(_authed())
         with patch("celerp_labels.ui_routes.httpx.AsyncClient") as mock_cls:
             mock_client = AsyncMock()
             mock_client.get = fake_get
             mock_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
             mock_cls.return_value.__aexit__ = AsyncMock(return_value=False)
-            # When one item is found but no templates, it still redirects (no templates = redirect)
             r = await ui_client.get(
                 "/labels/print-list?q=ruby&status=available&category=gemstones",
-                cookies=_authed(),
                 follow_redirects=False,
             )
         # Params were forwarded to the API
@@ -15699,6 +16201,7 @@ class TestInventoryUXFixes:
             "action_type": "navigate",
             "_module": "celerp-labels",
         })
+        ui_client.cookies.update(_authed())
         try:
             with (
                 patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
@@ -15706,7 +16209,7 @@ class TestInventoryUXFixes:
                 patch("ui.api_client.get_valuation", new=AsyncMock(return_value=_VALUATION)),
                 patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             ):
-                r = await ui_client.get("/inventory", cookies=_authed())
+                r = await ui_client.get("/inventory")
             assert r.status_code == 200
             assert "/labels/print-bulk" in r.text
         finally:
@@ -15715,13 +16218,14 @@ class TestInventoryUXFixes:
     @pytest.mark.asyncio
     async def test_print_all_labels_link_absent_without_labels_module(self, ui_client):
         """'Print all labels' link does NOT appear when labels module is not loaded."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [_ITEM], "total": 1})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value=_VALUATION)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
         ):
-            r = await ui_client.get("/inventory", cookies=_authed())
+            r = await ui_client.get("/inventory")
         assert r.status_code == 200
         assert "/labels/print-list" not in r.text
 
@@ -16040,6 +16544,7 @@ class TestApplyCreditErrorSurfacing:
         from unittest.mock import AsyncMock, patch as mock_patch
         from ui.api_client import APIError
 
+        ui_client.cookies.update(_authed())
         with mock_patch(
             "ui.api_client.apply_credit_note",
             new=AsyncMock(side_effect=APIError(409, "Amount exceeds credit note balance")),
@@ -16047,7 +16552,6 @@ class TestApplyCreditErrorSurfacing:
             r = await ui_client.post(
                 "/docs/doc:cn-001/apply-credit",
                 data={"target_doc_id": "doc:inv-001", "amount": "999.00", "date": "2026-01-10"},
-                cookies=_authed(),
             )
         assert r.status_code == 200
         assert "celerpToast" in r.headers.get("hx-trigger", "")
@@ -16060,6 +16564,7 @@ class TestApplyCreditErrorSurfacing:
         """POST /docs/{cn}/apply-credit on success must return 204 with HX-Redirect."""
         from unittest.mock import AsyncMock, patch as mock_patch
 
+        ui_client.cookies.update(_authed())
         with mock_patch(
             "ui.api_client.apply_credit_note",
             new=AsyncMock(return_value={"event_id": "e1"}),
@@ -16067,7 +16572,6 @@ class TestApplyCreditErrorSurfacing:
             r = await ui_client.post(
                 "/docs/doc:cn-001/apply-credit",
                 data={"target_doc_id": "doc:inv-001", "amount": "100.00", "date": "2026-01-10"},
-                cookies=_authed(),
             )
         assert r.status_code == 204
         assert "HX-Redirect" in r.headers
@@ -16493,6 +16997,7 @@ class TestCategoryDisplayName:
         ]
         cat_schemas = {"my_gems": [{"key": "color", "type": "text", "label": "Color"}]}
         display_names = {"my_gems": "My Gems"}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=schema)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value=cat_schemas)),
@@ -16504,7 +17009,7 @@ class TestCategoryDisplayName:
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": []})),
             patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
         ):
-            r = await ui_client.get("/inventory", cookies=_authed())
+            r = await ui_client.get("/inventory")
         assert r.status_code == 200
         html = r.text
         # Category cell must show display name
@@ -16528,6 +17033,7 @@ class TestCategoryChangeRowReload:
             "quantity": 1.0, "category": "gems", "status": "in_stock",
         }
         cat_schemas = {"gems": [], "my_gems": []}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=[])),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value=cat_schemas)),
@@ -16539,7 +17045,6 @@ class TestCategoryChangeRowReload:
             r = await ui_client.patch(
                 "/api/items/item:1/field/category",
                 data={"value": "my_gems"},
-                cookies=_authed(),
             )
         assert r.status_code == 200
         html = r.text
@@ -16558,10 +17063,10 @@ class TestSplitMotherWeightStatic:
     @pytest.mark.asyncio
     async def test_split_mother_weight_is_static_not_input(self, ui_client):
         """Mother weight must render as .mother-weight-display span, not an input."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.split_preview", new=AsyncMock(return_value=_SPLIT_PREVIEW_WEIGHT_CT)):
             r = await ui_client.get(
                 "/api/items/bulk/split-preview?entity_id=item%3A10&qty=3",
-                cookies=_authed(),
             )
         html = r.text
         assert 'type="number"' not in html.split('name="mother_weight"')[1].split('>')[0] if 'name="mother_weight"' in html else True, "mother_weight must not be a visible editable input"
@@ -16613,10 +17118,10 @@ class TestSplitWeightQtyDivergence:
     async def test_split_preview_weight_unit_has_data_sell_by_type_weight(self, ui_client):
         """When sell_by is a weight unit, form must carry data-sell-by-type='weight'."""
         preview = {**_SPLIT_PREVIEW_WEIGHT_CT, "sell_by_type": "weight", "weight_unit_names": ["carat", "gram", "kg", "oz", "lb"]}
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.split_preview", new=AsyncMock(return_value=preview)):
             r = await ui_client.get(
                 "/api/items/bulk/split-preview?entity_id=item%3A99",
-                cookies=_authed(),
             )
         assert r.status_code == 200
         assert 'data-sell-by-type="weight"' in r.text, "form must have data-sell-by-type=weight for carat sell_by"
@@ -16627,10 +17132,10 @@ class TestSplitWeightQtyDivergence:
         # Simulate API response that omits weight_unit_names (older server or custom unit config)
         preview = {**_SPLIT_PREVIEW_WEIGHT_CT, "sell_by_type": "weight"}
         # weight_unit_names deliberately omitted
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.split_preview", new=AsyncMock(return_value=preview)):
             r = await ui_client.get(
                 "/api/items/bulk/split-preview?entity_id=item%3A100",
-                cookies=_authed(),
             )
         assert r.status_code == 200
         html = r.text
@@ -16829,6 +17334,7 @@ class TestCategoryDetailPagePatch:
             "quantity": 1.0, "category": "jewelry", "status": "in_stock",
         }
         cat_schemas = {"jewelry": [], "gems": []}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=[])),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value=cat_schemas)),
@@ -16840,7 +17346,6 @@ class TestCategoryDetailPagePatch:
             r = await ui_client.patch(
                 "/api/items/item:99/field/category",
                 data={"value": "gems"},
-                cookies=_authed(),
                 headers={"HX-Current-URL": "http://localhost/inventory/item:99"},
             )
         assert r.status_code == 200
@@ -17001,10 +17506,10 @@ class TestBackupRoutes:
 
         with patch.object(_api, "list_backups", fake_list_backups):
             async with ui_client as c:
+                c.cookies.update({"celerp_token": test_token})
                 r = await c.get(
                     "/backup/list",
                     headers={"HX-Request": "true"},
-                    cookies={"celerp_token": test_token},
                 )
 
         assert r.status_code != 404, f"Route missing — got 404"
@@ -17027,9 +17532,9 @@ class TestBackupRoutes:
 
         with patch.object(_api, "trigger_backup", fake_trigger):
             async with ui_client as c:
+                c.cookies.update({"celerp_token": test_token})
                 r = await c.post(
                     "/backup/trigger?type=database",
-                    cookies={"celerp_token": test_token},
                 )
 
         assert r.status_code != 404, f"Route missing — got 404"
@@ -17053,9 +17558,9 @@ class TestBackupRoutes:
 
         with patch.object(_api, "trigger_backup", fake_trigger_timeout):
             async with ui_client as c:
+                c.cookies.update({"celerp_token": test_token})
                 r = await c.post(
                     "/backup/trigger?type=database",
-                    cookies={"celerp_token": test_token},
                 )
 
         assert r.status_code == 200, (
@@ -17077,9 +17582,9 @@ class TestBackupRoutes:
 
         with patch.object(_api, "trigger_backup", fake_trigger_ok):
             async with ui_client as c:
+                c.cookies.update({"celerp_token": test_token})
                 r = await c.post(
                     "/backup/trigger?type=database",
-                    cookies={"celerp_token": test_token},
                 )
 
         assert r.status_code == 200, f"Expected 200, got {r.status_code}"
@@ -17103,9 +17608,9 @@ class TestBackupRoutes:
 
         with patch.object(_api, "trigger_backup", fake_trigger_fail):
             async with ui_client as c:
+                c.cookies.update({"celerp_token": test_token})
                 r = await c.post(
                     "/backup/trigger?type=database",
-                    cookies={"celerp_token": test_token},
                 )
 
         assert r.status_code == 200, f"Expected 200 inline error, got {r.status_code}"
@@ -17134,7 +17639,8 @@ class TestBackupRoutes:
 
         with patch.object(_api, "export_backup", fake_export):
             async with ui_client as c:
-                r = await c.get("/backup/export", cookies={"celerp_token": test_token})
+                c.cookies.update({"celerp_token": test_token})
+                r = await c.get("/backup/export")
 
         assert r.status_code != 404, f"Route missing — got 404"
         assert captured.get("token") == test_token, (
@@ -17163,10 +17669,10 @@ class TestBackupRoutes:
 
         with patch("httpx.AsyncClient", _mock_api_client):
             async with ui_client as c:
+                c.cookies.update({"celerp_token": test_token})
                 r = await c.post(
                     "/backup/import",
                     files={"file": ("backup.celerp-backup", b"data", "application/octet-stream")},
-                    cookies={"celerp_token": test_token},
                 )
         assert r.status_code == 200
         assert "Import failed" in r.text and "flash--error" in r.text
@@ -17191,7 +17697,8 @@ class TestInventoryImportDraftReview:
         planner = AsyncMock(return_value=plan)
         with patch("ui.api_client.plan_import_rows", new=planner), \
              patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])):
-            r = await ui_client.post(path, data=data, cookies=_authed())
+            ui_client.cookies.update(_authed())
+            r = await ui_client.post(path, data=data)
         assert r.status_code == 200, r.text[:800]
         return r, planner
 
@@ -17285,16 +17792,18 @@ class TestInventoryImportDraftReview:
     @pytest.mark.asyncio
     async def test_draft_page_reopens_the_review(self, ui_client):
         ref = self._draft([{"sku": "X7", "name": "Ring", "sell_by": "piece", "quantity": "1"}], {"upsert": True})
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.plan_import_rows", new=AsyncMock(return_value=_CLEAN_ROWS_PREVIEW)) as planner, \
              patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])):
-            r = await ui_client.get(f"/inventory/import/draft/{ref}", cookies=_authed())
+            r = await ui_client.get(f"/inventory/import/draft/{ref}")
         assert r.status_code == 200
         assert _PREVIEW_HASH in r.text
         assert planner.await_args.kwargs["upsert"] is True
 
     @pytest.mark.asyncio
     async def test_foreign_or_expired_draft_page_offers_a_new_upload(self, ui_client):
-        r = await ui_client.get(f"/inventory/import/draft/imp_{'0' * 32}", cookies=_authed())
+        ui_client.cookies.update(_authed())
+        r = await ui_client.get(f"/inventory/import/draft/imp_{'0' * 32}")
         assert r.status_code == 200
         from ui.i18n import t
         assert t("inventory.csv_expired") in r.text
@@ -17303,7 +17812,8 @@ class TestInventoryImportDraftReview:
     async def test_cancel_deletes_the_draft(self, ui_client):
         from celerp.services.import_stage import read_draft
         ref = self._draft([{"sku": "X8", "name": "Ring", "sell_by": "piece", "quantity": "1"}])
-        r = await ui_client.post("/inventory/import/cancel", data={"csv_ref": ref}, cookies=_authed())
+        ui_client.cookies.update(_authed())
+        r = await ui_client.post("/inventory/import/cancel", data={"csv_ref": ref})
         assert r.headers.get("HX-Redirect") == "/inventory"
         assert read_draft(_TEST_COMPANY_ID, ref) is None
 
@@ -17312,9 +17822,9 @@ class TestInventoryImportDraftReview:
     async def test_undo_is_offered_only_for_a_reversible_import(self, ui_client, reversible):
         ref = self._draft([{"sku": "X9", "name": "Ring", "sell_by": "piece", "quantity": "1"}])
         result = {"created": 1, "skipped": 0, "updated": 0, "errors": [], "batch_id": "b-1", "reversible": reversible}
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.import_rows", new=AsyncMock(return_value=result)):
-            r = await ui_client.post("/inventory/import/confirm", data={"csv_ref": ref, "preview_hash": _PREVIEW_HASH},
-                                     cookies=_authed())
+            r = await ui_client.post("/inventory/import/confirm", data={"csv_ref": ref, "preview_hash": _PREVIEW_HASH})
         assert r.status_code == 200
         assert ('hx-post="/settings/import-history/b-1/undo"' in r.text) is reversible
 
@@ -17326,9 +17836,9 @@ class TestInventoryImportDraftReview:
     async def test_confirm_keeps_the_draft_unless_the_import_finished_cleanly(self, ui_client, result, kept):
         from celerp.services.import_stage import read_draft
         ref = self._draft([{"sku": "X11", "name": "Ring", "sell_by": "piece", "quantity": "1"}])
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.import_rows", new=AsyncMock(return_value=result)):
-            await ui_client.post("/inventory/import/confirm", data={"csv_ref": ref, "preview_hash": _PREVIEW_HASH},
-                                 cookies=_authed())
+            await ui_client.post("/inventory/import/confirm", data={"csv_ref": ref, "preview_hash": _PREVIEW_HASH})
         assert (read_draft(_TEST_COMPANY_ID, ref) is not None) is kept
 
     @pytest.mark.asyncio
@@ -17337,11 +17847,11 @@ class TestInventoryImportDraftReview:
         from ui.i18n import t
         from celerp.services.import_stage import read_draft
         ref = self._draft([{"sku": "X12", "name": "Ring", "sell_by": "piece", "quantity": "1"}])
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.import_rows", new=AsyncMock(side_effect=APIError(409, "stale"))), \
              patch("ui.api_client.plan_import_rows", new=AsyncMock(return_value=_CLEAN_ROWS_PREVIEW)), \
              patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])):
-            r = await ui_client.post("/inventory/import/confirm", data={"csv_ref": ref, "preview_hash": "f" * 64},
-                                     cookies=_authed())
+            r = await ui_client.post("/inventory/import/confirm", data={"csv_ref": ref, "preview_hash": "f" * 64})
         assert t("inventory.import_review_changed") in r.text
         assert read_draft(_TEST_COMPANY_ID, ref) is not None
 
@@ -17349,9 +17859,9 @@ class TestInventoryImportDraftReview:
     async def test_repeat_import_says_nothing_was_duplicated(self, ui_client):
         ref = self._draft([{"sku": "X10", "name": "Ring", "sell_by": "piece", "quantity": "1"}])
         result = {"created": 0, "skipped": 1, "updated": 0, "errors": [], "already_imported": 1, "reversible": False}
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.import_rows", new=AsyncMock(return_value=result)):
-            r = await ui_client.post("/inventory/import/confirm", data={"csv_ref": ref, "preview_hash": _PREVIEW_HASH},
-                                     cookies=_authed())
+            r = await ui_client.post("/inventory/import/confirm", data={"csv_ref": ref, "preview_hash": _PREVIEW_HASH})
         from ui.i18n import t
         assert t("inventory.import_already_imported") in r.text
 
@@ -17410,6 +17920,7 @@ class TestItemRowColumnParity:
         table_data_cols = [td["data-col"] for td in first_row.find_all("td") if td.get("data-col")]
 
         # Fetch item_row endpoint
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=schema)),
             patch("ui.api_client.get_item", new=AsyncMock(return_value=item)),
@@ -17421,7 +17932,7 @@ class TestItemRowColumnParity:
             patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_company", new=AsyncMock(return_value={"currency": "USD", "current_role": "owner"})),
         ):
-            r = await ui_client.get("/api/items/item:1/row", cookies=_authed())
+            r = await ui_client.get("/api/items/item:1/row")
 
         assert r.status_code == 200
         row_soup = BeautifulSoup(r.text, "html.parser")
@@ -17488,6 +17999,7 @@ class TestItemRowColumnParity:
         item = self._ITEM.copy()
         schema = self._SCHEMA
 
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=schema)),
             patch("ui.api_client.get_item", new=AsyncMock(return_value=item)),
@@ -17502,7 +18014,6 @@ class TestItemRowColumnParity:
             r = await ui_client.patch(
                 "/api/items/item:1/field/cost_price_total",
                 data={"value": "60.00"},
-                cookies=_authed(),
             )
 
         assert r.status_code == 200
@@ -17526,6 +18037,7 @@ class TestItemRowColumnParity:
         """The table's cost cells report the posting the same way the pricing card does."""
         item = self._ITEM.copy()
         correction = {"cogs_adjusted": [{"doc_number": "INV-0007", "amount": 10.0}], "cogs_unposted": []}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=self._SCHEMA)),
             patch("ui.api_client.get_item", new=AsyncMock(return_value=item)),
@@ -17538,7 +18050,7 @@ class TestItemRowColumnParity:
             patch("ui.api_client.patch_item", new=AsyncMock(return_value={**item, "cost_correction": correction})),
         ):
             responses = [
-                await ui_client.patch(f"/api/items/item:1/field/{field}", data={"value": value}, cookies=_authed())
+                await ui_client.patch(f"/api/items/item:1/field/{field}", data={"value": value})
                 for field, value in (("cost_price_total", "60.00"), ("cost_price", "30"), ("cost_price", ""))
             ]
         for r in responses:
@@ -17831,12 +18343,13 @@ class TestDraftStatusColumn:
         }
         item = {"entity_id": "item:q1", "sku": "Q-A", "name": "Widget", "status": "reserved",
                 "quantity": 1}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_list", new=AsyncMock(return_value=lst)),
             patch("ui.api_client.get_items_metadata",
                   new=AsyncMock(return_value={"item:q1": item})),
         ):
-            r = await ui_client.get("/lists/list:q1", cookies=_authed())
+            r = await ui_client.get("/lists/list:q1")
         assert r.status_code == 200
         assert "badge--reserved" in r.text, "finalized list must show the item's real status"
 
@@ -17847,22 +18360,24 @@ class TestDangerZoneUI:
     @pytest.mark.asyncio
     async def test_danger_zone_visible_for_owner(self, ui_client):
         """Owner visiting /settings/general?tab=company sees the Danger Zone."""
+        ui_client.cookies.update(_authed(role="owner"))
         with patch("ui.api_client.get_company", new_callable=AsyncMock, return_value={"name": "Co", "slug": "co", "settings": {}}), \
              patch("ui.api_client.get_users", new_callable=AsyncMock, return_value={"items": []}), \
              patch("ui.api_client.get_modules", new_callable=AsyncMock, return_value=[]), \
              patch("ui.api_client.get_locations", new_callable=AsyncMock, return_value={"items": []}):
-            r = await ui_client.get("/settings/general?tab=company", cookies=_authed(role="owner"))
+            r = await ui_client.get("/settings/general?tab=company")
         assert r.status_code == 200
         assert "Reset this company" in r.text
 
     @pytest.mark.asyncio
     async def test_danger_zone_hidden_for_admin(self, ui_client):
         """Admin visiting /settings/general?tab=company does NOT see the Danger Zone."""
+        ui_client.cookies.update(_authed(role="admin"))
         with patch("ui.api_client.get_company", new_callable=AsyncMock, return_value={"name": "Co", "slug": "co", "settings": {}}), \
              patch("ui.api_client.get_users", new_callable=AsyncMock, return_value={"items": []}), \
              patch("ui.api_client.get_modules", new_callable=AsyncMock, return_value=[]), \
              patch("ui.api_client.get_locations", new_callable=AsyncMock, return_value={"items": []}):
-            r = await ui_client.get("/settings/general?tab=company", cookies=_authed(role="admin"))
+            r = await ui_client.get("/settings/general?tab=company")
         assert r.status_code == 200
         assert "Reset this company" not in r.text
 
@@ -17880,9 +18395,10 @@ async def test_item_files_section_applies_tag_filter(ui_client):
              "size": 1, "url": "/x/b", "document_tag": "certificates"},
         ],
     }
+    ui_client.cookies.update(_authed())
     with patch("ui.api_client.get_item", new=AsyncMock(return_value=item)):
         r = await ui_client.get(
-            "/items/item:f3/files/_section?tag_filter=certificates", cookies=_authed())
+            "/items/item:f3/files/_section?tag_filter=certificates")
     assert r.status_code == 200, r.text
     body = r.text
     assert "gia-report" in body, "the certificates file should be shown"
@@ -17902,10 +18418,10 @@ async def test_bulk_attach_result_has_status_filters(ui_client):
             {"sku": "NOPE", "file": "NOPE.jpg", "status": "unmatched"},
         ],
     }
+    ui_client.cookies.update(_authed())
     with patch("ui.api_client.bulk_attach", new=AsyncMock(return_value=fake_result)):
         r = await ui_client.post(
             "/settings/bulk-attach",
-            cookies=_authed(),
             files={"file": ("archive.zip", b"PK\x03\x04stub", "application/zip")},
         )
     assert r.status_code == 200, r.text
@@ -17942,8 +18458,9 @@ async def test_backup_export_streams_with_progress_headers(ui_client):
             "content-type": "application/gzip",
         }
 
+    ui_client.cookies.update(_authed())
     with patch("ui.api_client.export_backup", _fake_export):
-        r = await ui_client.get("/backup/export", cookies=_authed())
+        r = await ui_client.get("/backup/export")
     assert r.status_code == 200
     assert r.content == b"".join(chunks)              # streamed through intact
     assert r.headers["content-length"] == str(total)  # browser progress bar
@@ -17967,8 +18484,9 @@ async def test_lists_export_csv_streams_with_progress_header(ui_client):
     async def _fake_export(token, params=None):
         return _fake_stream(), {"content-length": str(total), "content-type": "text/csv"}
 
+    ui_client.cookies.update(_authed())
     with patch("ui.api_client.export_lists_csv", _fake_export):
-        r = await ui_client.get("/lists/export/csv", cookies=_authed())
+        r = await ui_client.get("/lists/export/csv")
     assert r.status_code == 200
     assert r.content == b"".join(chunks)                    # streamed through intact
     assert r.headers["content-length"] == str(total)        # browser progress bar
@@ -18053,12 +18571,12 @@ class TestItemDetailSplit:
             captured["payload"] = payload
             return {"children": []}
 
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_item", new=AsyncMock(return_value={
                        "id": "item:p", "sku": "1000", "quantity": 10, "sell_by": "piece"})), \
              patch("ui.api_client.split_item", new=_capture_split):
             r = await ui_client.post(
                 "/api/items/item:p/split-inline",
-                cookies=_authed(),
                 data={"child_qty": ["3", "2"]},
             )
 
@@ -18078,12 +18596,12 @@ class TestItemDetailSplit:
             captured["payload"] = payload
             return {"children": []}
 
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_item", new=AsyncMock(return_value={
                        "id": "item:p", "sku": "1000", "quantity": 10, "sell_by": "gram"})), \
              patch("ui.api_client.split_item", new=_capture_split):
             r = await ui_client.post(
                 "/api/items/item:p/split-inline",
-                cookies=_authed(),
                 data={"child_qty": ["3"], "mother_weight": "6"},
             )
 
@@ -18102,12 +18620,12 @@ class TestItemDetailSplit:
             assert "mother_weight" in payload, "mother_weight must be forwarded to reach the 403"
             raise APIError(403, "Setting the split weight requires the inventory amounts permission")
 
+        ui_client.cookies.update(_authed(role="staff"))
         with patch("ui.api_client.get_item", new=AsyncMock(return_value={
                        "id": "item:p", "sku": "1000", "quantity": 10, "sell_by": "gram"})), \
              patch("ui.api_client.split_item", new=_deny_split):
             r = await ui_client.post(
                 "/api/items/item:p/split-inline",
-                cookies=_authed(role="staff"),
                 data={"child_qty": ["3"], "mother_weight": "9"},
             )
 
@@ -18118,12 +18636,12 @@ class TestItemDetailSplit:
     @pytest.mark.asyncio
     async def test_split_inline_zero_child_qty_flashes_positivity(self, ui_client):
         """J1: posting child_qty=0 flashes the positivity message in #item-action-error."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_item", new=AsyncMock(return_value={
                        "id": "item:p", "sku": "1000", "quantity": 10, "sell_by": "gram"})), \
              patch("ui.api_client.split_item", new=AsyncMock(return_value={"children": []})):
             r = await ui_client.post(
                 "/api/items/item:p/split-inline",
-                cookies=_authed(),
                 data={"child_qty": ["0"]},
             )
         assert r.status_code == 200, r.text
@@ -18175,9 +18693,10 @@ class TestCelerpAccountSurface:
 
     @pytest.mark.asyncio
     async def test_signup_panel_email_first_google_hidden_when_off(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.account_methods",
                    new=AsyncMock(return_value={"google": False})):
-            r = await ui_client.get("/account/panel", cookies=_authed())
+            r = await ui_client.get("/account/panel")
         assert r.status_code == 200
         assert b"Continue with email" in r.content
         assert b"Continue with Google" not in r.content     # no dead button
@@ -18185,9 +18704,10 @@ class TestCelerpAccountSurface:
 
     @pytest.mark.asyncio
     async def test_signup_panel_shows_google_when_on(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.account_methods",
                    new=AsyncMock(return_value={"google": True})):
-            r = await ui_client.get("/account/panel", cookies=_authed())
+            r = await ui_client.get("/account/panel")
         content = r.content
         assert b"Continue with email" in content
         assert b"Continue with Google" in content
@@ -18196,8 +18716,8 @@ class TestCelerpAccountSurface:
 
     @pytest.mark.asyncio
     async def test_claim_intent_leads_with_link_flow(self, ui_client):
-        r = await ui_client.get("/account/panel?intent=claim&panel=cloud-relay-tab",
-                                cookies=_authed())
+        ui_client.cookies.update(_authed())
+        r = await ui_client.get("/account/panel?intent=claim&panel=cloud-relay-tab")
         content = r.content
         assert b'id="cloud-relay-tab"' in content            # host page keeps its target
         assert b"/settings/cloud-send-otp" in content        # shipped claim flow intact
@@ -18208,10 +18728,10 @@ class TestCelerpAccountSurface:
 
     @pytest.mark.asyncio
     async def test_email_submit_shows_bounded_waiting_panel(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.account_signup",
                    new=AsyncMock(return_value={"sent": True})):
-            r = await ui_client.post("/account/email", data={"email": "o@shop.example"},
-                                     cookies=_authed())
+            r = await ui_client.post("/account/email", data={"email": "o@shop.example"})
         content = r.content
         assert b"Check your inbox" in content
         assert b"/account/poll" in content                   # poll wired
@@ -18219,23 +18739,24 @@ class TestCelerpAccountSurface:
 
     @pytest.mark.asyncio
     async def test_email_send_failure_returns_panel_with_error(self, ui_client):
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.account_signup",
                   new=AsyncMock(return_value={"error": "We couldn't send the confirmation email. Please try again."})),
             patch("ui.api_client.account_methods",
                   new=AsyncMock(return_value={"google": False})),
         ):
-            r = await ui_client.post("/account/email", data={"email": "o@shop.example"},
-                                     cookies=_authed())
+            r = await ui_client.post("/account/email", data={"email": "o@shop.example"})
         assert b"confirmation email" in r.content
         assert b"Continue with email" in r.content           # back on the form, can retry
 
     @pytest.mark.asyncio
     async def test_poll_keeps_waiting_then_stops_at_timeout(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.account_status",
                    new=AsyncMock(return_value={"email_verified": False})):
-            r1 = await ui_client.get("/account/poll?n=1&mode=email", cookies=_authed())
-            r2 = await ui_client.get("/account/poll?n=100&mode=email", cookies=_authed())
+            r1 = await ui_client.get("/account/poll?n=1&mode=email")
+            r2 = await ui_client.get("/account/poll?n=100&mode=email")
         assert b"/account/poll" in r1.content                # still polling
         assert b'id="account-poll"' not in r2.content        # bounded: poll stopped
         assert b"Still waiting" in r2.content                # timeout message
@@ -18243,6 +18764,7 @@ class TestCelerpAccountSurface:
     @pytest.mark.asyncio
     async def test_poll_verified_chains_activation_and_shows_signed_in(self, ui_client):
         activate = AsyncMock(return_value={"relay_status": "active"})
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.account_status",
                   new=AsyncMock(return_value={"email": "o@shop.example", "email_verified": True,
@@ -18250,12 +18772,13 @@ class TestCelerpAccountSurface:
                                               "linked_elsewhere": False})),
             patch("ui.api_client.activate_relay", new=activate),
         ):
-            r = await ui_client.get("/account/poll?n=3&mode=google", cookies=_authed())
+            r = await ui_client.get("/account/poll?n=3&mode=google")
         assert b"Signed in as" in r.content and b"o@shop.example" in r.content
         assert activate.await_count == 1                     # chained into activation
 
     @pytest.mark.asyncio
     async def test_poll_pending_selection_offers_claim(self, ui_client):
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.account_status",
                   new=AsyncMock(return_value={"email": "o@shop.example", "email_verified": True,
@@ -18263,12 +18786,13 @@ class TestCelerpAccountSurface:
                                               "linked_elsewhere": False})),
             patch("ui.api_client.activate_relay", new=AsyncMock(return_value={})),
         ):
-            r = await ui_client.get("/account/poll?n=3&mode=email", cookies=_authed())
+            r = await ui_client.get("/account/poll?n=3&mode=email")
         assert b"more than one subscription" in r.content
         assert b"intent=claim" in r.content                  # claim entry offered
 
     @pytest.mark.asyncio
     async def test_poll_linked_elsewhere_offers_claim(self, ui_client):
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.account_status",
                   new=AsyncMock(return_value={"email": "o@shop.example", "email_verified": True,
@@ -18276,7 +18800,7 @@ class TestCelerpAccountSurface:
                                               "linked_elsewhere": True})),
             patch("ui.api_client.activate_relay", new=AsyncMock(return_value={})),
         ):
-            r = await ui_client.get("/account/poll?n=3&mode=email", cookies=_authed())
+            r = await ui_client.get("/account/poll?n=3&mode=email")
         assert b"another computer" in r.content
         assert b"intent=claim" in r.content
 
@@ -18285,21 +18809,23 @@ class TestCelerpAccountSurface:
         """A successful connect changes the whole page chrome (value-prop
         landing -> connected tabs), so the response reloads the page instead
         of swapping a panel inside the stale landing page."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.activate_relay",
                    new=AsyncMock(return_value={"connected": True, "relay_status": "active",
                                                "public_url": "https://co.celerp.app",
                                                "instance_id": "i-1"})):
-            r = await ui_client.post("/settings/cloud-activate", cookies=_authed())
+            r = await ui_client.post("/settings/cloud-activate")
         assert r.status_code == 204
         assert r.headers["hx-redirect"] == "/settings/cloud"
 
     @pytest.mark.asyncio
     async def test_activate_error_stays_inline(self, ui_client):
         """A failed connect keeps the inline error - no page reload."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.activate_relay",
                    new=AsyncMock(return_value={"error": "No subscription found.",
                                                "instance_id": "i-1"})):
-            r = await ui_client.post("/settings/cloud-activate", cookies=_authed())
+            r = await ui_client.post("/settings/cloud-activate")
         assert r.status_code == 200
         assert "hx-redirect" not in r.headers
         assert b"No subscription found." in r.content
@@ -18309,10 +18835,11 @@ class TestCelerpAccountSurface:
         """A free account has no subscription and no public URL, so the
         reconnect confirm must not offer 'Reconnect to Celerp Connect' or talk
         about subscriptions - it is a sign-back-in to a free account."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.activate_relay",
                    new=AsyncMock(return_value={"reconnect": True, "gateway_token": "gt-1",
                                                "public_url": None, "instance_id": "i-1"})):
-            r = await ui_client.post("/settings/cloud-activate", cookies=_authed())
+            r = await ui_client.post("/settings/cloud-activate")
         assert b"free Celerp account" in r.content
         assert b"Sign back in" in r.content
         assert b"subscription" not in r.content
@@ -18320,48 +18847,47 @@ class TestCelerpAccountSurface:
                    new=AsyncMock(return_value={"reconnect": True, "gateway_token": "gt-1",
                                                "public_url": "https://co.celerp.app",
                                                "instance_id": "i-1"})):
-            r = await ui_client.post("/settings/cloud-activate", cookies=_authed())
+            r = await ui_client.post("/settings/cloud-activate")
         assert b"Reconnect to the same subscription?" in r.content
         assert b"free Celerp account" not in r.content
 
     @pytest.mark.asyncio
     async def test_claim_connected_reloads_the_web_access_page(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.cloud_claim",
                    new=AsyncMock(return_value={"connected": True, "relay_status": "active",
                                                "public_url": "https://co.celerp.app",
                                                "instance_id": "i-1"})):
             r = await ui_client.post("/settings/cloud-claim",
-                                     data={"claim_email": "o@shop.example", "otp_code": "123456"},
-                                     cookies=_authed())
+                                     data={"claim_email": "o@shop.example", "otp_code": "123456"})
         assert r.status_code == 204
         assert r.headers["hx-redirect"] == "/settings/cloud"
 
     @pytest.mark.asyncio
     async def test_claim_connected_carries_a_known_notice_to_the_page(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.cloud_claim",
                    new=AsyncMock(return_value={"connected": True, "instance_id": "i-1",
                                                "notice": "shopify_store_not_linked"})):
             r = await ui_client.post("/settings/cloud-claim",
-                                     data={"claim_email": "o@shop.example", "otp_code": "123456"},
-                                     cookies=_authed())
+                                     data={"claim_email": "o@shop.example", "otp_code": "123456"})
         assert r.status_code == 204
         assert r.headers["hx-redirect"] == "/settings/cloud?notice=shopify_store_not_linked"
         with patch("ui.api_client.cloud_claim",
                    new=AsyncMock(return_value={"connected": True, "instance_id": "i-1",
                                                "notice": "something_new"})):
             r = await ui_client.post("/settings/cloud-claim",
-                                     data={"claim_email": "o@shop.example", "otp_code": "123456"},
-                                     cookies=_authed())
+                                     data={"claim_email": "o@shop.example", "otp_code": "123456"})
         assert r.headers["hx-redirect"] == "/settings/cloud"
 
     @pytest.mark.asyncio
     async def test_claim_linked_shows_the_notice_with_the_handover(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.cloud_claim",
                    new=AsyncMock(return_value={"linked": True, "instance_id": "i-1",
                                                "notice": "shopify_store_not_linked"})):
             r = await ui_client.post("/settings/cloud-claim",
-                                     data={"claim_email": "o@shop.example", "otp_code": "123456"},
-                                     cookies=_authed())
+                                     data={"claim_email": "o@shop.example", "otp_code": "123456"})
         assert r.status_code == 200
         assert b"Subscription linked" in r.content
         assert b"Your Shopify store was not connected" in r.content
@@ -18372,11 +18898,11 @@ class TestCelerpAccountSurface:
         link may already be done; restart or retry), never with the generic
         busy-server and batch-size copy of a data request."""
         from ui.api_client import APIError, timeout_message
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.cloud_claim",
                    new=AsyncMock(side_effect=APIError(504, timeout_message()))):
             r = await ui_client.post("/settings/cloud-claim",
-                                     data={"claim_email": "o@shop.example", "otp_code": "123456"},
-                                     cookies=_authed())
+                                     data={"claim_email": "o@shop.example", "otp_code": "123456"})
         assert r.status_code == 200
         assert b"may already have moved to this computer" in r.content
         assert b"batch size" not in r.content
@@ -18387,13 +18913,13 @@ class TestCelerpAccountSurface:
         the connected page once activation brings the relay up."""
         status = {"email": "o@shop.example", "email_verified": True, "tier": "cloud",
                   "pending_selection": False, "linked_elsewhere": False}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.account_status", new=AsyncMock(return_value=status)),
             patch("ui.api_client.activate_relay",
                   new=AsyncMock(return_value={"connected": True, "relay_status": "active"})),
         ):
-            r = await ui_client.get("/account/poll?panel=cloud-relay-tab&mode=email",
-                                    cookies=_authed())
+            r = await ui_client.get("/account/poll?panel=cloud-relay-tab&mode=email")
         assert r.status_code == 204
         assert r.headers["hx-redirect"] == "/settings/cloud"
 
@@ -18404,13 +18930,13 @@ class TestCelerpAccountSurface:
         the landing page and hide the account state."""
         status = {"email": "o@shop.example", "email_verified": True, "tier": "free",
                   "pending_selection": False, "linked_elsewhere": False}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.account_status", new=AsyncMock(return_value=status)),
             patch("ui.api_client.activate_relay",
                   new=AsyncMock(return_value={"error": "no subscription"})),
         ):
-            r = await ui_client.get("/account/poll?panel=cloud-relay-tab&mode=email",
-                                    cookies=_authed())
+            r = await ui_client.get("/account/poll?panel=cloud-relay-tab&mode=email")
         assert r.status_code == 200
         assert b"Signed in as" in r.content
 
@@ -18419,13 +18945,14 @@ class TestCelerpAccountSurface:
         """Activation owns credential persistence; the UI consumes its result."""
         status = {"email": "o@shop.example", "email_verified": True, "tier": "free",
                   "pending_selection": False, "linked_elsewhere": False}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.account_status", new=AsyncMock(return_value=status)),
             patch("ui.api_client.activate_relay",
                   new=AsyncMock(return_value={"connected": True, "relay_status": "active",
                                               "instance_id": "i-1"})),
         ):
-            r = await ui_client.get("/account/poll?n=3&mode=google", cookies=_authed())
+            r = await ui_client.get("/account/poll?n=3&mode=google")
         assert b"Signed in as" in r.content
         assert b"could not be connected" not in r.content
 
@@ -18436,6 +18963,7 @@ class TestCelerpAccountSurface:
         staged continuation must not fire against the missing credentials."""
         status = {"email": "o@shop.example", "email_verified": True, "tier": "free",
                   "pending_selection": False, "linked_elsewhere": False}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.account_status", new=AsyncMock(return_value=status)),
             patch("ui.api_client.activate_relay",
@@ -18443,7 +18971,7 @@ class TestCelerpAccountSurface:
         ):
             r = await ui_client.get(
                 "/account/poll?panel=account-gate-panel&mode=google&n=3"
-                "&next=buy:acct-test:official", cookies=_authed())
+                "&next=buy:acct-test:official")
         assert b"could not be connected" in r.content
         assert b"account-resume" not in r.content
 
@@ -18453,28 +18981,28 @@ class TestCelerpAccountSurface:
         a close control the user is stuck until a manual page refresh."""
         status = {"email": "o@shop.example", "email_verified": True, "tier": "free",
                   "pending_selection": False, "linked_elsewhere": False}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.account_status", new=AsyncMock(return_value=status)),
             patch("ui.api_client.activate_relay",
                   new=AsyncMock(return_value={"connected": True, "relay_status": "active"})),
         ):
             gate = await ui_client.get(
-                "/account/poll?panel=account-gate-panel&mode=google&n=3",
-                cookies=_authed())
+                "/account/poll?panel=account-gate-panel&mode=google&n=3")
             embedded = await ui_client.get(
-                "/account/poll?panel=celerp-account-panel&mode=google&n=3",
-                cookies=_authed())
+                "/account/poll?panel=celerp-account-panel&mode=google&n=3")
         assert b"account-gate-close" in gate.content
         assert b"account-gate-modal" in gate.content          # dismiss wiring
         assert b"account-gate-close" not in embedded.content  # embedded panels need no way back
 
     @pytest.mark.asyncio
     async def test_google_button_opens_browser_and_waits(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.account_methods",
                    new=AsyncMock(return_value={
                        "google": True,
                        "google_start_url": "https://relay.celerp.com/auth/google/start?instance_id=i-1"})):
-            r = await ui_client.get("/account/google", cookies=_authed())
+            r = await ui_client.get("/account/google")
         content = r.content
         assert b"auth/google/start" in content               # opens the relay URL
         assert b"/account/poll" in content                   # then waits, bounded
@@ -18482,9 +19010,10 @@ class TestCelerpAccountSurface:
 
     @pytest.mark.asyncio
     async def test_google_unavailable_falls_back_with_message(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.account_methods",
                    new=AsyncMock(return_value={"google": False})):
-            r = await ui_client.get("/account/google", cookies=_authed())
+            r = await ui_client.get("/account/google")
         assert b"Use email instead" in r.content
         assert b"Continue with email" in r.content
 
@@ -18493,11 +19022,12 @@ class TestCelerpAccountSurface:
         """The Google waiting panel carries a visible authorize link plus a hint, so
         a packaged binary that never spawns the system browser still lets the user
         finish sign-in by hand."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.account_methods",
                    new=AsyncMock(return_value={
                        "google": True,
                        "google_start_url": "https://relay.celerp.com/auth/google/start?instance_id=i-1"})):
-            r = await ui_client.get("/account/google", cookies=_authed())
+            r = await ui_client.get("/account/google")
         content = r.content
         assert b"open this link to finish signing in with Google" in content
         assert b'href="https://relay.celerp.com/auth/google/start?instance_id=i-1"' in content
@@ -18507,12 +19037,12 @@ class TestCelerpAccountSurface:
     async def test_account_google_poll_keeps_fallback_link(self, ui_client):
         """While the poll is still waiting, the visible authorize link persists so the
         user is not stranded between ticks."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.account_status",
                    new=AsyncMock(return_value={"email_verified": False})):
             r = await ui_client.get(
                 "/account/poll?panel=celerp-account-panel&mode=google&n=1"
-                "&google_url=https%3A%2F%2Frelay.celerp.com%2Fauth%2Fgoogle%2Fstart%3Finstance_id%3Di-1",
-                cookies=_authed())
+                "&google_url=https%3A%2F%2Frelay.celerp.com%2Fauth%2Fgoogle%2Fstart%3Finstance_id%3Di-1")
         content = r.content
         assert b"open this link to finish signing in with Google" in content
         assert b'href="https://relay.celerp.com/auth/google/start?instance_id=i-1"' in content
@@ -18521,20 +19051,18 @@ class TestCelerpAccountSurface:
     async def test_account_google_poll_rejects_unsafe_or_foreign_url(self, ui_client):
         """The poll only renders the link for a safe relay/Google url. A safe url shows
         the link (red at merge-base); an unsafe scheme or a foreign host renders none."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.account_status",
                    new=AsyncMock(return_value={"email_verified": False})):
             safe = await ui_client.get(
                 "/account/poll?panel=celerp-account-panel&mode=google&n=1"
-                "&google_url=https%3A%2F%2Frelay.celerp.com%2Fauth%2Fgoogle%2Fstart%3Finstance_id%3Di-1",
-                cookies=_authed())
+                "&google_url=https%3A%2F%2Frelay.celerp.com%2Fauth%2Fgoogle%2Fstart%3Finstance_id%3Di-1")
             unsafe = await ui_client.get(
                 "/account/poll?panel=celerp-account-panel&mode=google&n=1"
-                "&google_url=javascript%3Aalert(1)",
-                cookies=_authed())
+                "&google_url=javascript%3Aalert(1)")
             foreign = await ui_client.get(
                 "/account/poll?panel=celerp-account-panel&mode=google&n=1"
-                "&google_url=https%3A%2F%2Fevil.example%2Fx",
-                cookies=_authed())
+                "&google_url=https%3A%2F%2Fevil.example%2Fx")
         assert b"open this link to finish signing in with Google" in safe.content
         assert b"open this link to finish signing in with Google" not in unsafe.content
         assert b"open this link to finish signing in with Google" not in foreign.content
@@ -18547,11 +19075,12 @@ class TestCelerpAccountSurface:
     async def test_account_google_unsafe_start_url_degrades(self, ui_client):
         """An unsafe google_start_url never reaches the panel: the handler degrades to
         the unavailable state and emits no Script carrying the raw url."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.account_methods",
                    new=AsyncMock(return_value={
                        "google": True,
                        "google_start_url": "https://evil.example/x</script>"})):
-            r = await ui_client.get("/account/google", cookies=_authed())
+            r = await ui_client.get("/account/google")
         content = r.content
         assert b"Continue with email" in content
         assert b"evil.example" not in content
@@ -18573,6 +19102,7 @@ class TestCelerpAccountSurface:
         """A pending one-click link confirmation in the browser keeps the panel
         waiting - it must land on the final (linked) state, not an early free."""
         activate = AsyncMock(return_value={})
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.account_status",
                   new=AsyncMock(return_value={"email": "o@shop.example", "email_verified": True,
@@ -18580,7 +19110,7 @@ class TestCelerpAccountSurface:
                                               "linked_elsewhere": False, "claim_offer": True})),
             patch("ui.api_client.activate_relay", new=activate),
         ):
-            r = await ui_client.get("/account/poll?n=2&mode=email", cookies=_authed())
+            r = await ui_client.get("/account/poll?n=2&mode=email")
         assert b"/account/poll" in r.content     # still waiting
         assert b"Signed in as" not in r.content
         assert activate.await_count == 0         # no premature activation
@@ -18591,14 +19121,13 @@ class TestCelerpAccountSurface:
         operators and viewers get an empty fragment from every account route
         and from the claim fragments - not the surface."""
         for role in ("manager", "operator", "viewer"):
-            r = await ui_client.get("/account/panel", cookies=_authed(role=role))
+            ui_client.cookies.update(_authed(role=role))
+            r = await ui_client.get("/account/panel")
             assert b"Continue with email" not in r.content, role
-            r = await ui_client.post("/account/email", data={"email": "x@y.z"},
-                                     cookies=_authed(role=role))
+            r = await ui_client.post("/account/email", data={"email": "x@y.z"})
             assert b"Check your inbox" not in r.content, role
             r = await ui_client.post("/settings/cloud-send-otp",
-                                     data={"claim_email": "x@y.z"},
-                                     cookies=_authed(role=role))
+                                     data={"claim_email": "x@y.z"})
             assert b"code" not in r.content.lower(), role
 
     @pytest.mark.asyncio
@@ -18606,7 +19135,8 @@ class TestCelerpAccountSurface:
         with patch("ui.api_client.account_methods",
                    new=AsyncMock(return_value={"google": False})):
             for role in ("admin", "owner"):
-                r = await ui_client.get("/account/panel", cookies=_authed(role=role))
+                ui_client.cookies.update(_authed(role=role))
+                r = await ui_client.get("/account/panel")
                 assert b"Continue with email" in r.content, role
 
     @pytest.mark.asyncio
@@ -18614,9 +19144,10 @@ class TestCelerpAccountSurface:
         """The Team-infrastructure fragments change the database/storage config -
         the page is admin-gated, so the fragments must refuse sub-admin roles
         too (save-infra could otherwise repoint the company database)."""
+        ui_client.cookies.update(_authed(role="operator"))
         for route in ("/settings/cloud/test-db", "/settings/cloud/test-storage",
                       "/settings/cloud/save-infra", "/settings/cloud/restore-db"):
-            r = await ui_client.post(route, data={}, cookies=_authed(role="operator"))
+            r = await ui_client.post(route, data={})
             body = r.content.strip()
             assert (body == b"" or b"<div></div>" in body.lower()
                     or body == b"<div></div>"), (route, body[:120])
@@ -18627,9 +19158,10 @@ class TestCelerpAccountSurface:
         opt-out channel and an inline Privacy Policy link (stated at first
         contact)."""
         from ui.config import PRIVACY_POLICY_URL
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.account_methods",
                    new=AsyncMock(return_value={"google": False})):
-            r = await ui_client.get("/account/panel", cookies=_authed())
+            r = await ui_client.get("/account/panel")
         assert b"unsubscribe@celerp.com" in r.content
         assert b"By registering you consent to" in r.content
         assert f'href="{PRIVACY_POLICY_URL}"'.encode() in r.content
@@ -18640,9 +19172,10 @@ class TestCelerpAccountSurface:
         """When Google is available the two sign-in paths are mutually
         exclusive: a radio picks one and hides the other so both are never on
         screen at once. Email is the default-shown path."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.account_methods",
                    new=AsyncMock(return_value={"google": True})):
-            r = await ui_client.get("/account/panel", cookies=_authed())
+            r = await ui_client.get("/account/panel")
         html = r.content.decode()
         assert 'name="gate_method"' in html
         assert "Email link" in html
@@ -18657,9 +19190,10 @@ class TestCelerpAccountSurface:
     async def test_signup_panel_no_radio_without_google(self, ui_client):
         """No Google means one path only - the email row shows with no radio
         toggle cluttering it."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.account_methods",
                    new=AsyncMock(return_value={"google": False})):
-            r = await ui_client.get("/account/panel", cookies=_authed())
+            r = await ui_client.get("/account/panel")
         html = r.content.decode()
         assert 'name="gate_method"' not in html
         assert 'id="gate-google-path"' not in html
@@ -18674,6 +19208,7 @@ class TestCelerpAccountSurface:
                 "tier": "verified", "author": "Acme Ltd", "license": "Proprietary",
                 "price_monthly": 9.0}]
         buy = AsyncMock(return_value={"url": "https://checkout.stripe.com/pay/cs_test_acme"})
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(cat, False))),
             patch("ui.api_client.module_licenses", new=AsyncMock(return_value=[])),
@@ -18684,7 +19219,7 @@ class TestCelerpAccountSurface:
                                               "linked_elsewhere": False})),
             patch("ui.api_client.buy_module", new=buy),
         ):
-            r = await ui_client.post("/modules/buy?slug=acme-crm&kind=monthly", cookies=_authed())
+            r = await ui_client.post("/modules/buy?slug=acme-crm&kind=monthly")
         assert r.status_code == 200
         consent = buy.call_args.args[3]
         assert "share your email address and purchase record with Acme Ltd" in consent
@@ -18751,11 +19286,12 @@ class TestCelerpAccountSurface:
     @pytest.mark.asyncio
     async def test_account_panel_rejects_malformed_next_action(self, ui_client):
         """A tampered next value is dropped, never echoed into the form."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.account_methods",
                    new=AsyncMock(return_value={"google": False})):
             r = await ui_client.get(
                 "/account/panel?intent=signup&panel=celerp-account-panel"
-                "&next=buy:../../etc:monthly", cookies=_authed())
+                "&next=buy:../../etc:monthly")
         content = r.content.decode()
         assert r.status_code == 200
         assert "Continue with email" in content
@@ -18766,12 +19302,13 @@ class TestCelerpAccountSurface:
     @pytest.mark.asyncio
     async def test_signup_disposable_email_shows_error_editable_form(self, ui_client):
         from ui.api_client import APIError
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.account_signup",
                    new=AsyncMock(side_effect=APIError(422, "Disposable email addresses cannot hold purchases. Use a mailbox you keep."))), \
              patch("ui.api_client.account_methods",
                    new=AsyncMock(return_value={"google": False})):
             r = await ui_client.post("/account/email?panel=celerp-account-panel",
-                                     data={"email": "x@mailinator.example"}, cookies=_authed())
+                                     data={"email": "x@mailinator.example"})
         content = r.content.decode()
         assert "Disposable email addresses cannot hold purchases" in content
         assert 'name="email"' in content            # form returned, still editable
@@ -18780,12 +19317,13 @@ class TestCelerpAccountSurface:
     @pytest.mark.asyncio
     async def test_signup_email_undeliverable_shows_error(self, ui_client):
         from ui.api_client import APIError
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.account_signup",
                    new=AsyncMock(side_effect=APIError(502, "We could not send to that address. Check it and try again."))), \
              patch("ui.api_client.account_methods",
                    new=AsyncMock(return_value={"google": False})):
             r = await ui_client.post("/account/email?panel=celerp-account-panel",
-                                     data={"email": "typo@nosuchdomain.example"}, cookies=_authed())
+                                     data={"email": "typo@nosuchdomain.example"})
         content = r.content.decode()
         assert "could not send to that address" in content
         assert 'name="email"' in content
@@ -18796,9 +19334,10 @@ class TestCelerpAccountSurface:
         locale key behind it is gone from every locale file."""
         import json
         from pathlib import Path
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.account_methods",
                    new=AsyncMock(return_value={"google": False})):
-            r = await ui_client.get("/account/panel?intent=claim", cookies=_authed())
+            r = await ui_client.get("/account/panel?intent=claim")
         assert b"Create a free account" not in r.content
         locales_dir = Path(__file__).resolve().parents[1] / "ui" / "locales"
         for f in sorted(locales_dir.glob("*.json")):
@@ -18813,11 +19352,11 @@ class TestCelerpAccountSurface:
                   "pending_selection": False, "linked_elsewhere": False}
         full = dict(masked, email="o@shop.example")
         status = AsyncMock(side_effect=[masked, full])
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.account_status", new=status), \
              patch("ui.api_client.activate_relay",
                    new=AsyncMock(return_value={"relay_status": "active"})):
-            r = await ui_client.get("/account/poll?panel=celerp-account-panel&mode=email&n=3",
-                                    cookies=_authed())
+            r = await ui_client.get("/account/poll?panel=celerp-account-panel&mode=email&n=3")
         assert status.await_count == 2
         assert b"o@shop.example" in r.content
 # ── Chart of accounts: add and edit ───────────────────────────────────────────
@@ -18828,17 +19367,19 @@ from ui.api_client import APIError
 class TestChartOfAccountsAddEdit:
     @pytest.mark.asyncio
     async def test_chart_tab_add_account_link_points_at_new_route(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_bank_accounts", new=AsyncMock(return_value={"items": []})), \
              patch("ui.api_client.get_chart", new=AsyncMock(return_value={"items": _CHART})):
-            r = await ui_client.get("/settings/accounting?tab=chart", cookies=_authed())
+            r = await ui_client.get("/settings/accounting?tab=chart")
         assert r.status_code == 200
         assert b'href="/settings/accounting/chart/new"' in r.content
         assert b'href="/accounting/new"' not in r.content
 
     @pytest.mark.asyncio
     async def test_add_account_page_renders_form(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_chart", new=AsyncMock(return_value={"items": _CHART})):
-            r = await ui_client.get("/settings/accounting/chart/new", cookies=_authed())
+            r = await ui_client.get("/settings/accounting/chart/new")
         assert r.status_code == 200
         assert b'name="code"' in r.content
         assert b'name="name"' in r.content
@@ -18847,8 +19388,9 @@ class TestChartOfAccountsAddEdit:
 
     @pytest.mark.asyncio
     async def test_add_account_form_has_escape_handler(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_chart", new=AsyncMock(return_value={"items": _CHART})):
-            r = await ui_client.get("/settings/accounting/chart/new", cookies=_authed())
+            r = await ui_client.get("/settings/accounting/chart/new")
         assert r.status_code == 200
         assert b"Escape" in r.content
         assert b"/settings/accounting?tab=chart" in r.content
@@ -18856,11 +19398,11 @@ class TestChartOfAccountsAddEdit:
     @pytest.mark.asyncio
     async def test_create_account_submit_returns_hx_redirect(self, ui_client):
         create = AsyncMock(return_value={"code": "1999"})
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.create_account", new=create), \
              patch("ui.api_client.get_chart", new=AsyncMock(return_value={"items": _CHART})):
             r = await ui_client.post(
                 "/settings/accounting/chart/new",
-                cookies=_authed(),
                 data={"code": "1999", "name": "Test Clearing", "account_type": "asset", "parent_code": ""},
             )
         assert r.status_code == 204
@@ -18870,11 +19412,11 @@ class TestChartOfAccountsAddEdit:
     @pytest.mark.asyncio
     async def test_create_account_submit_duplicate_code_shows_error_banner(self, ui_client):
         create = AsyncMock(side_effect=APIError(409, "Account code 1999 already exists"))
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.create_account", new=create), \
              patch("ui.api_client.get_chart", new=AsyncMock(return_value={"items": _CHART})):
             r = await ui_client.post(
                 "/settings/accounting/chart/new",
-                cookies=_authed(),
                 data={"code": "1999", "name": "Test Clearing", "account_type": "asset", "parent_code": ""},
             )
         assert r.status_code == 200
@@ -18886,11 +19428,11 @@ class TestChartOfAccountsAddEdit:
     @pytest.mark.asyncio
     async def test_create_account_submit_rejects_unknown_type(self, ui_client):
         create = AsyncMock(return_value={})
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.create_account", new=create), \
              patch("ui.api_client.get_chart", new=AsyncMock(return_value={"items": _CHART})):
             r = await ui_client.post(
                 "/settings/accounting/chart/new",
-                cookies=_authed(),
                 data={"code": "1999", "name": "X", "account_type": "bogus", "parent_code": ""},
             )
         assert r.status_code == 200
@@ -18900,11 +19442,11 @@ class TestChartOfAccountsAddEdit:
     @pytest.mark.asyncio
     async def test_create_account_submit_rejects_unknown_parent(self, ui_client):
         create = AsyncMock(return_value={})
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.create_account", new=create), \
              patch("ui.api_client.get_chart", new=AsyncMock(return_value={"items": _CHART})):
             r = await ui_client.post(
                 "/settings/accounting/chart/new",
-                cookies=_authed(),
                 data={"code": "1999", "name": "X", "account_type": "asset", "parent_code": "9999"},
             )
         assert r.status_code == 200
@@ -18914,11 +19456,11 @@ class TestChartOfAccountsAddEdit:
     @pytest.mark.asyncio
     async def test_patch_account_submit_rejects_self_parent(self, ui_client):
         patch_mock = AsyncMock(return_value={})
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.patch_account", new=patch_mock), \
              patch("ui.api_client.get_chart", new=AsyncMock(return_value={"items": _CHART})):
             r = await ui_client.patch(
                 "/settings/accounting/chart/1000",
-                cookies=_authed(),
                 data={"name": "Cash", "account_type": "asset", "parent_code": "1000", "is_active": "true"},
             )
         assert r.status_code == 200
@@ -18933,16 +19475,18 @@ class TestChartOfAccountsAddEdit:
 
     @pytest.mark.asyncio
     async def test_chart_table_row_has_edit_link(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_bank_accounts", new=AsyncMock(return_value={"items": []})), \
              patch("ui.api_client.get_chart", new=AsyncMock(return_value={"items": _CHART})):
-            r = await ui_client.get("/settings/accounting?tab=chart", cookies=_authed())
+            r = await ui_client.get("/settings/accounting?tab=chart")
         assert r.status_code == 200
         assert b"/settings/accounting/chart/1000/edit" in r.content
 
     @pytest.mark.asyncio
     async def test_edit_account_page_prefills_from_chart(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_chart", new=AsyncMock(return_value={"items": _CHART})):
-            r = await ui_client.get("/settings/accounting/chart/1000/edit", cookies=_authed())
+            r = await ui_client.get("/settings/accounting/chart/1000/edit")
         assert r.status_code == 200
         assert b'value="Cash"' in r.content
         # The account code is the posting identity journal lines reference:
@@ -18954,8 +19498,9 @@ class TestChartOfAccountsAddEdit:
         """The classification the cash flow statement uses is settable here, and the
         page shows what the account currently carries rather than a blank control."""
         chart = [{**_CHART[0], "cash_flow_category": "financing"}]
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_chart", new=AsyncMock(return_value={"items": chart})):
-            r = await ui_client.get("/settings/accounting/chart/1000/edit", cookies=_authed())
+            r = await ui_client.get("/settings/accounting/chart/1000/edit")
         assert r.status_code == 200
         body = r.content.decode()
         assert 'name="cash_flow_category"' in body
@@ -18968,11 +19513,11 @@ class TestChartOfAccountsAddEdit:
         """A mock returns its fixture whatever it is called with, so assert on what
         the page sent: the override has to reach the API to mean anything."""
         patch_mock = AsyncMock(return_value={"code": "1000"})
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.patch_account", new=patch_mock), \
              patch("ui.api_client.get_chart", new=AsyncMock(return_value={"items": _CHART})):
             r = await ui_client.patch(
                 "/settings/accounting/chart/1000",
-                cookies=_authed(),
                 data={"name": "Cash", "account_type": "asset", "parent_code": "",
                       "is_active": "true", "cash_flow_category": "investing"},
             )
@@ -18982,11 +19527,11 @@ class TestChartOfAccountsAddEdit:
     @pytest.mark.asyncio
     async def test_patch_account_submit_sends_an_empty_override_to_clear_it(self, ui_client):
         patch_mock = AsyncMock(return_value={"code": "1000"})
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.patch_account", new=patch_mock), \
              patch("ui.api_client.get_chart", new=AsyncMock(return_value={"items": _CHART})):
             r = await ui_client.patch(
                 "/settings/accounting/chart/1000",
-                cookies=_authed(),
                 data={"name": "Cash", "account_type": "asset", "parent_code": "",
                       "is_active": "true", "cash_flow_category": ""},
             )
@@ -18996,11 +19541,11 @@ class TestChartOfAccountsAddEdit:
     @pytest.mark.asyncio
     async def test_create_account_submit_forwards_the_cash_flow_override(self, ui_client):
         create = AsyncMock(return_value={"code": "1999"})
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.create_account", new=create), \
              patch("ui.api_client.get_chart", new=AsyncMock(return_value={"items": _CHART})):
             r = await ui_client.post(
                 "/settings/accounting/chart/new",
-                cookies=_authed(),
                 data={"code": "1999", "name": "Test Clearing", "account_type": "asset",
                       "parent_code": "", "cash_flow_category": "financing"},
             )
@@ -19015,9 +19560,10 @@ class TestChartOfAccountsAddEdit:
         chart = [_CHART[0], {"code": "1210", "name": "Equipment", "account_type": "asset",
                              "parent_code": "", "is_active": True,
                              "cash_flow_category": "financing"}]
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_bank_accounts", new=AsyncMock(return_value={"items": []})), \
              patch("ui.api_client.get_chart", new=AsyncMock(return_value={"items": chart})):
-            r = await ui_client.get("/settings/accounting?tab=chart", cookies=_authed())
+            r = await ui_client.get("/settings/accounting?tab=chart")
         assert r.status_code == 200
         body = r.content.decode()
         assert ">Financing<" in body
@@ -19030,9 +19576,10 @@ class TestChartOfAccountsAddEdit:
         """The cash flow column is a click-to-edit cell like the rest of the app's
         inline-editable cells, not plain text that only the full edit form can change."""
         chart = [{**_CHART[0], "cash_flow_category": "financing"}]
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_bank_accounts", new=AsyncMock(return_value={"items": []})), \
              patch("ui.api_client.get_chart", new=AsyncMock(return_value={"items": chart})):
-            r = await ui_client.get("/settings/accounting?tab=chart", cookies=_authed())
+            r = await ui_client.get("/settings/accounting?tab=chart")
         assert r.status_code == 200
         body = r.content.decode()
         assert 'class="editable-cell"' in body
@@ -19044,9 +19591,10 @@ class TestChartOfAccountsAddEdit:
     async def test_chart_table_cash_flow_cell_shows_dash_and_stays_clickable_when_unset(self, ui_client):
         """An account carrying no override still shows '--', and the cell keeps its
         click-to-edit trigger rather than becoming a dead cell."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_bank_accounts", new=AsyncMock(return_value={"items": []})), \
              patch("ui.api_client.get_chart", new=AsyncMock(return_value={"items": _CHART})):
-            r = await ui_client.get("/settings/accounting?tab=chart", cookies=_authed())
+            r = await ui_client.get("/settings/accounting?tab=chart")
         assert r.status_code == 200
         body = r.content.decode()
         assert ">--<" in body
@@ -19057,8 +19605,9 @@ class TestChartOfAccountsAddEdit:
         """Clicking the cell offers the same four choices as the full edit form:
         derive it, or pin to one of the three cash flow sections."""
         chart = [{**_CHART[0], "cash_flow_category": "investing"}]
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_chart", new=AsyncMock(return_value={"items": chart})):
-            r = await ui_client.get("/settings/accounting/chart/1000/cash-flow/edit", cookies=_authed())
+            r = await ui_client.get("/settings/accounting/chart/1000/cash-flow/edit")
         assert r.status_code == 200
         body = r.content.decode()
         assert "<select" in body
@@ -19070,8 +19619,9 @@ class TestChartOfAccountsAddEdit:
     async def test_cash_flow_field_edit_has_an_escape_handler_that_restores_the_display_cell(self, ui_client):
         """Escape cancels the in-place edit without saving, by restoring the
         original display cell rather than submitting the select's value."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_chart", new=AsyncMock(return_value={"items": _CHART})):
-            r = await ui_client.get("/settings/accounting/chart/1000/cash-flow/edit", cookies=_authed())
+            r = await ui_client.get("/settings/accounting/chart/1000/cash-flow/edit")
         assert r.status_code == 200
         body = r.content.decode()
         assert "Escape" in body
@@ -19082,10 +19632,10 @@ class TestChartOfAccountsAddEdit:
         """Routine data entry happens on-page: saving the override returns the
         updated cell fragment, not a full-page redirect or reload."""
         patch_mock = AsyncMock(return_value={"code": "1000", "cash_flow_category": "operating"})
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.patch_account", new=patch_mock):
             r = await ui_client.patch(
                 "/settings/accounting/chart/1000/cash-flow",
-                cookies=_authed(),
                 data={"value": "operating"},
             )
         assert r.status_code == 200
@@ -19100,10 +19650,10 @@ class TestChartOfAccountsAddEdit:
         """Selecting the derived option clears the override rather than sending a
         category name, matching the API's clear-to-derive contract."""
         patch_mock = AsyncMock(return_value={"code": "1000", "cash_flow_category": None})
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.patch_account", new=patch_mock):
             r = await ui_client.patch(
                 "/settings/accounting/chart/1000/cash-flow",
-                cookies=_authed(),
                 data={"value": ""},
             )
         assert r.status_code == 200
@@ -19116,10 +19666,10 @@ class TestChartOfAccountsAddEdit:
         swallowing the error."""
         patch_mock = AsyncMock(side_effect=APIError(
             422, "Cash flow category must be one of: operating, investing, financing."))
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.patch_account", new=patch_mock):
             r = await ui_client.patch(
                 "/settings/accounting/chart/1000/cash-flow",
-                cookies=_authed(),
                 data={"value": "bogus"},
             )
         assert r.status_code == 200
@@ -19130,8 +19680,9 @@ class TestChartOfAccountsAddEdit:
         """The display endpoint the Escape handler calls shows the account's
         actual saved value, not a blank or stale one."""
         chart = [{**_CHART[0], "cash_flow_category": "financing"}]
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_chart", new=AsyncMock(return_value={"items": chart})):
-            r = await ui_client.get("/settings/accounting/chart/1000/cash-flow/display", cookies=_authed())
+            r = await ui_client.get("/settings/accounting/chart/1000/cash-flow/display")
         assert r.status_code == 200
         body = r.content.decode()
         assert ">Financing<" in body
@@ -19139,9 +19690,10 @@ class TestChartOfAccountsAddEdit:
 
     @pytest.mark.asyncio
     async def test_chart_tab_api_error_shows_error_state_not_empty_chart(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_bank_accounts", new=AsyncMock(return_value={"items": []})), \
              patch("ui.api_client.get_chart", new=AsyncMock(side_effect=APIError(500, "backend down"))):
-            r = await ui_client.get("/settings/accounting?tab=chart", cookies=_authed())
+            r = await ui_client.get("/settings/accounting?tab=chart")
         assert r.status_code == 200
         assert b"No accounts yet" not in r.content
         assert b"error-banner" in r.content
@@ -19149,11 +19701,11 @@ class TestChartOfAccountsAddEdit:
     @pytest.mark.asyncio
     async def test_patch_account_submit_returns_hx_redirect(self, ui_client):
         patch_mock = AsyncMock(return_value={"code": "1000"})
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.patch_account", new=patch_mock), \
              patch("ui.api_client.get_chart", new=AsyncMock(return_value={"items": _CHART})):
             r = await ui_client.patch(
                 "/settings/accounting/chart/1000",
-                cookies=_authed(),
                 data={"name": "Cash Renamed", "account_type": "asset", "parent_code": "", "is_active": "true"},
             )
         assert r.status_code == 204
@@ -19163,11 +19715,11 @@ class TestChartOfAccountsAddEdit:
     @pytest.mark.asyncio
     async def test_patch_account_submit_not_found_shows_message(self, ui_client):
         patch_mock = AsyncMock(side_effect=APIError(404, "Account not found"))
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.patch_account", new=patch_mock), \
              patch("ui.api_client.get_chart", new=AsyncMock(return_value={"items": _CHART})):
             r = await ui_client.patch(
                 "/settings/accounting/chart/9999",
-                cookies=_authed(),
                 data={"name": "Ghost", "account_type": "asset", "parent_code": "", "is_active": "true"},
             )
         assert r.status_code == 200
@@ -19176,11 +19728,11 @@ class TestChartOfAccountsAddEdit:
     @pytest.mark.asyncio
     async def test_create_account_submit_expired_token_shows_error_banner(self, ui_client):
         create = AsyncMock(side_effect=APIError(401, "Unauthorized"))
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.create_account", new=create), \
              patch("ui.api_client.get_chart", new=AsyncMock(return_value={"items": _CHART})):
             r = await ui_client.post(
                 "/settings/accounting/chart/new",
-                cookies=_authed(),
                 data={"code": "1999", "name": "X", "account_type": "asset", "parent_code": ""},
             )
         assert r.status_code == 200
@@ -19209,10 +19761,10 @@ class TestReconciliationImportResponse:
     @pytest.mark.asyncio
     async def test_import_csv_success_returns_hx_redirect_not_302(self, ui_client):
         imp = AsyncMock(return_value={"needs_mapping": False, "rows_imported": 2})
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.import_recon_csv", new=imp):
             r = await ui_client.post(
                 "/accounting/reconcile/sess1/import",
-                cookies=_authed(),
                 files=_csv_upload(),
             )
         assert r.status_code == 204
@@ -19221,9 +19773,9 @@ class TestReconciliationImportResponse:
 
     @pytest.mark.asyncio
     async def test_import_csv_no_file_returns_hx_redirect_with_message(self, ui_client):
+        ui_client.cookies.update(_authed())
         r = await ui_client.post(
             "/accounting/reconcile/sess1/import",
-            cookies=_authed(),
             data={},
         )
         assert r.status_code == 204
@@ -19244,10 +19796,10 @@ class TestReconciliationImportResponse:
     @pytest.mark.asyncio
     async def test_import_csv_api_error_401_returns_401_hx_redirect(self, ui_client):
         imp = AsyncMock(side_effect=APIError(401, "expired"))
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.import_recon_csv", new=imp):
             r = await ui_client.post(
                 "/accounting/reconcile/sess1/import",
-                cookies=_authed(),
                 files=_csv_upload(),
             )
         assert r.status_code == 401
@@ -19256,10 +19808,10 @@ class TestReconciliationImportResponse:
     @pytest.mark.asyncio
     async def test_import_csv_api_error_409_surfaces_flash_toast(self, ui_client):
         imp = AsyncMock(side_effect=APIError(409, "Session already completed"))
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.import_recon_csv", new=imp):
             r = await ui_client.post(
                 "/accounting/reconcile/sess1/import",
-                cookies=_authed(),
                 files=_csv_upload(),
             )
         assert r.status_code == 204
@@ -19271,10 +19823,10 @@ class TestReconciliationImportResponse:
     async def test_import_csv_oversize_rejected(self, ui_client):
         imp = AsyncMock(return_value={"needs_mapping": False, "rows_imported": 0})
         big = b"Date,Description,Amount\n" + b"x" * (5 * 1024 * 1024 + 1)
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.import_recon_csv", new=imp):
             r = await ui_client.post(
                 "/accounting/reconcile/sess1/import",
-                cookies=_authed(),
                 files=_csv_upload(body=big),
             )
         assert r.status_code == 204
@@ -19284,10 +19836,10 @@ class TestReconciliationImportResponse:
     @pytest.mark.asyncio
     async def test_import_csv_zero_rows_shows_toast(self, ui_client):
         imp = AsyncMock(return_value={"needs_mapping": False, "rows_imported": 0})
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.import_recon_csv", new=imp):
             r = await ui_client.post(
                 "/accounting/reconcile/sess1/import",
-                cookies=_authed(),
                 files=_csv_upload(),
             )
         assert r.status_code == 204
@@ -19300,10 +19852,10 @@ class TestReconciliationImportResponse:
             "headers": ["Col A", "Col B", "Col C"],
             "preview": [{"Col A": "2026-03-01", "Col B": "Something", "Col C": "1000"}],
         })
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.import_recon_csv", new=imp):
             r = await ui_client.post(
                 "/accounting/reconcile/sess1/import",
-                cookies=_authed(),
                 files=_csv_upload(body=b"Col A,Col B,Col C\n2026-03-01,Something,1000\n"),
             )
         assert r.status_code == 200
@@ -19320,10 +19872,10 @@ class TestReconciliationImportResponse:
             "headers": ["Col A", "Col B", "Col C"],
             "preview": [],
         })
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.import_recon_csv", new=imp):
             r = await ui_client.post(
                 "/accounting/reconcile/sess1/import",
-                cookies=_authed(),
                 files=_csv_upload(body=b"Col A,Col B,Col C\n2026-03-01,Something,1000\n"),
             )
         assert r.status_code == 200
@@ -19340,10 +19892,10 @@ class TestReconciliationImportResponse:
             captured["column_map"] = column_map
             return {"needs_mapping": False, "rows_imported": 1}
 
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.import_recon_csv", new=_capture):
             r = await ui_client.post(
                 "/accounting/reconcile/sess1/confirm-import",
-                cookies=_authed(),
                 data={
                     "map_Col A": "date",
                     "map_Col B": "description",
@@ -19361,10 +19913,10 @@ class TestReconciliationImportResponse:
     async def test_confirm_import_incomplete_mapping_shows_inline_error(self, ui_client):
         import base64 as _b64
         imp = AsyncMock(return_value={})
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.import_recon_csv", new=imp):
             r = await ui_client.post(
                 "/accounting/reconcile/sess1/confirm-import",
-                cookies=_authed(),
                 data={
                     "map_Col A": "date",
                     "map_Col B": "ignore",
@@ -19383,10 +19935,10 @@ class TestReconciliationImportResponse:
     @pytest.mark.asyncio
     async def test_confirm_import_malformed_base64_rejected(self, ui_client):
         imp = AsyncMock(return_value={})
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.import_recon_csv", new=imp):
             r = await ui_client.post(
                 "/accounting/reconcile/sess1/confirm-import",
-                cookies=_authed(),
                 data={
                     "map_Col A": "date",
                     "map_Col B": "description",
@@ -19403,10 +19955,10 @@ class TestReconciliationImportResponse:
     async def test_confirm_import_duplicate_header_refused(self, ui_client):
         import base64 as _b64
         imp = AsyncMock(return_value={})
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.import_recon_csv", new=imp):
             r = await ui_client.post(
                 "/accounting/reconcile/sess1/confirm-import",
-                cookies=_authed(),
                 data={
                     "map_Date": "date",
                     "map_Description": "description",
@@ -19423,10 +19975,10 @@ class TestReconciliationImportResponse:
     async def test_confirm_import_header_mismatch_rejected(self, ui_client):
         import base64 as _b64
         imp = AsyncMock(return_value={})
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.import_recon_csv", new=imp):
             r = await ui_client.post(
                 "/accounting/reconcile/sess1/confirm-import",
-                cookies=_authed(),
                 data={
                     "map_Col A": "date",
                     "map_Col B": "description",
@@ -19441,19 +19993,21 @@ class TestReconciliationImportResponse:
 
     @pytest.mark.asyncio
     async def test_recon_start_page_back_link_points_at_settings_accounting(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)), \
              patch("ui.api_client.get_bank_accounts", new=AsyncMock(return_value={"items": []})):
-            r = await ui_client.get("/accounting/reconcile/start", cookies=_authed())
+            r = await ui_client.get("/accounting/reconcile/start")
         assert r.status_code == 200
         assert b'href="/settings/accounting?tab=bank-accounts"' in r.content
         assert b'href="/accounting?tab=bank-accounts"' not in r.content
 
     @pytest.mark.asyncio
     async def test_recon_workspace_error_fallback_redirects_to_settings_accounting(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)), \
              patch("ui.api_client.get_reconciliation", new=AsyncMock(side_effect=APIError(404, "Session not found"))), \
              patch("ui.api_client.get_statement_lines", new=AsyncMock(return_value={"items": []})):
-            r = await ui_client.get("/accounting/reconcile/sess1", cookies=_authed())
+            r = await ui_client.get("/accounting/reconcile/sess1")
         assert r.status_code == 302
         location = r.headers.get("location", "")
         assert location.startswith("/settings/accounting?tab=bank-accounts")
@@ -19461,8 +20015,9 @@ class TestReconciliationImportResponse:
 
     @pytest.mark.asyncio
     async def test_recon_completion_card_back_link_points_at_settings_accounting(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.complete_reconciliation", new=AsyncMock(return_value={"statement_date": "2026-03-31"})):
-            r = await ui_client.post("/accounting/reconcile/sess1/complete", cookies=_authed())
+            r = await ui_client.post("/accounting/reconcile/sess1/complete")
         assert r.status_code == 200
         assert b'href="/settings/accounting?tab=bank-accounts"' in r.content
         assert b'href="/accounting?tab=bank-accounts"' not in r.content
@@ -19550,10 +20105,11 @@ class TestModulesUnavailablePanel:
         from ui.api_client import APIError
         mocks = {**_SETTINGS_MOCKS_MODULES,
                  "ui.api_client.get_modules": AsyncMock(side_effect=APIError(500, "boom"))}
+        ui_client.cookies.update(_authed())
         with ExitStack() as stack:
             for k, v in mocks.items():
                 stack.enter_context(patch(k, new=v))
-            r = await ui_client.get("/modules", cookies=_authed())
+            r = await ui_client.get("/modules")
         assert r.status_code == 200
         body = r.content.decode()
         assert "The modules list is not available right now" in body
@@ -19573,8 +20129,9 @@ class TestModulesUnavailablePanel:
         rows = [{"name": "celerp-labels", "label": "Labels", "version": "1.0",
                  "author": "Celerp", "enabled": True, "running": True,
                  "is_default": True, "source": "default", "installed_at": None}]
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_modules", new=AsyncMock(return_value=rows)):
-            r = await ui_client.get("/modules/local-panel", cookies=_authed())
+            r = await ui_client.get("/modules/local-panel")
         assert r.status_code == 200
         assert r.headers.get("HX-Refresh") == "true"
         assert "The modules list is not available right now" not in r.content.decode()
@@ -19582,8 +20139,9 @@ class TestModulesUnavailablePanel:
     @pytest.mark.asyncio
     async def test_local_panel_route_keeps_retrying_on_api_error(self, ui_client):
         from ui.api_client import APIError
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_modules", new=AsyncMock(side_effect=APIError(502, "down"))):
-            r = await ui_client.get("/modules/local-panel", cookies=_authed())
+            r = await ui_client.get("/modules/local-panel")
         assert r.status_code == 200
         body = r.content.decode()
         assert "The modules list is not available right now" in body
@@ -19594,11 +20152,12 @@ class TestModulesUnavailablePanel:
     @pytest.mark.asyncio
     async def test_disable_failure_shows_retry_panel(self, ui_client):
         from ui.api_client import APIError
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.disable_module", new=AsyncMock(return_value={"ok": True})),
             patch("ui.api_client.get_modules", new=AsyncMock(side_effect=APIError(500, "boom"))),
         ):
-            r = await ui_client.post("/modules/some-mod/disable", cookies=_authed())
+            r = await ui_client.post("/modules/some-mod/disable")
         assert r.status_code == 200
         body = r.content.decode()
         assert "The modules list is not available right now" in body
@@ -19703,10 +20262,10 @@ class TestAttachmentProxyCompanyBoundary:
         """A path the API refuses (another company's file) reaches the API with the
         caller's bearer token, and the API's 404 is returned unchanged."""
         patcher, calls = _api_get_mock(status=404, content=b"", content_type="application/json")
+        ui_client.cookies.update(_authed(token="tkn-forwarded"))
         with patcher:
             r = await ui_client.get(
                 f"/static/attachments/{_OTHER_COMPANY}/att1.jpg",
-                cookies=_authed(token="tkn-forwarded"),
             )
         assert r.status_code == 404
         assert len(calls) == 1
@@ -19719,10 +20278,10 @@ class TestAttachmentProxyCompanyBoundary:
         """The proxy no longer parses the cookie: any present token is forwarded and
         the API decides. An unusable token comes back as the API's 401, not a UI guess."""
         patcher, calls = _api_get_mock(status=401, content=b"", content_type="application/json")
+        ui_client.cookies.update({"celerp_token": "not-a-jwt"})
         with patcher:
             r = await ui_client.get(
                 f"/static/attachments/{_TEST_COMPANY}/att1.jpg",
-                cookies={"celerp_token": "not-a-jwt"},
             )
         assert r.status_code == 401
         assert len(calls) == 1
@@ -19927,10 +20486,10 @@ async def test_account_panel_names_connect_tier(ui_client):
     """The signed-in account panel shows the tier's display name (Connect),
     never the raw internal tier key (cloud)."""
     status = {"email_verified": True, "tier": "cloud"}
+    ui_client.cookies.update(_authed())
     with patch("ui.api_client.account_status", new=AsyncMock(return_value=status)), \
          patch("ui.api_client.activate_relay", new=AsyncMock(return_value={})):
-        r = await ui_client.get("/account/poll?panel=account-gate-panel",
-                                cookies=_authed())
+        r = await ui_client.get("/account/poll?panel=account-gate-panel")
     content = r.content.decode()
     assert "Plan: Connect" in content
     assert "Plan: cloud" not in content
@@ -19951,10 +20510,11 @@ async def test_module_restart_refreshes_session_cookie(ui_client):
     new_access = "new-access-with-maintenance"
     new_refresh = "new-refresh-token"
     cookies = {**_authed(), "celerp_refresh": "stale-refresh-token"}
+    ui_client.cookies.update(cookies)
     with patch("ui.api_client.restart_system", new=AsyncMock(return_value=None)), \
          patch("ui.routes.modules_page.refresh_access_token",
                new=AsyncMock(return_value=(new_access, new_refresh))):
-        r = await ui_client.post("/modules/restart", cookies=cookies)
+        r = await ui_client.post("/modules/restart")
     assert r.status_code == 200
     set_cookie = r.headers.get("set-cookie", "")
     assert "celerp_token=" in set_cookie
@@ -19970,10 +20530,11 @@ async def test_module_restart_refresh_failure_still_restarts(ui_client):
     the restarting panel is returned, no session cookie is set, and no 500."""
     from ui.api_client import APIError
     cookies = {**_authed(), "celerp_refresh": "stale-refresh-token"}
+    ui_client.cookies.update(cookies)
     with patch("ui.api_client.restart_system", new=AsyncMock(return_value=None)), \
          patch("ui.routes.modules_page.refresh_access_token",
                new=AsyncMock(side_effect=APIError(500, "refresh boom"))):
-        r = await ui_client.post("/modules/restart", cookies=cookies)
+        r = await ui_client.post("/modules/restart")
     assert r.status_code == 200
     # Restart proceeded: the poll-and-reload panel is returned.
     assert "window.location = '/modules'" in r.content.decode()
@@ -20011,9 +20572,9 @@ async def test_module_delete_options_returns_dialog_with_both_paths(ui_client):
     delete-and-purge, delivered as the gate modal."""
     modules = [_module_row("acme-maintenance", enabled=False, running=False,
                            table_prefix="acme_")]
+    ui_client.cookies.update(_authed(role="owner"))
     with patch("ui.api_client.get_modules", new=AsyncMock(return_value=modules)):
-        r = await ui_client.get("/modules/acme-maintenance/delete-options",
-                                cookies=_authed(role="owner"))
+        r = await ui_client.get("/modules/acme-maintenance/delete-options")
     assert r.status_code == 200
     html = r.content.decode()
     # Keep-data path: delete without purge.
@@ -20031,9 +20592,9 @@ async def test_module_delete_options_without_prefix_omits_purge_path(ui_client):
     delete: there is nothing to purge, so the destructive path is not shown."""
     modules = [_module_row("noprefix", enabled=False, running=False,
                            table_prefix=None)]
+    ui_client.cookies.update(_authed(role="owner"))
     with patch("ui.api_client.get_modules", new=AsyncMock(return_value=modules)):
-        r = await ui_client.get("/modules/noprefix/delete-options",
-                                cookies=_authed(role="owner"))
+        r = await ui_client.get("/modules/noprefix/delete-options")
     assert r.status_code == 200
     html = r.content.decode()
     assert 'hx-post="/modules/noprefix/delete"' in html
@@ -20056,16 +20617,15 @@ async def test_module_delete_with_purge_drops_data_before_removing_module(ui_cli
         "ui.api_client.delete_module":
             AsyncMock(side_effect=lambda token, name: calls.append(("delete", name)) or {}),
     }
+    ui_client.cookies.update(_authed(role="owner"))
     with ExitStack() as stack:
         for k, v in mocks.items():
             stack.enter_context(patch(k, new=v))
-        r = await ui_client.post("/modules/acme-maintenance/delete?purge=1",
-                                 cookies=_authed(role="owner"))
+        r = await ui_client.post("/modules/acme-maintenance/delete?purge=1")
         assert r.status_code == 200
         assert calls == [("purge", "acme-maintenance"), ("delete", "acme-maintenance")]
         calls.clear()
-        r2 = await ui_client.post("/modules/acme-maintenance/delete",
-                                  cookies=_authed(role="owner"))
+        r2 = await ui_client.post("/modules/acme-maintenance/delete")
         assert r2.status_code == 200
         # Plain delete keeps the data: no purge.
         assert calls == [("delete", "acme-maintenance")]
@@ -20111,8 +20671,10 @@ async def test_transform_preview_hides_cost_without_permission(ui_client):
     company = {"settings": {}}  # default: view_inventory_costs requires manager
     p = _trp_patches(company=company)
     with p[0], p[1], p[2], p[3], p[4]:
-        r_op = await ui_client.get(_TRP_URL, cookies=_authed(role="operator"))
-        r_owner = await ui_client.get(_TRP_URL, cookies=_authed(role="owner"))
+        ui_client.cookies.update(_authed(role="operator"))
+        r_op = await ui_client.get(_TRP_URL)
+        ui_client.cookies.update(_authed(role="owner"))
+        r_owner = await ui_client.get(_TRP_URL)
     assert r_op.status_code == 200
     assert b"Cost Total" not in r_op.content
     assert b"child_cost_total" not in r_op.content
@@ -20127,6 +20689,7 @@ async def test_transform_preview_cost_hidden_on_company_fetch_error(ui_client):
     shown even to a normally-permitted role."""
     from ui.api_client import APIError
     company_err = AsyncMock(side_effect=APIError(500, "company unavailable"))
+    ui_client.cookies.update(_authed(role="owner"))
     with (
         patch("ui.api_client.get_item", new=AsyncMock(return_value=_TRP_ITEM)),
         patch("ui.api_client.get_units", new=AsyncMock(return_value=_TRP_UNITS)),
@@ -20134,7 +20697,7 @@ async def test_transform_preview_cost_hidden_on_company_fetch_error(ui_client):
         patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": []})),
         patch("ui.api_client.get_company", new=company_err),
     ):
-        r = await ui_client.get(_TRP_URL, cookies=_authed(role="owner"))
+        r = await ui_client.get(_TRP_URL)
     assert r.status_code == 200
     assert b"Cost Total" not in r.content
     assert b"child_cost_total" not in r.content
@@ -20147,8 +20710,9 @@ async def test_transform_preview_warns_on_dependency_fetch_error(ui_client):
     from ui.api_client import APIError
     company = {"settings": {}}
     p = _trp_patches(company=company, get_units=AsyncMock(side_effect=APIError(503, "units down")))
+    ui_client.cookies.update(_authed(role="owner"))
     with p[0], p[1], p[2], p[3], p[4]:
-        r = await ui_client.get(_TRP_URL, cookies=_authed(role="owner"))
+        r = await ui_client.get(_TRP_URL)
     assert r.status_code == 200
     assert b"flash--warning" in r.content
 
@@ -20168,11 +20732,12 @@ async def test_transform_handler_distinguishes_absent_from_zero_cost(ui_client):
         "child_sell_by": "piece",
         "child_qty": "5",
     }
+    ui_client.cookies.update(_authed())
     with patch("ui.api_client.transform_item", new=transform):
-        r_absent = await ui_client.post("/api/items/bulk/transform", data=base, cookies=_authed())
+        r_absent = await ui_client.post("/api/items/bulk/transform", data=base)
         absent_payload = transform.await_args.args[2]
         r_zero = await ui_client.post(
-            "/api/items/bulk/transform", data={**base, "child_cost_total": "0"}, cookies=_authed()
+            "/api/items/bulk/transform", data={**base, "child_cost_total": "0"}
         )
         zero_payload = transform.await_args.args[2]
     assert r_absent.status_code == 200
@@ -20392,11 +20957,11 @@ async def test_save_doc_lines_returns_reserved_conflicts(ui_client):
     err = APIError(422, "SKU-1: reserved on INV-9 - release it there first",
                    data={"message": "SKU-1: reserved on INV-9 - release it there first",
                          "conflicts": conflicts})
+    ui_client.cookies.update(_authed())
     with patch("ui.api_client.patch_doc", new=AsyncMock(side_effect=err)):
         r = await ui_client.post(
             "/docs/doc:INV-2026-0001/lines",
             json={"line_items": [], "subtotal": 0, "tax": 0, "total": 0},
-            cookies=_authed(),
         )
     assert r.status_code == 400
     body = r.json()
@@ -20408,7 +20973,6 @@ async def test_save_doc_lines_returns_reserved_conflicts(ui_client):
         r2 = await ui_client.post(
             "/docs/doc:INV-2026-0001/lines",
             json={"line_items": [], "subtotal": 0, "tax": 0, "total": 0},
-            cookies=_authed(),
         )
     assert r2.status_code == 400
     assert "reserved_conflicts" not in r2.json()
@@ -20423,11 +20987,11 @@ async def test_list_scan_proxy_preserves_run_conflict(ui_client):
     from ui.api_client import APIError
     msg = "This scan run was already recorded against a different batch."
     err = APIError(409, msg, data={"code": "scan_run_conflict", "detail": msg})
+    ui_client.cookies.update(_authed())
     with patch("ui.api_client.scan_codes", new=AsyncMock(side_effect=err)):
         r = await ui_client.post(
             "/lists/list:L1/scan",
             data={"barcode": "ABC123", "run_key": "run-1"},
-            cookies=_authed(),
         )
     assert r.status_code == 409
     body = r.json()
@@ -20441,12 +21005,12 @@ async def test_list_scan_proxy_plain_rejection_wraps_detail(ui_client):
     still returns JSON {detail: "..."} with the backend status - no machine code, so
     the scan bar shows the reason and keeps the field for a plain retry."""
     from ui.api_client import APIError
+    ui_client.cookies.update(_authed())
     with patch("ui.api_client.scan_codes",
                new=AsyncMock(side_effect=APIError(409, "This list is closed."))):
         r = await ui_client.post(
             "/lists/list:L1/scan",
             data={"barcode": "ABC123", "run_key": "run-1"},
-            cookies=_authed(),
         )
     assert r.status_code == 409
     assert r.json() == {"detail": "This list is closed."}
@@ -20460,11 +21024,11 @@ async def test_list_scan_proxy_returns_fresh_version(ui_client):
     scan = AsyncMock(return_value={"scanned": 1, "failed": [], "version": 4242})
     get = AsyncMock(return_value={"list": {"list_type": "quotation", "status": "draft"},
                                   "version": 1})
+    ui_client.cookies.update(_authed())
     with patch("ui.api_client.scan_codes", new=scan), patch("ui.api_client.get_list_page", new=get):
         r = await ui_client.post(
             "/lists/list:L1/scan",
             data={"barcode": "ABC123", "run_key": "run-1"},
-            cookies=_authed(),
         )
     assert r.status_code == 200
     body = r.json()
@@ -20503,6 +21067,7 @@ class TestDisposedTab:
         disposed = {"entity_id": "gc:900", "name": "Spoiled Batch", "status": "disposed",
                     "status_doc_id": "doc:WO-2026-0001", "status_doc_number": "WO-2026-0001",
                     "total_cost": "50.00"}
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
@@ -20515,7 +21080,7 @@ class TestDisposedTab:
             patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
             patch("ui.api_client.get_category_display_names", new=AsyncMock(return_value={})),
         ):
-            r = await ui_client.get("/inventory?status=disposed", cookies=_authed())
+            r = await ui_client.get("/inventory?status=disposed")
         assert r.status_code == 200
         body = r.content.decode()
         # The disposed row shows its value and a badge linking to the source write-off record.
@@ -20532,6 +21097,7 @@ class TestDisposedTab:
         nav = _inventory_nav_slots()
         assert "inventory_disposed" in [n.get("key") for n in nav]
         assert "/inventory?status=disposed" in [n.get("href") for n in nav]
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
@@ -20544,7 +21110,7 @@ class TestDisposedTab:
             patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
             patch("ui.api_client.get_category_display_names", new=AsyncMock(return_value={})),
         ):
-            r = await ui_client.get("/inventory?status=disposed", cookies=_authed())
+            r = await ui_client.get("/inventory?status=disposed")
         assert r.status_code == 200
         assert "No disposed items." in r.content.decode()
 
@@ -20939,10 +21505,10 @@ class TestInventoryThumbnailColumn:
     async def test_inventory_list_thumbnail_column_renders(self, ui_client):
         with_image = {**_ITEM, "thumbnail_file_id": "f-1"}
         without = {**_ITEM, "entity_id": "gc:456", "name": "Bare", "thumbnail_file_id": None}
+        ui_client.cookies.update(_authed())
         with self._patches([with_image, without]):
             r = await ui_client.get(
                 "/inventory/content?cols=thumbnail,name",
-                cookies=_authed(),
                 headers={"HX-Request": "true"},
             )
         assert r.status_code == 200, r.text[:500]
@@ -20955,6 +21521,7 @@ class TestInventoryThumbnailColumn:
 
     @pytest.mark.asyncio
     async def test_list_thumbnail_upload_returns_cell(self, ui_client):
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.upload_item_file", new=AsyncMock(return_value={"id": "f-9"})) as up,
             patch("ui.api_client.get_item", new=AsyncMock(return_value={**_ITEM, "thumbnail_file_id": "f-9"})),
@@ -20963,7 +21530,6 @@ class TestInventoryThumbnailColumn:
             r = await ui_client.post(
                 "/api/items/gc:123/thumbnail",
                 files={"file": ("photo.png", b"\x89PNG\r\n\x1a\n", "image/png")},
-                cookies=_authed(),
             )
         assert r.status_code == 200, r.text[:500]
         assert up.await_count == 1
@@ -20973,6 +21539,7 @@ class TestInventoryThumbnailColumn:
     @pytest.mark.asyncio
     async def test_list_thumbnail_upload_error_keeps_cell_with_message(self, ui_client):
         from ui.api_client import APIError
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.upload_item_file", new=AsyncMock(side_effect=APIError(413, "File exceeds 50 MB limit"))),
             patch("ui.api_client.get_item", new=AsyncMock(return_value={**_ITEM, "thumbnail_file_id": None})),
@@ -20981,7 +21548,6 @@ class TestInventoryThumbnailColumn:
             r = await ui_client.post(
                 "/api/items/gc:123/thumbnail",
                 files={"file": ("big.png", b"\x89PNG\r\n\x1a\n", "image/png")},
-                cookies=_authed(),
             )
         assert r.status_code == 200
         assert 'id="img-cell-gc-123"' in r.text
@@ -20997,15 +21563,15 @@ class TestInventoryThumbnailColumn:
             patch("ui.api_client.get_item", new=AsyncMock(return_value={**_ITEM, "thumbnail_file_id": "f-9"})),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
         ):
+            ui_client.cookies.update(_authed())
             owner = await ui_client.post(
                 "/api/items/gc:123/thumbnail",
                 files={"file": ("photo.png", b"\x89PNG\r\n\x1a\n", "image/png")},
-                cookies=_authed(),
             )
+            ui_client.cookies.update(_authed(role="viewer"))
             viewer = await ui_client.post(
                 "/api/items/gc:123/thumbnail",
                 files={"file": ("photo.png", b"\x89PNG\r\n\x1a\n", "image/png")},
-                cookies=_authed(role="viewer"),
             )
         assert up.call_args.kwargs.get("as_hero") is True
         assert owner.status_code == 200 and 'hx-post="/api/items/gc:123/thumbnail"' in owner.text
@@ -21017,14 +21583,14 @@ class TestInventoryThumbnailColumn:
         """When the item cannot be re-read the response is still the image cell carrying
         the message, so the swap keeps the row's shape."""
         from ui.api_client import APIError
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.upload_item_file", new=AsyncMock(return_value={"id": "f-9"})),
             patch("ui.api_client.get_item", new=AsyncMock(side_effect=APIError(404, "Item not found"))),
         ):
             r = await ui_client.post(
                 "/api/items/gc:123/thumbnail",
-                files={"file": ("photo.png", b"\x89PNG\r\n\x1a\n", "image/png")},
-                cookies=_authed(), headers={"HX-Request": "true"},
+                files={"file": ("photo.png", b"\x89PNG\r\n\x1a\n", "image/png")}, headers={"HX-Request": "true"},
             )
         assert r.status_code == 200
         assert r.text.lstrip().startswith("<td"), r.text[:200]
@@ -21036,6 +21602,7 @@ class TestReviewedListRoutes:
     @pytest.mark.asyncio
     async def test_page_parameter_is_guarded(self, ui_client):
         """A page value that is not a positive integer is page 1, never a server error."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.list_docs", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_doc_summary", new=AsyncMock(return_value={})),
@@ -21045,7 +21612,7 @@ class TestReviewedListRoutes:
             for path in ("/docs?type=invoice&page=abc", "/docs?type=invoice&page=-3",
                          "/docs/search?type=invoice&page=abc", "/lists?type=quotation&page=abc",
                          "/lists/search?type=quotation&page=x"):
-                r = await ui_client.get(path, cookies=_authed())
+                r = await ui_client.get(path)
                 assert r.status_code == 200, (path, r.status_code)
 
     @pytest.mark.asyncio
@@ -21054,6 +21621,7 @@ class TestReviewedListRoutes:
         never a downloaded CSV that says error."""
         from ui.api_client import APIError
         err = AsyncMock(side_effect=APIError(422, "Unknown export column(s): bogus"))
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.export_items_csv", new=err),
             patch("ui.api_client.export_docs_csv", new=err),
@@ -21061,7 +21629,7 @@ class TestReviewedListRoutes:
         ):
             for path in ("/inventory/export/csv?cols=bogus", "/docs/export/csv?type=invoice",
                          "/lists/export/csv?type=quotation"):
-                r = await ui_client.get(path, cookies=_authed())
+                r = await ui_client.get(path)
                 assert r.status_code == 422, (path, r.status_code)
                 assert "content-disposition" not in {k.lower() for k in r.headers}, path
                 assert r.headers["content-type"].startswith("text/plain"), path
@@ -21105,8 +21673,9 @@ class TestImportHistoryUndo:
         from ui.api_client import APIError
 
         reason = "This import cannot be undone because imported items were changed or used later."
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.undo_import_batch", new=AsyncMock(side_effect=APIError(409, reason))):
-            r = await ui_client.post("/settings/import-history/b-1/undo", cookies=_authed())
+            r = await ui_client.post("/settings/import-history/b-1/undo")
         assert r.headers.get("HX-Reswap") == "none"
         assert json.loads(r.headers["HX-Trigger"])["celerpToast"] == {"message": reason, "type": "error"}
 
@@ -21129,13 +21698,14 @@ class TestCompanySettingsUnavailable:
         "/accounting/reconcile/start",        # reconciliation statement date
     ])
     async def test_page_says_settings_could_not_be_read(self, ui_client, url):
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_company", new=self._down()),
             patch("ui.api_client.get_doc", new=AsyncMock(return_value=_DOC_DETAIL)),
             patch("ui.api_client.get_contact", new=AsyncMock(return_value=_CONTACTS[0])),
             patch("ui.api_client.list_contact_docs", new=AsyncMock(return_value={"items": []})),
         ):
-            r = await ui_client.get(url, cookies=_authed())
+            r = await ui_client.get(url)
         assert r.status_code == 503
         assert "couldn't read your company settings" in r.text
         assert f'href="{url.replace("&", "&amp;")}"' in r.text or url in r.text
@@ -21143,14 +21713,16 @@ class TestCompanySettingsUnavailable:
 
     @pytest.mark.asyncio
     async def test_fragment_request_gets_the_message_for_the_error_banner(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_company", new=self._down()):
-            r = await ui_client.get("/manufacturing/search", cookies=_authed(), headers={"HX-Request": "true"})
+            r = await ui_client.get("/manufacturing/search", headers={"HX-Request": "true"})
         assert r.status_code == 503
         assert r.text.startswith("Celerp couldn't read your company settings")
 
     @pytest.mark.asyncio
     async def test_expired_session_still_goes_to_sign_in(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_company", new=AsyncMock(side_effect=APIError(401, "expired"))):
-            r = await ui_client.get("/reports/sales", cookies=_authed())
+            r = await ui_client.get("/reports/sales")
         assert r.status_code == 302
         assert r.headers["location"].startswith("/login")

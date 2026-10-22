@@ -179,9 +179,11 @@ async def test_firm_journal_in_client_locked_period_is_declined(real_client, rea
     assert len(declined) == 1 and declined[0]["label"] == "Year-end accrual"
     assert "2026-06-30" in declined[0]["reason"]
 
-    await _two_way(client_company, credential)  # told once
+    again = await _two_way(client_company, credential)  # told once
     assert len([n for n in await _notices(real_engine, client_company)
                 if "Year-end accrual" in n[1]]) == 1
+    assert again["journals"].errors == []
+    assert [e["reason"] for e in again["journals"].attention] == [entry["reason"]]
 
 
 async def _received(real_client, tok: str) -> list[dict]:

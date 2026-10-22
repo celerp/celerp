@@ -163,8 +163,9 @@ async def test_trying_again_from_the_tab_re_renders_the_card(ui_client):  # noqa
     from test_older_stock_placement import _cookies
 
     retry = AsyncMock(return_value={**_VIEW, "failed": None, "result": {"placed": True}})
+    ui_client.cookies.update(_cookies())
     with patch("ui.api_client.retry_older_stock", new=retry):
-        r = await ui_client.post("/settings/accounting/older-stock/retry", cookies=_cookies())
+        r = await ui_client.post("/settings/accounting/older-stock/retry")
     assert r.status_code == 200
     body = r.content.decode()
     assert 'id="older-stock-card"' in body and "Older stock was placed." in body

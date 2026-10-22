@@ -33,8 +33,6 @@ from test_older_stock_reconciliation import _records
 from test_posting_roles_lots import _sell
 from test_posting_roles_race_pg_draft import _company, race  # noqa: F401  (race is a fixture)
 
-pytestmark = pytest.mark.asyncio
-
 
 async def _posting_accounts_set(session, auth) -> None:
     """The user set the posting accounts an older release lacked; nothing placed the stock since."""

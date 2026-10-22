@@ -919,8 +919,8 @@ async def test_all_semantic_transports_write_through_import_items(client, sessio
         "id": perm["company_id"], "current_role": "owner", "settings": await _company_settings(session, perm["company_id"]),
     })):
         async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as c:
-            r = await c.post("/inventory/import/confirm", data={"csv_ref": ref, "preview_hash": preview["preview_hash"]},
-                             cookies={"celerp_token": token})
+            c.cookies.update({"celerp_token": token})
+            r = await c.post("/inventory/import/confirm", data={"csv_ref": ref, "preview_hash": preview["preview_hash"]})
     assert r.status_code == 200, r.text
     assert entry.await_count == 3
     assert entry.await_args.args[5] == browser_rows

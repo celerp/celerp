@@ -407,7 +407,7 @@ async def test_migration_changed_by_an_earlier_modules_migration_never_runs(
     later = _make_module(base, f"acme-b{uid}",
                          {"m_001.py": _MIG_GUARD_PROBE.replace("__TABLE__", _probe_table)})
     target = later / "inner" / "migrations" / "m_001.py"
-    appended = f"\nopen({str(marker)!r}, 'w').write('ran')\n"
+    appended = f"\nwith open({str(marker)!r}, 'w') as f: f.write('ran')\n"
     earlier = _make_module(base, f"acme-a{uid}", {"m_001.py": (
         f"def upgrade():\n    with open({str(target)!r}, 'a') as f:\n        f.write({appended!r})\n")},
         table_prefix=f"early{uid}_")
@@ -426,7 +426,7 @@ async def test_migration_changed_by_an_earlier_modules_migration_never_runs(
 
 
 def _writes(marker: Path) -> str:
-    return f"open({str(marker)!r}, 'w').write('ran')\n"
+    return f"with open({str(marker)!r}, 'w') as f: f.write('ran')\n"
 
 
 async def test_migration_runs_its_checked_source_not_bytecode_beside_it(

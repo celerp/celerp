@@ -51,8 +51,9 @@ async def test_inventory_search_box_shows_the_search_from_the_address(ui):
         "get_company": {}, "get_locations": _EMPTY, "list_items": _EMPTY,
         "list_import_batches": {"batches": []}, "get_units": [], "get_price_lists": [],
     }
+    ui.cookies.update(authed_cookies(role="owner"))
     with patch.multiple("ui.api_client", **{k: AsyncMock(return_value=v) for k, v in mocks.items()}):
-        r = await ui.get("/inventory", params={"q": "name:rice"}, cookies=authed_cookies(role="owner"))
+        r = await ui.get("/inventory", params={"q": "name:rice"})
     assert r.status_code == 200
     assert 'id="search-input"' in r.text
     assert 'value="name:rice"' in r.text
@@ -62,11 +63,11 @@ async def test_inventory_search_box_shows_the_search_from_the_address(ui):
 async def test_bulk_delete_reloads_the_list_the_owner_is_on(ui):
     """After select-all plus Delete on the demo list, the table reloads that same
     list, not the whole catalog, so the emptied list reads as done."""
+    ui.cookies.update(authed_cookies(role="owner"))
     with patch("ui.api_client.bulk_delete", new=AsyncMock(return_value={"deleted": 2, "kept": 0})):
         r = await ui.post(
             "/api/items/bulk/delete", data={"selected": ["item:a", "item:b"]},
             headers={"HX-Current-URL": "http://testserver/inventory?filter=demo&page=2"},
-            cookies=authed_cookies(role="owner"),
         )
     assert r.status_code == 200
     url = urlsplit(html.unescape(re.search(r'hx-get="([^"]+)"', r.text).group(1)))
@@ -96,12 +97,12 @@ async def test_counts_are_asked_for_with_the_same_filters_as_the_rows(ui):
     valuation = AsyncMock(return_value={"item_count": 0, "category_counts": {}})
     rows = AsyncMock(return_value=_EMPTY)
     static = AsyncMock(return_value=([], {}, {}, [], [], {}))
+    ui.cookies.update(authed_cookies(role="owner"))
     with patch.multiple("ui.api_client", get_valuation=valuation, list_items=rows,
                         get_company=AsyncMock(return_value={}),
                         list_import_batches=AsyncMock(return_value={"batches": []})), \
          patch("ui.routes.inventory._load_inventory_static_metadata", new=static):
-        r = await ui.get("/inventory", params={"filter": DEMO_ITEMS_FILTER, "category": "Grain", "attr.size": "L"},
-                         cookies=authed_cookies(role="owner"))
+        r = await ui.get("/inventory", params={"filter": DEMO_ITEMS_FILTER, "category": "Grain", "attr.size": "L"})
     assert r.status_code == 200
     list_filters = {k: v for k, v in rows.await_args.args[1].items() if k not in ("limit", "offset", "sort", "dir")}
     assert list_filters == {"filter": DEMO_ITEMS_FILTER, "category": "Grain", "attr.size": "L"}
@@ -131,12 +132,13 @@ async def test_demo_list_says_it_is_filtered_and_offers_the_way_back(ui, rows):
     from pathlib import Path
     en = json.loads((Path(__file__).resolve().parents[1] / "ui" / "locales" / "en.json").read_text())
     static = AsyncMock(return_value=([], {}, {}, [], [], {}))
+    ui.cookies.update(authed_cookies(role="owner"))
     with patch.multiple("ui.api_client", list_items=AsyncMock(return_value=rows),
                         get_valuation=AsyncMock(return_value={"item_count": 0, "category_counts": {}}),
                         get_company=AsyncMock(return_value={}),
                         list_import_batches=AsyncMock(return_value={"batches": []})), \
          patch("ui.routes.inventory._load_inventory_static_metadata", new=static):
-        r = await ui.get("/inventory", params={"filter": DEMO_ITEMS_FILTER}, cookies=authed_cookies(role="owner"))
+        r = await ui.get("/inventory", params={"filter": DEMO_ITEMS_FILTER})
     assert r.status_code == 200
     page = html.unescape(r.text)
     banner = re.search(r'<div class="holdings-scope-banner">.*?</a>', page, re.S)

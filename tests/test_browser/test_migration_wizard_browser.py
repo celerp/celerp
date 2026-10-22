@@ -403,7 +403,9 @@ def fake_migration_api(ui_server, monkeypatch):
     from ui.config import API_BASE
 
     fake = _unit_proofs().FakeMigrationAPI()
-    real = httpx.AsyncHTTPTransport()
+    # Every other call goes to the real API through the UI's own pool, which the UI
+    # server closes when it stops.
+    real = api._get_transport()
 
     class _Split(httpx.AsyncBaseTransport):
         async def handle_async_request(self, request):

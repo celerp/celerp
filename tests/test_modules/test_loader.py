@@ -453,7 +453,7 @@ class TestRouteRegistration:
         (inner / "__init__.py").write_text("")
         (inner / "routes.py").write_text(
             f"def setup_{kind}_routes(app):\n"
-            f"    open({str(calls)!r}, 'a').write({kind!r})\n")
+            f"    with open({str(calls)!r}, 'a') as f: f.write({kind!r})\n")
         (base / "route-mod" / "__init__.py").write_text(
             "PLUGIN_MANIFEST = {'name': 'route-mod', 'version': '1.0', "
             f"'{kind}_routes': 'route_mod_{kind}.routes'}}")

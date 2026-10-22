@@ -64,7 +64,8 @@ async def test_download_keeps_the_attachment_name(ui_client, monkeypatch, tmp_pa
     import ui.api_client as api
 
     monkeypatch.setattr(api, api_fn, AsyncMock(return_value=_api_reply(tmp_path, name)))
-    r = await ui_client.get(route, cookies={"celerp_token": make_test_token(role="owner")})
+    ui_client.cookies.update({"celerp_token": make_test_token(role="owner")})
+    r = await ui_client.get(route)
     assert r.status_code == 200
     assert r.content == b"%PDF-1.4 test"
     cd = r.headers["content-disposition"]

@@ -38,7 +38,8 @@ async def test_backup_active_returns_503_on_upstream_failure(ui_app):
     with patch("ui.api_client.get_backup_active", new=failing):
         async with AsyncClient(transport=ASGITransport(app=ui_app),
                                base_url="http://ui", follow_redirects=False) as c:
-            r = await c.get("/backup/active", cookies=_cookies())
+            c.cookies.update(_cookies())
+            r = await c.get("/backup/active")
 
     assert r.status_code == 503, (
         f"an upstream backup-active failure must surface as HTTP 503, not "

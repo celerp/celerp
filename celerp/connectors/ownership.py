@@ -537,7 +537,7 @@ async def bind_connector_store(session: AsyncSession, company_id, connector, ctx
         or await sample(Projection.entity_id.like(f"contact:{prefix}"))
         or await sample(
             Projection.entity_type == "item",
-            Projection.state.op("->>")("idempotency_key").like(prefix),
+            Projection.state["idempotency_key"].as_string().like(prefix),
         )
     )
     if samples:

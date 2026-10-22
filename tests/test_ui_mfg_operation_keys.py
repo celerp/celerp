@@ -61,7 +61,8 @@ async def _page(auth, path: str, data: dict | list):
 
     from ui.app import app as ui_app
     async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as c:
-        return await c.post(path, content=urlencode(data).encode(), cookies={"celerp_token": _token(auth)},
+        c.cookies.update({"celerp_token": _token(auth)})
+        return await c.post(path, content=urlencode(data).encode(),
                             headers={"content-type": "application/x-www-form-urlencoded"})
 
 
@@ -162,10 +163,11 @@ async def test_each_render_brings_new_keys_and_each_run_its_own(client, session,
     from ui.app import app as ui_app
 
     async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as c:
+        c.cookies.update({"celerp_token": _token(auth)})
         with _app():
-            pages = [(await c.get(f"/api/items/{made}/production-block", cookies={"celerp_token": _token(auth)})).text
+            pages = [(await c.get(f"/api/items/{made}/production-block")).text
                      for _ in range(2)]
-            queues = [(await c.get("/manufacturing/production", cookies={"celerp_token": _token(auth)})).text
+            queues = [(await c.get("/manufacturing/production")).text
                       for _ in range(2)]
 
     first, second = (re.findall(r'idempotency_key(?:&quot;|")[^0-9a-f]+([0-9a-f-]{36})', p) for p in pages)
@@ -420,9 +422,9 @@ async def test_a_bulk_cancel_of_a_run_holding_materials_says_why_and_books_nothi
     before = await session.scalar(kept)
     with _app():
         async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as c:
+            c.cookies.update({"celerp_token": _token(auth), "celerp_lang": "de"})
             r = await c.post("/manufacturing/runs/bulk/cancel?status=active",
                              content=urlencode([("selected", order), ("idempotency_key", "page-1")]).encode(),
-                             cookies={"celerp_token": _token(auth), "celerp_lang": "de"},
                              headers={"content-type": "application/x-www-form-urlencoded"})
     assert r.status_code == 200, r.text
     message = json.loads(r.headers["HX-Trigger"])["celerpToast"]["message"]

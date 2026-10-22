@@ -80,7 +80,7 @@ def _write_module(base: Path, folder: str, manifest: dict, files: dict[str, str]
 
 
 def _marker_line(marker: Path) -> str:
-    return f"open({str(marker)!r}, 'a').write('ran\\n')\n"
+    return f"with open({str(marker)!r}, 'a') as f: f.write('ran\\n')\n"
 
 
 def _migrating_module(base: Path, folder: str, marker: Path, code: dict[str, str] | None = None,
@@ -1663,7 +1663,7 @@ _FAILING_SETUP = (
 
 _HOOK_FILE = (
     "async def ready(session=None, **kw):\n"
-    "    open({marker!r}, 'a').write('hook ran\\n')\n")
+    "    with open({marker!r}, 'a') as f: f.write('hook ran\\n')\n")
 
 
 def _failing_pair(base: Path, kind: str, hook_marker: Path):
@@ -2088,6 +2088,7 @@ def _ui_process(token: str, database_url: str, module_dir: Path, enabled: str,
             cwd=repo, env=env, capture_output=True, text=True, timeout=120)
     finally:
         server.shutdown()
+        server.server_close()
     assert out.returncode == 0, out.stderr[-2000:]
     return json.loads(out.stdout.strip().splitlines()[-1])
 

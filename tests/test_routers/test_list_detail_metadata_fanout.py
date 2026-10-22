@@ -123,7 +123,8 @@ async def test_list_detail_bounded_metadata_calls(ui_app):
     with _Patches(stubs):
         async with AsyncClient(transport=ASGITransport(app=ui_app),
                                base_url="http://ui", follow_redirects=False) as c:
-            r = await c.get("/lists/list:big", cookies=_cookies())
+            c.cookies.update(_cookies())
+            r = await c.get("/lists/list:big")
 
     assert r.status_code == 200, r.text
     assert get_item_spy.call_count == 0, (
@@ -148,7 +149,8 @@ async def test_list_detail_missing_item_meta_degrades_to_stored_values(ui_app):
     with _Patches(stubs):
         async with AsyncClient(transport=ASGITransport(app=ui_app),
                                base_url="http://ui", follow_redirects=False) as c:
-            r = await c.get("/lists/list:big", cookies=_cookies())
+            c.cookies.update(_cookies())
+            r = await c.get("/lists/list:big")
 
     assert r.status_code == 200, r.text
     assert "Item 0" in r.text, "stored line description must still render when item_meta is absent"

@@ -798,11 +798,11 @@ async def import_bundle_upload(
 
     content_type = request.headers.get("content-type", "")
     if "multipart/form-data" in content_type:
-        form = await request.form()
-        file = form.get("bundle")
-        if file is None:
-            raise HTTPException(status_code=422, detail=t("documents.err_share_no_file"))
-        raw = await file.read(_MAX_BUNDLE_BYTES + 1)
+        async with request.form() as form:
+            file = form.get("bundle")
+            if file is None:
+                raise HTTPException(status_code=422, detail=t("documents.err_share_no_file"))
+            raw = await file.read(_MAX_BUNDLE_BYTES + 1)
         if len(raw) > _MAX_BUNDLE_BYTES:
             raise HTTPException(status_code=413, detail=t("documents.err_share_too_large"))
         try:

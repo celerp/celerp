@@ -17,8 +17,8 @@ pytestmark = pytest.mark.asyncio
 
 async def _post(ui_client, data, *, scan, cookies=True):
     with patch("ui.api_client.scan_codes", new=scan):
-        return await ui_client.post("/docs/doc:INV-1/scan", data=data,
-                                    cookies=_authed() if cookies else {})
+        ui_client.cookies.update(_authed() if cookies else {})
+        return await ui_client.post("/docs/doc:INV-1/scan", data=data)
 
 
 async def test_doc_scan_proxy_posts_batch(ui_client):

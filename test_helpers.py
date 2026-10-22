@@ -18,6 +18,7 @@ import uuid
 from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 
+import pytest
 from fastapi import FastAPI
 
 from celerp.modules.loader import _BUNDLED_MODULES_DIRS, is_core_folded, load_all, register_api_routes
@@ -25,6 +26,13 @@ from celerp.routers import search as search_router_mod
 
 # Repo root: this file lives at repo root, so parent == repo root.
 REPO_ROOT = Path(__file__).resolve().parent
+
+# An upload racing a Delete retries its write in a savepoint, and SQLAlchemy reports that
+# the item row it flushes replaces the one its session held. Expected in those race tests.
+UPLOAD_DELETE_RACE_WARNINGS = pytest.mark.filterwarnings(
+    "ignore:New instance <Projection at .* conflicts with persistent instance:sqlalchemy.exc.SAWarning",
+    "ignore:Identity map already had an identity for .*Projection:sqlalchemy.exc.SAWarning",
+)
 
 # The root conftest always sets DATABASE_URL to the test Postgres before this is
 # imported; the default is just a sane placeholder for the Postgres-only app.

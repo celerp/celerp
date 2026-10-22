@@ -254,8 +254,9 @@ def _ui_cookies() -> dict:
 @pytest.mark.asyncio
 async def test_the_invoice_cell_opens_the_searchable_list_of_invoices(ui_client):
     from unittest.mock import AsyncMock, patch
+    ui_client.cookies.update(_ui_cookies())
     with patch("ui.api_client.get_unmatched_invoices", new=AsyncMock(return_value=INVOICES)):
-        r = await ui_client.get("/settings/payments/unmatched/pi_lost/invoice/edit", cookies=_ui_cookies())
+        r = await ui_client.get("/settings/payments/unmatched/pi_lost/invoice/edit")
     assert r.status_code == 200
     assert "combobox" in r.text and "INV-0001 - Buyer" in r.text and 'value="doc:inv-1"' in r.text
     assert 'hx-patch="/settings/payments/unmatched/pi_lost/invoice"' in r.text
@@ -265,8 +266,9 @@ async def test_the_invoice_cell_opens_the_searchable_list_of_invoices(ui_client)
 async def test_choosing_an_invoice_records_it_and_removes_the_row(ui_client):
     from unittest.mock import AsyncMock, patch
     record = AsyncMock(return_value={"ok": True})
+    ui_client.cookies.update(_ui_cookies())
     with patch("ui.api_client.record_unmatched_payment", new=record):
-        r = await ui_client.patch("/settings/payments/unmatched/pi_lost/invoice", cookies=_ui_cookies(),
+        r = await ui_client.patch("/settings/payments/unmatched/pi_lost/invoice",
                                   data={"value": "doc:inv-1"})
     record.assert_awaited_once()
     assert record.await_args.args[1:] == ("pi_lost", "doc:inv-1")
@@ -278,10 +280,10 @@ async def test_a_refusal_keeps_the_list_open_with_the_reason_in_the_users_langua
     from unittest.mock import AsyncMock, patch
     from ui.api_client import APIError
     error = APIError(409, REFUSED["paid"], {"message": REFUSED["paid"], "reason": "paid"})
+    ui_client.cookies.update({**_ui_cookies(), "celerp_lang": "de"})
     with patch("ui.api_client.record_unmatched_payment", new=AsyncMock(side_effect=error)), \
          patch("ui.api_client.get_unmatched_invoices", new=AsyncMock(return_value=INVOICES)):
-        r = await ui_client.patch("/settings/payments/unmatched/pi_lost/invoice",
-                                  cookies={**_ui_cookies(), "celerp_lang": "de"}, data={"value": "doc:inv-1"})
+        r = await ui_client.patch("/settings/payments/unmatched/pi_lost/invoice", data={"value": "doc:inv-1"})
     assert "HX-Reswap" not in r.headers
     assert "Diese Rechnung ist bereits bezahlt." in r.text and "cell-error" in r.text
     assert "combobox" in r.text

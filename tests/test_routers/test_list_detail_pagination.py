@@ -116,7 +116,8 @@ async def _get_list_detail(ui_app, path: str) -> tuple[str, AsyncMock]:
     with _Patches(_base_stubs(payload, page_mock)):
         async with AsyncClient(transport=ASGITransport(app=ui_app),
                                base_url="http://ui", follow_redirects=False) as c:
-            r = await c.get(path, cookies=_cookies())
+            c.cookies.update(_cookies())
+            r = await c.get(path)
     assert r.status_code == 200, r.text
     return r.text, page_mock
 
@@ -187,9 +188,11 @@ async def _audit_request(ui_app, method: str, path: str, data: dict | None = Non
         async with AsyncClient(transport=ASGITransport(app=ui_app),
                                base_url="http://ui", follow_redirects=False) as c:
             if method == "GET":
-                r = await c.get(path, cookies=_cookies())
+                c.cookies.update(_cookies())
+                r = await c.get(path)
             else:
-                r = await c.post(path, data=data or {}, cookies=_cookies())
+                c.cookies.update(_cookies())
+                r = await c.post(path, data=data or {})
     assert r.status_code == 200, r.text
     return r, page_mock
 
@@ -220,7 +223,8 @@ async def test_draft_list_pager_saves_first(ui_app):
     with _Patches(_base_stubs(payload, page_mock)):
         async with AsyncClient(transport=ASGITransport(app=ui_app),
                                base_url="http://ui", follow_redirects=False) as c:
-            r = await c.get("/lists/list:big", cookies=_cookies())
+            c.cookies.update(_cookies())
+            r = await c.get("/lists/list:big")
     assert r.status_code == 200, r.text
     assert "celerpPageNav(this.getAttribute('href'))" in _pager_html(r.text)
     assert "window._CELERP_CAN_EDIT_LINES = true" in r.text

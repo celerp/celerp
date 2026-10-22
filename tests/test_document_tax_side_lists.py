@@ -80,7 +80,8 @@ async def _editor(ui_client, doc_type: str) -> str:
         patch("ui.api_client.get_taxes", new=AsyncMock(return_value=_SALES)),
         patch("ui.api_client.get_purchasing_taxes", new=AsyncMock(return_value=_PURCHASING)),
     ):
-        r = await ui_client.get("/docs/d:1", cookies=_authed())
+        ui_client.cookies.update(_authed())
+        r = await ui_client.get("/docs/d:1")
     assert r.status_code == 200, r.text
     return r.text
 
