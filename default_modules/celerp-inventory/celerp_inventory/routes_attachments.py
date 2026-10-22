@@ -34,7 +34,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
 from celerp.events.engine import emit_event
-from celerp.importers.tabular import ZIP_ERRORS, zip_directory_fits
+from celerp.importers.tabular import ZIP_ERRORS, check_zip_member, read_zip_member, zip_directory_fits
 from celerp.models.projections import Projection
 from celerp.services.attachments import (
     AttachmentType,
@@ -262,9 +262,11 @@ async def bulk_attach_files(
         raise HTTPException(status_code=422, detail=too_many)
     try:
         zf = zipfile.ZipFile(file.file)
+        entries = [info for info in zf.infolist() if not info.is_dir()]
+        for info in entries:  # before any is read, so a zip is taken whole or not at all
+            check_zip_member(info)
     except ZIP_ERRORS:
         raise HTTPException(status_code=422, detail=t("inventory.err_zip_invalid")) from None
-    entries = [info for info in zf.infolist() if not info.is_dir()]
     if len(entries) > _BULK_MAX_ENTRIES:
         raise HTTPException(status_code=422, detail=too_many)
     if sum(info.file_size for info in entries) > _BULK_MAX_UNPACKED:
@@ -325,7 +327,7 @@ async def bulk_attach_files(
                 meta = None
                 try:
                     check_file_size(info.file_size)  # before anything is decompressed
-                    raw = zf.read(info)
+                    raw = read_zip_member(zf, info)
                     guessed_mime = _mt.guess_type(name)[0] or "application/octet-stream"
                     upload = UploadFile(
                         file=io.BytesIO(raw),

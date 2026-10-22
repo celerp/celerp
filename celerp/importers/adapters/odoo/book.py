@@ -443,7 +443,7 @@ class _Reader:
                 accounts: dict[str, tuple[str, str]]) -> dict[str, str]:
         """Tracking category -> option of a line's analytic distribution, account and tags."""
         options: dict[str, list[str]] = defaultdict(list)
-        spread = json_value(distribution or "{}")
+        spread = json_value(self.backup.decodable(distribution or "{}"))
         if not isinstance(spread, dict):
             raise TypeError("analytic shares not by account")
         for keys, percent in spread.items():

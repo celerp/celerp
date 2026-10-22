@@ -56,6 +56,41 @@ ZIP_ERRORS = (zipfile.BadZipFile, NotImplementedError, RuntimeError, ValueError,
 # 2 GB backup holds, and refuses a file made of hundreds of thousands of empty entries.
 ZIP_METADATA_BUDGET = 192 * 1024 ** 2
 ZIP_ENTRY_BYTES = 600
+# What a file in an uploaded zip may be packed with to be read: every zip the app reads (an Odoo
+# backup, a company copy, a module, a workbook, an export set, an attachment zip) is stored or
+# deflated by the tools that make it. LZMA keeps as much of the unpacked file resident as the
+# dictionary its entry declares, up to 4 GB, outside any budget a reader counts.
+ZIP_METHODS = (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED)
+ZIP_PASSWORD = 0x1  # the zip flag of a file packed with a password
+
+
+class ZipMemberRefused(zipfile.BadZipFile):
+    """A file of a zip packed with a password, or with a method outside ZIP_METHODS. One of
+    ZIP_ERRORS, so a reader refuses it as a zip it cannot read."""
+
+    def __init__(self, info: zipfile.ZipInfo) -> None:
+        super().__init__(info.filename)
+        self.password = bool(info.flag_bits & ZIP_PASSWORD)
+
+
+def check_zip_member(info: zipfile.ZipInfo) -> None:
+    """Raises ZipMemberRefused unless the file `info` lists may be unpacked."""
+    if info.flag_bits & ZIP_PASSWORD or info.compress_type not in ZIP_METHODS:
+        raise ZipMemberRefused(info)
+
+
+def open_zip_member(archive: zipfile.ZipFile, member: str | zipfile.ZipInfo) -> IO[bytes]:
+    """One file of `archive`, open for reading once check_zip_member admits it. Every read of a
+    file from a zip goes through here."""
+    info = member if isinstance(member, zipfile.ZipInfo) else archive.getinfo(member)
+    check_zip_member(info)
+    return archive.open(info)
+
+
+def read_zip_member(archive: zipfile.ZipFile, member: str | zipfile.ZipInfo) -> bytes:
+    """One file of `archive`, read whole through open_zip_member."""
+    with open_zip_member(archive, member) as file:
+        return file.read()
 
 
 def zip_directory_fits(file: IO[bytes]) -> bool:
@@ -809,6 +844,11 @@ def _xlsx_lines(data: bytes, *, sheet: str | None, limits: Limits | None = None)
         raise TabularError(t("import.err_xlsx_entries"))
     if sum(info.file_size for info in infos) > bounds.uncompressed:
         raise TabularError(t("import.err_xlsx_uncompressed"))
+    try:
+        for info in infos:  # openpyxl unpacks them itself, so each is checked here first
+            check_zip_member(info)
+    except ZipMemberRefused as exc:
+        raise TabularError(t("import.err_not_xlsx"), code="not_workbook") from exc
 
     try:
         workbook = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=False)
