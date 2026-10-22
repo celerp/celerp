@@ -320,7 +320,8 @@ async def check_precision_change(session, company_id, old_units: list[dict], new
                 needed = max(needed, *(_places(q) for q in finer))
         if not (holders or templates):
             continue
-        examples, named = ", ".join(holders[:3]), ", ".join(templates[:3])
+        # Split pieces share their parent's SKU, so a name is given once, in the order found.
+        examples, named = (", ".join(list(dict.fromkeys(labels))[:3]) for labels in (holders, templates))
         current = old.get(name, needed)
         lead = f"{name} cannot go to {decimals} decimal places"
         change = "Change those quantities or finish those documents"

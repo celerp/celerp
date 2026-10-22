@@ -409,6 +409,20 @@ async def test_a_paid_invoice_blocking_fewer_decimals_is_finished_by_shipping_it
     assert (await _set_carat_decimals(client, auth, 2)).status_code == 200
 
 
+async def test_split_pieces_are_named_once_in_the_refusal(client, session, auth):
+    """A split leaves two items under one SKU; the refusal names it once and keeps its other
+    example slots for other holders, in the order they were found."""
+    assert (await _set_carat_decimals(client, auth, 3)).status_code == 200
+    lot = await _lot(client, auth, qty=1)
+    r = await client.post(f"/items/{lot}/split", headers=auth["headers"], json={"children": [{"quantity": 0.275}]})
+    assert r.status_code == 200, r.text
+    other = await _lot(client, auth, qty=0.125)
+    r = await _set_carat_decimals(client, auth, 2)
+    assert r.status_code == 422, r.text
+    names = r.json()["detail"]["params"]["examples"].split(", ")
+    assert sorted(names) == sorted([await _sku(session, auth, lot), await _sku(session, auth, other)]), r.text
+
+
 async def _new_subscription(client, session, auth, doc_type: str, qty: float) -> str:
     """A template made as New subscription makes it: no name, then its customer and lines on the draft."""
     lot = await _lot(client, auth, qty=1)
