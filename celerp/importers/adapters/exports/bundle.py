@@ -29,21 +29,25 @@ from celerp.importers.schema import (
     CIFJournalEntry,
     CIFJournalLine,
     CIFLineItem,
+    CIFLineTax,
+    CIFLocation,
     CIFSettlement,
     CIFTaxCode,
+    DEBIT_NOTE_NOTE,
     CoverageClass,
 )
 from celerp.services.money import checked_exchange_rate
+from ui.i18n import t
 
 # Journal parts of the ledger, and the source id suffix each part's journal carries.
 JOURNAL_PARTS = {"journal": "", "fallback": ":journal"}
 FALLBACK = "{} (journal fallback)"
-FALLBACK_NARRATION = "Lines of this record booked differently in the source: rounding or an exchange difference."
+FALLBACK_NARRATION = ("Lines of this record booked differently in the source: rounding, an exchange difference, "
+                      "or a payment's part not applied to any document.")
 OPENING_NARRATION = "Opening balances at the cutover date."
 TRACKING = "Tracking category"
-TRACKING_NOTE = "Each invoice and bill line keeps its tracking options; Celerp does not report by them."
-FALLBACK_NOTE = ("The difference between what the source booked for these records and what Celerp books for "
-                 "them, a rounding cent or an exchange difference, is carried as a journal on the record.")
+TRACKING_NOTE = "migration.coverage_tracking_note"
+FALLBACK_NOTE = "migration.coverage_fallback_note"
 
 
 class Source:
@@ -71,24 +75,35 @@ def _contacts(book: Book, src: Source) -> list[CIFContact]:
 
 
 def _items(book: Book, src: Source) -> list[CIFItem]:
-    return [CIFItem(**src("Item", i.code, i.code), sku=i.code, name=i.name, description=i.description,
-                    retail_price=i.price, sell_by="piece", status="available" if i.active else "archived")
-            for i in sorted(book.items.values(), key=lambda i: i.code)]
+    """Each item at the first location, then each holding as stock of its item."""
+    home = book.locations[0] if book.locations else None
+    items = [CIFItem(**src("Item", i.code, i.code), sku=i.code, name=i.name, description=i.description,
+                     retail_price=i.price, sell_by="piece", status="available" if i.active else "archived",
+                     location_name=home)
+             for i in sorted(book.items.values(), key=lambda i: i.code)]
+    for h in sorted(book.holdings.values(), key=lambda h: h.key):
+        item = book.items[h.item]
+        items.append(CIFItem(**src("Item", h.key, h.key), sku=item.code, name=item.name, description=item.description,
+                             retail_price=item.price, sell_by="piece", status="available" if item.active else "archived",
+                             product_external_id=item.code, batch_no=h.lot, location_name=h.location))
+    return items
 
 
 
 def _document(book: Book, ledger: Ledger, doc: Document, src: Source) -> CIFDocument:
     state = ledger.states.get(doc.key)
     metadata: dict = {}
-    if doc.applies_to:
-        metadata["applies_to"] = doc.applies_to
-    if any(ln.tracking for ln in doc.lines):
-        metadata["tracking"] = [ln.tracking for ln in doc.lines]
+    if doc.applications:
+        metadata["applications"] = {key: str(amount) for key, amount in doc.applications.items()}
+    if doc.withheld:
+        metadata["withheld"] = {account: str(amount) for account, amount in doc.withheld.items()}
     lines = [CIFLineItem(item_external_id=ln.item, description=ln.description or None,
-                         account_external_id=ln.account, tax_code_external_id=ln.tax_code,
-                         tax_account_external_id=book.tax_account_for(ln.tax_code) if ln.tax_code else None,
+                         account_external_id=ln.account,
+                         taxes=[CIFLineTax(tax_code_external_id=x.code,
+                                           tax_account_external_id=book.tax_account_for(x.code), amount=x.amount)
+                                for x in ln.taxes],
                          quantity=ln.quantity, unit_price=ln.unit_price, discount_percent=ln.discount,
-                         tax_amount=ln.tax, total_price=ln.net)
+                         total_price=ln.net, tracking=ln.tracking)
              for ln in doc.lines]
     return CIFDocument(**src(doc.source_type, doc.key, doc.number), doc_type=doc.doc_type,
                        status=state.status if state else doc.status, contact_external_id=doc.contact,
@@ -105,7 +120,8 @@ def _settlements(ledger: Ledger, src: Source) -> list[CIFSettlement]:
     return [CIFSettlement(**src(s.source, s.key, s.reference), settlement_type=s.kind, settlement_date=s.date,
                           contact_external_id=s.contact, bank_account_external_id=s.bank, currency=s.currency,
                           exchange_rate=s.rate if book.is_foreign(s.currency) else None, amount=s.amount,
-                          allocations=[CIFAllocation(document_external_id=s.document, amount=s.amount)])
+                          allocations=[CIFAllocation(document_external_id=key, amount=amount)
+                                       for key, amount in s.allocations])
             for s in ledger.imported_settlements()]
 
 
@@ -188,6 +204,7 @@ def build_bundle(ledger: Ledger, src: Source) -> CIFImportBundle:
         company=company,
         currencies=_currencies(book, src),
         accounts=_accounts(book, src),
+        locations=[CIFLocation(**src("Location", name), name=name) for name in book.locations],
         tax_codes=[CIFTaxCode(**src("Tax rate", tc.name), name=tc.name, rate_percent=tc.rate,
                               account_external_id=tc.account) for tc in book.tax_codes.values()],
         contacts=_contacts(book, src),
@@ -205,7 +222,9 @@ def coverage(ledger: Ledger, skipped: dict[str, CoverageClass]) -> list[CIFCover
     book = ledger.book
     mapped: Counter = Counter({"Account": len(book.accounts), "Contact": len(book.contacts),
                                "Item": len(book.items), "Tax rate": len(book.tax_codes)})
-    mapped.update(d.source_type for d in book.documents.values() if d.journal or d.status != "posted")
+    noted = Counter(d.source_type for d in book.documents.values() if d.journal and d.doc_type == "debit_note")
+    mapped.update(d.source_type for d in book.documents.values()
+                  if (d.journal and d.doc_type != "debit_note") or d.status != "posted")
     mapped.update(j.source for j in ledger.journals.values())
     mapped.update(s.source for s in ledger.settlements.values())
     mapped.update("Bank Transfer" for _ in ledger.transfers)
@@ -213,12 +232,14 @@ def coverage(ledger: Ledger, skipped: dict[str, CoverageClass]) -> list[CIFCover
                         for record in {p.record for p in ledger.postings if p.part == "fallback"})
     rows = [CIFCoverageEntry(source_type=label, count=count, coverage_class=CoverageClass.MAPPED)
             for label, count in mapped.items() if count]
+    rows += [CIFCoverageEntry(source_type=label, count=count, coverage_class=CoverageClass.MAPPED_WITH_LOSS,
+                              note=DEBIT_NOTE_NOTE) for label, count in noted.items()]
     rows += [CIFCoverageEntry(source_type=FALLBACK.format(label), count=count,
-                              coverage_class=CoverageClass.MAPPED_WITH_LOSS, note=FALLBACK_NOTE)
+                              coverage_class=CoverageClass.MAPPED_WITH_LOSS, note=t(FALLBACK_NOTE))
              for label, count in fallbacks.items()]
     rows += [CIFCoverageEntry(source_type=label, count=count, coverage_class=skipped[label])
              for label, count in book.skipped.items() if count]
     if book.tracking:
         rows.append(CIFCoverageEntry(source_type=TRACKING, count=len(book.tracking),
-                                     coverage_class=CoverageClass.UNSUPPORTED_NONFINANCIAL, note=TRACKING_NOTE))
+                                     coverage_class=CoverageClass.UNSUPPORTED_NONFINANCIAL, note=t(TRACKING_NOTE)))
     return sorted(rows, key=lambda r: r.source_type)

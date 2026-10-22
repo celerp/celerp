@@ -36,9 +36,10 @@ _MEASURES = (
 def artifact(path: Path, name: str | None = None):
     from celerp.importers.adapters.base import Artifact
 
-    data = Path(path).read_bytes()
-    return Artifact(path=Path(path), original_name=name or Path(path).name, size_bytes=len(data),
-                    sha256=hashlib.sha256(data).hexdigest())
+    with open(path, "rb") as f:
+        sha256 = hashlib.file_digest(f, "sha256").hexdigest()
+    return Artifact(path=Path(path), original_name=name or Path(path).name, size_bytes=Path(path).stat().st_size,
+                    sha256=sha256)
 
 
 def adapter():

@@ -14,12 +14,12 @@ refused with a message naming each file and what to export instead.
 
 from __future__ import annotations
 
-import io
 import re
 import zipfile
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
+from pathlib import Path
 
 from celerp.importers import tabular
 from celerp.importers.adapters.base import ArtifactSet, ScanError
@@ -88,21 +88,25 @@ def _is_workbook(archive: zipfile.ZipFile) -> bool:
     return "[Content_Types].xml" in archive.namelist()
 
 
-def _members(name: str, data: bytes) -> list[tuple[str, bytes]]:
-    """The files an upload holds: itself, or each file of a plain zip archive."""
-    if data[:2] != b"PK":
-        return [(name, data)]
-    try:
-        archive = zipfile.ZipFile(io.BytesIO(data))
-    except zipfile.BadZipFile as exc:
-        raise ScanError(t("migration.err_export_unreadable", name=name)) from exc
-    if _is_workbook(archive):
-        return [(name, data)]
-    infos = [i for i in archive.infolist() if not i.is_dir() and not i.filename.split("/")[-1].startswith(".")
-             and "__MACOSX" not in i.filename]
-    if len(infos) > MAX_MEMBERS or sum(i.file_size for i in infos) > LIMITS.uncompressed:
-        raise ScanError(t("migration.err_export_archive_too_large", name=name))
-    return [(f"{name}: {i.filename.split('/')[-1]}", archive.read(i)) for i in infos]
+def _members(name: str, path: Path) -> list[tuple[str, bytes]]:
+    """The files an upload holds: itself, or each file of a plain zip archive. A zip's directory
+    is checked before it is read, and only its files are read, never the archive whole."""
+    with open(path, "rb") as file:
+        if file.read(2) != b"PK":
+            return [(name, path.read_bytes())]
+        if not tabular.zip_directory_fits(file):
+            raise ScanError(t("migration.err_export_archive_too_large", name=name))
+        try:
+            with zipfile.ZipFile(file) as archive:
+                if _is_workbook(archive):
+                    return [(name, path.read_bytes())]
+                infos = [i for i in archive.infolist() if not i.is_dir()
+                         and not i.filename.split("/")[-1].startswith(".") and "__MACOSX" not in i.filename]
+                if len(infos) > MAX_MEMBERS or sum(i.file_size for i in infos) > LIMITS.uncompressed:
+                    raise ScanError(t("migration.err_export_archive_too_large", name=name))
+                return [(f"{name}: {i.filename.split('/')[-1]}", archive.read(i)) for i in infos]
+        except tabular.ZIP_ERRORS as exc:
+            raise ScanError(t("migration.err_export_unreadable", name=name)) from exc
 
 
 def _match(lines: list[list[str]], layouts: tuple[Layout, ...]) -> tuple[Layout, int] | None:
@@ -138,7 +142,9 @@ def read_set(artifacts: ArtifactSet, layouts: tuple[Layout, ...]) -> tuple[list[
     strangers: list[Stranger] = []
     for artifact in artifacts:
         try:
-            members = _members(artifact.original_name, artifact.path.read_bytes())
+            if artifact.size_bytes > LIMITS.file_bytes:
+                raise ScanError(t("migration.err_file_too_large"))
+            members = _members(artifact.original_name, artifact.path)
         except ScanError as exc:
             strangers.append(Stranger(artifact.original_name, [], str(exc)))
             continue

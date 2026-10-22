@@ -44,7 +44,7 @@ from celerp.compat import StrEnum
 
 
 CIF_VERSION = "1"
-MIGRATION_CIF_VERSION = "2"
+MIGRATION_CIF_VERSION = "3"
 
 
 # ── Shared field types ─────────────────────────────────────────────────────────
@@ -313,7 +313,7 @@ class CIFAccount(CIFSourceRecord):
 
 class CIFTaxCode(CIFSourceRecord):
     name: NonEmptyStr
-    rate_percent: Annotated[CIFDecimal, Field(ge=0)]
+    rate_percent: CIFDecimal                  # below zero for a tax withheld
     inclusive: bool = False
     account_external_id: str | None = None    # tax control account
 
@@ -365,6 +365,8 @@ class CIFItem(CIFSourceRecord):
     status: ImportItemStatus
     category: str | None = None
     parent_external_id: str | None = None     # split lineage
+    product_external_id: str | None = None    # the item this is stock of: a lot of it, or its stock elsewhere
+    batch_no: str | None = None               # lot or serial number
     barcode: str | None = None
     location_name: str | None = None          # resolved to location_id at import time
     attributes: dict[str, Any] = Field(default_factory=dict)  # industry-specific fields
@@ -383,22 +385,33 @@ class DocumentType(StrEnum):
     DEBIT_NOTE = "debit_note"
 
 
+# How every adapter reports a debit note: the docs sink has no debit note document.
+DEBIT_NOTE_NOTE = ("Posted as a journal on the bill it notes and applied to that bill; Celerp has no debit note "
+                   "document.")
+
+
+class CIFLineTax(BaseModel):
+    """One tax on a document line, posting `amount` to `tax_account_external_id`."""
+    tax_code_external_id: str | None = None
+    tax_account_external_id: str | None = None
+    amount: CIFDecimal
+
+
 class CIFLineItem(BaseModel):
-    """A document line, posting its net to `account_external_id` and its tax to
-    `tax_account_external_id`."""
+    """A document line, posting its net to `account_external_id` and each of its taxes to
+    that tax's account."""
     item_external_id: str | None = None
     description: str | None = None
     account_external_id: str | None = None
-    tax_code_external_id: str | None = None
-    tax_account_external_id: str | None = None
+    taxes: list[CIFLineTax] = Field(default_factory=list)
     quantity: CIFDecimal
     weight: CIFDecimal | None = None
     weight_unit: str | None = None            # e.g. "kg", "g", "oz", "ct", "lb"
     unit_price: CIFDecimal
     discount_percent: CIFDecimal | None = None   # a line discount as a percentage of quantity x unit price
-    tax_amount: CIFDecimal | None = None
     total_price: CIFDecimal
     cost_basis: CIFDecimal | None = None      # cost at time of sale
+    tracking: dict[str, str] = Field(default_factory=dict)   # the source's tracking category -> option
 
 
 class CIFDocument(CIFSourceRecord):
@@ -514,6 +527,7 @@ class CIFAttachment(CIFSourceRecord):
     sha256: Annotated[str, Field(min_length=64, max_length=64)]
     target_source_type: NonEmptyStr
     target_source_external_id: NonEmptyStr
+    item_image: bool = False    # the item's own picture in the source: it becomes the item's main image
 
 
 # ── Coverage and reconciliation expectations ───────────────────────────────────
@@ -582,6 +596,7 @@ class ReconciliationMeasure(StrEnum):
     DOCUMENT_COUNT = "document_count"
     DOCUMENT_TOTAL = "document_total"
     DOCUMENT_STATUS = "document_status"
+    DOCUMENT_RESIDUAL = "document_residual"   # key: the document's source external id, in its currency
     SETTLEMENT_ALLOCATION = "settlement_allocation"
 
 
