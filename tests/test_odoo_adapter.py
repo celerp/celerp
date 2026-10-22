@@ -15,6 +15,7 @@ import json
 import os
 import random
 import re
+import sys
 import time
 import tracemalloc
 import zipfile
@@ -213,6 +214,82 @@ def test_a_translated_name_of_another_shape_is_refused(shape):
     from celerp.importers.adapters.odoo.dump import translation
 
     assert translation(_NOT_TRANSLATED[shape]) is None
+
+
+LANGUAGES = ("en_US", "th_TH", "fr_FR", "de_DE", "es_ES", "it_IT", "ja_JP", "vi_VN")
+_SALES_TEXT = ("Sales description " * 40)[:600]
+
+
+def _in_every_language(text: str) -> str:
+    """`text` as Odoo 16 on keeps a name translated into each of a catalog's eight LANGUAGES, Thai among them."""
+    return json.dumps({lang: f"{'สินค้า ' if lang == 'th_TH' else ''}{text} {lang}" for lang in LANGUAGES},
+                      ensure_ascii=False)
+
+
+def test_a_catalog_in_eight_languages_is_charged_only_the_names_it_keeps(tmp_path, monkeypatch):
+    """Only the English name of a translated value is kept, so only it is charged: a catalog
+    whose every name and 600-character description is stored in eight languages fits the budget
+    at 84,000 products and more (what it fitted before names were read from their JSON), and each
+    product is still charged at least the two names it keeps."""
+    from celerp.importers.adapters.odoo import book, dump
+
+    charged = {}
+    for n in (0, 2_000):
+        with dump.Backup(_shaped(tmp_path / f"catalog-{n}.zip", monkeypatch, "catalog", n)) as backup:
+            odoo = book.read_odoo(backup)
+            charged[n] = backup.held
+    per_product = (charged[2_000] - charged[0]) / 2_000
+    kept = odoo.book.items["P0001999"]
+    assert (kept.name, kept.description) == ("Part 1999 en_US", _SALES_TEXT + "1999 en_US")
+    assert per_product >= sys.getsizeof(kept.name) + sys.getsizeof(kept.description)
+    assert dump.MAX_HELD // per_product >= 84_000, f"{per_product:.0f} B a product"
+
+
+# JSON a few bytes a value long that decodes into objects many times its size (the numbers vary, so
+# the zip holding them is not refused for packing too tightly).
+_SWOLLEN_JSON = {
+    "numbers": '{"en_US": "x", "k": [' + ",".join(random.Random(1).choices("123456789", k=1_000_000)) + "]}",
+    "strings": '{"en_US": "x", "k": [' + ",".join(['"ab"'] * 500_000) + "]}",
+    "names": "{" + ",".join(f'"{i:x}": ""' for i in range(500_000)) + "}",
+    "lists": '{"en_US": "x", "k": [' + ",".join(["[]"] * 1_000_000) + "]}",
+    "objects": '{"en_US": "x", "k": [' + ",".join(["{}"] * 1_000_000) + "]}",
+}
+
+
+@pytest.mark.parametrize("shape", list(_SWOLLEN_JSON))
+def test_what_decoding_json_holds_is_never_more_than_its_measure(shape):
+    from celerp.importers.adapters.odoo.dump import json_size, json_value
+
+    for text in (_SWOLLEN_JSON[shape], _in_every_language(_SALES_TEXT), '{"1": 100.0}'):
+        tracemalloc.start()
+        try:
+            json_value(text)
+            peak = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+        assert peak <= json_size(text), f"{peak / json_size(text):.2f}x"
+
+
+@pytest.mark.parametrize("table, column", [("product_template", "name"), ("account_move_line", "analytic_distribution")])
+def test_json_that_would_decode_past_the_budget_is_refused_before_it_is_decoded(tmp_path, monkeypatch, table, column):
+    """A translated name or an analytic distribution is decoded from JSON, which can hold a hundred
+    times its text as objects: one whose decoding would take the read past the budget is refused
+    as too large before it is decoded."""
+    from celerp.importers.adapters.odoo import book, dump
+
+    tables = build.tables(17)
+    _damage(tables, table, column, _SWOLLEN_JSON["numbers"])
+    (tmp_path / "swollen.zip").write_bytes(build.backup(17, tables))
+    monkeypatch.setattr(dump, "MAX_HELD", 48 * MI)
+    tracemalloc.start()
+    try:
+        with dump.Backup(tmp_path / "swollen.zip") as backup, pytest.raises(ScanError) as refused:
+            book.read_odoo(backup)
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    assert str(refused.value) == t("migration.err_odoo_backup_too_large", "en")
+    assert peak < 32 * MI, f"held {peak / MI:.0f} MiB"
 
 
 @pytest.mark.parametrize("version", (16, 17))
@@ -963,7 +1040,7 @@ SHAPES = {
     "company": ("companies",),
     "chart": ("accounts", "posted", "long_account_span"),
     "contacts": ("contacts", "duplicate_names"),
-    "items": ("items",),
+    "items": ("items", "catalog"),
     "taxes": ("taxes", "taxed"),
     "journals": ("ordinary", "shared", "thai", "entries", "invoices", "long", "wide", "span"),
     "payments": ("paid", "chain"),
@@ -993,7 +1070,8 @@ def _shaped_tables(monkeypatch, shape: str, n: int) -> build.Tables:
     others add `n` of their rows: invoices each paid by its own payment ("paid"), or each paid half
     by the payment before it and half by its own, so every payment links two ("chain"), items each
     spread over the same fifty analytic accounts ("analytic"), companies, accounts, accounts each posted
-    to by an entry of its own ("posted"), contacts, items, taxes, one
+    to by an entry of its own ("posted"), contacts, items, items each named and described in the
+    eight LANGUAGES of a catalog ("catalog"), taxes, one
     invoice of a line for each of the taxes ("taxed"), files kept in the database, and
     stock: receipts of one product, receipts each of its own lot ("lots"), each then moved to
     another location ("transfers"), lots held only by a count ("quants"), products each received
@@ -1142,6 +1220,11 @@ def _grow(tables, shape: str, n: int) -> None:
             add("product_template", id=1000 + k, categ_id=1, uom_id=build.UNITS, type="consu", detailed_type="consu",
                 name=name(f"Part {k}"), description_sale=name(f"Part {k} for sale"), list_price="5", active="t")
             add("product_product", id=1000 + k, product_tmpl_id=1000 + k, default_code=f"P{k:07d}", active="t")
+        elif shape == "catalog":
+            add("product_template", id=1000 + k, categ_id=1, uom_id=build.UNITS, type="consu", detailed_type="consu",
+                name=_in_every_language(f"Part {k}"), description_sale=_in_every_language(_SALES_TEXT + str(k)),
+                list_price="5", active="t")
+            add("product_product", id=1000 + k, product_tmpl_id=1000 + k, default_code=f"P{k:07d}", active="t")
         elif shape == "files":
             content = f"Note {k}\n".encode() * 20
             add("ir_attachment", id=1000 + k, res_id=7, company_id=1, file_size=len(content), name=f"note-{k}.txt",
@@ -1192,7 +1275,7 @@ SIZES = {"companies": 8_000, "accounts": 2_000, "posted": 2_000, "chain": 2_000,
          "span": 1_000, "paid": 2_000, "analytic": 10_000, "receipts": 5_000, "lots": 5_000, "transfers": 3_000,
          "quants": 5_000, "revalued": 2_000, "layers": 5_000, "fan": 150, "drained": 3_000, "files": 2_000,
          "long_account_span": 400, "duplicate_names": 400, "long_code_lots": 400, "long_code_revaluations": 400,
-         "long_location_lots": 400, "analytic_repeat": 400}
+         "long_location_lots": 400, "analytic_repeat": 400, "catalog": 2_000}
 
 
 def test_every_family_of_tables_read_has_a_shape():

@@ -81,7 +81,7 @@ BUILT_BYTES = {"account_move_line": 450, "account_move": 700, "account_move_line
 DOCUMENT_BYTES, DOCUMENT_LINE_BYTES = 1000, 500
 STOCK_MOVE_BYTES, HOLDING_BYTES, MONTH_ACCOUNT_BYTES = 700, 1200, 600
 # A string the read builds per record out of values the dump holds once (a name told apart by its
-# id, a key, an address, a label, a decoded translation) is a new copy, so a long value repeated
+# id, a key, an address, a label) is a new copy, so a long value repeated
 # across many records is held many times. Each is charged at its size as Python holds it,
 # TEXT_COPIES times: the shared exports code copies it again (a holding key into its inventory
 # label and opening adjustment, a document key into its fallback journal, a label per month end).
@@ -92,6 +92,9 @@ KEY_ID_BYTES = 120
 # Reading a line holds it a few times over while it is split (the decoded text, the line, its
 # fields): the longest line read is charged LINE_COPIES times its size, once.
 LINE_COPIES = 4
+# Decoding JSON takes about two kilobytes whatever it decodes, and builds an object for each value,
+# however short its text: a number or an empty list two characters long is a hundred bytes or more.
+JSON_DECODER_BYTES, JSON_VALUE_BYTES = 4096, 128
 OLDEST, NEWEST = 13, 17
 LANGUAGE = "en_US"
 
@@ -167,6 +170,13 @@ def json_value(text: str):
     json reads NaN, Infinity and 1e999 (as an infinite float), which PostgreSQL never writes:
     each raises ValueError, as does text that is not JSON."""
     return json.loads(text, parse_float=_json_number, parse_int=_json_number, parse_constant=_no_constant)
+
+
+def json_size(text: str) -> int:
+    """At most what decoding `text` (json_value) holds at once: the decoder's own, twice the text,
+    for the strings copied out of it, and JSON_VALUE_BYTES for each value it can hold, one more
+    than its commas, colons and opening brackets."""
+    return JSON_DECODER_BYTES + 2 * sys.getsizeof(text) + JSON_VALUE_BYTES * (1 + sum(map(text.count, ",:[{")))
 
 
 def translation(value: str) -> str | None:
@@ -450,6 +460,17 @@ class Backup:
         if self.held > MAX_HELD:
             raise too_large()
 
+    def fits(self, size: int) -> None:
+        """Refuses the backup when `size` bytes more, held only for a moment, would take what it
+        holds past MAX_HELD."""
+        if self.held + size > MAX_HELD:
+            raise too_large()
+
+    def decodable(self, text: str) -> str:
+        """`text`, JSON, once decoding it (json_size) fits the budget (fits)."""
+        self.fits(json_size(text))
+        return text
+
     def hold_text(self, *parts: str, sep: str = "", width: int = 1) -> None:
         """Counts a string built per record from values the backup holds, `parts` joined by `sep`,
         before it is built, so building it never takes more than the budget allows."""
@@ -491,7 +512,8 @@ class Backup:
         a value not of that kind, or a `required` table (one an installed module makes) is missing.
         A kept column of the TRANSLATED kind that the dump declares jsonb is read as its English
         name (the first stored when it has none): one that is not a non-empty JSON object of
-        strings is damaged."""
+        strings is damaged. A value of the json kind, or a translated one, is decoded only when
+        decoding it fits the budget (decodable), and a translated one is charged only for the name kept."""
         wanted, where, capped, may_leave_out = set(names) | set(required), where or {}, capped or {}, set(may_leave_out)
         kinds = kinds or {}
         self.left_out: dict[str, list[str]] = {}
@@ -530,13 +552,14 @@ class Backup:
                         if len(values) != width or not line.endswith("\n"):
                             raise ScanError(t(DAMAGED))
                         fields = [_field(values[i]) if len(values[i]) <= limit else None for i, limit in zip(kept, limits)]
+                        for n in decoded:
+                            if fields[n] is not None:
+                                self.decodable(fields[n])
                         for n, valid in checked:
                             if fields[n] is not None and not valid(fields[n]):
                                 raise ScanError(t(DAMAGED))
                         for n in translated:
                             if fields[n] is not None:
-                                # The name decoded is no longer than its JSON; an escape (\u) may widen its characters.
-                                self.hold_text(fields[n], width=4 if "\\u" in fields[n] else 1)
                                 if (name := translation(fields[n])) is None:
                                     raise ScanError(t(DAMAGED))
                                 fields[n] = name
@@ -564,6 +587,7 @@ class Backup:
                         checked = [(n, KINDS[kinds[header[i]]]) for n, i in enumerate(kept) if kinds.get(header[i]) in KINDS]
                         translated = [n for n, i in enumerate(kept)
                                       if kinds.get(header[i]) == TRANSLATED and header[i] in jsonb.get(copying, ())]
+                        decoded = [n for n, i in enumerate(kept) if kinds.get(header[i]) == "json"] + translated
                         limits = [capped.get(header[i], math.inf) for i in kept]
                         shape = type("Row", (Row,), {"__slots__": (), "index": {header[i]: n for n, i in enumerate(kept)}})
                         keep, seen = where.get(copying), {}
