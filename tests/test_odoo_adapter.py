@@ -12,6 +12,7 @@ import gzip
 import io
 import json
 import random
+import re
 import time
 import tracemalloc
 import zipfile
@@ -674,20 +675,31 @@ def test_a_large_book_kept_in_thai_reads_with_room_to_spare(tmp_path, monkeypatc
 # has at least one, so what the read builds from any table is measured against what it is charged.
 SHAPES = {
     "company": ("companies",),
-    "chart": ("accounts", "posted"),
-    "contacts": ("contacts",),
+    "chart": ("accounts", "posted", "long_account_span"),
+    "contacts": ("contacts", "duplicate_names"),
     "items": ("items",),
     "taxes": ("taxes", "taxed"),
     "journals": ("ordinary", "shared", "thai", "entries", "invoices", "long", "wide", "span"),
     "payments": ("paid", "chain"),
-    "analytics": ("analytic",),
-    "stock": ("receipts", "lots", "transfers", "quants", "revalued", "layers", "fan", "drained"),
+    "analytics": ("analytic", "analytic_repeat"),
+    "stock": ("receipts", "lots", "transfers", "quants", "revalued", "layers", "fan", "drained", "long_code_lots",
+              "long_code_revaluations", "long_location_lots"),
     "attachments": ("files",),
 }
+LONG = 200_000  # characters of the one long value a "long" shape repeats across its records
+
+
+def _long(seed: int) -> str:
+    return "".join(random.Random(seed).choices("abcdefghijklmnopqrstuvwxyz0123456789", k=LONG))
 
 
 def _shaped(path, monkeypatch, shape: str, n: int):
-    """The fixture's backup grown by `n` rows in one of the SHAPES. Journals, in about `n`
+    path.write_bytes(build.backup(17, _shaped_tables(monkeypatch, shape, n)))
+    return path
+
+
+def _shaped_tables(monkeypatch, shape: str, n: int) -> build.Tables:
+    """The fixture's tables grown by `n` rows in one of the SHAPES. Journals, in about `n`
     journal items: one entry of items each with its own label and amount ("ordinary"), the same
     in Thai, one entry of items sharing every value but their id ("shared"), entries of two items
     ("entries"), one-line invoices ("invoices"), invoices of a hundred untaxed lines ("long") or
@@ -701,7 +713,12 @@ def _shaped(path, monkeypatch, shape: str, n: int):
     another location ("transfers"), lots held only by a count ("quants"), products each received
     and revalued ("revalued"), revaluations of one product ("layers"), or `n` lots of one
     product each revalued, every revaluation spread over every lot ("fan"), or `n` lots of one
-    product each received and shipped, then `n` revaluations of it ("drained")."""
+    product each received and shipped, then `n` revaluations of it ("drained"). The long shapes
+    repeat one value of LONG characters across their records: an account's name over `n` month
+    ends ("long_account_span"), the name of `n` customers ("duplicate_names"), a product's code
+    over `n` lots ("long_code_lots") or `n` revaluations ("long_code_revaluations"), a
+    location's name over `n` lots received into it ("long_location_lots"), and an analytic
+    account's name fifty times in each of `n` journal items ("analytic_repeat")."""
     invoiced = {"invoices": (1, build.SALE_TAX), "long": (100, None), "wide": (10, (build.SALE_TAX, build.PROVINCIAL_TAX))}
     bulk, lines = build._bulk, 0
     if shape in invoiced:
@@ -720,7 +737,7 @@ def _shaped(path, monkeypatch, shape: str, n: int):
         bulk = lambda n: [build.Move(30000 + k, f"MISC/2024/{k:07d}", "entry", "posted", "2024-05-01",  # noqa: E731
                                      [build.Line(a, s * D(f"{k % 997 + 1}.00"), name=f"Transfer {k}")
                                       for a, s in ((1, 1), (14, -1))], ref=f"T{k}") for k in range(n // 2)]
-    elif shape == "span":
+    elif shape in ("span", "long_account_span"):
         bulk = lambda n: [build._entry(30000 + k, f"MISC/{k}", f"{2024 + (n * k) // 12}-{(n * k) % 12 + 1:02d}-01",  # noqa: E731
                                        [(1, D(10)), (14, D(-10))]) for k in (0, 1)]
     elif shape == "shared":
@@ -756,13 +773,12 @@ def _shaped(path, monkeypatch, shape: str, n: int):
         monkeypatch.setattr(build, "ANALYTIC_ACCOUNTS", build.ANALYTIC_ACCOUNTS + spread)
         monkeypatch.setattr(build, "ANALYTIC", {**build.ANALYTIC, **{(25, i): {a: D(2) for a, *_ in spread}
                                                                      for i in range(n)}})
-    if shape in (*SHAPES["journals"], *SHAPES["payments"], *SHAPES["analytics"]):
+    if shape in (*SHAPES["journals"], *SHAPES["payments"], *SHAPES["analytics"], "long_account_span"):
         lines = n
     monkeypatch.setattr(build, "_bulk", bulk)
     tables = build.tables(17, bulk_lines=lines)
     _grow(tables, shape, n)
-    path.write_bytes(build.backup(17, tables))
-    return path
+    return tables
 
 
 def _grow(tables, shape: str, n: int) -> None:
@@ -795,12 +811,35 @@ def _grow(tables, shape: str, n: int) -> None:
         add("stock_lot", id=5000 + k, name=f"SN-{k:06d}", product_id=build.WIDGET, company_id=1)
         return 5000 + k
 
+    def edit(table: str, row_id: int, **values) -> None:
+        columns, rows = tables.rows[table]
+        row = next(r for r in rows if r[columns.index("id")] == row_id)
+        for column, value in values.items():
+            row[columns.index(column)] = value
+
+    long = _long(n) if shape.startswith("long_") or shape in ("duplicate_names", "analytic_repeat") else ""
+    if shape == "long_account_span":
+        edit("account_account", 1, name=name(long))
+    elif shape in ("long_code_lots", "long_code_revaluations"):
+        edit("product_product", build.WIDGET, default_code=long)
+    elif shape == "long_location_lots":
+        edit("stock_location", 9, complete_name=long)
+    elif shape == "analytic_repeat":
+        # Each item's distribution is its own, and names the one account fifty times.
+        edit("account_analytic_account", 1, name=name(long[:LONG // 50]))
+        columns, rows = tables.rows["account_move_line"]
+        spread = ",".join(["1"] * 50)
+        for k, row in enumerate(r for r in rows if r[columns.index("move_id")] == 25):
+            row[columns.index("analytic_distribution")] = json.dumps({spread: 100, f"9{k:08d}": 0})
     for k in range(n):
         if shape == "companies":
             add("res_company", id=1000 + k, name=f"Branch {k}", partner_id=1, currency_id=build.USD)
         elif shape in ("accounts", "posted"):
             add("account_account", id=1000 + k, company_id=1, code=f"7{k:06d}", account_type="income",
                 internal_group="income", name=name(f"Sales {k}"), deprecated="f", reconcile="f")
+        elif shape == "duplicate_names":
+            add("res_partner", id=700000 + k, name=long, commercial_partner_id=700000 + k, active="t",
+                is_company="t", customer_rank=1, supplier_rank=0)
         elif shape == "contacts":
             add("res_partner", id=1000 + k, name=f"Customer {k}", commercial_partner_id=1000 + k, active="t",
                 is_company="t", customer_rank=1, supplier_rank=0, email=f"c{k}@example.com", city="Portsmouth")
@@ -815,8 +854,10 @@ def _grow(tables, shape: str, n: int) -> None:
                 mimetype="text/plain", db_datas="\\x" + content.hex())
         elif shape == "receipts":
             receipt(k, build.WIDGET)
-        elif shape == "lots":
+        elif shape in ("lots", "long_code_lots"):
             receipt(k, build.WIDGET, lot(k))
+        elif shape == "long_location_lots":
+            receipt(k, build.WIDGET, lot(k), dest=9)
         elif shape == "transfers":
             receipt(k, build.WIDGET, lot(k))
             receipt(n + k, build.WIDGET, 5000 + k, dest=9, src=8)
@@ -829,7 +870,7 @@ def _grow(tables, shape: str, n: int) -> None:
             add("product_product", id=1000 + k, product_tmpl_id=1000 + k, default_code=f"P{k:07d}", active="t")
             receipt(k, 1000 + k, qty="2")
             revaluation(k, 1000 + k)
-        elif shape == "layers":
+        elif shape in ("layers", "long_code_revaluations"):
             revaluation(k, build.WIDGET)
         elif shape == "fan":
             receipt(k, build.WIDGET, lot(k))
@@ -854,7 +895,9 @@ def _read_whole(path, decisions=FULL):
 # Each shape at a size the per-test time limit reads three times over.
 SIZES = {"companies": 8_000, "accounts": 2_000, "posted": 2_000, "chain": 2_000, "contacts": 5_000, "items": 5_000, "taxes": 2_000, "taxed": 1_000,
          "span": 1_000, "paid": 2_000, "analytic": 10_000, "receipts": 5_000, "lots": 5_000, "transfers": 3_000,
-         "quants": 5_000, "revalued": 2_000, "layers": 5_000, "fan": 150, "drained": 3_000, "files": 2_000}
+         "quants": 5_000, "revalued": 2_000, "layers": 5_000, "fan": 150, "drained": 3_000, "files": 2_000,
+         "long_account_span": 400, "duplicate_names": 400, "long_code_lots": 400, "long_code_revaluations": 400,
+         "long_location_lots": 400, "analytic_repeat": 400}
 
 
 def test_every_family_of_tables_read_has_a_shape():
@@ -892,6 +935,132 @@ def test_a_book_the_budget_just_admits_reads_within_two_and_a_half_times_it(tmp_
     finally:
         tracemalloc.stop()
     assert peak < 2.5 * charged, f"read took {peak / charged:.2f}x the budget"
+
+
+# Each table the reader reads -> the shape making the most records out of one of its rows: a text
+# value grown in every row of the table is repeated across those records. A table the version-17
+# fixture does not hold (an Odoo 13 to 15 one) has no text column there to grow.
+GROWN_BY = {"res_company": "companies", "res_currency": "invoices", "account_account": "span",
+            "account_account_type": "posted", "ir_model_data": "posted", "res_partner": "contacts",
+            "product_product": "lots", "product_template": "lots", "uom_uom": "receipts", "account_tax": "taxed",
+            "account_tax_repartition_line": "taxed", "account_move": "invoices", "account_move_line": "entries",
+            "account_move_line_account_tax_rel": "wide", "account_partial_reconcile": "paid",
+            "account_payment": "paid", "account_analytic_account": "analytic", "account_analytic_plan": "analytic",
+            "account_analytic_tag": "analytic", "account_analytic_tag_account_move_line_rel": "analytic",
+            "stock_location": "transfers", "stock_move": "transfers", "stock_move_line": "transfers",
+            "stock_quant": "quants", "stock_valuation_layer": "fan", "stock_lot": "lots", "ir_attachment": "files"}
+GROWN = 60  # records of the shape
+_NOT_TEXT = re.compile(r"-?\d+(\.\d+)?|\d{4}-\d\d-\d\d.*|[tf]|\\x.*", re.S)
+
+
+def _text_columns() -> list[tuple[str, str]]:
+    """Every (table, column) the reader keeps whose values in the fixture are text: not an id,
+    number, date, flag or file content."""
+    from celerp.importers.adapters.odoo import book
+
+    tables = build.tables(17)
+    out = []
+    for table in sorted(GROWN_BY.keys() & tables.rows.keys()):
+        columns, rows = tables.rows[table]
+        for column in sorted(book.COLUMNS & set(columns)):
+            values = [str(r[columns.index(column)]) for r in rows if r[columns.index(column)] is not None]
+            if values and not all(_NOT_TEXT.fullmatch(v) for v in values):
+                out.append((table, column))
+    return out
+
+
+def test_every_table_read_is_grown_by_a_shape():
+    from celerp.importers.adapters.odoo import book
+
+    assert GROWN_BY.keys() == {*book.TABLES, "stock_lot"}
+    assert set(GROWN_BY.values()) <= {shape for shapes in SHAPES.values() for shape in shapes}
+
+
+@pytest.mark.parametrize("table, column", _text_columns())
+def test_any_text_the_reader_keeps_repeated_across_many_records_reads_within_two_and_a_half_times_its_charge(
+        tmp_path, monkeypatch, table, column):
+    """Whatever text a backup repeats, the read holds it once or charges every copy it builds:
+    one value of LONG characters in a column of every row of a table, across many records made
+    from those rows, reads within two and a half times what it is charged, or is refused."""
+    from celerp.importers.adapters.odoo import book, dump
+
+    (tmp_path / "warm.zip").write_bytes(_backup(17))
+    _read_whole(tmp_path / "warm.zip")
+    tables = _shaped_tables(monkeypatch, GROWN_BY[table], GROWN)
+    long = _long(len(column))
+    columns, rows = tables.rows[table]
+    at = columns.index(column)
+    for row in rows:
+        translated = str(row[at]).startswith('{"en_US"')
+        row[at] = json.dumps({"en_US": long}) if translated else long
+    path = tmp_path / "grown.zip"
+    path.write_bytes(build.backup(17, tables))
+    try:
+        with dump.Backup(path) as backup:
+            book.read_odoo(backup)
+            charged = backup.held
+        monkeypatch.setattr(dump, "MAX_HELD", charged)
+        tracemalloc.start()
+        try:
+            _read_whole(path)
+            peak = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+    except (ScanError, SourceRevisionError):
+        return
+    assert peak < 2.5 * charged, f"read took {peak / charged:.2f}x the budget"
+
+
+def _peak_rss() -> int | None:
+    """The most memory this process has held since _reset_peak_rss, in bytes; None where the
+    system does not say (only Linux does)."""
+    try:
+        with open("/proc/self/status") as f:
+            return next(int(line.split()[1]) * 1024 for line in f if line.startswith("VmHWM:"))
+    except OSError:
+        return None
+
+
+def _reset_peak_rss() -> bool:
+    try:
+        with open("/proc/self/clear_refs", "w") as f:
+            f.write("5")
+    except OSError:
+        return False
+    return True
+
+
+@pytest.mark.asyncio
+async def test_a_long_value_copied_into_every_record_is_refused_before_the_copies_are_built(client, monkeypatch,
+                                                                                            tmp_path):
+    """A product with a code of a million characters, revalued four hundred times: each
+    revaluation's record names the code again. The 650 KB upload would make the read hold four
+    hundred copies of it, a gigabyte; each copy is charged as it is built, so the backup is refused
+    as too large, in the user's language, once they reach the budget (here a sixteenth of it)."""
+    import sys
+    from celerp.config import settings
+    from celerp.importers.adapters.odoo import dump
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setattr(dump, "MAX_HELD", dump.MAX_HELD // 16)
+    monkeypatch.setattr(sys.modules[__name__], "LONG", 1_000_000)
+    data = _shaped(tmp_path / "code.zip", monkeypatch, "long_code_revaluations", 400).read_bytes()
+    assert len(data) < 700_000
+    gc.collect()
+    measured = _reset_peak_rss()
+    before = _peak_rss()
+    tracemalloc.start()
+    try:
+        r = await scan_upload(client, data, name="code.zip", source="odoo", headers={"Accept-Language": "th"})
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"] == t("migration.err_odoo_backup_too_large", "th")
+    assert peak < 2.5 * dump.MAX_HELD
+    if measured:
+        print(f"peak RSS {_peak_rss() / 2**20:.0f} MiB, {(_peak_rss() - before) / 2**20:.0f} MiB above the start")
+        assert _peak_rss() - before < 2.5 * dump.MAX_HELD
 
 
 @pytest.mark.asyncio

@@ -71,6 +71,15 @@ BUILT_BYTES = {"account_move_line": 450, "account_move": 700, "account_move_line
                "stock_move": 100, "stock_move_line": 100, "stock_valuation_layer": 100}
 DOCUMENT_BYTES, DOCUMENT_LINE_BYTES = 1000, 500
 STOCK_MOVE_BYTES, HOLDING_BYTES, MONTH_ACCOUNT_BYTES = 700, 1200, 600
+# A string the read builds per record out of values the dump holds once (a name told apart by its
+# id, a key, an address, a label, a decoded translation) is a new copy, so a long value repeated
+# across many records is held many times. Each is charged at its size as Python holds it,
+# TEXT_COPIES times: the shared exports code copies it again (a holding key into its inventory
+# label and opening adjustment, a document key into its fallback journal, a label per month end).
+TEXT_COPIES = 2
+# Reading a line holds it a few times over while it is split (the decoded text, the line, its
+# fields): the longest line read is charged LINE_COPIES times its size, once.
+LINE_COPIES = 4
 PASSWORD = 0x1  # the zip flag of a file packed with a password
 OLDEST, NEWEST = 13, 17
 LANGUAGE = "en_US"
@@ -302,13 +311,18 @@ class Backup:
             self.archive.close()
             raise SourceRevisionError(t(DAMAGED))
         self.modules = frozenset(modules)
-        self.held = 0
+        self.held = self.longest = 0
 
     def hold(self, size: int) -> None:
         """Counts `size` bytes more held from this backup, and refuses it past MAX_HELD."""
         self.held += size
         if self.held > MAX_HELD:
             raise too_large()
+
+    def held_text(self, text: str) -> str:
+        """`text`, a string built per record from values the backup holds, charged as held."""
+        self.hold(TEXT_COPIES * sys.getsizeof(text))
+        return text
 
     def __enter__(self) -> Backup:
         return self
@@ -347,6 +361,9 @@ class Backup:
             lines = io.TextIOWrapper(raw, encoding="utf-8", newline="\n")
             rows: list[Row] | None = None
             for line in iter(partial(lines.readline, MAX_LINE + 1), ""):
+                if (size := sys.getsizeof(line)) > self.longest:
+                    self.hold(LINE_COPIES * (size - self.longest))
+                    self.longest = size
                 if len(line) > MAX_LINE and not line.endswith("\n"):
                     if rows is None:
                         while (rest := lines.readline(MAX_LINE)) and not rest.endswith("\n"):
@@ -394,7 +411,8 @@ class Backup:
 
     def text(self, value: str | None) -> str:
         """A name as Odoo shows it in English. From Odoo 16 a translated name is stored as
-        JSON keyed by language; earlier names are plain text."""
+        JSON keyed by language; earlier names are plain text. A decoded name is a new string
+        on every call, so a value read for many records is decoded once."""
         if not value:
             return ""
         if self.version >= 16 and value.startswith("{"):
@@ -403,7 +421,7 @@ class Backup:
             except ValueError:
                 return value
             if isinstance(names, dict) and names:
-                return str(names.get(LANGUAGE) or next(iter(names.values())) or "")
+                return self.held_text(str(names.get(LANGUAGE) or next(iter(names.values())) or ""))
         return value
 
     def stored_file(self, store_fname: str, limit: int) -> bytes | None:

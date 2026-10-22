@@ -34,7 +34,7 @@ from celerp.importers.adapters.exports.book import (
     TaxCode,
 )
 from celerp.importers.adapters.odoo.dump import (
-    DOCUMENT_BYTES, DOCUMENT_LINE_BYTES, HOLDING_BYTES, MONTH_ACCOUNT_BYTES, STOCK_MOVE_BYTES, Backup, Row,
+    DAMAGED, DOCUMENT_BYTES, DOCUMENT_LINE_BYTES, HOLDING_BYTES, MONTH_ACCOUNT_BYTES, STOCK_MOVE_BYTES, Backup, Row,
 )
 from celerp.services.money import allocate_pro_rata, round_money
 from ui.i18n import t
@@ -233,15 +233,6 @@ def _internal(payment: Row) -> bool:
     return _true(payment.get("is_internal_transfer")) or payment.get("payment_type") == "transfer"
 
 
-def _unique(names: dict[str, str]) -> dict[str, str]:
-    """A name per id that no other id shares: the oldest record keeps a shared name and each
-    later one is told apart by its id."""
-    first: dict[str, str] = {}
-    for i in sorted(names, key=int):
-        first.setdefault(names[i], i)
-    return {i: (name if first[name] == i else f"{name} [{i}]") for i, name in names.items()}
-
-
 def _ours(row: Row, company: str) -> bool:
     return row.get("company_id") in (None, company)
 
@@ -276,6 +267,19 @@ class _Reader:
     def table(self, name: str) -> list[Row]:
         return [r for r in self.rows.get(name, []) if _ours(r, self.company["id"])]
 
+    def _unique(self, names: dict[str, str]) -> dict[str, str]:
+        """A name per id that no other id shares: the oldest record keeps a shared name and each
+        later one is told apart by its id."""
+        first: dict[str, str] = {}
+        for i in sorted(names, key=int):
+            first.setdefault(names[i], i)
+        return {i: (name if first[name] == i else self.backup.held_text(f"{name} [{i}]")) for i, name in names.items()}
+
+    def _name(self, value: str | None, fallback: str) -> str:
+        """A name without its outer spaces, else `fallback`."""
+        name = (value or "").strip()
+        return (name if name is value else self.backup.held_text(name)) or fallback
+
     def _company(self, chosen: str | None) -> tuple[Row, tuple[str, ...]]:
         """The company whose books are read: `chosen` by name, else the oldest with books; and
         the name of every company with books when there are several to choose from."""
@@ -285,7 +289,7 @@ class _Reader:
         if not companies:
             raise ScanError(t("migration.err_odoo_no_accounting"))
         booked = sorted({r["company_id"] for r in self.rows.get("account_move", [])} & companies.keys(), key=int)
-        names = _unique({i: (companies[i]["name"] or "").strip() or f"Company {i}" for i in booked})
+        names = self._unique({i: self._name(companies[i]["name"], f"Company {i}") for i in booked})
         options = tuple(names[i] for i in booked) if len(booked) > 1 else ()
         if chosen is None:
             return companies[booked[0] if booked else min(companies, key=int)], options
@@ -326,9 +330,11 @@ class _Reader:
             if row["id"] == fx:
                 control = "exchange_difference"
             currency = self.currency(row["currency_id"]) if control == "bank" else None
-            self.book.accounts[row["code"]] = Account(row["code"], self.text(row["name"]), account_type, control,
-                                                      currency if self.book.is_foreign(currency) else None,
-                                                      not _true(row["deprecated"]))
+            account = Account(row["code"], self.text(row["name"]), account_type, control,
+                              currency if self.book.is_foreign(currency) else None, not _true(row["deprecated"]))
+            # Its label is built again for each figure checked against it.
+            self.backup.held_text(account.label)
+            self.book.accounts[row["code"]] = account
             self.accounts[row["id"]] = row["code"]
 
     def read_contacts(self, referenced: set[str]) -> None:
@@ -341,11 +347,11 @@ class _Reader:
         carried = sorted((i for i, r in rows.items() if commercial[i] == i and (
             i in named or (i not in own and (_dec(r.get("customer_rank")) > 0 or _dec(r.get("supplier_rank")) > 0)))),
             key=int)
-        keys = _unique({i: (rows[i]["name"] or "").strip() or f"Partner {i}" for i in carried})
+        keys = self._unique({i: self._name(rows[i]["name"], f"Partner {i}") for i in carried})
         for i in carried:
             r = rows[i]
-            address = ", ".join(p for p in (r.get("street"), r.get("street2"),
-                                            " ".join(p for p in (r.get("zip"), r.get("city")) if p)) if p)
+            address = self.backup.held_text(", ".join(p for p in (r.get("street"), r.get("street2"), " ".join(
+                p for p in (r.get("zip"), r.get("city")) if p)) if p))
             contact = Contact(keys[i], email=r.get("email") or None, phone=r.get("phone") or r.get("mobile") or None,
                               address=address or None, tax_id=r.get("vat") or None)
             if _dec(r.get("customer_rank")) > 0:
@@ -359,14 +365,16 @@ class _Reader:
         templates = {r["id"]: r for r in self.table("product_template")}
         products = sorted((r for r in self.rows.get("product_product", []) if r["product_tmpl_id"] in templates),
                           key=lambda r: int(r["id"]))
-        codes = _unique({r["id"]: r["default_code"] or self.text(templates[r["product_tmpl_id"]]["name"])
-                         for r in products})
+        # A template's variants share its name and description, decoded once.
+        names = {i: self.text(r["name"]) for i, r in templates.items()}
+        descriptions = {i: self.text(r.get("description_sale")) or None for i, r in templates.items()}
+        codes = self._unique({r["id"]: r["default_code"] or names[r["product_tmpl_id"]] for r in products})
         for r in products:
             template = templates[r["product_tmpl_id"]]
             price = template.get("list_price")
             self.book.items[codes[r["id"]]] = Item(
-                codes[r["id"]], self.text(template["name"]),
-                self.text(template.get("description_sale")) or None, _dec(price) if price else None,
+                codes[r["id"]], names[r["product_tmpl_id"]],
+                descriptions[r["product_tmpl_id"]], _dec(price) if price else None,
                 _true(r["active"]) and _true(template["active"]))
         self.products = {r["id"]: codes[r["id"]] for r in products}
         self.uoms = {r["id"]: r for r in self.rows.get("uom_uom", [])}
@@ -374,7 +382,7 @@ class _Reader:
 
     def read_taxes(self) -> None:
         rows = sorted(self.table("account_tax"), key=lambda r: int(r["id"]))
-        names = _unique({r["id"]: self.text(r["name"]) for r in rows})
+        names = self._unique({r["id"]: self.text(r["name"]) for r in rows})
         accounts: dict[str, str] = {}
         for r in sorted(self.rows.get("account_tax_repartition_line", []), key=lambda r: int(r["id"])):
             tax = r.get("tax_id") if r.get("document_type", "invoice") == "invoice" else None
@@ -390,8 +398,10 @@ class _Reader:
         """Each move line's analytic accounts as tracking, by plan. From Odoo 16 a line spreads
         across accounts by percent (a key may join one account of each plan); before, it names
         one analytic account and any tags."""
-        accounts = {r["id"]: r for r in self.rows.get("account_analytic_account", [])}
         plans = {r["id"]: self.text(r["name"]) for r in self.rows.get("account_analytic_plan", [])}
+        # Analytic account id -> its name and plan, decoded once for every line naming it.
+        accounts = {r["id"]: (self.text(r["name"]), plans.get(r.get("plan_id") or "", ANALYTIC_ACCOUNT))
+                    for r in self.rows.get("account_analytic_account", [])}
         tags = {r["id"]: self.text(r["name"]) for r in self.rows.get("account_analytic_tag", [])}
         tagged: dict[str, list[str]] = defaultdict(list)
         for r in self.rows.get("account_analytic_tag_account_move_line_rel", []):
@@ -402,24 +412,26 @@ class _Reader:
         for r in self.rows.get("account_move_line", []):
             spread = (r.get("analytic_distribution"), r.get("analytic_account_id"), tuple(tagged.get(r["id"], ())))
             if spread not in spreads:
-                spreads[spread] = self._spread(*spread, accounts, plans)
+                spreads[spread] = self._spread(*spread, accounts)
             if found := spreads[spread]:
                 self.analytic[r["id"]] = found
 
     def _spread(self, distribution: str | None, account: str | None, tags: tuple[str, ...],
-                accounts: dict[str, Row], plans: dict[str, str]) -> dict[str, str]:
+                accounts: dict[str, tuple[str, str]]) -> dict[str, str]:
         """Tracking category -> option of a line's analytic distribution, account and tags."""
         options: dict[str, list[str]] = defaultdict(list)
-        for keys, percent in json.loads(distribution or "{}").items():
-            share = format(Decimal(str(percent)).normalize(), "f")
-            for i in (k for k in keys.split(",") if k in accounts):
-                name = self.text(accounts[i]["name"])
-                plan = plans.get(accounts[i].get("plan_id") or "", ANALYTIC_ACCOUNT)
-                options[plan].append(name if Decimal(share) == 100 else f"{name} {share}%")
+        try:
+            for keys, percent in json.loads(distribution or "{}").items():
+                share = format(Decimal(str(percent)).normalize(), "f")
+                for i in (k for k in keys.split(",") if k in accounts):
+                    name, plan = accounts[i]
+                    options[plan].append(name if Decimal(share) == 100 else f"{name} {share}%")
+        except (ValueError, AttributeError, ArithmeticError) as exc:
+            raise ScanError(t(DAMAGED)) from exc
         if account in accounts:
-            options[ANALYTIC_ACCOUNT].append(self.text(accounts[account]["name"]))
+            options[ANALYTIC_ACCOUNT].append(accounts[account][0])
         options[ANALYTIC_TAG] += tags
-        return {k: ", ".join(v) for k, v in options.items() if v}
+        return {k: self.backup.held_text(", ".join(v)) for k, v in options.items() if v}
 
     def _tracking(self, row: Row) -> dict[str, str]:
         """A carried line's tracking; its categories are counted in the coverage report."""
@@ -589,6 +601,9 @@ class _Reader:
                     carrying[code][-1].amount += difference
                 elif last is not None:
                     last.taxes.append(LineTax(code, difference))
+        for x in (x for ln in lines for x in ln.taxes):
+            if book.tax_account_for(x.code) is None:
+                raise ScanError(t("migration.err_export_tax_account", tax=x.code or ""))
         total, tax_total = _dec(move["amount_total"]), _dec(move["amount_tax"])
         withheld: dict[str, Decimal] = defaultdict(lambda: ZERO)
         if doc_type in ("invoice", "credit_note"):
@@ -611,7 +626,7 @@ class _Reader:
         key = f"{side}:{number}"
         for candidate in (key, f"{key}|{contact}", f"{key}|{contact}|{move['id']}"):
             if candidate not in book.documents:
-                key = candidate
+                key = self.backup.held_text(candidate)
                 break
         due = _dec(move["amount_residual"])
         book.documents[key] = Document(
@@ -697,6 +712,10 @@ class _Reader:
         last = steps.month_end(book.journals[-1].date)
         while on <= last:
             self.backup.hold(MONTH_ACCOUNT_BYTES * len(book.accounts))
+            # Each month end's balances are checked under every account's code and label again.
+            for code, account in book.accounts.items():
+                self.backup.held_text(code)
+                self.backup.held_text(account.label)
             for j in months.get(on, []):
                 for ln in j.lines:
                     running[ln.account] += ln.amount
@@ -724,7 +743,7 @@ class _Reader:
         two internal locations takes along its share of what the stock it left was worth, and a
         valuation with no move falls on the item's stock held at the time, by quantity."""
         book, base = self.book, self.book.base
-        names = _unique({r["id"]: r["complete_name"] or r["name"] or "" for r in self.table("stock_location")
+        names = self._unique({r["id"]: r["complete_name"] or r["name"] or "" for r in self.table("stock_location")
                          if r["usage"] == "internal"})
         internal = sorted(names, key=int)
         self.out.locations = len(internal)
@@ -740,11 +759,14 @@ class _Reader:
                 return code
             key = code + (f"#{lots[lot]}" if lot else "") + ("" if location == internal[0] else f"@{names[location]}")
             if key not in book.holdings:
+                # Its inventory count is labelled with the item's name, the lot and the location.
                 self.backup.hold(HOLDING_BYTES)
+                self.backup.held_text(key)
+                self.backup.held_text(book.items[code].name)
                 book.holdings[key] = StockHolding(key, code, names[location], lots[lot] if lot else None)
             if lot:
                 stocked.add(lot)
-            return key
+            return book.holdings[key].key
 
         valued = "stock_valuation_layer" in self.rows
         layers = [r for r in self.table("stock_valuation_layer") if r["product_id"] in self.products]
@@ -784,9 +806,10 @@ class _Reader:
                 stocked_under[code] = set(holders)
                 shares = allocate_pro_rata(_dec(r["value"]), [held[k][0] for k in holders], base) if holders \
                     else [_dec(r["value"])]
+                description = self.text(r.get("description"))
                 for target, share in zip(holders or [code], shares):
-                    add(record, f"{record}:{target}" if holders else record, "Stock valuation",
-                        self.text(r.get("description")), on, target, ZERO, share)
+                    add(record, self.backup.held_text(f"{record}:{target}") if holders else record, "Stock valuation",
+                        description, on, target, ZERO, share)
                 continue
             # A move Odoo recorded without lines moves as one line of its own.
             ordered, in_units = _dec(r.get("product_uom_qty")), _dec(r["product_qty"])
@@ -882,7 +905,7 @@ class _Reader:
             extension = mimetypes.guess_extension(r["mimetype"] or "")
             if res_field and target and extension:
                 # Odoo names a picture after its field; name it after its record instead.
-                name = target.replace("/", "-").replace("\\", "-") + extension
+                name = self.backup.held_text(target.replace("/", "-").replace("\\", "-") + extension)
             # A file kept in the database is held only when it can be imported: attached to a
             # record Celerp holds and within the size limit (one larger is read as absent).
             stored = r.get("db_datas") if target else None
