@@ -1181,17 +1181,11 @@ def event_owners(event_types: set[str]) -> tuple[list[str], list[str]]:
     """The display names of the installed modules whose projection handlers own these
     event types, enabled or not, and the event types no installed module owns."""
     owners: dict[str, str] = {}
-    for entry in module_search_path().split(","):
-        root = Path(entry)
-        if not root.is_dir():
-            continue
-        for pkg in sorted(root.iterdir()):
-            if not (pkg / "__init__.py").exists():
-                continue
-            manifest = read_manifest(pkg)
-            label = manifest.get("display_name") or manifest.get("name") or pkg.name
-            for contrib in (manifest.get("slots") or {}).get("projection_handler") or []:
-                owners.setdefault(contrib.get("prefix") or "", label)
+    for pkg in _installed_packages():
+        manifest = read_manifest(pkg)
+        label = manifest.get("display_name") or manifest.get("name") or pkg.name
+        for contrib in (manifest.get("slots") or {}).get("projection_handler") or []:
+            owners.setdefault(contrib.get("prefix") or "", label)
     owned: set[str] = set()
     unowned: set[str] = set()
     for t in event_types:
@@ -1201,6 +1195,56 @@ def event_owners(event_types: set[str]) -> tuple[list[str], list[str]]:
         else:
             unowned.add(t)
     return sorted(owned), sorted(unowned)
+
+
+def _installed_packages():
+    """Every installed module folder, enabled or not, in module search path order."""
+    for entry in module_search_path().split(","):
+        root = Path(entry)
+        if not root.is_dir():
+            continue
+        for pkg in sorted(root.iterdir()):
+            if (pkg / "__init__.py").exists():
+                yield pkg
+
+
+@dataclass(frozen=True)
+class HelpSource:
+    """A module's help folder, declared by the ``help`` manifest key."""
+    name: str
+    display_name: str
+    first_party: bool
+    help_dir: Path
+
+
+def installed_help_dirs() -> list[HelpSource]:
+    """The help folder of every installed module, enabled or not, read from its
+    manifest without importing it, so a disabled module's help can explain how to
+    turn it on. The first copy of a name on the search path wins. A malformed
+    ``help`` entry, or one pointing outside the module folder, is logged and skipped."""
+    out: list[HelpSource] = []
+    seen: set[str] = set()
+    for pkg in _installed_packages():
+        manifest = read_manifest(pkg)
+        name = manifest.get("name") or pkg.name
+        if name in seen or "help" not in manifest:
+            continue
+        seen.add(name)
+        entry = manifest["help"]
+        if (not isinstance(entry, dict) or not isinstance(entry.get("dir"), str)
+                or not entry["dir"].strip()):
+            log.error("Module %r 'help' skipped: must be a dict with a non-empty string 'dir'",
+                      name)
+            continue
+        help_dir = pkg / entry["dir"]
+        if not _inside(help_dir, pkg) or not help_dir.is_dir():
+            log.error("Module %r help skipped: %s is not a folder inside the module folder",
+                      name, entry["dir"])
+            continue
+        out.append(HelpSource(name=name,
+                              display_name=manifest.get("display_name") or name,
+                              first_party=is_first_party(pkg), help_dir=help_dir))
+    return out
 
 
 # Fields to extract from PLUGIN_MANIFEST for display purposes.
@@ -1283,6 +1327,10 @@ def load_all(
     # import keeps ui.i18n the lowest leaf (it must not import this module).
     from ui.i18n import clear_registry
     clear_registry()
+    # The help index is built from installed modules the same way: dropped here,
+    # rebuilt on the next read.
+    from celerp.help import registry as help_registry
+    help_registry.reset()
 
     if admission is None:
         admission = admit_modules(module_dir, enabled)
