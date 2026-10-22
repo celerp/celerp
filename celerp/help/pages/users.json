@@ -1,0 +1,24 @@
+{
+  "id": "core.users",
+  "title": "Adding staff and setting what they can do",
+  "summary": "Create a login for each person on your team and choose which role controls what they can see and change.",
+  "keywords": ["users", "staff", "roles", "permissions", "invite", "create user"],
+  "routes": ["/settings/general?tab=users"],
+  "permission": "manage_users",
+  "order": 4,
+  "steps": [
+    {
+      "text": "On the Users tab in Global Config, use {create} to add a teammate with a name, email, temporary password and role.",
+      "labels": {"create": "btn.create_user"},
+      "image": null,
+      "capture": {"route": "/settings/general?tab=users", "selector": "main", "actions": []}
+    },
+    {
+      "text": "{matrix} shows exactly what each role can do; the owner can turn individual permissions on or off for any role except the owner's own.",
+      "labels": {"matrix": "settings.role_permissions_reference"},
+      "image": null,
+      "capture": {"route": "/settings/general?tab=users", "selector": "main", "actions": []}
+    }
+  ],
+  "related": ["core.companies", "core.settings"]
+}
