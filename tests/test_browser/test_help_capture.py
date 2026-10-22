@@ -13,6 +13,7 @@ import importlib.util
 import io
 import os
 import random
+import threading
 import uuid
 from pathlib import Path
 
@@ -53,7 +54,23 @@ def demo_token(api_server, api):
             await seed_demo.seed_docs(client, token, contacts, "purchase_order", 6)
 
     random.seed(20261022)
-    asyncio.run(seed())
+    # Playwright's sync API keeps its own event loop running on this thread for the whole
+    # session (greenlet-trampolined), so asyncio.run() here would always raise "cannot be
+    # called from a running event loop". Run the seed coroutine on a fresh thread, same as
+    # api_server/ui_server above run their own event loop off the main thread.
+    error: list[BaseException] = []
+
+    def _run():
+        try:
+            asyncio.run(seed())
+        except BaseException as exc:  # noqa: BLE001 - re-raised on the calling thread below
+            error.append(exc)
+
+    thread = threading.Thread(target=_run)
+    thread.start()
+    thread.join()
+    if error:
+        raise error[0]
     return token
 
 

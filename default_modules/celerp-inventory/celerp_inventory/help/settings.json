@@ -1,0 +1,18 @@
+{
+  "id": "inventory.settings",
+  "title": "Inventory settings",
+  "summary": "Set up locations, categories, units and reorder alerts.",
+  "keywords": ["settings", "locations", "categories", "units", "reorder"],
+  "routes": ["/settings/inventory"],
+  "permission": "manage_module_settings",
+  "order": 4,
+  "steps": [
+    {
+      "text": "On {title}, the tabs cover {loc}, {cat}, {units} and {reorder}.",
+      "labels": {"title": "settings_inventory.page_header", "loc": "settings.tab_locations", "cat": "settings.tab_categories", "units": "page.units", "reorder": "settings_inventory.tab_reorder"},
+      "image": null,
+      "capture": {"route": "/settings/inventory", "selector": "main", "actions": []}
+    }
+  ],
+  "related": ["inventory.add-item", "inventory.stock-views"]
+}

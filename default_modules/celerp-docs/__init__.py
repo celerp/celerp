@@ -52,4 +52,5 @@ PLUGIN_MANIFEST = {
     },
     "migrations": None,
     "default_enabled": True,
+    "help": {"dir": "celerp_docs/help"},
 }
