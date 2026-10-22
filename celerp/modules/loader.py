@@ -1215,6 +1215,9 @@ class HelpSource:
     display_name: str
     first_party: bool
     help_dir: Path
+    # The module's own UI catalogs by language, read from disk: a module that is
+    # not running never registers them, yet its help pages still name its labels.
+    catalogs: dict[str, dict]
 
 
 def installed_help_dirs() -> list[HelpSource]:
@@ -1243,7 +1246,10 @@ def installed_help_dirs() -> list[HelpSource]:
             continue
         out.append(HelpSource(name=name,
                               display_name=manifest.get("display_name") or name,
-                              first_party=is_first_party(pkg), help_dir=help_dir))
+                              first_party=is_first_party(pkg), help_dir=help_dir,
+                              catalogs={lang.strip().lower(): catalog for lang, catalog, _rtl
+                                        in module_catalogs(name, pkg, manifest)
+                                        if isinstance(catalog, dict)}))
     return out
 
 
@@ -1739,14 +1745,19 @@ def _load_one(pkg_path: Path, pkg_name: str, *, trusted: bool, declared: dict) -
 
 
 def _register_locales(pkg_name: str, pkg_path: Path, manifest: dict) -> None:
-    """Register module-contributed UI translation catalogs (the `locales`
-    manifest key, mirroring `slots`). Each entry maps a language code to
-    {"file": <path>, "rtl": <bool>}. Pushed into ui.i18n through a lazy import
-    so the i18n leaf never imports the module subsystem. A malformed or
-    unreadable entry is logged and skipped; the module and its other locales
-    still load."""
+    """Register module-contributed UI translation catalogs into ui.i18n, through a
+    lazy import so the i18n leaf never imports the module subsystem."""
     from ui.i18n import register_catalog
 
+    for lang, catalog, rtl in module_catalogs(pkg_name, pkg_path, manifest):
+        register_catalog(lang, catalog, rtl=rtl)
+
+
+def module_catalogs(pkg_name: str, pkg_path: Path, manifest: dict):
+    """Yield (lang, catalog, rtl) for each UI translation catalog a module declares
+    (the `locales` manifest key, mirroring `slots`). Each entry maps a language code
+    to {"file": <path>, "rtl": <bool>}. A malformed or unreadable entry is logged and
+    skipped; the module's other locales still load."""
     locales = manifest.get("locales") or {}
     if not isinstance(locales, dict):
         log.error(
@@ -1788,7 +1799,7 @@ def _register_locales(pkg_name: str, pkg_path: Path, manifest: dict) -> None:
                 pkg_name, lang, entry["file"], type(exc).__name__, exc,
             )
             continue
-        register_catalog(lang, catalog, rtl=rtl)
+        yield lang, catalog, rtl
 
 
 def _route_failure(manifest: dict, kind: str, exc: Exception) -> None:

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 PAGE_KEYS = frozenset({"id", "title", "summary", "keywords", "routes", "permission",
@@ -40,10 +40,12 @@ class HelpPage:
     steps: list[dict]
     related: list[str]
     help_dir: Path
-    # Set by the registry: core, first_party or third_party, and the owning module.
+    # Set by the registry: core, first_party or third_party, the owning module, and
+    # that module's own UI catalogs by language (see render.label).
     source: str = ""
     module: str = ""
     module_display: str = ""
+    catalogs: dict[str, dict] = field(default_factory=dict)
 
 
 def module_prefix(module: str) -> str:

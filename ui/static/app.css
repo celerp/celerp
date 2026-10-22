@@ -1299,19 +1299,39 @@ th.cell--number { font-family: inherit; }
   border: 1px solid var(--c-border); border-radius: 50%; cursor: pointer;
 }
 .global-search-help:hover, .global-search-help:focus { color: var(--c-text); border-color: var(--c-accent); outline: none; }
-.global-search-help-panel {
+.global-search-help-panel, .help-panel {
   display: none; position: absolute; top: calc(100% + 6px); right: 0; z-index: 90;
   width: 320px; padding: 12px 14px; font-size: 12px; color: var(--c-text);
   background: var(--c-bg2); border: 1px solid var(--c-border); border-radius: var(--radius);
   box-shadow: 0 8px 24px rgba(26,29,46,0.1);
 }
-.global-search-help-panel.open { display: block; }
+.global-search-help-panel.open, .help-panel.open { display: block; }
 .global-search-help-title { font-weight: 600; margin-bottom: 6px; }
 .global-search-help-panel ul { margin: 0 0 8px; padding-left: 16px; }
 .global-search-help-panel li { margin: 3px 0; }
 .global-search-help-op { font-family: monospace; font-weight: 600; color: var(--c-accent); }
 .global-search-help-example { color: var(--c-text2); border-top: 1px solid var(--c-border); padding-top: 8px; }
 .global-search-help-panel code { font-family: monospace; background: var(--c-bg3); padding: 1px 4px; border-radius: 3px; }
+
+/* Help: the "Help" top bar panel and the /help viewer */
+.topbar-help { position: relative; }
+.topbar-help__btn { font-size: 12px; padding: 0.2rem 0.6rem; color: var(--c-text2); background: var(--c-bg3); border: 1px solid var(--c-border); border-radius: var(--radius); cursor: pointer; }
+.topbar-help__btn:hover, .topbar-help__btn:focus { color: var(--c-text); border-color: var(--c-accent); outline: none; }
+.help-panel__title { font-weight: 600; margin-bottom: 6px; }
+.help-panel__none { color: var(--c-text2); margin: 0 0 8px; }
+.help-panel__actions { display: flex; gap: 0.5rem; border-top: 1px solid var(--c-border); padding-top: 8px; }
+.help-page { display: flex; flex-direction: column; gap: 0.75rem; max-width: 760px; }
+.help-search { display: flex; gap: 0.5rem; }
+.help-search__input { flex: 1; }
+.help-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.6rem; }
+.help-list__title { font-weight: 600; }
+.help-list__summary { margin: 0.15rem 0 0; color: var(--c-text2); }
+.help-page__summary { margin: 0; }
+.help-steps { margin: 0; padding-left: 1.25rem; display: flex; flex-direction: column; gap: 1rem; }
+.help-step p { margin: 0 0 0.5rem; }
+.help-step__img { max-width: 100%; height: auto; border: 1px solid var(--c-border); border-radius: var(--radius); }
+.help-related { margin: 0; padding-left: 1.25rem; }
+.help-back { align-self: flex-start; }
 
 /* ─── Column resize handle (T12) ──────────────────────────────────────── */
 .col-resize-handle {
@@ -2751,6 +2771,7 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
 .ai-action-group__summary { margin: 0; font-size: 0.95rem; font-weight: 600; }
 .ai-action-group > .ai-action__done, .ai-action-group > .ai-action__error { margin: 0; }
 .ai-msg--error { color: var(--c-red-text); border: 1px solid rgba(239,68,68,0.35); }
+.ai-msg__sources { margin: 0.5rem 0 0; font-size: 0.8rem; color: var(--c-text2); white-space: normal; }
 .load-error { display: flex; flex-direction: column; align-items: flex-start; gap: 0.5rem; padding: 0.75rem; border: 1px solid rgba(239,68,68,0.35); border-radius: var(--radius); color: var(--c-red-text); background: var(--c-bg2); }
 .load-error__text { margin: 0; }
 .ai-job { white-space: normal; }

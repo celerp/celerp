@@ -14,6 +14,7 @@ import pytest
 from celerp.ai import tools as ai_tools
 from celerp.help import registry
 from celerp.help.schema import HelpPage
+from celerp.modules import loader
 from celerp.services.permissions import missing_permission_text
 from test_helpers import invite_user, real_agent_app, register_admin
 
@@ -47,6 +48,8 @@ def help_pages(monkeypatch):
               permission="manage_users"),
     ]
     monkeypatch.setattr(registry, "_index", registry.Index(pages={p.id: p for p in pages}))
+    # The harness never runs load_all; celerp-contacts runs, acme-widgets does not.
+    monkeypatch.setattr(loader, "_loaded", [{"name": "celerp-contacts", "version": "1.0.0"}])
     return pages
 
 

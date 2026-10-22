@@ -173,7 +173,7 @@ def setup_ui_routes(app) -> None:
                 return RedirectResponse("/ai", status_code=302)
         messages: list[dict] = []
         jobs: list[dict] = []
-        load_error: FT | None = None
+        failed: FT | None = None
         if conversation_id:
             from celerp.gateway.state import get_session_token
             session_token = get_session_token()
@@ -184,7 +184,7 @@ def setup_ui_routes(app) -> None:
             except APIError as exc:
                 if exc.status == 404:
                     return RedirectResponse("/ai", status_code=302)
-                load_error = load_error(
+                failed = load_error(
                     t("ai.conversation_load_failed", lang), lang,
                     href=f"/ai?conversation={conversation_id}",
                 )
@@ -192,7 +192,7 @@ def setup_ui_routes(app) -> None:
         return await base_shell(
             _chat_view(
                 messages=messages, jobs=jobs, conversation_id=conversation_id,
-                lang=lang, load_error=load_error,
+                lang=lang, failed=failed,
             ),
             title="AI Assistant - Celerp", nav_active="ai", request=request,
         )
@@ -1552,10 +1552,10 @@ def _thread(messages: list[dict], jobs: list[dict], conversation_id: str, lang: 
 
 def _chat_view(
     messages: list[dict] | None = None, jobs: list[dict] | None = None,
-    conversation_id: str = "", lang: str = "en", load_error: FT | None = None,
+    conversation_id: str = "", lang: str = "en", failed: FT | None = None,
 ) -> FT:
-    if load_error is not None:
-        message_children = [load_error]
+    if failed is not None:
+        message_children = [failed]
     elif messages or jobs:
         message_children = _thread(messages or [], jobs or [], conversation_id, lang)
     else:

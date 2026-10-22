@@ -36,18 +36,20 @@ def page_files(help_dir: Path) -> list[Path]:
     return sorted(help_dir.glob("*.json")) if help_dir.is_dir() else []
 
 
-def _sources() -> list[tuple[str, str, str, Path]]:
-    """(source, module, display name, help dir): core, first-party, then third-party."""
+def _sources() -> list[tuple[str, str, str, Path, dict]]:
+    """(source, module, display name, help dir, module catalogs): core, first-party,
+    then third-party."""
     found = installed_help_dirs()
     ordered = [s for s in found if s.first_party] + [s for s in found if not s.first_party]
-    return [("core", CORE, "Celerp", CORE_HELP_DIR), *(
-        ("first_party" if s.first_party else "third_party", s.name, s.display_name, s.help_dir)
+    return [("core", CORE, "Celerp", CORE_HELP_DIR, {}), *(
+        ("first_party" if s.first_party else "third_party", s.name, s.display_name, s.help_dir,
+         s.catalogs)
         for s in ordered)]
 
 
 def _build() -> Index:
     pages: dict[str, HelpPage] = {}
-    for source, module, display, help_dir in _sources():
+    for source, module, display, help_dir, catalogs in _sources():
         for path in page_files(help_dir):
             page, errors = load_file(path, help_dir, module_prefix(module))
             if page is None:
@@ -58,7 +60,7 @@ def _build() -> Index:
                             page.id, module, pages[page.id].module)
                 continue
             pages[page.id] = dataclasses.replace(
-                page, source=source, module=module, module_display=display)
+                page, source=source, module=module, module_display=display, catalogs=catalogs)
     return Index(pages=pages)
 
 

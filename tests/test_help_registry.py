@@ -60,7 +60,8 @@ def test_help_dir_outside_package_is_skipped(module_root, caplog):
 
 
 def _source(name, help_dir, first_party):
-    return loader.HelpSource(name=name, display_name=name, first_party=first_party, help_dir=help_dir)
+    return loader.HelpSource(name=name, display_name=name, first_party=first_party, help_dir=help_dir,
+                             catalogs={})
 
 
 def test_duplicate_page_id_first_source_wins(tmp_path, monkeypatch, caplog):

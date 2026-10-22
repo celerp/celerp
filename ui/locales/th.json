@@ -6319,5 +6319,20 @@
   "event.fa.check.removed": "ลบการตรวจนับสินทรัพย์ถาวร",
   "modules.turn_on": "เปิดใช้",
   "nav.my_assets": "สินทรัพย์ของฉัน",
-  "connectors.order_changed_in_woocommerce": "คำสั่งซื้อนี้ถูกเปลี่ยนใน WooCommerce เลือก ลองอีกครั้ง เพื่อตรวจสอบการเปลี่ยนแปลง"
+  "connectors.order_changed_in_woocommerce": "คำสั่งซื้อนี้ถูกเปลี่ยนใน WooCommerce เลือก ลองอีกครั้ง เพื่อตรวจสอบการเปลี่ยนแปลง",
+  "help.title": "Help",
+  "help.search_placeholder": "Search help",
+  "help.no_results": "No help page matches. Search in English, or ask Celerp AI in your language.",
+  "help.ask_ai": "Ask Celerp AI",
+  "help.answers_in_your_language": "These pages are in English. Celerp AI answers your questions in your language.",
+  "help.for_this_page": "Help for this page",
+  "help.none_for_this_page": "No help page covers this screen yet.",
+  "help.browse": "Browse by module",
+  "help.third_party": "From the {module} module, not written by Celerp.",
+  "help.related": "Related pages",
+  "help.load_failed": "Celerp couldn't load the help pages.",
+  "help.empty_query": "Type what you want to find.",
+  "help.no_module": "No module named {module}.",
+  "ai.help_sources": "Sources:",
+  "ai.help_no_coverage": "No help page covers this yet, so this answer is not from the Celerp help."
 }
