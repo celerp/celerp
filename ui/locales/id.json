@@ -6268,6 +6268,8 @@
   "notice.tax_seed.ca-qst-compound.body": "QST 9.975% is set as compound, so it is charged on the price plus GST. Quebec charges it on the price before GST. Set Compound to No for QST 9.975% in Settings > Taxes.",
   "notice.tax_seed.my-sst-6.title": "Malaysia SST 6% replaced",
   "notice.tax_seed.my-sst-6.body": "SST 6% is no longer in force. Malaysia now charges Sales Tax at 10% or 5% on goods, and Service Tax at 8% or 6% on services. Change the SST 6% row in Settings > Taxes.",
+  "notice.customs_freeze.title": "Issued shipping documents keep their customs codes",
+  "notice.customs_freeze.body": "HS codes and countries of origin are now saved on your issued shipping documents ({count}), so later changes to the items no longer alter them. They are the same codes these documents already printed.",
   "migration.xero_attachments_later": "File yang dilampirkan ke faktur, tagihan, dan nota kredit di Xero tidak ada dalam ekspor. Setelah impor selesai, ambil file tersebut dari Xero di halaman hasil pemeriksaan.",
   "migration.xero_attachments_title": "Lampiran di Xero",
   "migration.xero_attachments_hint": "Celerp masuk ke organisasi Xero klien, mengunduh file yang dilampirkan ke setiap faktur, tagihan, dan nota kredit yang diimpor, lalu melampirkannya ke dokumen yang sama di sini. Celerp hanya membaca dari Xero dan tidak pernah mengubah apa pun di sana.",

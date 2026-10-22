@@ -140,8 +140,11 @@ async def test_batch_import_of_issued_shipping_lists_is_frozen(client, auth):
 # The startup pass: shipping documents issued by an earlier release hold no codes of their own.
 
 async def _reset_marker(session) -> None:
+    from celerp.migrations._data_reconcile import get_meta
     from celerp_docs.customs_freeze import CUSTOMS_FREEZE_KEY
 
+    conn = await session.connection()
+    await conn.run_sync(lambda c: get_meta(c, CUSTOMS_FREEZE_KEY))  # creates the table on a fresh database
     await session.execute(text("DELETE FROM instance_meta WHERE key = :k"), {"k": CUSTOMS_FREEZE_KEY})
     await session.commit()
 
@@ -165,6 +168,16 @@ async def _issued_by_an_earlier_release(client, auth, session, item_id: str) -> 
     row.state = {**row.state, "line_items": lines}
     await session.commit()
     return ship
+
+
+async def _printed_by_an_earlier_release(session, auth, entity_id: str, item_id: str) -> dict:
+    """The first line as an earlier release printed it: every code read from the item."""
+    from celerp.services.shipping import customs_backfill
+
+    session.expire_all()
+    line = dict((await session.get(Projection, (auth["company_id"], entity_id))).state["line_items"][0])
+    customs_backfill(line, (await session.get(Projection, (auth["company_id"], item_id))).state)
+    return line
 
 
 async def _start(session) -> None:
@@ -210,7 +223,7 @@ async def test_startup_freeze_keeps_printed_codes_and_is_idempotent(client, auth
     await _reset_marker(session)
     item_id = await _item(client, auth)
     ship = await _issued_by_an_earlier_release(client, auth, session, item_id)
-    printed = (await _shared_lines(session, auth, ship))[0]["hs_code"]
+    printed = (await _printed_by_an_earlier_release(session, auth, ship, item_id))["hs_code"]
     assert printed == "1234"
 
     await _start(session)

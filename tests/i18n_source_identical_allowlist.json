@@ -69,7 +69,9 @@
     "notice.tax_seed.my-sst-6.title",
     "notice.tax_seed.my-sst-6.body",
     "th.compound",
-    "settings.value_must_be_yes_or_no"
+    "settings.value_must_be_yes_or_no",
+    "notice.customs_freeze.title",
+    "notice.customs_freeze.body"
   ],
   "ar": [
     "account.email_placeholder",
@@ -129,7 +131,9 @@
     "notice.tax_seed.my-sst-6.title",
     "notice.tax_seed.my-sst-6.body",
     "th.compound",
-    "settings.value_must_be_yes_or_no"
+    "settings.value_must_be_yes_or_no",
+    "notice.customs_freeze.title",
+    "notice.customs_freeze.body"
   ],
   "de": [
     "acct.source_system",
@@ -260,7 +264,9 @@
     "notice.tax_seed.my-sst-6.title",
     "notice.tax_seed.my-sst-6.body",
     "th.compound",
-    "settings.value_must_be_yes_or_no"
+    "settings.value_must_be_yes_or_no",
+    "notice.customs_freeze.title",
+    "notice.customs_freeze.body"
   ],
   "es": [
     "account.plan",
@@ -364,7 +370,9 @@
     "notice.tax_seed.my-sst-6.title",
     "notice.tax_seed.my-sst-6.body",
     "th.compound",
-    "settings.value_must_be_yes_or_no"
+    "settings.value_must_be_yes_or_no",
+    "notice.customs_freeze.title",
+    "notice.customs_freeze.body"
   ],
   "fr": [
     "acct.tab_journal",
@@ -509,7 +517,9 @@
     "notice.tax_seed.my-sst-6.title",
     "notice.tax_seed.my-sst-6.body",
     "th.compound",
-    "settings.value_must_be_yes_or_no"
+    "settings.value_must_be_yes_or_no",
+    "notice.customs_freeze.title",
+    "notice.customs_freeze.body"
   ],
   "id": [
     "acct.source_manual",
@@ -638,7 +648,9 @@
     "notice.tax_seed.my-sst-6.title",
     "notice.tax_seed.my-sst-6.body",
     "th.compound",
-    "settings.value_must_be_yes_or_no"
+    "settings.value_must_be_yes_or_no",
+    "notice.customs_freeze.title",
+    "notice.customs_freeze.body"
   ],
   "it": [
     "attr.volume_l",
@@ -739,7 +751,9 @@
     "notice.tax_seed.my-sst-6.title",
     "notice.tax_seed.my-sst-6.body",
     "th.compound",
-    "settings.value_must_be_yes_or_no"
+    "settings.value_must_be_yes_or_no",
+    "notice.customs_freeze.title",
+    "notice.customs_freeze.body"
   ],
   "ja": [
     "account.email_placeholder",
@@ -809,7 +823,9 @@
     "notice.tax_seed.my-sst-6.title",
     "notice.tax_seed.my-sst-6.body",
     "th.compound",
-    "settings.value_must_be_yes_or_no"
+    "settings.value_must_be_yes_or_no",
+    "notice.customs_freeze.title",
+    "notice.customs_freeze.body"
   ],
   "pt": [
     "acct.source_manual",
@@ -924,7 +940,9 @@
     "notice.tax_seed.my-sst-6.title",
     "notice.tax_seed.my-sst-6.body",
     "th.compound",
-    "settings.value_must_be_yes_or_no"
+    "settings.value_must_be_yes_or_no",
+    "notice.customs_freeze.title",
+    "notice.customs_freeze.body"
   ],
   "th": [
     "account.email_placeholder",
@@ -992,7 +1010,9 @@
     "notice.tax_seed.my-sst-6.title",
     "notice.tax_seed.my-sst-6.body",
     "th.compound",
-    "settings.value_must_be_yes_or_no"
+    "settings.value_must_be_yes_or_no",
+    "notice.customs_freeze.title",
+    "notice.customs_freeze.body"
   ],
   "vi": [
     "btn.u00d7",
@@ -1064,6 +1084,8 @@
     "notice.tax_seed.my-sst-6.title",
     "notice.tax_seed.my-sst-6.body",
     "th.compound",
-    "settings.value_must_be_yes_or_no"
+    "settings.value_must_be_yes_or_no",
+    "notice.customs_freeze.title",
+    "notice.customs_freeze.body"
   ]
 }

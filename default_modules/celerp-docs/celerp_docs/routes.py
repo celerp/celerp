@@ -77,7 +77,7 @@ from celerp.services.list_behavior import (
     DRAFT, FINALIZED, CLOSED, VOID, DEFAULT_LIST_TYPE, LIST_TYPES, SCAN_RUNS_FIELD, SUPPLIER_DOC_TYPES, ScanBehavior,
     behavior, scan_behavior, terminal_action, is_money_list,
 )
-from celerp.services.shipping import INCOTERMS_2020, REASONS_FOR_EXPORT
+from celerp.services.shipping import INCOTERMS_2020, REASONS_FOR_EXPORT, customs_backfill
 from celerp.schemas.numbers import FiniteFloat
 from ui.i18n import doc_type_label, t
 
@@ -9220,6 +9220,8 @@ async def finalize_list_record(entity_id: str, company_id: str, user, session: A
         data["line_items"] = lines
     elif milestone:
         data[milestone] = now
+    if behavior(lt).customs:
+        data["line_items"] = await freeze_customs_lines(session, company_id, state.get("line_items") or [])
     entry = await _emit_list(session, company_id, entity_id, "list.finalized", data, user)
     if commit:
         await session.commit()
@@ -9575,7 +9577,8 @@ async def import_list(
 
     entry = await emit_event(
         session, company_id=company_id, entity_id=body.entity_id, entity_type="list",
-        event_type="list.created", data=body.data, actor_id=user.id, location_id=None,
+        event_type="list.created", data=await _issued_import_data(session, company_id, body.data),
+        actor_id=user.id, location_id=None,
         source=body.source, idempotency_key=body.idempotency_key,
         metadata_={"request": import_digest(body.entity_id, body.data),
                    **({"source_ts": body.source_ts} if body.source_ts else {})},
@@ -9692,7 +9695,8 @@ async def batch_import_lists(
             await _assert_import_number_free(session, company_id, "list", rec.data)
             entry = await emit_event(
                 session, company_id=company_id, entity_id=rec.entity_id, entity_type="list",
-                event_type="list.created", data=rec.data, actor_id=user.id, location_id=None,
+                event_type="list.created", data=await _issued_import_data(session, company_id, rec.data),
+                actor_id=user.id, location_id=None,
                 source=rec.source, idempotency_key=rec.idempotency_key,
                 metadata_={"request": import_digest(rec.entity_id, rec.data),
                            **({"source_ts": rec.source_ts} if rec.source_ts else {})},
@@ -12181,6 +12185,29 @@ def _locked_manifest_failure(code: str, item: Projection | None, lines: list[dic
 _AUDIT_IDENTITY_FIELDS = ("sku", "name", "barcode")
 
 
+async def freeze_customs_lines(session: AsyncSession, company_id: str, lines: list[dict]) -> list[dict]:
+    """Copies of ``lines`` with each linked line's customs codes (HS code, country of origin)
+    filled from its item where the line has none. An issued customs document keeps these, so a
+    later change to the item never reaches what was already issued."""
+    frozen = []
+    for line in lines or []:
+        line = dict(line)
+        key = line.get("entity_id") or line.get("item_id")
+        item = await session.get(Projection, {"company_id": company_id, "entity_id": key}) if key else None
+        if item is not None and item.entity_type == "item":
+            customs_backfill(line, item.state or {})
+        frozen.append(line)
+    return frozen
+
+
+async def _issued_import_data(session: AsyncSession, company_id: str, data: dict) -> dict:
+    """An imported list as it is stored: an issued customs list keeps its items' codes, as Issue
+    would have given it. A draft takes them at Issue."""
+    if (data.get("status") or DRAFT) == DRAFT or not behavior(data.get("list_type") or DEFAULT_LIST_TYPE).customs:
+        return data
+    return {**data, "line_items": await freeze_customs_lines(session, company_id, data.get("line_items") or [])}
+
+
 async def _lock_audit_lines(session: AsyncSession, company_id: str, lines: list[dict],
                             *, keep_unlinked_on_hand: bool) -> None:
     """In place: refresh each linked line's identity from its item and freeze its on-hand, so the
@@ -13402,6 +13429,8 @@ async def change_list_type(
         lines = [dict(l) for l in (state.get("line_items") or [])]
         await _lock_audit_lines(session, company_id, lines, keep_unlinked_on_hand=True)
         fields["line_items"] = lines
+    elif behavior(new_type).customs and status == FINALIZED:
+        fields["line_items"] = await freeze_customs_lines(session, company_id, state.get("line_items") or [])
     await _set_list_fields(session, company_id, entity_id, user, fields)
     await session.commit()
     return {"ok": True, "list_type": new_type}

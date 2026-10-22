@@ -63,11 +63,15 @@ def customs_backfill(line: dict, item_state: dict) -> None:
     """Fill a line's customs fields from its catalog item when the line lacks them.
 
     The item is the durable home of HS code / country of origin; a line only
-    overrides it. Used by both print-enrichment paths (UI and share view).
+    overrides it. A draft's printout and share view read them from the item;
+    Issue saves them on the lines (celerp-docs), so an issued document keeps them.
+    ``item_state`` is the stored item or its flattened read: a field the item has no
+    column for (country of origin) is stored in its attributes.
     """
+    attributes = item_state.get("attributes") or {}
     for key in ("hs_code", "country_of_origin"):
         if not line.get(key):
-            v = item_state.get(key)
+            v = item_state.get(key) or attributes.get(key)
             if v:
                 line[key] = v
 

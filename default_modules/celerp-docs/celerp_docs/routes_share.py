@@ -42,6 +42,7 @@ from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.models.share import DocShareToken, is_active as share_is_active
 from celerp.services.auth import get_current_company_id, get_current_user
+from celerp.services.list_behavior import DRAFT
 from celerp.services.money import round_money, to_decimal, to_stored_float
 from celerp.services.permissions import require_permission
 from celerp.services.outbound_url import validate_public_base_url
@@ -577,6 +578,8 @@ async def _enrich_share_lines(session: AsyncSession, company_id, state: dict) ->
     units = settings.get("units") or DEFAULT_UNITS
     umap = build_unit_map(units)
     is_shipping = state.get("list_type") == SHIPPING_LIST_TYPE
+    # Issue saves the customs codes on the lines; only a draft still reads them from the item.
+    is_draft = state.get("status") == DRAFT
     for li in state.get("line_items") or []:
         eid = li.get("entity_id") or li.get("item_id")
         if not eid:
@@ -591,7 +594,8 @@ async def _enrich_share_lines(session: AsyncSession, company_id, state: dict) ->
         meta = item_measure_meta(irow.state or {}, umap)
         li["pieces"], li["weight"], li["weight_unit"], _, _ = resolve_line_measures(li, item_meta=meta)
         if is_shipping:
-            customs_backfill(li, irow.state or {})
+            if is_draft:
+                customs_backfill(li, irow.state or {})
             li["gross_weight"], li["gross_weight_unit"] = line_gross_weight(
                 li, irow.state or {}, bool(meta.get("qty_is_weight")))
     return ident_mode
