@@ -21,6 +21,8 @@ import traceback
 import zipfile
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
+from datetime import datetime
+from decimal import Decimal
 from functools import partial
 from pathlib import Path
 from typing import IO
@@ -49,6 +51,9 @@ MAX_RATIO = 100
 MAX_LINE = 64_000_000  # characters of the columns kept from one row
 MAX_MANIFEST = 1024 ** 2  # Odoo's is a few kilobytes
 ID_DIGITS = 19  # the most a PostgreSQL bigint id writes
+# The largest amount or quantity read, as a power of ten: no book holds one larger, and one
+# larger cannot be carried to the cent in Decimal's 28 digits.
+MAX_MAGNITUDE = 20
 # What the rows read may take of the server's memory, in bytes, counted as Python holds them:
 # each row a tuple of its kept values, each distinct value a string held once in its table, at
 # its own size (one, two or four bytes a character, by its widest one, and its header).
@@ -106,6 +111,37 @@ _ESCAPE = re.compile(r"\\(?:([0-7]{1,3})|x([0-9a-fA-F]{1,2})|(.))")
 _ESCAPED = {"b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t", "v": "\v"}
 
 
+def _id(value: str) -> bool:
+    return value.isascii() and value.isdigit() and len(value) <= ID_DIGITS
+
+
+_PLAIN = re.compile(rf"-?\d{{1,{MAX_MAGNITUDE}}}(?:\.\d+)?").fullmatch  # how most numbers are written
+
+
+def _number(value: str) -> bool:
+    """A finite number below MAX_MAGNITUDE, as PostgreSQL writes a numeric or a float."""
+    if _PLAIN(value):
+        return True
+    try:
+        number = Decimal(value)
+    except ArithmeticError:
+        return False
+    return number.is_finite() and number.adjusted() < MAX_MAGNITUDE
+
+
+def _date(value: str) -> bool:
+    """A date, or a date and time, as PostgreSQL writes one."""
+    try:
+        datetime.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
+
+
+# What each kind of column holds when the database wrote it.
+KINDS: dict[str, Callable[[str], bool]] = {"id": _id, "number": _number, "date": _date}
+
+
 def _unescape(match: re.Match) -> str:
     octal, hexa, char = match.groups()
     if octal:
@@ -143,9 +179,9 @@ def _intact(error: type[Exception] = ScanError) -> Iterator[None]:
     raise too_large(error)
 
 
-def freed(exc: MemoryError) -> None:
-    """Free what the steps that ran out of memory held, so the refusal (which may read its
-    language's messages) is built with that memory back. The caller raises the refusal once
+def freed(exc: BaseException) -> None:
+    """Free what the steps that failed held (running out of memory, or on a damaged value), so
+    the refusal (which may read its language's messages) is built with that memory back. The caller raises the refusal once
     out of its `except` block, so the refusal does not carry the failure along with it."""
     traceback.clear_frames(exc.__traceback__)
 
@@ -351,7 +387,7 @@ class Backup:
     def tables(self, names: Iterable[str], columns: frozenset[str],
                where: Mapping[str, Callable[[Row], bool]] | None = None,
                required: Iterable[str] = (), capped: Mapping[str, int] | None = None,
-               may_leave_out: Iterable[str] = ()) -> dict[str, list[Row]]:
+               may_leave_out: Iterable[str] = (), kinds: Mapping[str, str] | None = None) -> dict[str, list[Row]]:
         """The rows of each named table the dump holds, in dump order, with only the named
         columns, and of a table in `where` only the rows its test keeps. A table the dump does
         not hold (its module is not installed) is absent. A value of a `capped` column longer
@@ -364,8 +400,10 @@ class Backup:
         much, when the rows kept, with what is built from them (BUILT_BYTES), would take more
         than MAX_HELD of memory, or when the dump is cut short or damaged: it does not unpack,
         has no closing line, a table's data never ends or never starts, a row has more or fewer
-        fields than its table, or a `required` table (one an installed module makes) is missing."""
+        fields than its table, a kept column of a kind in `kinds` (column -> a key of KINDS) holds
+        a value not of that kind, or a `required` table (one an installed module makes) is missing."""
         wanted, where, capped, may_leave_out = set(names) | set(required), where or {}, capped or {}, set(may_leave_out)
+        kinds = kinds or {}
         self.left_out: dict[str, list[str]] = {}
         out: dict[str, list[Row]] = {}
         made: set[str] = set()
@@ -387,7 +425,7 @@ class Backup:
                     if len(values) != width or not ended:
                         raise ScanError(t(DAMAGED))
                     if over:
-                        if copying not in may_leave_out or not (values[0].isdigit() and len(values[0]) <= ID_DIGITS):
+                        if copying not in may_leave_out or not _id(values[0]):
                             raise too_long()
                         self.left_out.setdefault(copying, []).append(values[0])
                         continue
@@ -400,6 +438,9 @@ class Backup:
                         if len(values) != width or not line.endswith("\n"):
                             raise ScanError(t(DAMAGED))
                         fields = [_field(values[i]) if len(values[i]) <= limit else None for i, limit in zip(kept, limits)]
+                        for n, valid in checked:
+                            if fields[n] is not None and not valid(fields[n]):
+                                raise ScanError(t(DAMAGED))
                         if keep is not None and not keep(shape(fields)):
                             continue
                         self.hold(row_bytes + sum(map(sys.getsizeof, {f for f in fields if f is not None and f not in seen})))
@@ -414,6 +455,7 @@ class Backup:
                     if copying in wanted:
                         header = [c.strip().strip('"') for c in match.group(2).split(",")]
                         width, kept = len(header), [i for i, name in enumerate(header) if name in columns]
+                        checked = [(n, KINDS[kinds[header[i]]]) for n, i in enumerate(kept) if header[i] in kinds]
                         limits = [capped.get(header[i], math.inf) for i in kept]
                         shape = type("Row", (Row,), {"__slots__": (), "index": {header[i]: n for n, i in enumerate(kept)}})
                         keep, seen = where.get(copying), {}

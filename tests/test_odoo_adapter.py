@@ -315,6 +315,120 @@ async def test_a_manifest_without_the_modules_is_refused_as_a_damaged_odoo_backu
     assert r.json()["detail"] == t("migration.err_odoo_dump_damaged", "en")
 
 
+def _damage(tables: build.Tables, table: str, column: str, value: str | None, row_id: int | None = None) -> None:
+    """`value` written into `column` of the first row of `table`, or of the row with `row_id`."""
+    columns, rows = tables.rows[table]
+    row = next(r for r in rows if row_id is None or r[columns.index("id")] == row_id)
+    row[columns.index(column)] = value
+
+
+_DEEP_NAME = '{"en_US": ' * 20_000 + '"x"' + "}" * 20_000  # past the JSON parser's depth, within the size checks
+DAMAGED_FIELDS = {
+    "debit not a number": ("account_move_line", "debit", "not-a-number", None),
+    "inline file not hex": ("ir_attachment", "db_datas", "\\xGG", 9),
+    "debit NaN": ("account_move_line", "debit", "NaN", None),
+    "debit past any amount": ("account_move_line", "debit", "1E+999999", None),
+    "entry date not a day": ("account_move", "date", "2024-13-45", None),
+    "entry without a date": ("account_move", "date", None, None),
+    "contact id not an id": ("res_partner", "id", "abc", 7),
+    "line id not an id": ("account_move_line", "id", "x1", None),
+    "unit ratio of zero": ("uom_uom", "factor", "0", None),
+    "unit rounding of zero": ("uom_uom", "rounding", "0", None),
+    "sale price infinite": ("product_template", "list_price", "Infinity", None),
+    "account name nested too deep": ("account_account", "name", _DEEP_NAME, 1),
+    "stock quantity not a number": ("stock_quant", "quantity", "lots", None),
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", list(DAMAGED_FIELDS))
+async def test_a_field_that_does_not_convert_refuses_the_backup_as_damaged(client, monkeypatch, tmp_path, case):
+    """A value Odoo's database could not hold (a number that is not one, a day that is not one,
+    a missing date, an id that is not one, a unit with no ratio) is a damaged backup: the scan
+    refuses it with the reason, never fails, never reads it as something else, and keeps none of it."""
+    from celerp.config import settings
+    from celerp.importers.adapters.odoo.adapter import _books
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    tables = build.tables(17)
+    _damage(tables, *DAMAGED_FIELDS[case])
+    _books.cache_clear()
+    r = await scan_upload(client, build.backup(17, tables), name="harbour.zip", source="odoo")
+    assert r.status_code == 422, r.text[:300]
+    assert r.json()["detail"] == t("migration.err_odoo_dump_damaged", "en")
+    assert _books.cache_info().currsize == 0
+
+
+def _read_columns(version: int) -> dict[str, list[tuple[str, list]]]:
+    """Each column this reader keeps that the fixture fills at `version`: its tables and values."""
+    from celerp.importers.adapters.odoo.book import COLUMNS, TABLES
+
+    out: dict[str, list[tuple[str, list]]] = defaultdict(list)
+    for table, (columns, rows) in build.tables(version).rows.items():
+        if table in (*TABLES, "stock_lot", "stock_production_lot"):
+            for i, column in enumerate(columns):
+                if column in COLUMNS:
+                    out[column].append((table, [row[i] for row in rows if row[i] is not None]))
+    return out
+
+
+# Text columns whose values in the fixture happen to be digits.
+_DIGIT_TEXT = {"code"}
+
+
+@pytest.mark.parametrize("version", VERSIONS)
+def test_every_column_read_holding_numbers_or_dates_is_checked_as_it_is_read(version):
+    """A column added to the reader whose values are numbers or dates is checked with them, so a
+    damaged value in it is refused instead of failing the scan or being read as nonsense."""
+    from celerp.importers.adapters.odoo.book import COLUMN_KINDS
+
+    def parses(value, kind) -> bool:
+        try:
+            kind(str(value))
+        except (ArithmeticError, ValueError):
+            return False
+        return True
+
+    for column, filled in _read_columns(version).items():
+        values = [v for _, vs in filled for v in vs]
+        if values and column not in _DIGIT_TEXT and (all(parses(v, Decimal) for v in values)
+                                                     or all(parses(v, date.fromisoformat) for v in values)):
+            assert column in COLUMN_KINDS, column
+
+
+_NOT_OF_KIND = {"id": "x1", "number": "NaN", "date": "2024-13-45"}
+
+
+@pytest.mark.parametrize("version", (13, 17))
+@pytest.mark.parametrize("kind", list(_NOT_OF_KIND))
+def test_every_id_number_and_date_column_read_refuses_a_value_not_of_its_kind(tmp_path, version, kind):
+    """For each id, number and date column the reader keeps, a value not of its kind in every
+    table holding it refuses the backup as damaged before anything is imported, whether or not
+    the import goes on to use that value."""
+    from celerp.importers.adapters.odoo.book import COLUMN_KINDS
+
+    columns = [c for c in _read_columns(version) if COLUMN_KINDS.get(c) == kind]
+    assert columns
+    for column in columns:
+        tables = build.tables(version)
+        for table, (names, rows) in tables.rows.items():
+            if column in names:
+                for row in rows:
+                    row[names.index(column)] = _NOT_OF_KIND[kind]
+        with pytest.raises((ScanError, SourceRevisionError), match="incomplete or damaged"):
+            _adapter().inspect(_file(tmp_path, build.backup(version, tables), f"{column}.zip"))
+
+
+def test_a_value_is_read_as_its_kind_as_postgresql_writes_it():
+    from celerp.importers.adapters.odoo.dump import KINDS
+
+    assert all(map(KINDS["id"], ("1", "42", "9" * 19))) and not any(map(KINDS["id"], ("-1", "1.0", "x", "\u0661", "9" * 20)))
+    assert all(map(KINDS["number"], ("0", "-12.50", "345", "1e-05", "0.333333333333333", "1" + "0" * 19)))
+    assert not any(map(KINDS["number"], ("NaN", "Infinity", "-Infinity", "1E+999999", "1" + "0" * 20, "", "x")))
+    assert all(map(KINDS["date"], ("2024-01-05", "2024-01-10 09:00:00", "2024-01-10 09:00:00.123456")))
+    assert not any(map(KINDS["date"], ("2024-13-45", "", "05/01/2024", "x")))
+
+
 def _corrupt(data: bytes, at: bytes, offset: int = 0, garbage: bytes = b"\xff") -> bytes:
     """`data` with `garbage` written where `at` starts, `offset` bytes in."""
     start = data.index(at) + offset

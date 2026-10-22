@@ -27,7 +27,7 @@ from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
 
 from celerp.importers.adapters.attachment_files import MAX_ATTACHMENT_BYTES
-from celerp.importers.adapters.base import ScanError
+from celerp.importers.adapters.base import ScanError, SourceRevisionError
 from celerp.importers.adapters.exports import steps
 from celerp.importers.adapters.exports.book import (
     PARTY_SIGN, ZERO, Account, Book, Contact, DocLine, Document, GLJournal, GLLine, Item, LineTax, StockHolding,
@@ -35,6 +35,7 @@ from celerp.importers.adapters.exports.book import (
 )
 from celerp.importers.adapters.odoo.dump import (
     DAMAGED, DOCUMENT_BYTES, DOCUMENT_LINE_BYTES, HOLDING_BYTES, MONTH_ACCOUNT_BYTES, STOCK_MOVE_BYTES, Backup, Row,
+    freed,
 )
 from celerp.services.money import allocate_pro_rata, round_money
 from ui.i18n import t
@@ -129,7 +130,7 @@ COLUMNS = frozenset({
     "analytic_distribution", "account_type", "active", "amount", "amount_currency",
     "amount_residual", "amount_tax", "amount_total", "amount_type", "checksum", "city", "code",
     "commercial_partner_id", "company_id", "complete_name", "create_date", "credit", "credit_amount_currency", "credit_move_id", "currency_id", "customer_rank",
-    "date", "db_datas", "decimal_places", "debit", "debit_amount_currency", "debit_move_id", "default_code", "deprecated", "description", "description_sale",
+    "date", "db_datas", "debit", "debit_amount_currency", "debit_move_id", "default_code", "deprecated", "description", "description_sale",
     "discount", "display_type", "document_type", "email", "exclude_from_invoice_tab", "id",
     "income_currency_exchange_account_id", "internal_group", "invoice_date_due", "invoice_tax_id",
     "is_internal_transfer", "is_rounding_line", "list_price", "location_dest_id", "location_id", "lot_id", "mimetype",
@@ -141,6 +142,17 @@ COLUMNS = frozenset({
     "store_fname", "street", "street2", "supplier_rank", "tax_id", "tax_line_id", "type", "usage", "user_type_id",
     "url", "value", "vat", "zip", "factor", "rounding", "uom_id", "product_uom_id", "quantity_product_uom",
 })
+# Of those, the ones holding an id, a number or a date. Backup.tables refuses a dump with any
+# other value in one, whether or not the import goes on to use that value.
+IDS = frozenset(c for c in COLUMNS if c == "id" or c.endswith("_id")) | {"res_id"}
+NUMBERS = frozenset({
+    "amount", "amount_currency", "amount_residual", "amount_tax", "amount_total", "credit", "credit_amount_currency",
+    "customer_rank", "debit", "debit_amount_currency", "discount", "factor", "list_price", "price_subtotal",
+    "price_total", "price_unit", "product_qty", "product_uom_qty", "qty_done", "quantity", "quantity_product_uom",
+    "rounding", "sequence", "supplier_rank", "value",
+})
+DATES = frozenset({"create_date", "date", "invoice_date_due"})
+COLUMN_KINDS = {**dict.fromkeys(IDS, "id"), **dict.fromkeys(NUMBERS, "number"), **dict.fromkeys(DATES, "date")}
 
 
 def required_tables(modules: frozenset[str], version: int) -> set[str]:
@@ -245,7 +257,8 @@ class _Reader:
         # import takes is read as absent, and an attachment row too long to read is left out alone.
         self.rows = backup.tables((*TABLES, backup.lot_table), COLUMNS, KEPT_ROWS,
                                   required_tables(backup.modules, backup.version),
-                                  capped={"db_datas": 3 + 2 * MAX_ATTACHMENT_BYTES}, may_leave_out=("ir_attachment",))
+                                  capped={"db_datas": 3 + 2 * MAX_ATTACHMENT_BYTES}, may_leave_out=("ir_attachment",),
+                                  kinds=COLUMN_KINDS)
         self.company, companies = self._company(company)
         currencies = {r["id"]: r["name"] for r in self.rows.get("res_currency", [])}
         self.currency = lambda i: currencies.get(i or "", "")
@@ -378,6 +391,9 @@ class _Reader:
                 _true(r["active"]) and _true(template["active"]))
         self.products = {r["id"]: codes[r["id"]] for r in products}
         self.uoms = {r["id"]: r for r in self.rows.get("uom_uom", [])}
+        # Odoo requires a unit's ratio and rounding above zero; the ratio divides a quantity.
+        if any(_dec(r.get(c)) <= 0 for r in self.uoms.values() for c in ("factor", "rounding")):
+            raise ValueError("unit of measure")
         self.units = {r["id"]: self.uoms.get(templates[r["product_tmpl_id"]].get("uom_id")) for r in products}
 
     def read_taxes(self) -> None:
@@ -420,14 +436,11 @@ class _Reader:
                 accounts: dict[str, tuple[str, str]]) -> dict[str, str]:
         """Tracking category -> option of a line's analytic distribution, account and tags."""
         options: dict[str, list[str]] = defaultdict(list)
-        try:
-            for keys, percent in json.loads(distribution or "{}").items():
-                share = format(Decimal(str(percent)).normalize(), "f")
-                for i in (k for k in keys.split(",") if k in accounts):
-                    name, plan = accounts[i]
-                    options[plan].append(name if Decimal(share) == 100 else f"{name} {share}%")
-        except (ValueError, AttributeError, ArithmeticError) as exc:
-            raise ScanError(t(DAMAGED)) from exc
+        for keys, percent in json.loads(distribution or "{}").items():
+            share = format(Decimal(str(percent)).normalize(), "f")
+            for i in (k for k in keys.split(",") if k in accounts):
+                name, plan = accounts[i]
+                options[plan].append(name if Decimal(share) == 100 else f"{name} {share}%")
         if account in accounts:
             options[ANALYTIC_ACCOUNT].append(accounts[account][0])
         options[ANALYTIC_TAG] += tags
@@ -920,8 +933,24 @@ class _Reader:
         book.object_counts["Attachment"] = len(self.out.attachments)
 
 
+# What converting a damaged field raises: a number that is not one (decimal's ArithmeticError),
+# a date or JSON that does not parse, JSON of another shape than Odoo writes, a reference to a
+# row that is not there, a NULL where Odoo requires a value, or a name nested past the parser's depth.
+CONVERSION_ERRORS = (ArithmeticError, ValueError, TypeError, KeyError, AttributeError, RecursionError)
+
+
 def read_odoo(backup: Backup, company: str | None = None) -> OdooBook:
-    """The books of one company in the backup: `company` by name, else the oldest with books."""
+    """The books of one company in the backup: `company` by name, else the oldest with books.
+    A value that does not convert to what its column holds (CONVERSION_ERRORS) refuses the
+    backup as damaged, and nothing read from it is kept."""
+    try:
+        return _read(backup, company)
+    except CONVERSION_ERRORS as exc:
+        freed(exc)
+    raise SourceRevisionError(t(DAMAGED))
+
+
+def _read(backup: Backup, company: str | None) -> OdooBook:
     reader = _Reader(backup, company)
     book = reader.book
     reader.read_chart()
