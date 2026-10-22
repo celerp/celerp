@@ -594,6 +594,80 @@ def test_rows_needing_more_memory_than_the_budget_are_refused_with_what_is_held_
     assert peak < 16 * MI, f"held {peak / MI:.0f} MiB"
 
 
+def _named(names: list[str]) -> bytes:
+    """The fixture's backup with a contact more for each of `names`."""
+    tables = build.tables(17)
+    columns, rows = tables.rows["res_partner"]
+    for i, name in enumerate(names):
+        row = dict.fromkeys(columns)
+        row.update(id=900000 + i, name=name, active=True)
+        rows.append([row[c] for c in columns])
+    return build.backup(17, tables)
+
+
+@pytest.mark.parametrize("first", [0x61, 0x0E01, 0x1F600], ids=["latin", "thai", "emoji"])
+def test_the_budget_counts_text_as_python_holds_it(tmp_path, monkeypatch, first):
+    """Python holds a string at one, two or four bytes a character, by its widest one: Thai at
+    two, an emoji at four. 30 contacts each named with a quarter million characters of their
+    own, under a 10 MiB budget: in Latin letters the names hold 7.5 MiB and are read; in Thai
+    or emoji they hold 15 or 30 MiB and are refused, never held past the budget."""
+    from celerp.importers.adapters.odoo import book, dump
+
+    monkeypatch.setattr(dump, "MAX_HELD", 10 * MI)
+    rng = random.Random(7)
+    path = tmp_path / "named.zip"
+    path.write_bytes(_named(["".join(chr(first + rng.randrange(26)) for _ in range(MI // 4)) for _ in range(30)]))
+    tracemalloc.start()
+    try:
+        with dump.Backup(path) as backup:
+            read = lambda: backup.tables((*book.TABLES, backup.lot_table), book.COLUMNS, book.KEPT_ROWS,  # noqa: E731
+                                         book.required_tables(backup.modules, backup.version))
+            if first == 0x61:
+                assert len(read()["res_partner"]) > 30
+            else:
+                with pytest.raises(ScanError, match="too large"):
+                    read()
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    assert peak < 1.5 * dump.MAX_HELD, f"held {peak / MI:.0f} MiB"
+
+
+def test_a_large_book_kept_in_thai_reads_with_twice_the_room_it_needs(tmp_path, monkeypatch):
+    """A large company's decade, a million journal items with 20,000 contacts and 10,000
+    products, every name in Thai (two bytes a character as Python holds it), fits in half the
+    budget. In proportion: a fiftieth of that book under a fiftieth of half the budget."""
+    from celerp.importers.adapters.odoo import book, dump
+
+    def thai(lines: int) -> list:
+        amounts = [D(f"{k % 9973 + 1}.{k % 100:02d}") for k in range(lines // 2)]
+        booked = [build.Line(account, sign * a, name=f"โอนเงินระหว่างบัญชี {k} จาก {len(amounts)}")
+                  for k, a in enumerate(amounts) for account, sign in ((1, 1), (14, -1))]
+        return [build.Move(25, "MISC/2024/05/0001", "entry", "posted", "2024-05-01", booked, ref="โอนเงินจำนวนมาก")]
+
+    monkeypatch.setattr(build, "_bulk", thai)
+    tables = build.tables(17, bulk_lines=20_000)
+    columns, rows = tables.rows["res_partner"]
+    for i in range(400):
+        row = dict.fromkeys(columns)
+        row.update(id=500000 + i, company_id=1, name=f"บริษัท สยามการค้า จำกัด สาขา {i}", city="กรุงเทพมหานคร",
+                   street=f"{i} ถนนสุขุมวิท แขวงคลองเตย", commercial_partner_id=500000 + i, active=True)
+        rows.append([row[c] for c in columns])
+    columns, rows = tables.rows["product_template"]
+    for i in range(200):
+        row = dict(zip(columns, rows[0]))
+        row.update(id=500000 + i, name=json.dumps({"en_US": f"ข้าวหอมมะลิ ถุง 5 กิโลกรัม รุ่น {i}"}, ensure_ascii=False),
+                   description_sale=json.dumps({"en_US": f"ข้าวหอมมะลิคุณภาพดี สำหรับขาย รุ่น {i}"}, ensure_ascii=False))
+        rows.append([row[c] for c in columns])
+    monkeypatch.setattr(dump, "MAX_HELD", dump.MAX_HELD // 2 // 50)
+    path = tmp_path / "thai.zip"
+    path.write_bytes(build.backup(17, tables))
+    with dump.Backup(path) as backup:
+        read = backup.tables((*book.TABLES, backup.lot_table), book.COLUMNS, book.KEPT_ROWS,
+                             book.required_tables(backup.modules, backup.version))
+    assert len(read["account_move_line"]) > 20_000 and len(read["res_partner"]) > 400
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("stage", ["the dump", "the books"])
 async def test_running_out_of_memory_while_reading_is_refused_as_too_large(client, monkeypatch, tmp_path, stage):

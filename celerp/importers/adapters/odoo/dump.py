@@ -16,6 +16,7 @@ import io
 import json
 import math
 import re
+import sys
 import zipfile
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
@@ -48,9 +49,10 @@ MAX_LINE = 64_000_000  # characters of the columns kept from one row
 MAX_MANIFEST = 1024 ** 2  # Odoo's is a few kilobytes
 ID_DIGITS = 19  # the most a PostgreSQL bigint id writes
 # What the rows read may take of the server's memory, in bytes, counted as Python holds them:
-# each row a tuple of its kept values, each distinct value a string held once in its table.
+# each row a tuple of its kept values, each distinct value a string held once in its table, at
+# its own size (one, two or four bytes a character, by its widest one, and its header).
 MAX_HELD = 1024 ** 3
-ROW_BYTES, FIELD_BYTES, VALUE_BYTES = 64, 8, 100
+ROW_BYTES, FIELD_BYTES = 64, 8
 PASSWORD = 0x1  # the zip flag of a file packed with a password
 OLDEST, NEWEST = 13, 17
 LANGUAGE = "en_US"
@@ -335,7 +337,7 @@ class Backup:
                         fields = [_field(values[i]) if len(values[i]) <= limit else None for i, limit in zip(kept, limits)]
                         if keep is not None and not keep(shape(fields)):
                             continue
-                        held += row_bytes + sum(VALUE_BYTES + len(f) for f in fields if f is not None and f not in seen)
+                        held += row_bytes + sum(map(sys.getsizeof, {f for f in fields if f is not None and f not in seen}))
                         if held > MAX_HELD:
                             raise too_large()
                         rows.append(shape(map(seen.setdefault, fields, fields)))
