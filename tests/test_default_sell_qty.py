@@ -26,6 +26,7 @@ from test_cost_restatement import _item, _merge, _state
 from test_inventory_transform import _transform_payload
 from test_receipt_accounting import _doc, _finalize, _parcels, _receive, _return
 from test_supplier_credit_note import _trial_balance
+from test_supplier_return_settles_bill import supplier_credits
 
 LOCALES = Path(__file__).resolve().parent.parent / "ui" / "locales"
 
@@ -522,6 +523,24 @@ async def _return_void_issue_again(client, session, auth, doc_type: str, doc: st
     await _bought_once(client, auth, doc_type, line, lot, 0.1)
 
 
+async def _pay(client, auth, doc: str, amount: float) -> None:
+    r = await client.post(f"/docs/{doc}/payment", headers=auth["headers"], json={
+        "amount": amount, "method": "cash", "payment_date": "2026-10-09", "bank_account": "1111"})
+    assert r.status_code == 200, r.text
+
+
+async def _sell(client, session, auth, item: str, qty: float) -> None:
+    r = await client.post("/docs", headers=auth["headers"], json={
+        "doc_type": "invoice", "contact_id": "customer:1", "line_items": [
+            {"item_id": item, "sku": await _sku(session, auth, item), "name": "Stone", "quantity": qty,
+             "unit": "carat", "unit_price": 30.0}]})
+    assert r.status_code == 200, r.text
+    invoice = r.json()["id"]
+    assert (await client.post(f"/docs/{invoice}/finalize", headers=auth["headers"])).status_code == 200
+    r = await client.post(f"/docs/{invoice}/fulfill-lines", headers=auth["headers"], json={"line_entity_ids": [item]})
+    assert r.status_code == 200, r.text
+
+
 def _moved(before: dict[str, float], after: dict[str, float]) -> dict[str, float]:
     return {code: round(after.get(code, 0) - before.get(code, 0), 2) for code in {*before, *after}
             if round(after.get(code, 0) - before.get(code, 0), 2)}
@@ -533,14 +552,14 @@ async def test_returning_voiding_and_issuing_again_books_only_what_arrived(clien
     before = await _trial_balance(client, auth)
     lot, line, doc = await _short_shipped(client, session, auth, doc_type)
     if paid:  # for what arrived, the usual state of a short-shipped bill
-        r = await client.post(f"/docs/{doc}/payment", headers=auth["headers"], json={
-            "amount": 1.0, "method": "cash", "payment_date": "2026-10-09", "bank_account": "1111"})
-        assert r.status_code == 200, r.text
+        await _pay(client, auth, doc, 1.0)
     await _return_void_issue_again(client, session, auth, doc_type, doc, line, lot)
     assert (await _set_carat_decimals(client, auth, 2)).status_code == 200
     route = _moved(before, await _trial_balance(client, auth))
     base = await _trial_balance(client, auth)
-    await _bought_once(client, auth, doc_type, line, lot, 0.1)
+    once = await _bought_once(client, auth, doc_type, line, lot, 0.1)
+    if paid:
+        await _pay(client, auth, once, 1.0)
     assert route == _moved(base, await _trial_balance(client, auth)), route
 
 
@@ -555,17 +574,7 @@ async def test_once_what_arrived_is_sold_receiving_the_rest_and_returning_it_fin
     assert ("Otherwise, receive the rest and send that back with Return Goods."
             in (await _set_carat_decimals(client, auth, 2)).json()["detail"]["message"])
     [arrived] = (await _state(session, auth, doc))["received_item_ids"]
-    r = await client.post("/docs", headers=auth["headers"], json={
-        "doc_type": "invoice", "contact_id": "customer:1", "line_items": [
-            {"item_id": arrived, "sku": await _sku(session, auth, arrived), "name": "Stone", "quantity": 0.1,
-             "unit": "carat", "unit_price": 30.0}]})
-    assert r.status_code == 200, r.text
-    invoice = r.json()["id"]
-    assert (await client.post(f"/docs/{invoice}/finalize", headers=auth["headers"])).status_code == 200
-    r = await client.post(f"/docs/{invoice}/fulfill-lines", headers=auth["headers"],
-                          json={"line_entity_ids": [arrived]})
-    assert r.status_code == 200, r.text
-    sold = _moved(before, await _trial_balance(client, auth))
+    await _sell(client, session, auth, arrived, 0.1)
     assert (await _return(client, auth, doc, arrived, 0.1)).status_code == 409  # sold, not on hand
 
     r = await _receive(client, auth, doc, {"po_line_index": 0, "item_id": lot, "quantity_received": 0.175})
@@ -573,8 +582,14 @@ async def test_once_what_arrived_is_sold_receiving_the_rest_and_returning_it_fin
     [rest] = [i for i in (await _state(session, auth, doc))["received_item_ids"] if i != arrived]
     assert (await _return(client, auth, doc, rest, 0.175)).status_code == 200
     assert (await _set_carat_decimals(client, auth, 2)).status_code == 200
-    assert _moved(before, await _trial_balance(client, auth)) == sold
+    route = _moved(before, await _trial_balance(client, auth))
     assert (await _state(session, auth, rest))["status"] == "disposed"
+
+    base = await _trial_balance(client, auth)
+    once = await _bought_once(client, auth, doc_type, line, lot, 0.1)
+    [bought] = (await _state(session, auth, once))["received_item_ids"]
+    await _sell(client, session, auth, bought, 0.1)
+    assert route == _moved(base, await _trial_balance(client, auth)), route
 
 
 async def test_voiding_a_supplier_credit_note_holds_the_goods_it_brings_back_to_their_unit(client, session, auth):
@@ -585,15 +600,12 @@ async def test_voiding_a_supplier_credit_note_holds_the_goods_it_brings_back_to_
     lot = await _lot(client, auth, qty=1)
     bill = await _bought_once(client, auth, "bill", {"item_id": lot, "sku": await _sku(session, auth, lot),
                                                      "name": "Stone", "unit": "carat", "unit_price": 10.0}, lot, 0.275)
-    r = await client.post(f"/docs/{bill}/payment", headers=auth["headers"], json={
-        "amount": 2.75, "method": "cash", "payment_date": "2026-10-09", "bank_account": "1111"})
-    assert r.status_code == 200, r.text
+    await _pay(client, auth, bill, 2.75)
     [arrived] = (await _state(session, auth, bill))["received_item_ids"]
     assert (await _return(client, auth, bill, arrived, 0.125)).status_code == 200
     [returned] = (await _state(session, auth, bill))["returned_items"]
     back = returned.get("returned_lot_id") or arrived
-    [note] = [d for d in (await _rows(session, auth)).values()
-              if (await _state(session, auth, d)).get("source_return")]
+    [note] = [n["id"] for n in await supplier_credits(session, auth, bill)]
     assert (await _set_carat_decimals(client, auth, 2)).status_code == 200
 
     r = await client.post(f"/docs/{note}/void", headers=auth["headers"], json={})
@@ -1236,12 +1248,13 @@ async def test_a_unit_items_are_weighed_in_cannot_be_removed(client, session, au
 @pytest.mark.parametrize("change", list(_CARAT_CHANGES))
 async def test_the_way_out_named_gives_the_items_another_unit_then_the_change_goes_through(
         client, session, auth, change):
-    lot = await _lot(client, auth, qty=3.5)
+    """Selling by gram takes the quantity from the lot's weight in grams."""
+    lot = await _lot(client, auth, qty=3.5, weight=0.7, weight_unit="gram")
     edit, _key = _CARAT_CHANGES[change]
     assert (await _put_units(client, auth, edit(await _units(client, auth)))).status_code == 422
     assert (await _patch(client, auth, lot, sell_by="gram")).status_code == 200
     assert (await _put_units(client, auth, edit(await _units(client, auth)))).status_code == 200
-    assert await _scanned(client, auth, await _sku(session, auth, lot)) == 3.5
+    assert await _scanned(client, auth, await _sku(session, auth, lot)) == 0.7
 
 
 @pytest.mark.parametrize("entity_type, doc_type, status", _STILL_MOVING)
@@ -1260,12 +1273,14 @@ async def test_a_history_document_line_never_blocks_removing_its_unit(client, se
 
 
 async def test_a_written_off_lot_never_blocks_a_units_change(client, session, auth):
+    assert (await _set_carat_decimals(client, auth, 3)).status_code == 200
     lot = await _lot(client, auth, qty=0.275)
     await emit_event(session, company_id=auth["company_id"], entity_id=lot, entity_type="item",
-                     event_type="item.written_off", data={"source_list_id": "list:w", "doc_number": "WO-1"},
+                     event_type="item.written_off", data={"account": "5900", "qty": 0.275, "unit_cost": 0.0, "cost_total": 0.0,
+                           "source_list_id": "list:w", "doc_number": "WO-1"},
                      actor_id=None, location_id=None, source="test", idempotency_key=str(uuid.uuid4()), metadata_={})
     await session.commit()
-    assert (await _set_carat_decimals(client, auth, 1)).status_code == 200
+    assert (await _set_carat_decimals(client, auth, 2)).status_code == 200
     assert (await _put_units(client, auth, _without_carat(await _units(client, auth)))).status_code == 200
 
 
