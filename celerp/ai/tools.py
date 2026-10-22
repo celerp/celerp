@@ -18,6 +18,7 @@ from fastapi.routing import APIRoute
 from celerp.modules.loader import loaded_modules
 from celerp.modules.registry import uses_module
 from celerp.services.permissions import role_has_permission
+from ui.i18n import current_lang
 
 
 # ---------------------------------------------------------------------------
@@ -394,7 +395,7 @@ async def execute_agent_capability(
                     url_path,
                     params=params,
                     json=body,
-                    headers={"Authorization": authorization},
+                    headers={"Authorization": authorization, "Accept-Language": current_lang()},
                     follow_redirects=False,
                 ),
                 timeout=CAPABILITY_TIMEOUT_S,

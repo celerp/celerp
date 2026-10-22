@@ -19,7 +19,7 @@ from ui.components.cloud_gate import (
     is_partner_managed,
     direct_price,
 )
-from ui.components.shell import base_shell
+from ui.components.shell import base_shell, load_error
 from ui.config import get_token as _token, get_role
 from ui.i18n import t, get_lang
 from ui.security import not_permitted_redirect
@@ -143,7 +143,7 @@ def setup_ui_routes(app) -> None:
             settings = (await api.get_company(token)).get("settings") or {}
         except APIError:
             return await base_shell(
-                Div(_load_error(t("ai.service_unavailable", lang), lang, href="/ai"), cls="ai-page"),
+                Div(load_error(t("ai.service_unavailable", lang), lang, href="/ai"), cls="ai-page"),
                 title="AI Assistant - Celerp", nav_active="ai", request=request,
             )
         if not role_has_permission(settings, get_role(request), "use_ai_assistant"):
@@ -155,7 +155,7 @@ def setup_ui_routes(app) -> None:
             status = {"unknown": True}
         if not isinstance(status, dict) or status.get("unknown") or status.get("disconnected"):
             return await base_shell(
-                Div(_load_error(t("ai.service_unavailable", lang), lang, href="/ai"), cls="ai-page"),
+                Div(load_error(t("ai.service_unavailable", lang), lang, href="/ai"), cls="ai-page"),
                 title="AI Assistant - Celerp", nav_active="ai", request=request,
             )
         has_cloud = not status.get("local") and status.get("tier") in ("cloud", "ai", "team")
@@ -184,7 +184,7 @@ def setup_ui_routes(app) -> None:
             except APIError as exc:
                 if exc.status == 404:
                     return RedirectResponse("/ai", status_code=302)
-                load_error = _load_error(
+                load_error = load_error(
                     t("ai.conversation_load_failed", lang), lang,
                     href=f"/ai?conversation={conversation_id}",
                 )
@@ -342,7 +342,8 @@ def setup_ui_routes(app) -> None:
         error = result.get("error")
         reply = (
             user_bubble,
-            _msg_bubble("ai", error or result.get("answer", ""), error=bool(error)),
+            _msg_bubble("ai", error or result.get("answer", ""), error=bool(error),
+                        help_pages=None if error else result.get("help_pages"), lang=lang),
             *groups,
             oob_id,
             oob_history,
@@ -522,7 +523,7 @@ def setup_ui_routes(app) -> None:
             session_token = get_session_token()
             result = await api.ai_conversations_list(token, session_token)
         except Exception:
-            return _load_error(
+            return load_error(
                 t("ai.conversations_load_failed", get_lang(request)), get_lang(request),
                 hx_get="/ai/conversations-list", target="#ai-history",
             )
@@ -556,7 +557,7 @@ def setup_ui_routes(app) -> None:
             session_token = get_session_token()
             result = await api.ai_memory_get(token, session_token)
         except Exception:
-            return _load_error(
+            return load_error(
                 t("ai.memory_load_failed", get_lang(request)), get_lang(request),
                 hx_get="/ai/memory-panel", target="#ai-memory-content",
             )
@@ -793,11 +794,28 @@ async def _usage_table(token: str, session_token: str) -> FT:
 # Components
 # ---------------------------------------------------------------------------
 
-def _msg_bubble(role: str, text: str, *, error: bool = False) -> FT:
+def _msg_bubble(role: str, text: str, *, error: bool = False, help_pages: list[str] | None = None,
+                lang: str = "en") -> FT:
     cls = "ai-msg ai-msg--user" if role == "user" else "ai-msg ai-msg--ai"
     if error:
         cls += " ai-msg--error"
-    return Div(text, cls=cls)
+    return Div(text, *_help_sources(help_pages, lang), cls=cls)
+
+
+def _help_sources(page_ids: list[str] | None, lang: str) -> list[FT]:
+    """The help pages an answer came from, or the note that none covers it. Nothing when
+    the answer did not search help, or when every page it read has since gone."""
+    if page_ids is None:
+        return []
+    if not page_ids:
+        return [P(t("ai.help_no_coverage", lang), cls="ai-msg__sources")]
+    from celerp.help.registry import get_index
+    pages = get_index().pages
+    links = [A(pages[i].title, href=f"/help/{i}") for i in page_ids if i in pages]
+    if not links:
+        return []
+    joined = [part for n, link in enumerate(links) for part in ((", ", link) if n else (link,))]
+    return [P(t("ai.help_sources", lang), " ", *joined, cls="ai-msg__sources")]
 
 
 def _failed_reply(user_bubble: FT, e: APIError, lang: str) -> tuple[FT, FT]:
@@ -809,19 +827,6 @@ def _failed_reply(user_bubble: FT, e: APIError, lang: str) -> tuple[FT, FT]:
     if e.status == 429:
         return user_bubble, _msg_bubble("ai", t("ai.busy", lang))
     return user_bubble, _msg_bubble("ai", _api_error_text(e), error=True)
-
-
-def _load_error(message: str, lang: str = "en", *, href: str | None = None,
-                hx_get: str | None = None, target: str | None = None) -> FT:
-    """Recoverable read failure. Empty-state copy is reserved for successful reads."""
-    if href:
-        retry: FT = A(t("btn.retry", lang), href=href, cls="btn btn--secondary btn--sm")
-    else:
-        retry = Button(
-            t("btn.retry", lang), type="button", cls="btn btn--secondary btn--sm",
-            hx_get=hx_get, hx_target=target, hx_swap="innerHTML",
-        )
-    return Div(P(message, cls="ai-load-error__text"), retry, cls="ai-load-error")
 
 
 def _api_error_code(e: APIError) -> str:
@@ -1537,7 +1542,8 @@ def _thread(messages: list[dict], jobs: list[dict], conversation_id: str, lang: 
             continue
         role = entry.get("role")
         text = entry.get("content") or (t("ai.attached_files", lang) if entry.get("file_ids") else "")
-        out.append(_msg_bubble("user" if role == "user" else "ai", text, error=bool(entry.get("error"))))
+        out.append(_msg_bubble("user" if role == "user" else "ai", text, error=bool(entry.get("error")),
+                               help_pages=entry.get("help_pages"), lang=lang))
         actions = entry.get("pending_actions") or []
         if actions:
             out.append(_action_group(conversation_id, str(entry.get("id", "")), actions, lang))

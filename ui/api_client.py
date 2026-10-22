@@ -1319,6 +1319,29 @@ async def global_search(token: str, q: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Help pages
+# ---------------------------------------------------------------------------
+
+async def help_search(token: str, q: str, module: str | None = None) -> dict:
+    """Help pages matching *q*, best first, each flagged for this company and role."""
+    params = {"q": q, **({"module": module} if module else {})}
+    async with _api_client(token) as c:
+        return _raise(await c.get("/help/search", params=params)).json()
+
+
+async def help_read(token: str, page_id: str) -> dict:
+    """One help page with its steps in the reader's language."""
+    async with _api_client(token) as c:
+        return _raise(await c.get(f"/help/page/{quote(page_id, safe='')}")).json()
+
+
+async def help_for_route(token: str, path: str) -> dict:
+    """The help pages that cover the screen at *path*."""
+    async with _api_client(token) as c:
+        return _raise(await c.get("/help/for-route", params={"path": path})).json()
+
+
+# ---------------------------------------------------------------------------
 # Items
 # ---------------------------------------------------------------------------
 

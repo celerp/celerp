@@ -12,8 +12,8 @@ from dataclasses import dataclass
 
 from celerp.help.registry import CORE, get_index
 from celerp.help.schema import HelpPage
-from celerp.modules.loader import is_core_folded
-from celerp.modules.registry import company_modules
+from celerp.modules.loader import is_core_folded, loaded_modules
+from celerp.modules.registry import uses_module
 from celerp.services.permissions import role_has_permission
 from ui.i18n import t
 
@@ -49,8 +49,11 @@ def _score(page: HelpPage, query: str, words: set[str], lang: str) -> int:
 
 
 def module_enabled(page: HelpPage, settings: dict | None) -> bool:
-    """Whether the company can use the module the page belongs to."""
-    return page.module == CORE or is_core_folded(page.module) or page.module in company_modules(settings)
+    """Whether the page's module is running here and the company uses it."""
+    if page.module == CORE:
+        return True
+    running = is_core_folded(page.module) or any(m.get("name") == page.module for m in loaded_modules())
+    return running and uses_module(settings, page.module)
 
 
 def permitted(page: HelpPage, settings: dict | None, role: str) -> bool:

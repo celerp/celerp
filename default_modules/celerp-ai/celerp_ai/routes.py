@@ -90,6 +90,7 @@ class QueryResponse(BaseModel):
     tools_called: list[str]
     pending_actions: list[dict] = []
     error: str | None = None
+    help_pages: list[str] | None = None
 
 
 class EstimateRequest(BaseModel):
@@ -408,6 +409,7 @@ class MessageOut(BaseModel):
     file_ids: list[str] | None = None
     credits_used: int = 0
     error: bool = False
+    help_pages: list[str] | None = None
     created_at: str
 
     model_config = {"from_attributes": True}
@@ -446,13 +448,14 @@ class ConversationDetail(ConversationOut):
 
 
 def _message_out(m) -> MessageOut:
-    from celerp.ai.conversations import message_error, pending_actions, tool_names
+    from celerp.ai.conversations import help_pages, message_error, pending_actions, tool_names
     return MessageOut(
         id=m.id, role=m.role, content=m.content,
         model_used=m.model_used, tools_called=tool_names(m.tools_called),
         pending_actions=[{**r, "message_id": str(m.id)} for r in pending_actions(m.tools_called)],
         file_ids=m.file_ids, credits_used=m.credits_used,
         error=message_error(m.tools_called),
+        help_pages=help_pages(m.tools_called),
         created_at=m.created_at.isoformat(),
     )
 
@@ -652,6 +655,7 @@ async def query_in_conversation(
         build_history_context,
         get_conversation,
         get_messages,
+        help_record,
         record_credits,
         tool_names,
     )
@@ -723,7 +727,8 @@ async def query_in_conversation(
     msg = await add_message(
         session, conversation_id, "assistant", result.answer,
         model_used=result.model_used,
-        tools_called=[*result.tools_called, *[asdict(p) for p in result.pending_actions]],
+        tools_called=[*result.tools_called, *[asdict(p) for p in result.pending_actions],
+                      *help_record(result.help_pages)],
     )
     await session.commit()
 
@@ -732,6 +737,7 @@ async def query_in_conversation(
         model_used=result.model_used,
         tools_called=tool_names(msg.tools_called),
         pending_actions=[{**asdict(p), "message_id": str(msg.id)} for p in result.pending_actions],
+        help_pages=result.help_pages,
     )
 
 
@@ -1368,7 +1374,8 @@ def _refresh_expired_proposals(records: list, now: datetime) -> list:
     id_map: dict[str, str] = {}
     refreshed = False
     for item in copied:
-        if not isinstance(item, dict) or item.get("status", "pending") != "pending":
+        # Only proposals carry a tool name; marker and citation records are kept as they are.
+        if not isinstance(item, dict) or not item.get("name") or item.get("status", "pending") != "pending":
             continue
         try:
             is_expired = datetime.fromisoformat(str(item.get("expires_at") or "")) <= now

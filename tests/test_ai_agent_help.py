@@ -187,3 +187,17 @@ def test_message_out_carries_help_pages():
 
     assert _message_out(_msg(["help_read", {"help_pages": ["core.settings"]}])).help_pages == ["core.settings"]
     assert _message_out(_msg(["list_items"])).help_pages is None
+
+
+def test_refreshing_expired_proposals_keeps_citation_record():
+    import celerp.main  # noqa: F401  (puts bundled module packages on the import path)
+    from celerp_ai.routes import _refresh_expired_proposals
+
+    now = datetime.now(timezone.utc)
+    expired = {"id": "p1", "name": "create_item", "arguments": {}, "created_at": "2026-01-01T00:00:00+00:00",
+               "expires_at": "2026-01-01T00:01:00+00:00", "title": "Create item"}
+    citation = {"help_pages": ["inventory.add-item"]}
+    refreshed = _refresh_expired_proposals(["help_read", expired, citation], now)
+    assert refreshed[1]["id"] != "p1"
+    assert refreshed[2] == citation
+    assert help_pages(refreshed) == ["inventory.add-item"]

@@ -346,6 +346,23 @@ def message_error(tools_called: list | None) -> bool:
     )
 
 
+def help_record(pages: list[str] | None) -> list[dict]:
+    """The citation record for an answer's help pages; nothing when help was not searched.
+
+    The record has no ``name``, ``expires_at`` or ``error``, so ``tool_names``,
+    ``pending_actions`` and ``message_error`` all ignore it.
+    """
+    return [] if pages is None else [{"help_pages": list(pages)}]
+
+
+def help_pages(tools_called: list | None) -> list[str] | None:
+    """The help pages a stored answer cites; None when the answer did not search help."""
+    for item in tools_called or []:
+        if isinstance(item, dict) and isinstance(item.get("help_pages"), list):
+            return item["help_pages"]
+    return None
+
+
 def tool_names(tools_called: list | None) -> list[str]:
     """Operation-id strings from a stored ``tools_called`` list.
 
