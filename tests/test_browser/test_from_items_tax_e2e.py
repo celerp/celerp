@@ -82,6 +82,17 @@ def test_from_items_invoice_total_is_subtotal_plus_default_rate(api_server, ui_s
         assert {tuple(_codes(line)) for line in doc["line_items"]} == {("CGST 9%", "SGST 9%")}
 
 
+@pytest.mark.parametrize(("country", "shown"), [("IN", True), ("TH", False)])
+def test_the_editor_of_a_company_offering_igst_explains_it(api_server, ui_server, api, country, shown):
+    from ui.i18n import t
+
+    with _demo_company(api_server, ui_server, api, country) as (company, ui, _, items):
+        r = ui.post("/docs/from-items/new", data={"selected": [items[0]["id"]]})
+        assert r.status_code == 204, r.text
+        html = ui.get(r.headers["HX-Redirect"]).text
+    assert (t("documents.igst_note") in html) is shown
+
+
 def _whole_draft(company, item: dict) -> str:
     r = company.post("/docs", json={
         "doc_type": "invoice", "status": "draft", "doc_taxes": [_VAT_WHOLE],

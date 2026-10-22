@@ -2548,6 +2548,7 @@
   "documents.already_received": "تم الاستلام بالفعل",
   "documents.remaining_amount": "المتبقي: {amount}",
   "documents.remove_doc_tax": "Remove this tax",
+  "documents.igst_note": "IGST 18% applies to a sale or purchase between states. Within one state, the same 18% is CGST 9% plus SGST 9%.",
   "documents.remove_from_draft": "إزالة من المسودة",
   "documents.reprice_failed": "تعذّرت إعادة حساب الأسعار. اختر إعادة المحاولة.",
   "documents.reprice_version_unknown": "لم يتمكن Celerp من معرفة أي نسخة من هذا المستند يعيد تسعيرها. اختر إعادة المحاولة، ثم اختر قائمة الأسعار مرة أخرى.",

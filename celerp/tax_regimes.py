@@ -320,6 +320,11 @@ def _tax_name_key(name) -> str:
     return str(name or "").strip().casefold()
 
 
+def holds_tax(taxes: list[dict], name: str) -> bool:
+    """Whether the tax list holds a tax named ``name`` (as _tax_name_key)."""
+    return any(_tax_name_key(x.get("name")) == _tax_name_key(name) for x in taxes)
+
+
 def misplaced_tax(settings: dict, doc_type: str | None, applied: list[dict]) -> str | None:
     """The name of the first tax in ``applied`` (each a ``code`` and ``rate``) a document of
     this type cannot carry, else None. A tax takes its side from the company's tax lists by

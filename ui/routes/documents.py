@@ -34,7 +34,7 @@ from celerp.services.business_time import business_today
 from celerp.services.doc_balance import awaiting_status_param, is_awaiting_payment, is_owed, outstanding_balance
 from celerp.services.money import to_decimal, to_stored_float, round_money, currency_dp, rate_dp
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, line_price_list, resolve_price
-from celerp.tax_regimes import default_line_taxes, tax_entries, taxes_for
+from celerp.tax_regimes import default_line_taxes, holds_tax, tax_entries, taxes_for
 from celerp.services.payment_terms import due_date_for_terms
 from celerp.services.permissions import missing_permission_text, role_has_permission
 from ui.components.import_access import can_import_documents
@@ -7941,6 +7941,8 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 ),
                 cls="table-scroll-wrap",
             ),
+            # The Indian seed's default: say plainly what IGST is for, beside the lines that take it.
+            (P(t("documents.igst_note"), cls="form-hint") if holds_tax(_taxes_list, "IGST 18%") else None),
             (_list_line_pager(entity_id, line_offset, line_limit,
                               line_total if line_total is not None else len(line_items),
                               save_first=can_edit_lines) if is_list else None),

@@ -57,7 +57,8 @@
     "th.compound",
     "th.position",
     "th.sku",
-    "error.company_timezone_unknown"
+    "error.company_timezone_unknown",
+    "documents.igst_note"
   ],
   "ar": [
     "account.email_placeholder",
@@ -105,7 +106,8 @@
     "th.compound",
     "th.position",
     "th.sku",
-    "error.company_timezone_unknown"
+    "error.company_timezone_unknown",
+    "documents.igst_note"
   ],
   "de": [
     "acct.source_system",
@@ -224,7 +226,8 @@
     "th.status",
     "th.text",
     "th.version",
-    "error.company_timezone_unknown"
+    "error.company_timezone_unknown",
+    "documents.igst_note"
   ],
   "es": [
     "account.plan",
@@ -316,7 +319,8 @@
     "th.position",
     "th.sku",
     "th.total",
-    "error.company_timezone_unknown"
+    "error.company_timezone_unknown",
+    "documents.igst_note"
   ],
   "fr": [
     "acct.tab_journal",
@@ -449,7 +453,8 @@
     "th.source",
     "th.total",
     "th.version",
-    "error.company_timezone_unknown"
+    "error.company_timezone_unknown",
+    "documents.igst_note"
   ],
   "id": [
     "acct.source_manual",
@@ -566,7 +571,8 @@
     "th.sku",
     "th.status",
     "th.total",
-    "error.company_timezone_unknown"
+    "error.company_timezone_unknown",
+    "documents.igst_note"
   ],
   "it": [
     "attr.volume_l",
@@ -655,7 +661,8 @@
     "th.output",
     "th.position",
     "th.sku",
-    "error.company_timezone_unknown"
+    "error.company_timezone_unknown",
+    "documents.igst_note"
   ],
   "ja": [
     "account.email_placeholder",
@@ -713,7 +720,8 @@
     "th.compound",
     "th.position",
     "th.sku",
-    "error.company_timezone_unknown"
+    "error.company_timezone_unknown",
+    "documents.igst_note"
   ],
   "pt": [
     "acct.source_manual",
@@ -816,7 +824,8 @@
     "th.skuitem",
     "th.status",
     "th.total",
-    "error.company_timezone_unknown"
+    "error.company_timezone_unknown",
+    "documents.igst_note"
   ],
   "th": [
     "account.email_placeholder",
@@ -872,7 +881,8 @@
     "th.compound",
     "th.position",
     "th.sku",
-    "error.company_timezone_unknown"
+    "error.company_timezone_unknown",
+    "documents.igst_note"
   ],
   "vi": [
     "btn.u00d7",
@@ -932,6 +942,7 @@
     "th.compound",
     "th.position",
     "th.sku",
-    "error.company_timezone_unknown"
+    "error.company_timezone_unknown",
+    "documents.igst_note"
   ]
 }
