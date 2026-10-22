@@ -481,6 +481,7 @@ async def _boot_with(monkeypatch, *, sweep, reconcile) -> bool:
     monkeypatch.setattr(company_backup_files, "sweep_transient_files", sweep)
     monkeypatch.setattr(company_backup, "reconcile_landings", reconcile)
     monkeypatch.setattr("celerp.gateway.has_active_share", AsyncMock(return_value=False))
+    monkeypatch.setattr(main_mod, "_try_auto_activate", AsyncMock())
     saved_token, saved_public = settings.gateway_token, settings.celerp_public_url
     settings.gateway_token = ""
     settings.celerp_public_url = None
