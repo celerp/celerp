@@ -17,7 +17,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from celerp.modules.loader import module_search_path, resolve_runtime_module_path
-from celerp.services.units import DEFAULT_UNITS
+from celerp.services.units import DEFAULT_UNITS, settings_units
 
 log = logging.getLogger(__name__)
 
@@ -121,7 +121,7 @@ def ensure_unit_seeded(settings: dict, unit_name: str) -> None:
     seed_by_name = {u["name"]: u for u in DEFAULT_UNITS}
     if unit_name not in seed_by_name:
         return
-    current_units: list[dict] = list(settings.get("units") or DEFAULT_UNITS)
+    current_units: list[dict] = list(settings_units(settings))
     if not any(u["name"] == unit_name for u in current_units):
         current_units.append(seed_by_name[unit_name])
         settings["units"] = current_units

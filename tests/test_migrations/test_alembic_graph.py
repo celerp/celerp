@@ -51,10 +51,10 @@ RELEASE_CHAIN = ["p3e4f5a6b7c8", "q4f5a6b7c8d9", "r5g6b7c8d9e0", "s6h7c8d9e0f1",
 # it: company peer grants, then removing per-user API keys, then the firm view's key last
 # use and refused records, then the revisions two-way sync sent or declined, then the
 # account links two-way sync keeps, then the attachments a Xero migration fetches, then the
-# firm name a company key carries.
+# firm name a company key carries, then the password reset method check a restore keeps.
 SHIPPED_HEAD = "y3p4q5r6s7t8"
 AFTER_SHIPPED = ["x2p3q4r5s6t7", "y3q4r5s6t7u8", "z4r5s6t7u8v9", "a5t6u7v8w9x0", "b6u7v8w9x0y1",
-                 "c7v8w9x0y1z2", "d8w9x0y1z2a3", "e9x0y1z2a3b4", "f0y1z2a3b4c5"]
+                 "c7v8w9x0y1z2", "d8w9x0y1z2a3", "e9x0y1z2a3b4", "f0y1z2a3b4c5", "g1z2a3b4c5d6"]
 
 # The newest revision a database can already carry from the module and payment work
 # that reaches main before this release.
@@ -128,7 +128,7 @@ def test_a_database_from_2_6_0_runs_every_revision_after_it():
                     "CAST('{\"restored_backup\": {\"opened_from\": \"Lakeside\"}}' AS json), true, now())"),
                     {"id": company_id})
             # A key issued by a build between the peer grants and the firm name.
-            upgrade_to(sync_url, AFTER_SHIPPED[-2])
+            upgrade_to(sync_url, AFTER_SHIPPED[AFTER_SHIPPED.index("f0y1z2a3b4c5") - 1])
             with eng.begin() as conn:
                 conn.execute(text(
                     "INSERT INTO company_peer_grants (id, company_id, source_company_id, token_hash, "

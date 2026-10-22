@@ -8,6 +8,7 @@ import re
 from fasthtml.common import *
 from ui.i18n import t, t_or, field_label
 from celerp.services.field_schema import MIXED_VALUE
+from celerp.services.units import plain_number
 # Canonical definitions live with the shared document renderer; re-exported
 # here for the UI's many call sites. EMPTY is the canonical empty-value
 # placeholder (rule k).
@@ -702,11 +703,13 @@ def searchable_select(
     placeholder: str = "",
     cls_extra: str = "",
     allow_custom: bool = False,
+    custom_hint: str = "",
     search_url: str = "",
     multiple: bool = False,
     values: list[str] | None = None,
     count_label: str = "",
     aria_label: str = "",
+    autofocus: bool = False,
     **htmx_attrs,
 ) -> FT:
     """
@@ -716,6 +719,8 @@ def searchable_select(
 
     options: list of strings OR list of (value, label) tuples.
     allow_custom: if True, user can type a value not in the list (saved as-is).
+    custom_hint: the note shown when typed text still matches several options, for a box
+        whose custom values follow a rule; defaults to offering Enter to add the text as typed.
     search_url: if set, enables server-side search. The text input sends hx-get
         requests to this URL with ?q=<typed>, replacing the option list via HTMX.
         When q is empty the JS restores the original static options.
@@ -729,6 +734,7 @@ def searchable_select(
         other than "N selected".
     aria_label: accessible name for the visible input, for a control whose only label
         would otherwise be a column header the screen reader does not read with it.
+    autofocus: focus the visible input when it is swapped in, as an inline-edit cell does.
     htmx_attrs: HTMX attributes forwarded to the hidden input (hx_get, hx_target, etc.)
     """
     placeholder = placeholder or t("table.search_or_select")
@@ -775,6 +781,8 @@ def searchable_select(
     wrap_attrs: dict = {"cls": "combobox-wrap"}
     if allow_custom:
         wrap_attrs["data_allow_custom"] = "true"
+    if custom_hint:
+        wrap_attrs["data_custom_hint"] = custom_hint
     if multiple:
         wrap_attrs["data_multiple"] = "true"
         wrap_attrs["data_count_label"] = count_label
@@ -794,6 +802,8 @@ def searchable_select(
     # name belongs there rather than on the hidden value input.
     if aria_label:
         text_input_extra["aria_label"] = aria_label
+    if autofocus:
+        text_input_extra["autofocus"] = True
     # ARIA combobox semantics (rule i): a screen reader announces this as a
     # combobox owning a popup listbox. The dynamic wiring - aria-controls to the
     # list id, aria-expanded on open/close, aria-activedescendant to the focused
@@ -968,6 +978,7 @@ def editable_cell(
     cell_type: str = "text",
     options: list[str] | None = None,
     allow_custom: bool = False,
+    custom_hint: str = "",
     restore_url: str | None = None,
     label_map: dict | None = None,
     placeholder: str | None = None,
@@ -985,7 +996,8 @@ def editable_cell(
     aria_label: accessible name for the control. A cell editor replaces the cell it sits
                in, so the column header is no longer beside it once the editor opens.
     searchable: a select is the searchable combobox however few options it holds now,
-               for a list that could hold more than ten."""
+               for a list that could hold more than ten.
+    custom_hint: passed to searchable_select for an allow-custom box whose typed values follow a rule."""
     # Grey hint for empty inputs (e.g. a reorder suggestion). Kept separate from `value`
     # so it can never be saved: HTML placeholder is shown only while the input is empty and
     # is never part of the submitted form data.
@@ -994,6 +1006,8 @@ def editable_cell(
     display_val = str(value) if value is not None else ""
     if cell_type == "number" and display_val:
         display_val = _normalize_number_str(display_val)
+    if cell_type == "text" and "\n" in display_val:
+        cell_type = "textarea"  # a single-line box would drop the line break
     patch_url = patch_url or f"/api/items/{entity_id}/field/{field}"
     # ESC restores from the same field route it saves to, so pointing the cell at another
     # REST surface moves both halves together instead of leaving the restore on core's.
@@ -1014,6 +1028,16 @@ def editable_cell(
         f"else if(event.key==='Enter'){{event.preventDefault();htmx.trigger(this,'blur');}}"
     )
     blur_restore_js = f"if(!this._escaping){{htmx.ajax('GET','{restore_url}',{{target:this.closest('td'),swap:'outerHTML'}})}}"
+    # Typed editors save on blur only a value changed from the one they opened with; leaving
+    # an untouched editor restores the cell, so opening one and moving on never writes.
+    # The opening value is read from the box on its first focus, not from the HTML value:
+    # a text input drops line breaks, so the two differ before anything is typed.
+    blur_save = dict(
+        onfocus="if(this._v===undefined)this._v=this.value",
+        hx_trigger="blur[this.value!==this._v] delay:200ms",
+        onblur=(f"if(!this._escaping&&this.value===this._v){{"
+                f"htmx.ajax('GET','{restore_url}',{{target:this.closest('td'),swap:'outerHTML'}})}}"),
+    )
     # ESC handler for combobox wrapper (keydown bubbles up from the inner input)
     combobox_escape_js = (
         f"if(event.key==='Escape'){{"
@@ -1031,6 +1055,8 @@ def editable_cell(
                     options=options,
                     value=display_val,
                     allow_custom=allow_custom,
+                    custom_hint=custom_hint,
+                    autofocus=True,
                     hx_patch=patch_url,
                     hx_target="closest td",
                     hx_swap="outerHTML",
@@ -1063,8 +1089,7 @@ def editable_cell(
         step = {"money": "0.01", "weight": "0.001"}.get(cell_type, "any")
         input_el = Input(
             type="number", name="value", value=display_val, step=step,
-            **swap, **_ph, **_aria,
-            hx_trigger="blur delay:200ms",
+            **swap, **_ph, **_aria, **blur_save,
             cls="cell-input cell-input--number",
             autofocus=True,
             onkeydown=escape_js,
@@ -1090,8 +1115,7 @@ def editable_cell(
             f"event.preventDefault();}}"
         )
         input_el = Textarea(
-            display_val, name="value", **swap, **_aria,
-            hx_trigger="blur delay:200ms",
+            display_val, name="value", **swap, **_aria, **blur_save,
             cls="cell-input cell-textarea-input", rows="5",
             autofocus=True,
             onkeydown=textarea_escape_js,
@@ -1113,8 +1137,7 @@ def editable_cell(
     else:
         input_el = Input(
             type="text", name="value", value=display_val,
-            **swap, **_ph, **_aria,
-            hx_trigger="blur delay:200ms",
+            **swap, **_ph, **_aria, **blur_save,
             cls="cell-input",
             autofocus=True,
             onkeydown=escape_js,
@@ -1124,10 +1147,10 @@ def editable_cell(
 
 
 def _normalize_number_str(s: str) -> str:
-    """Format a numeric string for display: drop .0 for integers, use :g for floats."""
+    """Format a numeric string for display and editing: drop .0 for integers and keep
+    every digit of a real number, so an editor opened on a value holds exactly that value."""
     try:
-        n = float(s)
-        return str(int(n)) if n == int(n) else f"{n:g}"
+        return plain_number(float(s))
     except (ValueError, TypeError):
         return s
 

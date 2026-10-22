@@ -330,9 +330,9 @@ async def _source_templates(session: AsyncSession, company_id: uuid.UUID, entry:
 
 async def _unit_map(session: AsyncSession, company_id: uuid.UUID) -> dict[str, dict]:
     """Name-keyed company units; drives the derived weight/pieces label fields."""
-    from celerp.services.units import build_unit_map, get_company_units
+    from celerp.services.units import build_unit_map, read_company_units
 
-    return build_unit_map(await get_company_units(session, company_id))
+    return build_unit_map(await read_company_units(session, company_id))
 
 
 async def _get_or_404(session: AsyncSession, company_id: uuid.UUID, template_id: uuid.UUID) -> LabelTemplate:

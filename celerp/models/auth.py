@@ -48,7 +48,8 @@ class PasswordReset(Base):
 
     __tablename__ = "password_resets"
     __table_args__ = (
-        CheckConstraint("method IN ('email_code', 'terminal', 'owner')", name="ck_password_resets_method"),
+        # Compared as text so Postgres prints it back the same way after a restore.
+        CheckConstraint("method::text IN ('email_code', 'terminal', 'owner')", name="ck_password_resets_method"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)

@@ -19,6 +19,7 @@ from starlette.responses import RedirectResponse, Response
 
 import ui.api_client as api
 from celerp.output.document_context import prepare_document_output
+from celerp_docs.doc_constants import template_label
 from ui.components.icons import import_icon
 from ui.components.operation_key import operation_key_vals, submitted_operation_key
 from ui.api_client import APIError
@@ -92,7 +93,7 @@ def _sub_table(subs: list[dict], direction: str) -> FT:
 
     def _row(s: dict) -> FT:
         eid = s.get("id") or s.get("entity_id", "")
-        name = s.get("ref_id") or s.get("doc_number") or s.get("name") or eid.split(":")[-1]
+        name = template_label(s, eid)
         contact = s.get("contact_name") or s.get("contact_company_name") or "-"
         freq = display_enum(s["frequency"], "subscription_frequency") if s.get("frequency") else "-"
         next_due = s.get("next_run_date") or "-"

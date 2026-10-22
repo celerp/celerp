@@ -16,6 +16,8 @@ from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
+from typing import Any
+
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -93,9 +95,9 @@ from celerp.services.pricing import (
 )
 from ui.components.table import display_unit
 from ui.i18n import category_label, field_label, item_status_label, price_list_label, t
-from celerp.services.units import validate_quantity, build_unit_map, get_company_units, is_weight_unit, is_pieces_unit, LANDED_COST_KINDS
+from celerp.services.units import validate_quantity, build_unit_map, get_company_units, read_company_units, is_weight_unit, is_pieces_unit, LANDED_COST_KINDS
 from celerp.services.vertical_presets import category_item_defaults
-from celerp.services.line_measures import splitting_allowed
+from celerp.services.line_measures import check_sell_qty_fits_unit, sell_qty_misfit, splitting_allowed, validate_default_sell_qty
 from celerp.services.money import round_basis, round_money, to_decimal, to_stored_float
 from celerp.schemas.numbers import FiniteFloat
 from celerp_inventory.projections import _is_image_mime, is_core_item_key, is_item_available, thumbnail_file_id
@@ -312,6 +314,12 @@ class ItemCreate(BaseModel):
     purchase_unit: str | None = None       # unit vendor sells in (e.g. "case", "box")
     purchase_conversion_factor: FiniteFloat | None = None  # sell units per purchase unit (e.g. 24 pcs/case)
     allow_splitting: bool = True
+    # Typed Any so a boolean is refused by validate_default_sell_qty, never coerced.
+    default_sell_qty: Any = Field(None, description=(
+        "How much one scan adds to a sale: \"full\" for everything left, or a number above 0 "
+        "the item's unit allows. Unset uses the unit's default (1 for pieces, otherwise full)."),
+        json_schema_extra={"anyOf": [{"type": "string", "enum": ["full"]},
+                                     {"type": "number", "exclusiveMinimum": 0}, {"type": "null"}]})
     attributes: dict = Field(default_factory=dict)
     idempotency_key: str | None = None
     # stocked | component | non_stocked | service | freight; omitted means the
@@ -1424,7 +1432,7 @@ async def query_items(
     # on every page and for any combination of filters.
     aggregates = result_aggregates(
         result, (await get_price_config(session, company_id))[0], can_see_costs, base_currency,
-        build_unit_map(await get_company_units(session, company_id)))
+        build_unit_map(await read_company_units(session, company_id)))
 
     # Ordering (FEFO / user column sort / default) is single-sourced in
     # celerp_inventory.search so the list and the global-search bar stay in
@@ -1716,7 +1724,7 @@ async def items_metadata(payload: ItemsMetadataBody, company_id=Depends(get_curr
     price_config = await get_price_config(session, company_id)
     # Units are company-wide, so build the map once for the whole batch. It feeds
     # flatten_item's qty_each derivation, exactly as GET /items/{id} does per item.
-    units = await _get_company_units(session, company_id)
+    units = await read_company_units(session, company_id)
     unit_map = {u["name"]: u for u in units}
     can_see_costs = role_has_permission(settings, role, "view_inventory_costs")
     can_author_drafts = role_has_permission(settings, role, "edit_inventory")
@@ -2176,7 +2184,7 @@ async def get_item(entity_id: str, company_id=Depends(get_current_company_id), r
             )
         )).scalar_one_or_none()
         loc_name = loc.name if loc else None
-    units = await _get_company_units(session, company_id)
+    units = await read_company_units(session, company_id)
     unit_map = {u["name"]: u for u in units}
     flat = flatten_item(row.state, row.entity_id,
                          location_id=str(row.location_id) if row.location_id else None,
@@ -2412,6 +2420,8 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
     refusal = negative_cost_error(lot_label(data, entity_id), *(data.get(k) for k in GOODS_COST_KEYS))
     if refusal:
         raise HTTPException(status_code=422, detail=refusal)
+    if (sell_qty := validate_default_sell_qty(data.pop("default_sell_qty", None), payload.sell_by, unit_map)) is not None:
+        data["default_sell_qty"] = sell_qty
 
     for field in ("purchase_unit", "weight_unit"):
         if data.get(field) is None and field in category_defaults:
@@ -2617,6 +2627,20 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
             unit_map = {u["name"]: u for u in units}
             if new_sell_by not in unit_map:
                 raise HTTPException(status_code=422, detail=t("inventory.err_unit_unknown", unit=new_sell_by))
+
+    # Default Sell Qty is held to the item's unit: a new value when it is set, and a stored
+    # number when the unit changes (refused, never rounded to fit).
+    if changed_keys & {"default_sell_qty", "sell_by"}:
+        row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
+        current = (row.state if row else None) or {}
+        sell_by = (payload.fields_changed["sell_by"] or {}).get("new") if "sell_by" in changed_keys else current.get("sell_by")
+        unit_map = {u["name"]: u for u in await _get_company_units(session, company_id)}
+        if "default_sell_qty" in changed_keys:
+            change = payload.fields_changed["default_sell_qty"] or {}
+            payload.fields_changed["default_sell_qty"] = {
+                **change, "new": validate_default_sell_qty(change.get("new"), sell_by, unit_map)}
+        else:
+            check_sell_qty_fits_unit(current.get("default_sell_qty"), sell_by, unit_map)
 
     # Validate quantity change against current sell_by unit.
     # Also sync derived weight/pieces field: if sell_by is a weight unit,
@@ -3136,7 +3160,7 @@ async def split_preview(
     parent_weight = _read_float(parent.state, "weight")
     parent_pieces = _read_pieces(parent.state)
 
-    units = await _get_company_units(session, company_id)
+    units = await read_company_units(session, company_id)
     unit_map = {u["name"]: u for u in units}
     unit_cfg = unit_map.get(parent_sell_by) or {}
     decimals = unit_cfg.get("decimals", 0)
@@ -3922,6 +3946,7 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
     _transform_unit_map = {u["name"]: u for u in _transform_units}
     if payload.child_sell_by not in _transform_unit_map:
         raise HTTPException(status_code=422, detail=t("inventory.err_unit_unknown", unit=payload.child_sell_by))
+    validate_quantity(payload.child_quantity, _transform_unit_map[payload.child_sell_by]["decimals"])
 
     # Child SKU uniqueness against existing items is no longer enforced - SKUs may
     # repeat across physical lots; lot identity is carried by barcode / entity_id.
@@ -3942,9 +3967,9 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
     if payload.child_cost_total is not None and payload.child_cost_total != parent_cost_total:
         reject_price_change({"cost_total"}, role, settings)
     effective_cost = payload.child_cost_total if payload.child_cost_total is not None else parent_cost_total
-    refusal = negative_cost_error(payload.child_sku, effective_cost)
-    if refusal:
-        raise HTTPException(status_code=422, detail=refusal)
+    cost_refusal = negative_cost_error(payload.child_sku, effective_cost)
+    if cost_refusal:
+        raise HTTPException(status_code=422, detail=cost_refusal)
     # Kept at the parent's cost, the child carries the parent's landed pools beside its goods
     # cost; a cost the user restates is the child's goods cost entire.
     child_landed = dict(parent.state.get("landed_costs") or {}) if effective_cost == parent_cost_total else {}
@@ -3982,6 +4007,17 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
         child_data["weight_unit"] = payload.child_weight_unit
     if payload.child_pieces is not None:
         child_data["attributes"] = {**child_data["attributes"], "pieces": payload.child_pieces}
+    # A Default Sell Qty the child's unit cannot hold is not carried over (never rounded):
+    # the child scans its unit's default, and the result says which setting was left behind.
+    notices = []
+    dropped_qty = sell_qty_misfit(child_data.get("default_sell_qty"), payload.child_sell_by, _transform_unit_map)
+    if dropped_qty is not None:
+        child_data.pop("default_sell_qty")
+        notices.append(refusal(
+            "item.default_sell_qty_not_carried",
+            f"Default Sell Qty {dropped_qty:g} was not carried over: {payload.child_sell_by} cannot hold it. "
+            "Scanning the new item adds its normal quantity until you set a Default Sell Qty.",
+            qty=f"{dropped_qty:g}", unit=payload.child_sell_by))
 
     # 1. Mark parent archived (consumed by transform), first: goods an invoice holds
     #    cannot be made into something else, and are refused before anything is written.
@@ -4112,7 +4148,8 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
             metadata={"trigger": "item.cost_restated", "item_id": child_eid, "transformed_from": entity_id})
 
     await session.commit()
-    return {"child_id": child_eid, "child_sku": payload.child_sku, "parent_sku": parent.state.get("sku", "")}
+    return {"child_id": child_eid, "child_sku": payload.child_sku, "parent_sku": parent.state.get("sku", ""),
+            "notices": notices}
 
 
 
@@ -4500,6 +4537,7 @@ async def _plan_merge(session: AsyncSession, company_id, payload: MergeBody, set
         "sell_by": str(target_state.get("sell_by") or "piece"),
         "status": "available",
         "allow_splitting": splitting_allowed(target_state),
+        "default_sell_qty": target_state.get("default_sell_qty"),
         "attributes": resolved_attrs,
     }
     if merged_catalog_id:
@@ -5198,7 +5236,7 @@ async def export_items_csv(
         visible -= {price_key(pl["name"]) for pl in price_config[0] if pl.get("name") and is_cost_list_name(pl["name"])}
     out_cols = [c for c in out_cols if c in visible and virtual.get(c, c) in visible]
 
-    unit_map = build_unit_map(await _get_company_units(session, company_id))
+    unit_map = build_unit_map(await read_company_units(session, company_id))
     currency = settings.get("currency") or "USD"
 
     def _rows():

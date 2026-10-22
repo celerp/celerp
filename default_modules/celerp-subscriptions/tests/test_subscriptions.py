@@ -187,7 +187,9 @@ async def test_generate_now_creates_invoice(client):
     doc = dr.json()
     assert doc.get("doc_type") == "invoice"
     assert doc.get("subscription_id") == eid
-    assert "My Sub Template" in doc.get("notes", "")
+    # The note names the template as the subscriptions list does: by its reference, not its name.
+    ref = (await client.get(f"/docs/{eid}", headers=h)).json()["ref_id"]
+    assert ref and doc.get("notes") == f"Auto-created from subscription template {ref}"
     assert doc.get("terms_template") == "Standard Sales Terms"
     assert "seller until paid" in doc.get("terms_text", "")
     assert "company_name" not in doc

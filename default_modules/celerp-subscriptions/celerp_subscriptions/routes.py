@@ -26,6 +26,8 @@ from celerp.services.business_time import business_today, company_today
 from celerp.services.company_lock import locked_company
 from celerp.services.permissions import require_permission
 from celerp.services.terms import resolve_document_terms
+from celerp.services.units import require_moving_fits_units
+from celerp_docs.doc_constants import template_label
 from celerp_docs.doc_money import document_money
 from celerp_docs.routes import finalize_document
 from celerp_docs.sequences import next_draft_ref
@@ -147,7 +149,7 @@ def _build_router() -> APIRouter:
         line_items = copy.deepcopy(list(state.get("line_items") or []))
         payment_terms = state.get("payment_terms")
         due_date = _compute_due_date(today, payment_terms, company)
-        template_name = state.get("name") or entity_id
+        template_name = template_label(state, entity_id)
         auto_note = f"Auto-created from subscription template {template_name}"
         existing_notes = state.get("notes") or ""
         notes = f"{existing_notes}\n{auto_note}".strip() if existing_notes else auto_note
@@ -175,6 +177,8 @@ def _build_router() -> APIRouter:
         }
         if due_date:
             doc_data["due_date"] = due_date
+        # The template may predate a precision change; what it makes is held to today's units.
+        await require_moving_fits_units(session, company_id, doc_entity_id, "doc", doc_data, template=template_name)
 
         # Use the same canonical creation policy as ordinary documents. Legacy
         # subscription templates may still carry `terms`, but generated docs do not.

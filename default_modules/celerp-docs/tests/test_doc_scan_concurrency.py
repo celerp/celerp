@@ -18,14 +18,15 @@ from celerp.events.engine import emit_event
 from test_list_outcome_concurrency import _barcode, _cleanup, _factory, _seed_company, _state
 
 
-async def _seed_unique_item(factory, company_id, user, *, sku, barcode, splitting, quantity=1) -> str:
+async def _seed_unique_item(factory, company_id, user, *, sku, barcode, splitting, quantity=1,
+                            sell_by="piece") -> str:
     from celerp.services.lot_origin import recognize_opening_lots
 
     entity_id = f"item:{uuid.uuid4()}"
     async with factory() as s:
         await emit_event(
             s, company_id=company_id, entity_id=entity_id, entity_type="item", event_type="item.created",
-            data={"status": "available", "sku": sku, "name": sku, "quantity": quantity, "sell_by": "piece",
+            data={"status": "available", "sku": sku, "name": sku, "quantity": quantity, "sell_by": sell_by,
                   "barcode": barcode, "cost_price": 1, "allow_splitting": splitting},
             actor_id=user.id, location_id=None, source="test", idempotency_key=str(uuid.uuid4()), metadata_={},
         )

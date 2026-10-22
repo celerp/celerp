@@ -57,6 +57,7 @@ from celerp.services.item_erasure import erased_from_connector
 from celerp.services.field_schema import AMOUNT_ITEM_KEYS, reject_system_item_fields
 from celerp.services.money import to_stored_float, unit_price_from_total
 from celerp.services.peer_import import SourceRevision
+from celerp.services.line_measures import check_sell_qty_fits_unit, validate_default_sell_qty
 from celerp.services.permissions import role_has_permission
 from celerp.services.vertical_presets import category_item_defaults
 from celerp.services.pricing import derived_price_keys, get_price_config, is_derived, price_key, price_keys_in
@@ -67,6 +68,7 @@ from celerp.services.units import (
     get_company_units,
     is_pieces_unit,
     is_weight_unit,
+    validate_line_quantity,
     validate_quantity,
 )
 from celerp_inventory.projections import is_core_item_key
@@ -2595,7 +2597,7 @@ ITEM_IMPORT_TAIL_COLS = [
     "weight", "weight_unit", "gross_weight", "gross_weight_unit", "pieces",
     "barcode", "hs_code", "purchase_sku", "purchase_name", "purchase_unit",
     "purchase_conversion_factor", "inventory_type", "gtin", "rfid_epc",
-    "short_description", "description", "notes", "location_name",
+    "short_description", "description", "notes", "location_name", "default_sell_qty",
 ]
 # Numeric row keys: each must hold a finite number. ``qty`` and ``weight_ct`` are
 # not offered as mapping targets but are read as the quantity and the weight.
@@ -2976,6 +2978,15 @@ async def build_import_records(
         if amount_errors:
             errors.extend({"row": i + 1, **e} for e in amount_errors)
             continue
+        # A mapped Default Sell Qty cell is written even when blank: a blank clears it.
+        sell_qty = None
+        if "default_sell_qty" in row:
+            try:
+                sell_qty = validate_default_sell_qty(row["default_sell_qty"], item_sell_by, unit_map)
+            except HTTPException as exc:
+                errors.append({"row": i + 1, "field": "default_sell_qty", "code": "invalid_value",
+                               "message": exc.detail["message"]})
+                continue
 
         def _flt(key: str, _row: dict = row) -> float | None:
             return _to_float(_row.get(key))
@@ -3026,6 +3037,7 @@ async def build_import_records(
             ("inventory_type", _text("inventory_type")),
             ("gtin", _text("gtin")),
             ("rfid_epc", validate_rfid_epc(_text("rfid_epc"))),
+            ("default_sell_qty", sell_qty),
         ) if value is not None})
 
         # A total is divided by the quantity it covers: the row's own quantity, or
@@ -3107,6 +3119,8 @@ async def build_import_records(
                 value = data.get(key)
                 if value is not None:
                     patch[key] = value
+        if "default_sell_qty" in row:
+            patch["default_sell_qty"] = sell_qty
         if loc_name:
             patch["location_id"] = location_id
         if attrs:
@@ -3791,6 +3805,7 @@ async def write_import_batch(
 
     units = await get_company_units(session, company_id)
     valid_units: frozenset[str] = frozenset(u["name"] for u in units)
+    unit_map = build_unit_map(units)
     price_lists = (await get_price_config(session, company_id))[0]
     derived_keys = derived_price_keys(price_lists)
 
@@ -3928,6 +3943,25 @@ async def write_import_batch(
         if sell_by and valid_units and sell_by not in valid_units:
             outcome.add(entity_id, "rejected", _row_refused(named, refusal(
                 "import.row.unknown_unit", f"sell_by '{sell_by}' is not a valid unit", unit=sell_by)))
+            continue
+
+        # Quantity and Default Sell Qty are held to the item's unit: a value the record sets,
+        # and a stored number when the record changes the unit.
+        stored_state = (stored_proj.state or {}) if stored_proj is not None else {}
+        unit_changed = bool(sell_by) and sell_by != str(stored_state.get("sell_by") or "")
+        qty = _to_float(data["quantity"]) if "quantity" in data else (
+            _to_float(stored_state.get("quantity")) if unit_changed else None)
+        try:
+            if qty is not None:
+                validate_line_quantity(qty, sell_by or stored_state.get("sell_by"), unit_map,
+                                       label=t("field.label.quantity"), require_positive=False)
+            if "default_sell_qty" in data:
+                data["default_sell_qty"] = validate_default_sell_qty(
+                    data["default_sell_qty"], sell_by or stored_state.get("sell_by"), unit_map)
+            elif unit_changed:
+                check_sell_qty_fits_unit(stored_state.get("default_sell_qty"), sell_by, unit_map)
+        except HTTPException as exc:
+            outcome.add(entity_id, "rejected", _row_refused(named, exc.detail))
             continue
 
         if event_type == "item.patched" and stored_proj is not None:

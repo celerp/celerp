@@ -823,6 +823,39 @@ class TestClickToEdit:
         assert b"<input" not in r.content
         assert b"<select" not in r.content
 
+    @pytest.mark.parametrize("field, route, hint", [
+        ("sell_by", "edit", True),
+        ("sell_by", "paired-edit", True),
+        ("purchase_unit", "paired-edit", False),
+        ("weight_unit", "paired-edit", False),
+    ])
+    @pytest.mark.asyncio
+    async def test_unit_box_note_matches_what_the_cell_accepts(self, ui_client, field, route, hint):
+        """Sell By takes only the company's units, so its box, from either editor, carries its
+        own note pointing to the list and Add new unit. Purchase and weight units take a typed
+        unit, so they keep the shared note that offers Enter."""
+        schema = [{"key": field, "label": field, "type": "text", "editable": True}]
+        item = {"entity_id": "gc:123", "sell_by": "carat", "quantity": 5, "weight": 1,
+                "purchase_unit": "piece", "weight_unit": "gram"}
+        units = [{"name": "carat", "unit_type": "weight"}, {"name": "piece", "unit_type": "count"},
+                 {"name": "gram", "unit_type": "weight"}]
+        with (
+            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=schema)),
+            patch("ui.api_client.get_item", new=AsyncMock(return_value=item)),
+            patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": []})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"settings": {}})),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=units)),
+        ):
+            ui_client.cookies.update(_authed())
+            r = await ui_client.get(f"/api/items/gc:123/field/{field}/{route}")
+        assert r.status_code == 200
+        assert b"combobox-input" in r.content
+        note = b'data-custom-hint="Pick one of your units, or add a new one with Add new unit."'
+        assert (note in r.content) is hint
+        if not hint:
+            assert b"data-custom-hint" not in r.content
+
     @pytest.mark.asyncio
     async def test_patch_item_field_returns_display_td(self, ui_client):
         """PATCH /api/items/{id}/field/{field} → saves, returns display <td> with new value."""
@@ -13667,11 +13700,11 @@ class TestUnitsSettings:
         """PUT /companies/me/units stores the list and returns it."""
         headers = await _api_headers(client)
         payload = {"units": [
-            {"name": "piece", "label": "Piece", "decimals": 0},
-            {"name": "gram", "label": "Gram", "decimals": 2},
+            {"name": "piece", "label": "Piece", "decimals": 0, "unit_type": "pieces"},
+            {"name": "gram", "label": "Gram", "decimals": 2, "unit_type": "weight"},
         ]}
         r = await client.put("/companies/me/units", json=payload, headers=headers)
-        assert r.status_code == 200
+        assert r.status_code == 200, r.text
         units = r.json()
         assert len(units) == 2
         assert units[0]["name"] == "piece"
@@ -13752,16 +13785,38 @@ class TestUnitsSettings:
                 content=b"name=tola&label=Tola&decimals=3",
                 headers={"content-type": "application/x-www-form-urlencoded"},
             )
-        assert r.status_code in (302, 303)
-        assert "tab=units" in r.headers.get("location", "")
+        assert r.status_code == 204
+        assert r.headers.get("hx-redirect") == "/settings/inventory?tab=units"
         sent = mock_put.call_args[0][1]
         assert any(u["name"] == "tola" for u in sent)
+
+    @pytest.mark.asyncio
+    async def test_a_refused_new_unit_says_why_and_stays_on_the_page(self, ui_client):
+        """POST /settings/units/add that the API refuses returns the reason, no redirect."""
+        from ui.api_client import APIError
+        refused = APIError(422, "carat cannot go to 1 decimal places", data={
+            "detail": {"message_key": "units.precision_lowered_under_quantities",
+                       "message": "carat cannot go to 1 decimal places: items or open documents still hold quantities with more (LOT-1).",
+                       "params": {"unit": "carat", "decimals": 1, "examples": "LOT-1", "current": 2}}})
+        ui_client.cookies.update(_authed())
+        with (
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=list(_DEFAULT_UNITS_SEED))),
+            patch("ui.api_client.patch_units", new=AsyncMock(side_effect=refused)),
+        ):
+            r = await ui_client.post(
+                "/settings/units/add",
+                content=b"name=carat&decimals=1",
+                headers={"content-type": "application/x-www-form-urlencoded"},
+            )
+        assert r.status_code == 200
+        assert "hx-redirect" not in r.headers
+        assert 'class="cell-error"' in r.text and "LOT-1" in r.text
 
     # ── UI: Delete unit ──────────────────────────────────────────────
 
     @pytest.mark.asyncio
     async def test_delete_unit_via_delete(self, ui_client):
-        """DELETE /settings/units/{name} removes unit and redirects."""
+        """DELETE /settings/units/{name} removes the unit and sends the page to the refreshed list."""
         current = [
             {"name": "piece", "label": "Piece", "decimals": 0},
             {"name": "gram", "label": "Gram", "decimals": 2},
@@ -13776,11 +13831,25 @@ class TestUnitsSettings:
             r = await ui_client.delete(
                 "/settings/units/gram",
             )
-        assert r.status_code in (302, 303)
-        assert "tab=units" in r.headers.get("location", "")
+        assert r.status_code == 204
+        assert r.headers.get("hx-redirect") == "/settings/inventory?tab=units"
         sent = mock_put.call_args[0][1]
         assert not any(u["name"] == "gram" for u in sent)
         assert any(u["name"] == "piece" for u in sent)
+
+    @pytest.mark.asyncio
+    async def test_a_refused_unit_delete_says_why_and_stays_on_the_page(self, ui_client):
+        from ui.api_client import APIError
+        refused = APIError(422, "gram is in use", data={"detail": "gram is in use"})
+        ui_client.cookies.update(_authed())
+        with (
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=list(_DEFAULT_UNITS_SEED))),
+            patch("ui.api_client.patch_units", new=AsyncMock(side_effect=refused)),
+        ):
+            r = await ui_client.delete("/settings/units/gram")
+        assert r.status_code == 200
+        assert "hx-redirect" not in r.headers
+        assert 'class="cell-error"' in r.text and "gram is in use" in r.text
 
     # ── UI: Edit unit (inline patch) ─────────────────────────────────
 
@@ -13823,6 +13892,32 @@ class TestUnitsSettings:
             )
         assert r.status_code == 200
         assert b"4" in r.content
+
+    @pytest.mark.asyncio
+    async def test_a_refused_decimals_change_shows_why_in_the_cell(self, ui_client):
+        """A precision change the API refuses keeps the stored value in the cell and shows the
+        refusal under it, in the user's words, not a server error."""
+        from ui.api_client import APIError
+        current = [{"name": "carat", "label": "Carat", "decimals": 2}]
+        params = {"unit": "carat", "decimals": 1, "examples": "RAW-1, RAW-2", "current": 2}
+        refused = APIError(422, "x", data={"message": "x", "message_key": "units.precision_lowered_under_quantities",
+                                           "params": params})
+        ui_client.cookies.update(_authed())
+        with (
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=current)),
+            patch("ui.api_client.patch_units", new=AsyncMock(side_effect=refused)),
+        ):
+            r = await ui_client.patch(
+                "/settings/units/carat/decimals",
+                content=b"value=1",
+                headers={"content-type": "application/x-www-form-urlencoded"},
+            )
+        assert r.status_code == 200
+        assert 'class="cell-error"' in r.text, r.text
+        assert ("carat cannot go to 1 decimal places: items or open documents still hold quantities with more "
+                "(RAW-1, RAW-2). Change those quantities or finish those documents first, or keep 2 decimal places."
+                ) in r.text, r.text
+        assert '<span class="cell-text">2</span>' in r.text, r.text
 
 
 # ---------------------------------------------------------------------------
@@ -20651,6 +20746,28 @@ async def test_transform_handler_distinguishes_absent_from_zero_cost(ui_client):
     assert absent_payload["child_cost_total"] is None
     assert r_zero.status_code == 200
     assert zero_payload["child_cost_total"] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_transform_handler_raises_a_setting_not_carried_over_as_a_toast_that_stays(ui_client):
+    """A transform that could not carry a setting to the new unit says so in a toast that
+    stays until dismissed, beside the usual result; one with nothing to say raises none."""
+    import json as _json
+    notice = {"message": "x", "message_key": "item.default_sell_qty_not_carried",
+              "params": {"qty": "0.5", "unit": "piece"}}
+    base = {"entity_id": "item:1", "child_sku": "C-1", "child_category": "Processed",
+            "child_sell_by": "piece", "child_qty": "4"}
+    result = {"child_sku": "C-1", "parent_sku": "P-1"}
+    ui_client.cookies.update(_authed())
+    with patch("ui.api_client.transform_item", new=AsyncMock(return_value={**result, "notices": [notice]})):
+        r = await ui_client.post("/api/items/bulk/transform", data=base)
+    assert r.status_code == 200
+    toast = _json.loads(r.headers["HX-Trigger"])["celerpToast"]
+    assert "Default Sell Qty 0.5 was not carried over: piece cannot hold it." in toast["message"], toast
+    assert toast["persist"] is True and "flash--warning" in r.text
+    with patch("ui.api_client.transform_item", new=AsyncMock(return_value={**result, "notices": []})):
+        r = await ui_client.post("/api/items/bulk/transform", data=base)
+    assert "celerpToast" not in r.headers["HX-Trigger"] and "flash--success" in r.text
 
 
 def test_reserved_badge_renders():

@@ -2,6 +2,9 @@
 # SPDX-License-Identifier: MIT
 """Shared constants for the docs module."""
 
+from collections.abc import Callable
+from decimal import Decimal
+
 from celerp.services.doc_balance import MEMO_LIVE_STATUSES
 from celerp.services.list_behavior import SCAN_RUNS_FIELD
 
@@ -59,6 +62,53 @@ SUPPLIER_RETURN_STATUSES: dict[str, frozenset[str]] = {
     "purchase_order": _RETURN_OPEN | {"partial", "paid"},
 }
 
+# Per-doc-type statuses POST /docs/{id}/convert takes a document in. A quotation converts in
+# every status but QUOTATION_SPENT_STATUSES.
+CONVERTIBLE_STATUSES: dict[str, frozenset[str]] = {
+    "memo": frozenset({"final", "sent", "received", "partially_received", "converted"}),
+    "consignment_in": frozenset({"final", "sent", "received", "partially_received", "partial_returned", "returned"}),
+}
+QUOTATION_SPENT_STATUSES = frozenset({"void", "converted"})
+
+
+def sent_out_by(item_state: dict, doc_id: str) -> bool:
+    """Whether document ``doc_id`` sent these goods out (sold or out on memo): it
+    fulfilled them, or holds them as their status document."""
+    return item_state.get("status") in ("sold", "memo_out") and (
+        doc_id in (item_state.get("fulfilled_for_docs") or []) or item_state.get("status_doc_id") == doc_id)
+
+
+def quantities_still_moving(state: dict, shipped: Callable[[dict], bool]) -> list[tuple[dict, float]]:
+    """Each line of a document with the quantity on it that can still be received, shipped or
+    carried into a converted document. A draft and an open quotation carry their whole lines, since
+    converting a quotation copies them. A document that receives carries what each line has not
+    received yet; one that ships carries the lines whose goods have not gone out (``shipped``),
+    and nothing once all of them have. A subscription template carries its whole lines until it
+    is cancelled, since it keeps making documents from them. What came in or went out, even if it
+    can still be sent back or converted (a memo bills what is out on it, a consignment buys what
+    was kept), sits in its item, so a document that can only do that carries nothing. Any other
+    document, a converted one among them, is history."""
+    doc_type, status = state.get("doc_type"), state.get("status")
+    lines = [line for line in state.get("line_items") or [] if isinstance(line, dict)]
+    if (doc_type == "quotation" and status not in QUOTATION_SPENT_STATUSES) \
+            or (doc_type in TEMPLATE_DOC_TYPES and status != "cancelled"):
+        return [(line, line.get("quantity")) for line in lines]
+    if status in RECEIVABLE_STATUSES.get(doc_type, ()):
+        return [(line, left) for line in lines if (left := _unreceived(line)) > 0]
+    if status in FULFILLABLE_STATUSES.get(doc_type, ()):
+        if state.get("fulfillment_status") == "fulfilled":
+            return []
+        return [(line, line.get("quantity")) for line in lines if not shipped(line)]
+    if status in (None, "draft"):
+        return [(line, line.get("quantity")) for line in lines]
+    return []
+
+
+def _unreceived(line: dict) -> float:
+    ordered, received = (Decimal(str(float(line.get(key) or 0))) for key in ("quantity", "quantity_received"))
+    return float(ordered - received)
+
+
 # The payment methods that record a credit note applied to a document rather than money:
 # the receiving side names its source (an invoice's "credit_note", a bill's
 # "supplier_credit") and the note's own side is "applied". A pair moves no cash, so it is
@@ -68,6 +118,13 @@ CREDIT_APPLICATION_METHODS: frozenset[str] = frozenset({"credit_note", "applied"
 # Doc types that are subscription templates (not fulfillable, not part of normal doc counters).
 # These are recurring template docs - they should never show a fulfill button.
 TEMPLATE_DOC_TYPES: frozenset[str] = frozenset({"subscription_invoice", "subscription_po"})
+
+
+def template_label(state: dict, entity_id: str = "") -> str:
+    """A subscription template's name as the subscriptions list shows it: its reference, else its
+    number, else its name, else the last part of its id. A template made with New subscription
+    has a reference and no name."""
+    return state.get("ref_id") or state.get("doc_number") or state.get("name") or entity_id.split(":")[-1]
 
 # Document types whose line prices are the company's own selling prices, so a
 # price that differs from its reference needs set_sales_doc_prices. Purchase and

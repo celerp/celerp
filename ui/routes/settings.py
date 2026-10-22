@@ -32,6 +32,11 @@ from ui.routes.documents import _action_error
 from ui.routes.setup import business_type_label, business_type_options
 
 
+def _refusal(e: APIError) -> FT:
+    """An API refusal as its message in the user's language, shown where the action was taken."""
+    return P(refusal_text(e.data or e.detail) or str(e.detail), cls="cell-error")
+
+
 async def _check_permission(
     request: Request, key: str, *, page_view: bool = False
 ) -> Response | None:
@@ -86,6 +91,12 @@ async def _category_field_count(token: str, key: str) -> int:
         return 0
 
 
+def _cat_fields_url(key: str) -> str:
+    """The page listing one category's fields."""
+    from urllib.parse import quote
+    return f"/settings/inventory?tab=categories&cat={quote(key, safe='')}"
+
+
 def _category_row(key: str, display_name: str, field_count: int) -> FT:
     """Single category Tr for the Your Categories table."""
     from urllib.parse import quote as _q
@@ -100,13 +111,39 @@ def _category_row(key: str, display_name: str, field_count: int) -> FT:
         Td(str(field_count), cls="cell cell--center your-cats-fields"),
         Td(
             A(t("settings.edit"),
-              href=f"/settings/inventory?tab=categories&cat={_q(key, safe='')}",
+              href=_cat_fields_url(key),
               cls="btn btn--secondary btn--xs"),
             Button("x", cls="btn btn--danger btn--xs",
                    hx_delete=f"/settings/categories/{_q(key, safe='')}",
                    hx_target="closest tr",
                    hx_swap="outerHTML"),
             cls="cell cell--action your-cats-action",
+        ),
+        cls="data-row",
+    )
+
+
+def _category_editor(key: str, value: str, error: FT | None = None) -> FT:
+    """The rename row for a category: the name box holding ``value``, Save and Cancel, and a
+    refused rename's reason under the box, so a refusal keeps the row and what was typed."""
+    return Tr(
+        Td(
+            Form(
+                Input(type="text", name="new_name", value=value,
+                      cls="form-input form-input--sm cat-add-input",
+                      autofocus=True),
+                Button(t("btn.save"), type="submit", cls="btn btn--primary btn--xs"),
+                Button(t("btn.cancel"), type="button", cls="btn btn--secondary btn--xs",
+                       hx_get=f"/settings/categories/{key}/cancel",
+                       hx_target="closest tr",
+                       hx_swap="outerHTML"),
+                hx_patch=f"/settings/categories/{key}",
+                hx_target="closest tr",
+                hx_swap="outerHTML",
+                cls="cat-add-form",
+            ),
+            error or "",
+            colspan="3", cls="cell",
         ),
         cls="data-row",
     )
@@ -1532,8 +1569,8 @@ def setup_routes(app):
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
-            return _R("", status_code=500)
-        return _R("", status_code=204)
+            return _refusal(e)
+        return _R("", status_code=204, headers={"HX-Redirect": _cat_fields_url(category)})
 
     @app.post("/settings/cat-schema/{category}/add")
     async def cat_schema_field_add(request: Request, category: str):
@@ -1562,8 +1599,8 @@ def setup_routes(app):
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
-            return _R("", status_code=500)
-        return _R("", status_code=204)
+            return _refusal(e)
+        return _R("", status_code=204, headers={"HX-Redirect": _cat_fields_url(category)})
 
     # ── Module toggle endpoints ──────────────────────────────────────
     @app.post("/settings/locations/new")
@@ -2247,15 +2284,10 @@ def setup_routes(app):
         if not vertical:
             return P(t("settings.no_vertical_specified"), cls="error-banner")
         try:
-            result = await api.apply_vertical_preset(token, vertical)
+            await api.apply_vertical_preset(token, vertical)
         except APIError as e:
-            return P(str(e.detail), cls="error-banner")
-        n = result.get("categories", 0)
-        return Div(
-            Span(t("settings.vertical_applied", name=result.get("applied", vertical), n=n),
-                 cls="flash flash--success"),
-            id="verticals-apply-result",
-        )
+            return _refusal(e)
+        return _R("", status_code=204, headers={"HX-Redirect": "/settings/inventory?tab=categories"})
 
     @app.post("/settings/verticals/apply-category")
     async def verticals_apply_category(request: Request):
@@ -2269,14 +2301,10 @@ def setup_routes(app):
         if not name:
             return P(t("settings.no_category_specified"), cls="error-banner")
         try:
-            result = await api.apply_vertical_category(token, name)
+            await api.apply_vertical_category(token, name)
         except APIError as e:
-            return P(str(e.detail), cls="error-banner")
-        return Div(
-            Span(t("settings.category_added", name=category_label(name, result.get("display_name"))),
-                 cls="flash flash--success"),
-            id="verticals-apply-result",
-        )
+            return _refusal(e)
+        return _R("", status_code=204, headers={"HX-Redirect": "/settings/inventory?tab=categories"})
 
     # ── Category CRUD UI routes ─────────────────────────────────────────────
 
@@ -2288,11 +2316,11 @@ def setup_routes(app):
         form = await request.form()
         name = str(form.get("new_category_name", "")).strip()
         if not name:
-            return P(t("settings.field_is_required", label=t("settings.new_category_name")), cls="error-banner")
+            return P(t("settings.category_name_required"), cls="cell-error")
         try:
             await api.create_category(token, name)
         except APIError as e:
-            return P(str(e.detail), cls="error-banner")
+            return _refusal(e)
         return Response("", status_code=204, headers={"HX-Redirect": "/settings/inventory?tab=categories"})
 
     @app.delete("/settings/categories/{category_key}")
@@ -2328,26 +2356,7 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return Response("", status_code=401, headers={"HX-Redirect": "/login"})
-        return Tr(
-            Td(
-                Form(
-                    Input(type="text", name="new_name", value=await _category_name(token, category_key),
-                          cls="form-input form-input--sm cat-add-input",
-                          autofocus=True),
-                    Button(t("btn.save"), type="submit", cls="btn btn--primary btn--xs"),
-                    Button(t("btn.cancel"), type="button", cls="btn btn--secondary btn--xs",
-                           hx_get=f"/settings/categories/{category_key}/cancel",
-                           hx_target="closest tr",
-                           hx_swap="outerHTML"),
-                    hx_patch=f"/settings/categories/{category_key}",
-                    hx_target="closest tr",
-                    hx_swap="outerHTML",
-                    cls="cat-add-form",
-                ),
-                colspan="3", cls="cell",
-            ),
-            cls="data-row",
-        )
+        return _category_editor(category_key, await _category_name(token, category_key))
 
     @app.get("/settings/categories/{category_key}/cancel")
     async def settings_category_rename_cancel(request: Request, category_key: str):
@@ -2365,7 +2374,7 @@ def setup_routes(app):
         form = await request.form()
         new_name = str(form.get("new_name", "")).strip()
         if not new_name:
-            return P(t("settings.field_is_required", label=t("settings.new_category_name")), cls="error-banner")
+            return _category_editor(category_key, new_name, P(t("settings.category_name_required"), cls="cell-error"))
         # Saving the name as shown (a library category reads in the user's language) is
         # no rename: the category keeps its library name and keeps translating.
         if new_name == await _category_name(token, category_key):
@@ -2373,7 +2382,7 @@ def setup_routes(app):
         try:
             await api.rename_category(token, category_key, new_name)
         except APIError as e:
-            return P(str(e.detail), cls="error-banner")
+            return _category_editor(category_key, new_name, _refusal(e))
         import re as _re
         new_key = _re.sub(r"[^a-z0-9]+", "_", new_name.lower()).strip("_")
         return _category_row(new_key, category_label(new_key, new_name), await _category_field_count(token, new_key))
