@@ -7167,7 +7167,7 @@ async def _undo_supplier_return(session, company_id, user_id, note_id: str, note
 
     key = str(note["source_return"])
     doc_id = str(note.get("original_doc_id") or "")
-    await _get_doc(session, company_id, doc_id, for_update=True)
+    doc = await _get_doc(session, company_id, doc_id, for_update=True)
     returned = await find_event_by_idempotency(session, company_id, key)
     if returned is None or returned.entity_id != doc_id or returned.event_type != "doc.items_returned":
         raise HTTPException(status_code=409, detail=refusal(
@@ -7179,7 +7179,11 @@ async def _undo_supplier_return(session, company_id, user_id, note_id: str, note
                                        return_key=key, note_id=note_id)
     items = [x for x in data.get("items") or [] if x.get("return_key") == key]
     lots = {x.get("returned_lot_id") or x["item_id"]: x.get("lot_status") or "available" for x in items}
-    await lock_projections(session, company_id, lots)
+    held = await lock_projections(session, company_id, lots)
+    # The lots were history while they were back with the supplier: they come back held to
+    # the units of today, before any of them is put back.
+    await require_moving_fits_units(session, company_id, doc_id, "doc", doc.state, also=[
+        ({"item_id": lot}, row.state.get("quantity")) for lot, row in held.items()])
     for lot, restored in lots.items():
         await emit_event(
             session, company_id=company_id, entity_id=lot, entity_type="item",

@@ -17,12 +17,15 @@ from fastapi import HTTPException
 from celerp.events.engine import emit_event
 from celerp.services.company_lock import locked_company
 from celerp.services.field_schema import _BASE_FIELDS, get_effective_field_schema
-from celerp.services.line_measures import validate_default_sell_qty
+from celerp.routers.companies import UnitRecord
+from celerp.services.line_measures import proposed_sell_qty, validate_default_sell_qty
 from celerp.services.list_behavior import FINALIZED
+from celerp.services.units import build_unit_map
 from mfg_runs import complete, issue, product, receive, reopen, run
 from test_cost_restatement import _item, _merge, _state
 from test_inventory_transform import _transform_payload
-from test_receipt_accounting import _doc, _finalize, _parcels, _receive
+from test_receipt_accounting import _doc, _finalize, _parcels, _receive, _return
+from test_supplier_credit_note import _trial_balance
 
 LOCALES = Path(__file__).resolve().parent.parent / "ui" / "locales"
 
@@ -429,9 +432,11 @@ async def test_a_partly_received_document_blocking_fewer_decimals_is_finished_by
     r = await _set_carat_decimals(client, auth, 2)
     assert r.status_code == 422, r.text
     detail = r.json()["detail"]
-    assert detail["message_key"] == "units.precision_lowered_under_received", detail
+    assert detail["message_key"] == "units.precision_lowered_under_partly_received", detail
     assert detail["params"] == {"unit": "carat", "decimals": 2, "examples": number, "current": 3}, detail
-    assert "sending them back with Return Goods, voiding it, and issuing it again for what arrived" in detail["message"], detail
+    assert ("While what arrived is still in stock, send it back with Return Goods, void the document, and issue it "
+            "again for what arrived. Otherwise, receive the rest and send that back with Return Goods.") \
+        in detail["message"], detail
     # None of the plain ways out finishes it.
     assert (await client.post(f"/docs/{doc}/void", headers=auth["headers"], json={})).status_code == 409
     assert (await client.post(f"/docs/{doc}/close", headers=auth["headers"], json={})).status_code == 422
@@ -469,7 +474,7 @@ async def test_a_partly_received_document_beside_a_subscription_names_both_ways_
     r = await _set_carat_decimals(client, auth, 2)
     assert r.status_code == 422, r.text
     detail = r.json()["detail"]
-    assert detail["message_key"] == "units.precision_lowered_under_received_and_templates", detail
+    assert detail["message_key"] == "units.precision_lowered_under_partly_received_and_templates", detail
     assert detail["params"] == {"unit": "carat", "decimals": 2,
                                 "examples": state.get("doc_number") or state["ref_id"],
                                 "templates": (await _state(session, auth, sub))["ref_id"], "current": 3}, detail
@@ -482,6 +487,123 @@ async def test_a_partly_received_document_beside_a_subscription_names_both_ways_
     await _finalize(client, auth, unreceived)
     r = await _set_carat_decimals(client, auth, 2)
     assert r.json()["detail"]["message_key"] == "units.precision_lowered_under_quantities_and_templates", r.text
+
+
+async def _short_shipped(client, session, auth, doc_type: str) -> tuple[str, dict, str]:
+    """A purchase order or bill for 0.275 ct of which 0.1 ct arrived and no more will, while carat
+    has 3 decimal places. -> (the catalog lot, the line, the document)"""
+    assert (await _set_carat_decimals(client, auth, 3)).status_code == 200
+    lot = await _lot(client, auth, qty=1)
+    line = {"item_id": lot, "sku": await _sku(session, auth, lot), "name": "Stone", "unit": "carat",
+            "sell_by": "carat", "unit_price": 10.0}
+    doc = await _doc(client, auth, doc_type, [{**line, "quantity": 0.275}])
+    await _finalize(client, auth, doc)
+    r = await _receive(client, auth, doc, {"po_line_index": 0, "item_id": lot, "quantity_received": 0.1})
+    assert r.status_code == 200, r.text
+    r = await _set_carat_decimals(client, auth, 2)
+    assert r.json()["detail"]["message_key"] == "units.precision_lowered_under_partly_received", r.text
+    return lot, line, doc
+
+
+async def _bought_once(client, auth, doc_type: str, line: dict, lot: str, qty: float) -> str:
+    doc = await _doc(client, auth, doc_type, [{**line, "quantity": qty}])
+    await _finalize(client, auth, doc)
+    r = await _receive(client, auth, doc, {"po_line_index": 0, "item_id": lot, "quantity_received": qty})
+    assert r.status_code == 200, r.text
+    return doc
+
+
+async def _return_void_issue_again(client, session, auth, doc_type: str, doc: str, line: dict, lot: str) -> None:
+    """The way out while what arrived is in stock: Return Goods, void, issue again for what arrived."""
+    [arrived] = (await _state(session, auth, doc))["received_item_ids"]
+    assert (await _return(client, auth, doc, arrived, 0.1)).status_code == 200
+    r = await client.post(f"/docs/{doc}/void", headers=auth["headers"], json={})
+    assert r.status_code == 200, r.text
+    await _bought_once(client, auth, doc_type, line, lot, 0.1)
+
+
+def _moved(before: dict[str, float], after: dict[str, float]) -> dict[str, float]:
+    return {code: round(after.get(code, 0) - before.get(code, 0), 2) for code in {*before, *after}
+            if round(after.get(code, 0) - before.get(code, 0), 2)}
+
+
+@pytest.mark.parametrize("paid", [False, True])
+@pytest.mark.parametrize("doc_type", ["purchase_order", "bill"])
+async def test_returning_voiding_and_issuing_again_books_only_what_arrived(client, session, auth, doc_type, paid):
+    before = await _trial_balance(client, auth)
+    lot, line, doc = await _short_shipped(client, session, auth, doc_type)
+    if paid:  # for what arrived, the usual state of a short-shipped bill
+        r = await client.post(f"/docs/{doc}/payment", headers=auth["headers"], json={
+            "amount": 1.0, "method": "cash", "payment_date": "2026-10-09", "bank_account": "1111"})
+        assert r.status_code == 200, r.text
+    await _return_void_issue_again(client, session, auth, doc_type, doc, line, lot)
+    assert (await _set_carat_decimals(client, auth, 2)).status_code == 200
+    route = _moved(before, await _trial_balance(client, auth))
+    base = await _trial_balance(client, auth)
+    await _bought_once(client, auth, doc_type, line, lot, 0.1)
+    assert route == _moved(base, await _trial_balance(client, auth)), route
+
+
+@pytest.mark.parametrize("doc_type", ["purchase_order", "bill"])
+async def test_once_what_arrived_is_sold_receiving_the_rest_and_returning_it_finishes_the_document(
+        client, session, auth, doc_type):
+    """Return Goods cannot send back goods already sold, so the refusal names the other way out:
+    receive the rest and send that back. The books end as one purchase of what arrived, sold, and
+    the lot sent back (written off as it is) never holds the unit."""
+    before = await _trial_balance(client, auth)
+    lot, line, doc = await _short_shipped(client, session, auth, doc_type)
+    assert ("Otherwise, receive the rest and send that back with Return Goods."
+            in (await _set_carat_decimals(client, auth, 2)).json()["detail"]["message"])
+    [arrived] = (await _state(session, auth, doc))["received_item_ids"]
+    r = await client.post("/docs", headers=auth["headers"], json={
+        "doc_type": "invoice", "contact_id": "customer:1", "line_items": [
+            {"item_id": arrived, "sku": await _sku(session, auth, arrived), "name": "Stone", "quantity": 0.1,
+             "unit": "carat", "unit_price": 30.0}]})
+    assert r.status_code == 200, r.text
+    invoice = r.json()["id"]
+    assert (await client.post(f"/docs/{invoice}/finalize", headers=auth["headers"])).status_code == 200
+    r = await client.post(f"/docs/{invoice}/fulfill-lines", headers=auth["headers"],
+                          json={"line_entity_ids": [arrived]})
+    assert r.status_code == 200, r.text
+    sold = _moved(before, await _trial_balance(client, auth))
+    assert (await _return(client, auth, doc, arrived, 0.1)).status_code == 409  # sold, not on hand
+
+    r = await _receive(client, auth, doc, {"po_line_index": 0, "item_id": lot, "quantity_received": 0.175})
+    assert r.status_code == 200, r.text
+    [rest] = [i for i in (await _state(session, auth, doc))["received_item_ids"] if i != arrived]
+    assert (await _return(client, auth, doc, rest, 0.175)).status_code == 200
+    assert (await _set_carat_decimals(client, auth, 2)).status_code == 200
+    assert _moved(before, await _trial_balance(client, auth)) == sold
+    assert (await _state(session, auth, rest))["status"] == "disposed"
+
+
+async def test_voiding_a_supplier_credit_note_holds_the_goods_it_brings_back_to_their_unit(client, session, auth):
+    """Goods sent back are history while they are with the supplier, so they never block fewer
+    decimal places; voiding the credit note their return raised brings them back, and is held to
+    the unit as it is now, before anything is put back."""
+    assert (await _set_carat_decimals(client, auth, 3)).status_code == 200
+    lot = await _lot(client, auth, qty=1)
+    bill = await _bought_once(client, auth, "bill", {"item_id": lot, "sku": await _sku(session, auth, lot),
+                                                     "name": "Stone", "unit": "carat", "unit_price": 10.0}, lot, 0.275)
+    r = await client.post(f"/docs/{bill}/payment", headers=auth["headers"], json={
+        "amount": 2.75, "method": "cash", "payment_date": "2026-10-09", "bank_account": "1111"})
+    assert r.status_code == 200, r.text
+    [arrived] = (await _state(session, auth, bill))["received_item_ids"]
+    assert (await _return(client, auth, bill, arrived, 0.125)).status_code == 200
+    [returned] = (await _state(session, auth, bill))["returned_items"]
+    back = returned.get("returned_lot_id") or arrived
+    [note] = [d for d in (await _rows(session, auth)).values()
+              if (await _state(session, auth, d)).get("source_return")]
+    assert (await _set_carat_decimals(client, auth, 2)).status_code == 200
+
+    r = await client.post(f"/docs/{note}/void", headers=auth["headers"], json={})
+    _finer_refusal(r, label=await _sku(session, auth, back), qty="0.125")
+    assert (await _state(session, auth, back))["status"] == "disposed"
+    assert (await _state(session, auth, note))["status"] != "void"
+    assert (await _set_carat_decimals(client, auth, 3)).status_code == 200
+    r = await client.post(f"/docs/{note}/void", headers=auth["headers"], json={})
+    assert r.status_code == 200, r.text
+    assert (await _state(session, auth, back))["status"] == "available"
 
 
 async def test_split_pieces_are_named_once_in_the_refusal(client, session, auth):
@@ -638,7 +760,8 @@ async def test_a_memo_blocks_what_it_has_still_to_send_and_its_lot_while_out_nev
     # The invoice draft carries its lines until it is issued over the lot it already holds.
     invoice = r.json()["target_doc_id"]
     assert (await client.post(f"/docs/{invoice}/finalize", headers=auth["headers"])).status_code == 200
-    # Only the lot, which every item status counts, holds 0.275 now: the converted memo never does.
+    # Only the lot, which counts in every status but written off or returned, holds 0.275 now: the
+    # converted memo never does.
     assert await holders() == sku
     assert await _carat_decimals(client, auth) == 3
 
@@ -992,12 +1115,20 @@ async def _put_units(client, auth, units: list[dict]):
     return await client.put("/companies/me/units", headers=auth["headers"], json={"units": units})
 
 
+async def _store_units(session, auth, units: list[dict]) -> None:
+    """Units stored as they are, as data saved before removing a unit in use was refused can hold
+    them: an item sold by a unit that is no longer one of the company's."""
+    company = await locked_company(session, auth["company_id"])
+    company.settings = {**company.settings, "units": units}
+    await session.commit()
+
+
 async def test_a_unit_deleted_then_added_back_is_checked_against_what_it_holds(client, session, auth):
     lot = await _lot(client, auth, qty=0.27)
     units = await _units(client, auth)
     carat = next(u for u in units if u["name"] == "carat")
     without = [u for u in units if u["name"] != "carat"]
-    assert (await _put_units(client, auth, without)).status_code == 200
+    await _store_units(session, auth, without)
 
     r = await _put_units(client, auth, [*without, {**carat, "decimals": 1}])
     assert r.status_code == 422, r.text
@@ -1034,10 +1165,9 @@ async def test_a_category_seeding_a_deleted_unit_back_is_checked_against_what_it
     finer = [{**u, "decimals": 3} if u["name"] == "gram" else u for u in await _units(client, auth)]
     assert (await _put_units(client, auth, finer)).status_code == 200
     lot = await _lot(client, auth, sell_by="gram", qty=0.275)
-    without = [u for u in finer if u["name"] != "gram"]
-    assert (await _put_units(client, auth, without)).status_code == 200
     company = await locked_company(session, auth["company_id"])
-    company.settings = {**company.settings, **{  # so the category is new to the company
+    company.settings = {**company.settings, "units": [u for u in finer if u["name"] != "gram"], **{
+        # gram gone while the lot holds it, and the category new to the company
         key: {k: v for k, v in (company.settings.get(key) or {}).items() if k != "diamond"}
         for key in ("category_schemas", "category_display_names")}}
     await session.commit()
@@ -1048,6 +1178,175 @@ async def test_a_category_seeding_a_deleted_unit_back_is_checked_against_what_it
     assert (detail["params"]["examples"], detail["params"]["current"]) == (await _sku(session, auth, lot), 3), detail
     assert all(u["name"] != "gram" for u in await _units(client, auth))
     assert (await _state(session, auth, lot))["quantity"] == 0.275
+
+
+# A unit removed, or its type changed, while items or open records still use it
+
+def _without_carat(units: list[dict]) -> list[dict]:
+    return [u for u in units if u["name"] != "carat"]
+
+
+def _carat_as_pieces(units: list[dict]) -> list[dict]:
+    return [{**u, "unit_type": "pieces"} if u["name"] == "carat" else u for u in units]
+
+
+_CARAT_CHANGES = {"removed": (_without_carat, "units.unit_removed_in_use"),
+                  "retyped": (_carat_as_pieces, "units.unit_type_changed_in_use")}
+
+
+async def _scanned(client, auth, sku: str) -> float:
+    """What one scan of ``sku`` adds to a new invoice."""
+    r = await client.post("/docs", headers=auth["headers"], json={
+        "doc_type": "invoice", "contact_id": "customer:1", "line_items": []})
+    assert r.status_code == 200, r.text
+    r = await client.post(f"/docs/{r.json()['id']}/scan", headers=auth["headers"], json={"barcode": sku})
+    assert r.status_code == 200 and r.json()["scanned"] == 1, r.text
+    return r.json()["results"][0]["quantity"]
+
+
+@pytest.mark.parametrize("change", list(_CARAT_CHANGES))
+async def test_a_unit_an_item_is_sold_by_cannot_be_removed_or_retyped_so_its_scan_adds_the_same(
+        client, session, auth, change):
+    """A splittable 3.50 ct lot with no Default Sell Qty: a scan adds all 3.5. Removing carat, or
+    making it a piece unit, would make the same scan add 1."""
+    sku = await _sku(session, auth, await _lot(client, auth, qty=3.5))
+    assert await _scanned(client, auth, sku) == 3.5
+    edit, key = _CARAT_CHANGES[change]
+    units = await _units(client, auth)
+
+    r = await _put_units(client, auth, edit(units))
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert detail["message_key"] == key, detail
+    assert detail["params"]["unit"] == "carat" and sku in detail["params"]["examples"].split(", "), detail
+    assert detail["message"].startswith(f"carat cannot {'be removed' if change == 'removed' else 'change its type'}: "
+                                        f"items, open documents or subscriptions still use it ("), detail
+    assert await _units(client, auth) == units
+    assert await _scanned(client, auth, sku) == 3.5
+
+
+async def test_a_unit_items_are_weighed_in_cannot_be_removed(client, session, auth):
+    """Splitting reads the weight unit's decimal places."""
+    lot = await _lot(client, auth, sell_by="piece", qty=1, weight_unit="carat")
+    r = await _put_units(client, auth, _without_carat(await _units(client, auth)))
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"]["params"] == {"unit": "carat", "examples": await _sku(session, auth, lot)}, r.text
+
+
+@pytest.mark.parametrize("change", list(_CARAT_CHANGES))
+async def test_the_way_out_named_gives_the_items_another_unit_then_the_change_goes_through(
+        client, session, auth, change):
+    lot = await _lot(client, auth, qty=3.5)
+    edit, _key = _CARAT_CHANGES[change]
+    assert (await _put_units(client, auth, edit(await _units(client, auth)))).status_code == 422
+    assert (await _patch(client, auth, lot, sell_by="gram")).status_code == 200
+    assert (await _put_units(client, auth, edit(await _units(client, auth)))).status_code == 200
+    assert await _scanned(client, auth, await _sku(session, auth, lot)) == 3.5
+
+
+@pytest.mark.parametrize("entity_type, doc_type, status", _STILL_MOVING)
+async def test_an_open_document_line_blocks_removing_its_unit(client, session, auth, entity_type, doc_type, status):
+    await _carat_doc(session, auth, status, 0.25, "OPEN-1", doc_type, entity_type)
+    r = await _put_units(client, auth, _without_carat(await _units(client, auth)))
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"]["params"] == {"unit": "carat", "examples": "OPEN-1"}, r.text
+
+
+@pytest.mark.parametrize("entity_type, doc_type, status", _HISTORY)
+async def test_a_history_document_line_never_blocks_removing_its_unit(client, session, auth, entity_type, doc_type,
+                                                                      status):
+    await _carat_doc(session, auth, status, 0.25, "DONE-1", doc_type, entity_type)
+    assert (await _put_units(client, auth, _without_carat(await _units(client, auth)))).status_code == 200
+
+
+async def test_a_written_off_lot_never_blocks_a_units_change(client, session, auth):
+    lot = await _lot(client, auth, qty=0.275)
+    await emit_event(session, company_id=auth["company_id"], entity_id=lot, entity_type="item",
+                     event_type="item.written_off", data={"source_list_id": "list:w", "doc_number": "WO-1"},
+                     actor_id=None, location_id=None, source="test", idempotency_key=str(uuid.uuid4()), metadata_={})
+    await session.commit()
+    assert (await _set_carat_decimals(client, auth, 1)).status_code == 200
+    assert (await _put_units(client, auth, _without_carat(await _units(client, auth)))).status_code == 200
+
+
+@pytest.mark.parametrize("change, key", [("removed", "units.unit_removed_under_partly_received"),
+                                         ("retyped", "units.unit_type_changed_under_partly_received")])
+async def test_a_partly_received_document_blocking_a_unit_change_names_both_ways_out(
+        client, session, auth, change, key):
+    await _short_shipped(client, session, auth, "purchase_order")
+    r = await _put_units(client, auth, _CARAT_CHANGES[change][0](await _units(client, auth)))
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert detail["message_key"] == key, detail
+    assert "While what arrived is still in stock" in detail["message"], detail
+    assert "Otherwise, receive the rest and send that back with Return Goods." in detail["message"], detail
+
+
+async def test_a_line_in_its_items_unit_removed_meanwhile_is_refused_when_it_moves_again(client, session, auth):
+    """A unit removed before it was checked: the draft its item is on cannot come back from void."""
+    lot = await _lot(client, auth, qty=1)
+    r = await client.post("/docs", headers=auth["headers"], json={
+        "doc_type": "invoice", "contact_id": "customer:1", "line_items": [
+            {"item_id": lot, "name": "Stone", "quantity": 0.5, "unit_price": 10}]})
+    assert r.status_code == 200, r.text
+    doc = r.json()["id"]
+    assert (await client.post(f"/docs/{doc}/void", headers=auth["headers"], json={})).status_code == 200
+    units = await _units(client, auth)
+    await _store_units(session, auth, _without_carat(units))
+
+    r = await client.post(f"/docs/{doc}/unvoid", headers=auth["headers"], json={})
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert detail["message_key"] == "units.moving_unit_removed", detail
+    assert detail["params"] == {"label": "Stone", "unit": "carat"}, detail
+    await _store_units(session, auth, units)
+    assert (await client.post(f"/docs/{doc}/unvoid", headers=auth["headers"], json={})).status_code == 200
+
+
+# Every field of a company unit, changed on a unit in use: refused, or what its stored quantities
+# mean (what a scan adds, whether they are accepted) is unchanged. A new field fails
+# test_every_unit_field_is_covered until it is added here.
+_FIELD_CHANGES = {
+    "name": (lambda u: {**u, "name": "carats"}, 422),
+    "label": (lambda u: {**u, "label": "Carats"}, 200),
+    "decimals up": (lambda u: {**u, "decimals": 3}, 200),
+    "decimals down": (lambda u: {**u, "decimals": 1}, 422),
+    "unit_type pieces": (lambda u: {**u, "unit_type": "pieces"}, 422),
+    "unit_type quantity": (lambda u: {**u, "unit_type": "quantity"}, 422),
+}
+
+
+def test_every_unit_field_is_covered():
+    covered = {name.split()[0] for name in _FIELD_CHANGES}
+    assert set(UnitRecord.model_fields) == covered, "classify the new unit field in _FIELD_CHANGES"
+
+
+def _meaning(states: list[dict], unit_map: dict) -> list:
+    def accepted(qty, sell_by):
+        try:
+            return validate_default_sell_qty(qty, sell_by, unit_map)
+        except HTTPException as exc:
+            return exc.detail["message_key"]
+    return [(proposed_sell_qty(state, unit_map), accepted(state["quantity"], state["sell_by"]),
+             accepted(0.25, state["sell_by"])) for state in states]
+
+
+@pytest.mark.parametrize("change", list(_FIELD_CHANGES))
+async def test_a_change_to_a_unit_in_use_is_refused_or_keeps_what_its_quantities_mean(client, session, auth, change):
+    lots = [await _lot(client, auth, qty=3.55), await _lot(client, auth, qty=6, default_sell_qty=0.25)]
+    await _carat_doc(session, auth, "draft", 0.25, "OPEN-G")
+    units = await _units(client, auth)
+    states = [await _state(session, auth, lot) for lot in lots]
+    before = _meaning(states, build_unit_map(units))
+    edit, expected = _FIELD_CHANGES[change]
+
+    r = await _put_units(client, auth, [edit(u) if u["name"] == "carat" else u for u in units])
+    assert r.status_code == expected, r.text
+    after = await _units(client, auth)
+    if r.status_code == 422:
+        assert after == units
+    else:
+        assert _meaning(states, build_unit_map(after)) == before
 
 
 # CSV import and export

@@ -171,6 +171,13 @@ def _finer_than(value, decimals: int) -> bool:
     return math.isfinite(qty) and exceeds_precision(qty, decimals)
 
 
+def _positive(value) -> bool:
+    try:
+        return float(value) > 0
+    except (TypeError, ValueError):
+        return False
+
+
 def _places(value) -> int:
     """The decimal places a stored quantity uses (0.275 -> 3)."""
     return max(0, -Decimal(str(float(value))).normalize().as_tuple().exponent)
@@ -215,8 +222,8 @@ async def require_moving_fits_units(session, company_id, entity_id: str, entity_
     move, and the item quantities ``also`` names, to its units' decimal places today: a precision
     change let them through while they were history, so they are checked as a line writer checks
     them, under the company lock. ``state`` is the state it is about to take. A quantity finer
-    than its unit allows is refused 422 naming the line, the unit and the way out, before anything
-    is written; a document a subscription makes names that subscription (``template``)."""
+    than its unit allows, or in its item's unit once that is no longer one of the company's units,
+    is refused 422 naming the line, the unit and the way out, before anything is written; a document a subscription makes names that subscription (``template``)."""
     from sqlalchemy import or_, select
 
     from celerp.models.projections import Projection
@@ -235,11 +242,27 @@ async def require_moving_fits_units(session, company_id, entity_id: str, entity_
     unit_map = build_unit_map(await get_company_units(session, company_id))
     for line, qty in lines:
         unit = _line_unit(line, item_unit)
+        item = items.get(line.get("item_id")) or {}
+        label = str(line.get("name") or line.get("sku") or item.get("sku") or item.get("name") or "-")
+        # An item is sold by one of the company's units, so a line in its item's unit that is no
+        # longer one names a unit removed while this was history: its scan and checks would
+        # read it as unknown. A line's own unit can be free text and is not held to the list.
+        if unit and unit not in unit_map and unit not in SERVICE_SELL_BY and _positive(qty) \
+                and unit in (item_unit.get(line.get("item_id")), item_unit.get(line.get("sku"))):
+            add_back = f"add {unit} back in Global Config, Inventory, Units"
+            if template:
+                raise HTTPException(status_code=422, detail=refusal(
+                    "units.template_unit_removed",
+                    f"Subscription {template} lists {label} in {unit}, which is no longer one of your units. "
+                    f"To go ahead, {add_back}, or cancel this subscription and set up a new one in a unit "
+                    f"you have.", template=template, label=label, unit=unit))
+            raise HTTPException(status_code=422, detail=refusal(
+                "units.moving_unit_removed",
+                f"{label} is in {unit}, which is no longer one of your units. To go ahead, {add_back}.",
+                label=label, unit=unit))
         decimals = unit_decimals(unit, unit_map)
         if decimals is None or not _finer_than(qty, decimals):
             continue
-        item = items.get(line.get("item_id")) or {}
-        label = str(line.get("name") or line.get("sku") or item.get("sku") or item.get("name") or "-")
         places = _places(qty)
         shown = plain_number(float(qty))
         way_out = f"set {unit} back to {places} decimal places in Global Config, Inventory, Units"
@@ -260,24 +283,42 @@ async def require_moving_fits_units(session, company_id, entity_id: str, entity_
 def _partly_received(entity_type: str, state: dict) -> bool:
     """A purchase order or bill that received some of its goods and still expects the rest. It
     cannot be voided, closed or edited while it holds received goods, so a refusal it is named in
-    gives it the way out that works: Return Goods, void, and issue it again."""
+    gives it the ways out that work (_PARTLY_RECEIVED)."""
     return entity_type == "doc" and state.get("doc_type") in ("purchase_order", "bill") and any(
         float(line.get("quantity_received") or 0) > 0
         for line in state.get("line_items") or [] if isinstance(line, dict))
 
 
-async def check_precision_change(session, company_id, old_units: list[dict], new_units: list[dict]) -> None:
-    """Fewer decimal places for a unit that still holds finer quantities: refused with 422, naming
-    a few of the items and open documents that hold them and, apart, the subscriptions, with the
-    way out of each: an item's quantity can be changed and a document finished, while an active or
-    paused subscription's lines cannot be edited, so it is cancelled and set up again. Every item
-    counts, whatever its status, since any item can come back into stock; a document, list or run
-    counts what it can still move (_still_moving). What a document received or shipped is history
-    and never blocks; a document, list or run that later moves again is held to the precision of
-    that day by require_moving_fits_units. Raising precision always passes. A unit missing from
-    the old list (deleted, then added back or re-seeded) had no precision to compare with, so it
-    is checked against what is stored in it. A line with no unit of its own is in its item's unit,
-    found by item id or SKU."""
+# How a partly received purchase order or bill is finished, in every refusal it blocks.
+_PARTLY_RECEIVED = ("A purchase order or bill that received only part of its goods is finished in one of two "
+                    "ways. While what arrived is still in stock, send it back with Return Goods, void the "
+                    "document, and issue it again for what arrived. Otherwise, receive the rest and send that "
+                    "back with Return Goods.")
+
+
+def _unit_type(unit: dict) -> str:
+    return unit.get("unit_type") or "quantity"
+
+
+async def check_units_change(session, company_id, old_units: list[dict], new_units: list[dict]) -> None:
+    """A change to the company's units that would change what stored quantities mean is refused
+    with 422, naming a few of the items, open documents and subscriptions that hold them, with the
+    way out. Checked in this order, under the caller's company lock:
+    - removing a unit (renaming one removes the old name), or changing its type, while an item is
+      sold by it or weighed in it, or a line that can still move is in it: the scan, splitting,
+      quantity checks and display all read the unit;
+    - fewer decimal places for a unit that still holds finer quantities, naming apart the
+      subscriptions, since an active or paused subscription's lines cannot be edited: it is
+      cancelled and set up again.
+    Every item counts, whatever its status, since any item can come back into stock, except one
+    written off or sent back to the supplier: that is history, and what Undo write-off or voiding
+    the supplier credit note brings back is held to the units of that day. A document, list or run
+    counts what it can still move (_still_moving); what a document received or shipped is history
+    and never blocks, and a document, list or run that later moves again is held to the units of
+    that day by require_moving_fits_units. A new label and more decimal places always pass. A
+    unit missing from the old list (deleted, then added back or re-seeded) had no precision to
+    compare with, so it is checked against what is stored in it. A line with no unit of its own
+    is in its item's unit, found by item id or SKU."""
     from sqlalchemy import or_, select
 
     from celerp_docs.doc_constants import TEMPLATE_DOC_TYPES, template_label
@@ -286,64 +327,115 @@ async def check_precision_change(session, company_id, old_units: list[dict], new
     from celerp.models.projections import Projection
     from celerp.services.line_measures import FULL, stored_sell_qty
 
-    old = {u["name"]: int(u.get("decimals") or 0) for u in old_units}
-    lowered = {u["name"]: int(u["decimals"]) for u in new_units
-               if u["name"] not in old or int(u["decimals"]) < old[u["name"]]}
-    if not lowered:
+    old = {u["name"]: u for u in old_units}
+    new = {u["name"]: u for u in new_units}
+    gone = [name for name in old if name not in new]
+    retyped = [name for name in old if name in new and _unit_type(new[name]) != _unit_type(old[name])]
+    lowered = {name: int(u["decimals"]) for name, u in new.items()
+               if name not in old or int(u["decimals"]) < int(old[name].get("decimals") or 0)}
+    if not (gone or retyped or lowered):
         return
+    names = [*gone, *retyped, *lowered]
     status = Projection.state["status"].as_string()
     rows = (await session.execute(select(Projection.entity_id, Projection.entity_type, Projection.state).where(
         Projection.company_id == company_id,
-        or_((Projection.entity_type == "item") & Projection.state["sell_by"].as_string().in_(list(lowered)),
+        or_((Projection.entity_type == "item") & or_(status.is_(None), status != "disposed")
+            & or_(Projection.state["sell_by"].as_string().in_(names),
+                  Projection.state["weight_unit"].as_string().in_(names)),
             Projection.entity_type.in_(("doc", "list")) & or_(status.is_(None), status != "void"),
             Projection.entity_type == "mfg_order"),
     ))).all()
     items = {entity_id: state for entity_id, entity_type, state in rows if entity_type == "item"}
     item_unit = _item_units(items)
-
     rows = [(entity_id, entity_type, state,
              None if entity_type == "item" else _still_moving(entity_id, entity_type, state, items))
             for entity_id, entity_type, state in rows]
-    for name, decimals in lowered.items():
+
+    def holding(name: str, item_holds, line_holds) -> tuple[list[str], list[str], list, bool]:
+        """Who holds ``name``: the items, documents, lists and runs, apart the subscriptions, the
+        quantities they hold it with, and whether a partly received document is among them.
+        ``item_holds(state)`` gives an item's quantities that hold it, ``line_holds(qty)`` tells
+        whether a moving line's quantity does."""
         holders: list[str] = []
         templates: list[str] = []
-        needed = decimals
+        held: list = []
         partly_received = False
         for entity_id, entity_type, state, lines in rows:
             template = state.get("doc_type") in TEMPLATE_DOC_TYPES
             if entity_type == "item":
-                sell_qty = stored_sell_qty(state.get("default_sell_qty"))
-                quantities = [state.get("quantity"), *([] if sell_qty in (None, FULL) else [sell_qty])] \
-                    if state.get("sell_by") == name else []
+                quantities = item_holds(state)
                 label = state.get("sku") or state.get("name")
             else:
-                quantities = [qty for line, qty in lines if _line_unit(line, item_unit) == name]
+                quantities = [qty for line, qty in lines if _line_unit(line, item_unit) == name and line_holds(qty)]
                 if entity_type == "mfg_order":
                     label = run_name(state)
                 elif template:
                     label = template_label(state, entity_id)
                 else:
                     label = state.get("doc_number") or state.get("ref_id") or state.get("name")
-            finer = [q for q in quantities if _finer_than(q, decimals)]
-            if finer:
+            if quantities:
                 (templates if template else holders).append(str(label or "-"))
-                needed = max(needed, *(_places(q) for q in finer))
+                held.extend(quantities)
                 partly_received = partly_received or _partly_received(entity_type, state)
+        return holders, templates, held, partly_received
+
+    def first_three(labels: list[str]) -> str:
+        # Split pieces share their parent's SKU, so a name is given once, in the order found.
+        return ", ".join(list(dict.fromkeys(labels))[:3])
+
+    for name in [*gone, *retyped]:
+        holders, templates, _, partly_received = holding(
+            name, lambda state, name=name: [state.get("quantity")] if name in (
+                state.get("sell_by"), state.get("weight_unit")) else [], _positive)
         if not (holders or templates):
             continue
-        # Split pieces share their parent's SKU, so a name is given once, in the order found.
-        examples, named = (", ".join(list(dict.fromkeys(labels))[:3]) for labels in (holders, templates))
-        current = old.get(name, needed)
+        examples = first_three([*holders, *templates])
+        lead = f"items, open documents or subscriptions still use it ({examples})"
+        way_out = "Give those items another unit, and finish those documents or cancel those subscriptions first"
+        if name in gone and partly_received:
+            detail = refusal(
+                "units.unit_removed_under_partly_received",
+                f"{name} cannot be removed: {lead}. {way_out}. {_PARTLY_RECEIVED} Or keep {name}.",
+                unit=name, examples=examples)
+        elif name in gone:
+            detail = refusal(
+                "units.unit_removed_in_use",
+                f"{name} cannot be removed: {lead}. {way_out}, or keep {name}.",
+                unit=name, examples=examples)
+        elif partly_received:
+            detail = refusal(
+                "units.unit_type_changed_under_partly_received",
+                f"{name} cannot change its type: {lead}. {way_out}. {_PARTLY_RECEIVED} Or keep {name} as it is.",
+                unit=name, examples=examples)
+        else:
+            detail = refusal(
+                "units.unit_type_changed_in_use",
+                f"{name} cannot change its type: {lead}. {way_out}, or keep {name} as it is.",
+                unit=name, examples=examples)
+        raise HTTPException(status_code=422, detail=detail)
+
+    for name, decimals in lowered.items():
+        def finer_in_item(state: dict, name=name, decimals=decimals) -> list:
+            if state.get("sell_by") != name:
+                return []
+            sell_qty = stored_sell_qty(state.get("default_sell_qty"))
+            return [q for q in (state.get("quantity"), *([] if sell_qty in (None, FULL) else [sell_qty]))
+                    if _finer_than(q, decimals)]
+
+        holders, templates, finer, partly_received = holding(
+            name, finer_in_item, lambda qty, decimals=decimals: _finer_than(qty, decimals))
+        if not (holders or templates):
+            continue
+        examples, named = first_three(holders), first_three(templates)
+        current = int(old[name].get("decimals") or 0) if name in old else max(decimals, *map(_places, finer))
         lead = f"{name} cannot go to {decimals} decimal places"
         change = "Change those quantities or finish those documents"
         cancel = f"set up new ones with quantities {name} allows"
-        received = ("A purchase order or bill that received only part of its goods is finished by sending them "
-                    "back with Return Goods, voiding it, and issuing it again for what arrived.")
         if not templates and partly_received:
             detail = refusal(
-                "units.precision_lowered_under_received",
+                "units.precision_lowered_under_partly_received",
                 f"{lead}: items or open documents still hold quantities with more ({examples}). {change} first. "
-                f"{received} Or keep {current} decimal places.",
+                f"{_PARTLY_RECEIVED} Or keep {current} decimal places.",
                 unit=name, decimals=decimals, examples=examples, current=current)
         elif not templates:
             detail = refusal(
@@ -362,8 +454,8 @@ async def check_precision_change(session, company_id, old_units: list[dict], new
                     f"with more. {change}, and cancel those subscriptions and {cancel}.")
             params = dict(unit=name, decimals=decimals, examples=examples, templates=named, current=current)
             if partly_received:
-                detail = refusal("units.precision_lowered_under_received_and_templates",
-                                 f"{both} {received} Or keep {current} decimal places.", **params)
+                detail = refusal("units.precision_lowered_under_partly_received_and_templates",
+                                 f"{both} {_PARTLY_RECEIVED} Or keep {current} decimal places.", **params)
             else:
                 detail = refusal("units.precision_lowered_under_quantities_and_templates",
                                  f"{both} Or keep {current} decimal places.", **params)
