@@ -397,7 +397,7 @@ async def buy_consignment(session, *, company_id, user_id, consignment_id: str, 
         if to_decimal(state.get("discount") or 0) > 0 and state.get("discount_type") != "percentage":
             raise _cannot_recompute()
         try:
-            data.update(document_money(data, lines, currency, keep_unrated_tax=False))
+            data.update(document_money(data, lines, currency, keep_unrated_tax=False, stored=state))
         except UnratedTaxError as exc:
             raise _cannot_recompute() from exc
     # The bill is born issued, so it is finalized in its own right.

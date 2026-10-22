@@ -2764,6 +2764,7 @@
   "documents.received_total": "ተቀብሏል: {amount}",
   "documents.already_received": "አስቀድሞ ተቀብሏል",
   "documents.remaining_amount": "የቀረው: {amount}",
+  "documents.remove_doc_tax": "Remove this tax",
   "documents.remove_from_draft": "ከረቂቅ አስወግድ",
   "documents.reprice_failed": "ዋጋዎች እንደገና ሊሰሉ አልቻሉም። እንደገና ሞክር ይምረጡ።",
   "documents.reprice_version_unknown": "Celerp የትኛውን የዚህን ሰነድ ስሪት ዋጋ እንደሚያሰላ ማወቅ አልቻለም። እንደገና ሞክር ይምረጡ፣ ከዚያ የዋጋ ዝርዝሩን እንደገና ይምረጡ።",

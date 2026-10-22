@@ -2544,6 +2544,7 @@
   "documents.received_total": "Recebido: {amount}",
   "documents.already_received": "Já recebido",
   "documents.remaining_amount": "Restante: {amount}",
+  "documents.remove_doc_tax": "Remove this tax",
   "documents.remove_from_draft": "Remover do rascunho",
   "documents.reprice_failed": "Não foi possível recalcular os preços. Selecione Tentar novamente.",
   "documents.reprice_version_unknown": "O Celerp não conseguiu identificar qual versão deste documento recalcular. Selecione Tentar novamente e escolha a lista de preços outra vez.",

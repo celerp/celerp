@@ -34,7 +34,7 @@ from celerp.services.business_time import business_today
 from celerp.services.doc_balance import awaiting_status_param, is_awaiting_payment, is_owed, outstanding_balance
 from celerp.services.money import to_decimal, to_stored_float, round_money, currency_dp, rate_dp
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, line_price_list, resolve_price
-from celerp.tax_regimes import default_tax, taxes_for
+from celerp.tax_regimes import default_line_taxes, default_tax, taxes_for
 from celerp.services.payment_terms import due_date_for_terms
 from celerp.services.permissions import missing_permission_text, role_has_permission
 from ui.components.import_access import can_import_documents
@@ -1255,8 +1255,18 @@ def _form_version(form) -> int | None:
     return int(raw) if raw.isdigit() else None
 
 
-async def _line_items_from_inventory(token: str, entity_ids: list[str], price_list: str = DEFAULT_PRICE_LIST_NAME) -> list[dict]:
-    """Fetch inventory items and build doc/list line items."""
+async def _new_line_taxes(token: str, doc_type: str | None) -> list[dict]:
+    """The taxes a new line on a document of this type starts with (see default_line_taxes); none
+    for a list (no doc_type). A failed read raises, so no line is added without its tax."""
+    if not doc_type:
+        return []
+    return default_line_taxes(await api.get_document_taxes(token, doc_type), doc_type)
+
+
+async def _line_items_from_inventory(token: str, entity_ids: list[str], price_list: str = DEFAULT_PRICE_LIST_NAME,
+                                     doc_type: str | None = None) -> list[dict]:
+    """Fetch inventory items and build doc/list line items; a document's lines start with its default tax."""
+    line_taxes = await _new_line_taxes(token, doc_type)
     line_items = []
     for eid in entity_ids:
         try:
@@ -1282,6 +1292,7 @@ async def _line_items_from_inventory(token: str, entity_ids: list[str], price_li
             "entity_id": eid,
             "allow_splitting": splitting_allowed(item),
             "item_quantity": item.get("quantity"),
+            **({"taxes": [dict(x) for x in line_taxes]} if line_taxes else {}),
         })
     return line_items
 
@@ -1350,12 +1361,13 @@ def _reorder_po_line(item: dict, unit_decimals: int | None = None) -> dict:
     }
 
 
-async def _reorder_lines_from_inventory(token: str, entity_ids: list[str]) -> list[dict]:
+async def _reorder_lines_from_inventory(token: str, entity_ids: list[str], doc_type: str | None = None) -> list[dict]:
     """Fetch inventory items and build purchase-order reorder lines (see _reorder_po_line).
 
     Loads the company unit map once so each line's qty is ceil'd to its purchase
-    unit's precision.
+    unit's precision. With a doc_type, each line starts with that document's default tax.
     """
+    line_taxes = await _new_line_taxes(token, doc_type)
     try:
         unit_map = build_unit_map(await api.get_units(token))
     except Exception:
@@ -1368,7 +1380,10 @@ async def _reorder_lines_from_inventory(token: str, entity_ids: list[str]) -> li
             continue
         pu = item.get("purchase_unit") or item.get("sell_by") or "piece"
         decimals = (unit_map.get(pu) or {}).get("decimals")
-        lines.append(_reorder_po_line(item, unit_decimals=decimals))
+        line = _reorder_po_line(item, unit_decimals=decimals)
+        if line_taxes:
+            line["taxes"] = [dict(x) for x in line_taxes]
+        lines.append(line)
     return lines
 
 
@@ -1411,19 +1426,6 @@ async def _po_line_suggestions(token: str, doc: dict) -> dict[str, str]:
         if q:
             out[eid] = f"{q:g}"
     return out
-
-
-async def _company_doc_taxes(token: str, doc_type: str) -> list[dict]:
-    """The company's rated taxes for this document type's side, as doc_taxes dicts for a new document."""
-    try:
-        taxes = await api.get_document_taxes(token, doc_type)
-    except Exception:
-        return []
-    return [
-        {"code": tax.get("name", "Tax"), "rate": float(tax.get("rate", 0)), "order": i, "is_compound": bool(tax.get("is_compound"))}
-        for i, tax in enumerate(taxes_for(taxes, doc_type))
-        if tax.get("rate")
-    ]
 
 
 def _send_to_option_list(items: list[dict], kind: str) -> FT:
@@ -1762,14 +1764,12 @@ def setup_routes(app):
         entity_ids = [v.strip() for v in form.getlist("selected") if v.strip()]
         if not entity_ids:
             return Div(P(t("flash.no_items_selected"), cls="flash flash--warning"), id="modal-container")
-        line_items = await _line_items_from_inventory(token, entity_ids)
-        doc_taxes = await _company_doc_taxes(token, "invoice")
         try:
+            line_items = await _line_items_from_inventory(token, entity_ids, doc_type="invoice")
             result = await api.create_doc(token, {
                 "doc_type": "invoice",
                 "status": "draft",
                 "line_items": line_items,
-                "doc_taxes": doc_taxes,
             })
             doc_id = result.get("entity_id") or result.get("id", "")
         except APIError as e:
@@ -1788,17 +1788,10 @@ def setup_routes(app):
         target_id = str(form.get("target_id", "")).strip()
         if not entity_ids or not target_id:
             return Div(P(t("label.no_items_or_target_selected"), cls="flash flash--warning"), id="modal-container")
-        new_lines = await _line_items_from_inventory(token, entity_ids)
         try:
             doc = await api.get_doc(token, target_id)
-            existing_lines = doc.get("line_items") or []
-            combined = existing_lines + new_lines
-            subtotal = sum(l.get("quantity", 0) * l.get("unit_price", 0) for l in combined)
-            await api.patch_doc(token, target_id, {
-                "line_items": combined,
-                "subtotal": subtotal,
-                "total": subtotal,
-            })
+            new_lines = await _line_items_from_inventory(token, entity_ids, doc_type=doc.get("doc_type"))
+            await api.patch_doc(token, target_id, {"line_items": (doc.get("line_items") or []) + new_lines})
         except APIError as e:
             return Div(P(error_message(e), cls="flash flash--error"), id="modal-container")
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{target_id}"})
@@ -3176,13 +3169,16 @@ celerpUpdateBulkAlloc();
             body = await request.json()
         except Exception:
             return JSONResponse({"error": "Invalid JSON"}, status_code=400)
-        # The lines and the header discount are inputs; the API computes the document's
-        # subtotal, discount amount, taxes and total from them.
+        # The lines, the header discount and the document taxes are inputs; the API computes the
+        # document's subtotal, discount amount, taxes and total from them.
         patch_data = {"line_items": body.get("line_items", [])}
         # Always sent (0 clears it) so removing a discount sticks.
         if "discount" in body:
             patch_data["discount"] = float(body.get("discount") or 0)
             patch_data["discount_type"] = body.get("discount_type") or "flat"
+        # An empty list clears them, so removing the last document tax sticks.
+        if "doc_taxes" in body:
+            patch_data["doc_taxes"] = body["doc_taxes"]
         try:
             result = await api.patch_doc(token, entity_id, patch_data)
         except APIError as e:
@@ -3192,7 +3188,16 @@ celerpUpdateBulkAlloc();
             if isinstance(e.data, dict) and e.data.get("conflicts"):
                 payload["reserved_conflicts"] = e.data["conflicts"]
             return JSONResponse(payload, status_code=400)
-        return JSONResponse({"ok": True, "version": result.get("version")})
+        saved = {"ok": True, "version": result.get("version")}
+        # The page shows the document taxes and total the API just computed, never its own copy.
+        try:
+            doc = await api.get_doc(token, entity_id)
+        except APIError as e:
+            return JSONResponse({**saved, "error": error_message(e)})
+        currency = doc.get("currency") or "USD"
+        return JSONResponse({**saved,
+                             "stored_tax_rows_html": to_xml(_stored_doc_tax_rows(doc, currency, doc.get("status") == "draft")),
+                             "total": fmt_money(float(doc.get("total") or 0), currency)})
 
     async def _proxy_reprice(request: Request, entity_id: str, reprice_fn):
         """Transport-only Web UI adapter; all repricing semantics live in celerp-docs."""
@@ -6588,6 +6593,26 @@ def _line_account_picker(chart_accounts: list | None, value: str) -> FT:
     )
 
 
+def _stored_doc_tax_rows(doc: dict, currency: str | None, can_edit: bool) -> FT:
+    """The document-level taxes stored on a document, each with the amount the API computed for
+    it. The page adds these amounts to its live total and never recomputes them. On an editable
+    draft each row can be removed, and the rows' state rides along with the next line save."""
+    doc_taxes = doc.get("doc_taxes") or []
+    rows = []
+    for i, dtax in enumerate(doc_taxes):
+        amount = float(dtax.get("amount") or 0)
+        remove = (Button("×", type="button", cls="btn-disc-edit", title=t("btn.remove"),
+                         aria_label=t("documents.remove_doc_tax"), onclick=f"celerpRemoveDocTax({i})")
+                  if can_edit else "")
+        rows.append(Div(
+            Span(remove, Span(f"{dtax.get('code') or t('documents.tax')}:", cls="total-label"),
+                 cls="total-final-left"),
+            Span(fmt_money(amount, currency), cls="total-value"),
+            cls="total-row", data_amount=f"{amount}", data_doc_tax_index=str(i)))
+    state = Input(type="hidden", id="doc-taxes-state", value=_json.dumps(doc_taxes)) if can_edit and doc_taxes else ""
+    return Div(*rows, state, id="doc-stored-tax-rows")
+
+
 def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", settings: dict | None = None, item_categories: dict | None = None, notes: list | None = None, company_currency: str = "USD", suppress_doc_actions: bool = False, extra_left_actions: list | None = None, extra_right_actions: list | None = None, suppress_pdf: bool = False, free_send_offer: bool = False, email_used: int = 0, email_quota: int = 0, email_resets_on: str | None = None, share_enabled: bool = False, share_active: bool = False, payments_on: bool = False, item_status_map: dict | None = None, item_status_doc_map: dict | None = None, item_meta_map: dict | None = None, chart_accounts: list | None = None, contact_shipping_addresses: list | None = None, line_suggestions: dict | None = None, line_identifier_mode: str = "sku", relay_error: bool = False, line_offset: int = 0, line_total: int | None = None, line_limit: int = 100,
                 connected_connectors: set[str] | None = None, note_targets: list | None = None, original: dict | None = None) -> FT:
     def _pick(*keys: str):
@@ -8841,11 +8866,32 @@ function celerpUpdateTotals() {{
             taxContainer.appendChild(row);
         }});
         const totEl = document.getElementById('doc-total');
-        if (totEl) totEl.textContent = _fmt(_hd.taxable + totalTax + _CELERP_SHIPPING);
+        if (totEl) totEl.textContent = _fmt(_hd.taxable + totalTax + _celerpStoredTax() + _CELERP_SHIPPING);
     }} else {{
         const totEl = document.getElementById('doc-total');
-        if (totEl) totEl.textContent = _fmt(_hd.taxable + _CELERP_SHIPPING);
+        if (totEl) totEl.textContent = _fmt(_hd.taxable + _celerpStoredTax() + _CELERP_SHIPPING);
     }}
+}}
+// Document-level taxes keep the amounts the server last computed (#doc-stored-tax-rows); the
+// page never recomputes them, and each line save swaps in the server's new rows.
+function _celerpStoredTax() {{
+    let sum = 0;
+    document.querySelectorAll('#doc-stored-tax-rows [data-amount]').forEach(r => {{
+        sum += parseFloat(r.dataset.amount) || 0;
+    }});
+    return sum;
+}}
+function celerpRemoveDocTax(i) {{
+    const st = document.getElementById('doc-taxes-state');
+    if (!st) return;
+    // The slot is emptied, not spliced, so the other rows keep their indices until the save
+    // brings the server's rows back.
+    const taxes = JSON.parse(st.value || '[]');
+    taxes[i] = null;
+    st.value = JSON.stringify(taxes);
+    document.querySelector('#doc-stored-tax-rows [data-doc-tax-index="' + i + '"]')?.remove();
+    celerpUpdateTotals();
+    celerpAutoSave();
 }}
 // Header-discount helpers. State lives in hidden inputs (#doc-discount-value/#doc-discount-type),
 // seeded from the doc and edited via the pencil popover next to the Total.
@@ -9136,16 +9182,18 @@ async function _celerpRefreshHeldBadges() {{
     }}
     const hd = _celerpHeaderDiscount(lines.reduce((s, l) => s + l.line_total, 0));
     const statusEl = document.getElementById('save-status');
+    const _docTaxesState = document.getElementById('doc-taxes-state');
     // Send the current page's rows, the stored offset they occupy, and the length of the
     // stored window this page loaded. The server REPLACES positions [offset, offset+original_count)
     // with the submitted rows (a shorter page truncates deleted rows, a longer one inserts) and
     // recomputes totals from the full merged array, so off-page rows are never touched by a page save.
     const resp = await fetch(_CELERP_BASE + _CELERP_EID + '/lines', {{
         method: 'POST', headers: {{'Content-Type': 'application/json'}},
-        body: JSON.stringify({{line_items: lines, offset: _CELERP_LINE_OFFSET,
+        body: JSON.stringify(Object.assign({{line_items: lines, offset: _CELERP_LINE_OFFSET,
             original_count: _CELERP_ORIGINAL_COUNT,
             discount: hd.value, discount_type: hd.type,
-            expected_version: _celerpEntityVersion}})
+            expected_version: _celerpEntityVersion}},
+            _docTaxesState ? {{doc_taxes: JSON.parse(_docTaxesState.value || '[]').filter(Boolean)}} : {{}}))
     }});
     if (resp.ok) {{
         // A newer edit may have happened while this request was in flight. Only
@@ -9156,6 +9204,14 @@ async function _celerpRefreshHeldBadges() {{
         try {{
             const data = await resp.json();
             if (data && data.version != null) _celerpEntityVersion = data.version;
+            // The server's document taxes and total for what was just saved, unless a newer
+            // edit is already pending (its own save brings fresher figures).
+            if (data && data.stored_tax_rows_html != null && revision === window._celerpLineRevision) {{
+                const storedEl = document.getElementById('doc-stored-tax-rows');
+                if (storedEl) storedEl.outerHTML = data.stored_tax_rows_html;
+                const totEl = document.getElementById('doc-total');
+                if (totEl && data.total) totEl.textContent = data.total;
+            }}
         }} catch (_e) {{}}
         // The rows just written become this page's stored window, so a follow-up save
         // in the same view replaces the new window length, not the original one.
@@ -10031,15 +10087,15 @@ async function celerpCsvImport(input, entityId) {{
             rate = float(item.get("rate", 0) or 0)
             label = f"{code} ({rate:g}%)" if code else f"{item.get('label') or t('documents.tax')} ({rate:g}%)"
             _add_tax(code or f"custom_{rate}", label, item.get("amount"))
-    for dtax in doc.get("doc_taxes") or []:
-        code = dtax.get("code") or t("documents.tax")
-        _add_tax(code, code, dtax.get("amount"))
-    if abs(sum(v["amount"] for v in code_totals.values()) - tax_amount) > 0.005:
+    stored_tax_rows = _stored_doc_tax_rows(doc, currency, can_edit_lines)
+    stored_tax = sum(float(d.get("amount") or 0) for d in doc.get("doc_taxes") or [])
+    if abs(sum(v["amount"] for v in code_totals.values()) + stored_tax - tax_amount) > 0.005:
         # The stored breakdown does not account for the stored tax (a line or header rate with no
         # per-line amounts): show the stored tax as one row, labelled with its rate when single.
         rates = {float(li.get("tax_rate") or 0) for li in line_items if float(li.get("tax_rate") or 0)}
         label = f"{t('documents.tax')} ({next(iter(rates)):g}%)" if len(rates) == 1 else t("documents.tax")
         code_totals = {"tax": {"label": label, "amount": tax_amount}} if tax_amount else {}
+        stored_tax_rows = Div(id="doc-stored-tax-rows")
 
     tax_rows = [
         Div(Span(f"{v['label']}:", cls="total-label"),
@@ -10068,6 +10124,7 @@ async function celerpCsvImport(input, entityId) {{
             Span(f"-{fmt_money(discount, currency)}", id="doc-header-discount", cls="total-value"),
             id="doc-header-discount-row", cls="total-row") if discount > 0.005 else "",
         Div(*tax_rows, id="doc-tax-rows"),
+        stored_tax_rows,
         Div(Span(t("doc.shipping"), cls="total-label"),
             Span(fmt_money(shipping, currency), id="doc-shipping", cls="total-value"),
             cls="total-row") if shipping else "",

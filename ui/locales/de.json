@@ -2545,6 +2545,7 @@
   "documents.received_total": "Eingegangen: {amount}",
   "documents.already_received": "Bereits eingegangen",
   "documents.remaining_amount": "Verbleibend: {amount}",
+  "documents.remove_doc_tax": "Remove this tax",
   "documents.remove_from_draft": "Aus dem Entwurf entfernen",
   "documents.reprice_failed": "Die Preise konnten nicht neu berechnet werden. Wählen Sie „Erneut versuchen“.",
   "documents.reprice_version_unknown": "Celerp konnte nicht erkennen, welche Version dieses Dokuments neu bepreist werden soll. Wählen Sie „Erneut versuchen“ und wählen Sie dann die Preisliste noch einmal.",

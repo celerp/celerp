@@ -4167,11 +4167,9 @@ function celerpPrintLabel(entityId, templateId) {
             if target_id and not target_id.startswith("__new__"):
                 # Add to existing document
                 if doc_type == "invoice":
-                    new_lines = await _line_items_from_inventory(token, entity_ids)
+                    new_lines = await _line_items_from_inventory(token, entity_ids, doc_type="invoice")
                     doc = await api.get_doc(token, target_id)
-                    combined = (doc.get("line_items") or []) + new_lines
-                    subtotal = sum(l.get("quantity", 0) * l.get("unit_price", 0) for l in combined)
-                    await api.patch_doc(token, target_id, {"line_items": combined, "subtotal": subtotal, "total": subtotal})
+                    await api.patch_doc(token, target_id, {"line_items": (doc.get("line_items") or []) + new_lines})
                     return Response("", status_code=204, headers={"HX-Redirect": f"/docs/{target_id}"})
                 elif doc_type in ("list", "shipping_doc"):
                     new_lines = await _line_items_from_inventory(token, entity_ids)
@@ -4183,26 +4181,20 @@ function celerpPrintLabel(entityId, templateId) {
                     await api.patch_list(token, target_id, {"line_items": combined, "subtotal": subtotal, "total": subtotal}, expected_version=lst.get("version"))
                     return Response("", status_code=204, headers={"HX-Redirect": f"/lists/{target_id}"})
                 elif doc_type == "memo":
-                    new_lines = await _line_items_from_inventory(token, entity_ids)
+                    new_lines = await _line_items_from_inventory(token, entity_ids, doc_type="memo")
                     doc = await api.get_doc(token, target_id)
-                    combined = (doc.get("line_items") or []) + new_lines
-                    subtotal = sum(l.get("quantity", 0) * l.get("unit_price", 0) for l in combined)
-                    await api.patch_doc(token, target_id, {"line_items": combined, "subtotal": subtotal, "total": subtotal})
+                    await api.patch_doc(token, target_id, {"line_items": (doc.get("line_items") or []) + new_lines})
                     return Response("", status_code=204, headers={"HX-Redirect": f"/docs/{target_id}"})
                 elif doc_type == "purchase_order":
-                    new_lines = await _reorder_lines_from_inventory(token, entity_ids)
+                    new_lines = await _reorder_lines_from_inventory(token, entity_ids, doc_type="purchase_order")
                     doc = await api.get_doc(token, target_id)
-                    combined = (doc.get("line_items") or []) + new_lines
-                    subtotal = sum(l.get("quantity", 0) * l.get("unit_price", 0) for l in combined)
-                    await api.patch_doc(token, target_id, {"line_items": combined, "subtotal": subtotal, "total": subtotal})
+                    await api.patch_doc(token, target_id, {"line_items": (doc.get("line_items") or []) + new_lines})
                     return Response("", status_code=204, headers={"HX-Redirect": f"/docs/{target_id}"})
             else:
                 # Create new document
                 if doc_type == "invoice":
-                    line_items = await _line_items_from_inventory(token, entity_ids)
-                    from ui.routes.documents import _company_doc_taxes
-                    doc_taxes = await _company_doc_taxes(token, "invoice")
-                    result = await api.create_doc(token, {"doc_type": "invoice", "status": "draft", "line_items": line_items, "doc_taxes": doc_taxes})
+                    line_items = await _line_items_from_inventory(token, entity_ids, doc_type="invoice")
+                    result = await api.create_doc(token, {"doc_type": "invoice", "status": "draft", "line_items": line_items})
                     doc_id = result.get("entity_id") or result.get("id", "")
                     return Response("", status_code=204, headers={"HX-Redirect": f"/docs/{doc_id}"})
                 elif doc_type in ("list", "shipping_doc"):
@@ -4212,15 +4204,13 @@ function celerpPrintLabel(entityId, templateId) {
                     list_id = result.get("entity_id") or result.get("id", "")
                     return Response("", status_code=204, headers={"HX-Redirect": f"/lists/{list_id}"})
                 elif doc_type == "memo":
-                    line_items = await _line_items_from_inventory(token, entity_ids)
-                    from ui.routes.documents import _company_doc_taxes
-                    doc_taxes = await _company_doc_taxes(token, "memo")
-                    result = await api.create_doc(token, {"doc_type": "memo", "status": "draft", "line_items": line_items, "doc_taxes": doc_taxes})
+                    line_items = await _line_items_from_inventory(token, entity_ids, doc_type="memo")
+                    result = await api.create_doc(token, {"doc_type": "memo", "status": "draft", "line_items": line_items})
                     doc_id = result.get("entity_id") or result.get("id", "")
                     return Response("", status_code=204, headers={"HX-Redirect": f"/docs/{doc_id}"})
                 elif doc_type == "purchase_order":
                     # Purchase-side: qty = reorder_qty in purchase units (blank when unset),
-                    # cost price, purchase unit, no sales taxes. Group the selection by each
+                    # cost price, purchase unit, the purchase-side default tax. Group the selection by each
                     # item's preferred supplier so a multi-supplier reorder becomes one draft
                     # PO per supplier (plus one for items with no supplier set).
                     from celerp.services.reorder import group_by_supplier
@@ -4237,7 +4227,7 @@ function celerpPrintLabel(entityId, templateId) {
                     for sup, ids in groups.items():
                         label = sup or t("inv.no_supplier")
                         try:
-                            line_items = await _reorder_lines_from_inventory(token, ids)
+                            line_items = await _reorder_lines_from_inventory(token, ids, doc_type="purchase_order")
                             payload = {"doc_type": "purchase_order", "status": "draft",
                                        "purchase_kind": "inventory", "line_items": line_items}
                             # preferred_supplier is a free-text name, so record it as the

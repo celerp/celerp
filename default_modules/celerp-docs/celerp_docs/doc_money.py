@@ -49,14 +49,26 @@ def _line_amount(line: dict):
     )
 
 
-def document_money(state: dict, lines: list[dict], currency: str, *, keep_unrated_tax: bool) -> dict:
+def _has_rate(state: dict) -> bool:
+    """Whether a document's tax comes from a rate: a line's ``taxes`` or ``tax_rate``, a
+    document tax or a header ``tax_rate``."""
+    if state.get("doc_taxes") or to_decimal(state.get("tax_rate", 0) or 0):
+        return True
+    return any(isinstance(line, dict) and (line.get("taxes") or to_decimal(line.get("tax_rate", 0) or 0))
+               for line in state.get("line_items") or [])
+
+
+def document_money(state: dict, lines: list[dict], currency: str, *, keep_unrated_tax: bool,
+                   stored: dict | None = None) -> dict:
     """Subtotal, discount, taxes and total of a document with these lines.
 
     Line ``taxes`` are recomputed from their rates, as are a line ``tax_rate``,
     ``doc_taxes`` and a header ``tax_rate``. A document with none of those but a
     ``tax`` amount has nothing to recompute it from: with *keep_unrated_tax* that
     amount stands as it is, otherwise UnratedTaxError is raised so the caller can
-    refuse rather than change the amount.
+    refuse rather than change the amount. When *stored* (the document before this
+    change) had a rate, its ``tax`` was computed from it, so an edit that removes the
+    last rate leaves no tax rather than that amount.
     """
     subtotal = round_money(
         sum((_line_amount(line) for line in lines if isinstance(line, dict)), to_decimal(0)),
@@ -106,6 +118,8 @@ def document_money(state: dict, lines: list[dict], currency: str, *, keep_unrate
             taxable * to_decimal(state.get("tax_rate", 0) or 0) / 100,
             currency,
         )
+    elif stored is not None and _has_rate(stored):
+        tax_total = to_decimal(0)
     else:
         tax_total = round_money(state.get("tax", 0) or 0, currency)
         if tax_total and not keep_unrated_tax:

@@ -2544,6 +2544,7 @@
   "documents.received_total": "Recibido: {amount}",
   "documents.already_received": "Ya recibido",
   "documents.remaining_amount": "Restante: {amount}",
+  "documents.remove_doc_tax": "Remove this tax",
   "documents.remove_from_draft": "Eliminar del borrador",
   "documents.reprice_failed": "No se pudieron recalcular los precios. Seleccione Reintentar.",
   "documents.reprice_version_unknown": "Celerp no pudo saber qué versión de este documento debía recalcular. Seleccione Reintentar y vuelva a elegir la lista de precios.",

@@ -56,7 +56,8 @@
     "units.unit_type_changed_under_partly_received",
     "units.moving_unit_removed",
     "units.template_unit_removed",
-    "units.precision_lowered_under_templates"
+    "units.precision_lowered_under_templates",
+    "documents.remove_doc_tax"
   ],
   "ar": [
     "account.email_placeholder",
@@ -103,7 +104,8 @@
     "units.unit_type_changed_under_partly_received",
     "units.moving_unit_removed",
     "units.template_unit_removed",
-    "units.precision_lowered_under_templates"
+    "units.precision_lowered_under_templates",
+    "documents.remove_doc_tax"
   ],
   "de": [
     "acct.source_system",
@@ -221,7 +223,8 @@
     "units.unit_type_changed_under_partly_received",
     "units.moving_unit_removed",
     "units.template_unit_removed",
-    "units.precision_lowered_under_templates"
+    "units.precision_lowered_under_templates",
+    "documents.remove_doc_tax"
   ],
   "es": [
     "account.plan",
@@ -312,7 +315,8 @@
     "units.unit_type_changed_under_partly_received",
     "units.moving_unit_removed",
     "units.template_unit_removed",
-    "units.precision_lowered_under_templates"
+    "units.precision_lowered_under_templates",
+    "documents.remove_doc_tax"
   ],
   "fr": [
     "acct.tab_journal",
@@ -444,7 +448,8 @@
     "units.unit_type_changed_under_partly_received",
     "units.moving_unit_removed",
     "units.template_unit_removed",
-    "units.precision_lowered_under_templates"
+    "units.precision_lowered_under_templates",
+    "documents.remove_doc_tax"
   ],
   "id": [
     "acct.source_manual",
@@ -560,7 +565,8 @@
     "units.unit_type_changed_under_partly_received",
     "units.moving_unit_removed",
     "units.template_unit_removed",
-    "units.precision_lowered_under_templates"
+    "units.precision_lowered_under_templates",
+    "documents.remove_doc_tax"
   ],
   "it": [
     "attr.volume_l",
@@ -648,7 +654,8 @@
     "units.unit_type_changed_under_partly_received",
     "units.moving_unit_removed",
     "units.template_unit_removed",
-    "units.precision_lowered_under_templates"
+    "units.precision_lowered_under_templates",
+    "documents.remove_doc_tax"
   ],
   "ja": [
     "account.email_placeholder",
@@ -705,7 +712,8 @@
     "units.unit_type_changed_under_partly_received",
     "units.moving_unit_removed",
     "units.template_unit_removed",
-    "units.precision_lowered_under_templates"
+    "units.precision_lowered_under_templates",
+    "documents.remove_doc_tax"
   ],
   "pt": [
     "acct.source_manual",
@@ -807,7 +815,8 @@
     "units.unit_type_changed_under_partly_received",
     "units.moving_unit_removed",
     "units.template_unit_removed",
-    "units.precision_lowered_under_templates"
+    "units.precision_lowered_under_templates",
+    "documents.remove_doc_tax"
   ],
   "th": [
     "account.email_placeholder",
@@ -862,7 +871,8 @@
     "units.unit_type_changed_under_partly_received",
     "units.moving_unit_removed",
     "units.template_unit_removed",
-    "units.precision_lowered_under_templates"
+    "units.precision_lowered_under_templates",
+    "documents.remove_doc_tax"
   ],
   "vi": [
     "btn.u00d7",
@@ -921,6 +931,7 @@
     "units.unit_type_changed_under_partly_received",
     "units.moving_unit_removed",
     "units.template_unit_removed",
-    "units.precision_lowered_under_templates"
+    "units.precision_lowered_under_templates",
+    "documents.remove_doc_tax"
   ]
 }

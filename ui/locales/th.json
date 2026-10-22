@@ -2544,6 +2544,7 @@
   "documents.received_total": "รับแล้ว: {amount}",
   "documents.already_received": "รับแล้ว",
   "documents.remaining_amount": "คงเหลือ: {amount}",
+  "documents.remove_doc_tax": "Remove this tax",
   "documents.remove_from_draft": "นำออกจากร่าง",
   "documents.reprice_failed": "คำนวณราคาใหม่ไม่ได้ เลือก ลองอีกครั้ง",
   "documents.reprice_version_unknown": "Celerp ไม่ทราบว่าต้องคำนวณราคาใหม่ให้เอกสารนี้ฉบับใด เลือก ลองอีกครั้ง แล้วเลือกรายการราคาอีกครั้ง",

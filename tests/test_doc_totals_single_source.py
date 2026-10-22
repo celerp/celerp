@@ -151,3 +151,53 @@ async def test_line_save_stores_computed_money_not_client_figures(client, sessio
             credit[e["account"]] = round(credit.get(e["account"], 0) + float(e["credit"] or 0), 2)
     assert debit.get("1120") == 104.0, (debit, credit)
     assert credit.get("2120") == 9.0, (debit, credit)
+
+
+# A document's tax amount computed from rates is derived: removing the last rate on a draft
+# leaves no tax, never the amount the old rates gave. Only a tax amount the document never
+# had a rate for (an imported total) stands on its own.
+_LINE = {"description": "Service", "quantity": 1, "unit_price": 100.0, "line_total": 100.0}
+_LEVY = {"code": "Levy 5%", "rate": 5.0, "order": 0, "is_compound": False, "label": ""}
+_RATE_SOURCES = {
+    "doc_taxes": ({"doc_taxes": [_LEVY]}, {"doc_taxes": []}),
+    "header_tax_rate": ({"tax_rate": 5}, {"tax_rate": 0}),
+    "line_taxes": ({"line_items": [{**_LINE, "taxes": [_LEVY]}]}, {"line_items": [dict(_LINE)]}),
+    "line_tax_rate": ({"line_items": [{**_LINE, "tax_rate": 5}]}, {"line_items": [dict(_LINE)]}),
+}
+
+
+@pytest.mark.parametrize("source", sorted(_RATE_SOURCES))
+def test_removing_the_last_rate_leaves_no_tax(source):
+    from celerp_docs.doc_money import document_money
+    rated, cleared = _RATE_SOURCES[source]
+    stored = {"currency": "USD", "line_items": [dict(_LINE)], **copy.deepcopy(rated)}
+    stored.update(document_money(stored, stored["line_items"], "USD", keep_unrated_tax=True))
+    assert stored["tax"] == 5.0
+    merged = {**stored, **copy.deepcopy(cleared)}
+    money = document_money(merged, merged["line_items"], "USD", keep_unrated_tax=True, stored=stored)
+    assert (money["tax"], money["total"]) == (0.0, 100.0)
+
+
+def test_an_unrated_tax_amount_stands_through_an_edit():
+    from celerp_docs.doc_money import document_money
+    stored = {"currency": "USD", "line_items": [dict(_LINE)], "tax": 7.0}
+    merged = {**stored, "line_items": [{**_LINE, "quantity": 2, "line_total": 200.0}]}
+    money = document_money(merged, merged["line_items"], "USD", keep_unrated_tax=True, stored=stored)
+    assert (money["tax"], money["total"]) == (7.0, 207.0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", sorted(_RATE_SOURCES))
+async def test_a_draft_edit_removing_the_last_rate_stores_no_tax(client, session, source):
+    auth = await _auth_company(session)
+    rated, cleared = _RATE_SOURCES[source]
+    r = await client.post("/docs", headers=auth["headers"], json={
+        "doc_type": "invoice", "line_items": [dict(_LINE)], **copy.deepcopy(rated)})
+    assert r.status_code == 200, r.text
+    doc_id = r.json()["id"]
+    assert (await client.get(f"/docs/{doc_id}", headers=auth["headers"])).json()["tax"] == 5.0
+    r = await client.patch(f"/docs/{doc_id}", headers=auth["headers"], json={"fields_changed": {
+        k: {"new": v} for k, v in copy.deepcopy(cleared).items()}})
+    assert r.status_code == 200, r.text
+    doc = (await client.get(f"/docs/{doc_id}", headers=auth["headers"])).json()
+    assert (doc["tax"], doc["total"]) == (0.0, 100.0), doc

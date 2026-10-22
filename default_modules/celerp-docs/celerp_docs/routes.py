@@ -47,7 +47,7 @@ from celerp.services.lot_origin import in_stock, is_stock_type, rerun_after_plac
 from celerp.services.physical_codes import lock_item_code_namespace
 from celerp.services.peer_import import SourceRevision, peer_batch, receive_file
 from celerp.services.payments import recorded_unmatched, return_unmatched
-from celerp.tax_regimes import default_tax, side_taxes
+from celerp.tax_regimes import default_line_taxes, side_taxes
 from celerp.services.business_time import business_date_at, business_date_of, company_today
 from celerp.services.landed_cost import compute_bill_landed_allocation
 from celerp.services.line_measures import (FULL, floor_to_unit, line_label, proposed_sell_qty, splitting_allowed,
@@ -2010,7 +2010,7 @@ async def write_doc_patch(session: AsyncSession, company_id, role: str, settings
         # in document_money, so the stored figures always reconcile (shipping included).
         merged = {**row.state, **{k: (v or {}).get("new") for k, v in fields_changed.items()}}
         money_lines = [dict(li) if isinstance(li, dict) else li for li in (merged.get("line_items") or [])]
-        money = document_money(merged, money_lines, _new_currency, keep_unrated_tax=True)
+        money = document_money(merged, money_lines, _new_currency, keep_unrated_tax=True, stored=row.state)
         if "line_items" in fields_changed or money_lines != (row.state.get("line_items") or []):
             fields_changed["line_items"] = {"new": money_lines}
         for field, value in money.items():
@@ -7478,7 +7478,7 @@ async def convert_doc(entity_id: str, payload: DocConvertBody | None = None, com
         # invoice is what books its revenue and the cost of the goods sold.
         _MEMO_TOTAL_FIELDS = frozenset({"total", "outstanding", "tax_total", "discount_total", "subtotal", "amount_due"})
         new_data = {k: v for k, v in filtered_state.items() if k not in LIFECYCLE_OWNED_FIELDS | _MEMO_TOTAL_FIELDS}
-        new_data.update(document_money(new_data, qualifying_line_items, _currency, keep_unrated_tax=True))
+        new_data.update(document_money(new_data, qualifying_line_items, _currency, keep_unrated_tax=True, stored=state))
         new_data.update({"doc_type": "invoice", "ref_id": ref, "source_memo_id": entity_id, "status": "draft"})
         await emit_event(
             session, company_id=company_id, entity_id=new_doc_id, entity_type="doc", event_type="doc.created", data=new_data,
@@ -8911,7 +8911,8 @@ async def _contact_selection_values(
         values["line_items"] = lines
     if kind == "doc" and (lines is not None or "currency" in values):
         merged = {**state, **values}
-        values.update(document_money(merged, merged.get("line_items") or [], currency, keep_unrated_tax=True))
+        values.update(document_money(merged, merged.get("line_items") or [], currency, keep_unrated_tax=True,
+                                     stored=state))
     return values
 
 
@@ -8963,7 +8964,7 @@ async def reprice_doc(
     new_values = {
         "price_list": payload.price_list,
         "line_items": updated_lines,
-        **document_money(row.state, updated_lines, currency, keep_unrated_tax=True),
+        **document_money(row.state, updated_lines, currency, keep_unrated_tax=True, stored=row.state),
     }
     fields_changed = {
         field: {"old": row.state.get(field), "new": value}
@@ -12642,17 +12643,16 @@ def _scan_lot(code: str, res, sb: ScanBehavior, settings: dict, state: dict,
 
 
 def _scan_doc_line(lot: Projection, quantity, priced: bool, price_list: str, currency: str | None,
-                   price_config: tuple[list[dict], str, str], tax: dict | None) -> dict:
+                   price_config: tuple[list[dict], str, str], line_taxes: list[dict]) -> dict:
     """A new document line for a scanned lot: the scan line, how a purchase receives it, the item's
-    customs fields and the document type's default tax."""
+    customs fields and the document type's default line taxes."""
     st = lot.state or {}
     line = _scan_line(lot, quantity, priced=priced, price_list=price_list, currency=currency,
                       price_config=price_config)
     line["receive_as"] = default_receive_as(st.get("inventory_type"), st.get("sell_by"))
     line.update({k: st[k] for k in ("hs_code", "country_of_origin", "category") if st.get(k)})
-    if tax and float(tax.get("rate") or 0):
-        line["taxes"] = [{"code": tax.get("name"), "rate": float(tax["rate"]), "amount": 0, "order": 0,
-                          "is_compound": bool(tax.get("is_compound")), "label": ""}]
+    if line_taxes:
+        line["taxes"] = [dict(t) for t in line_taxes]
     return line
 
 
@@ -12686,7 +12686,7 @@ async def scan_doc(
     price_list = line_price_list(doc_type, payload.price_list)
     priced = sb.priced and (not is_cost_list_name(price_list) or role_has_permission(settings, role, "view_inventory_costs"))
     currency = state.get("currency")
-    tax = default_tax(side_taxes(settings, doc_type), doc_type)
+    line_taxes = default_line_taxes(side_taxes(settings, doc_type), doc_type)
     existing = [dict(l) for l in (state.get("line_items") or [])]
     known = line_id_counts(existing)
 
@@ -12703,7 +12703,7 @@ async def scan_doc(
     lines = [dict(l) for l in existing]
     results, failed = await _apply_scan_run(
         session, company_id, entity_id, state, lines, codes, sb, settings, noun="this document",
-        build=lambda lot, quantity: _scan_doc_line(lot, quantity, priced, price_list, currency, price_config, tax),
+        build=lambda lot, quantity: _scan_doc_line(lot, quantity, priced, price_list, currency, price_config, line_taxes),
         admit=admit)
     scanned = len(results) - len(failed)
     version = row.version

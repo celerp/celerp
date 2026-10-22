@@ -2544,6 +2544,7 @@
   "documents.received_total": "Đã nhận: {amount}",
   "documents.already_received": "Đã nhận",
   "documents.remaining_amount": "Số lượng còn lại: {amount}",
+  "documents.remove_doc_tax": "Remove this tax",
   "documents.remove_from_draft": "Xóa khỏi bản nháp",
   "documents.reprice_failed": "Không thể tính lại giá. Hãy chọn Thử lại.",
   "documents.reprice_version_unknown": "Celerp không xác định được cần tính lại giá cho phiên bản nào của chứng từ này. Hãy chọn Thử lại, rồi chọn lại bảng giá.",

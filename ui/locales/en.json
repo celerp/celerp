@@ -2783,6 +2783,7 @@
   "documents.received_total": "Received: {amount}",
   "documents.already_received": "Already received",
   "documents.remaining_amount": "Remaining: {amount}",
+  "documents.remove_doc_tax": "Remove this tax",
   "documents.remove_from_draft": "Remove from draft",
   "documents.reprice_failed": "Prices couldn't be recalculated. Select Try again.",
   "documents.reprice_version_unknown": "Celerp couldn't tell which version of this document to reprice. Select Try again, then choose the price list again.",

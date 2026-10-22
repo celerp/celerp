@@ -295,6 +295,16 @@ def default_tax(taxes: list[dict], doc_type: str | None) -> dict | None:
     return next((x for x in taxes_for(taxes, doc_type) if x.get("is_default")), None)
 
 
+def default_line_taxes(taxes: list[dict], doc_type: str | None) -> list[dict]:
+    """The taxes list a new line starts with, whichever way it is added (scan, from items, append,
+    reorder): the default tax of `default_tax` when its rate is not zero, else no tax."""
+    tax = default_tax(taxes, doc_type)
+    if not tax or not float(tax.get("rate") or 0):
+        return []
+    return [{"code": tax.get("name"), "rate": float(tax["rate"]), "amount": 0, "order": 0,
+             "is_compound": bool(tax.get("is_compound")), "label": ""}]
+
+
 def _tax_name_key(name) -> str:
     """A tax name as a lookup key: the same name in another case or with spaces around it
     is the same tax."""

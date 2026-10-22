@@ -12845,6 +12845,7 @@ class TestBulkActionsPhase6SendTo:
         "quantity": 1, "sell_by": "weight", "weight": 3.5, "weight_unit": "ct",
         "sale_price": 500, "attributes": {},
     }
+    _VAT7 = [{"name": "VAT", "rate": 7, "tax_type": "both", "is_default": True}]
     _PIECE_ITEM = {
         "entity_id": "item:p1", "sku": "JWL-002", "name": "Gold Ring",
         "quantity": 2, "sell_by": "piece",
@@ -12886,6 +12887,7 @@ class TestBulkActionsPhase6SendTo:
         mock_create = AsyncMock(return_value={"id": "doc:INV-001"})
         ui_client.cookies.update(_authed())
         with (
+            patch("ui.api_client.get_document_taxes", new=AsyncMock(return_value=self._VAT7)),
             patch("ui.api_client.get_item", new=AsyncMock(return_value=self._PIECE_ITEM)),
             patch("ui.api_client.create_doc", new=mock_create),
         ):
@@ -12900,6 +12902,9 @@ class TestBulkActionsPhase6SendTo:
         assert call_data["doc_type"] == "invoice"
         assert call_data["status"] == "draft"
         assert len(call_data["line_items"]) == 1
+        # The new line starts with the default tax; the document carries no document-level copy.
+        assert [x["code"] for x in call_data["line_items"][0]["taxes"]] == ["VAT"]
+        assert "doc_taxes" not in call_data
 
     @pytest.mark.asyncio
     async def test_docs_from_items_new_weight_uses_weight_as_qty(self, ui_client):
@@ -12912,6 +12917,7 @@ class TestBulkActionsPhase6SendTo:
         mock_create = AsyncMock(return_value={"id": "doc:INV-002"})
         ui_client.cookies.update(_authed())
         with (
+            patch("ui.api_client.get_document_taxes", new=AsyncMock(return_value=[])),
             patch("ui.api_client.get_item", new=AsyncMock(return_value=item)),
             patch("ui.api_client.create_doc", new=mock_create),
         ):
@@ -12936,6 +12942,7 @@ class TestBulkActionsPhase6SendTo:
         mock_create = AsyncMock(return_value={"id": "doc:INV-003"})
         ui_client.cookies.update(_authed())
         with (
+            patch("ui.api_client.get_document_taxes", new=AsyncMock(return_value=[])),
             patch("ui.api_client.get_item", new=AsyncMock(return_value=item)),
             patch("ui.api_client.create_doc", new=mock_create),
         ):
@@ -13379,12 +13386,14 @@ class TestSendToPurchaseOrder:
     }
     _UNITS = [{"name": "box", "label": "Box", "decimals": 0, "unit_type": "count"},
               {"name": "piece", "label": "Piece", "decimals": 0, "unit_type": "count"}]
+    _VAT7 = TestBulkActionsPhase6SendTo._VAT7
 
     @pytest.mark.asyncio
     async def test_send_to_new_po_builds_purchase_lines(self, ui_client):
         mock_create = AsyncMock(return_value={"id": "doc:PO-001"})
         ui_client.cookies.update(_authed())
         with (
+            patch("ui.api_client.get_document_taxes", new=AsyncMock(return_value=self._VAT7)),
             patch("ui.api_client.get_item", new=AsyncMock(return_value=self._PO_ITEM)),
             patch("ui.api_client.get_units", new=AsyncMock(return_value=self._UNITS)),
             patch("ui.api_client.create_doc", new=mock_create),
@@ -13399,8 +13408,9 @@ class TestSendToPurchaseOrder:
         payload = mock_create.call_args[0][1]
         assert payload["doc_type"] == "purchase_order"
         assert payload["purchase_kind"] == "inventory"
-        assert "doc_taxes" not in payload  # purchasing, not a sales doc
+        assert "doc_taxes" not in payload
         line = payload["line_items"][0]
+        assert [x["code"] for x in line["taxes"]] == ["VAT"]  # the default tax applies to both sides
         assert line["quantity"] == 2        # reorder_qty 24 / conversion 12
         assert line["unit_price"] == 120    # cost per PURCHASE unit = 10 x 12
         assert line["unit"] == "box"        # purchase unit, not sell unit
@@ -13412,6 +13422,7 @@ class TestSendToPurchaseOrder:
         mock_create = AsyncMock(return_value={"id": "doc:PO-002"})
         ui_client.cookies.update(_authed())
         with (
+            patch("ui.api_client.get_document_taxes", new=AsyncMock(return_value=[])),
             patch("ui.api_client.get_item", new=AsyncMock(return_value=item)),
             patch("ui.api_client.get_units", new=AsyncMock(return_value=self._UNITS)),
             patch("ui.api_client.create_doc", new=mock_create),
@@ -13430,6 +13441,7 @@ class TestSendToPurchaseOrder:
         existing = {"line_items": [{"description": "Old", "quantity": 1, "unit_price": 5}]}
         ui_client.cookies.update(_authed())
         with (
+            patch("ui.api_client.get_document_taxes", new=AsyncMock(return_value=[])),
             patch("ui.api_client.get_item", new=AsyncMock(return_value=self._PO_ITEM)),
             patch("ui.api_client.get_units", new=AsyncMock(return_value=self._UNITS)),
             patch("ui.api_client.get_doc", new=AsyncMock(return_value=existing)),
@@ -13476,6 +13488,7 @@ class TestSendToPurchaseOrder:
         ])
         ui_client.cookies.update(_authed())
         with (
+            patch("ui.api_client.get_document_taxes", new=AsyncMock(return_value=[])),
             patch("ui.api_client.get_item", new=_get_item),
             patch("ui.api_client.get_units", new=AsyncMock(return_value=self._UNITS)),
             patch("ui.api_client.create_doc", new=mock_create),
@@ -13532,6 +13545,7 @@ class TestSendToPurchaseOrder:
         ])
         ui_client.cookies.update(_authed())
         with (
+            patch("ui.api_client.get_document_taxes", new=AsyncMock(return_value=[])),
             patch("ui.api_client.get_item", new=_get_item),
             patch("ui.api_client.get_units", new=AsyncMock(return_value=self._UNITS)),
             patch("ui.api_client.create_doc", new=mock_create),
@@ -13566,6 +13580,7 @@ class TestSendToPurchaseOrder:
         ])
         ui_client.cookies.update(_authed())
         with (
+            patch("ui.api_client.get_document_taxes", new=AsyncMock(return_value=[])),
             patch("ui.api_client.get_item", new=_get_item),
             patch("ui.api_client.get_units", new=AsyncMock(return_value=self._UNITS)),
             patch("ui.api_client.create_doc", new=mock_create),
