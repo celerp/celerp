@@ -1486,5 +1486,8 @@
   },
   "PUT /manufacturing/items/{item_id}/workflow": {
     "path:item_id": "Identifier of the inventory item."
+  },
+  "GET /ai/usage-stats": {
+    "query:period": "Questions to count: month (from the start of the current company month, the default) or all (all time)."
   }
 }
