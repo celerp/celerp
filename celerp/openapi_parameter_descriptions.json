@@ -476,6 +476,16 @@
   "GET /fixed-assets/api/year-end": {
     "query:year": "Year to review, as a four-digit year such as 2026."
   },
+  "GET /help/for-route": {
+    "query:path": "Path of the screen to find help pages for, starting with a slash."
+  },
+  "GET /help/page/{page_id}": {
+    "path:page_id": "Identifier of the help page, as returned by help search."
+  },
+  "GET /help/search": {
+    "query:module": "Optional module name, to search only that module's help pages.",
+    "query:q": "Words describing what to do, matched against the help pages (written in English)."
+  },
   "GET /items": {
     "query:barcode": "Barcode value used to find matching inventory items.",
     "query:category": "Category value used to filter or identify the requested configuration.",
