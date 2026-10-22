@@ -129,8 +129,15 @@ def _number(value: str) -> bool:
     return number.is_finite() and number.adjusted() < MAX_MAGNITUDE
 
 
+# The forms PostgreSQL writes a date and a timestamp in. datetime.fromisoformat also reads ISO week
+# dates and forms without separators, which a database never writes.
+_DATE_FORM = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}(?: [0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?)?").fullmatch
+
+
 def _date(value: str) -> bool:
-    """A date, or a date and time, as PostgreSQL writes one."""
+    """A real date, or date and time, in a form PostgreSQL writes."""
+    if not _DATE_FORM(value):
+        return False
     try:
         datetime.fromisoformat(value)
     except ValueError:

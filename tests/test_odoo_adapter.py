@@ -333,6 +333,9 @@ DAMAGED_FIELDS = {
     "debit past any amount": ("account_move_line", "debit", "1E+999999", None),
     "entry date not a day": ("account_move", "date", "2024-13-45", None),
     "entry without a date": ("account_move", "date", None, None),
+    "entry date as an ISO week": ("account_move", "date", "2024-W03-1", None),
+    "entry date without dashes": ("account_move", "date", "20240115", None),
+    "stock move time as an ISO week": ("stock_move", "date", "2024-W03-1 10:00:00", None),
     "contact id not an id": ("res_partner", "id", "abc", 7),
     "line id not an id": ("account_move_line", "id", "x1", None),
     "unit ratio of zero": ("uom_uom", "factor", "0", None),
@@ -416,7 +419,8 @@ def test_every_column_read_holding_numbers_or_dates_is_checked_as_it_is_read(ver
             assert COLUMN_KINDS.get(column) == "json", column
 
 
-_NOT_OF_KIND = {"id": "x1", "number": "NaN", "date": "2024-13-45", "bytes": "\\xGG", "json": '{"1": NaN}'}
+_NOT_OF_KIND = {"id": ("x1",), "number": ("NaN",), "date": ("2024-13-45", "2024-W03-1", "20240115"),
+                "bytes": ("\\xGG",), "json": ('{"1": NaN}',)}
 
 
 # Odoo keeps JSON in a column read from Odoo 16 on (analytic_distribution).
@@ -430,13 +434,14 @@ def test_every_id_number_and_date_column_read_refuses_a_value_not_of_its_kind(tm
     columns = [c for c in _read_columns(version) if COLUMN_KINDS.get(c) == kind]
     assert columns
     for column in columns:
-        tables = build.tables(version)
-        for table, (names, rows) in tables.rows.items():
-            if column in names:
-                for row in rows:
-                    row[names.index(column)] = _NOT_OF_KIND[kind]
-        with pytest.raises((ScanError, SourceRevisionError), match="incomplete or damaged"):
-            _adapter().inspect(_file(tmp_path, build.backup(version, tables), f"{column}.zip"))
+        for value in _NOT_OF_KIND[kind]:
+            tables = build.tables(version)
+            for table, (names, rows) in tables.rows.items():
+                if column in names:
+                    for row in rows:
+                        row[names.index(column)] = value
+            with pytest.raises((ScanError, SourceRevisionError), match="incomplete or damaged"):
+                _adapter().inspect(_file(tmp_path, build.backup(version, tables), f"{column}.zip"))
 
 
 def test_a_value_is_read_as_its_kind_as_postgresql_writes_it():
@@ -446,7 +451,9 @@ def test_a_value_is_read_as_its_kind_as_postgresql_writes_it():
     assert all(map(KINDS["number"], ("0", "-12.50", "345", "1e-05", "0.333333333333333", "1" + "0" * 19)))
     assert not any(map(KINDS["number"], ("NaN", "Infinity", "-Infinity", "1E+999999", "1" + "0" * 20, "", "x")))
     assert all(map(KINDS["date"], ("2024-01-05", "2024-01-10 09:00:00", "2024-01-10 09:00:00.123456")))
-    assert not any(map(KINDS["date"], ("2024-13-45", "", "05/01/2024", "x")))
+    assert not any(map(KINDS["date"], ("2024-13-45", "", "05/01/2024", "x", "2024-W03-1", "20240115", "2024-01-15T09:00:00",
+                                       "2024-01-15 09:00", "2024-01-15 09:00:00+07:00", "2024-01-15 09:00:00.1234567",
+                                       "\u0662024-01-15")))
     assert all(map(KINDS["bytes"], ("\\x", "\\x00ff", "\\xDEADbeef")))
     assert not any(map(KINDS["bytes"], ("\\xGG", "\\xABC", "\\x0 ", "", "00ff", "x00")))
     assert all(map(KINDS["json"], ('{"1": 100.0}', '{"1,2": 50, "3": 12.5}', "{}", '{"1": 1e-05}')))
