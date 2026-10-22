@@ -148,13 +148,13 @@ def find_document(book: Book, sales: bool, number: str, contact: str) -> Documen
     return None
 
 
-def _party(book: Book, doc_type: str) -> set[str]:
-    return set(book.control("receivable" if doc_type in ("invoice", "credit_note") else "payable"))
+def _party(book: Book, doc_type: str) -> frozenset[str]:
+    return book.controlled("receivable" if doc_type in ("invoice", "credit_note") else "payable")
 
 
 def _actual(book: Book, j: GLJournal, record: str, part: str, document: str | None = None) -> list[Posting]:
     """A journal's own lines; a customer or supplier balance line names its own contact, else the journal's."""
-    parties = {*book.control("receivable"), *book.control("payable")}
+    parties = book.controlled("receivable", "payable")
     return [Posting(record, part, j.date, ln.account, ln.amount,
                     (ln.contact or j.contact) if ln.account in parties else None,
                     ln.description or None, document, ln.foreign if ln.foreign is not None else ln.amount)
@@ -370,11 +370,19 @@ def _carried(book: Book, ledger: Ledger, posted: list[str], cutover: date) -> se
     # A settlement or a note is imported whole: carrying one of its documents carries the others.
     groups = [set(s.documents) for s in ledger.settlements.values()]
     groups += [{k, *book.documents[k].applications} for k in posted if book.documents[k].applications]
-    grown = True
-    while grown:
-        touched = {k for g in groups if carried & g for k in g} & pre
-        grown = bool(touched - carried)
-        carried |= touched
+    linked: dict[str, list[int]] = defaultdict(list)
+    for i, g in enumerate(groups):
+        for k in g:
+            linked[k].append(i)
+    reached: set[int] = set()
+    queue = list(carried)
+    while queue:
+        for i in linked[queue.pop()]:
+            if i not in reached:
+                reached.add(i)
+                found = (groups[i] & pre) - carried
+                carried |= found
+                queue += found
     return carried
 
 
@@ -453,8 +461,11 @@ def build_ledger(book: Book, decisions: MigrationDecisions) -> Ledger:
             ledger.postings += _actual(book, j, j.key, "journal")
 
     ledger.states = _states(book, list(ledger.settlements.values()), set(posted))
-    carried = posted if cutover is None else [k for k in posted if k in _carried(book, ledger, posted, cutover)
-                                              or book.documents[k].date > cutover]
+    if cutover is None:
+        carried = posted
+    else:
+        before = _carried(book, ledger, posted, cutover)
+        carried = [k for k in posted if k in before or book.documents[k].date > cutover]
     unposted = [d.key for d in sorted(book.documents.values(), key=lambda d: (d.date, d.key))
                 if not d.journal and d.status != "posted"
                 and (cutover is None or d.date > cutover or d.status == "draft")]

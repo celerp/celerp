@@ -7,6 +7,7 @@ lay their tables out (tests/fixtures/odoo_backup/build.py)."""
 
 from __future__ import annotations
 
+import gc
 import gzip
 import io
 import json
@@ -673,14 +674,14 @@ def test_a_large_book_kept_in_thai_reads_with_room_to_spare(tmp_path, monkeypatc
 # has at least one, so what the read builds from any table is measured against what it is charged.
 SHAPES = {
     "company": ("companies",),
-    "chart": ("accounts",),
+    "chart": ("accounts", "posted"),
     "contacts": ("contacts",),
     "items": ("items",),
     "taxes": ("taxes", "taxed"),
     "journals": ("ordinary", "shared", "thai", "entries", "invoices", "long", "wide", "span"),
-    "payments": ("paid",),
+    "payments": ("paid", "chain"),
     "analytics": ("analytic",),
-    "stock": ("receipts", "lots", "transfers", "quants", "revalued", "layers", "fan"),
+    "stock": ("receipts", "lots", "transfers", "quants", "revalued", "layers", "fan", "drained"),
     "attachments": ("files",),
 }
 
@@ -691,13 +692,16 @@ def _shaped(path, monkeypatch, shape: str, n: int):
     in Thai, one entry of items sharing every value but their id ("shared"), entries of two items
     ("entries"), one-line invoices ("invoices"), invoices of a hundred untaxed lines ("long") or
     of ten lines with two taxes each ("wide"), or two entries `n` months apart ("span"). The
-    others add `n` of their rows: invoices each paid by its own payment ("paid"), items each
-    spread over the same fifty analytic accounts ("analytic"), companies, accounts, contacts, items, taxes, one
+    others add `n` of their rows: invoices each paid by its own payment ("paid"), or each paid half
+    by the payment before it and half by its own, so every payment links two ("chain"), items each
+    spread over the same fifty analytic accounts ("analytic"), companies, accounts, accounts each posted
+    to by an entry of its own ("posted"), contacts, items, taxes, one
     invoice of a line for each of the taxes ("taxed"), files kept in the database, and
     stock: receipts of one product, receipts each of its own lot ("lots"), each then moved to
     another location ("transfers"), lots held only by a count ("quants"), products each received
     and revalued ("revalued"), revaluations of one product ("layers"), or `n` lots of one
-    product each revalued, every revaluation spread over every lot ("fan")."""
+    product each revalued, every revaluation spread over every lot ("fan"), or `n` lots of one
+    product each received and shipped, then `n` revaluations of it ("drained")."""
     invoiced = {"invoices": (1, build.SALE_TAX), "long": (100, None), "wide": (10, (build.SALE_TAX, build.PROVINCIAL_TAX))}
     bulk, lines = build._bulk, 0
     if shape in invoiced:
@@ -736,6 +740,17 @@ def _shaped(path, monkeypatch, shape: str, n: int):
                          partner=9, payment=("customer", "inbound")))]
         monkeypatch.setattr(build, "PARTIALS", build.PARTIALS + [(100000 + 2 * k, 100001 + 2 * k, D(115))
                                                                  for k in range(n)])
+    elif shape == "chain":
+        bulk = lambda n: [m for k in range(n) for m in (  # noqa: E731
+            build._invoice(100000 + 2 * k, f"INV/2024/{k:07d}", "out_invoice", "2024-01-10", 9,
+                           [(build.CONSULTING, 1, D(100), None)]),
+            build._entry(100001 + 2 * k, f"PBNK1/2024/{k:07d}", "2024-01-20", [(2, D(100)), (4, D(-100), None, 9)],
+                         partner=9, payment=("customer", "inbound")))]
+        monkeypatch.setattr(build, "PARTIALS", build.PARTIALS + [(100000 + 2 * (k + j), 100001 + 2 * k, D(50))
+                                                                 for k in range(n) for j in (0, 1) if k + j < n])
+    elif shape == "posted":
+        bulk = lambda n: [build._entry(30000 + k, f"MISC/{k}", "2024-05-01", [(1000 + k, D(10)), (14, D(-10))])  # noqa: E731
+                          for k in range(n)]
     elif shape == "analytic":
         spread = [(100 + a, f"Project {a} of the spread", 1) for a in range(50)]
         monkeypatch.setattr(build, "ANALYTIC_ACCOUNTS", build.ANALYTIC_ACCOUNTS + spread)
@@ -783,7 +798,7 @@ def _grow(tables, shape: str, n: int) -> None:
     for k in range(n):
         if shape == "companies":
             add("res_company", id=1000 + k, name=f"Branch {k}", partner_id=1, currency_id=build.USD)
-        elif shape == "accounts":
+        elif shape in ("accounts", "posted"):
             add("account_account", id=1000 + k, company_id=1, code=f"7{k:06d}", account_type="income",
                 internal_group="income", name=name(f"Sales {k}"), deprecated="f", reconcile="f")
         elif shape == "contacts":
@@ -819,23 +834,27 @@ def _grow(tables, shape: str, n: int) -> None:
         elif shape == "fan":
             receipt(k, build.WIDGET, lot(k))
             revaluation(k, build.WIDGET)
+        elif shape == "drained":
+            receipt(k, build.WIDGET, lot(k))
+            receipt(n + k, build.WIDGET, 5000 + k, dest=1, src=8)
+            revaluation(k, build.WIDGET)
 
 
-def _read_whole(path):
+def _read_whole(path, decisions=FULL):
     from celerp.importers.adapters.odoo import OdooAdapter
     from celerp.importers.adapters.odoo import adapter as odoo_adapter
 
     odoo_adapter._books.cache_clear()
     try:
-        return OdooAdapter().build_manifest([artifact(path)], FULL)
+        return OdooAdapter().build_manifest([artifact(path)], decisions)
     finally:
         odoo_adapter._books.cache_clear()
 
 
 # Each shape at a size the per-test time limit reads three times over.
-SIZES = {"companies": 8_000, "accounts": 2_000, "contacts": 5_000, "items": 5_000, "taxes": 2_000, "taxed": 1_000,
+SIZES = {"companies": 8_000, "accounts": 2_000, "posted": 2_000, "chain": 2_000, "contacts": 5_000, "items": 5_000, "taxes": 2_000, "taxed": 1_000,
          "span": 1_000, "paid": 2_000, "analytic": 10_000, "receipts": 5_000, "lots": 5_000, "transfers": 3_000,
-         "quants": 5_000, "revalued": 2_000, "layers": 5_000, "fan": 150, "files": 2_000}
+         "quants": 5_000, "revalued": 2_000, "layers": 5_000, "fan": 150, "drained": 3_000, "files": 2_000}
 
 
 def test_every_family_of_tables_read_has_a_shape():
@@ -899,10 +918,11 @@ async def test_a_stock_valuation_spread_far_past_its_upload_is_refused_before_it
     assert peak < 2.5 * dump.MAX_HELD
 
 
-# Per family, the shape whose read could grow faster than its rows, at the smaller of two sizes.
-TIMED = {"companies": 20_000, "accounts": 4_000, "contacts": 10_000, "items": 10_000, "taxed": 1_000,
-         "invoices": 30_000, "span": 2_000, "paid": 2_000, "analytic": 10_000, "revalued": 3_000,
-         "transfers": 3_000, "files": 4_000}
+# Per family, the shape whose read could grow faster than its rows, at the smaller of two sizes
+# (one its read takes a tenth of a second or more for, so the timing is not lost in noise).
+TIMED = {"companies": 60_000, "accounts": 8_000, "posted": 8_000, "contacts": 20_000, "items": 20_000,
+         "taxed": 1_000, "invoices": 15_000, "span": 4_000, "paid": 2_000, "chain": 1_000, "analytic": 10_000,
+         "revalued": 3_000, "transfers": 3_000, "drained": 3_000, "files": 12_000}
 
 
 def test_every_family_of_tables_read_is_timed():
@@ -913,15 +933,25 @@ def test_every_family_of_tables_read_is_timed():
 def test_reading_four_times_the_rows_takes_about_four_times_as_long(tmp_path, monkeypatch, shape):
     """Reading a book takes time in proportion to it, whatever its tables hold: no step looks
     through every record of a kind for each record (each journal found every document, each
-    revaluation every holding, each line every account). Four times the rows within six times
-    the time (in the square of them it is sixteen)."""
+    revaluation every holding, each line every account, each hop along a chain of settlements
+    every settlement). The chain is read at a cutover, where what one settlement carries
+    carries the documents it links. Four times the rows within six times the time (in the
+    square of them it is sixteen), the faster of two reads of each, with the garbage collector
+    paused: its passes over everything the test process holds are not the read's."""
+    decisions = MigrationDecisions(mode=CIFMode.CUTOVER, cutover_date=CUTOVER) if shape == "chain" else FULL
     took = {}
     for n in (TIMED[shape], 4 * TIMED[shape]):
         path = _shaped(tmp_path / f"{shape}-{n}.zip", monkeypatch, shape, n)
         monkeypatch.undo()
-        began = time.perf_counter()
-        _read_whole(path)
-        took[n] = time.perf_counter() - began
+        for _ in range(2):
+            gc.collect()
+            gc.disable()
+            try:
+                began = time.perf_counter()
+                _read_whole(path, decisions)
+                took[n] = min(took.get(n, float("inf")), time.perf_counter() - began)
+            finally:
+                gc.enable()
     assert took[4 * TIMED[shape]] < 6 * took[TIMED[shape]], took
 
 

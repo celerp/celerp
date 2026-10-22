@@ -14,10 +14,11 @@ the same line in the journal's currency when the source states one.
 
 from __future__ import annotations
 
-from collections import Counter
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
+from typing import ClassVar
 
 ZERO = Decimal(0)
 SALES = frozenset({"invoice", "credit_note"})
@@ -35,6 +36,13 @@ class Account:
     control: str | None = None
     currency: str | None = None                 # a bank account kept in a foreign currency
     active: bool = True
+    # Each account built, or its control changed, anywhere: Book.control rebuilds its index after one.
+    edits: ClassVar[int] = 0
+
+    def __setattr__(self, name: str, value: object) -> None:
+        if name == "control":
+            Account.edits += 1
+        super().__setattr__(name, value)
 
     @property
     def label(self) -> str:
@@ -198,6 +206,11 @@ class Book:
     locations: list[str] = field(default_factory=list)
     holdings: dict[str, StockHolding] = field(default_factory=dict)
     object_counts: Counter = field(default_factory=Counter)
+    # Control -> its accounts' codes, and the accounts of each set of controls looked up, as the chart
+    # stood at (its size, Account.edits): every journal, document and settlement asks for one, so it is
+    # found without looking through the chart.
+    _controls: tuple[tuple[int, int], dict[str | None, tuple[str, ...]], dict[tuple[str, ...], frozenset[str]]] = \
+        field(default=((-1, -1), {}, {}), repr=False, compare=False)
 
     @property
     def currencies(self) -> tuple[str, ...]:
@@ -213,8 +226,24 @@ class Book:
         holding = self.holdings.get(key)
         return holding.item if holding else key
 
-    def control(self, kind: str) -> list[str]:
-        return [a.code for a in self.accounts.values() if a.control == kind]
+    def _control_index(self) -> tuple[dict[str | None, tuple[str, ...]], dict[tuple[str, ...], frozenset[str]]]:
+        if self._controls[0] != (stood := (len(self.accounts), Account.edits)):
+            index: dict[str | None, list[str]] = defaultdict(list)
+            for a in self.accounts.values():
+                index[a.control].append(a.code)
+            self._controls = (stood, {k: tuple(codes) for k, codes in index.items()}, {})
+        return self._controls[1], self._controls[2]
+
+    def control(self, kind: str) -> tuple[str, ...]:
+        """The accounts of one control, in the chart's order."""
+        return self._control_index()[0].get(kind, ())
+
+    def controlled(self, *kinds: str) -> frozenset[str]:
+        """The accounts of any of `kinds`, to look an account up in."""
+        order, found = self._control_index()
+        if kinds not in found:
+            found[kinds] = frozenset(code for kind in kinds for code in order.get(kind, ()))
+        return found[kinds]
 
     @property
     def fx_account(self) -> str | None:

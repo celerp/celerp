@@ -45,7 +45,7 @@ def bank_currencies(book: Book) -> None:
 
 
 def roles_from_ledger(book: Book) -> None:
-    receivable, payable = set(book.control("receivable")), set(book.control("payable"))
+    receivable, payable = book.controlled("receivable"), book.controlled("payable")
     for j in book.journals:
         for ln in j.lines:
             contact = ln.contact or j.contact

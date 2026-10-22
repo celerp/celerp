@@ -491,7 +491,7 @@ class _Reader:
         currency and in the base currency."""
         book = self.book
         move_type = self._move_type(move)
-        parties = {*book.control("receivable"), *book.control("payable")}
+        parties = book.controlled("receivable", "payable")
         merged: dict[tuple[str, str | None], GLLine] = {}
         out: list[GLLine] = []
         for r in sorted(rows, key=lambda r: int(r["id"])):
@@ -578,22 +578,28 @@ class _Reader:
         for r in rows:
             if r.get("tax_line_id") and r["account_id"] in self.accounts:
                 booked[self.taxes.get(r["tax_line_id"])] += amount(r)
+        carrying: dict[str | None, list[LineTax]] = defaultdict(list)
+        for ln in lines:
+            for x in ln.taxes:
+                carrying[x.code].append(x)
+        last = ([ln for ln in lines if ln.taxes] or lines or [None])[-1]
         for code, target in booked.items():
-            carrying = [x for ln in lines for x in ln.taxes if x.code == code]
-            if difference := target - sum((x.amount for x in carrying), ZERO):
-                if carrying:
-                    carrying[-1].amount += difference
-                elif lines:
-                    ([ln for ln in lines if ln.taxes] or lines)[-1].taxes.append(LineTax(code, difference))
+            if difference := target - sum((x.amount for x in carrying[code]), ZERO):
+                if carrying[code]:
+                    carrying[code][-1].amount += difference
+                elif last is not None:
+                    last.taxes.append(LineTax(code, difference))
         total, tax_total = _dec(move["amount_total"]), _dec(move["amount_tax"])
         withheld: dict[str, Decimal] = defaultdict(lambda: ZERO)
         if doc_type in ("invoice", "credit_note"):
             # A sale holds no tax below zero: tax the customer withholds is part of the total,
             # settled from the withholding account.
             for ln in lines:
-                kept = [x for x in ln.taxes if x.code is None or book.tax_codes[x.code].rate >= 0]
+                kept = []
                 for x in ln.taxes:
-                    if x not in kept:
+                    if x.code is None or book.tax_codes[x.code].rate >= 0:
+                        kept.append(x)
+                    else:
                         withheld[book.tax_account_for(x.code)] -= x.amount
                 ln.taxes = kept
             total += sum(withheld.values(), ZERO)
@@ -755,6 +761,7 @@ class _Reader:
         events += [(r["create_date"] or "", 1, int(r["id"]), r) for r in layers
                    if not r.get("stock_move_id") and _dec(r["value"])]
         held: dict[str, list[Decimal]] = defaultdict(lambda: [ZERO, ZERO])    # key -> [quantity, value]
+        stocked_under: dict[str, set[str]] = defaultdict(set)                # item -> its keys holding any
         moves: list[StockMove] = []
 
         def add(record: str, key: str, source_type: str, ref: str, on: date, target: str, quantity: Decimal,
@@ -762,13 +769,19 @@ class _Reader:
             self.backup.hold(STOCK_MOVE_BYTES)
             held[target][0] += quantity
             held[target][1] += value or ZERO
+            if held[target][0] > 0:
+                stocked_under[book.stock_item(target)].add(target)
+            else:
+                stocked_under[book.stock_item(target)].discard(target)
             moves.append(StockMove(key, source_type, ref, on, target, quantity, value, record))
 
         for when, is_layer, _, r in sorted(events, key=lambda e: e[:3]):
             code, on = self.products[r["product_id"]], _day(when)
             if is_layer:
                 record = f"valuation:{r['id']}"
-                holders = sorted(k for k, (q, _) in held.items() if q > 0 and book.stock_item(k) == code)
+                holders = sorted(stocked_under[code])
+                # A set keeps the room of every key it once held; its copy iterates in its own size.
+                stocked_under[code] = set(holders)
                 shares = allocate_pro_rata(_dec(r["value"]), [held[k][0] for k in holders], base) if holders \
                     else [_dec(r["value"])]
                 for target, share in zip(holders or [code], shares):

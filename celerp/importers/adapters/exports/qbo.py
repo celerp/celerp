@@ -263,7 +263,7 @@ def _documents(book: Book, tables: list[Table], read_date: DateReader, account: 
 
 def _settled_amount(book: Book, j: GLJournal) -> Decimal:
     """What a payment journal moved on the customer or supplier balance, in its own currency."""
-    parties = {*book.control("receivable"), *book.control("payable")}
+    parties = book.controlled("receivable", "payable")
     return sum((abs(ln.foreign if ln.foreign is not None else ln.amount) for ln in j.lines if ln.account in parties),
                ZERO)
 
