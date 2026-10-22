@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import gc
 import gzip
+import hashlib
 import io
 import json
+import os
 import random
 import re
 import time
@@ -326,6 +328,7 @@ _DEEP_NAME = '{"en_US": ' * 20_000 + '"x"' + "}" * 20_000  # past the JSON parse
 DAMAGED_FIELDS = {
     "debit not a number": ("account_move_line", "debit", "not-a-number", None),
     "inline file not hex": ("ir_attachment", "db_datas", "\\xGG", 9),
+    "inline file half a byte": ("ir_attachment", "db_datas", "\\xABC", 9),
     "debit NaN": ("account_move_line", "debit", "NaN", None),
     "debit past any amount": ("account_move_line", "debit", "1E+999999", None),
     "entry date not a day": ("account_move", "date", "2024-13-45", None),
@@ -396,13 +399,13 @@ def test_every_column_read_holding_numbers_or_dates_is_checked_as_it_is_read(ver
             assert column in COLUMN_KINDS, column
 
 
-_NOT_OF_KIND = {"id": "x1", "number": "NaN", "date": "2024-13-45"}
+_NOT_OF_KIND = {"id": "x1", "number": "NaN", "date": "2024-13-45", "bytes": "\\xGG"}
 
 
 @pytest.mark.parametrize("version", (13, 17))
 @pytest.mark.parametrize("kind", list(_NOT_OF_KIND))
 def test_every_id_number_and_date_column_read_refuses_a_value_not_of_its_kind(tmp_path, version, kind):
-    """For each id, number and date column the reader keeps, a value not of its kind in every
+    """For each id, number, date and file content column the reader keeps, a value not of its kind in every
     table holding it refuses the backup as damaged before anything is imported, whether or not
     the import goes on to use that value."""
     from celerp.importers.adapters.odoo.book import COLUMN_KINDS
@@ -427,6 +430,8 @@ def test_a_value_is_read_as_its_kind_as_postgresql_writes_it():
     assert not any(map(KINDS["number"], ("NaN", "Infinity", "-Infinity", "1E+999999", "1" + "0" * 20, "", "x")))
     assert all(map(KINDS["date"], ("2024-01-05", "2024-01-10 09:00:00", "2024-01-10 09:00:00.123456")))
     assert not any(map(KINDS["date"], ("2024-13-45", "", "05/01/2024", "x")))
+    assert all(map(KINDS["bytes"], ("\\x", "\\x00ff", "\\xDEADbeef")))
+    assert not any(map(KINDS["bytes"], ("\\xGG", "\\xABC", "\\x0 ", "", "00ff", "x00")))
 
 
 def _corrupt(data: bytes, at: bytes, offset: int = 0, garbage: bytes = b"\xff") -> bytes:
@@ -1201,6 +1206,44 @@ def test_any_text_the_reader_keeps_repeated_across_many_records_reads_within_two
     except (ScanError, SourceRevisionError):
         return
     assert peak < 2.5 * charged, f"read took {peak / charged:.2f}x the budget"
+
+
+def test_attachments_sharing_one_file_kept_in_the_database_read_within_two_and_a_half_times_its_charge(
+        tmp_path, monkeypatch):
+    """The database keeps a file shared by many records once; the read holds it once as the
+    database wrote it, so a hundred records sharing a 1 MiB file read within two and a half times
+    their charge, and each file is decoded only when it is checked or imported."""
+    from celerp.importers.adapters.odoo import book, dump
+
+    (tmp_path / "warm.zip").write_bytes(_backup(17))
+    _read_whole(tmp_path / "warm.zip")
+    tables = build.tables(17)
+    columns, rows = tables.rows["ir_attachment"]
+    content = b"%PDF-1.7\n" + os.urandom(1024 ** 2)
+    for k in range(100):
+        row = dict.fromkeys(columns)
+        row.update(id=90000 + k, res_id=7, company_id=1, file_size=len(content), name=f"scan-{k}.pdf",
+                   res_model="res.partner", type="binary", mimetype="application/pdf",
+                   checksum=hashlib.sha1(content).hexdigest(), db_datas="\\x" + content.hex())
+        rows.append([row[c] for c in columns])
+    path = tmp_path / "shared.zip"
+    path.write_bytes(build.backup(17, tables))
+    with dump.Backup(path) as backup:
+        book.read_odoo(backup)
+        charged = backup.held
+    monkeypatch.setattr(dump, "MAX_HELD", charged)
+    tracemalloc.start()
+    try:
+        with dump.Backup(path) as backup:
+            odoo = book.read_odoo(backup)
+            peak = tracemalloc.get_traced_memory()[1]
+            screened = attachments.screen(backup, odoo.attachments, {("Contact", odoo.attachments["attachment:90000"].target)})
+    finally:
+        tracemalloc.stop()
+    assert peak < 2.5 * charged, f"read took {peak / charged:.2f}x the charge"
+    # Decoded one at a time when checked, each the file Odoo recorded.
+    assert all(screened.accepted[f"attachment:{90000 + k}"].sha256 == hashlib.sha256(content).hexdigest()
+               for k in range(100))
 
 
 def _peak_rss() -> int | None:

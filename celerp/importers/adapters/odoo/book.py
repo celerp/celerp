@@ -142,7 +142,7 @@ COLUMNS = frozenset({
     "store_fname", "street", "street2", "supplier_rank", "tax_id", "tax_line_id", "type", "usage", "user_type_id",
     "url", "value", "vat", "zip", "factor", "rounding", "uom_id", "product_uom_id", "quantity_product_uom",
 })
-# Of those, the ones holding an id, a number or a date. Backup.tables refuses a dump with any
+# Of those, the ones holding an id, a number, a date or a file's content. Backup.tables refuses a dump with any
 # other value in one, whether or not the import goes on to use that value.
 IDS = frozenset(c for c in COLUMNS if c == "id" or c.endswith("_id")) | {"res_id"}
 NUMBERS = frozenset({
@@ -152,7 +152,8 @@ NUMBERS = frozenset({
     "rounding", "sequence", "supplier_rank", "value",
 })
 DATES = frozenset({"create_date", "date", "invoice_date_due"})
-COLUMN_KINDS = {**dict.fromkeys(IDS, "id"), **dict.fromkeys(NUMBERS, "number"), **dict.fromkeys(DATES, "date")}
+COLUMN_KINDS = {**dict.fromkeys(IDS, "id"), **dict.fromkeys(NUMBERS, "number"), **dict.fromkeys(DATES, "date"),
+                "db_datas": "bytes"}
 
 
 def required_tables(modules: frozenset[str], version: int) -> set[str]:
@@ -199,7 +200,7 @@ class AttachmentRef:
     key: str
     name: str
     store_fname: str | None
-    stored: bytes | None                        # content kept in the database instead of the filestore
+    stored: str | None                          # content kept in the database instead of the filestore, as it wrote it
     checksum: str | None                        # SHA-1 of the content, as Odoo records it
     target_type: str | None                     # source type of its record; None when Celerp holds no such record
     target: str | None
@@ -920,12 +921,11 @@ class _Reader:
                 # Odoo names a picture after its field; name it after its record instead.
                 name = self.backup.held_text(target.replace("/", "-").replace("\\", "-") + extension)
             # A file kept in the database is held only when it can be imported: attached to a
-            # record Celerp holds and within the size limit (one larger is read as absent).
-            stored = r.get("db_datas") if target else None
-            held = stored and stored.startswith("\\x")
+            # record Celerp holds and within the size limit (one larger is read as absent). It is
+            # held as the database wrote it, once however many records share it, and decoded when used.
             key = f"attachment:{r['id']}"
             self.out.attachments[key] = AttachmentRef(
-                key, name, r.get("store_fname"), bytes.fromhex(stored[2:]) if held else None,
+                key, name, r.get("store_fname"), r.get("db_datas") if target else None,
                 r.get("checksum"), target_type, target, bool(res_field) and target_type == "Item")
         for row_id in self.backup.left_out.get("ir_attachment", []):
             key = f"attachment:{row_id}"

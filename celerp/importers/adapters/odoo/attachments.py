@@ -59,7 +59,7 @@ def _check(backup: Backup, ref: AttachmentRef, carried: set[tuple[str, str]]) ->
     ext = accepted_extension(ref.name)
     if ext is None:
         raise ScanError(t("migration.odoo_attachment_type"))
-    content = ref.stored if ref.stored is not None else (
+    content = bytes.fromhex(ref.stored[2:]) if ref.stored is not None else (
         backup.stored_file(ref.store_fname, MAX_ATTACHMENT_BYTES) if ref.store_fname else None)
     if content is None or len(content) > MAX_ATTACHMENT_BYTES:
         raise ScanError(t("migration.odoo_attachment_unreadable"))

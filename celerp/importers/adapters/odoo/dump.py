@@ -138,8 +138,16 @@ def _date(value: str) -> bool:
     return True
 
 
+_HEX = re.compile(r"[0-9a-fA-F]*").fullmatch
+
+
+def _bytes(value: str) -> bool:
+    """A file's content as PostgreSQL writes it: hex after \\x, two characters a byte."""
+    return value.startswith("\\x") and len(value) % 2 == 0 and _HEX(value, 2) is not None
+
+
 # What each kind of column holds when the database wrote it.
-KINDS: dict[str, Callable[[str], bool]] = {"id": _id, "number": _number, "date": _date}
+KINDS: dict[str, Callable[[str], bool]] = {"id": _id, "number": _number, "date": _date, "bytes": _bytes}
 
 
 def _unescape(match: re.Match) -> str:
