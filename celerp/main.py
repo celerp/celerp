@@ -22,6 +22,7 @@ from celerp.openapi_parameters import describe_parameters
 from celerp.inventory_codes import CodeConflictError
 from celerp.projections.engine import UnhandledEventsError
 from celerp.services.account_roles import PostingRoleError
+from celerp.services.business_time import InvalidTimezoneError
 from celerp.services.journal_accounts import UnbalancedJournalEntry
 from celerp.config import settings, assert_secure_jwt, ensure_instance_id, load_cloud_config, load_backup_config
 load_cloud_config()
@@ -805,6 +806,13 @@ async def code_conflict_handler(_request: Request, exc: CodeConflictError):
     # introduces a physical code another item already holds. One handler on the shared
     # base maps every physical-code collision to 409.
     return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+
+@app.exception_handler(InvalidTimezoneError)
+async def invalid_timezone_handler(_request: Request, exc: InvalidTimezoneError):
+    # Any request that needs the business day (numbering a document, previewing a counter)
+    # is refused with the reason before it stores anything, without a try in every route.
+    return JSONResponse(status_code=422, content={"detail": str(exc)})
 
 
 @app.exception_handler(UnhandledEventsError)

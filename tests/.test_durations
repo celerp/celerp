@@ -16775,7 +16775,6 @@
 "tests/test_services/test_sequences.py::test_get_all_sequences_returns_all_types": 0.001,
 "tests/test_services/test_sequences.py::test_monthly_reset": 0.001,
 "tests/test_services/test_sequences.py::test_per_doc_type_independent_sequences": 0.001,
-"tests/test_services/test_sequences.py::test_preview_pattern": 0.001,
 "tests/test_services/test_sequences.py::test_unsupported_type_raises": 0.001,
 "tests/test_services/test_sequences.py::test_update_sequence_changes_pattern": 0.001,
 "tests/test_services/test_sequences.py::test_update_sequence_changes_prefix": 0.001,

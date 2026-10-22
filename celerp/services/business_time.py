@@ -10,15 +10,19 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from ui.i18n import t
 
 
+class InvalidTimezoneError(ValueError):
+    """A stored business timezone the app cannot resolve. The message is for the user."""
+
+
 def business_timezone(timezone_name: str | None) -> ZoneInfo:
     """Resolve an IANA business timezone, defaulting an unset value to UTC."""
     if timezone_name is not None and not isinstance(timezone_name, str):
-        raise ValueError(t("error.timezone_not_text"))
+        raise InvalidTimezoneError(t("error.timezone_not_text"))
     name = (timezone_name or "UTC").strip() or "UTC"
     try:
         return ZoneInfo(name)
     except (ZoneInfoNotFoundError, ValueError) as exc:
-        raise ValueError(t("error.invalid_timezone", value=name)) from exc
+        raise InvalidTimezoneError(t("error.invalid_timezone", value=name)) from exc
 
 
 def business_date_at(instant: datetime, timezone_name: str | None) -> str:
