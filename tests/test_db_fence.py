@@ -81,6 +81,9 @@ async def write(args):
 
 if path == "api":
     import celerp.main as app_main
+    async def _no_relay_check_in():
+        pass
+    app_main._try_auto_activate = app_main._try_sync_existing_entitlement = _no_relay_check_in
     async def run():
         async with app_main.lifespan(app_main.app):
             await asyncio.to_thread(hold, asyncio.get_running_loop())

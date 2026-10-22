@@ -968,3 +968,47 @@ def docs_running(monkeypatch):
     The harness mounts its routes directly, so the loader would otherwise not list it."""
     from celerp.modules import loader
     monkeypatch.setattr(loader, "_loaded", [*loader._loaded, {"name": "celerp-docs", "version": "1.0.0"}])
+
+
+@pytest.fixture
+def no_connection_off_this_machine(monkeypatch):
+    """Fail a test that opens a connection to any host but this machine or the test
+    database: a boot task left unstubbed would otherwise reach the live relay, and its
+    socket outlives the test."""
+    import ipaddress
+    import socket
+    from sqlalchemy.engine import make_url
+    from celerp.config import settings
+
+    db_host = make_url(settings.database_url).host
+    allowed = {socket.gethostbyname(db_host)} if db_host else set()
+    reached = []
+
+    def _off_machine(address):
+        try:
+            return address[0] not in allowed and not ipaddress.ip_address(address[0]).is_loopback
+        except (TypeError, ValueError, IndexError):
+            return False
+
+    def _recording(real):
+        def _connect(sock, address):
+            if _off_machine(address):
+                reached.append(address)
+            return real(sock, address)
+        return _connect
+
+    monkeypatch.setattr(socket.socket, "connect", _recording(socket.socket.connect))
+    monkeypatch.setattr(socket.socket, "connect_ex", _recording(socket.socket.connect_ex))
+    yield
+    assert not reached, f"connected off this machine: {reached}"
+
+
+@pytest.fixture
+def relay_not_called_at_boot(no_connection_off_this_machine, monkeypatch):
+    """Boot without checking in with the relay, with or without a relay token. A test
+    that wants the check-in patches it again itself."""
+    from unittest.mock import AsyncMock
+    import celerp.main as main_mod
+
+    monkeypatch.setattr(main_mod, "_try_sync_existing_entitlement", AsyncMock())
+    monkeypatch.setattr(main_mod, "_try_auto_activate", AsyncMock())

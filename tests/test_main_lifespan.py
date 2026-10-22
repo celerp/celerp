@@ -22,7 +22,7 @@ from celerp.modules.loader import Admission
 
 # Boot reads and maintains the real database; it needs the schema to exist whichever
 # test runs first.
-pytestmark = pytest.mark.usefixtures("_db_engine")
+pytestmark = pytest.mark.usefixtures("_db_engine", "relay_not_called_at_boot")
 
 
 async def _boom_hook(session=None, **kwargs):

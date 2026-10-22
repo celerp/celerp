@@ -528,6 +528,9 @@ settings.data_dir = Path(sys.argv[3])
 settings.gateway_token = ""
 settings.celerp_public_url = None
 import celerp.main as app_main
+async def _no_relay_check_in():
+    pass
+app_main._try_auto_activate = app_main._try_sync_existing_entitlement = _no_relay_check_in
 if mode == "guard_raises":
     import celerp.services.dev_release_guard as guard
     async def _guard_fails(session):
