@@ -123,6 +123,32 @@ def _category_row(key: str, display_name: str, field_count: int) -> FT:
     )
 
 
+def _category_editor(key: str, value: str, error: FT | None = None) -> FT:
+    """The rename row for a category: the name box holding ``value``, Save and Cancel, and a
+    refused rename's reason under the box, so a refusal keeps the row and what was typed."""
+    return Tr(
+        Td(
+            Form(
+                Input(type="text", name="new_name", value=value,
+                      cls="form-input form-input--sm cat-add-input",
+                      autofocus=True),
+                Button(t("btn.save"), type="submit", cls="btn btn--primary btn--xs"),
+                Button(t("btn.cancel"), type="button", cls="btn btn--secondary btn--xs",
+                       hx_get=f"/settings/categories/{key}/cancel",
+                       hx_target="closest tr",
+                       hx_swap="outerHTML"),
+                hx_patch=f"/settings/categories/{key}",
+                hx_target="closest tr",
+                hx_swap="outerHTML",
+                cls="cat-add-form",
+            ),
+            error or "",
+            colspan="3", cls="cell",
+        ),
+        cls="data-row",
+    )
+
+
 # ── Constrained field options ────────────────────────────────────────────
 
 # IANA timezones - canonical names only (no deprecated aliases)
@@ -2330,26 +2356,7 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return Response("", status_code=401, headers={"HX-Redirect": "/login"})
-        return Tr(
-            Td(
-                Form(
-                    Input(type="text", name="new_name", value=await _category_name(token, category_key),
-                          cls="form-input form-input--sm cat-add-input",
-                          autofocus=True),
-                    Button(t("btn.save"), type="submit", cls="btn btn--primary btn--xs"),
-                    Button(t("btn.cancel"), type="button", cls="btn btn--secondary btn--xs",
-                           hx_get=f"/settings/categories/{category_key}/cancel",
-                           hx_target="closest tr",
-                           hx_swap="outerHTML"),
-                    hx_patch=f"/settings/categories/{category_key}",
-                    hx_target="closest tr",
-                    hx_swap="outerHTML",
-                    cls="cat-add-form",
-                ),
-                colspan="3", cls="cell",
-            ),
-            cls="data-row",
-        )
+        return _category_editor(category_key, await _category_name(token, category_key))
 
     @app.get("/settings/categories/{category_key}/cancel")
     async def settings_category_rename_cancel(request: Request, category_key: str):
@@ -2367,7 +2374,7 @@ def setup_routes(app):
         form = await request.form()
         new_name = str(form.get("new_name", "")).strip()
         if not new_name:
-            return P(t("settings.category_name_required"), cls="error-banner")
+            return _category_editor(category_key, new_name, P(t("settings.category_name_required"), cls="cell-error"))
         # Saving the name as shown (a library category reads in the user's language) is
         # no rename: the category keeps its library name and keeps translating.
         if new_name == await _category_name(token, category_key):
@@ -2375,7 +2382,7 @@ def setup_routes(app):
         try:
             await api.rename_category(token, category_key, new_name)
         except APIError as e:
-            return P(str(e.detail), cls="error-banner")
+            return _category_editor(category_key, new_name, _refusal(e))
         import re as _re
         new_key = _re.sub(r"[^a-z0-9]+", "_", new_name.lower()).strip("_")
         return _category_row(new_key, category_label(new_key, new_name), await _category_field_count(token, new_key))

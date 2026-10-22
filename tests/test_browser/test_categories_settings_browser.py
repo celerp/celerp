@@ -127,3 +127,53 @@ def test_a_blank_new_category_says_to_enter_a_name_beside_the_form(page, ui_serv
     expect(refusal).to_be_in_viewport()
     assert page.evaluate("window.__sameView === true"), "the page reloaded after the refusal"
     expect(rows).to_have_count(before)
+
+
+def _row_named(page, name: str):
+    return page.locator("#your-cats-section tbody tr", has=page.locator(".cat-name-display", has_text=name))
+
+
+def _patch_rename(page, typed: str):
+    box = page.locator("#your-cats-section input[name=new_name]")
+    box.wait_for(state="visible", timeout=4000)
+    box.fill(typed)
+    with page.expect_response(lambda r: r.request.method == "PATCH" and "/settings/categories/" in r.url):
+        box.press("Enter")
+    return box
+
+
+@pytest.mark.parametrize("typed, said", [("", "Enter a category name."),
+                                         ("gemstone", "A category called gemstone already exists.")])
+def test_a_refused_rename_keeps_the_row_with_what_was_typed_and_says_why(page, ui_server, fresh_company,
+                                                                        typed, said):
+    api = fresh_company
+    for name in ("Colored Stone", "Gemstone"):
+        assert api.post("/companies/me/categories", json={"name": name}).status_code == 200
+    _open_categories(page, ui_server)
+    rows = page.locator("#your-cats-section tbody tr")
+    before = rows.count()
+    _row_named(page, "Colored Stone").locator(".cat-name-display").click()
+    box = _patch_rename(page, typed)
+
+    editor = page.locator("#your-cats-section tbody tr:has(input[name=new_name])")
+    refusal = editor.locator(".cell-error")
+    expect(refusal).to_contain_text(said)
+    expect(refusal).to_be_in_viewport()
+    assert page.evaluate("window.__sameView === true"), "the page reloaded after the refusal"
+    expect(rows).to_have_count(before)
+    expect(box).to_have_value(typed)
+    expect(editor.get_by_role("button", name="Save")).to_be_visible()
+
+    # Cancel puts the row back as it was.
+    editor.get_by_role("button", name="Cancel").click()
+    expect(_row_named(page, "Colored Stone")).to_have_count(1)
+    expect(page.locator("#your-cats-section input[name=new_name]")).to_have_count(0)
+    expect(rows).to_have_count(before)
+
+    # A good name still renames it in place.
+    _row_named(page, "Colored Stone").locator(".cat-name-display").click()
+    _patch_rename(page, "Rough Stone")
+    expect(_row_named(page, "Rough Stone")).to_have_count(1)
+    expect(_row_named(page, "Colored Stone")).to_have_count(0)
+    expect(page.locator("#your-cats-section .cell-error")).to_have_count(0)
+    expect(rows).to_have_count(before)
