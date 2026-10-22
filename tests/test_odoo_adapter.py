@@ -183,11 +183,65 @@ def test_translated_names_from_odoo_16_are_read_in_english(tmp_path):
     assert sorted(t.name for t in scan.bundle.tax_codes) == ["15%", "15% [2]", "PST 7%", "WHT 3%", "WHT 3% [5]"]
 
     with Backup(tmp_path / "harbour.zip") as backup:
-        assert backup.text('{"es_ES": "Banco"}') == "Banco"     # no English name: the first one stored
-        assert backup.text("plain") == "plain"
         backup.version = 15
-        assert backup.text('{"en_US": "Bank"}') == '{"en_US": "Bank"}'   # before 16 a name is plain text
         assert backup.lot_table == "stock_production_lot"
+
+
+def test_the_manifest_names_its_version_as_text_or_none():
+    from celerp.importers.adapters.odoo.dump import _major
+
+    assert _major({"version": "17.0"}) == 17 and _major({"major_version": "saas~16.3", "version": "16.3"}) == 16
+    assert _major({"version": ["17.0"]}) is None and _major({"version": {"17.": 1}}) is None and _major({}) is None
+
+
+def test_a_translated_name_is_its_english_one_else_the_first_stored():
+    from celerp.importers.adapters.odoo.dump import translation
+
+    assert translation('{"en_US": "Bank", "th_TH": "ธนาคาร"}') == "Bank"
+    assert translation('{"es_ES": "Banco", "fr_FR": "Banque"}') == "Banco"   # no English name: the first one stored
+    assert translation('{"en_US": "\\u0e18"}') == "\u0e18"
+
+
+# Translations Odoo never writes: each refuses the backup as damaged.
+_NOT_TRANSLATED = {"object": '{"en_US": {"a": 1}}', "list": '{"en_US": ["Widget", "Gadget"]}', "number": '{"en_US": 12}',
+                   "null and bool": '{"en_US": null, "th_TH": true}', "empty": "{}", "a string": '"Widget"',
+                   "an array": '["Widget"]', "not JSON": '{"en_US": "Widget"', "NaN": '{"en_US": NaN}'}
+
+
+@pytest.mark.parametrize("shape", list(_NOT_TRANSLATED))
+def test_a_translated_name_of_another_shape_is_refused(shape):
+    from celerp.importers.adapters.odoo.dump import translation
+
+    assert translation(_NOT_TRANSLATED[shape]) is None
+
+
+@pytest.mark.parametrize("version", (16, 17))
+def test_every_translated_column_read_refuses_a_name_not_of_its_shape(tmp_path, version):
+    """Every name and description the dump declares jsonb is checked as its row is read: one of
+    another shape (here the review's four, which were imported as a Python repr, a number or an
+    empty name) refuses the backup as damaged before anything is imported."""
+    from celerp.importers.adapters.odoo.book import COLUMN_KINDS, COLUMNS, TABLES
+
+    jsonb = [(table, column) for table, columns in build.tables(version).jsonb.items() if table in TABLES
+             for column in columns if column in COLUMNS]
+    assert all(column in COLUMN_KINDS for _, column in jsonb)   # every jsonb column kept has a kind
+    translated = [(table, column) for table, column in jsonb if COLUMN_KINDS[column] == "translated"]
+    assert {c for _, c in translated} == {"name", "description_sale"} and len(translated) == 7
+    for table, column in translated:
+        for shape in ("object", "list", "number", "null and bool"):
+            tables = build.tables(version)
+            _damage(tables, table, column, _NOT_TRANSLATED[shape])
+            with pytest.raises(ScanError, match="incomplete or damaged"):
+                _adapter().build_manifest(_file(tmp_path, build.backup(version, tables), f"{table}.zip"), FULL)
+
+
+def test_a_name_the_dump_declares_text_is_read_as_written_at_every_version(tmp_path):
+    """Only a column the dump declares jsonb holds a translation: a contact's name that happens
+    to be written as JSON is that contact's name, never decoded."""
+    tables = build.tables(17)
+    _damage(tables, "res_partner", "name", '{"en_US": {"a": 1}}', 7)
+    scan = _adapter().build_manifest(_file(tmp_path, build.backup(17, tables)), FULL)
+    assert '{"en_US": {"a": 1}}' in {c.name for c in scan.bundle.contacts}
 
 
 def _uninstall(version: int, *modules: str, tables: tuple[str, ...]) -> bytes:
@@ -349,6 +403,12 @@ DAMAGED_FIELDS = {
     "analytic share past any amount": ("account_move_line", "analytic_distribution", '{"1": 1e999}', None),
     "analytic share as text": ("account_move_line", "analytic_distribution", '{"1": "NaN"}', None),
     "analytic shares not by account": ("account_move_line", "analytic_distribution", "[100]", None),
+    "debit smaller than any amount": ("account_move_line", "debit", "1E-999999", None),
+    "debit with more fraction digits than any amount": ("account_move_line", "debit", "0." + "1" * 49, None),
+    "analytic share smaller than any amount": ("account_move_line", "analytic_distribution", '{"1": 1e-999999}', None),
+    "analytic share with more fraction digits than any amount": ("account_move_line", "analytic_distribution",
+                                                                 '{"1": 0.' + "1" * 49 + "}", None),
+    "analytic key naming an account twice": ("account_move_line", "analytic_distribution", '{"1,2,1": 100}', None),
 }
 
 
@@ -448,8 +508,10 @@ def test_a_value_is_read_as_its_kind_as_postgresql_writes_it():
     from celerp.importers.adapters.odoo.dump import KINDS
 
     assert all(map(KINDS["id"], ("1", "42", "9" * 19))) and not any(map(KINDS["id"], ("-1", "1.0", "x", "\u0661", "9" * 20)))
-    assert all(map(KINDS["number"], ("0", "-12.50", "345", "1e-05", "0.333333333333333", "1" + "0" * 19)))
-    assert not any(map(KINDS["number"], ("NaN", "Infinity", "-Infinity", "1E+999999", "1" + "0" * 20, "", "x")))
+    assert all(map(KINDS["number"], ("0", "-12.50", "345", "1e-05", "0.333333333333333", "1" + "0" * 19,
+                                     "1.1102230246251565e-16", "1.2345678901234567e-32", "0." + "0" * 47 + "1")))
+    assert not any(map(KINDS["number"], ("NaN", "Infinity", "-Infinity", "1E+999999", "1" + "0" * 20, "", "x",
+                                         "1E-999999", "1e-49", "0." + "1" * 49, "0E-49", "1.2345678901234567e-33")))
     assert all(map(KINDS["date"], ("2024-01-05", "2024-01-10 09:00:00", "2024-01-10 09:00:00.123456")))
     assert not any(map(KINDS["date"], ("2024-13-45", "", "05/01/2024", "x", "2024-W03-1", "20240115", "2024-01-15T09:00:00",
                                        "2024-01-15 09:00", "2024-01-15 09:00:00+07:00", "2024-01-15 09:00:00.1234567",
@@ -458,7 +520,7 @@ def test_a_value_is_read_as_its_kind_as_postgresql_writes_it():
     assert not any(map(KINDS["bytes"], ("\\xGG", "\\xABC", "\\x0 ", "", "00ff", "x00")))
     assert all(map(KINDS["json"], ('{"1": 100.0}', '{"1,2": 50, "3": 12.5}', "{}", '{"1": 1e-05}')))
     assert not any(map(KINDS["json"], ('{"1": NaN}', '{"1": Infinity}', '{"1": -Infinity}', '{"1": 1e999}',
-                                       '{"1": 1' + "0" * 20 + "}", '{"1": ', "", _DEEP_NAME)))
+                                       '{"1": 1' + "0" * 20 + "}", '{"1": 1e-999999}', '{"1": ', "", _DEEP_NAME)))
 
 
 def _corrupt(data: bytes, at: bytes, offset: int = 0, garbage: bytes = b"\xff") -> bytes:
@@ -941,8 +1003,9 @@ def _shaped_tables(monkeypatch, shape: str, n: int) -> build.Tables:
     repeat one value of LONG characters across their records: an account's name over `n` month
     ends ("long_account_span"), the name of `n` customers ("duplicate_names"), a product's code
     over `n` lots ("long_code_lots") or `n` revaluations ("long_code_revaluations"), a
-    location's name over `n` lots received into it ("long_location_lots"), and an analytic
-    account's name fifty times in each of `n` journal items ("analytic_repeat")."""
+    location's name over `n` lots received into it ("long_location_lots"), and fifty analytic
+    accounts sharing one name, spread by the longest share a number holds in each of `n` journal
+    items ("analytic_repeat")."""
     invoiced = {"invoices": (1, build.SALE_TAX), "long": (100, None), "wide": (10, (build.SALE_TAX, build.PROVINCIAL_TAX))}
     bulk, lines = build._bulk, 0
     if shape in invoiced:
@@ -1049,12 +1112,20 @@ def _grow(tables, shape: str, n: int) -> None:
     elif shape == "long_location_lots":
         edit("stock_location", 9, complete_name=long)
     elif shape == "analytic_repeat":
-        # Each item's distribution is its own, and names the one account fifty times.
-        edit("account_analytic_account", 1, name=name(long[:LONG // 50]))
+        # Each item's distribution is its own, and spreads the longest share a number holds over
+        # fifty accounts sharing one long name.
+        from celerp.importers.adapters.odoo import dump
+
+        analytic_columns, analytic_rows = tables.rows["account_analytic_account"]
+        first = analytic_rows[0]
+        for a in range(50):
+            analytic_rows.append([200 + a if c == "id" else name(long[:LONG // 50]) if c == "name" else v
+                                  for c, v in zip(analytic_columns, first)])
         columns, rows = tables.rows["account_move_line"]
-        spread = ",".join(["1"] * 50)
+        spread = ",".join(str(200 + a) for a in range(50))
+        share = "9" * (dump.MAX_MAGNITUDE - 1) + "." + "9" * dump.MAX_SCALE
         for k, row in enumerate(r for r in rows if r[columns.index("move_id")] == 25):
-            row[columns.index("analytic_distribution")] = json.dumps({spread: 100, f"9{k:08d}": 0})
+            row[columns.index("analytic_distribution")] = f'{{"{spread}": {share}, "9{k:08d}": 0}}'
     for k in range(n):
         if shape == "companies":
             add("res_company", id=1000 + k, name=f"Branch {k}", partner_id=1, currency_id=build.USD)
@@ -1233,6 +1304,55 @@ def test_any_text_the_reader_keeps_repeated_across_many_records_reads_within_two
     except (ScanError, SourceRevisionError):
         return
     assert peak < 2.5 * charged, f"read took {peak / charged:.2f}x the budget"
+
+
+# Each column holding JSON -> the shape growing its keys and numbers to the most the reader takes.
+GROWN_JSON = {"analytic_distribution": "analytic_repeat"}
+
+
+def test_every_json_column_read_is_grown_by_a_shape():
+    """A JSON column added to the reader with no shape would go unmeasured against its charge:
+    test_a_book_the_budget_just_admits_reads_within_two_and_a_half_times_it reads each shape."""
+    from celerp.importers.adapters.odoo.book import COLUMN_KINDS
+
+    assert GROWN_JSON.keys() == {column for column, kind in COLUMN_KINDS.items() if kind == "json"}
+    assert set(GROWN_JSON.values()) <= {shape for shapes in SHAPES.values() for shape in shapes}
+
+
+# Distributions Odoo never writes, each in every distributed line: (times account 1 is named in
+# the key, the share, the length of account 1's name or None for the fixture's).
+_ANALYTIC_AMPLIFIED = {
+    "a share smaller than any amount": (1, "1e-999999", None),
+    "a share smaller than any amount, its account named 200 times": (200, "1e-999999", None),
+    "a long-named account named 1000 times": (1000, "50", 200_000),
+    "a long-named account named 5000 times": (5000, "50", 200_000),
+}
+
+
+@pytest.mark.parametrize("case", list(_ANALYTIC_AMPLIFIED))
+def test_an_analytic_distribution_odoo_never_writes_is_refused_before_its_tracking_is_built(tmp_path, case):
+    """A key naming an account more than once, or a share smaller than any amount, is a damaged
+    backup: refused before any tracking is built from it, so a few kilobytes never build labels
+    of hundreds of megabytes (one copy of the name per mention, a share spelled in a million digits)."""
+    mentions, share, length = _ANALYTIC_AMPLIFIED[case]
+    tables = build.tables(17)
+    columns, rows = tables.rows["account_move_line"]
+    at = columns.index("analytic_distribution")
+    for row in rows:
+        if row[at]:
+            row[at] = f'{{"{",".join(["1"] * mentions)}": {share}}}'
+    if length:
+        _damage(tables, "account_analytic_account", "name", json.dumps({"en_US": "A" * length}), 1)
+    path = tmp_path / "amplified.zip"
+    path.write_bytes(build.backup(17, tables))
+    tracemalloc.start()
+    try:
+        with pytest.raises((ScanError, SourceRevisionError), match="incomplete or damaged"):
+            _read_whole(path)
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    assert peak < 60 * 1024 ** 2, f"a {len(path.read_bytes())} byte upload built {peak >> 20} MB"
 
 
 def test_attachments_sharing_one_file_kept_in_the_database_read_within_two_and_a_half_times_its_charge(

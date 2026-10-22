@@ -3,12 +3,13 @@
 
 from __future__ import annotations
 
+import atexit
 import os
 import shutil
 from pathlib import Path
 
 from conftest_support import (
-    is_own_test_config, provision_worker_db, resolve_worker_config, resolve_worker_data_dir)
+    is_own_test_config, provision_worker_db, resolve_worker_config, resolve_worker_data_dir, worker_label)
 
 # Must be set before celerp.config is imported (JWT guard fires at module load).
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
@@ -28,23 +29,27 @@ if _inherited_data_dir:
 # mid-write (a torn read raises tomllib.TOMLDecodeError) and leaks one test's
 # instance_id/token into the next. resolve_worker_config is the shared rule (see
 # its docstring for why a plain setdefault does not achieve this under xdist).
-_worker = os.environ.get("PYTEST_XDIST_WORKER", "main")
+# The file is this run's alone (worker_label), so it starts empty and another suite
+# running at once on this machine never reads or writes it.
+_worker = worker_label(os.environ)
 os.environ["CELERP_CONFIG"] = resolve_worker_config(os.environ.get("CELERP_CONFIG"), _worker)
 
-# Start from a clean config: a temp file left by a previous local run (e.g. a
-# persisted [cloud] disconnected = true from the disconnect endpoint) must not
-# leak into this session. Scoped to our own temp path so a real CELERP_CONFIG
-# passed in by CI is never touched.
-_cfg_start = os.environ["CELERP_CONFIG"]
-if is_own_test_config(_cfg_start) and os.path.exists(_cfg_start):
-    os.remove(_cfg_start)
-
-# Per-worker data directory, emptied at start, for the same reason: the default ./data
-# is shared with every other worker and with any app booted from this checkout.
-_data_own = resolve_worker_data_dir(None, _worker)
+# Per-worker data directory, for the same reason: the default ./data is shared with
+# every other worker and with any app booted from this checkout.
 os.environ["DATA_DIR"] = resolve_worker_data_dir(os.environ.get("DATA_DIR"), _worker)
-if os.environ["DATA_DIR"] == _data_own:
-    shutil.rmtree(_data_own, ignore_errors=True)
+
+
+_own_config, _own_data = os.environ["CELERP_CONFIG"], os.environ["DATA_DIR"]
+
+
+@atexit.register
+def _remove_own_temp_files() -> None:
+    """Remove this run's config and data directory, never a real CELERP_CONFIG or DATA_DIR passed in."""
+    if is_own_test_config(_own_config):
+        Path(_own_config).unlink(missing_ok=True)
+    if _own_data == resolve_worker_data_dir(None, _worker):
+        shutil.rmtree(_own_data, ignore_errors=True)
+
 
 # ── Postgres for the whole test suite ──────────────────────────────────────────
 # Both production targets (the server and the Electron embedded-postgres build)
