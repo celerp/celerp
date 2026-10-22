@@ -40,7 +40,7 @@ async def _invoice(client, auth, lines: list[tuple[str, str, float]], *, finaliz
     items = [{"entity_id": lot, "sku": sku, "name": "Lot", "quantity": qty, "unit_price": 40.0,
               "line_total": 40.0 * qty} for lot, sku, qty in lines]
     r = await client.post("/docs", headers=auth["headers"], json={
-        "doc_type": "invoice", "ref_id": f"INV-{uuid.uuid4().hex[:6]}", "line_items": items,
+        "doc_type": "invoice", "ref_id": f"INV-{uuid.uuid4().hex}", "line_items": items,
         "total": sum(i["line_total"] for i in items)})
     assert r.status_code == 200, r.text
     doc = r.json()["id"]
@@ -530,7 +530,7 @@ async def test_finalizing_reads_no_more_rows_after_many_invoices_elsewhere(clien
     started = time.perf_counter()
     for _ in range(_HISTORY):
         r = await client.post("/docs", headers=auth["headers"], json={
-            "doc_type": "invoice", "ref_id": f"INV-{uuid.uuid4().hex[:6]}", "total": 40.0,
+            "doc_type": "invoice", "ref_id": f"INV-{uuid.uuid4().hex}", "total": 40.0,
             "line_items": [{"name": "Service", "quantity": 1, "unit_price": 40.0, "line_total": 40.0}]})
         assert r.status_code == 200, r.text
         await _ok(client, auth, f"/docs/{r.json()['id']}/finalize")
