@@ -25,6 +25,7 @@ from celerp.modules.registry import commit_with_load_set, enable_for_company, ho
 from celerp.services.auth import get_current_company_id, get_current_user
 from celerp.services.company_lock import locked_company
 from celerp.services.permissions import require_permission
+from celerp.services.units import check_units_change, settings_units
 from celerp.services.vertical_presets import (
     installed_preset_modules,
     list_categories as _list_categories,
@@ -91,6 +92,7 @@ def _build_router() -> APIRouter:
 
         company = await _company(session, company_id)
         settings, categories = merge_missing_preset_categories(dict(company.settings or {}), preset)
+        await check_units_change(session, company_id, settings_units(company.settings), settings_units(settings))
         for name in modules:
             settings, _deps = enable_for_company(settings, name)
         # Additive: a setting the company already has is never overwritten.
@@ -117,6 +119,7 @@ def _build_router() -> APIRouter:
             **(settings.get("category_display_names") or {}), cat["name"]: cat["display_name"],
         }
         seed_category_units(settings, cat)
+        await check_units_change(session, company_id, settings_units(company.settings), settings_units(settings))
         company.settings = settings
         await session.commit()
         return {"applied": name, "display_name": cat["display_name"]}

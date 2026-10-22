@@ -45,15 +45,14 @@ def bank_currencies(book: Book) -> None:
 
 
 def roles_from_ledger(book: Book) -> None:
-    receivable, payable = set(book.control("receivable")), set(book.control("payable"))
+    receivable, payable = book.controlled("receivable"), book.controlled("payable")
     for j in book.journals:
-        if not j.contact:
-            continue
         for ln in j.lines:
-            if ln.account in receivable:
-                book.contact(j.contact).roles.add("customer")
-            elif ln.account in payable:
-                book.contact(j.contact).roles.add("supplier")
+            contact = ln.contact or j.contact
+            if contact and ln.account in receivable:
+                book.contact(contact).roles.add("customer")
+            elif contact and ln.account in payable:
+                book.contact(contact).roles.add("supplier")
 
 
 def tax_rates(book: Book) -> None:
@@ -63,8 +62,8 @@ def tax_rates(book: Book) -> None:
         if "%" in code.name and head.replace(".", "", 1).isdigit():
             code.rate = Decimal(head)
         else:
-            rates = {(ln.tax * 100 / ln.net).quantize(Decimal("0.1")) for d in book.documents.values()
-                     for ln in d.lines if ln.tax_code == code.name and ln.net}
+            rates = {(x.amount * 100 / ln.net).quantize(Decimal("0.1")) for d in book.documents.values()
+                     for ln in d.lines for x in ln.taxes if x.code == code.name and ln.net}
             code.rate = rates.pop() if len(rates) == 1 else ZERO
         if code.rate:
             if book.tax_account is None:

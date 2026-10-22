@@ -516,6 +516,7 @@ function initCombobox(wrap) {
   }
 
   function selectOpt(opt) {
+    clearPickNote();
     var val = opt.dataset.value !== undefined ? opt.dataset.value : opt.textContent.trim();
     var label = opt.textContent.trim();
     // __new__:URL values trigger a redirect instead of a form submission
@@ -534,12 +535,84 @@ function initCombobox(wrap) {
     committedLabel = label;
     list.classList.remove('open');
     currentOpts().forEach(function(o) { o.classList.remove('focused'); });
+    fireChange();
+  }
+
+  function fireChange() {
     // Use htmx.trigger() — synthetic dispatchEvent is ignored by HTMX 2.x
     if (hidden && typeof htmx !== 'undefined') {
       htmx.trigger(hidden, 'change');
     } else if (hidden) {
       hidden.dispatchEvent(new Event('change', {bubbles: true}));
     }
+  }
+
+  // allow-custom: on Enter, or on Tab or blur when no option contains it, typed text that is
+  // not the committed label becomes the value (an emptied box clears it on Enter). Typing
+  // already mirrors it into the hidden input, so the commit is the change event; text
+  // equal to the committed label keeps the committed value.
+  function commitCustom() {
+    clearPickNote();
+    if (input.value === committedLabel) { hidden.value = committedValue; return; }
+    hidden.value = input.value;
+    committedValue = input.value;
+    committedLabel = input.value;
+    fireChange();
+  }
+
+  // What the typed text names without arrow-key focus. exact: the option whose label,
+  // or else whose value, it spells in any case. lone: the only option the query leaves
+  // visible, which only Enter on a fixed-list box picks; an allow-custom box never turns
+  // a partial match into that option, so "Gems" never becomes "Rough Gemstone". An empty
+  // box is no query, so it never picks the lone option. Pinned actions (add-new, scope
+  // toggles) stay visible whatever is typed, so they are never picked or counted.
+  function typedMatch() {
+    var opts = currentOpts().filter(function(o) {
+      return !o.classList.contains('combobox-option--empty') && !o.classList.contains('combobox-option--pinned');
+    });
+    var vis = opts.filter(function(o) { return o.style.display !== 'none'; });
+    var typed = input.value.trim().toLowerCase();
+    var byLabel = opts.filter(function(o) { return typed && o.textContent.trim().toLowerCase() === typed; });
+    var byValue = opts.filter(function(o) {
+      return typed && o.dataset.value !== undefined && o.dataset.value.toLowerCase() === typed;
+    });
+    var exact = byLabel.length === 1 ? byLabel[0] : (!byLabel.length && byValue.length === 1 ? byValue[0] : null);
+    return {exact: exact, lone: typed && vis.length === 1 ? vis[0] : null, matches: vis.length};
+  }
+
+  // Options still match on Tab or click-away: nothing is saved, the committed
+  // value stays behind the typed text, and a note under the box says how to finish.
+  function showPickNote() {
+    hidden.value = committedValue;
+    var note = wrap.querySelector('.combobox-note');
+    if (!note) {
+      note = document.createElement('div');
+      note.className = 'cell-error combobox-note';
+      note.setAttribute('role', 'status');
+      wrap.appendChild(note);
+    }
+    // A box whose typed values follow a rule carries its own hint; the shared one offers Enter.
+    note.textContent = wrap.dataset.customHint
+      || window.__shellI18n.comboPickOrAdd.replace('{value}', input.value.trim());
+  }
+  function clearPickNote() {
+    var note = wrap.querySelector('.combobox-note');
+    if (note) note.remove();
+  }
+
+  // allow-custom, leaving the box by Tab or click-away: an exact match picks its option,
+  // text no option contains is a new value, and text options still contain is an
+  // unfinished search the user is told about. Text equal to the committed label
+  // changes nothing, so a box Enter, Tab or a pick already committed is never saved twice.
+  function settleTyped() {
+    if (input.value === committedLabel) { hidden.value = committedValue; return; }
+    var m = typedMatch();
+    if (m.exact) {
+      var val = m.exact.dataset.value !== undefined ? m.exact.dataset.value : m.exact.textContent.trim();
+      if (val !== committedValue) selectOpt(m.exact);
+      else { input.value = committedLabel; hidden.value = committedValue; }
+    } else if (m.matches) showPickNote();
+    else commitCustom();
   }
 
   function openList() {
@@ -558,6 +631,7 @@ function initCombobox(wrap) {
   // A click on the field after Esc closed it opens it again; focus alone would not.
   input.addEventListener('click', function() { if (!list.classList.contains('open')) openList(); });
   input.addEventListener('input', function() {
+    clearPickNote();
     if (isServerSearch) {
       if (!input.value) {
         // User cleared the search, so put the static options back and show them all
@@ -585,18 +659,7 @@ function initCombobox(wrap) {
       // Typing filters the list in multi mode; the selection bag is the state,
       // so restore the summary rather than leaving the search text behind.
       if (isMulti) { syncMultiLabel(); return; }
-      // allow-custom keeps the hidden value in step with typing; if the box was
-      // cleared, commit whatever text stands as the value.
-      if (allowCustom) {
-        if (input.value && !hidden.value) {
-          hidden.value = input.value;
-          committedValue = input.value;
-          committedLabel = input.value;
-          if (typeof htmx !== 'undefined') htmx.trigger(hidden, 'change');
-          else hidden.dispatchEvent(new Event('change', {bubbles: true}));
-        }
-        return;
-      }
+      if (allowCustom) { settleTyped(); return; }
       // Plain single-select over a fixed option set: typing only filters, it
       // never commits. Restore the committed label and value so blurring after a
       // search that was not confirmed never leaves a stale query in the box or an
@@ -608,19 +671,18 @@ function initCombobox(wrap) {
   input.addEventListener('keydown', function(e) {
     if (e.key === 'ArrowDown') { moveFocus(1); e.preventDefault(); }
     if (e.key === 'ArrowUp') { moveFocus(-1); e.preventDefault(); }
-    if (e.key === 'Enter') {
+    // Enter commits; on an allow-custom box Tab picks the same way and still moves on.
+    var enter = e.key === 'Enter';
+    if (enter || (e.key === 'Tab' && allowCustom)) {
       var focused = list.querySelector('.combobox-option.focused');
-      if (focused) { selectOpt(focused); e.preventDefault(); return; }
-      // No arrow-key focus: commit the exact visible label match, or the only
-      // visible option if the query narrowed the list to one, so a keyboard user
-      // who typed a full name and pressed Enter is not left with nothing selected.
-      var vis = currentOpts().filter(function(o) {
-        return o.style.display !== 'none' && !o.classList.contains('combobox-option--empty');
-      });
-      var typed = input.value.trim().toLowerCase();
-      var exact = vis.filter(function(o) { return o.textContent.trim().toLowerCase() === typed; });
-      var pick = exact.length === 1 ? exact[0] : (vis.length === 1 ? vis[0] : null);
+      if (focused) { selectOpt(focused); if (enter) e.preventDefault(); return; }
+      if (!enter) { settleTyped(); return; }
+      // Enter: an exact match picks its option, a fixed-list box also picks the lone
+      // visible option, and an allow-custom box takes the typed text as a new value.
+      var m = typedMatch();
+      var pick = m.exact || (!allowCustom && m.lone);
       if (pick) { selectOpt(pick); e.preventDefault(); }
+      else if (allowCustom) commitCustom();
     }
     if (e.key === 'Escape') {
       list.classList.remove('open');
@@ -981,6 +1043,11 @@ def _backup_banner_html(lang: str = "en") -> FT:
         cls="sys-health-banner",
         style="display:none;align-items:center;justify-content:center;padding:0.5rem 1rem;font-weight:500;background-color:#2563eb;color:#fff;",
     )
+
+# A move into Celerp that is still in progress, on every page, so its owner can always
+# get back to it. Fills itself after the page loads; nothing shows when there is none.
+_OPEN_MIGRATIONS_LOADER = Div(hx_get="/migrations/open-banner", hx_trigger="load", hx_swap="outerHTML",
+                              **{"data-quiet-error": "1"})
 
 _GLOBAL_UI_ERROR_HTML = Div(
     "",
@@ -1953,6 +2020,7 @@ def _shell_js_i18n(lang: str = "en") -> dict:
     _LIST_HINT_JS; the config is injected by client_scripts, before any of them."""
     return {
         "copied": t("shell.copied", lang),
+        "comboPickOrAdd": t("shell.combo_pick_or_add", lang),
         "copyLabel": t("btn.copy", lang),
         "requestFailed": t("shell.request_failed", lang),
         "networkError": t("shell.network_error", lang),
@@ -2165,6 +2233,7 @@ def _shell_document(*content, nav: FT, title: str = "Celerp", companies: list[di
                     _topbar(companies or [], lang=lang, user_email=user_email, relay_info=relay_info),
                     _HEALTH_BANNER_HTML,
                     _backup_banner_html(lang),
+                    _OPEN_MIGRATIONS_LOADER,
                     _GLOBAL_UI_ERROR_HTML,
                     _TOAST_CONTAINER_HTML,
                     Main(*_redirect_notice(request, lang), *content, id="main-content", cls="main-content"),

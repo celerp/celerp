@@ -85,12 +85,12 @@ def test_a_batch_records_when_it_was_made_in_utc():
 def test_the_migration_manifest_has_its_own_version_and_guard():
     from celerp.importers.schema import CIF_VERSION, MIGRATION_CIF_VERSION, CIFImportManifest
 
-    assert MIGRATION_CIF_VERSION == "2" != CIF_VERSION
+    assert MIGRATION_CIF_VERSION == "3" != CIF_VERSION
     assert CIFImportManifest.model_fields["cif_version"].default == MIGRATION_CIF_VERSION
     base = {"source": "s", "source_system": "x", "adapter_version": "1", "exported_at": "2026-01-01T00:00:00",
             "bundle": {}}
-    assert CIFImportManifest.model_validate({**base, "cif_version": "2"}).cif_version == "2"
-    for stale in ("1", "3"):
+    assert CIFImportManifest.model_validate({**base, "cif_version": "3"}).cif_version == "3"
+    for stale in ("1", "2", "4"):
         with pytest.raises(ValidationError, match=f"Unsupported migration CIF version '{stale}'"):
             CIFImportManifest.model_validate({**base, "cif_version": stale})
 

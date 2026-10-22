@@ -4,6 +4,8 @@
 
 Items are written by the same writer as the item batch import route; opening
 positions and adjustments by the same quantity service as the item adjust route.
+Stock the source keeps apart from its item (a lot, or the stock at another location)
+is an item of its own, linked to the item as stock of it, as a lot is in Celerp.
 A position carries its goods cost with its quantity but never posts to the
 ledger: the source's inventory value arrives through its journals and documents.
 """
@@ -61,18 +63,26 @@ class InventoryMigrationSink:
     async def reconcile(
         self, context: SinkContext, expectations: ReconciliationExpectations
     ) -> list[DestinationMeasurement]:
-        """Quantity on hand and goods cost per item."""
+        """Quantity on hand and goods cost per item: its own and that of each item the migration
+        imported as stock of it (a lot, or its stock elsewhere). Lots a document made later, such as
+        the units it sold, are the document's to measure."""
         wanted = [e for e in expectations.expectations if e.measure in _MEASURED]
         items = await mapped_targets(context, ITEM, [e.key for e in wanted])
-        out = []
-        for e in wanted:
-            if e.key not in items:
-                continue
-            row = await context.session.get(Projection, (context.company_id, items[e.key]))
-            state = (row.state or {}) if row else {}
-            value = Decimal(str(state.get(_MEASURED[e.measure]) or 0))
-            out.append(DestinationMeasurement(e.measure, e.key, e.currency, value))
-        return out
+        ids = sorted(set(items.values()))
+        rows = (await context.session.execute(select(Projection).where(
+            Projection.company_id == context.company_id,
+            Projection.entity_id.in_(ids),
+        ))).scalars().all() if ids else []
+        totals: dict[tuple[str, str], Decimal] = {}
+        for row in rows:
+            state = row.state or {}
+            for item_id in {row.entity_id, state.get("catalog_item_id")} & set(ids):
+                for field in _MEASURED.values():
+                    totals[(item_id, field)] = totals.get((item_id, field), Decimal(0)) + Decimal(
+                        str(state.get(field) or 0))
+        return [DestinationMeasurement(e.measure, e.key, e.currency,
+                                       totals.get((items[e.key], _MEASURED[e.measure]), Decimal(0)))
+                for e in wanted if e.key in items]
 
 
 # ── Items ─────────────────────────────────────────────────────────────────────
@@ -86,7 +96,11 @@ async def _import_items(context: SinkContext, items: Sequence[CIFItem]) -> list[
     default = None
     if any(not item.location_name for item in items):
         default = str((await ensure_default_location(context.session, context.company_id)).id)
-    prepared = [_item_record(context, item, by_name, default) for item in items]
+    # Source id -> Celerp id of each item another can be stock of: in this batch, or imported before it.
+    products = {i.source_external_id: _entity_id(context, i) for i in items if not i.product_external_id}
+    products.update(await mapped_targets(context, ITEM, [i.product_external_id for i in items
+                                                         if i.product_external_id not in products]))
+    prepared = [_item_record(context, item, by_name, default, products) for item in items]
 
     async def write(ready: list[ImportRecord]):
         outcome, _batch_id = await services.write_import_batch(
@@ -99,8 +113,10 @@ async def _import_items(context: SinkContext, items: Sequence[CIFItem]) -> list[
 
 
 def _item_record(
-    context: SinkContext, item: CIFItem, by_name: dict[str, str], default: str | None
+    context: SinkContext, item: CIFItem, by_name: dict[str, str], default: str | None, products: dict[str, str]
 ) -> ImportRecord | str:
+    if item.product_external_id and item.product_external_id not in products:
+        return f"Item {item.name}: the item it is stock of, {item.product_external_id}, was not imported."
     if item.location_name:
         location_id = by_name.get(item.location_name)
         if location_id is None:
@@ -119,6 +135,8 @@ def _item_record(
         "weight_unit": item.weight_unit,
         "category": item.category,
         "barcode": item.barcode,
+        "batch_no": item.batch_no,
+        "catalog_item_id": products[item.product_external_id] if item.product_external_id else None,
         "location_id": location_id,
         "attributes": dict(item.attributes),
         "retail_price": float(item.retail_price) if item.retail_price is not None else None,
@@ -127,12 +145,16 @@ def _item_record(
         "cost_total": float(item.total_cost) if item.cost_per_unit is None and item.total_cost is not None else None,
     }
     return ImportRecord(
-        entity_id=f"item:{deterministic_id(context, item.source_type, item.source_external_id)}",
+        entity_id=_entity_id(context, item),
         event_type="item.created",
         data={k: v for k, v in data.items() if v not in (None, "", {})},
         source="migration",
         idempotency_key=context.idempotency_key(item, "created"),
     )
+
+
+def _entity_id(context: SinkContext, item: CIFItem) -> str:
+    return f"item:{deterministic_id(context, item.source_type, item.source_external_id)}"
 
 
 # ── Opening positions and adjustments ─────────────────────────────────────────

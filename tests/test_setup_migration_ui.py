@@ -1440,6 +1440,41 @@ async def test_bootstrap_start_signs_in_the_new_owner(ui, router, fake_api):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("with_accounts", [False, True])
+async def test_the_backup_company_choice_reads_as_a_choice_from_the_backup(ui, router, fake_api, with_accounts):
+    """A backup that holds several companies asks which one to import. The choice lists the
+    backup's companies, so it sits above the mapping table as a choice from the file, never
+    under "In Celerp" or a title about where items go in Celerp."""
+    from celerp.importers.adapters.base import COMPANY_QUESTION
+
+    _owner(ui)
+    base = "/setup/new-company/migrate"
+    r = await ui.post(f"{base}/scan", files=_UPLOAD, data={"source": "manager_io", "prepared_by": "Example Bookkeeping"})
+    token = _cookie_value(r, SCAN_COOKIE)
+    ui.cookies.set(SCAN_COOKIE, token)
+    scan = fake_api.scans[token]["scan"]
+    choice = {"key": COMPANY_QUESTION, "source_type": "Company", "source_external_id": "company",
+              "label": t("migration.odoo_company_question", "en"), "options": ["Harbour Supplies Ltd", "Second Co"],
+              "suggested": "Harbour Supplies Ltd"}
+    scan["questions"] = [choice, *(scan["questions"] if with_accounts else [])]
+
+    r = await ui.get(f"{base}/mapping")
+    assert r.status_code == 200
+    page, visible = _page(r), _visible(r)
+    choice_at = page.index(f'name="mapping__{COMPANY_QUESTION}"')
+    assert "Company to import from this backup" in visible
+    assert "<table" not in page[:choice_at], "the company choice comes before the mapping table"
+    if with_accounts:
+        table = page[page.index("<table"):page.index("</table>")]
+        assert 'name="mapping__account:fx-gain"' in table and f"mapping__{COMPANY_QUESTION}" not in table
+        assert t("migration.mapping_title", "en") in visible
+    else:
+        assert "<table" not in page
+        assert "Choose the company to import" in visible
+        assert t("migration.mapping_subtitle", "en") not in visible and "In Celerp" not in visible
+
+
+@pytest.mark.asyncio
 async def test_move_another_company_starts_clean_wizard(ui, router, fake_api):
     _owner(ui)
     base = "/setup/new-company/migrate"
@@ -1555,9 +1590,75 @@ async def test_preparing_run_explains_and_waits_without_a_start_button(ui, fake_
     assert "Celerp is preparing features for this company" in _visible(r)
     assert 'hx-trigger="every 2s"' in _page(r)
     assert f'action="/migrations/{run_id}/start"' not in _page(r)
+    # The run already started: it reads as preparing, says once that the user can leave,
+    # and never warns that the file goes if they do not start.
+    page = _visible(r)
+    assert "Preparing" in page and "Ready to start" not in page
+    assert page.count("You can leave this page") == 1
+    assert t("migration.retention_started", "en") in page and "if you do not start" not in page
 
 
-@pytest.mark.parametrize("preparing,status,quiet", [(True, "ready", True), (False, "running", False)])
+@pytest.mark.asyncio
+async def test_a_move_in_progress_is_reachable_from_the_page_the_owner_lands_on(ui, router, fake_api):
+    """The run page says the user can leave it, and the desktop app shows the home page
+    after the restart a move can need. Every page leads back to a move still in progress,
+    except the run page that already shows it."""
+    _owner(ui)
+    run_id = fake_api.add_run("ready_to_finalize")
+    items = [{"id": run_id, "company_name": "Moved Co", "status": "ready_to_finalize", "preparing": False}]
+    router.overrides[("GET", "/migrations/open")] = lambda request: _json(200, {"items": items})
+    from fasthtml.common import P, to_xml
+
+    from ui.components.shell import minimal_shell
+    # Every app page, the home page among them, is built on the shell document.
+    assert 'hx-get="/migrations/open-banner"' in to_xml(minimal_shell(P("home")))
+    home = "http://localhost/docs?type=invoice"
+
+    async def banner(current_url: str) -> httpx.Response:
+        return await ui.get("/migrations/open-banner", headers={"HX-Request": "true", "HX-Current-URL": current_url})
+
+    r = await banner(home)
+    assert f'href="/migrations/{run_id}"' in _page(r)
+    assert "Moving Moved Co into Celerp: Ready to finish." in _visible(r)
+    assert (await banner(f"http://localhost/migrations/{run_id}")).text == ""
+
+    items[0].update(status="ready", preparing=True)
+    assert "Moving Moved Co into Celerp: Preparing." in _visible(await banner(home))
+
+    items.clear()
+    assert (await banner(home)).text == ""
+    router.overrides[("GET", "/migrations/open")] = lambda request: _json(503, {"detail": "down"})
+    assert (await banner(home)).text == ""
+
+
+@pytest.mark.asyncio
+async def test_a_poll_the_api_cannot_answer_keeps_polling_and_says_it_is_reconnecting(ui, fake_api, router):
+    """The restart a run's preparing ends in stops the API for a moment. A poll in that
+    window gets a block that says it is reconnecting and keeps polling quietly, never the
+    error page that would end the polling; a poll that gets any other refusal reloads the
+    page, which then shows the refusal."""
+    _owner(ui)
+    run_id = fake_api.add_run("ready")
+    fake_api.runs[run_id]["preparing"] = True
+    hx = {"HX-Request": "true"}
+
+    def down(request):
+        raise httpx.ConnectError("API restarting", request=request)
+    router.overrides[("GET", f"/migrations/{run_id}")] = down
+    r = await ui.get(f"/migrations/{run_id}", headers=hx)
+    html = _page(r)
+    assert r.status_code == 200
+    assert 'id="migration-progress"' in html and 'hx-trigger="every 2s"' in html and 'data-quiet-error="1"' in html
+    assert "Reconnecting to Celerp" in _visible(r) and "restart Celerp" not in _visible(r)
+
+    router.overrides[("GET", f"/migrations/{run_id}")] = lambda request: httpx.Response(404, json={"detail": "Gone"})
+    r = await ui.get(f"/migrations/{run_id}", headers=hx)
+    assert r.headers.get("HX-Refresh") == "true" and not r.text
+    full = await ui.get(f"/migrations/{run_id}")
+    assert "Gone" in _visible(full)
+
+
+@pytest.mark.parametrize("preparing,status,quiet",[(True, "ready", True), (False, "running", False)])
 def test_preparing_poll_rides_through_the_restart_it_announces(preparing, status, quiet):
     """RED before the change: preparing ends in the restart the page announces, and
     the poll that fails while the servers are down raised a native alert on this

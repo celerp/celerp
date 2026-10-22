@@ -8,6 +8,7 @@ source's export menus write it."""
 from __future__ import annotations
 
 import io
+import struct
 import zipfile
 from datetime import date
 from decimal import Decimal
@@ -23,6 +24,7 @@ from fixtures.qbo_export import build as qbo
 from fixtures.xero_export import build
 from migration_support import maker, real_engine  # noqa: F401
 from test_migration_e2e import _maps, _passing, migrate_set
+from ui.i18n import t
 
 FULL = MigrationDecisions(mode=CIFMode.FULL_HISTORY)
 CUTOVER = date(2025, 6, 30)
@@ -122,6 +124,128 @@ def test_an_unreadable_file_is_named_and_not_also_called_missing(tmp_path):
     assert "Contacts is missing" not in message
 
 
+def _many_files(count: int) -> bytes:
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_STORED) as z:
+        for k in range(count):
+            z.writestr(f"{k:08d}.csv", b"")
+    return out.getvalue()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", [None, "xero", "quickbooks_online"])
+async def test_a_zip_listing_more_files_than_the_server_holds_is_refused_without_reading_it(client, monkeypatch,
+                                                                                            tmp_path, source):
+    """A zip of 300,000 empty files, offered to every reader or to one chosen: each refuses it from
+    the size its directory declares, without holding the upload or its directory."""
+    from celerp.config import settings
+    from migration_support import recognition_peak, scan_upload
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    data = _many_files(300_000)
+    peaks = recognition_peak(monkeypatch)
+    r = await scan_upload(client, data, name="books.zip", source=source)
+    assert r.status_code == 422, r.text
+    assert peaks and max(peaks) < 16 * 1024 ** 2, f"{len(data) / 2 ** 20:.0f} MiB upload, peaks {peaks}"
+
+
+def test_a_file_beyond_what_an_export_set_reads_is_named_without_being_read(tmp_path, monkeypatch):
+    from celerp.importers.adapters.exports import files
+
+    many = _set(tmp_path, [("many.zip", _many_files(300_000))])
+    _, strangers = files.read_set(many, ())
+    assert [s.reason for s in strangers] == [t("migration.err_export_archive_too_large", name="many.zip")]
+    whole = _set(tmp_path, [("Contacts.csv", dict(_xero())["Contacts.csv"])])
+    monkeypatch.setattr(files, "LIMITS", files.tabular.Limits(files.LIMITS.rows, files.LIMITS.cells,
+                                                              whole[0].size_bytes - 1, files.LIMITS.uncompressed))
+    monkeypatch.setattr(type(whole[0].path), "read_bytes", lambda self: pytest.fail(f"{self.name} was read"))
+    _, strangers = files.read_set(whole, ())
+    assert [s.reason for s in strangers] == [t("migration.err_file_too_large")]
+
+
+def test_a_workbook_listing_more_entries_than_the_server_holds_is_refused_before_it_is_parsed():
+    import tracemalloc
+
+    from celerp.importers import tabular
+    from celerp.importers.adapters.exports import files
+
+    data = _many_files(300_000)
+    tracemalloc.start()
+    try:
+        with pytest.raises(tabular.TabularError) as refused:
+            tabular.workbook_lines(data, files.LIMITS)
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    assert str(refused.value) == t("import.err_xlsx_entries")
+    assert peak < 16 * 1024 ** 2, f"{peak / 2 ** 20:.0f} MiB peak"
+
+
+def _zip64_tail(disk: int, record_at: int) -> bytes:
+    """A ZIP64 end locator naming `disk` and a record at `record_at`, then an empty end record."""
+    return (struct.pack("<4sLQL", b"PK\x06\x07", disk, record_at, 1)
+            + struct.pack("<4s4H2LH", b"PK\x05\x06", 0, 0, 0, 0, 0, 0, 0))
+
+
+# End records zipfile cannot parse: it refuses each when it opens the file.
+DAMAGED_TAILS = {
+    "on_two_disks": _zip64_tail(1, 0),
+    "record_outside_the_file": _zip64_tail(0, 10 ** 9),
+    "record_missing": _zip64_tail(0, 0),
+}
+
+# Every function that runs the zip preflight, and each way an upload reaches it.
+PREFLIGHT_CALLERS = {
+    "celerp/importers/tabular.py:_xlsx_lines": ("read_table", "read_table_at_header", "workbook_lines"),
+    "celerp/importers/adapters/exports/files.py:_members": ("scan", "scan:xero", "scan:quickbooks_online"),
+    "celerp/importers/adapters/odoo/dump.py:__init__": ("scan:odoo",),
+}
+
+
+def test_every_function_running_the_zip_preflight_is_probed_with_a_damaged_tail():
+    import ast
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    callers = set()
+    for path in [*(root / "celerp").rglob("*.py"), *(root / "default_modules").rglob("*.py")]:
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and any(
+                    isinstance(call, ast.Call) and "zip_directory_fits" in {getattr(call.func, "id", None),
+                                                                            getattr(call.func, "attr", None)}
+                    for call in ast.walk(node)):
+                callers.add(f"{path.relative_to(root).as_posix()}:{node.name}")
+    assert callers == set(PREFLIGHT_CALLERS)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tail", list(DAMAGED_TAILS))
+@pytest.mark.parametrize("way", [way for ways in PREFLIGHT_CALLERS.values() for way in ways])
+async def test_a_zip_whose_end_records_do_not_parse_is_refused_as_unreadable(client, monkeypatch, tmp_path, way, tail):
+    """Every spreadsheet import (general, document lines, items, bank statement) and every source
+    scan reads such a file as zipfile does: unreadable, never a server error."""
+    from celerp.config import settings
+    from celerp.importers import tabular
+    from celerp.importers.adapters.exports import files
+    from migration_support import scan_upload
+
+    data = DAMAGED_TAILS[tail]
+    if not way.startswith("scan"):
+        read = {"read_table": lambda: tabular.read_table(data, "items.xlsx"),
+                "read_table_at_header": lambda: tabular.read_table_at_header(data, "items.xlsx"),
+                "workbook_lines": lambda: tabular.workbook_lines(data, files.LIMITS)}[way]
+        with pytest.raises(tabular.TabularError) as refused:
+            read()
+        assert str(refused.value) == t("import.err_not_xlsx")
+        return
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    source = way.partition(":")[2] or None
+    r = await scan_upload(client, data, name="books.zip", source=source)
+    assert r.status_code == 422, r.text
+    refused = 'Celerp cannot read "books.zip" yet.' if source is None else '"books.zip" is not a'
+    assert r.json()["detail"].startswith(refused), r.text
+
+
 def test_overlapping_batches_are_refused(tmp_path):
     first = dict(_xero())["Invoices 1.csv"]
     with pytest.raises(ScanError, match="Invoices 1.csv.*Invoices 9.csv"):
@@ -162,6 +286,11 @@ def test_slashed_dates_are_read_in_the_one_order_the_set_allows():
 
 # ── Masters and documents ─────────────────────────────────────────────────────
 
+def test_an_export_set_holds_no_attachment(tmp_path):
+    with pytest.raises(ScanError, match="This attachment is not in the uploaded file."):
+        _adapter().read_attachment(_set(tmp_path, _xero()), FULL, "attachment:1")
+
+
 def test_xero_masters_and_documents_carry_into_cif(tmp_path):
     manifest = _adapter().build_manifest(_set(tmp_path, _xero()), FULL)
     bundle = manifest.bundle
@@ -195,15 +324,18 @@ def test_xero_masters_and_documents_carry_into_cif(tmp_path):
     assert [statuses[n] for n, d in source.items() if d.status == "Voided"] == ["void"] * 6
     assert [statuses[n] for n, d in source.items() if d.status == "Draft"] == ["draft"]
     usd = next(d for d in docs.values() if d.currency == "USD" and d.status == "paid")
-    assert usd.exchange_rate is not None and usd.line_items[0].tax_code_external_id
+    assert usd.exchange_rate is not None and usd.line_items[0].taxes[0].tax_code_external_id
     notes = [d for d in docs.values() if d.doc_type == "credit_note"]
-    assert len(notes) == 3 and all(n.metadata["applies_to"] == f"S:{source[n.ref].reference}" for n in notes)
+    assert len(notes) == 3 and all(n.metadata["applications"] == {f"S:{source[n.ref].reference}": str(n.total)} for n in notes)
     assert docs["S:INV-0001"].line_items[0].item_external_id is not None
-    assert docs["S:INV-0001"].metadata["tracking"] == [{"Region": "North", "Project": "Beta"}]
+    assert [ln.tracking for ln in docs["S:INV-0001"].line_items] == [{"Region": "North", "Project": "Beta"}]
 
     coverage = {row.source_type: (row.count, row.coverage_class) for row in manifest.coverage}
     assert coverage["Deleted invoice or bill"] == (3, CoverageClass.IGNORED_NON_BUSINESS)
     assert coverage["Tracking category"][1] == CoverageClass.UNSUPPORTED_NONFINANCIAL
+    # The report's note is read from the catalogs, so it is shown in the user's language.
+    notes = {row.source_type: row.note for row in manifest.coverage}
+    assert notes["Tracking category"] == t("migration.coverage_tracking_note") != "migration.coverage_tracking_note"
     assert all(row.coverage_class != CoverageClass.UNSUPPORTED_FINANCIAL_BLOCKER for row in manifest.coverage)
 
 
@@ -292,16 +424,35 @@ def test_quickbooks_online_masters_and_documents_carry_into_cif(tmp_path):
     assert set(docs) == {f"{'S' if d.sales else 'P'}:{n}" for n, d in source.items()}
     assert [docs[f"S:{n}"].status for n, d in source.items() if d.status == "Voided"] == ["void"] * 6
     usd = next(d for d in docs.values() if d.currency == "USD" and d.status == "paid")
-    assert usd.exchange_rate is not None and usd.line_items[0].tax_code_external_id
+    assert usd.exchange_rate is not None and usd.line_items[0].taxes[0].tax_code_external_id
     notes = [d for d in docs.values() if d.doc_type == "credit_note"]
-    assert len(notes) == 3 and all(n.metadata["applies_to"] == f"S:{source[n.ref].reference}" for n in notes)
+    assert len(notes) == 3 and all(n.metadata["applications"] == {f"S:{source[n.ref].reference}": str(n.total)} for n in notes)
     assert docs["S:INV-0001"].line_items[0].item_external_id is not None
-    assert docs["S:INV-0001"].metadata["tracking"] == [{"Class": "North", "Location": "Beta"}]
+    assert [ln.tracking for ln in docs["S:INV-0001"].line_items] == [{"Class": "North", "Location": "Beta"}]
 
     # Payments are matched to what they settled, so few stay plain journals.
     settled = [s for s in bundle.settlements if s.settlement_type == "receipt"]
     assert len(settled) > 100
     assert all(row.coverage_class != CoverageClass.UNSUPPORTED_FINANCIAL_BLOCKER for row in manifest.coverage)
+
+
+def test_a_quickbooks_online_payment_applied_to_two_invoices_settles_each(tmp_path):
+    """One receipt applied to two invoices of a customer settles each by what was applied to it."""
+    books = build.simulate()
+    pays = [j for j in books.journals if j.source == "Receivable Payment" and j.currency == build.BASE]
+    first, second = next((a, b) for a in pays for b in pays if a.contact == b.contact and a.invoice < b.invoice)
+    party = sum((p.amount for p in first.postings if p.account == "610"), Decimal(0))
+    later = sum((p.amount for p in second.postings if p.account == "610"), Decimal(0))
+    first.applied = {first.invoice: -party, second.invoice: -later}
+    first.on, first.invoice = max(first.on, second.on), ""
+    totals: dict[str, Decimal] = {}
+    for p in first.postings + second.postings:
+        totals[p.account] = totals.get(p.account, Decimal(0)) + p.amount
+    first.postings = [build.Posting(account, amount) for account, amount in totals.items()]
+    books.journals.remove(second)
+    bundle = _qbo_adapter().build_manifest(_set(tmp_path, qbo.files(books).items()), FULL).bundle
+    settled = {tuple((a.document_external_id, a.amount) for a in s.allocations) for s in bundle.settlements}
+    assert ((f"S:{next(iter(first.applied))}", -party), (f"S:{list(first.applied)[1]}", -later)) in settled
 
 
 def test_quickbooks_online_expectations_come_from_the_reports(tmp_path):
@@ -344,3 +495,21 @@ async def test_quickbooks_and_xero_adapters(real_engine, monkeypatch, tmp_path, 
         if m.meta.get("representation") == "journal_fallback":
             assert ((m.source_type, "mapped_with_loss") in coverage
                     or (f"{m.source_type} (journal fallback)", "mapped_with_loss") in coverage), m.source_type
+
+
+def test_a_document_number_is_found_only_on_its_own_contacts_document():
+    from celerp.importers.adapters.exports.book import Book, Document
+    from celerp.importers.adapters.exports.ledger import find_document
+
+    def doc(key: str, contact: str) -> Document:
+        return Document(key, "INV-1", "invoice", "Invoice", contact, "", date(2025, 1, 1), None, "USD", "posted",
+                        [], Decimal(0), Decimal(0), Decimal(0), Decimal(0))
+
+    book = Book("xero")
+    book.documents = {k: doc(k, c) for k, c in (("S:INV-1", "Ann"), ("S:INV-1|Bob", "Bob"), ("P:INV-1|Cy", "Cy"))}
+    assert find_document(book, True, "INV-1", "Ann").key == "S:INV-1"
+    assert find_document(book, True, "INV-1", "Bob").key == "S:INV-1|Bob"
+    assert find_document(book, True, "INV-1", "Dee") is None          # never another contact's
+    assert find_document(book, True, "INV-1", "").key == "S:INV-1"    # a journal naming no contact
+    assert find_document(book, False, "INV-1", "Cy").key == "P:INV-1|Cy"
+    assert find_document(book, False, "INV-1", "Ann") is None

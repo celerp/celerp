@@ -110,9 +110,9 @@ def _python_sources() -> list[Path]:
     return [REPO / p for p in listed.stdout.split() if "/migrations/versions/" not in p]
 
 
-def test_the_migration_manifest_is_cif_v2_and_each_version_is_defined_once():
+def test_the_migration_manifest_is_cif_v3_and_each_version_is_defined_once():
     manifest = adapter().build_manifest([artifact(BASIC)], FULL)
-    assert manifest.cif_version == MIGRATION_CIF_VERSION == "2"
+    assert manifest.cif_version == MIGRATION_CIF_VERSION == "3"
     assert CIFImportManifest.model_validate(manifest.model_dump()).bundle == manifest.bundle
 
     # The CIF v1 bundle entities keyed themselves by a bare `external_id`; migration entities have none.

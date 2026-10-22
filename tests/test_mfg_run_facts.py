@@ -48,8 +48,8 @@ async def test_a_component_listed_twice_becomes_one_requirement(client, auth):
     made = (await client.post("/items", headers=headers, json={
         "sku": "DUP-FG", "name": "Out", "quantity": 0, "sell_by": "piece"})).json()["id"]
     r = await client.post("/manufacturing", headers=headers, json={
-        "description": "Dup", "inputs": [{"item_id": item_id, "quantity": 2}, {"item_id": item_id, "quantity": 1.5}],
+        "description": "Dup", "inputs": [{"item_id": item_id, "quantity": 2}, {"item_id": item_id, "quantity": 1}],
         "output_item_id": made})
     assert r.status_code == 200, r.text
     run = (await client.get(f"/manufacturing/{r.json()['id']}", headers=headers)).json()
-    assert run["inputs"] == [{"item_id": item_id, "quantity": 3.5, "issued_qty": 0.0}]
+    assert run["inputs"] == [{"item_id": item_id, "quantity": 3, "issued_qty": 0.0}]

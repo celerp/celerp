@@ -70,9 +70,12 @@ from celerp.services.lot_origin import (
     value_moved,
 )
 from celerp.services.money import allocate_pro_rata, round_money
+from celerp.services.units import build_unit_map, get_company_units, require_moving_fits_units, validate_line_quantity
 
 from . import run_events  # noqa: F401  (registers the run's own event types)
 from .expansion import merge_inputs, output_line
+from .projection_handler import reopened
+from .search import _INCOMPLETE_STATUSES
 
 # Namespace for produced-lot ids: a receipt retried with its key resolves to the same lot id.
 MFG_LOT_NS = uuid.UUID("6f1d0c2a-7b3e-4a9c-8d5f-2e0a1b4c6d8e")
@@ -151,7 +154,28 @@ def outstanding_inputs(run_state: dict) -> list[dict]:
 def outstanding_output(run_state: dict) -> float:
     """Finished-goods quantity still to receive (expected - already received)."""
     expected = float((run_state.get("expected_outputs") or [{}])[0].get("quantity") or 0)
-    return max(0.0, expected - float(run_state.get("received_qty") or 0))
+    return max(0.0, round(expected - float(run_state.get("received_qty") or 0), 6))
+
+
+def quantities_still_moving(run_state: dict) -> list[tuple[dict, float]]:
+    """What an open run can still move, as (line naming its item, quantity): each component's
+    quantity still to issue and the output still to receive. A completed or cancelled run
+    moves nothing more."""
+    if run_state.get("status") not in _INCOMPLETE_STATUSES:
+        return []
+    lines = [({"item_id": i["item_id"]}, i["quantity"]) for i in outstanding_inputs(run_state)]
+    if (left := outstanding_output(run_state)) > _EPS:
+        lines.append(({"item_id": run_state.get("output_item_id")}, left))
+    return lines
+
+
+async def require_unit_precision(session: AsyncSession, company_id, lines: list[tuple[dict, float]]) -> None:
+    """Refuse a quantity finer than its item's unit allows, for each (item state, quantity), so a
+    run never leaves a lot or component holding more decimal places than its unit."""
+    unit_map = build_unit_map(await get_company_units(session, company_id))
+    for state, qty in lines:
+        validate_line_quantity(qty, state.get("sell_by"), unit_map, label=state.get("sku") or state.get("name"),
+                               require_positive=False)
 
 
 def _money(value) -> Decimal:
@@ -376,6 +400,7 @@ async def _issue(op: _Op, run: Projection, wanted: list[dict], rk: str, request:
         sku = s.get("sku") or item_id
         refuse_draft(s, item_id)
         await require_not_merged(op.session, op.company_id, s, item_id, 409)
+        await require_unit_precision(op.session, op.company_id, [(s, line["quantity"])])
         held = held_value(row)  # a stocked item or component (_require_executable_shape)
         if not is_item_available(s) or s.get("status_doc_id") or held is None:
             raise refuse(409, "item_unavailable",
@@ -506,6 +531,7 @@ async def _return(op: _Op, run: Projection, wanted: list[dict], rk: str, request
                          f"{s.get('sku') or item_id} is no longer stock the company holds (it is "
                          f"{s.get('status') or 'gone'}), so nothing can be returned to it.",
                          sku=s.get("sku") or item_id, status=s.get("status"))
+        await require_unit_precision(op.session, op.company_id, [(s, line["quantity"])])
         befores[item_id] = None if off_books else op.round(held)
         if op.books and values[item_id]:
             lot_account(s)
@@ -591,6 +617,7 @@ async def _receive(op: _Op, run: Projection, qty: float, rk: str, request: str) 
     out_id = state["output_item_id"]  # a stocked item (_require_executable_shape)
     p = (await lock_projections(op.session, op.company_id, [out_id]))[out_id].state or {}
     refuse_draft(p, out_id)
+    await require_unit_precision(op.session, op.company_id, [(p, qty)])
 
     wip = _wip(state)
     amount = wip if qty >= outstanding - _EPS else op.round(wip * _money(qty) / _money(outstanding))
@@ -610,7 +637,8 @@ async def _receive(op: _Op, run: Projection, qty: float, rk: str, request: str) 
     await op.emit(lot_id, "item", "item.created", {
         "sku": p.get("sku"), "name": p.get("name"), "sell_by": p.get("sell_by"),
         "category": p.get("category"), "inventory_type": p.get("inventory_type"),
-        "allow_splitting": splitting_allowed(p), "quantity": 0, "location_id": loc,
+        "allow_splitting": splitting_allowed(p), "default_sell_qty": p.get("default_sell_qty"),
+        "quantity": 0, "location_id": loc,
         "parent_item_id": out_id, "lot": True,
         # A produced lot is a new physical parcel with its own barcode.
         "barcode": (await allocate_internal_codes(op.session, op.company_id))[0],
@@ -1047,6 +1075,7 @@ async def reopen(session: AsyncSession, company_id, user_id, order_id: str, key:
                      "was in another state, so what completion recorded cannot be reversed exactly. It cannot "
                      "be reopened; start a new run for further work.")
     _require_settled(op, state)
+    await require_moving_fits_units(session, company_id, order_id, "mfg_order", reopened(state))
     deltas = {lot["lot_item_id"]: _money(lot["delta"]) for lot in closing.get("lots") or []}
     # Completion re-costed only the lots whose cost it could still reach; a lot that keeps what
     # it was given (reconcile) is none of its business.

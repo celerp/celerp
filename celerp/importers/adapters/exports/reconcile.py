@@ -4,7 +4,9 @@
 
 Taken from the source's own reports, never from the conversion: the trial balance at
 the last month end and at every month end before it, the aged receivables and payables
-per contact, and the invoices and bills list's own totals, amounts due and statuses. The
+per contact, the stock on hand per item (and per lot and location where the source keeps
+them apart) where the source states it, and the invoices and
+bills list's own totals, statuses and amount due on each document. The
 ledger decides only which documents the migration imports and the rate each was booked
 at, so an import is checked against figures that did not pass through it.
 """
@@ -25,6 +27,8 @@ from celerp.importers.schema import (
 from celerp.services.money import round_money
 
 CONTROL_MEASURES = {"receivable": M.AR_CONTROL, "payable": M.AP_CONTROL, "tax": M.TAX_CONTROL}
+# Document types Celerp carries as a journal on the document they apply to, not as documents.
+JOURNAL_DOCUMENTS = frozenset({"debit_note"})
 # Sign of a document's amount due in the open balance of its side.
 OPEN_SIGN = {"invoice": 1, "credit_note": -1, "bill": 1, "debit_note": -1}
 
@@ -46,8 +50,7 @@ def expectations_from(book: Book, ledger: Ledger) -> ReconciliationExpectations:
         rows.append(ReconciliationExpectation(measure=measure, key=key, currency=currency, expected=expected,
                                               tolerance=exact, label=label, credit_normal=credit_normal))
 
-    last = max(book.trial_balances)
-    end = book.trial_balances[last]
+    end = book.trial_balances[max(book.trial_balances)] if book.trial_balances else {}
     add(M.DEBITS_EQUAL_CREDITS, "", base, sum(end.values(), ZERO))
     for code, account in sorted(book.accounts.items()):
         balance = end.get(code, ZERO)
@@ -71,17 +74,31 @@ def expectations_from(book: Book, ledger: Ledger) -> ReconciliationExpectations:
             if role in contact.roles:
                 add(measure, name, base, owed.get(name, ZERO), name, side == "payable")
 
+    for code, (quantity, value) in sorted(book.stock.items()):
+        label = book.items[book.stock_item(code)].name
+        holding = book.holdings.get(code)
+        if holding:
+            label = ", ".join(filter(None, (label, holding.lot, holding.location)))
+        add(M.INVENTORY_QUANTITY, code, None, quantity, label)
+        if value is not None:
+            add(M.INVENTORY_VALUE, code, base, value, label)
+
     open_side: dict[bool, Decimal] = defaultdict(lambda: ZERO)
     counts: Counter = Counter()
     totals: dict[tuple[str, str], Decimal] = defaultdict(lambda: ZERO)
     statuses: Counter = Counter()
+    owed: list[Document] = []
     for key in ledger.documents:
         doc = book.documents[key]
         if doc.status == "posted":
             open_side[doc.sales] += OPEN_SIGN[doc.doc_type] * round_money(doc.amount_due * (doc.rate or 1), base)
+        if doc.doc_type in JOURNAL_DOCUMENTS:
+            continue
         counts[(doc.doc_type, doc.currency)] += 1
         totals[(doc.doc_type, doc.currency)] += doc.total
         statuses[f"{doc.doc_type}:{_status(doc)}"] += 1
+        if doc.status == "posted":
+            owed.append(doc)
     ar = sum((end.get(code, ZERO) for code in book.control("receivable")), ZERO)
     ap = sum((end.get(code, ZERO) for code in book.control("payable")), ZERO)
     add(M.AR_DOCUMENT_RESIDUAL, "", base, ar - open_side[True])
@@ -91,4 +108,7 @@ def expectations_from(book: Book, ledger: Ledger) -> ReconciliationExpectations:
         add(M.DOCUMENT_TOTAL, doc_type, currency, totals[(doc_type, currency)])
     for key, count in sorted(statuses.items()):
         add(M.DOCUMENT_STATUS, key, None, Decimal(count))
+    # Each document on its own, so a wrong open amount on one cannot hide in the totals.
+    for doc in owed:
+        add(M.DOCUMENT_RESIDUAL, doc.key, doc.currency, doc.amount_due, doc.number)
     return ReconciliationExpectations(expectations=rows)

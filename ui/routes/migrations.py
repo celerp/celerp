@@ -29,13 +29,14 @@ import uuid
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 from fasthtml.common import *
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, RedirectResponse, Response
 
 from celerp.accounting_roles import account_label
+from celerp.importers.adapters.base import COMPANY_QUESTION
 import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.posting_accounts import NEW_ACCOUNT, account_picker
@@ -1291,24 +1292,35 @@ def _mapping_page(request: Request, mode: WizardMode, entry: dict, errors: dict 
     current = _decisions(scan).get("mappings") or {}
     errors = errors or {}
     questions = scan.get("questions") or []
+    # A backup that holds several companies asks which one to import: a choice from the
+    # file, so it stands above the table of where items go in Celerp.
+    company = next((q for q in questions if q["key"] == COMPANY_QUESTION), None)
+    rows = [q for q in questions if q is not company]
+
+    def control(q: dict) -> FT:
+        return _mapping_control(q, current.get(q["key"], q.get("suggested") or ""))
+
+    header = auth_header(t("migration.mapping_title"), t("migration.mapping_subtitle")) if rows else \
+        auth_header(t("migration.company_choice_title"), t("migration.company_choice_subtitle"))
     return wizard_page(
         request,
         _steps(3),
-        auth_header(t("migration.mapping_title"), t("migration.mapping_subtitle")),
+        header,
         flash(error) if error else "",
         Form(
             Input(type="hidden", name="step", value="mapping"),
+            Div(Label(company.get("label", ""), cls="form-label"), control(company),
+                field_error(errors, company["key"]), cls="form-group") if company else "",
             wizard_table(
                 Thead(Tr(Th(t("migration.source_item")), Th(t("migration.celerp_item")))),
                 Tbody(*[
                     Tr(
                         Td(q.get("label", ""), Br(), Span(q.get("source_type", ""), cls="form-hint")),
-                        Td(_mapping_control(q, current.get(q["key"], q.get("suggested") or "")),
-                           field_error(errors, q["key"])),
+                        Td(control(q), field_error(errors, q["key"])),
                     )
-                    for q in questions
+                    for q in rows
                 ]),
-            ),
+            ) if rows else "",
             field_error(errors, "mappings"),
             Button(t("btn.continue"), type="submit", cls="btn btn--primary btn--full mt-md"),
             method="post", action=f"{mode.base}/decisions", cls="auth-form",
@@ -1564,6 +1576,10 @@ def _error_block(error: dict | None) -> FT | str:
                cls="flash flash--error")
 
 
+def _status_label(run: dict) -> str:
+    return t("migration.status.preparing" if run.get("preparing") else f"migration.status.{run.get('status', '')}")
+
+
 def _progress_fragment(run: dict) -> FT:
     status = run.get("status", "")
     phases = run.get("phases") or []
@@ -1577,8 +1593,9 @@ def _progress_fragment(run: dict) -> FT:
         # it cannot follow the restart to the new servers.
         polling["data-quiet-error"] = "1"
     return Div(
-        P(t("migration.progress_subtitle"), cls="form-hint") if active else "",
-        P(_badge(t(f"migration.status.{status}"), _PHASE_BADGE.get(
+        # While preparing, the notice below already says the user can leave.
+        P(t("migration.progress_subtitle"), cls="form-hint") if active and not run.get("preparing") else "",
+        P(_badge(_status_label(run), _PHASE_BADGE.get(
             {"completed": "done", "failed": "failed", "running": "running"}.get(status, ""), "badge--inactive"))),
         wizard_table(
             Thead(Tr(Th(t("migration.phase")), Th(t("label.status")),
@@ -1605,11 +1622,29 @@ def _progress_fragment(run: dict) -> FT:
     )
 
 
+def _reconnecting_fragment(run_id: str) -> FT:
+    """The polled block while the API does not answer, as during the restart a run's
+    preparing ends in. It says so and keeps polling; its own failed polls stay quiet."""
+    return Div(P(t("migration.reconnecting"), cls="form-hint"), id="migration-progress",
+               hx_get=f"/migrations/{run_id}", hx_trigger="every 2s", hx_swap="outerHTML",
+               **{"data-quiet-error": "1"})
+
+
 async def _load_run(request: Request, run_id: str):
     try:
         return await api.get_migration_run(get_token(request), run_id), None
     except APIError as e:
         return None, _run_error_page(request, str(e.detail))
+
+
+def _open_runs_banner(runs: list[dict], current_url: str) -> FT | str:
+    """One line per move still in progress, each leading to its run page. The run
+    page the user is already on is left out."""
+    shown = urlsplit(current_url).path.rstrip("/")
+    lines = [P(t("migration.open_runs_banner", company=run["company_name"], status=_status_label(run)), " ",
+               A(t("migration.open_runs_link"), href=f"/migrations/{run['id']}"))
+             for run in runs if not shown.startswith(f"/migrations/{run['id']}")]
+    return Div(*lines, id="open-migrations", cls="info-banner", style="flex-direction:column") if lines else ""
 
 
 def _progress_page(request: Request, run: dict, error: str | None = None):
@@ -1620,7 +1655,8 @@ def _progress_page(request: Request, run: dict, error: str | None = None):
         auth_header(t("migration.progress_title", company=run.get("company_name", ""))),
         flash(error) if error else "",
         _progress_fragment(run),
-        P(t("migration.retention" if run.get("status") == "ready" else "migration.retention_started"),
+        P(t("migration.retention" if run.get("status") == "ready" and not run.get("preparing")
+            else "migration.retention_started"),
           cls="form-hint"),
     )
 
@@ -1631,14 +1667,26 @@ def migrations_routes(app) -> None:
     for mode in (BOOTSTRAP, COMPANY, START_COMPANY):
         _register_wizard(app, mode)
 
+    @app.get("/migrations/open-banner")
+    async def migration_open_banner(request: Request):
+        try:
+            runs = await api.open_migration_runs(get_token(request))
+        except APIError:
+            return ""
+        return _open_runs_banner(runs, request.headers.get("HX-Current-URL", ""))
+
     @app.get("/migrations/{run_id}")
     async def migration_progress(request: Request, run_id: str):
-        run, failure = await _load_run(request, run_id)
-        if failure is not None:
-            return failure
-        if request.headers.get("HX-Request"):
-            return _progress_fragment(run)
-        return _progress_page(request, run)
+        if not request.headers.get("HX-Request"):
+            run, failure = await _load_run(request, run_id)
+            return failure if failure is not None else _progress_page(request, run)
+        try:
+            return _progress_fragment(await api.get_migration_run(get_token(request), run_id))
+        except APIError as e:
+            # A poll swaps its answer into the block, so it never gets the full error page.
+            if e.status in (503, 504):
+                return _reconnecting_fragment(run_id)
+            return HTMLResponse("", headers={"HX-Refresh": "true"})
 
     async def _action(request: Request, run_id: str, action: str):
         token = get_token(request)

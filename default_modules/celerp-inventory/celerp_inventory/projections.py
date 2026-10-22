@@ -50,7 +50,7 @@ CORE_ITEM_KEYS: frozenset[str] = frozenset({
     # reorder / planning
     "reorder_point", "reorder_qty",
     # flags / classification
-    "allow_splitting", "inventory_type", "pick_method", "consignment_flag", "item_type",
+    "allow_splitting", "default_sell_qty", "inventory_type", "pick_method", "consignment_flag", "item_type",
     "is_expired", "expires_at", "landed_cost_kind", "recoverable",
     # the inventory account the lot's value sits in, and for a consigned lot the account
     # its sale is owed to its consignor on and that consignor (celerp.accounting_roles)

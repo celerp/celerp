@@ -162,7 +162,7 @@ def test_manager_decoder_resource_limits(tmp_path):
 def test_every_attachment_type_the_manager_adapter_accepts_is_stored_by_celerp():
     """RED before the change: XLSX and CSV pass the Manager screen, then every attempt to
     store them fails, so the migration can never finish."""
-    from celerp.importers.adapters.manager_io.attachments import FILE_TYPES
+    from celerp.importers.adapters.attachment_files import FILE_TYPES
     from celerp.services.attachments import accepts_mime
 
     assert [ext for ext, (mime, _) in FILE_TYPES.items() if not accepts_mime(mime)] == []
@@ -217,7 +217,7 @@ def test_manager_attachment_handling_is_untrusted_and_reported(tmp_path):
     assert accepted.declared_content_type == "image/png"
     assert accepted.sha256 == hashlib.sha256(png).hexdigest()
     assert (accepted.target_source_type, accepted.target_source_external_id) == ("SalesInvoice", ref("INV1"))
-    assert manager.read_attachment([art], ref("ATT1")) == png
+    assert manager.read_attachment([art], FULL, ref("ATT1")) == png
 
     rejected = {row["source_external_id"]: row["reason"] for row in manifest.source_summary["attachments"]["rejected"]}
     assert set(rejected) == {ref(label) for label in [*cases, "EXTERNAL"]}
@@ -225,7 +225,9 @@ def test_manager_attachment_handling_is_untrusted_and_reported(tmp_path):
     assert rejected[ref("NOTARGET")] == t("migration.attachment_no_target", "en")
     for label in [*cases, "EXTERNAL"]:
         with pytest.raises(ScanError):
-            manager.read_attachment([art], ref(label))
+            manager.read_attachment([art], FULL, ref(label))
+    with pytest.raises(ScanError, match=t("migration.err_attachment_not_found", "en")):
+        manager.read_attachment([art], FULL, "no-such-attachment")
 
     # A rejected attachment never turns the run into a false full success, and never blocks the ledger.
     assert ("Attachment (rejected)", CoverageClass.MAPPED_WITH_LOSS) in {
@@ -284,7 +286,7 @@ def test_manager_mapping_preserves_source_semantics():
         (ref("INV1"), Decimal("110")), (ref("INV2"), Decimal("20"))}
     assert documents[ref("INV1")].contact_external_id == ref("CA")
     assert documents[ref("BILL1")].contact_external_id == ref("SA")
-    assert documents[ref("CN1")].metadata["applies_to"] == ref("INV2")
+    assert documents[ref("CN1")].metadata["applications"] == {ref("INV2"): str(documents[ref("CN1")].total)}
 
     # Tax keeps its rate, inclusive treatment and control account.
     (vat,) = bundle.tax_codes
@@ -295,9 +297,10 @@ def test_manager_mapping_preserves_source_semantics():
     assert inclusive.metadata["amounts_include_tax"] is True
     assert exclusive.metadata["amounts_include_tax"] is False
     (line,) = inclusive.line_items
-    assert (line.tax_code_external_id, line.tax_amount, line.total_price) == (ref("VAT"), Decimal("5"), Decimal("50"))
+    assert (line.taxes[0].tax_code_external_id, line.taxes[0].amount, line.total_price) == (
+        ref("VAT"), Decimal("5"), Decimal("50"))
     (line,) = exclusive.line_items
-    assert (line.quantity, line.unit_price, line.tax_amount, line.total_price) == (
+    assert (line.quantity, line.unit_price, line.taxes[0].amount, line.total_price) == (
         Decimal("2"), Decimal("50"), Decimal("10"), Decimal("100"))
     (line,) = documents[ref("INV3")].line_items
     assert (line.discount_percent, line.total_price) == (Decimal("20"), Decimal("200"))
@@ -702,9 +705,9 @@ def test_document_line_forms_carry_their_exact_fields_and_report_the_rest(tmp_pa
     assert (lines[ref("LPCT")].discount_percent, lines[ref("LPCT")].total_price) == (Decimal("20"), Decimal("200"))
     assert (lines[ref("LFIX")].discount_percent, lines[ref("LFIX")].unit_price,
             lines[ref("LFIX")].total_price) == (None, Decimal("100"), Decimal("85"))
-    assert (lines[ref("LINC")].unit_price, lines[ref("LINC")].tax_amount,
+    assert (lines[ref("LINC")].unit_price, lines[ref("LINC")].taxes[0].amount,
             lines[ref("LINC")].total_price) == (Decimal("50"), Decimal("5"), Decimal("50"))
-    assert (lines[ref("LRND")].unit_price, lines[ref("LRND")].tax_amount,
+    assert (lines[ref("LRND")].unit_price, lines[ref("LRND")].taxes[0].amount,
             lines[ref("LRND")].total_price) == (Decimal("3.335"), Decimal("1.00"), Decimal("10.01"))
 
     coverage = _coverage(manifest)

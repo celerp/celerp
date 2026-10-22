@@ -90,6 +90,7 @@ _BASE_FIELDS: list[dict] = [
     {"key": "gross_weight_unit", "label": "Gross Weight Unit", "type": "text",   "editable": True,  "required": False, "options": [],                                            "visible_to_roles": [],               "position": 3.3, "show_in_table": False, "tooltip_key": "field.tooltip.gross_weight_unit", "label_key": "field.label.gross_weight_unit"},
     {"key": "inventory_type",    "label": "Inventory Type",    "type": "select", "editable": True,  "required": False, "options": ["stocked", "component", "non_stocked", "service", "freight"], "visible_to_roles": [],               "position": 4.2, "show_in_table": False, "tooltip_key": "field.tooltip.inventory_type", "label_key": "field.label.inventory_type"},
     {"key": "allow_splitting",   "label": "Allow Splitting",   "type": "bool",   "editable": True,  "required": False, "options": [],                                            "visible_to_roles": [],               "position": 4.5, "show_in_table": False, "tooltip_key": "field.tooltip.allow_splitting", "label_key": "field.label.allow_splitting"},
+    {"key": "default_sell_qty",  "label": "Default Sell Qty",  "type": "select", "editable": True,  "required": False, "options": ["full"],                                       "visible_to_roles": [],               "position": 4.55, "show_in_table": False, "tooltip_key": "field.tooltip.default_sell_qty", "label_key": "field.label.default_sell_qty"},
     {"key": "pick_method",       "label": "Stock Cutting",     "type": "select", "editable": True,  "required": False, "options": ["default", "fifo", "fefo", "lifo"], "visible_to_roles": [],               "position": 4.6, "show_in_table": False, "tooltip_key": "field.tooltip.pick_method", "label_key": "field.label.pick_method"},
     {"key": "location_name",     "label": "Location",          "type": "text",   "editable": False, "required": False, "options": [],                                            "visible_to_roles": [],               "position": 5,  "show_in_table": True,  "tooltip_key": "field.tooltip.location_name", "label_key": "field.label.location_name"},
     # Price columns are injected dynamically at position 6+ by _inject_price_columns()
@@ -270,6 +271,21 @@ NON_HIDEABLE_FIELD_KEYS: frozenset[str] = frozenset({"status"})
 DEFAULT_ITEM_SCHEMA: list[dict] = _inject_price_columns(_BASE_FIELDS, _DEFAULT_PRICE_LISTS)
 
 
+def _with_missing_defaults(stored: list[dict], defaults: list[dict]) -> list[dict]:
+    """*stored* plus every default field it lacks, each placed directly after the
+    default that precedes it (at the start when none does), so a field added to the
+    defaults lands where it belongs in a customised schema rather than at the end."""
+    out = list(stored)
+    keys = {f["key"] for f in out}
+    prev: str | None = None
+    for f in defaults:
+        if f["key"] not in keys:
+            out.insert(next((i + 1 for i, g in enumerate(out) if g["key"] == prev), 0), f)
+            keys.add(f["key"])
+        prev = f["key"]
+    return out
+
+
 async def get_effective_field_schema(
     session: AsyncSession, company_id, category: str | None = None
 ) -> list[dict]:
@@ -279,7 +295,8 @@ async def get_effective_field_schema(
     price lists (settings["price_lists"]), not hardcoded.
 
     If the stored schema is missing default fields (e.g. after a partial PATCH),
-    missing defaults are appended so clients always see the full set.
+    missing defaults are added after their default predecessor so clients always see
+    the full set in order.
     """
     co = await session.get(
         Company,
@@ -294,10 +311,8 @@ async def get_effective_field_schema(
     price_lists: list[dict] = settings.get("price_lists") or _DEFAULT_PRICE_LISTS
     # Inject price columns (idempotent - skips already-present keys)
     stored_with_prices = _inject_price_columns(stored, price_lists)
-    # Append any _BASE_FIELDS defaults missing from stored schema (no duplicates)
-    stored_keys = {f["key"] for f in stored_with_prices}
     full_defaults = _inject_price_columns(_BASE_FIELDS, price_lists)
-    base_schema = stored_with_prices + [f for f in full_defaults if f["key"] not in stored_keys]
+    base_schema = _with_missing_defaults(stored_with_prices, full_defaults)
 
     # Price-column editability is config-driven only: a derived list's column is read-only,
     # a manual list's is editable. This must win over any stored schema round-trip captured

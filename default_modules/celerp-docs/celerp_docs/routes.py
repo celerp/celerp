@@ -50,7 +50,8 @@ from celerp.services.payments import recorded_unmatched, return_unmatched
 from celerp.tax_regimes import default_tax, side_taxes
 from celerp.services.business_time import business_date_at, business_date_of, company_today
 from celerp.services.landed_cost import compute_bill_landed_allocation
-from celerp.services.line_measures import line_label, splitting_allowed, splitting_off
+from celerp.services.line_measures import (FULL, floor_to_unit, line_label, proposed_sell_qty, splitting_allowed,
+                                          splitting_off)
 from celerp.services.document_lines import (
     assert_line_holds_respected, assert_new_references_eligible,
     line_id_counts, line_item_id, linked_items, memo_out_refusal, out_on_another_memo, received_line_index,
@@ -63,14 +64,14 @@ from celerp.services.auth import AuthContext, get_auth_context, get_current_comp
 from celerp.services.permissions import assert_role_permission, get_current_company_settings, locked_authority, reject_price_change, require_permission, role_has_permission
 from celerp_docs.sequences import next_doc_ref, next_draft_ref, require_doc_type, get_all_sequences, update_sequence, list_sequence_key
 from celerp_docs.search import doc_q_clause
-from celerp.services.units import DEFAULT_UNITS, build_unit_map, default_receive_as, is_non_stock_line, is_pieces_unit, is_weight_unit, line_receive_kind, validate_line_quantity
+from celerp.services.units import build_unit_map, default_receive_as, get_company_units, is_non_stock_line, is_pieces_unit, is_weight_unit, line_receive_kind, require_moving_fits_units, validate_line_quantity
 from celerp.services.money import allocate_pro_rata, books_currency, checked_exchange_rate, discount_from_inputs, doc_rate, document_line_unit, require_doc_rate, received_share, round_basis, round_money, round_rate, to_base, to_decimal, to_stored_float
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, coerce_price, get_price_config, is_cost_list_name, line_price_list, price_keys_in, resolve_price
 from celerp.services.terms import resolve_document_terms
 from celerp.services.payment_terms import company_payment_terms, due_date_for_terms
 from celerp_contacts.references import contact_accepts, contact_snapshot, lock_contacts
 from celerp.output.document_context import prepare_document_output
-from celerp_docs.doc_constants import WRITEOFF_ACCOUNT_TYPES, INBOUND_DOC_TYPES, FULFILLABLE_STATUSES, LEGACY_CONTACT_FIELDS, LIFECYCLE_OWNED_FIELDS, NON_FINANCIAL_DOC_TYPES, RECEIVABLE_STATUSES, RESERVABLE_DOC_STATUSES, REVERTIBLE_STATUSES, SALES_PRICED_DOC_TYPES, SUPPLIER_RETURN_STATUSES, CREDIT_APPLICATION_METHODS
+from celerp_docs.doc_constants import WRITEOFF_ACCOUNT_TYPES, INBOUND_DOC_TYPES, FULFILLABLE_STATUSES, LEGACY_CONTACT_FIELDS, LIFECYCLE_OWNED_FIELDS, NON_FINANCIAL_DOC_TYPES, RECEIVABLE_STATUSES, RESERVABLE_DOC_STATUSES, REVERTIBLE_STATUSES, SALES_PRICED_DOC_TYPES, SUPPLIER_RETURN_STATUSES, CREDIT_APPLICATION_METHODS, CONVERTIBLE_STATUSES, QUOTATION_SPENT_STATUSES, sent_out_by
 from celerp.services.doc_balance import DOC_FIELD_FALLBACKS, doc_value, is_awaiting_payment, is_overdue_document, is_owed, outstanding_balance
 from celerp.services.list_behavior import (
     DRAFT, FINALIZED, CLOSED, VOID, DEFAULT_LIST_TYPE, LIST_TYPES, SCAN_RUNS_FIELD, SUPPLIER_DOC_TYPES, ScanBehavior,
@@ -134,6 +135,8 @@ class LineItem(BaseModel):
     asset_returned: bool | None = None
     # A credit note line: the invoice line it credits.
     source_line_id: str | None = None
+    # A migrated line: the tracking category -> option its source books gave it.
+    tracking: dict[str, str] | None = None
 
     @model_validator(mode="after")
     def _resolve_entity_id(self) -> "LineItem":
@@ -527,13 +530,6 @@ class DocBatchImportRequest(BaseModel):
     upsert: bool = False
 
 
-def _sent_out_by(item_state: dict, doc_id: str) -> bool:
-    """Whether document ``doc_id`` sent these goods out (sold or out on memo): it
-    fulfilled them, or holds them as their status document."""
-    return item_state.get("status") in ("sold", "memo_out") and (
-        doc_id in (item_state.get("fulfilled_for_docs") or []) or item_state.get("status_doc_id") == doc_id)
-
-
 class FulfillLinesRequest(BaseModel):
     """The lines an action applies to: ``line_ids`` names each line by its line id.
 
@@ -709,10 +705,9 @@ def _line_item_brief(line_items: list[dict], eids) -> list[dict]:
 
 
 async def _get_unit_map(session: AsyncSession, company_id: str) -> dict[str, dict]:
-    """Return a name-keyed unit map for the company (falls back to DEFAULT_UNITS)."""
-    company = await session.get(Company, company_id)
-    units = (company.settings or {}).get("units") if company else None
-    return build_unit_map(units if units else DEFAULT_UNITS)
+    """Name-keyed company units, read under the company lock (get_company_units) so line
+    quantities are validated against the committed precision."""
+    return build_unit_map(await get_company_units(session, company_id))
 
 
 async def _get_item_sell_by_map(session: AsyncSession, company_id: str) -> dict[str, str]:
@@ -3202,6 +3197,7 @@ async def reopen_doc(entity_id: str, payload: DocReopenBody, company_id: str = D
             f"Only a closed memo can be reopened. {number} closed because its invoice is void and stays closed; "
             "to credit the customer, issue a new credit note on a live invoice.", document=number))
     restored = row.state.get("pre_close_status") or "final"
+    await require_moving_fits_units(session, company_id, entity_id, "doc", {**row.state, "status": restored})
     event_data = payload.model_dump(exclude_none=True)
     event_data["restored_status"] = restored
     entry = await emit_event(
@@ -3289,6 +3285,7 @@ async def revert_doc_to_draft(entity_id: str, payload: DocRevertBody, company_id
             detail="Cannot revert to draft while lines are still out on memo or sold. "
                    "Select those lines and use Set as available first, then revert.",
         )
+    await require_moving_fits_units(session, company_id, entity_id, "doc", {**state, "status": "draft"})
 
     event_data: dict = {"reverted_by": str(user.id), "previous_status": previous_status}
     if payload.reason:
@@ -3441,6 +3438,7 @@ async def unvoid_doc(entity_id: str, payload: DocUnvoidBody, company_id: str = D
                 "This supplier credit note was raised by a return, and voiding it took the return back: the "
                 "goods are in stock again. To send them back, use Return items on the bill."))
         await supplier_credit_original(session, company_id, state, for_update=True)
+    await require_moving_fits_units(session, company_id, entity_id, "doc", {**state, "status": restored_status})
 
     # Restored in a savepoint, so a refusal that can only be read off the restored books
     # leaves nothing behind.
@@ -3680,9 +3678,10 @@ async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
     and cannot compute a duplicate or colliding payment_index.
 
     The money moves through ``bank_account``, which must be able to hold it. Only a
-    migration passes ``moves_cash=False``, for an imported debit note and for the
-    amount a document was paid before its source books started: each settles the
-    document against its own receivable or payable account, so no money moves.
+    migration passes ``moves_cash=False``, for an imported debit note, for the amount a
+    document was paid before its source books started, and for tax a customer withheld
+    from an invoice: each settles the document against its own receivable or payable
+    account, or the withholding tax account, so no money moves.
 
     *books* is the (base currency, document rate) the payment posts on when the caller
     already holds them - an online payment keeps the books its payment page opened with,
@@ -5242,7 +5241,7 @@ async def record_receipt(session: AsyncSession, company_id, row: Projection, pay
                 "tax_codes", "hs_code", "weight_unit",
                 "dimensions", "dimensions_unit", "purchase_sku",
                 "purchase_name", "purchase_unit", "purchase_conversion_factor",
-                "allow_splitting", "pick_method", "gtin",
+                "allow_splitting", "default_sell_qty", "pick_method", "gtin",
             )
             item_data: dict = {k: sku_ref[k] for k in _INHERIT if k in sku_ref and sku_ref[k] is not None}
             if catalog_item_id:
@@ -7171,7 +7170,7 @@ async def _undo_supplier_return(session, company_id, user_id, note_id: str, note
 
     key = str(note["source_return"])
     doc_id = str(note.get("original_doc_id") or "")
-    await _get_doc(session, company_id, doc_id, for_update=True)
+    doc = await _get_doc(session, company_id, doc_id, for_update=True)
     returned = await find_event_by_idempotency(session, company_id, key)
     if returned is None or returned.entity_id != doc_id or returned.event_type != "doc.items_returned":
         raise HTTPException(status_code=409, detail=refusal(
@@ -7183,7 +7182,11 @@ async def _undo_supplier_return(session, company_id, user_id, note_id: str, note
                                        return_key=key, note_id=note_id)
     items = [x for x in data.get("items") or [] if x.get("return_key") == key]
     lots = {x.get("returned_lot_id") or x["item_id"]: x.get("lot_status") or "available" for x in items}
-    await lock_projections(session, company_id, lots)
+    held = await lock_projections(session, company_id, lots)
+    # The lots were history while they were back with the supplier: they come back held to
+    # the units of today, before any of them is put back.
+    await require_moving_fits_units(session, company_id, doc_id, "doc", doc.state, also=[
+        ({"item_id": lot}, row.state.get("quantity")) for lot, row in held.items()])
     for lot, restored in lots.items():
         await emit_event(
             session, company_id=company_id, entity_id=lot, entity_type="item",
@@ -7313,6 +7316,8 @@ async def create_shipment_from_docs(
         "reason_for_export": "sale" if any(s.get("doc_type") == "invoice" for s in states)
                              else "not_for_resale",
     }.items() if v is not None}
+    # A shipped document is history, so its lines may predate a precision change.
+    await require_moving_fits_units(session, company_id, new_entity_id, "list", data)
     entry = await _emit_list(session, company_id, new_entity_id, "list.created", data, user)
     await session.commit()
     return {"event_id": entry.id, "id": new_entity_id}
@@ -7335,7 +7340,7 @@ async def convert_doc(entity_id: str, payload: DocConvertBody | None = None, com
     _assert_contacts_unchanged(named, [row])
     state = row.state
     if state.get("doc_type") == "quotation":
-        if state.get("status") in {"void", "converted"}:
+        if state.get("status") in QUOTATION_SPENT_STATUSES:
             raise HTTPException(status_code=409, detail=t("documents.err_quote_convert_status"))
         valid_until = state.get("valid_until")
         if valid_until and valid_until < business_date_of(None, (company.settings or {}).get("timezone")):
@@ -7345,6 +7350,7 @@ async def convert_doc(entity_id: str, payload: DocConvertBody | None = None, com
         # The invoice is a new draft: none of the quotation's own lifecycle carries over.
         new_data = {k: v for k, v in state.items() if k not in LIFECYCLE_OWNED_FIELDS}
         new_data.update({"doc_type": "invoice", "ref_id": ref, "source_quotation_id": entity_id, "status": "draft"})
+        await require_moving_fits_units(session, company_id, new_doc_id, "doc", new_data)
         await emit_event(
             session, company_id=company_id, entity_id=new_doc_id, entity_type="doc", event_type="doc.created", data=new_data,
             actor_id=user.id, location_id=None, source="api", idempotency_key=str(uuid.uuid4()), metadata_={},
@@ -7362,7 +7368,7 @@ async def convert_doc(entity_id: str, payload: DocConvertBody | None = None, com
         # which refuses with the clearer "nothing On Memo" 422: convert hands every
         # backing lot to the invoice, so a converted memo has an empty allocation set and
         # can never re-bill. Only a genuinely-not-issued memo (draft/void) is rejected here.
-        if state.get("status") not in ("final", "sent", "received", "partially_received", "converted"):
+        if state.get("status") not in CONVERTIBLE_STATUSES["memo"]:
             raise HTTPException(status_code=409, detail=t("documents.err_memo_issue_first"))
         ref = next_draft_ref(company, "invoice")
         new_doc_id = f"doc:{ref}"
@@ -7506,7 +7512,7 @@ async def convert_doc(entity_id: str, payload: DocConvertBody | None = None, com
     if state.get("doc_type") == "consignment_in":
         # Returned in part or whole, it still buys whatever was kept (buy_consignment refuses
         # when nothing was).
-        if state.get("status") not in ("final", "sent", "received", "partially_received", "partial_returned", "returned"):
+        if state.get("status") not in CONVERTIBLE_STATUSES["consignment_in"]:
             raise HTTPException(status_code=409, detail=t("documents.err_consignment_issue_first"))
         await require_line_destinations(session, company_id, state.get("line_items"))
         new_doc_id = await buy_consignment(
@@ -9366,6 +9372,8 @@ async def convert_list(
     to_transfer = await _held_lots(session, company_id, entity_id)
     ref = next_draft_ref(company, payload.target_type)
     new_doc_id = f"doc:{ref}"
+    await require_moving_fits_units(session, company_id, new_doc_id, "doc",
+                                    {**state, "doc_type": payload.target_type, "status": "draft"})
     for li_eid, held in to_transfer.items():
         data = {"new_status": "reserved", "source_doc_id": new_doc_id, "doc_number": ref}
         if held.state.get("status_line_entity_id"):
@@ -9411,6 +9419,7 @@ async def duplicate_list(
                 if k not in {"status", "entity_type", "ref_id", "share_token", SCAN_RUNS_FIELD}}
     new_data.update({"ref_id": ref_id, "status": "draft", "source_list_id": entity_id,
                      "line_items": strip_line_ids(state.get("line_items"))})
+    await require_moving_fits_units(session, company_id, new_entity_id, "list", new_data)
     entry = await _emit_list(session, company_id, new_entity_id, "list.created", new_data, user)
     await session.commit()
     return {"event_id": entry.id, "id": new_entity_id}
@@ -11111,7 +11120,7 @@ async def _return_parts(session, company_id, invoice_id: str, items: list[Return
     return beyond that is refused with the numbers."""
     from celerp.services.fulfill import returned_lots
 
-    shipped = {r.entity_id: item_by_id[r.entity_id] for r in item_rows if _sent_out_by(r.state or {}, invoice_id)}
+    shipped = {r.entity_id: item_by_id[r.entity_id] for r in item_rows if sent_out_by(r.state or {}, invoice_id)}
     sent = {lot: float(flat.get("quantity") or 0) for lot, flat in shipped.items()}
     left = dict(sent)
 
@@ -12416,8 +12425,9 @@ async def _apply_scan_run(session: AsyncSession, company_id: str, entity_id: str
     past draft (a locked audit) only checks off the lines it holds, and a counting draft moves a
     line it already holds to the top. Otherwise:
       - a splittable lot or an item kept in no stock raises its line by one, or starts a line of
-        one, whatever code named it; where goods leave stock (`sb.unstocked` refuse) neither a
-        line nor all the lines drawing on one product's stock take more than is on hand;
+        one, whatever code named it (by the item's sell quantity where `sb.sell_qty`, held to what
+        is left); where goods leave stock (`sb.unstocked` refuse) neither a line nor all the lines
+        drawing on one product's stock take more than is on hand;
       - a lot that may not be split is one physical piece and takes its whole on-hand on a new
         line, `build` making it; a repeat is reported as already on the record where
         `sb.repeats` refuses it and is another line where goods are bought in;
@@ -12440,9 +12450,9 @@ async def _apply_scan_run(session: AsyncSession, company_id: str, entity_id: str
     results: list[dict] = []
     failed: list[dict] = []
     tagged: set[str] = set()  # lots read by RFID tag in this run
-    pools: dict[str, tuple[set[str], float]] = {}
+    pools: dict[str, tuple[set[str], Decimal]] = {}
 
-    def product_pool(lot: Projection) -> tuple[set[str], float]:
+    def product_pool(lot: Projection) -> tuple[set[str], Decimal]:
         """Every lot of the lot's product this record may draw on (in use, stocked, not held for
         another record; pieces that may not be split included) and what they hold together, taken
         from the run's one inventory load by SKU. Lines on the product code's representative and on
@@ -12453,11 +12463,17 @@ async def _apply_scan_run(session: AsyncSession, company_id: str, entity_id: str
                      if is_stock_type(m.state or {})
                      and str((m.state or {}).get("status") or "").lower() not in HIDDEN_STATUSES | {"draft"}
                      and not held_elsewhere(m.state or {}, entity_id, None, state.get("source_memo_id"))]
-            pools[sku] = ({m.entity_id for m in stock}, sum(float((m.state or {}).get("quantity") or 0) for m in stock))
+            pools[sku] = ({m.entity_id for m in stock},
+                          sum((to_decimal((m.state or {}).get("quantity") or 0) for m in stock), Decimal(0)))
         ids, available = pools[sku]
         if lot.entity_id in ids:
             return ids, available
-        return ids | {lot.entity_id}, available + float(lot.state.get("quantity") or 0)
+        return ids | {lot.entity_id}, available + to_decimal(lot.state.get("quantity") or 0)
+
+    def drawn(on: list[dict], pool_ids: set[str]) -> Decimal:
+        """What the lines drawing on one product's stock take together."""
+        return sum((to_decimal(l.get("quantity") or 0) for l in on
+                    if (l.get("item_id") or l.get("entity_id")) in pool_ids), Decimal(0))
     for code in codes:
         res = resolved.get(code)
         if res is not None and res.duplicate_physical:
@@ -12501,10 +12517,37 @@ async def _apply_scan_run(session: AsyncSession, company_id: str, entity_id: str
                               f"{code}: already on {noun}{_sku_note(code, lot)}", lines[idx].get("line_id"))
                 continue
             empty = stocked and not float(on_hand or 0) > 0
+            held = to_decimal(lines[idx].get("quantity") or 0) if not whole and idx is not None else Decimal(0)
+            step, capped = Decimal(1), False
+            if sb.sell_qty and not whole and not empty and res.kind != "rfid_epc":
+                # Goods sold or offered place the item's sell quantity. Where goods leave stock it
+                # is held to what is left of the lot and of the product's stock (the two bounds the
+                # cap below checks); with nothing left the uncapped amount meets today's refusals.
+                proposed = proposed_sell_qty(lot.state, unit_map)
+                if stocked and sb.unstocked == "refuse":
+                    pool_ids, available = product_pool(lot)
+                    left = floor_to_unit(min(to_decimal(on_hand) - held, available - drawn(lines, pool_ids)),
+                                         lot.state.get("sell_by"), unit_map)
+                    full_on = proposed == FULL and left <= 0 and idx is not None
+                    if proposed == FULL:
+                        step = left if left > 0 else to_decimal(on_hand)
+                    else:
+                        step, capped = (left, True) if 0 < left < proposed else (proposed, False)
+                elif proposed == FULL:
+                    # A quotation offers the whole on-hand once; an item kept in no stock takes one.
+                    full_on = stocked and idx is not None
+                    step = to_decimal(on_hand) if stocked else Decimal(1)
+                else:
+                    full_on, step = False, proposed
+                if full_on:
+                    _scan_failure(failed, results, code, "duplicate_scan",
+                                  f"{code}: already on {noun}{_sku_note(code, lot)}", lines[idx].get("line_id"))
+                    continue
             if whole or idx is None:
-                line = build(lot, 1 if not whole and not empty or empty and sb.unstocked == "one" else on_hand)
+                line = build(lot, float(step) if not whole and not empty
+                             else 1 if empty and sb.unstocked == "one" else on_hand)
             else:
-                line = {**lines[idx], "quantity": float(lines[idx].get("quantity") or 0) + 1}
+                line = {**lines[idx], "quantity": float(held + step)}
                 line["line_id"] = line.get("line_id") or uuid.uuid4().hex
             sku = lot.state.get("sku") or code
             if sb.unstocked != "snapshot":
@@ -12523,14 +12566,13 @@ async def _apply_scan_run(session: AsyncSession, company_id: str, entity_id: str
             if sb.unstocked == "refuse" and stocked:
                 # The line never takes more than its lot stands for, and every line drawing on the
                 # product's stock together never takes more than the product has.
-                taken, available = line["quantity"], float(on_hand or 0)
+                taken, available = to_decimal(line["quantity"]), to_decimal(on_hand or 0)
                 if taken <= available:
                     pool_ids, available = product_pool(lot)
-                    taken = sum(float(l.get("quantity") or 0) for l in placed
-                                if (l.get("item_id") or l.get("entity_id")) in pool_ids)
+                    taken = drawn(placed, pool_ids)
                 if taken > available:
-                    _scan_failure(failed, results, code, "insufficient_stock",
-                                  f"{sku}: insufficient stock - {taken:g} on {noun}, available {available:g}")
+                    _scan_failure(failed, results, code, "insufficient_stock", f"{sku}: insufficient stock - "
+                                  f"{float(taken):g} on {noun}, available {float(available):g}")
                     continue
             if not whole and idx is not None:
                 lines[idx] = line
@@ -12541,6 +12583,10 @@ async def _apply_scan_run(session: AsyncSession, company_id: str, entity_id: str
             result_state = "added"
         results.append({"code": code, "state": result_state, "item_id": lot.entity_id,
                         "sku": lot.state.get("sku"), "line_id": line.get("line_id")})
+        if result_state == "added":
+            # What this scan placed, so the scan bar can say it.
+            results[-1].update(quantity=float(to_decimal(line.get("quantity") or 0) - held),
+                               unit=line.get("sell_by"), capped=capped)
     return results, failed
 
 
@@ -12912,6 +12958,9 @@ async def undo_audit_adjust(
                 status_code=409,
                 detail=t("documents.err_audit_undo_cost", sku=l.get("sku") or item_id),
             )
+    # The count reopens and each lot goes back to what it held before the count.
+    await require_moving_fits_units(session, company_id, entity_id, "list", {**row.state, "status": FINALIZED},
+                                    also=[({"item_id": l["item_id"]}, l["prior_qty"]) for l in targets])
     for l in targets:
         item_id = str(l["item_id"])
         await emit_event(
@@ -13287,9 +13336,11 @@ async def undo_write_off(
 
     # Lock the projection: undo reads each disposed line, restores its lot, and writes the line_items
     # array back (read-modify-write), so it must serialize against a concurrent re-run/undo.
+    await lock_company(session, company_id)  # before the list row lock (lock order)
     row = await _get_writeoff(session, company_id, entity_id, for_update=True)
     if row.state.get("status") != CLOSED or row.state.get("result") != "written_off":
         raise HTTPException(status_code=409, detail=t("documents.err_writeoff_no_undo"))
+    await require_moving_fits_units(session, company_id, entity_id, "list", {**row.state, "status": FINALIZED})
     cycle = int(row.state.get("adjust_count") or 1) - 1
     lines = [dict(l) for l in (row.state.get("line_items") or [])]
     for l in lines:

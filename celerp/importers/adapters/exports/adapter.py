@@ -68,7 +68,7 @@ class ExportSetAdapter:
     def detect(self, artifacts: ArtifactSet) -> DetectionResult:
         return DetectionResult(self.matches(artifacts))
 
-    def inspect(self, artifacts: ArtifactSet) -> SourceScan:
+    def inspect(self, artifacts: ArtifactSet, company: str | None = None) -> SourceScan:
         book, ledger = self._read(artifacts, FULL)
         dated = sorted(j.date for j in book.journals)
         features = [name for name, present in (
@@ -101,9 +101,9 @@ class ExportSetAdapter:
     def source_expectations(self, artifacts: ArtifactSet, decisions: MigrationDecisions) -> ReconciliationExpectations:
         return expectations_from(*self._read(artifacts, decisions))
 
-    def read_attachment(self, artifacts: ArtifactSet, key: str) -> bytes:
+    def read_attachment(self, artifacts: ArtifactSet, decisions: MigrationDecisions, key: str) -> bytes:
         """An export set carries no attachments."""
-        raise ScanError("No such attachment in this export set.")
+        raise ScanError(t("migration.err_attachment_not_found"))
 
 
 class XeroAdapter(ExportSetAdapter):

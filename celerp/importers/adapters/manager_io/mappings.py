@@ -39,6 +39,7 @@ from celerp.importers.schema import (
     CIFJournalEntry,
     CIFJournalLine,
     CIFLineItem,
+    CIFLineTax,
     CIFLocation,
     CIFSettlement,
     CIFTaxCode,
@@ -121,10 +122,12 @@ def _line(book: Book, doc: Document, line: Line) -> CIFLineItem:
         discount_percent = None
     return CIFLineItem(item_external_id=line.item, description=line.description,
                        account_external_id=line_account(doc, line),
-                       tax_code_external_id=line.tax_code,
-                       tax_account_external_id=book.tax_codes[line.tax_code].account if line.tax_code else None,
+                       taxes=[CIFLineTax(tax_code_external_id=line.tax_code,
+                                         tax_account_external_id=book.tax_codes[line.tax_code].account
+                                         if line.tax_code else None, amount=line.tax)]
+                       if line.tax_code or line.tax else [],
                        quantity=line.quantity, unit_price=unit_price, discount_percent=discount_percent,
-                       tax_amount=line.tax, total_price=line.net, cost_basis=line.cost or None)
+                       total_price=line.net, cost_basis=line.cost or None)
 
 
 def _movements(book: Book) -> dict[str, list[dict]]:
@@ -177,7 +180,7 @@ def _document(book: Book, ledger: Ledger, doc: Document, movements: dict[str, li
     state = ledger.states[doc.key]
     metadata: dict = {"amounts_include_tax": doc.include_tax, **_links(book, ledger, doc)}
     if doc.applies_to:
-        metadata["applies_to"] = doc.applies_to
+        metadata["applications"] = {doc.applies_to: str(doc.total)}
     if doc.billing_address:
         metadata["billing_address"] = doc.billing_address
     if movements.get(doc.key):

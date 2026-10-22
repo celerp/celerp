@@ -236,7 +236,8 @@ async def _prepare(scan: store.ScanSession):
 async def _save_decisions(owner: store.ScanOwner, payload: DecisionsIn) -> dict:
     scan = store.load_scan(payload.scan_token, owner=owner)
     decisions = await asyncio.to_thread(migrations.validate_decisions, scan, payload.model_dump(exclude={"scan_token"}))
-    return {"scan": migrations.scan_view(store.save_decisions(payload.scan_token, owner=owner, decisions=decisions))}
+    saved = await asyncio.to_thread(store.save_decisions, payload.scan_token, owner=owner, decisions=decisions)
+    return {"scan": migrations.scan_view(saved)}
 
 
 async def _turn_on_modules(plan: migrations.StartPlan) -> bool:
@@ -616,6 +617,13 @@ async def forget_template(source_system: str, ctx: AuthContext = Depends(get_aut
         raise HTTPException(status_code=404, detail=t("migration.err_unknown_source"))
     await migration_templates.forget(session, ctx.user.id, source_system)
     return Response(status_code=204)
+
+
+@router.get("/open")
+async def get_open_runs(ctx: AuthContext = Depends(get_auth_context),
+                        session: AsyncSession = Depends(get_session)) -> dict:
+    """This person's moves still in progress, so any page can lead back to them."""
+    return {"items": await migrations.open_runs(session, ctx.user.id)}
 
 
 @router.get("/staged")

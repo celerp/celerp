@@ -286,3 +286,56 @@ describe("postgresPaths", () => {
       .toThrow(`The folder ${bad} for the database has letters outside ASCII.`);
   });
 });
+
+// Windows keeps a folder busy for a moment after initdb exits (its last child process,
+// an antivirus scan of the new files), and the move into place fails with EPERM.
+function heldError(code) {
+  return Object.assign(new Error(`${code}: operation not permitted, rename`), { code });
+}
+
+test("a folder still held when initdb exits is moved once Windows lets go", async () => {
+  const dataDir = dataDirIn();
+  const rename = fs.renameSync;
+  let refusals = 0;
+  const spy = jest.spyOn(fs, "renameSync").mockImplementation((from, to) => {
+    if (refusals < 2) { refusals += 1; throw heldError("EPERM"); }
+    return rename(from, to);
+  });
+  try {
+    await expect(initialiseClusterOnce({ dataDir, runInitdb: goodInitdb, sleep: async () => {} })).resolves.toBe(true);
+  } finally {
+    spy.mockRestore();
+  }
+  expect(refusals).toBe(2);
+  expect(fs.readFileSync(path.join(dataDir, "PG_VERSION"), "utf8")).toBe("17\n");
+  expect(fs.existsSync(`${dataDir}.init`)).toBe(false);
+});
+
+test("a folder held past the wait fails the setup and leaves nothing behind", async () => {
+  const dataDir = dataDirIn();
+  let clock = 0;
+  const spy = jest.spyOn(fs, "renameSync").mockImplementation(() => { throw heldError("EBUSY"); });
+  try {
+    await expect(initialiseClusterOnce({
+      dataDir, runInitdb: goodInitdb, now: () => clock, sleep: async (ms) => { clock += ms; },
+    })).rejects.toThrow(/EBUSY/);
+  } finally {
+    spy.mockRestore();
+  }
+  expect(clock).toBeGreaterThanOrEqual(60000);
+  expect(fs.existsSync(`${dataDir}.init`)).toBe(false);
+});
+
+test("a move that fails for another reason is not retried", async () => {
+  const dataDir = dataDirIn();
+  const sleep = jest.fn(async () => {});
+  const spy = jest.spyOn(fs, "renameSync").mockImplementation(() => {
+    throw Object.assign(new Error("EXDEV: cross-device link not permitted, rename"), { code: "EXDEV" });
+  });
+  try {
+    await expect(initialiseClusterOnce({ dataDir, runInitdb: goodInitdb, sleep })).rejects.toThrow(/EXDEV/);
+  } finally {
+    spy.mockRestore();
+  }
+  expect(sleep).not.toHaveBeenCalled();
+});
