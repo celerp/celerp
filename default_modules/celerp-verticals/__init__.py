@@ -19,4 +19,5 @@ PLUGIN_MANIFEST = {
     "depends_on": ["celerp-inventory"],
     "slots": {},
     "migrations": None,
+    "help": {"dir": "celerp_verticals/help"},
 }

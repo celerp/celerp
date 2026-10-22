@@ -2,8 +2,8 @@
   "celerp-accounting": "8d777ac84a15fd3b6814f9361586a14535f77ebf217f751b28257e8917bbbccd",
   "celerp-admin": "fb75947c6f7e4bf17a99c635a1e35afbce2344352b39e6bc9d46abeca2741a7a",
   "celerp-ai": "1f9fae2d6ad46ee3e371133007a582fce8ad8f31e77ba4897f90da95aed2a4e2",
-  "celerp-backup": "c916a01c8681142be3c006fdf5b3b9795df4a61eb9ea61a72124f23b96fef3ea",
-  "celerp-connectors": "a2892cac2b39072eff455f02d565f57104f65f1486d55ddbfaade72cb7b3dd12",
+  "celerp-backup": "d64e6b4376f42ac07a8b4684d4b1b888f8478db28fe2f9b77b892f117c5df73e",
+  "celerp-connectors": "13e54689e6cca46e2a2a6e22a8b34c48e8e68894bff668e6abad7be292ed1560",
   "celerp-contacts": "8501cbe4c7281af94d15353bb6e002c57444dec03064d4f6b9374579db0f1600",
   "celerp-dashboard": "4bebb8df38147a42e764ef95c9666910855b645472044cfd034e7a4720c7333c",
   "celerp-docs": "b6d3e8a9b342d2135e54a8841d43ad15690de6e1b77ef216cdcaa9a324eb5582",
@@ -13,5 +13,5 @@
   "celerp-manufacturing": "d9e9e9eccbe2d7add3663d09f297156824fdb55e4f7ff1ec551e45badb72190c",
   "celerp-reports": "60b068d78bb3834e7589ba2ab1101dfbd10ffd9e072f53da7f2d06d15e85a9ca",
   "celerp-subscriptions": "90f02be8b6a876ccab6fa22c3f3bb0b0f1d314211ad77b884f49a96de93d7d92",
-  "celerp-verticals": "62c2961ce62ef472216abedd7631c0952d62383ad3818996ea06100bdb2f177e"
+  "celerp-verticals": "84050ba501d6d040e642abd5562bae8491b1fac50545ee4757e3fe485a8069f4"
 }
