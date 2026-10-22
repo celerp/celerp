@@ -18,6 +18,9 @@ const path = require("path");
 // A lock older than this is not trusted even when its process ID is in use: the
 // ID may belong to an unrelated process started since. A real setup takes seconds.
 const LOCK_STALE_MS = 10 * 60 * 1000;
+// How long a move into place waits for Windows to let go of the new folder.
+const HELD_WAIT_MS = 60 * 1000;
+const HELD = new Set(["EBUSY", "EPERM", "EACCES"]);
 
 function processIsRunning(pid) {
   try {
@@ -104,12 +107,31 @@ function clearOwnStaging(staging, ownerFile) {
 }
 
 /**
+ * Windows keeps a new folder busy for a moment after the process that wrote it exits
+ * (its last child, an antivirus scan), so the move is retried while the folder is held,
+ * up to HELD_WAIT_MS. Any other failure is thrown at once.
+ */
+async function renameWhenReleased(from, to, now, sleep) {
+  const deadline = now() + HELD_WAIT_MS;
+  for (;;) {
+    try {
+      fs.renameSync(from, to);
+      return;
+    } catch (error) {
+      if (!HELD.has(error.code) || now() >= deadline) throw error;
+      await sleep(500);
+    }
+  }
+}
+
+/**
  * Create the cluster in `dataDir` unless it already has one. `runInitdb(target)`
  * runs initdb into `target` (an existing empty folder) and rejects on failure.
  * Resolves true when a cluster was created, false when one was already there.
- * `isRunning(pid)` and `now()` are injectable for tests.
+ * `isRunning(pid)`, `now()` and `sleep(ms)` are injectable for tests.
  */
-async function initialiseClusterOnce({ dataDir, runInitdb, isRunning = processIsRunning, now = Date.now }) {
+async function initialiseClusterOnce({ dataDir, runInitdb, isRunning = processIsRunning, now = Date.now,
+  sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) }) {
   if (fs.existsSync(path.join(dataDir, "PG_VERSION"))) return false;
   const staging = `${dataDir}.init`;
   const ownerFile = `${staging}.owner`;
@@ -135,7 +157,7 @@ async function initialiseClusterOnce({ dataDir, runInitdb, isRunning = processIs
       await runInitdb(staging);
       // Windows cannot rename onto an existing folder; this one is empty (checked above).
       if (fs.existsSync(dataDir)) fs.rmdirSync(dataDir);
-      fs.renameSync(staging, dataDir);
+      await renameWhenReleased(staging, dataDir, now, sleep);
       created = true;
     } finally {
       if (!created) fs.rmSync(staging, { recursive: true, force: true });
