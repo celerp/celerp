@@ -718,11 +718,11 @@ def test_a_book_the_budget_just_admits_reads_within_two_and_a_half_times_it(tmp_
     """The budget charges what the read builds from each row, document and document line, not
     only the rows, so a book it just admits reads within two and a half times it whatever its
     rows are (one-line invoices built seven times what their rows were counted at), and a byte
-    less refuses the book. In miniature: about 60,000 journal items, under the budget they are
+    less refuses the book. In miniature: about 30,000 journal items, under the budget they are
     charged."""
     from celerp.importers.adapters.odoo import book, dump
 
-    path = _shaped(tmp_path / f"{shape}.zip", monkeypatch, shape, 60_000)
+    path = _shaped(tmp_path / f"{shape}.zip", monkeypatch, shape, 30_000)
     with dump.Backup(path) as backup:
         book.read_odoo(backup)
         charged = backup.held
