@@ -634,10 +634,11 @@ def test_the_budget_counts_text_as_python_holds_it(tmp_path, monkeypatch, first)
     assert peak < 1.5 * dump.MAX_HELD, f"held {peak / MI:.0f} MiB"
 
 
-def test_a_large_book_kept_in_thai_reads_with_twice_the_room_it_needs(tmp_path, monkeypatch):
+def test_a_large_book_kept_in_thai_reads_with_room_to_spare(tmp_path, monkeypatch):
     """A large company's decade, a million journal items with 20,000 contacts and 10,000
-    products, every name in Thai (two bytes a character as Python holds it), fits in half the
-    budget. In proportion: a fiftieth of that book under a fiftieth of half the budget."""
+    products, every name in Thai (two bytes a character as Python holds it), is charged under
+    85% of the budget with what is built from it. In proportion: a fiftieth of that book under a
+    fiftieth of 85% of the budget."""
     from celerp.importers.adapters.odoo import book, dump
 
     def thai(lines: int) -> list:
@@ -660,23 +661,31 @@ def test_a_large_book_kept_in_thai_reads_with_twice_the_room_it_needs(tmp_path, 
         row.update(id=500000 + i, name=json.dumps({"en_US": f"ข้าวหอมมะลิ ถุง 5 กิโลกรัม รุ่น {i}"}, ensure_ascii=False),
                    description_sale=json.dumps({"en_US": f"ข้าวหอมมะลิคุณภาพดี สำหรับขาย รุ่น {i}"}, ensure_ascii=False))
         rows.append([row[c] for c in columns])
-    monkeypatch.setattr(dump, "MAX_HELD", dump.MAX_HELD // 2 // 50)
+    monkeypatch.setattr(dump, "MAX_HELD", dump.MAX_HELD * 85 // 100 // 50)
     path = tmp_path / "thai.zip"
     path.write_bytes(build.backup(17, tables))
     with dump.Backup(path) as backup:
-        read = backup.tables((*book.TABLES, backup.lot_table), book.COLUMNS, book.KEPT_ROWS,
-                             book.required_tables(backup.modules, backup.version))
-    assert len(read["account_move_line"]) > 20_000 and len(read["res_partner"]) > 400
+        read = book.read_odoo(backup).book
+    assert len(read.journals[-1].lines) == 20_000
 
 
 def _shaped(path, monkeypatch, shape: str, lines: int):
     """The fixture's backup with about `lines` journal items more, in one of the shapes a book
     can take: one entry of items each with its own label and amount ("ordinary"), the same in
     Thai, one entry of items sharing every value but their id ("shared"), or one-line invoices
-    of three items each ("invoices")."""
-    if shape == "invoices":
+    of three items each ("invoices"), invoices of a hundred untaxed lines ("long") or of ten
+    lines with two taxes each ("wide"), or entries of two items ("entries")."""
+    invoiced = {"invoices": (1, build.SALE_TAX), "long": (100, None), "wide": (10, (build.SALE_TAX, build.PROVINCIAL_TAX))}
+    if shape in invoiced:
+        count, taxes = invoiced[shape]
+        items = count + len(taxes if isinstance(taxes, tuple) else [taxes] if taxes else []) + 1
         bulk = lambda n: [build._invoice(1000 + k, f"INV/2025/{k:07d}", "out_invoice", "2024-04-01", 9,  # noqa: E731
-                                         [(build.CONSULTING, 1, D(100), build.SALE_TAX)]) for k in range(n // 3)]
+                                         [(build.CONSULTING if i % 2 else build.WIDGET, i + 1, D(100 + i), taxes)
+                                          for i in range(count)]) for k in range(n // items)]
+    elif shape == "entries":
+        bulk = lambda n: [build.Move(30000 + k, f"MISC/2024/{k:07d}", "entry", "posted", "2024-05-01",  # noqa: E731
+                                     [build.Line(a, s * D(f"{k % 997 + 1}.00"), name=f"Transfer {k}")
+                                      for a, s in ((1, 1), (14, -1))], ref=f"T{k}") for k in range(n // 2)]
     elif shape == "shared":
         bulk = lambda n: [build.Move(25, "MISC/2024/05/0001", "entry", "posted", "2024-05-01",  # noqa: E731
                                      [build.Line(a, s * D("1.00"), name="Transfer")
@@ -702,6 +711,33 @@ def _read_whole(path):
         return OdooAdapter().build_manifest([artifact(path)], FULL)
     finally:
         odoo_adapter._books.cache_clear()
+
+
+@pytest.mark.parametrize("shape", ["ordinary", "shared", "thai", "entries", "invoices", "long", "wide"])
+def test_a_book_the_budget_just_admits_reads_within_two_and_a_half_times_it(tmp_path, monkeypatch, shape):
+    """The budget charges what the read builds from each row, document and document line, not
+    only the rows, so a book it just admits reads within two and a half times it whatever its
+    rows are (one-line invoices built seven times what their rows were counted at), and a byte
+    less refuses the book. In miniature: about 60,000 journal items, under the budget they are
+    charged."""
+    from celerp.importers.adapters.odoo import book, dump
+
+    path = _shaped(tmp_path / f"{shape}.zip", monkeypatch, shape, 60_000)
+    with dump.Backup(path) as backup:
+        book.read_odoo(backup)
+        charged = backup.held
+    monkeypatch.setattr(dump, "MAX_HELD", charged - 1)
+    with dump.Backup(path) as backup, pytest.raises(ScanError) as refused:
+        book.read_odoo(backup)
+    assert str(refused.value) == t("migration.err_odoo_backup_too_large", "en")
+    monkeypatch.setattr(dump, "MAX_HELD", charged)
+    tracemalloc.start()
+    try:
+        assert _read_whole(path).bundle.journals
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    assert peak < 2.5 * charged, f"read took {peak / charged:.2f}x the budget"
 
 
 def test_reading_four_times_the_invoices_takes_about_four_times_as_long(tmp_path, monkeypatch):

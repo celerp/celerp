@@ -33,7 +33,7 @@ from celerp.importers.adapters.exports.book import (
     PARTY_SIGN, ZERO, Account, Book, Contact, DocLine, Document, GLJournal, GLLine, Item, LineTax, StockHolding,
     TaxCode,
 )
-from celerp.importers.adapters.odoo.dump import Backup, Row
+from celerp.importers.adapters.odoo.dump import DOCUMENT_BYTES, DOCUMENT_LINE_BYTES, Backup, Row
 from celerp.services.money import allocate_pro_rata, round_money
 from ui.i18n import t
 
@@ -540,11 +540,11 @@ class _Reader:
             return -sign * (_dec(r["amount_currency"]) if book.is_foreign(currency)
                             else _dec(r["debit"]) - _dec(r["credit"]))
 
+        carried = [(r, kind) for r in sorted(rows, key=lambda r: (int(r.get("sequence") or 0), int(r["id"])))
+                   if (kind := self._line_kind(r)) is not None and r["account_id"] in self.accounts]
+        self.backup.hold(DOCUMENT_BYTES + DOCUMENT_LINE_BYTES * len(carried))
         lines: list[DocLine] = []
-        for r in sorted(rows, key=lambda r: (int(r.get("sequence") or 0), int(r["id"]))):
-            kind = self._line_kind(r)
-            if kind is None or r["account_id"] not in self.accounts:
-                continue
+        for r, kind in carried:
             net = amount(r)
             tax = _dec(r["price_total"]) - _dec(r["price_subtotal"]) if kind == "product" else ZERO
             discount = _dec(r.get("discount"))

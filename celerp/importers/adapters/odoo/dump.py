@@ -54,6 +54,14 @@ ID_DIGITS = 19  # the most a PostgreSQL bigint id writes
 # its own size (one, two or four bytes a character, by its widest one, and its header).
 MAX_HELD = 1024 ** 3
 ROW_BYTES, FIELD_BYTES = 64, 8
+# What the read builds from its rows, beyond the rows, is charged to the same budget, so whatever
+# the rows are the whole read stays within about two and a half times it. Measured in bytes
+# traced per unit of large books: a journal item builds about 1600 (its row is counted at 300 to
+# 400), a line's tax about 1070 (its row about 130). An invoice line builds about 2700 and its
+# invoice about 4900 (the move row about 600): what a document adds is charged once the read
+# knows a move is one, before it is built, so an entry's items are not charged as invoice lines.
+BUILT_BYTES = {"account_move_line": 450, "account_move": 700, "account_move_line_account_tax_rel": 400}
+DOCUMENT_BYTES, DOCUMENT_LINE_BYTES = 1000, 500
 PASSWORD = 0x1  # the zip flag of a file packed with a password
 OLDEST, NEWEST = 13, 17
 LANGUAGE = "en_US"
@@ -285,6 +293,13 @@ class Backup:
             self.archive.close()
             raise SourceRevisionError(t(DAMAGED))
         self.modules = frozenset(modules)
+        self.held = 0
+
+    def hold(self, size: int) -> None:
+        """Counts `size` bytes more held from this backup, and refuses it past MAX_HELD."""
+        self.held += size
+        if self.held > MAX_HELD:
+            raise too_large()
 
     def __enter__(self) -> Backup:
         return self
@@ -309,7 +324,7 @@ class Backup:
         table keeping more than MAX_LINE characters is left out and its leading field (its id)
         listed in `self.left_out` under its table. Raises ScanError, before any row is used,
         when a row of another wanted table, or one whose leading field is not an id, keeps that
-        much, when the rows kept would take more
+        much, when the rows kept, with what is built from them (BUILT_BYTES), would take more
         than MAX_HELD of memory, or when the dump is cut short or damaged: it does not unpack,
         has no closing line, a table's data never ends or never starts, a row has more or fewer
         fields than its table, or a `required` table (one an installed module makes) is missing."""
@@ -319,7 +334,6 @@ class Backup:
         made: set[str] = set()
         copying: str | None = None
         complete = False
-        held = 0
         with _intact(), _open(self.archive, self.root + DUMP) as raw:
             lines = io.TextIOWrapper(raw, encoding="utf-8", newline="\n")
             rows: list[Row] | None = None
@@ -348,9 +362,7 @@ class Backup:
                         fields = [_field(values[i]) if len(values[i]) <= limit else None for i, limit in zip(kept, limits)]
                         if keep is not None and not keep(shape(fields)):
                             continue
-                        held += row_bytes + sum(map(sys.getsizeof, {f for f in fields if f is not None and f not in seen}))
-                        if held > MAX_HELD:
-                            raise too_large()
+                        self.hold(row_bytes + sum(map(sys.getsizeof, {f for f in fields if f is not None and f not in seen})))
                         rows.append(shape(map(seen.setdefault, fields, fields)))
                     continue
                 if line.startswith(DUMP_COMPLETE):
@@ -365,7 +377,7 @@ class Backup:
                         limits = [capped.get(header[i], math.inf) for i in kept]
                         shape = type("Row", (Row,), {"__slots__": (), "index": {header[i]: n for n, i in enumerate(kept)}})
                         keep, seen = where.get(copying), {}
-                        row_bytes = ROW_BYTES + FIELD_BYTES * len(kept)
+                        row_bytes = ROW_BYTES + FIELD_BYTES * len(kept) + BUILT_BYTES.get(copying, 0)
                         rows = out.setdefault(copying, [])
         if copying is not None or not complete or ((made & wanted) | set(required)) - set(out):
             raise ScanError(t(DAMAGED))
