@@ -16,4 +16,5 @@ PLUGIN_MANIFEST = {
         "nav": {"group": None, "key": "dashboard", "href": "/dashboard", "label": "Dashboard", "label_key": "nav.dashboard", "order": 1, "permission": "view_dashboards"},
     },
     "migrations": None,
+    "help": {"dir": "celerp_dashboard/help"},
 }

@@ -1,0 +1,30 @@
+{
+  "id": "admin.ledger-doctor",
+  "title": "Check your books for record problems",
+  "summary": "Doctor runs a read-only scan of your records and explains anything the last start held back.",
+  "keywords": ["doctor", "diagnostics", "integrity", "ledger", "record checks", "repair", "admin"],
+  "routes": ["/doctor"],
+  "permission": "manage_company_settings",
+  "order": 1,
+  "steps": [
+    {
+      "text": "Open {doctor} from the sidebar. It never changes anything: everything here is a read-only report.",
+      "labels": {"doctor": "nav.doctor"},
+      "image": null,
+      "capture": {"route": "/doctor", "selector": "main", "actions": []}
+    },
+    {
+      "text": "{start} explains why the last start held your records back, if it did, with each failed step and its error.",
+      "labels": {"start": "doctor.last_start"},
+      "image": null,
+      "capture": {"route": "/doctor", "selector": "main", "actions": []}
+    },
+    {
+      "text": "{checks} lists each automatic scan Admin Tools runs over your records and how many problems it found in the current count.",
+      "labels": {"checks": "doctor.record_checks"},
+      "image": null,
+      "capture": {"route": "/doctor", "selector": "main", "actions": []}
+    }
+  ],
+  "related": []
+}
