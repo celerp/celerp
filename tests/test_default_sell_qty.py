@@ -409,6 +409,81 @@ async def test_a_paid_invoice_blocking_fewer_decimals_is_finished_by_shipping_it
     assert (await _set_carat_decimals(client, auth, 2)).status_code == 200
 
 
+@pytest.mark.parametrize("doc_type", ["purchase_order", "bill"])
+async def test_a_partly_received_document_blocking_fewer_decimals_is_finished_by_returning_and_issuing_again(
+        client, session, auth, doc_type):
+    """The supplier sent 0.1 of 0.275 ct and will send no more. Such a document cannot be closed,
+    voided or edited while it holds received goods, so the refusal names the route that finishes
+    it, and following it ends in the lower with only what arrived in stock."""
+    assert (await _set_carat_decimals(client, auth, 3)).status_code == 200
+    lot = await _lot(client, auth, qty=1)
+    line = {"item_id": lot, "sku": await _sku(session, auth, lot), "name": "Stone", "unit": "carat",
+            "sell_by": "carat", "unit_price": 10.0}
+    doc = await _doc(client, auth, doc_type, [{**line, "quantity": 0.275}])
+    await _finalize(client, auth, doc)
+    r = await _receive(client, auth, doc, {"po_line_index": 0, "item_id": lot, "quantity_received": 0.1})
+    assert r.status_code == 200, r.text
+    state = await _state(session, auth, doc)
+    number = state.get("doc_number") or state["ref_id"]
+
+    r = await _set_carat_decimals(client, auth, 2)
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert detail["message_key"] == "units.precision_lowered_under_received", detail
+    assert detail["params"] == {"unit": "carat", "decimals": 2, "examples": number, "current": 3}, detail
+    assert "sending them back with Return Goods, voiding it, and issuing it again for what arrived" in detail["message"], detail
+    # None of the plain ways out finishes it.
+    assert (await client.post(f"/docs/{doc}/void", headers=auth["headers"], json={})).status_code == 409
+    assert (await client.post(f"/docs/{doc}/close", headers=auth["headers"], json={})).status_code == 422
+
+    [arrived] = state["received_item_ids"]
+    r = await client.post(f"/docs/{doc}/return-items", headers=auth["headers"],
+                          json={"items": [{"item_id": arrived, "quantity_returned": 0.1}]})
+    assert r.status_code == 200, r.text
+    r = await client.post(f"/docs/{doc}/void", headers=auth["headers"], json={})
+    assert r.status_code == 200, r.text
+    again = await _doc(client, auth, doc_type, [{**line, "quantity": 0.1}])
+    await _finalize(client, auth, again)
+    r = await _receive(client, auth, again, {"po_line_index": 0, "item_id": lot, "quantity_received": 0.1})
+    assert r.status_code == 200, r.text
+    assert (await _set_carat_decimals(client, auth, 2)).status_code == 200
+    # Only what arrived is in stock: the issued-again document's 0.1, nothing for the 0.175 that never came.
+    [kept] = (await _state(session, auth, again))["received_item_ids"]
+    lots = {i: ((held := await _state(session, auth, i))["quantity"], held.get("status"))
+            for i in (lot, arrived, kept)}
+    assert lots == {lot: (1, "available"), arrived: (0.1, "disposed"), kept: (0.1, "available")}, lots
+
+
+async def test_a_partly_received_document_beside_a_subscription_names_both_ways_out(client, session, auth):
+    assert (await _set_carat_decimals(client, auth, 3)).status_code == 200
+    lot = await _lot(client, auth, qty=1)
+    po = await _doc(client, auth, "purchase_order", [{"item_id": lot, "sku": await _sku(session, auth, lot),
+                                                      "name": "Stone", "quantity": 0.275, "unit": "carat",
+                                                      "unit_price": 10.0}])
+    await _finalize(client, auth, po)
+    assert (await _receive(client, auth, po, {"po_line_index": 0, "item_id": lot,
+                                              "quantity_received": 0.1})).status_code == 200
+    sub = await _template(client, session, auth, "subscription_invoice", 0.125)
+    state = await _state(session, auth, po)
+
+    r = await _set_carat_decimals(client, auth, 2)
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert detail["message_key"] == "units.precision_lowered_under_received_and_templates", detail
+    assert detail["params"] == {"unit": "carat", "decimals": 2,
+                                "examples": state.get("doc_number") or state["ref_id"],
+                                "templates": (await _state(session, auth, sub))["ref_id"], "current": 3}, detail
+    assert "cancel those subscriptions" in detail["message"] and "Return Goods" in detail["message"], detail
+    # A document that received in full, or nothing yet, keeps the plain advice.
+    assert (await _receive(client, auth, po, {"po_line_index": 0, "item_id": lot,
+                                              "quantity_received": 0.175})).status_code == 200
+    unreceived = await _doc(client, auth, "purchase_order", [{"item_id": lot, "name": "Stone", "quantity": 0.275,
+                                                              "unit": "carat", "unit_price": 10.0}])
+    await _finalize(client, auth, unreceived)
+    r = await _set_carat_decimals(client, auth, 2)
+    assert r.json()["detail"]["message_key"] == "units.precision_lowered_under_quantities_and_templates", r.text
+
+
 async def test_split_pieces_are_named_once_in_the_refusal(client, session, auth):
     """A split leaves two items under one SKU; the refusal names it once and keeps its other
     example slots for other holders, in the order they were found."""

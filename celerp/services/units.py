@@ -257,6 +257,15 @@ async def require_moving_fits_units(session, company_id, entity_id: str, entity_
             label=label, qty=shown, unit=unit, decimals=decimals, places=places))
 
 
+def _partly_received(entity_type: str, state: dict) -> bool:
+    """A purchase order or bill that received some of its goods and still expects the rest. It
+    cannot be voided, closed or edited while it holds received goods, so a refusal it is named in
+    gives it the way out that works: Return Goods, void, and issue it again."""
+    return entity_type == "doc" and state.get("doc_type") in ("purchase_order", "bill") and any(
+        float(line.get("quantity_received") or 0) > 0
+        for line in state.get("line_items") or [] if isinstance(line, dict))
+
+
 async def check_precision_change(session, company_id, old_units: list[dict], new_units: list[dict]) -> None:
     """Fewer decimal places for a unit that still holds finer quantities: refused with 422, naming
     a few of the items and open documents that hold them and, apart, the subscriptions, with the
@@ -299,6 +308,7 @@ async def check_precision_change(session, company_id, old_units: list[dict], new
         holders: list[str] = []
         templates: list[str] = []
         needed = decimals
+        partly_received = False
         for entity_id, entity_type, state, lines in rows:
             template = state.get("doc_type") in TEMPLATE_DOC_TYPES
             if entity_type == "item":
@@ -318,6 +328,7 @@ async def check_precision_change(session, company_id, old_units: list[dict], new
             if finer:
                 (templates if template else holders).append(str(label or "-"))
                 needed = max(needed, *(_places(q) for q in finer))
+                partly_received = partly_received or _partly_received(entity_type, state)
         if not (holders or templates):
             continue
         # Split pieces share their parent's SKU, so a name is given once, in the order found.
@@ -326,7 +337,15 @@ async def check_precision_change(session, company_id, old_units: list[dict], new
         lead = f"{name} cannot go to {decimals} decimal places"
         change = "Change those quantities or finish those documents"
         cancel = f"set up new ones with quantities {name} allows"
-        if not templates:
+        received = ("A purchase order or bill that received only part of its goods is finished by sending them "
+                    "back with Return Goods, voiding it, and issuing it again for what arrived.")
+        if not templates and partly_received:
+            detail = refusal(
+                "units.precision_lowered_under_received",
+                f"{lead}: items or open documents still hold quantities with more ({examples}). {change} first. "
+                f"{received} Or keep {current} decimal places.",
+                unit=name, decimals=decimals, examples=examples, current=current)
+        elif not templates:
             detail = refusal(
                 "units.precision_lowered_under_quantities",
                 f"{lead}: items or open documents still hold quantities with more ({examples}). {change} first, "
@@ -340,9 +359,11 @@ async def check_precision_change(session, company_id, old_units: list[dict], new
                 unit=name, decimals=decimals, examples=named, current=current)
         else:
             detail = refusal(
-                "units.precision_lowered_under_quantities_and_templates",
+                "units.precision_lowered_under_received_and_templates" if partly_received
+                else "units.precision_lowered_under_quantities_and_templates",
                 f"{lead}: items or open documents ({examples}) and subscriptions ({named}) still hold quantities "
-                f"with more. {change}, and cancel those subscriptions and {cancel}. Or keep {current} decimal places.",
+                f"with more. {change}, and cancel those subscriptions and {cancel}."
+                f"{f' {received}' if partly_received else ''} Or keep {current} decimal places.",
                 unit=name, decimals=decimals, examples=examples, templates=named, current=current)
         raise HTTPException(status_code=422, detail=detail)
 

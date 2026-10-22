@@ -48,6 +48,8 @@
     "units.template_finer_than_unit",
     "units.precision_lowered_under_quantities",
     "units.precision_lowered_under_quantities_and_templates",
+    "units.precision_lowered_under_received",
+    "units.precision_lowered_under_received_and_templates",
     "units.precision_lowered_under_templates"
   ],
   "ar": [
@@ -87,6 +89,8 @@
     "units.template_finer_than_unit",
     "units.precision_lowered_under_quantities",
     "units.precision_lowered_under_quantities_and_templates",
+    "units.precision_lowered_under_received",
+    "units.precision_lowered_under_received_and_templates",
     "units.precision_lowered_under_templates"
   ],
   "de": [
@@ -197,6 +201,8 @@
     "units.template_finer_than_unit",
     "units.precision_lowered_under_quantities",
     "units.precision_lowered_under_quantities_and_templates",
+    "units.precision_lowered_under_received",
+    "units.precision_lowered_under_received_and_templates",
     "units.precision_lowered_under_templates"
   ],
   "es": [
@@ -280,6 +286,8 @@
     "units.template_finer_than_unit",
     "units.precision_lowered_under_quantities",
     "units.precision_lowered_under_quantities_and_templates",
+    "units.precision_lowered_under_received",
+    "units.precision_lowered_under_received_and_templates",
     "units.precision_lowered_under_templates"
   ],
   "fr": [
@@ -404,6 +412,8 @@
     "units.template_finer_than_unit",
     "units.precision_lowered_under_quantities",
     "units.precision_lowered_under_quantities_and_templates",
+    "units.precision_lowered_under_received",
+    "units.precision_lowered_under_received_and_templates",
     "units.precision_lowered_under_templates"
   ],
   "id": [
@@ -512,6 +522,8 @@
     "units.template_finer_than_unit",
     "units.precision_lowered_under_quantities",
     "units.precision_lowered_under_quantities_and_templates",
+    "units.precision_lowered_under_received",
+    "units.precision_lowered_under_received_and_templates",
     "units.precision_lowered_under_templates"
   ],
   "it": [
@@ -592,6 +604,8 @@
     "units.template_finer_than_unit",
     "units.precision_lowered_under_quantities",
     "units.precision_lowered_under_quantities_and_templates",
+    "units.precision_lowered_under_received",
+    "units.precision_lowered_under_received_and_templates",
     "units.precision_lowered_under_templates"
   ],
   "ja": [
@@ -641,6 +655,8 @@
     "units.template_finer_than_unit",
     "units.precision_lowered_under_quantities",
     "units.precision_lowered_under_quantities_and_templates",
+    "units.precision_lowered_under_received",
+    "units.precision_lowered_under_received_and_templates",
     "units.precision_lowered_under_templates"
   ],
   "pt": [
@@ -735,6 +751,8 @@
     "units.template_finer_than_unit",
     "units.precision_lowered_under_quantities",
     "units.precision_lowered_under_quantities_and_templates",
+    "units.precision_lowered_under_received",
+    "units.precision_lowered_under_received_and_templates",
     "units.precision_lowered_under_templates"
   ],
   "th": [
@@ -782,6 +800,8 @@
     "units.template_finer_than_unit",
     "units.precision_lowered_under_quantities",
     "units.precision_lowered_under_quantities_and_templates",
+    "units.precision_lowered_under_received",
+    "units.precision_lowered_under_received_and_templates",
     "units.precision_lowered_under_templates"
   ],
   "vi": [
@@ -833,6 +853,8 @@
     "units.template_finer_than_unit",
     "units.precision_lowered_under_quantities",
     "units.precision_lowered_under_quantities_and_templates",
+    "units.precision_lowered_under_received",
+    "units.precision_lowered_under_received_and_templates",
     "units.precision_lowered_under_templates"
   ]
 }
