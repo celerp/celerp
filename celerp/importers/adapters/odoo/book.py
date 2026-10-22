@@ -19,7 +19,6 @@ documents are read from the backup's filestore.
 
 from __future__ import annotations
 
-import json
 import mimetypes
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -35,7 +34,7 @@ from celerp.importers.adapters.exports.book import (
 )
 from celerp.importers.adapters.odoo.dump import (
     DAMAGED, DOCUMENT_BYTES, DOCUMENT_LINE_BYTES, HOLDING_BYTES, MONTH_ACCOUNT_BYTES, STOCK_MOVE_BYTES, Backup, Row,
-    freed,
+    freed, json_value,
 )
 from celerp.services.money import allocate_pro_rata, round_money
 from ui.i18n import t
@@ -142,8 +141,8 @@ COLUMNS = frozenset({
     "store_fname", "street", "street2", "supplier_rank", "tax_id", "tax_line_id", "type", "usage", "user_type_id",
     "url", "value", "vat", "zip", "factor", "rounding", "uom_id", "product_uom_id", "quantity_product_uom",
 })
-# Of those, the ones holding an id, a number, a date or a file's content. Backup.tables refuses a dump with any
-# other value in one, whether or not the import goes on to use that value.
+# Of those, the ones holding an id, a number, a date, a file's content or JSON with numbers. Backup.tables refuses
+# a dump with any other value in one, whether or not the import goes on to use that value.
 IDS = frozenset(c for c in COLUMNS if c == "id" or c.endswith("_id")) | {"res_id"}
 NUMBERS = frozenset({
     "amount", "amount_currency", "amount_residual", "amount_tax", "amount_total", "credit", "credit_amount_currency",
@@ -153,7 +152,7 @@ NUMBERS = frozenset({
 })
 DATES = frozenset({"create_date", "date", "invoice_date_due"})
 COLUMN_KINDS = {**dict.fromkeys(IDS, "id"), **dict.fromkeys(NUMBERS, "number"), **dict.fromkeys(DATES, "date"),
-                "db_datas": "bytes"}
+                "db_datas": "bytes", "analytic_distribution": "json"}
 
 
 def required_tables(modules: frozenset[str], version: int) -> set[str]:
@@ -437,11 +436,13 @@ class _Reader:
                 accounts: dict[str, tuple[str, str]]) -> dict[str, str]:
         """Tracking category -> option of a line's analytic distribution, account and tags."""
         options: dict[str, list[str]] = defaultdict(list)
-        for keys, percent in json.loads(distribution or "{}").items():
-            share = format(Decimal(str(percent)).normalize(), "f")
+        for keys, percent in json_value(distribution or "{}").items():
+            if not isinstance(percent, Decimal):
+                raise TypeError("an analytic share that is not a number")
+            share = format(percent.normalize(), "f")
             for i in (k for k in keys.split(",") if k in accounts):
                 name, plan = accounts[i]
-                options[plan].append(name if Decimal(share) == 100 else f"{name} {share}%")
+                options[plan].append(name if percent == 100 else f"{name} {share}%")
         if account in accounts:
             options[ANALYTIC_ACCOUNT].append(accounts[account][0])
         options[ANALYTIC_TAG] += tags

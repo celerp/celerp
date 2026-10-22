@@ -333,6 +333,9 @@ DAMAGED_FIELDS = {
     "debit past any amount": ("account_move_line", "debit", "1E+999999", None),
     "entry date not a day": ("account_move", "date", "2024-13-45", None),
     "entry without a date": ("account_move", "date", None, None),
+    "entry date as an ISO week": ("account_move", "date", "2024-W03-1", None),
+    "entry date without dashes": ("account_move", "date", "20240115", None),
+    "stock move time as an ISO week": ("stock_move", "date", "2024-W03-1 10:00:00", None),
     "contact id not an id": ("res_partner", "id", "abc", 7),
     "line id not an id": ("account_move_line", "id", "x1", None),
     "unit ratio of zero": ("uom_uom", "factor", "0", None),
@@ -340,6 +343,12 @@ DAMAGED_FIELDS = {
     "sale price infinite": ("product_template", "list_price", "Infinity", None),
     "account name nested too deep": ("account_account", "name", _DEEP_NAME, 1),
     "stock quantity not a number": ("stock_quant", "quantity", "lots", None),
+    "analytic share NaN": ("account_move_line", "analytic_distribution", '{"1": NaN}', None),
+    "analytic share infinite": ("account_move_line", "analytic_distribution", '{"1": Infinity}', None),
+    "analytic share minus infinite": ("account_move_line", "analytic_distribution", '{"1": -Infinity}', None),
+    "analytic share past any amount": ("account_move_line", "analytic_distribution", '{"1": 1e999}', None),
+    "analytic share as text": ("account_move_line", "analytic_distribution", '{"1": "NaN"}', None),
+    "analytic shares not by account": ("account_move_line", "analytic_distribution", "[100]", None),
 }
 
 
@@ -392,34 +401,47 @@ def test_every_column_read_holding_numbers_or_dates_is_checked_as_it_is_read(ver
             return False
         return True
 
+    def holds_numbers(value) -> bool:
+        """JSON with a number in it."""
+        found = []
+        try:
+            json.loads(str(value), parse_float=found.append, parse_int=found.append)
+        except ValueError:
+            return False
+        return bool(found)
+
     for column, filled in _read_columns(version).items():
         values = [v for _, vs in filled for v in vs]
         if values and column not in _DIGIT_TEXT and (all(parses(v, Decimal) for v in values)
                                                      or all(parses(v, date.fromisoformat) for v in values)):
             assert column in COLUMN_KINDS, column
+        if values and any(holds_numbers(v) for v in values) and not all(parses(v, Decimal) for v in values):
+            assert COLUMN_KINDS.get(column) == "json", column
 
 
-_NOT_OF_KIND = {"id": "x1", "number": "NaN", "date": "2024-13-45", "bytes": "\\xGG"}
+_NOT_OF_KIND = {"id": ("x1",), "number": ("NaN",), "date": ("2024-13-45", "2024-W03-1", "20240115"),
+                "bytes": ("\\xGG",), "json": ('{"1": NaN}',)}
 
 
-@pytest.mark.parametrize("version", (13, 17))
-@pytest.mark.parametrize("kind", list(_NOT_OF_KIND))
+# Odoo keeps JSON in a column read from Odoo 16 on (analytic_distribution).
+@pytest.mark.parametrize(("version", "kind"), [(v, k) for v in (13, 17) for k in _NOT_OF_KIND if (v, k) != (13, "json")])
 def test_every_id_number_and_date_column_read_refuses_a_value_not_of_its_kind(tmp_path, version, kind):
-    """For each id, number, date and file content column the reader keeps, a value not of its kind in every
-    table holding it refuses the backup as damaged before anything is imported, whether or not
-    the import goes on to use that value."""
+    """For each id, number, date, file content and JSON column the reader keeps, a value not of its kind in
+    every table holding it refuses the backup as damaged before anything is imported, whether or
+    not the import goes on to use that value."""
     from celerp.importers.adapters.odoo.book import COLUMN_KINDS
 
     columns = [c for c in _read_columns(version) if COLUMN_KINDS.get(c) == kind]
     assert columns
     for column in columns:
-        tables = build.tables(version)
-        for table, (names, rows) in tables.rows.items():
-            if column in names:
-                for row in rows:
-                    row[names.index(column)] = _NOT_OF_KIND[kind]
-        with pytest.raises((ScanError, SourceRevisionError), match="incomplete or damaged"):
-            _adapter().inspect(_file(tmp_path, build.backup(version, tables), f"{column}.zip"))
+        for value in _NOT_OF_KIND[kind]:
+            tables = build.tables(version)
+            for table, (names, rows) in tables.rows.items():
+                if column in names:
+                    for row in rows:
+                        row[names.index(column)] = value
+            with pytest.raises((ScanError, SourceRevisionError), match="incomplete or damaged"):
+                _adapter().inspect(_file(tmp_path, build.backup(version, tables), f"{column}.zip"))
 
 
 def test_a_value_is_read_as_its_kind_as_postgresql_writes_it():
@@ -429,9 +451,14 @@ def test_a_value_is_read_as_its_kind_as_postgresql_writes_it():
     assert all(map(KINDS["number"], ("0", "-12.50", "345", "1e-05", "0.333333333333333", "1" + "0" * 19)))
     assert not any(map(KINDS["number"], ("NaN", "Infinity", "-Infinity", "1E+999999", "1" + "0" * 20, "", "x")))
     assert all(map(KINDS["date"], ("2024-01-05", "2024-01-10 09:00:00", "2024-01-10 09:00:00.123456")))
-    assert not any(map(KINDS["date"], ("2024-13-45", "", "05/01/2024", "x")))
+    assert not any(map(KINDS["date"], ("2024-13-45", "", "05/01/2024", "x", "2024-W03-1", "20240115", "2024-01-15T09:00:00",
+                                       "2024-01-15 09:00", "2024-01-15 09:00:00+07:00", "2024-01-15 09:00:00.1234567",
+                                       "\u0662024-01-15")))
     assert all(map(KINDS["bytes"], ("\\x", "\\x00ff", "\\xDEADbeef")))
     assert not any(map(KINDS["bytes"], ("\\xGG", "\\xABC", "\\x0 ", "", "00ff", "x00")))
+    assert all(map(KINDS["json"], ('{"1": 100.0}', '{"1,2": 50, "3": 12.5}', "{}", '{"1": 1e-05}')))
+    assert not any(map(KINDS["json"], ('{"1": NaN}', '{"1": Infinity}', '{"1": -Infinity}', '{"1": 1e999}',
+                                       '{"1": 1' + "0" * 20 + "}", '{"1": ', "", _DEEP_NAME)))
 
 
 def _corrupt(data: bytes, at: bytes, offset: int = 0, garbage: bytes = b"\xff") -> bytes:

@@ -60,9 +60,13 @@ ZIP_ENTRY_BYTES = 600
 
 def zip_directory_fits(file: IO[bytes]) -> bool:
     """Whether opening the zip `file` holds within ZIP_METADATA_BUDGET, from the end-of-directory
-    records alone (ZIP64 included), read as zipfile reads them. A file without them is not ruled
-    on: zipfile refuses it on its own without reading a directory."""
-    end = zipfile._EndRecData(file)  # the records zipfile itself parses, in a bounded read of the tail
+    records alone (ZIP64 included), read as zipfile reads them. A file without them, or with
+    records zipfile cannot parse, is not ruled on: zipfile refuses it on its own when the caller
+    opens it, without reading a directory."""
+    try:
+        end = zipfile._EndRecData(file)  # the records zipfile itself parses, in a bounded read of the tail
+    except ZIP_ERRORS:
+        return True
     if end is None:
         return True
     size = end[zipfile._ECD_SIZE]
