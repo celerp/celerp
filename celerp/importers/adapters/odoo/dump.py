@@ -60,8 +60,17 @@ ROW_BYTES, FIELD_BYTES = 64, 8
 # 400), a line's tax about 1070 (its row about 130). An invoice line builds about 2700 and its
 # invoice about 4900 (the move row about 600): what a document adds is charged once the read
 # knows a move is one, before it is built, so an entry's items are not charged as invoice lines.
-BUILT_BYTES = {"account_move_line": 450, "account_move": 700, "account_move_line_account_tax_rel": 400}
+# Masters build their record, its bundle entry and the balances it is checked against: a contact
+# about 2900, an item about 2100, an account about 2800; a stock row adds its place in an index.
+# What rows do not bound is charged where the read builds it: a stock move about 1500 (with its
+# inventory adjustment), a holding of a lot or a location about 3200 (its bundle item and expected
+# count), and each month end from the first record to the last, every account's balance at about
+# 1100 each.
+BUILT_BYTES = {"account_move_line": 450, "account_move": 700, "account_move_line_account_tax_rel": 400,
+               "account_account": 1000, "res_partner": 1000, "product_product": 500, "ir_attachment": 250,
+               "stock_move": 100, "stock_move_line": 100, "stock_valuation_layer": 100}
 DOCUMENT_BYTES, DOCUMENT_LINE_BYTES = 1000, 500
+STOCK_MOVE_BYTES, HOLDING_BYTES, MONTH_ACCOUNT_BYTES = 700, 1200, 600
 PASSWORD = 0x1  # the zip flag of a file packed with a password
 OLDEST, NEWEST = 13, 17
 LANGUAGE = "en_US"

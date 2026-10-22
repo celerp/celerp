@@ -33,7 +33,9 @@ from celerp.importers.adapters.exports.book import (
     PARTY_SIGN, ZERO, Account, Book, Contact, DocLine, Document, GLJournal, GLLine, Item, LineTax, StockHolding,
     TaxCode,
 )
-from celerp.importers.adapters.odoo.dump import DOCUMENT_BYTES, DOCUMENT_LINE_BYTES, Backup, Row
+from celerp.importers.adapters.odoo.dump import (
+    DOCUMENT_BYTES, DOCUMENT_LINE_BYTES, HOLDING_BYTES, MONTH_ACCOUNT_BYTES, STOCK_MOVE_BYTES, Backup, Row,
+)
 from celerp.services.money import allocate_pro_rata, round_money
 from ui.i18n import t
 
@@ -105,15 +107,22 @@ TARGET_MODELS = frozenset({"account.move", "account.payment", "res.partner", "pr
 # The field holding a record's full-size picture; Odoo keeps smaller copies of it under other fields.
 MAIN_IMAGES = frozenset({"image_1920", "image_variant_1920"})
 
-TABLES = (
-    "res_company", "res_currency", "res_partner", "account_account", "account_account_type", "ir_model_data",
-    "account_tax", "account_tax_repartition_line", "account_move", "account_move_line",
-    "account_move_line_account_tax_rel", "account_partial_reconcile", "account_payment", "product_product",
-    "product_template", "stock_location", "stock_move", "stock_move_line", "stock_quant", "stock_valuation_layer", "ir_attachment",
-    "uom_uom",
-    "account_analytic_account", "account_analytic_plan", "account_analytic_tag",
-    "account_analytic_tag_account_move_line_rel",
-)
+# The tables read, by what they hold; the lot table is read too, by its name in the backup's
+# version (Backup.lot_table), with the stock.
+FAMILIES = {
+    "company": ("res_company", "res_currency"),
+    "chart": ("account_account", "account_account_type", "ir_model_data"),
+    "contacts": ("res_partner",),
+    "items": ("product_product", "product_template", "uom_uom"),
+    "taxes": ("account_tax", "account_tax_repartition_line"),
+    "journals": ("account_move", "account_move_line", "account_move_line_account_tax_rel"),
+    "payments": ("account_partial_reconcile", "account_payment"),
+    "analytics": ("account_analytic_account", "account_analytic_plan", "account_analytic_tag",
+                  "account_analytic_tag_account_move_line_rel"),
+    "stock": ("stock_location", "stock_move", "stock_move_line", "stock_quant", "stock_valuation_layer"),
+    "attachments": ("ir_attachment",),
+}
+TABLES = tuple(table for tables in FAMILIES.values() for table in tables)
 # The columns this reader uses, in any of the versions it reads; the dump's other columns are not kept.
 COLUMNS = frozenset({
     "account_analytic_tag_id", "account_id", "account_move_line_id", "account_tax_id", "analytic_account_id",
@@ -388,19 +397,29 @@ class _Reader:
         for r in self.rows.get("account_analytic_tag_account_move_line_rel", []):
             if r["account_analytic_tag_id"] in tags:
                 tagged[r["account_move_line_id"]].append(tags[r["account_analytic_tag_id"]])
+        # Lines analysed alike share one tracking, so what it holds is built once, not per line.
+        spreads: dict[tuple[str | None, str | None, tuple[str, ...]], dict[str, str]] = {}
         for r in self.rows.get("account_move_line", []):
-            options: dict[str, list[str]] = defaultdict(list)
-            for keys, percent in json.loads(r.get("analytic_distribution") or "{}").items():
-                share = format(Decimal(str(percent)).normalize(), "f")
-                for i in (k for k in keys.split(",") if k in accounts):
-                    name = self.text(accounts[i]["name"])
-                    plan = plans.get(accounts[i].get("plan_id") or "", ANALYTIC_ACCOUNT)
-                    options[plan].append(name if Decimal(share) == 100 else f"{name} {share}%")
-            if r.get("analytic_account_id") in accounts:
-                options[ANALYTIC_ACCOUNT].append(self.text(accounts[r["analytic_account_id"]]["name"]))
-            options[ANALYTIC_TAG] += tagged.get(r["id"], [])
-            if found := {k: ", ".join(v) for k, v in options.items() if v}:
+            spread = (r.get("analytic_distribution"), r.get("analytic_account_id"), tuple(tagged.get(r["id"], ())))
+            if spread not in spreads:
+                spreads[spread] = self._spread(*spread, accounts, plans)
+            if found := spreads[spread]:
                 self.analytic[r["id"]] = found
+
+    def _spread(self, distribution: str | None, account: str | None, tags: tuple[str, ...],
+                accounts: dict[str, Row], plans: dict[str, str]) -> dict[str, str]:
+        """Tracking category -> option of a line's analytic distribution, account and tags."""
+        options: dict[str, list[str]] = defaultdict(list)
+        for keys, percent in json.loads(distribution or "{}").items():
+            share = format(Decimal(str(percent)).normalize(), "f")
+            for i in (k for k in keys.split(",") if k in accounts):
+                name = self.text(accounts[i]["name"])
+                plan = plans.get(accounts[i].get("plan_id") or "", ANALYTIC_ACCOUNT)
+                options[plan].append(name if Decimal(share) == 100 else f"{name} {share}%")
+        if account in accounts:
+            options[ANALYTIC_ACCOUNT].append(self.text(accounts[account]["name"]))
+        options[ANALYTIC_TAG] += tags
+        return {k: ", ".join(v) for k, v in options.items() if v}
 
     def _tracking(self, row: Row) -> dict[str, str]:
         """A carried line's tracking; its categories are counted in the coverage report."""
@@ -671,6 +690,7 @@ class _Reader:
         on = steps.month_end(book.journals[0].date)
         last = steps.month_end(book.journals[-1].date)
         while on <= last:
+            self.backup.hold(MONTH_ACCOUNT_BYTES * len(book.accounts))
             for j in months.get(on, []):
                 for ln in j.lines:
                     running[ln.account] += ln.amount
@@ -713,7 +733,9 @@ class _Reader:
             if location == internal[0] and lot is None:
                 return code
             key = code + (f"#{lots[lot]}" if lot else "") + ("" if location == internal[0] else f"@{names[location]}")
-            book.holdings.setdefault(key, StockHolding(key, code, names[location], lots[lot] if lot else None))
+            if key not in book.holdings:
+                self.backup.hold(HOLDING_BYTES)
+                book.holdings[key] = StockHolding(key, code, names[location], lots[lot] if lot else None)
             if lot:
                 stocked.add(lot)
             return key
@@ -737,6 +759,7 @@ class _Reader:
 
         def add(record: str, key: str, source_type: str, ref: str, on: date, target: str, quantity: Decimal,
                 value: Decimal | None) -> None:
+            self.backup.hold(STOCK_MOVE_BYTES)
             held[target][0] += quantity
             held[target][1] += value or ZERO
             moves.append(StockMove(key, source_type, ref, on, target, quantity, value, record))

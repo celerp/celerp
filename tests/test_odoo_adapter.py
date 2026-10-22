@@ -669,23 +669,56 @@ def test_a_large_book_kept_in_thai_reads_with_room_to_spare(tmp_path, monkeypatc
     assert len(read.journals[-1].lines) == 20_000
 
 
-def _shaped(path, monkeypatch, shape: str, lines: int):
-    """The fixture's backup with about `lines` journal items more, in one of the shapes a book
-    can take: one entry of items each with its own label and amount ("ordinary"), the same in
-    Thai, one entry of items sharing every value but their id ("shared"), or one-line invoices
-    of three items each ("invoices"), invoices of a hundred untaxed lines ("long") or of ten
-    lines with two taxes each ("wide"), or entries of two items ("entries")."""
+# The shapes a book can take, by the family of tables each fills (book.FAMILIES): every family
+# has at least one, so what the read builds from any table is measured against what it is charged.
+SHAPES = {
+    "company": ("companies",),
+    "chart": ("accounts",),
+    "contacts": ("contacts",),
+    "items": ("items",),
+    "taxes": ("taxes", "taxed"),
+    "journals": ("ordinary", "shared", "thai", "entries", "invoices", "long", "wide", "span"),
+    "payments": ("paid",),
+    "analytics": ("analytic",),
+    "stock": ("receipts", "lots", "transfers", "quants", "revalued", "layers", "fan"),
+    "attachments": ("files",),
+}
+
+
+def _shaped(path, monkeypatch, shape: str, n: int):
+    """The fixture's backup grown by `n` rows in one of the SHAPES. Journals, in about `n`
+    journal items: one entry of items each with its own label and amount ("ordinary"), the same
+    in Thai, one entry of items sharing every value but their id ("shared"), entries of two items
+    ("entries"), one-line invoices ("invoices"), invoices of a hundred untaxed lines ("long") or
+    of ten lines with two taxes each ("wide"), or two entries `n` months apart ("span"). The
+    others add `n` of their rows: invoices each paid by its own payment ("paid"), items each
+    spread over the same fifty analytic accounts ("analytic"), companies, accounts, contacts, items, taxes, one
+    invoice of a line for each of the taxes ("taxed"), files kept in the database, and
+    stock: receipts of one product, receipts each of its own lot ("lots"), each then moved to
+    another location ("transfers"), lots held only by a count ("quants"), products each received
+    and revalued ("revalued"), revaluations of one product ("layers"), or `n` lots of one
+    product each revalued, every revaluation spread over every lot ("fan")."""
     invoiced = {"invoices": (1, build.SALE_TAX), "long": (100, None), "wide": (10, (build.SALE_TAX, build.PROVINCIAL_TAX))}
+    bulk, lines = build._bulk, 0
     if shape in invoiced:
         count, taxes = invoiced[shape]
         items = count + len(taxes if isinstance(taxes, tuple) else [taxes] if taxes else []) + 1
         bulk = lambda n: [build._invoice(1000 + k, f"INV/2025/{k:07d}", "out_invoice", "2024-04-01", 9,  # noqa: E731
                                          [(build.CONSULTING if i % 2 else build.WIDGET, i + 1, D(100 + i), taxes)
                                           for i in range(count)]) for k in range(n // items)]
+    elif shape in ("taxes", "taxed"):
+        monkeypatch.setattr(build, "TAXES", build.TAXES + [(6 + k, f"Tax {k}", "sale", D(k % 20 + 1), 6)
+                                                           for k in range(n)])
+        if shape == "taxed":
+            bulk = lambda _: [build._invoice(1000, "INV/2025/0000001", "out_invoice", "2024-04-01", 9,  # noqa: E731
+                                             [(build.CONSULTING, 1, D(100 + k), 6 + k) for k in range(n)])]
     elif shape == "entries":
         bulk = lambda n: [build.Move(30000 + k, f"MISC/2024/{k:07d}", "entry", "posted", "2024-05-01",  # noqa: E731
                                      [build.Line(a, s * D(f"{k % 997 + 1}.00"), name=f"Transfer {k}")
                                       for a, s in ((1, 1), (14, -1))], ref=f"T{k}") for k in range(n // 2)]
+    elif shape == "span":
+        bulk = lambda n: [build._entry(30000 + k, f"MISC/{k}", f"{2024 + (n * k) // 12}-{(n * k) % 12 + 1:02d}-01",  # noqa: E731
+                                       [(1, D(10)), (14, D(-10))]) for k in (0, 1)]
     elif shape == "shared":
         bulk = lambda n: [build.Move(25, "MISC/2024/05/0001", "entry", "posted", "2024-05-01",  # noqa: E731
                                      [build.Line(a, s * D("1.00"), name="Transfer")
@@ -695,11 +728,97 @@ def _shaped(path, monkeypatch, shape: str, lines: int):
                                      [build.Line(a, s * D(f"{k % 9973 + 1}.{k % 100:02d}"),
                                                  name=f"โอนเงินระหว่างบัญชี {k} จาก {n // 2}")
                                       for k in range(n // 2) for a, s in ((1, 1), (14, -1))], ref="โอนเงินจำนวนมาก")]
-    else:
-        bulk = build._bulk
+    elif shape == "paid":
+        bulk = lambda n: [m for k in range(n) for m in (  # noqa: E731
+            build._invoice(100000 + 2 * k, f"INV/2025/{k:07d}", "out_invoice", "2024-04-01", 9,
+                           [(build.CONSULTING, 1, D(100), build.SALE_TAX)]),
+            build._entry(100001 + 2 * k, f"PBNK1/2025/{k:07d}", "2024-04-05", [(2, D(115)), (4, D(-115), None, 9)],
+                         partner=9, payment=("customer", "inbound")))]
+        monkeypatch.setattr(build, "PARTIALS", build.PARTIALS + [(100000 + 2 * k, 100001 + 2 * k, D(115))
+                                                                 for k in range(n)])
+    elif shape == "analytic":
+        spread = [(100 + a, f"Project {a} of the spread", 1) for a in range(50)]
+        monkeypatch.setattr(build, "ANALYTIC_ACCOUNTS", build.ANALYTIC_ACCOUNTS + spread)
+        monkeypatch.setattr(build, "ANALYTIC", {**build.ANALYTIC, **{(25, i): {a: D(2) for a, *_ in spread}
+                                                                     for i in range(n)}})
+    if shape in (*SHAPES["journals"], *SHAPES["payments"], *SHAPES["analytics"]):
+        lines = n
     monkeypatch.setattr(build, "_bulk", bulk)
-    path.write_bytes(build.backup(17, build.tables(17, bulk_lines=lines)))
+    tables = build.tables(17, bulk_lines=lines)
+    _grow(tables, shape, n)
+    path.write_bytes(build.backup(17, tables))
     return path
+
+
+def _grow(tables, shape: str, n: int) -> None:
+    """Adds the rows of a shape outside the journals to the fixture's tables."""
+    def add(table: str, **values) -> None:
+        columns, rows = tables.rows[table]
+        rows.append([values.get(c) for c in columns])
+
+    def name(text: str) -> str:
+        return json.dumps({"en_US": text})
+
+    def receipt(k: int, product: int, lot: int | None = None, qty: str = "1", dest: int = 8, src: int = 1) -> None:
+        on, ref = f"2024-01-11 {k // 3600 % 24:02d}:{k // 60 % 60:02d}:{k % 60:02d}", f"WH/IN/{k:07d}"
+        mid = 1000 + k
+        add("stock_move", id=mid, name=ref, reference=ref, date=on, product_id=product, product_uom_qty=qty,
+            product_qty=qty, location_id=src, location_dest_id=dest, state="done", company_id=1)
+        add("stock_move_line", id=mid, move_id=mid, product_id=product, lot_id=lot, location_id=src,
+            location_dest_id=dest, product_uom_id=build.UNITS, quantity=qty, quantity_product_uom=qty, reference=ref,
+            date=on, state="done", company_id=1)
+        if src == 1:
+            add("stock_valuation_layer", id=mid, company_id=1, product_id=product, stock_move_id=mid, quantity=qty,
+                value=f"{k % 97 + 1}.00", description=ref, create_date=on)
+
+    def revaluation(k: int, product: int) -> None:
+        add("stock_valuation_layer", id=900000 + k, company_id=1, product_id=product, quantity="0",
+            value=f"{k % 97 + 1}.25", description="Product value manually modified",
+            create_date=f"2024-0{k % 8 + 2}-02 09:00:00")
+
+    def lot(k: int) -> int:
+        add("stock_lot", id=5000 + k, name=f"SN-{k:06d}", product_id=build.WIDGET, company_id=1)
+        return 5000 + k
+
+    for k in range(n):
+        if shape == "companies":
+            add("res_company", id=1000 + k, name=f"Branch {k}", partner_id=1, currency_id=build.USD)
+        elif shape == "accounts":
+            add("account_account", id=1000 + k, company_id=1, code=f"7{k:06d}", account_type="income",
+                internal_group="income", name=name(f"Sales {k}"), deprecated="f", reconcile="f")
+        elif shape == "contacts":
+            add("res_partner", id=1000 + k, name=f"Customer {k}", commercial_partner_id=1000 + k, active="t",
+                is_company="t", customer_rank=1, supplier_rank=0, email=f"c{k}@example.com", city="Portsmouth")
+        elif shape == "items":
+            add("product_template", id=1000 + k, categ_id=1, uom_id=build.UNITS, type="consu", detailed_type="consu",
+                name=name(f"Part {k}"), description_sale=name(f"Part {k} for sale"), list_price="5", active="t")
+            add("product_product", id=1000 + k, product_tmpl_id=1000 + k, default_code=f"P{k:07d}", active="t")
+        elif shape == "files":
+            content = f"Note {k}\n".encode() * 20
+            add("ir_attachment", id=1000 + k, res_id=7, company_id=1, file_size=len(content), name=f"note-{k}.txt",
+                res_model="res.partner", type="binary", checksum=build.hashlib.sha1(content).hexdigest(),
+                mimetype="text/plain", db_datas="\\x" + content.hex())
+        elif shape == "receipts":
+            receipt(k, build.WIDGET)
+        elif shape == "lots":
+            receipt(k, build.WIDGET, lot(k))
+        elif shape == "transfers":
+            receipt(k, build.WIDGET, lot(k))
+            receipt(n + k, build.WIDGET, 5000 + k, dest=9, src=8)
+        elif shape == "quants":
+            add("stock_quant", id=1000 + k, product_id=build.WIDGET, company_id=1, location_id=9, lot_id=lot(k),
+                quantity="1", reserved_quantity="0")
+        elif shape == "revalued":
+            add("product_template", id=1000 + k, categ_id=1, uom_id=build.UNITS, type="product",
+                detailed_type="product", name=name(f"Part {k}"), list_price="5", active="t")
+            add("product_product", id=1000 + k, product_tmpl_id=1000 + k, default_code=f"P{k:07d}", active="t")
+            receipt(k, 1000 + k, qty="2")
+            revaluation(k, 1000 + k)
+        elif shape == "layers":
+            revaluation(k, build.WIDGET)
+        elif shape == "fan":
+            receipt(k, build.WIDGET, lot(k))
+            revaluation(k, build.WIDGET)
 
 
 def _read_whole(path):
@@ -713,16 +832,32 @@ def _read_whole(path):
         odoo_adapter._books.cache_clear()
 
 
-@pytest.mark.parametrize("shape", ["ordinary", "shared", "thai", "entries", "invoices", "long", "wide"])
+# Each shape at a size the per-test time limit reads three times over.
+SIZES = {"companies": 8_000, "accounts": 2_000, "contacts": 5_000, "items": 5_000, "taxes": 2_000, "taxed": 1_000,
+         "span": 1_000, "paid": 2_000, "analytic": 10_000, "receipts": 5_000, "lots": 5_000, "transfers": 3_000,
+         "quants": 5_000, "revalued": 2_000, "layers": 5_000, "fan": 150, "files": 2_000}
+
+
+def test_every_family_of_tables_read_has_a_shape():
+    """A table family the reader reads with no shape would go unmeasured against its charge."""
+    from celerp.importers.adapters.odoo import book
+
+    assert SHAPES.keys() == book.FAMILIES.keys()
+    assert all(SHAPES.values())
+
+
+@pytest.mark.parametrize("shape", [shape for shapes in SHAPES.values() for shape in shapes])
 def test_a_book_the_budget_just_admits_reads_within_two_and_a_half_times_it(tmp_path, monkeypatch, shape):
-    """The budget charges what the read builds from each row, document and document line, not
-    only the rows, so a book it just admits reads within two and a half times it whatever its
-    rows are (one-line invoices built seven times what their rows were counted at), and a byte
-    less refuses the book. In miniature: about 30,000 journal items, under the budget they are
-    charged."""
+    """The budget charges what the read builds (from each row, document, document line, stock
+    move, holding and month end), not only the rows, so a book it just admits reads within two
+    and a half times it whatever its tables hold (one-line invoices built seven times what their
+    rows were counted at, a valuation spread over many lots hundreds of times), and a byte less
+    refuses the book. In miniature, under the budget each book is charged."""
     from celerp.importers.adapters.odoo import book, dump
 
-    path = _shaped(tmp_path / f"{shape}.zip", monkeypatch, shape, 30_000)
+    (tmp_path / "warm.zip").write_bytes(_backup(17))
+    _read_whole(tmp_path / "warm.zip")  # what any first read loads once is not this book's
+    path = _shaped(tmp_path / f"{shape}.zip", monkeypatch, shape, SIZES.get(shape, 30_000))
     with dump.Backup(path) as backup:
         book.read_odoo(backup)
         charged = backup.held
@@ -740,17 +875,54 @@ def test_a_book_the_budget_just_admits_reads_within_two_and_a_half_times_it(tmp_
     assert peak < 2.5 * charged, f"read took {peak / charged:.2f}x the budget"
 
 
-def test_reading_four_times_the_invoices_takes_about_four_times_as_long(tmp_path, monkeypatch):
-    """Reading a book takes time in proportion to it: each journal finds the document it books
-    by key, never by looking through every document. Four times the invoices within six times
-    the time (in the square of them it was eleven times at this size)."""
+@pytest.mark.asyncio
+async def test_a_stock_valuation_spread_far_past_its_upload_is_refused_before_it_is_built(client, monkeypatch, tmp_path):
+    """Fifteen hundred lots of one product, each revalued, spread every revaluation over every
+    lot: a 70 KB upload that would build over two million stock moves. The moves are charged as
+    they are built, so the backup is refused as too large, in the user's language, once they
+    reach the budget (here a sixteenth of it), never past it."""
+    from celerp.config import settings
+    from celerp.importers.adapters.odoo import dump
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setattr(dump, "MAX_HELD", dump.MAX_HELD // 16)
+    data = _shaped(tmp_path / "fan.zip", monkeypatch, "fan", 1_500).read_bytes()
+    assert len(data) < 100_000
+    tracemalloc.start()
+    try:
+        r = await scan_upload(client, data, name="fan.zip", source="odoo", headers={"Accept-Language": "th"})
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"] == t("migration.err_odoo_backup_too_large", "th")
+    assert peak < 2.5 * dump.MAX_HELD
+
+
+# Per family, the shape whose read could grow faster than its rows, at the smaller of two sizes.
+TIMED = {"companies": 20_000, "accounts": 4_000, "contacts": 10_000, "items": 10_000, "taxed": 1_000,
+         "invoices": 30_000, "span": 2_000, "paid": 2_000, "analytic": 10_000, "revalued": 3_000,
+         "transfers": 3_000, "files": 4_000}
+
+
+def test_every_family_of_tables_read_is_timed():
+    assert {next(f for f, shapes in SHAPES.items() if shape in shapes) for shape in TIMED} == SHAPES.keys()
+
+
+@pytest.mark.parametrize("shape", TIMED)
+def test_reading_four_times_the_rows_takes_about_four_times_as_long(tmp_path, monkeypatch, shape):
+    """Reading a book takes time in proportion to it, whatever its tables hold: no step looks
+    through every record of a kind for each record (each journal found every document, each
+    revaluation every holding, each line every account). Four times the rows within six times
+    the time (in the square of them it is sixteen)."""
     took = {}
-    for n in (10_000, 40_000):
-        path = _shaped(tmp_path / f"{n}.zip", monkeypatch, "invoices", 3 * n)
+    for n in (TIMED[shape], 4 * TIMED[shape]):
+        path = _shaped(tmp_path / f"{shape}-{n}.zip", monkeypatch, shape, n)
+        monkeypatch.undo()
         began = time.perf_counter()
         _read_whole(path)
         took[n] = time.perf_counter() - began
-    assert took[40_000] < 6 * took[10_000], took
+    assert took[4 * TIMED[shape]] < 6 * took[TIMED[shape]], took
 
 
 @pytest.mark.asyncio
