@@ -208,16 +208,24 @@ def test_every_message_that_says_select_try_again_is_recognised_in_its_own_langu
 
 def test_a_long_notice_is_checked_in_time_proportional_to_its_length(module_catalogs):
     """Every message with its Try again sentence cut, run together: words the pattern starts on
-    again and again, so a pattern that backtracks over the whole notice would hang the page."""
+    again and again, so a pattern that backtracks over the whole notice would hang the page.
+    Four times the text may take about four times as long; backtracking takes 16 or 64 times."""
     import time
-    from ui.i18n import t
+    from ui.i18n import t, try_again_pattern
     en = _catalog("en")
     cut = " ".join(re.sub(r"[Ss]elect Try again", "", _filled(t(k, "en")))
                    for k in en if re.search(r"[Ss]elect Try again", en[k]))
-    notice = cut * 4
-    started = time.perf_counter()
-    assert not _says_try_again("en", notice)
-    assert time.perf_counter() - started < 1
+    pattern = re.compile(try_again_pattern("en"))
+
+    def fastest(notice: str) -> float:
+        times = []
+        for _ in range(3):
+            started = time.perf_counter()
+            assert pattern.search(notice) is None
+            times.append(time.perf_counter() - started)
+        return min(times)
+
+    assert fastest(cut * 4) < 10 * fastest(cut)
 
 
 @pytest.mark.parametrize("lang", ["en", "th", "ja", "de"])
