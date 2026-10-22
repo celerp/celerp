@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 
 from celerp.config import settings
-from celerp.gateway.state import get_session_token, relay_http_url
+from celerp.gateway.state import PAID_TIERS, get_session_token, relay_http_url
 
 # Alias so tests / internal callers import this from here rather than reaching
 # into celerp.gateway.state directly.
@@ -49,7 +49,7 @@ async def get_quota_status() -> dict | None:
     if not isinstance(data, dict):
         return {"unknown": True}
     tier = str(data.get("tier") or "free")
-    if tier in ("cloud", "ai", "team") and not get_session_token():
+    if tier in PAID_TIERS and not get_session_token():
         try:
             await sync_existing_entitlement(require_persisted_key=True)
         except Exception as exc:

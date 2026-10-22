@@ -103,6 +103,8 @@ class _RunTally:
 # -- Error mapping ----------------------------------------------------------
 
 _RELAY_ERROR_KEY = {
+    "no_session": "error.ai_signed_out",
+    "no_account": "error.ai_no_account",
     "unexpected_reply": "ai.err_bad_reply",
     "continuation_expired": "ai.err_step_expired",
     "gateway_error": "ai.err_unavailable",
@@ -121,8 +123,6 @@ def _user_error(exc: BaseException) -> str:
     if isinstance(exc, RelayError):
         if exc.code == "service_unavailable":
             return str(exc)
-        if exc.code == "no_session":
-            return t("error.ai_signed_out")
         if exc.code == "busy":
             return _BUSY_TEXT
         return t(_RELAY_ERROR_KEY[exc.code])
@@ -236,7 +236,7 @@ async def run_query(
     history: list[dict[str, str]] | None = None,
     user_id: uuid.UUID | None = None,
 ) -> AIResponse:
-    """Run a text-only AI completion. Returns AIResponse - never raises except 402.
+    """Run a text-only AI completion. Returns AIResponse - raises only the relay refusals llm.complete raises.
 
     Serves legacy/module callers such as celerp.modules.api.ai_query: company
     memory plus any uploaded files, no ERP tools. The HTTP /ai/query route uses
@@ -326,7 +326,7 @@ async def run_agent(
     history: list[dict],
     read_only: bool = False,
 ) -> AgentResult:
-    """Run the tool-calling agent loop. Returns AgentResult - never raises except 402."""
+    """Run the tool-calling agent loop. Returns AgentResult - raises only the relay refusals llm.complete raises."""
     t0 = time.monotonic()
     tally = _RunTally()
     try:

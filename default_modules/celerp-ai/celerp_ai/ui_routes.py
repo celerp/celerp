@@ -10,6 +10,7 @@ from fasthtml.common import *
 from starlette.requests import Request
 from starlette.responses import RedirectResponse
 
+from celerp.gateway.state import PAID_TIERS
 import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.activity import QTY_FIELD_KEYS, fmt_price, fmt_qty, is_money_field
@@ -98,7 +99,7 @@ def _quota_exceeded_card(detail: dict, user_bubble: FT, lang: str = "en") -> tup
     partner_managed.
     """
     limit = int(detail.get("base_limit", detail.get("limit", 0)) or 0)
-    is_ai_tier = detail.get("tier") in ("cloud", "ai", "team")
+    is_ai_tier = detail.get("tier") in PAID_TIERS
     if is_ai_tier:
         return (
             user_bubble,
@@ -158,7 +159,7 @@ def setup_ui_routes(app) -> None:
                 Div(load_error(t("ai.service_unavailable", lang), lang, href="/ai"), cls="ai-page"),
                 title="AI Assistant - Celerp", nav_active="ai", request=request,
             )
-        has_cloud = not status.get("local") and status.get("tier") in ("cloud", "ai", "team")
+        has_cloud = not status.get("local") and status.get("tier") in PAID_TIERS
         if not has_cloud:
             return await base_shell(
                 _showcase_view(lang=lang),
@@ -665,7 +666,7 @@ def setup_ui_routes(app) -> None:
             # Compute the top-up destination server-side through the commercial
             # policy so the client never builds a direct checkout URL itself.
             if isinstance(result, dict):
-                result = {**result, "topup_url": topup_url()}
+                result = {**result, "topup_url": topup_url(), "paid": result.get("tier") in PAID_TIERS}
             return JSONResponse(result)
         except Exception:
             return JSONResponse({"unknown": True})
@@ -2133,8 +2134,7 @@ def _showcase_script() -> FT:
   });
 
   function paidEntitlement(data) {
-    return data && !data.local && !data.unknown && !data.disconnected &&
-      ['cloud', 'ai', 'team'].indexOf(data.tier) >= 0;
+    return data && data.paid === true;
   }
 
   function retryEntitlement(attempts) {

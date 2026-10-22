@@ -198,25 +198,68 @@ async def test_plain_503_remains_busy(relay):
     assert (ei.value.code, ei.value.status) == ("busy", 503)
 
 
+@pytest.mark.parametrize("case", ["connected", "no_key", "disconnected"])
+@pytest.mark.asyncio
+async def test_complete_without_session_header(monkeypatch, case):
+    """With no Connect session the call uses the install Bearer, or names why it cannot."""
+    from unittest.mock import AsyncMock, patch
+    from celerp.config import settings
+    monkeypatch.setattr(llm_mod, "relay_session_headers", lambda: {"X-Session-Token": "", "X-Instance-ID": ""})
+    monkeypatch.setattr(settings, "cloud_disconnected", case == "disconnected")
+    reply = httpx.Response(200, json={"message": {"role": "assistant", "content": "hi"},
+                                      "model_used": "m", "usage": {}, "remaining": 29})
+    bearer = AsyncMock(return_value=None if case == "no_key" else reply)
+    with patch("celerp.services.cloud_entitlement.authenticated_request", new=bearer):
+        if case == "connected":
+            result = await complete([{"role": "user", "content": "x"}], timeout=12.0)
+            assert result.remaining == 29
+            bearer.assert_awaited_once()
+            args, kwargs = bearer.await_args
+            assert args == ("POST", "/ai/complete")
+            assert kwargs["json"]["messages"] == [{"role": "user", "content": "x"}]
+            assert kwargs["total_s"] == 12.0
+            return
+        with pytest.raises(RelayError) as ei:
+            await complete([{"role": "user", "content": "x"}])
+    if case == "no_key":
+        assert ei.value.code == "no_account"
+        bearer.assert_awaited_once()
+    else:
+        assert ei.value.code == "no_session"
+        bearer.assert_not_awaited()
+
+
+_FILES_402 = ("This plan allows 1 file per question. Remove the extra files, "
+              "or choose Connect + AI to attach more.")
+
+
+@pytest.mark.parametrize("status,body,expected", [
+    (402, {"detail": "AI is not available on this plan"},
+     {"code": "not_available", "message": "AI is not available on this plan"}),
+    (402, {"detail": _FILES_402}, {"code": "plan_limit", "message": _FILES_402}),
+    (413, {"detail": {"code": "free_text_too_large", "message": "too long"}},
+     {"code": "free_text_too_large", "message": "too long"}),
+    (503, {"detail": {"code": "free_paused", "message": "paused",
+                      "resets_at": "2026-11-01T00:00:00+00:00"}},
+     {"code": "free_paused", "message": "paused", "resets_at": "2026-11-01T00:00:00+00:00"}),
+])
 @pytest.mark.asyncio
 @respx.mock
-async def test_plain_402_keeps_quota_code(relay):
-    respx.post(f"{_RELAY}/ai/complete").mock(
-        return_value=httpx.Response(402, json={"detail": "AI is not available on this plan"}))
+async def test_complete_maps_free_codes(relay, status, body, expected):
+    respx.post(f"{_RELAY}/ai/complete").mock(return_value=httpx.Response(status, json=body))
     with pytest.raises(HTTPException) as ei:
         await complete([{"role": "user", "content": "x"}])
-    assert ei.value.detail == {
-        "code": "quota_exceeded",
-        "message": "AI is not available on this plan",
-    }
+    assert ei.value.status_code == status
+    assert ei.value.detail == expected
 
 
 @pytest.mark.asyncio
-async def test_complete_no_session(monkeypatch):
-    monkeypatch.setattr(llm_mod, "relay_session_headers", lambda: {"X-Session-Token": "", "X-Instance-ID": ""})
-    with pytest.raises(RelayError) as ei:
-        await complete([{"role": "user", "content": "x"}])
-    assert ei.value.code == "no_session"
+@respx.mock
+async def test_complete_remaining_null_stays_unknown(relay):
+    respx.post(f"{_RELAY}/ai/complete").mock(return_value=httpx.Response(
+        200, json={"message": {"role": "assistant", "content": "hi"}, "remaining": None}))
+    result = await complete([{"role": "user", "content": "x"}])
+    assert result.remaining is None
 
 
 @pytest.mark.asyncio
@@ -256,7 +299,9 @@ async def test_call_llm_quota_exceeded_raises_402(relay):
 
 @pytest.mark.asyncio
 async def test_call_llm_no_session(monkeypatch):
+    from celerp.config import settings
     monkeypatch.setattr(llm_mod, "relay_session_headers", lambda: {"X-Session-Token": ""})
+    monkeypatch.setattr(settings, "cloud_disconnected", True)
     with pytest.raises(RelayError) as ei:
         await call_llm("m", "s", "u")
     assert ei.value.code == "no_session"

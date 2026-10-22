@@ -4036,11 +4036,6 @@ def _tos_acceptance_card(required_version: str) -> FT:
     )
 
 
-# Billing tiers above free. Unknown entitlement is represented separately and
-# must never be rendered as an authoritative Free account.
-PAID_TIERS = frozenset({"cloud", "ai", "team"})
-
-
 def _cloud_relay_tab(relay_status: str | None = None, public_url: str | None = None,
                       tier: str | None = None, token_bound: bool = False,
                       entitlement_known: bool = False,

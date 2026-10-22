@@ -809,6 +809,7 @@
   "error.connector_sync_error": "{service} didn't answer as expected: {detail}. Try again in a few minutes; if it keeps happening, disconnect {service} in Web Access and connect it again.",
   "error.cloud_backup_disconnected": "Cloud backup is off because Celerp Connect is disconnected. Connect again in Web Access to back up online.",
   "error.cloud_backup_no_account": "Cloud backup needs a Celerp Connect account. Sign in in Web Access, then try again.",
+  "error.ai_no_account": "Celerp AI needs a Celerp account. The person who installed Celerp can create a free one on the AI page.",
   "error.ai_signed_out": "Celerp AI isn't available because you aren't signed in to Celerp Connect. Sign in in Web Access, then ask again.",
   "error.store_unchecked": "Celerp couldn't reach {store} to check that this company's {service} records came from it. Check your internet connection and try again.",
   "error.connector_nothing_to_reset": "{service} has no leftover connection to reset. Nothing needs doing.",

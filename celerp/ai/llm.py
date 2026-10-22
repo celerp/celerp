@@ -17,6 +17,7 @@ import os
 from dataclasses import dataclass
 
 import httpx
+from fastapi import HTTPException
 
 from celerp.ai.files import XLSX_CONTENT_TYPE
 from celerp.gateway.state import relay_http_url, relay_session_headers
@@ -35,7 +36,8 @@ MODEL_CALL_TIMEOUT_S = 90.0
 class RelayError(RuntimeError):
     """A gateway call failed. ``code`` names the failure for the caller.
 
-    Codes: ``no_session`` (no active cloud session), ``unexpected_reply`` (a
+    Codes: ``no_session`` (signed out of Celerp Connect), ``no_account`` (no
+    Celerp account key on this install), ``unexpected_reply`` (a
     200 without a structured assistant message), ``continuation_expired``
     (the relay dropped the reservation), ``service_unavailable`` (a Celerp-owned
     upstream/service failure), ``busy`` (429 or an unstructured 503), and
@@ -55,6 +57,13 @@ class ModelResult:
     usage: dict
     reservation_id: str | None
     remaining: int | None
+
+
+# Relay refusals the caller shows as their own states, raised like a 402 with
+# the relay's detail: 402 codes ``quota_exceeded``, ``not_available`` and
+# ``plan_limit``, plus these free-account refusals.
+_NOT_AVAILABLE = "AI is not available on this plan"
+_FREE_REFUSALS = {(413, "free_text_too_large"), (503, "free_paused")}
 
 
 def _error_detail(resp: httpx.Response) -> dict:
@@ -132,11 +141,13 @@ async def complete(
 ) -> ModelResult:
     """Run a structured completion through the gateway.
 
-    Posts to {relay}/ai/complete with the session headers. tools, tool_choice
-    and reservation_id are sent only when not None.
+    Posts to {relay}/ai/complete with the session headers, or with the
+    install's account key when there is no Connect session. tools,
+    tool_choice and reservation_id are sent only when not None.
 
-    Raises HTTPException(402) when the plan's quota is exhausted and
-    RelayError for every other gateway failure (see RelayError.code).
+    Raises HTTPException carrying the relay's detail when the relay refuses
+    the question (402, and the free-account 413 and 503, see _FREE_REFUSALS)
+    and RelayError for every other gateway failure (see RelayError.code).
     httpx.TimeoutException propagates when the gateway does not answer in
     ``timeout`` seconds.
     """
@@ -151,14 +162,20 @@ async def complete(
         body["reservation_id"] = reservation_id
 
     headers = relay_session_headers()
-    if not headers.get("X-Session-Token"):
-        raise RelayError("no_session", "The AI service is not available - no active cloud session.")
-
-    url = f"{relay_http_url()}/ai/complete"
-
-    async with _semaphore:
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.post(url, headers=headers, json=body)
+    if headers.get("X-Session-Token"):
+        async with _semaphore:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                resp = await client.post(f"{relay_http_url()}/ai/complete", headers=headers, json=body)
+    else:
+        # No Connect session: a free account asks with the install's own key.
+        from celerp.config import settings
+        if settings.cloud_disconnected:
+            raise RelayError("no_session", "The AI service is not available - signed out of Celerp Connect.")
+        from celerp.services.cloud_entitlement import authenticated_request
+        async with _semaphore:
+            resp = await authenticated_request("POST", "/ai/complete", json=body, total_s=timeout)
+        if resp is None:
+            raise RelayError("no_account", "The AI service is not available - no Celerp account.")
 
     if resp.status_code == 200:
         data = resp.json()
@@ -176,10 +193,15 @@ async def complete(
     detail = _error_detail(resp)
 
     if resp.status_code == 402:
-        from fastapi import HTTPException
         if "code" not in detail:
-            detail = {"code": "quota_exceeded", **detail}
+            # The relay's plain-text 402s: AI is off for the plan, or the
+            # question breaks a plan limit (its text says which).
+            code = "not_available" if detail.get("message") == _NOT_AVAILABLE else "plan_limit"
+            detail = {"code": code, **detail}
         raise HTTPException(status_code=402, detail=detail)
+
+    if (resp.status_code, detail.get("code")) in _FREE_REFUSALS:
+        raise HTTPException(status_code=resp.status_code, detail=detail)
 
     if resp.status_code == 503 and detail.get("code") == "service_unavailable":
         raise RelayError(

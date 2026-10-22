@@ -54,6 +54,7 @@ from celerp.models.ai import AIBatchJob
 from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
 from celerp.services.company_lock import hold_company
 from celerp.services.permissions import get_current_company_settings, require_permission
+from celerp.session_gate import require_ai_access
 from ui.i18n import t
 
 # AI-specific rate limiter: tighter than the global 60/min default.
@@ -61,14 +62,8 @@ from ui.i18n import t
 _limiter = Limiter(key_func=get_remote_address)
 
 
-async def _require_session(request: Request) -> None:
-    """Refuse AI routes while this installation has no active Connect session."""
-    from celerp.session_gate import require_session_token
-    await require_session_token(request)
-
-
 router = APIRouter(
-    dependencies=[Depends(get_current_user), Depends(_require_session), require_permission("use_ai_assistant")],
+    dependencies=[Depends(get_current_user), Depends(require_ai_access), require_permission("use_ai_assistant")],
 )
 
 # Settings endpoints are authenticated separately from AI execution routes.
@@ -331,13 +326,16 @@ async def set_ai_memory_kv(
 async def quota_status() -> dict:
     """Return current AI quota usage for the UI badge.
 
-    Returns used/limit/topup/remaining/tier. Never raises - returns
-    empty dict if gateway not configured (local install).
+    Returns used/limit/topup/remaining/tier. Never raises: ``{"local": True}``
+    when the install has no account, and the ``disconnected`` / ``unknown``
+    sentinels unchanged so the page can show those states.
     """
     from celerp.ai.quota import get_quota_status
     status = await get_quota_status()
     if not status:
         return {"local": True}
+    if status.get("disconnected") or status.get("unknown"):
+        return status
     used = int(status.get("used", 0) or 0)
     legacy_limit = int(status.get("limit", 0) or 0)
     legacy_topup = int(status.get("topup_credits", 0) or 0)
