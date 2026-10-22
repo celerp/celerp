@@ -177,12 +177,13 @@ TAX_REGIMES: dict[str, _T] = {
     "IN": {
         "currency": "INR",
         "taxes": [
-            {"name": "CGST 9%", "rate": 9.0, "tax_type": "both", "is_default": True,
+            {"name": "CGST 9%", "rate": 9.0, "tax_type": "both", "is_default": False,
              "description": "India central GST (standard rate split)", "is_compound": False, "default_order": 0},
-            {"name": "SGST 9%", "rate": 9.0, "tax_type": "both", "is_default": True,
+            {"name": "SGST 9%", "rate": 9.0, "tax_type": "both", "is_default": False,
              "description": "India state GST (standard rate split)", "is_compound": False, "default_order": 0},
-            {"name": "IGST 18%", "rate": 18.0, "tax_type": "both", "is_default": False,
-             "description": "India integrated GST (interstate)", "is_compound": False, "default_order": 0},
+            {"name": "IGST 18%", "rate": 18.0, "tax_type": "both", "is_default": True,
+             "description": "Integrated GST on sales between states. Within a state, 18% is charged as "
+                            "CGST 9% plus SGST 9%", "is_compound": False, "default_order": 0},
             {"name": "GST 5%", "rate": 5.0, "tax_type": "both", "is_default": False,
              "description": "India reduced GST rate", "is_compound": False, "default_order": 0},
             {"name": "Exempt", "rate": 0.0, "tax_type": "both", "is_default": False,
