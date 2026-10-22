@@ -52,7 +52,8 @@ def _gate(get_company):
 async def _get(client, role: str, get_company):
     a, b, c = _gate(get_company)
     with a, b, c:
-        return await client.get("/fake-page", cookies={"celerp_token": make_test_token(role=role)})
+        client.cookies.update({"celerp_token": make_test_token(role=role)})
+        return await client.get("/fake-page")
 
 
 @pytest.mark.asyncio
@@ -123,11 +124,12 @@ async def test_htmx_request_to_a_module_that_is_off_navigates_to_its_refusal_pag
     lands on: the page saying the module is turned off."""
     a, b, c = _gate(AsyncMock(return_value=_off("admin")))
     cookies = {"celerp_token": make_test_token(role="admin")}
+    ui_client.cookies.update(cookies)
     with a, b, c:
-        r = await ui_client.request(method, "/fake-page?tab=2", cookies=cookies, headers={"HX-Request": "true"})
+        r = await ui_client.request(method, "/fake-page?tab=2", headers={"HX-Request": "true"})
         assert r.status_code == 200
         assert r.headers["HX-Redirect"] == "/fake-page?tab=2"
-        full = await ui_client.get(r.headers["HX-Redirect"], cookies=cookies)
+        full = await ui_client.get(r.headers["HX-Redirect"])
     assert full.status_code == 403
     assert "turned off" in full.text
 

@@ -26,8 +26,6 @@ from migration_support import auth, count, maker, real_client, real_engine  # no
 from ui.i18n import t
 from test_helpers import merge_items
 
-pytestmark = pytest.mark.asyncio
-
 REPO = Path(__file__).resolve().parents[1]
 PRODUCTION_ROOTS = ("celerp", "ui", "default_modules")
 SESSION_TOKEN = "test-session-token-channel-links"

@@ -807,9 +807,9 @@ async def test_import_malformed_csv_shows_error(client):
     ) as c:
         # More columns than header → DictReader emits None key for overflow columns
         malformed = b"name,sell_by\nfoo,piece,extra_unexpected_col\n"
+        c.cookies.update({"celerp_token": make_test_token(role="manager")})
         r = await c.post(
             "/inventory/import/preview",
-            cookies={"celerp_token": make_test_token(role="manager")},
             files={"csv_file": ("items.csv", malformed, "text/csv")},
         )
     assert r.status_code == 200
@@ -840,14 +840,13 @@ async def test_import_blank_leading_lines_find_or_ask_for_the_header(client, tmp
             base_url="http://ui",
             follow_redirects=False,
         ) as c:
+            c.cookies.update({"celerp_token": make_test_token(role="manager")})
             found = await c.post(
                 "/inventory/import/preview",
-                cookies={"celerp_token": make_test_token(role="manager")},
                 files={"csv_file": ("items.csv", b"\n\nname,sell_by\ntest,piece\n", "text/csv")},
             )
             unclear = await c.post(
                 "/inventory/import/preview",
-                cookies={"celerp_token": make_test_token(role="manager")},
                 files={"csv_file": ("items.csv", b"\n\nalpha,beta\n1,2\n", "text/csv")},
             )
     assert found.status_code == 200 and unclear.status_code == 200

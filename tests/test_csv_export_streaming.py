@@ -121,3 +121,44 @@ async def test_backend_exports_use_one_streamed_statement():
     response = await routes.export_lists_csv(filters=routes.ListIndexFilters(), cols=None, company_id="00000000-0000-0000-0000-000000000001", session=s)
     _ = [chunk async for chunk in response.body_iterator]
     assert s.stream_calls == 1 and s.execute_calls == 0 and s.results[0].closed
+
+
+class _Upstream(httpx.AsyncByteStream):
+    """An export body that records whether it was closed."""
+
+    def __init__(self):
+        self.closed = False
+
+    async def __aiter__(self):
+        yield b"col_a,col_b\n"
+
+    async def aclose(self):
+        self.closed = True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("spec_version", ["2.3", "2.4"])
+async def test_leaving_before_the_first_chunk_closes_the_export_upstream(monkeypatch, spec_version):
+    """The browser leaves before any of the export reaches it: the response the export
+    opened to the API is still closed, so it does not hold one of the two bulk slots."""
+    from starlette.requests import ClientDisconnect
+
+    from ui.streaming import ClosingStreamingResponse
+
+    upstream = _Upstream()
+    monkeypatch.setattr(api, "_get_bulk_transport", lambda: httpx.MockTransport(
+        lambda request: httpx.Response(200, headers={"content-type": "text/csv"}, stream=upstream)))
+    stream, _headers = await api.export_docs_csv("tok", {})
+
+    async def receive():
+        return {"type": "http.disconnect"}
+
+    async def send(message):
+        raise OSError("the browser left")
+
+    scope = {"type": "http", "asgi": {"version": "3.0", "spec_version": spec_version}}
+    try:
+        await ClosingStreamingResponse(stream, media_type="text/csv")(scope, receive, send)
+    except (ClientDisconnect, OSError):
+        pass
+    assert upstream.closed

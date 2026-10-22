@@ -820,9 +820,9 @@ async def test_save_doc_lines_surfaces_permission_error(client, session):
     with patch("ui.api_client._client", _bridged_client):
         async with AsyncClient(transport=ASGITransport(app=ui_app),
                                base_url="http://ui", follow_redirects=False) as ui_c:
+            ui_c.cookies.update({"celerp_token": operator_token})
             r = await ui_c.post(
                 f"/docs/{doc_id}/lines",
-                cookies={"celerp_token": operator_token},
                 json={"line_items": [{"sku": "SKU-PERM", "item_id": ctx["item_id"],
                                       "quantity": 2, "unit_price": 75.0}],
                       "subtotal": 150.0, "tax": 0, "total": 150.0},
@@ -950,8 +950,8 @@ async def _render_users_tab(ui, role: str, settings: dict) -> str:
     with ExitStack() as stack:
         for p in _settings_patches(settings):
             stack.enter_context(p)
-        r = await ui.get("/settings/general", params={"tab": "users"},
-                         cookies=authed_cookies(role=role))
+        ui.cookies.update(authed_cookies(role=role))
+        r = await ui.get("/settings/general", params={"tab": "users"})
     assert r.status_code == 200, r.text
     return r.text
 
@@ -1026,9 +1026,9 @@ async def test_matrix_row_swap_reflects_single_cell(client, session):
     with patch("ui.api_client._client", _bridged_client):
         async with AsyncClient(transport=ASGITransport(app=ui_app),
                                base_url="http://ui", follow_redirects=False) as ui_c:
+            ui_c.cookies.update({"celerp_token": owner_token})
             r = await ui_c.patch(
                 "/settings/roles/set_inventory_prices/operator",
-                cookies={"celerp_token": owner_token},
                 data={"granted": "true"},
             )
     assert r.status_code == 200, r.text
@@ -1075,7 +1075,8 @@ async def _render_dashboard(ui, role: str, settings: dict, vertical: str) -> byt
     with ExitStack() as stack:
         for p in _dashboard_patches(settings, vertical):
             stack.enter_context(p)
-        r = await ui.get("/dashboard", cookies=authed_cookies(role=role))
+        ui.cookies.update(authed_cookies(role=role))
+        r = await ui.get("/dashboard")
     assert r.status_code == 200
     return r.content
 
@@ -1373,8 +1374,9 @@ async def test_payments_page_requires_permission(ui):
     from test_helpers import assert_not_permitted_redirect, make_test_token
 
     company = {"currency": "THB", "settings": {}}
+    ui.cookies.update({"celerp_token": make_test_token(role="operator")})
     with patch("ui.api_client.get_company", AsyncMock(return_value=company)):
-        r = await ui.get("/payments", cookies={"celerp_token": make_test_token(role="operator")})
+        r = await ui.get("/payments")
     assert_not_permitted_redirect(r)
 
 
@@ -1404,8 +1406,9 @@ async def test_raised_view_inventory_redirects_viewer(ui):
     ]
     for p in patches:
         p.start()
+    ui.cookies.update({"celerp_token": make_test_token(role="viewer")})
     try:
-        r = await ui.get("/inventory", cookies={"celerp_token": make_test_token(role="viewer")})
+        r = await ui.get("/inventory")
     finally:
         for p in patches:
             p.stop()
@@ -1422,7 +1425,8 @@ async def _assert_page_redirects_when_revoked(ui, path: str, perm_key: str):
     company = {"currency": "THB",
                "settings": {"role_grants": {perm_key: _roles_from("operator")}}}
     with patch("ui.api_client.get_company", AsyncMock(return_value=company)):
-        r = await ui.get(path, cookies={"celerp_token": make_test_token(role="viewer")})
+        ui.cookies.update({"celerp_token": make_test_token(role="viewer")})
+        r = await ui.get(path)
     assert_not_permitted_redirect(r)
 
 

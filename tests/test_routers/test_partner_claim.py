@@ -579,9 +579,9 @@ async def test_partner_claim_decline_binds_nothing():
             transport=ASGITransport(app=ui_app), base_url="http://ui",
             follow_redirects=False,
         ) as c:
+            c.cookies.update({"celerp_token": make_test_token(role="owner")})
             r = await c.post(
-                "/settings/partner-claim/decline",
-                cookies={"celerp_token": make_test_token(role="owner")})
+                "/settings/partner-claim/decline")
         assert r.status_code == 200
         assert mock_api_client.call_count == 0
 
@@ -622,9 +622,9 @@ async def test_partner_claim_hidden_on_partner_managed():
                 transport=ASGITransport(app=ui_app), base_url="http://ui",
                 follow_redirects=False,
             ) as c:
+                c.cookies.update({"celerp_token": make_test_token(role="owner")})
                 r = await c.get(
-                    "/settings/cloud?tab=partner",
-                    cookies={"celerp_token": make_test_token(role="owner")})
+                    "/settings/cloud?tab=partner")
         assert r.status_code == 200
         # The claim-entry control is withheld: no claim-token input renders.
         assert 'name="claim_token"' not in r.text
@@ -676,9 +676,9 @@ async def test_partner_claim_hidden_once_direct_install_is_connected(
             transport=ASGITransport(app=ui_app), base_url="http://ui",
             follow_redirects=False,
         ) as c:
+            c.cookies.update({"celerp_token": make_test_token(role="owner")})
             r = await c.get(
                 "/settings/cloud?tab=partner",
-                cookies={"celerp_token": make_test_token(role="owner")},
             )
     assert r.status_code == 200
     assert 'id="partner-claim-card"' not in r.text
@@ -742,9 +742,9 @@ async def test_unconnected_direct_owner_admin_always_has_subscription_recovery(
             transport=ASGITransport(app=ui_app), base_url="http://ui",
             follow_redirects=False,
         ) as c:
+            c.cookies.update({"celerp_token": make_test_token(role=role)})
             r = await c.get(
                 "/settings/cloud",
-                cookies={"celerp_token": make_test_token(role=role)},
             )
 
     assert r.status_code == 200
@@ -799,9 +799,9 @@ async def test_terminal_gateway_error_always_has_recovery(
             transport=ASGITransport(app=ui_app), base_url="http://ui",
             follow_redirects=False,
         ) as c:
+            c.cookies.update({"celerp_token": make_test_token(role=role)})
             r = await c.get(
                 "/settings/cloud",
-                cookies={"celerp_token": make_test_token(role=role)},
             )
 
     assert r.status_code == 200
@@ -846,9 +846,9 @@ async def test_inactive_known_paid_account_has_reconnect_not_partner_claim(role)
             transport=ASGITransport(app=ui_app), base_url="http://ui",
             follow_redirects=False,
         ) as c:
+            c.cookies.update({"celerp_token": make_test_token(role=role)})
             r = await c.get(
                 "/settings/cloud",
-                cookies={"celerp_token": make_test_token(role=role)},
             )
 
     assert r.status_code == 200
@@ -897,9 +897,9 @@ async def test_lapsed_paid_account_always_has_subscription_recovery_without_part
             transport=ASGITransport(app=ui_app), base_url="http://ui",
             follow_redirects=False,
         ) as c:
+            c.cookies.update({"celerp_token": make_test_token(role=role)})
             r = await c.get(
                 "/settings/cloud",
-                cookies={"celerp_token": make_test_token(role=role)},
             )
 
     assert r.status_code == 200
@@ -955,9 +955,9 @@ async def test_web_access_route_never_strands_unusable_direct_account(
             transport=ASGITransport(app=ui_app), base_url="http://ui",
             follow_redirects=False,
         ) as c:
+            c.cookies.update({"celerp_token": make_test_token(role=role)})
             r = await c.get(
                 "/settings/cloud",
-                cookies={"celerp_token": make_test_token(role=role)},
             )
 
     assert r.status_code == 200, case

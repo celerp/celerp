@@ -62,8 +62,9 @@ class TestSetupRender:
     @pytest.mark.asyncio
     async def test_fresh_setup_selects_only_placeholder(self, ui_client):
         company = {"name": "Co", "settings": {}}
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_company", new=AsyncMock(return_value=company)):
-            r = await ui_client.get("/setup/company", cookies=_authed())
+            r = await ui_client.get("/setup/company")
         select = _vertical_select(r.text)
         assert _selected_values(select) == [""]
         assert _shows_only_placeholder(select)
@@ -72,8 +73,9 @@ class TestSetupRender:
     @pytest.mark.parametrize("stored", ["general", "gemstones"])
     async def test_company_with_a_type_goes_to_the_dashboard(self, ui_client, stored):
         company = {"name": "Co", "vertical": stored, "settings": {"vertical": stored}}
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_company", new=AsyncMock(return_value=company)):
-            r = await ui_client.get("/setup/company", cookies=_authed())
+            r = await ui_client.get("/setup/company")
         assert r.status_code == 302 and r.headers["location"] == "/dashboard"
 
     def test_hidden_presets_not_offered(self):
@@ -104,10 +106,10 @@ class TestSetupSubmit:
         ("saas", "Unknown business type"),
     ])
     async def test_missing_unknown_or_hidden_rejected_before_mutation(self, ui_client, vertical, message):
+        ui_client.cookies.update(_authed())
         with ExitStack() as stack:
             m = self._mocks(stack)
-            r = await ui_client.post("/setup/company", data={**_FULL_FORM, "vertical": vertical},
-                                     cookies=_authed())
+            r = await ui_client.post("/setup/company", data={**_FULL_FORM, "vertical": vertical})
         assert r.status_code == 200
         assert message in r.text
         m["patch_company"].assert_not_awaited()
@@ -115,10 +117,10 @@ class TestSetupSubmit:
 
     @pytest.mark.asyncio
     async def test_invalid_currency_rerender_keeps_business_type_and_clears_currency(self, ui_client):
+        ui_client.cookies.update(_authed())
         with ExitStack() as stack:
             m = self._mocks(stack)
-            r = await ui_client.post("/setup/company", data={**_FULL_FORM, "currency": "XXX"},
-                                     cookies=_authed())
+            r = await ui_client.post("/setup/company", data={**_FULL_FORM, "currency": "XXX"})
         assert r.status_code == 200
         _assert_form_kept(r.text, currency="")  # an unknown code is never shown as chosen
         m["patch_company"].assert_not_awaited()
@@ -126,10 +128,11 @@ class TestSetupSubmit:
     @pytest.mark.asyncio
     async def test_backend_failure_rerender_keeps_submitted_values(self, ui_client):
         stored = {"name": "Co", "currency": "USD", "settings": {"currency": "USD"}}
+        ui_client.cookies.update(_authed())
         with ExitStack() as stack:
             m = self._mocks(stack, patch_company=AsyncMock(side_effect=APIError(500, "save failed")))
             stack.enter_context(patch("ui.api_client.get_company", new=AsyncMock(return_value=stored)))
-            r = await ui_client.post("/setup/company", data=_FULL_FORM, cookies=_authed())
+            r = await ui_client.post("/setup/company", data=_FULL_FORM)
         assert r.status_code == 200
         assert "save failed" in r.text
         _assert_form_kept(r.text)
@@ -137,9 +140,10 @@ class TestSetupSubmit:
 
     @pytest.mark.asyncio
     async def test_business_type_failure_does_not_advance(self, ui_client):
+        ui_client.cookies.update(_authed())
         with ExitStack() as stack:
             m = self._mocks(stack, set_type=AsyncMock(side_effect=APIError(500, "type failed")))
-            r = await ui_client.post("/setup/company", data=_FULL_FORM, cookies=_authed())
+            r = await ui_client.post("/setup/company", data=_FULL_FORM)
         assert r.status_code == 200
         assert "type failed" in r.text
         _assert_form_kept(r.text)
@@ -150,10 +154,11 @@ class TestSetupSubmit:
         import ui.routes.setup as setup_mod
         for gone in ("_set_enabled_modules", "_seed_vertical_categories", "_PRESETS_DIR", "_CATEGORIES_DIR"):
             assert not hasattr(setup_mod, gone), gone
+        ui_client.cookies.update(_authed())
         with ExitStack() as stack:
             m = self._mocks(stack, set_type=AsyncMock(return_value={"restart_required": True}))
             schema = stack.enter_context(patch("ui.api_client.patch_category_schema", new=AsyncMock()))
-            r = await ui_client.post("/setup/company", data=_FULL_FORM, cookies=_authed())
+            r = await ui_client.post("/setup/company", data=_FULL_FORM)
         assert r.headers["location"].endswith("/setup/activating")
         assert m["set_business_type"].await_args.args[1] == "gemstones"
         assert "vertical" not in m["patch_company"].await_args.args[1]
@@ -180,26 +185,29 @@ def _details_patches(stack: ExitStack, role: str, vertical: str | None = "gemsto
 class TestCompanyDetails:
     @pytest.mark.asyncio
     async def test_owner_sees_business_type(self, ui_client):
+        ui_client.cookies.update(_authed("owner"))
         with ExitStack() as stack:
             _details_patches(stack, "owner")
-            r = await ui_client.get("/finance/company-details", cookies=_authed("owner"))
+            r = await ui_client.get("/finance/company-details")
         assert r.status_code == 200, r.text
         assert "/settings/company/vertical/edit" in r.text
         assert "Gems &amp; Jewelry" in r.text or "Gems & Jewelry" in r.text
 
     @pytest.mark.asyncio
     async def test_admin_without_lifecycle_permission_does_not_see_it(self, ui_client):
+        ui_client.cookies.update(_authed("admin"))
         with ExitStack() as stack:
             _details_patches(stack, "admin")
-            r = await ui_client.get("/finance/company-details", cookies=_authed("admin"))
+            r = await ui_client.get("/finance/company-details")
         assert r.status_code == 200, r.text
         assert "/settings/company/vertical/edit" not in r.text
 
     @pytest.mark.asyncio
     async def test_edit_is_searchable_with_esc_cancel(self, ui_client):
+        ui_client.cookies.update(_authed())
         with ExitStack() as stack:
             _details_patches(stack, "owner")
-            r = await ui_client.get("/settings/company/vertical/edit", cookies=_authed())
+            r = await ui_client.get("/settings/company/vertical/edit")
         assert "combobox-input" in r.text
         assert 'data-value="agricultural"' in r.text and 'data-value="saas"' not in r.text
         assert "/settings/company/vertical/display" in r.text
@@ -208,9 +216,10 @@ class TestCompanyDetails:
     async def test_save_calls_business_type_and_confirms(self, ui_client):
         set_type = AsyncMock(return_value={"vertical": "fashion", "restart_required": False})
         patch_company = AsyncMock()
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.set_business_type", new=set_type), \
              patch("ui.api_client.patch_company", new=patch_company):
-            r = await ui_client.patch("/settings/company/vertical", data={"value": "fashion"}, cookies=_authed())
+            r = await ui_client.patch("/settings/company/vertical", data={"value": "fashion"})
         assert r.status_code == 200
         assert set_type.await_args.args[1] == "fashion"
         patch_company.assert_not_awaited()
@@ -221,23 +230,26 @@ class TestCompanyDetails:
     @pytest.mark.asyncio
     async def test_restart_needed_points_to_modules(self, ui_client):
         set_type = AsyncMock(return_value={"vertical": "fashion", "restart_required": True})
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.set_business_type", new=set_type):
-            r = await ui_client.patch("/settings/company/vertical", data={"value": "fashion"}, cookies=_authed())
+            r = await ui_client.patch("/settings/company/vertical", data={"value": "fashion"})
         assert 'href="/modules"' in r.text
         assert '"persist": true' in r.headers["HX-Trigger"]
 
     @pytest.mark.asyncio
     async def test_unknown_value_rejected_without_call(self, ui_client):
         set_type = AsyncMock()
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.set_business_type", new=set_type):
-            r = await ui_client.patch("/settings/company/vertical", data={"value": "saas"}, cookies=_authed())
+            r = await ui_client.patch("/settings/company/vertical", data={"value": "saas"})
         assert "Unknown business type" in r.text
         set_type.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_backend_refusal_shown(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.set_business_type", new=AsyncMock(side_effect=APIError(403, "Forbidden"))):
-            r = await ui_client.patch("/settings/company/vertical", data={"value": "fashion"}, cookies=_authed())
+            r = await ui_client.patch("/settings/company/vertical", data={"value": "fashion"})
         assert "Forbidden" in r.text and "cell-error" in r.text
 
 
@@ -246,6 +258,7 @@ class TestSetupRestart:
     async def test_restart_request_dropping_still_goes_to_activating(self, ui_client):
         """The restart request can fail as the server goes down; setup still moves on
         to the page that waits for the modules."""
+        ui_client.cookies.update(_authed())
         with ExitStack() as stack:
             stack.enter_context(patch("ui.api_client.patch_company", new=AsyncMock(return_value={})))
             stack.enter_context(patch("ui.api_client.set_business_type",
@@ -253,7 +266,7 @@ class TestSetupRestart:
             stack.enter_context(patch("ui.api_client.restart_system",
                                       new=AsyncMock(side_effect=httpx.RemoteProtocolError("server closed"))))
             stack.enter_context(patch("ui.api_client.installation_owner", new=AsyncMock(return_value=True)))
-            r = await ui_client.post("/setup/company", data=_FULL_FORM, cookies=_authed())
+            r = await ui_client.post("/setup/company", data=_FULL_FORM)
         assert r.status_code == 302
         assert r.headers["location"].endswith("/setup/activating")
 
@@ -261,13 +274,14 @@ class TestSetupRestart:
     async def test_setup_by_someone_else_than_the_installation_owner_leaves_the_restart_to_them(
             self, ui_client):
         restart = AsyncMock(return_value={"ok": True})
+        ui_client.cookies.update(_authed())
         with ExitStack() as stack:
             stack.enter_context(patch("ui.api_client.patch_company", new=AsyncMock(return_value={})))
             stack.enter_context(patch("ui.api_client.set_business_type",
                                       new=AsyncMock(return_value={"restart_required": True})))
             stack.enter_context(patch("ui.api_client.restart_system", new=restart))
             stack.enter_context(patch("ui.api_client.installation_owner", new=AsyncMock(return_value=False)))
-            r = await ui_client.post("/setup/company", data=_FULL_FORM, cookies=_authed())
+            r = await ui_client.post("/setup/company", data=_FULL_FORM)
         assert r.status_code == 302
         assert r.headers["location"] == "/dashboard?modules=pending"
         restart.assert_not_awaited()
@@ -294,8 +308,9 @@ class TestCompanyDetailsSummary:
     @pytest.mark.asyncio
     async def test_change_summary_is_shown_until_dismissed(self, ui_client):
         set_type = AsyncMock(return_value={"vertical": "fashion", "restart_required": False, "changes": _CHANGES})
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.set_business_type", new=set_type):
-            r = await ui_client.patch("/settings/company/vertical", data={"value": "fashion"}, cookies=_authed())
+            r = await ui_client.patch("/settings/company/vertical", data={"value": "fashion"})
         toast = _toast(r)
         assert toast["persist"] is True
         lines = toast["message"].split("\n")
@@ -310,8 +325,9 @@ class TestCompanyDetailsSummary:
     async def test_nothing_changed_is_a_plain_confirmation(self, ui_client):
         empty = {k: (type(v)() if isinstance(v, (list, dict)) else 0) for k, v in _CHANGES.items()}
         set_type = AsyncMock(return_value={"vertical": "fashion", "restart_required": False, "changes": empty})
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.set_business_type", new=set_type):
-            r = await ui_client.patch("/settings/company/vertical", data={"value": "fashion"}, cookies=_authed())
+            r = await ui_client.patch("/settings/company/vertical", data={"value": "fashion"})
         toast = _toast(r)
         assert toast["message"] == "Business type saved."
         assert "persist" not in toast
@@ -335,9 +351,10 @@ class TestCompanyDetailsSummary:
 class TestStoredTypeDisplay:
     @pytest.mark.asyncio
     async def test_hidden_stored_type_shows_its_label(self, ui_client):
+        ui_client.cookies.update(_authed("owner"))
         with ExitStack() as stack:
             _details_patches(stack, "owner", vertical="saas")
-            r = await ui_client.get("/finance/company-details", cookies=_authed("owner"))
+            r = await ui_client.get("/finance/company-details")
         assert "SaaS / Software" in r.text
 
     @pytest.mark.asyncio
@@ -350,8 +367,9 @@ class TestStoredTypeDisplay:
 
     @pytest.mark.asyncio
     async def test_editor_opens_with_the_hidden_type_visible(self, ui_client):
+        ui_client.cookies.update(_authed())
         with ExitStack() as stack:
             _details_patches(stack, "owner", vertical="saas")
-            r = await ui_client.get("/settings/company/vertical/edit", cookies=_authed())
+            r = await ui_client.get("/settings/company/vertical/edit")
         text_input = re.search(r'<input[^>]*combobox-input[^>]*>', r.text).group(0)
         assert 'value="SaaS / Software"' in text_input

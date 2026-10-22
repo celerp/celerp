@@ -184,7 +184,8 @@ async def test_list_detail_single_outbound_request(ui_app):
     with _install(backend):
         async with AsyncClient(transport=ASGITransport(app=ui_app),
                                base_url="http://ui", follow_redirects=False) as c:
-            r = await c.get("/lists/list:big", cookies=_cookies())
+            c.cookies.update(_cookies())
+            r = await c.get("/lists/list:big")
 
     assert r.status_code == 200, r.text
 
@@ -213,8 +214,9 @@ async def test_audit_scan_tbody_never_requests_unbounded_list(ui_app):
     with _install(backend):
         async with AsyncClient(transport=ASGITransport(app=ui_app),
                                base_url="http://ui", follow_redirects=False) as c:
+            c.cookies.update(_cookies())
             r = await c.post("/lists/list:big/scan",
-                             data={"barcode": "CODE1"}, cookies=_cookies())
+                             data={"barcode": "CODE1"})
 
     assert r.status_code == 200, r.text
 
@@ -241,8 +243,9 @@ async def test_set_scanned_tbody_never_requests_unbounded_list(ui_app):
     with _install(backend):
         async with AsyncClient(transport=ASGITransport(app=ui_app),
                                base_url="http://ui", follow_redirects=False) as c:
+            c.cookies.update(_cookies())
             r = await c.post("/lists/list:big/set-scanned",
-                             data={"scanned": "1"}, cookies=_cookies())
+                             data={"scanned": "1"})
 
     assert r.status_code == 200, r.text
 

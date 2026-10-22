@@ -15,13 +15,9 @@ import json
 from decimal import Decimal
 from pathlib import Path
 
-import pytest
-
 from fa_fixtures import FA
 from test_runs import _contributed, _managed_from, _run
 from test_sales import _finalize, _sell
-
-pytestmark = pytest.mark.asyncio
 
 D = Decimal
 ZZ_MODULE = "celerp_l10n_zz"

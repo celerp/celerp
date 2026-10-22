@@ -111,8 +111,9 @@ def installs():
     databases = [_database(base, f"int_{name}") for name in INSTALLATIONS]
 
     def spawn(port: int, args: list[str], log: Path, cwd: Path, env: dict) -> None:
-        process = subprocess.Popen([sys.executable, *args], stdout=log.open("wb"),
-                                   stderr=subprocess.STDOUT, cwd=cwd, env=env)
+        with log.open("wb") as out:
+            process = subprocess.Popen([sys.executable, *args], stdout=out,
+                                       stderr=subprocess.STDOUT, cwd=cwd, env=env)
         started.append((port, process, log))
 
     try:

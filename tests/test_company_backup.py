@@ -49,8 +49,6 @@ from company_backup_support import (
 )
 from migration_support import OWNER_EMAIL, auth, code_config, count, maker, real_client, real_engine, rules_bind  # noqa: F401
 
-pytestmark = pytest.mark.asyncio
-
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 _BK_UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
@@ -2630,6 +2628,7 @@ def test_restore_memory_bounded_for_rows_of_empty_containers(tmp_path):
     objects is refused before it is parsed, and the restore row path stays under 32 MB."""
     import tracemalloc
     import zipfile
+    from contextlib import closing
     cb = _bk_cb()
     assert cb.MAX_ROW_BYTES == 8 * 1024 ** 2
     head, tail = b'{"id":1,"state":[', b"{}]}\n"
@@ -2638,11 +2637,11 @@ def test_restore_memory_bounded_for_rows_of_empty_containers(tmp_path):
     path = tmp_path / "amplified.zip"
     with zipfile.ZipFile(path, "w") as zf, zf.open("tables/ledger.jsonl", "w") as fh:
         fh.write(row)
-    with zipfile.ZipFile(path) as zf:
+    with zipfile.ZipFile(path) as zf, closing(cb._lines(zf, "tables/ledger.jsonl")) as lines:
         tracemalloc.start()
         try:
             with pytest.raises(cb.BackupError) as err:
-                for batch in cb._row_batches(cb._lines(zf, "tables/ledger.jsonl"), cb.BATCH_ROWS):
+                for batch in cb._row_batches(lines, cb.BATCH_ROWS):
                     cb._dump_rows(cb.remap(batch, {}))
             _, peak = tracemalloc.get_traced_memory()
         finally:

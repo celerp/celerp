@@ -114,14 +114,14 @@ async def test_cancelling_a_run_that_holds_materials_says_why_in_the_users_langu
     refused = APIError(409, "This run still holds materials or output, so it cannot be cancelled.",
                        {"message": "This run still holds materials or output, so it cannot be cancelled.",
                         "message_key": "mfg.cancel_moved", "params": {}})
+    ui_client.cookies.update({**_authed(), "celerp_lang": "th"})
     with (
         patch("ui.api_client.cancel_mfg_order", new=AsyncMock(side_effect=refused)),
         patch("ui.api_client.get_item", new=AsyncMock(return_value={"id": "item:p", "sku": "P"})),
         patch("ui.api_client.get_company", new=AsyncMock(return_value={"currency": "THB"})),
         patch("ui.api_client.manufacturing_item_hub", new=AsyncMock(return_value={})),
     ):
-        r = await ui_client.post("/api/items/item:p/runs/mfg:1/act", data={"action": "cancel", "idempotency_key": "k"},
-                                 cookies={**_authed(), "celerp_lang": "th"})
+        r = await ui_client.post("/api/items/item:p/runs/mfg:1/act", data={"action": "cancel", "idempotency_key": "k"})
     assert r.status_code == 200, r.text
     assert _TH_CANCEL in r.text
 
@@ -132,14 +132,14 @@ async def test_a_bulk_action_says_why_each_run_was_skipped(ui_client):
         {"id": "mfg:1", "reason": SHORT["message"], "message_key": SHORT["message_key"], "params": SHORT["params"]},
         {"id": "mfg:3", "reason": "Production run mfg:3 was not found.", "message_key": "mfg.run_not_found",
          "params": {"order": "mfg:3"}}]}
+    ui_client.cookies.update({**_authed(), "celerp_lang": "th"})
     with (
         patch("ui.api_client.manufacturing_bulk_run_action", new=AsyncMock(return_value=result)),
         patch("ui.api_client.list_mfg_orders", new=AsyncMock(return_value={"items": []})),
     ):
         r = await ui_client.post("/manufacturing/runs/bulk/issue?status=active",
                                  content=b"selected=mfg%3A1&selected=mfg%3A2&selected=mfg%3A3&idempotency_key=k",
-                                 headers={"content-type": "application/x-www-form-urlencoded"},
-                                 cookies={**_authed(), "celerp_lang": "th"})
+                                 headers={"content-type": "application/x-www-form-urlencoded"})
     assert r.status_code == 200, r.text
     message = json.loads(r.headers["HX-Trigger"])["celerpToast"]["message"]
     assert _TH_SHORT in message and _catalog("th")["mfg.run_not_found"].format(order="mfg:3") in message
@@ -149,14 +149,14 @@ async def test_a_bulk_action_says_why_each_run_was_skipped(ui_client):
 async def test_a_bulk_toast_reads_as_whole_sentences(ui_client):
     result = {"done": ["mfg:2"], "skipped": [
         {"id": "mfg:1", "reason": SHORT["message"], "message_key": SHORT["message_key"], "params": SHORT["params"]}]}
+    ui_client.cookies.update({**_authed(), "celerp_lang": "en"})
     with (
         patch("ui.api_client.manufacturing_bulk_run_action", new=AsyncMock(return_value=result)),
         patch("ui.api_client.list_mfg_orders", new=AsyncMock(return_value={"items": []})),
     ):
         r = await ui_client.post("/manufacturing/runs/bulk/issue?status=active",
                                  content=b"selected=mfg%3A1&selected=mfg%3A2&idempotency_key=k",
-                                 headers={"content-type": "application/x-www-form-urlencoded"},
-                                 cookies={**_authed(), "celerp_lang": "en"})
+                                 headers={"content-type": "application/x-www-form-urlencoded"})
     assert json.loads(r.headers["HX-Trigger"])["celerpToast"]["message"] == (
         "Components issued for runs: 1. Skipped: 1. " + SHORT["message"])
 
@@ -174,8 +174,9 @@ async def test_a_document_action_refused_by_a_run_says_why_in_the_users_language
     english = _catalog("en")["mfg.output_memo_conversion"]
     refused = APIError(409, english, {"message": english, "message_key": "mfg.output_memo_conversion",
                                       "params": {"sku": "FG-1", "order": "mfg:1"}})
+    ui_client.cookies.update({**_authed(), "celerp_lang": "th"})
     with patch("ui.api_client.convert_doc", new=AsyncMock(side_effect=refused)):
-        r = await ui_client.post("/docs/doc:MEMO-1/convert", cookies={**_authed(), "celerp_lang": "th"})
+        r = await ui_client.post("/docs/doc:MEMO-1/convert")
     assert r.status_code == 200, r.text
     assert json.loads(r.headers["HX-Trigger"])["celerpToast"]["message"] == th
 
@@ -189,9 +190,9 @@ async def test_shipping_open_run_output_in_part_says_why_in_the_users_language(u
     params = {"sku": "FG-1", "order": "mfg:1"}
     english = _catalog("en")["mfg.output_in_production"].format(**params)
     refused = APIError(409, english, {"message": english, "message_key": "mfg.output_in_production", "params": params})
+    ui_client.cookies.update({**_authed(), "celerp_lang": "th"})
     with patch("ui.api_client.fulfill_lines", new=AsyncMock(side_effect=refused)):
-        r = await ui_client.post("/docs/doc:INV-1/fulfill-lines", data={"selected": "item:1", "idempotency_key": "k"},
-                                 cookies={**_authed(), "celerp_lang": "th"})
+        r = await ui_client.post("/docs/doc:INV-1/fulfill-lines", data={"selected": "item:1", "idempotency_key": "k"})
     assert r.status_code == 200, r.text
     assert json.loads(r.headers["HX-Trigger"])["celerpToast"]["message"] == _catalog("th")[
         "mfg.output_in_production"].format(**params)

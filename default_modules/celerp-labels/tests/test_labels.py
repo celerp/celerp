@@ -407,7 +407,7 @@ class TestColumnManagerUi:
         """app.css must set table-layout: auto on .data-table so resize expands table, not shrinks other columns."""
         import os
         css_path = os.path.join(_REPO_ROOT, "ui/static/app.css")
-        css = open(css_path).read()
+        css = Path(css_path).read_text()
         assert "table-layout: auto" in css, (
             "table-layout: auto missing from app.css; column resize must expand table width, not compress other columns"
         )
@@ -416,7 +416,7 @@ class TestColumnManagerUi:
         """app.css must define .table-scroll-wrap with overflow-x: auto."""
         import os
         css_path = os.path.join(_REPO_ROOT, "ui/static/app.css")
-        css = open(css_path).read()
+        css = Path(css_path).read_text()
         assert "table-scroll-wrap" in css
         assert "overflow-x: auto" in css
 
@@ -594,7 +594,7 @@ def test_css_table_uses_max_content_width():
     """app.css .data-table must use width: max-content so the table grows when columns are widened."""
     import os
     css_path = os.path.join(_REPO_ROOT, "ui/static/app.css")
-    css = open(css_path).read()
+    css = Path(css_path).read_text()
     assert "width: max-content" in css, (
         ".data-table must have width: max-content so column resize expands the table, "
         "enabling the .table-scroll-wrap horizontal scrollbar"

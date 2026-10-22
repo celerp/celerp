@@ -16,8 +16,6 @@ from celerp.services.list_behavior import LIST_TYPES
 from celerp_docs.sequences import _PREFIX_BY_DOC_TYPE
 from test_helpers import reserve_item, sell_item
 
-pytestmark = pytest.mark.asyncio
-
 # Every numbered document type except the list types, which scan through /lists.
 DOC_TYPES = sorted(set(_PREFIX_BY_DOC_TYPE) - {"list", *LIST_TYPES})
 

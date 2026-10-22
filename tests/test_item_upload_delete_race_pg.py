@@ -30,6 +30,7 @@ from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, Location, User
 from celerp_inventory import routes as inventory
 from celerp_inventory import routes_attachments as uploads
+from test_helpers import UPLOAD_DELETE_RACE_WARNINGS
 
 pytestmark = pytest.mark.asyncio
 
@@ -129,6 +130,7 @@ def _company_files(tmp_path, company_id) -> list[str]:
                   if p.is_file() and str(company_id) in str(p.relative_to(tmp_path)))
 
 
+@UPLOAD_DELETE_RACE_WARNINGS
 @pytest.mark.parametrize("door", [_attachments_door, _files_door], ids=["attachments", "files"])
 async def test_an_upload_racing_a_delete_leaves_nothing_behind(committed_engine, tmp_path, monkeypatch, door):
     _local_files(monkeypatch, tmp_path)

@@ -38,7 +38,8 @@ class _FakeSession:
     def __init__(self, rollback_spy: AsyncMock):
         self.commit = AsyncMock(side_effect=RuntimeError("commit refused: transaction aborted"))
         self.rollback = rollback_spy
-        self.execute = AsyncMock()
+        # A query result with no rows.
+        self.execute = AsyncMock(return_value=MagicMock())
         self.close = AsyncMock()
 
     async def __aenter__(self):

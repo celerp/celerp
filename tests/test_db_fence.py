@@ -234,17 +234,19 @@ def _no_leftover_processes():
         proc = _SPAWNED.pop()
         if proc.poll() is None:
             proc.kill()
-            proc.wait()
+        proc.wait()
+        proc.stdin.close()
 
 
 def _spawn(version: str, path: str, url: str, data_dir, *, wait: float = 60.0) -> subprocess.Popen:
     """Output goes to a file beside *data_dir*, never a pipe nobody drains: a holder
     logs while it runs and would block on a full pipe instead of stopping."""
     log = f"{data_dir}.log"
-    proc = subprocess.Popen(
-        [sys.executable, "-c", _RUN, version, path, url, str(wait), str(data_dir)],
-        stdin=subprocess.PIPE, stdout=open(log, "w"), stderr=subprocess.STDOUT,
-        text=True, env=_env(url, data_dir))
+    with open(log, "w") as out:
+        proc = subprocess.Popen(
+            [sys.executable, "-c", _RUN, version, path, url, str(wait), str(data_dir)],
+            stdin=subprocess.PIPE, stdout=out, stderr=subprocess.STDOUT,
+            text=True, env=_env(url, data_dir))
     proc.log = log
     _SPAWNED.append(proc)
     return proc

@@ -7,14 +7,11 @@ from __future__ import annotations
 
 import json
 
-import pytest
 from fasthtml.common import to_xml
 from fastapi import FastAPI
 
 from ui import api_client
 from ui.routes import sync_accounts as routes
-
-pytestmark = pytest.mark.asyncio
 
 OTHER = {"id": "a-1", "code": "6150", "name": "Courier", "account_type": "expense", "currency": "USD"}
 HOLDS = [

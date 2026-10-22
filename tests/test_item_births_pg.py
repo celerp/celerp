@@ -20,6 +20,7 @@ from fastapi import HTTPException
 from sqlalchemy import func, select
 
 from migration_support import auth, maker
+from test_helpers import UPLOAD_DELETE_RACE_WARNINGS
 from test_posting_roles_race_pg_draft import _company, _draft, _race, race  # noqa: F401  (race is a fixture)
 
 pytestmark = pytest.mark.asyncio
@@ -70,6 +71,7 @@ def _sync(client, tok: str, lot: str):
     return lambda: client.post("/items/bulk/shopify-sync", headers=auth(tok), json={"entity_ids": [lot]})
 
 
+@UPLOAD_DELETE_RACE_WARNINGS
 @pytest.mark.parametrize("second", [_rename, _upload, _attach, _sync],
                          ids=["patch", "file-upload", "attachment-upload", "shop-sync"])
 async def test_an_item_event_waiting_on_a_delete_is_refused(committed_engine, race, tmp_path, monkeypatch, second):

@@ -101,35 +101,40 @@ class TestSettingsRedirect:
     @pytest.mark.asyncio
     async def test_settings_redirect(self, ui_client):
         """GET /settings returns 302 to /settings/general."""
-        r = await ui_client.get("/settings", cookies=_authed())
+        ui_client.cookies.update(_authed())
+        r = await ui_client.get("/settings")
         assert r.status_code == 302
         assert "/settings/general" in r.headers.get("location", "")
 
     @pytest.mark.asyncio
     async def test_settings_redirect_tab_taxes(self, ui_client):
         """GET /settings?tab=taxes redirects to /settings/sales?tab=taxes."""
-        r = await ui_client.get("/settings?tab=taxes", cookies=_authed())
+        ui_client.cookies.update(_authed())
+        r = await ui_client.get("/settings?tab=taxes")
         assert r.status_code == 302
         assert "/settings/sales?tab=taxes" in r.headers.get("location", "")
 
     @pytest.mark.asyncio
     async def test_settings_redirect_tab_locations(self, ui_client):
         """GET /settings?tab=locations redirects to /settings/inventory?tab=locations."""
-        r = await ui_client.get("/settings?tab=locations", cookies=_authed())
+        ui_client.cookies.update(_authed())
+        r = await ui_client.get("/settings?tab=locations")
         assert r.status_code == 302
         assert "/settings/inventory?tab=locations" in r.headers.get("location", "")
 
     @pytest.mark.asyncio
     async def test_settings_redirect_tab_schema(self, ui_client):
         """GET /settings?tab=schema redirects to /settings/inventory?tab=category-library."""
-        r = await ui_client.get("/settings?tab=schema", cookies=_authed())
+        ui_client.cookies.update(_authed())
+        r = await ui_client.get("/settings?tab=schema")
         assert r.status_code == 302
         assert "/settings/inventory?tab=category-library" in r.headers.get("location", "")
 
     @pytest.mark.asyncio
     async def test_settings_redirect_tab_users(self, ui_client):
         """GET /settings?tab=users redirects to /settings/general?tab=users."""
-        r = await ui_client.get("/settings?tab=users", cookies=_authed())
+        ui_client.cookies.update(_authed())
+        r = await ui_client.get("/settings?tab=users")
         assert r.status_code == 302
         assert "/settings/general?tab=users" in r.headers.get("location", "")
 
@@ -137,7 +142,8 @@ class TestSettingsRedirect:
     async def test_settings_redirect_tab_connectors_falls_to_general(self, ui_client):
         """GET /settings?tab=connectors falls back to /settings/general: the sales
         connectors stub is gone, so the legacy tab key is no longer a known target."""
-        r = await ui_client.get("/settings?tab=connectors", cookies=_authed())
+        ui_client.cookies.update(_authed())
+        r = await ui_client.get("/settings?tab=connectors")
         assert r.status_code == 302
         assert "/settings/general" in r.headers.get("location", "")
 
@@ -149,35 +155,38 @@ class TestSettingsGeneral:
     @pytest.mark.asyncio
     async def test_settings_general_renders(self, ui_client):
         """GET /settings/general?tab=company returns 200."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_users", new=AsyncMock(return_value={"items": _USERS, "total": 1})),
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=_MODULES)),
         ):
-            r = await ui_client.get("/settings/general?tab=company", cookies=_authed())
+            r = await ui_client.get("/settings/general?tab=company")
         assert r.status_code == 200
         assert b"Settings" in r.content
 
     @pytest.mark.asyncio
     async def test_settings_general_users_tab(self, ui_client):
         """GET /settings/general?tab=users returns 200 with user data."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_users", new=AsyncMock(return_value={"items": _USERS, "total": 1})),
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=_MODULES)),
         ):
-            r = await ui_client.get("/settings/general?tab=users", cookies=_authed())
+            r = await ui_client.get("/settings/general?tab=users")
         assert r.status_code == 200
         assert b"Alice" in r.content
 
     @pytest.mark.asyncio
     async def test_settings_general_has_no_modules_tab(self, ui_client):
         """Modules moved to its own /modules page; the settings tab is gone."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_users", new=AsyncMock(return_value={"items": [], "total": 0})),
         ):
-            r = await ui_client.get("/settings/general", cookies=_authed())
+            r = await ui_client.get("/settings/general")
         assert r.status_code == 200
         assert b"?tab=modules" not in r.content
 
@@ -196,18 +205,20 @@ class TestSettingsSales:
     @pytest.mark.asyncio
     async def test_settings_sales_renders(self, ui_client):
         """GET /settings/sales?tab=taxes returns 200."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_taxes", new=AsyncMock(return_value=_TAXES)),
             patch("ui.api_client.get_payment_terms", new=AsyncMock(return_value=_TERMS)),
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=_MODULES)),
         ):
-            r = await ui_client.get("/settings/sales?tab=taxes", cookies=_authed())
+            r = await ui_client.get("/settings/sales?tab=taxes")
         assert r.status_code == 200
         assert b"VAT" in r.content
 
     @pytest.mark.asyncio
     async def test_settings_sales_terms_conditions_tab(self, ui_client):
         """GET /settings/sales?tab=terms-conditions returns 200."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_taxes", new=AsyncMock(return_value=_TAXES)),
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=_MODULES)),
@@ -215,7 +226,7 @@ class TestSettingsSales:
                 {"name": "Standard Sales Terms", "text": "Goods remain property...", "doc_types": ["invoice"], "is_default": True},
             ])),
         ):
-            r = await ui_client.get("/settings/sales?tab=terms-conditions", cookies=_authed())
+            r = await ui_client.get("/settings/sales?tab=terms-conditions")
         assert r.status_code == 200
         assert b"Standard Sales Terms" in r.content
 
@@ -234,18 +245,20 @@ class TestSettingsInventory:
     @pytest.mark.asyncio
     async def test_settings_inventory_renders(self, ui_client):
         """GET /settings/inventory?tab=locations returns 200."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
         ):
-            r = await ui_client.get("/settings/inventory?tab=locations", cookies=_authed())
+            r = await ui_client.get("/settings/inventory?tab=locations")
         assert r.status_code == 200
 
     @pytest.mark.asyncio
     async def test_settings_inventory_category_library_tab(self, ui_client):
         """GET /settings/inventory?tab=categories returns 200 with Browse Library section."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
@@ -255,7 +268,7 @@ class TestSettingsInventory:
             patch("ui.api_client.list_verticals_categories", new=AsyncMock(return_value=[])),
             patch("ui.api_client.list_verticals_presets", new=AsyncMock(return_value=[])),
         ):
-            r = await ui_client.get("/settings/inventory?tab=categories", cookies=_authed())
+            r = await ui_client.get("/settings/inventory?tab=categories")
         assert r.status_code == 200
 
     @pytest.mark.asyncio
@@ -308,13 +321,14 @@ class TestCompanyAddressesUI:
     @pytest.mark.asyncio
     async def test_demo_data_section_removed(self, ui_client):
         """Company tab HTML must NOT contain 'Demo Data' or 'Reload Demo Items'."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_users", new=AsyncMock(return_value={"items": _USERS, "total": 1})),
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=_MODULES)),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
         ):
-            r = await ui_client.get("/settings/general?tab=company", cookies=_authed())
+            r = await ui_client.get("/settings/general?tab=company")
         assert r.status_code == 200
         assert b"Demo Data" not in r.content
         assert b"Reload Demo Items" not in r.content
@@ -325,6 +339,7 @@ class TestCategoriesCRUDUI:
     @pytest.mark.asyncio
     async def test_categories_tab_has_add_form(self, ui_client):
         """Tab=categories must render an Add Category form with new_category_name input."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
@@ -334,13 +349,14 @@ class TestCategoriesCRUDUI:
             patch("ui.api_client.list_verticals_categories", new=AsyncMock(return_value=[])),
             patch("ui.api_client.list_verticals_presets", new=AsyncMock(return_value=[])),
         ):
-            r = await ui_client.get("/settings/inventory?tab=categories", cookies=_authed())
+            r = await ui_client.get("/settings/inventory?tab=categories")
         assert r.status_code == 200
         assert "new_category_name" in r.text
 
     @pytest.mark.asyncio
     async def test_categories_tab_rows_have_delete_button(self, ui_client):
         """Applied categories table rows must have a delete affordance."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
@@ -350,7 +366,7 @@ class TestCategoriesCRUDUI:
             patch("ui.api_client.list_verticals_categories", new=AsyncMock(return_value=[])),
             patch("ui.api_client.list_verticals_presets", new=AsyncMock(return_value=[])),
         ):
-            r = await ui_client.get("/settings/inventory?tab=categories", cookies=_authed())
+            r = await ui_client.get("/settings/inventory?tab=categories")
         assert r.status_code == 200
         # Delete affordance: either hx-delete or a delete button targeting /settings/categories/gems
         assert "/settings/categories/gems" in r.text
@@ -376,6 +392,7 @@ class TestProtectedPriceListDeletion:
     @pytest.mark.asyncio
     async def test_cannot_delete_retail(self, ui_client):
         """DELETE /settings/price-lists/<idx> for Retail must return error fragment."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[
                 {"name": "Cost"}, {"name": "Wholesale"}, {"name": "Retail"},
@@ -383,13 +400,14 @@ class TestProtectedPriceListDeletion:
             patch("ui.api_client.get_default_price_list", new=AsyncMock(return_value="Retail")),
             patch("ui.api_client.patch_price_lists", new=AsyncMock(return_value=None)),
         ):
-            resp = await ui_client.delete("/settings/price-lists/2", cookies=_authed())
+            resp = await ui_client.delete("/settings/price-lists/2")
         assert resp.status_code == 200
         assert "celerpToast" in resp.headers.get("HX-Trigger", "")
 
     @pytest.mark.asyncio
     async def test_cannot_delete_cost(self, ui_client):
         """DELETE /settings/price-lists/<idx> for Cost must return error fragment."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[
                 {"name": "Cost"}, {"name": "Wholesale"}, {"name": "Retail"},
@@ -397,13 +415,14 @@ class TestProtectedPriceListDeletion:
             patch("ui.api_client.get_default_price_list", new=AsyncMock(return_value="Retail")),
             patch("ui.api_client.patch_price_lists", new=AsyncMock(return_value=None)),
         ):
-            resp = await ui_client.delete("/settings/price-lists/0", cookies=_authed())
+            resp = await ui_client.delete("/settings/price-lists/0")
         assert resp.status_code == 200
         assert "celerpToast" in resp.headers.get("HX-Trigger", "")
 
     @pytest.mark.asyncio
     async def test_cannot_delete_wholesale(self, ui_client):
         """DELETE /settings/price-lists/<idx> for Wholesale must return error fragment."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[
                 {"name": "Cost"}, {"name": "Wholesale"}, {"name": "Retail"},
@@ -411,13 +430,14 @@ class TestProtectedPriceListDeletion:
             patch("ui.api_client.get_default_price_list", new=AsyncMock(return_value="Retail")),
             patch("ui.api_client.patch_price_lists", new=AsyncMock(return_value=None)),
         ):
-            resp = await ui_client.delete("/settings/price-lists/1", cookies=_authed())
+            resp = await ui_client.delete("/settings/price-lists/1")
         assert resp.status_code == 200
         assert "celerpToast" in resp.headers.get("HX-Trigger", "")
 
     @pytest.mark.asyncio
     async def test_can_delete_custom_price_list(self, ui_client):
         """DELETE /settings/price-lists/<idx> for a user-added list must succeed."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[
                 {"name": "Cost"}, {"name": "Wholesale"}, {"name": "Retail"}, {"name": "VIP"},
@@ -426,7 +446,7 @@ class TestProtectedPriceListDeletion:
             patch("ui.api_client.get_base_price_list", new=AsyncMock(return_value="Retail")),
             patch("ui.api_client.patch_price_lists", new=AsyncMock(return_value=None)),
         ):
-            resp = await ui_client.delete("/settings/price-lists/3", cookies=_authed())
+            resp = await ui_client.delete("/settings/price-lists/3")
         # Should redirect (204) or succeed without an error fragment
         assert resp.status_code in (200, 204)
         if resp.status_code == 200:
@@ -435,6 +455,7 @@ class TestProtectedPriceListDeletion:
     @pytest.mark.asyncio
     async def test_cannot_delete_base_price_list(self, ui_client):
         """DELETE /settings/price-lists/<idx> for the base price list must return error fragment."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[
                 {"name": "Cost"}, {"name": "Wholesale"}, {"name": "Retail"}, {"name": "VIP"},
@@ -443,7 +464,7 @@ class TestProtectedPriceListDeletion:
             patch("ui.api_client.get_base_price_list", new=AsyncMock(return_value="VIP")),
             patch("ui.api_client.patch_price_lists", new=AsyncMock(return_value=None)),
         ):
-            resp = await ui_client.delete("/settings/price-lists/3", cookies=_authed())
+            resp = await ui_client.delete("/settings/price-lists/3")
         assert resp.status_code == 200
         assert "celerpToast" in resp.headers.get("HX-Trigger", "")
         assert "base price list" in resp.headers.get("HX-Trigger", "")
@@ -526,12 +547,13 @@ class TestRestoreJourneyNotice:
 async def test_sales_tab_connectors_falls_back_to_taxes(ui_client):
     """GET /settings/sales?tab=connectors renders the taxes tab: the coming-soon
     connectors stub is deleted, so the unknown tab key falls back to the default."""
+    ui_client.cookies.update(_authed())
     with (
         patch("ui.api_client.get_taxes", new=AsyncMock(return_value=_TAXES)),
         patch("ui.api_client.get_payment_terms", new=AsyncMock(return_value=_TERMS)),
         patch("ui.api_client.get_modules", new=AsyncMock(return_value=_MODULES)),
     ):
-        r = await ui_client.get("/settings/sales?tab=connectors", cookies=_authed())
+        r = await ui_client.get("/settings/sales?tab=connectors")
     assert r.status_code == 200
     assert b"VAT" in r.content
     assert b"Coming soon" not in r.content
@@ -543,11 +565,11 @@ async def test_settings_inline_save_persists_auto_complete(ui_client):
     trigger confirms the save, not a 303 reload - and passes auto_complete_work_orders
     through to the client."""
     saved = AsyncMock(return_value={})
+    ui_client.cookies.update(_authed())
     with patch("ui.api_client.update_mfg_settings", new=saved):
         r = await ui_client.post(
             "/settings/manufacturing",
             data={"auto_complete_work_orders": "1", "auto_create_work_orders": "1"},
-            cookies=_authed(),
         )
     assert r.status_code == 200
     assert "Settings saved." in r.headers.get("HX-Trigger", "")
@@ -577,12 +599,13 @@ class TestReorderDigestUpsell:
         """A paid user's save consults relay status and redirects saved=1 with no upsell=1."""
         prior = {**_COMPANY, "reorder_alert_email": False}
         relay = AsyncMock(return_value={"connected": True, "tier": "cloud"})
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value=prior)),
             patch("ui.api_client.patch_company", new=AsyncMock()) as patch_co,
             patch("ui.api_client.get_relay_status", new=relay),
         ):
-            r = await ui_client.post(self._URL, data=self._post_data(), cookies=_authed())
+            r = await ui_client.post(self._URL, data=self._post_data())
         assert r.status_code == 303
         loc = r.headers.get("location", "")
         assert "tab=reorder" in loc and "saved=1" in loc
@@ -595,12 +618,13 @@ class TestReorderDigestUpsell:
         """A non-paid save that leaves the digest already-on emits no upsell=1 (transition-only)."""
         prior = {**_COMPANY, "reorder_alert_email": True}
         relay = AsyncMock(return_value={"connected": False, "tier": None})
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value=prior)),
             patch("ui.api_client.patch_company", new=AsyncMock()),
             patch("ui.api_client.get_relay_status", new=relay),
         ):
-            r = await ui_client.post(self._URL, data=self._post_data(), cookies=_authed())
+            r = await ui_client.post(self._URL, data=self._post_data())
         assert r.status_code == 303
         loc = r.headers.get("location", "")
         assert "saved=1" in loc
@@ -612,12 +636,13 @@ class TestReorderDigestUpsell:
         """When relay status errors on the off->on save, the setting still saves and no upsell=1."""
         prior = {**_COMPANY, "reorder_alert_email": False}
         relay = AsyncMock(side_effect=APIError(503, "relay down"))
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value=prior)),
             patch("ui.api_client.patch_company", new=AsyncMock()) as patch_co,
             patch("ui.api_client.get_relay_status", new=relay),
         ):
-            r = await ui_client.post(self._URL, data=self._post_data(), cookies=_authed())
+            r = await ui_client.post(self._URL, data=self._post_data())
         assert r.status_code == 303
         loc = r.headers.get("location", "")
         assert "saved=1" in loc

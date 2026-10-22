@@ -25,7 +25,7 @@ def _assert_shield(im: Image.Image) -> None:
     w, h = im.size
     for xy in [(0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)]:
         assert im.getpixel(xy)[3] == 0, f"corner {xy} is not transparent"
-    opaque = [p for p in im.getdata() if p[3] == 255]
+    opaque = [p for p in im.get_flattened_data() if p[3] == 255]
     assert opaque, "no opaque pixels"
     blue = sum(1 for r, g, b, _ in opaque if b > r + 40 and b > g)
     assert blue / len(opaque) > 0.3, "opaque area is not the shield's blue field"

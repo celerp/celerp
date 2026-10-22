@@ -48,7 +48,7 @@ from celerp.services.company_handoff_transfer import HandoffDownloadError, downl
 
 from fasthtml.common import *
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
+from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 import ui.api_client as api
 import ui.handoff_opening as opening
@@ -76,6 +76,7 @@ from ui.routes.migrations import (
     wizard_page,
     wizard_table,
 )
+from ui.streaming import ClosingStreamingResponse
 
 DOWNLOAD = "/company-backup/download"
 SEND = "/settings/company-handoff"
@@ -148,8 +149,8 @@ async def _download(request: Request):
         back = f"/migrations/{run_id}/complete" if run_id else BACKUP_TAB
         return wizard_page(request, auth_header(t("company_backup.download")), flash(_message(e)),
                            back_link(back), status_code=_status(e), title="company_backup.download")
-    return StreamingResponse(chunks, media_type="application/octet-stream",
-                             headers={k.title(): v for k, v in headers.items() if k != "content-type"})
+    return ClosingStreamingResponse(chunks, media_type="application/octet-stream",
+                                    headers={k.title(): v for k, v in headers.items() if k != "content-type"})
 
 
 # ---------------------------------------------------------------------------
@@ -1288,8 +1289,8 @@ async def _saved_download(request: Request):
         chunks, headers = await api.company_backup_kept_download(get_token(request), kept)
     except APIError as e:
         return await _saved_page(request, warning=_message(e), status_code=_status(e))
-    return StreamingResponse(chunks, media_type="application/octet-stream",
-                             headers={k.title(): v for k, v in headers.items() if k != "content-type"})
+    return ClosingStreamingResponse(chunks, media_type="application/octet-stream",
+                                    headers={k.title(): v for k, v in headers.items() if k != "content-type"})
 
 
 async def _saved_delete(request: Request):

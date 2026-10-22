@@ -28,8 +28,6 @@ from migration_support import code_config, count, real_client, real_engine  # no
 from ui.components.table import format_value
 from ui.i18n import t
 
-pytestmark = pytest.mark.asyncio
-
 UPLOAD_COOKIE = "celerp_company_backup_upload"
 CONTENTS = ("Contains this company's records, settings and attachments. Users, passwords, "
             "connections and share links stay with this Celerp installation.")

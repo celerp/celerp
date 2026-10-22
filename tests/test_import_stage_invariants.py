@@ -247,13 +247,15 @@ def _app_for(path: str):
 async def _post(path: str, data: dict | None = None, files: dict | None = None) -> httpx.Response:
     transport = ASGITransport(app=_app_for(path), raise_app_exceptions=False)
     async with AsyncClient(transport=transport, base_url="http://ui") as c:
-        return await c.post(path, data=data, files=files, cookies=_cookies())
+        c.cookies.update(_cookies())
+        return await c.post(path, data=data, files=files)
 
 
 async def _get(path: str) -> httpx.Response:
     transport = ASGITransport(app=_app_for(path), raise_app_exceptions=False)
     async with AsyncClient(transport=transport, base_url="http://ui") as c:
-        return await c.get(path, cookies=_cookies())
+        c.cookies.update(_cookies())
+        return await c.get(path)
 
 
 async def _confirm(name: str, writer, *, csv_text: str | None = None, company_id: str = _COMPANY_A):

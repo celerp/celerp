@@ -25,7 +25,8 @@ async def test_pages_are_not_kept_in_the_browser_cache_and_static_files_are():
                             get_company=AsyncMock(return_value={}),
                             list_import_batches=AsyncMock(return_value={"batches": []})), \
              patch("ui.routes.inventory._load_inventory_static_metadata", new=static):
-            page = await c.get("/inventory", params={"filter": "demo"}, cookies=authed_cookies(role="owner"))
+            c.cookies.update(authed_cookies(role="owner"))
+            page = await c.get("/inventory", params={"filter": "demo"})
         css = await c.get("/static/app.css")
     assert page.status_code == 200
     assert page.headers.get("cache-control") == "no-store", dict(page.headers)

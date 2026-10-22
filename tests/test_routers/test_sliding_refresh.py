@@ -112,7 +112,8 @@ async def test_switch_company_updates_refresh_token():
             base_url="http://ui",
             follow_redirects=False,
         ) as c:
-            r = await c.post(f"/switch-company/{company_b_id}", cookies=_authed())
+            c.cookies.update(_authed())
+            r = await c.post(f"/switch-company/{company_b_id}")
 
     assert r.status_code in (302, 303)
     cookies_header = r.headers.get("set-cookie", "")

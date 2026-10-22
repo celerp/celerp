@@ -115,11 +115,11 @@ def test_the_program_ends_when_the_launcher_is_killed():
     # The app stops a server by killing the process it started, which here is the
     # launcher: the program it runs must not outlive it and keep the server's port.
     probe = "import os, time; print(os.getpid(), flush=True); time.sleep(60)"
-    launcher = subprocess.Popen([sys.executable, "-I", launch.__file__, sys.executable, "-I", "-c", probe],
-                                stdout=subprocess.PIPE, text=True)
-    pid = int(launcher.stdout.readline())
-    launcher.kill()
-    launcher.wait(timeout=10)
+    with subprocess.Popen([sys.executable, "-I", launch.__file__, sys.executable, "-I", "-c", probe],
+                          stdout=subprocess.PIPE, text=True) as launcher:
+        pid = int(launcher.stdout.readline())
+        launcher.kill()
+        launcher.wait(timeout=10)
     deadline = time.monotonic() + 10
     while _running(pid) and time.monotonic() < deadline:
         time.sleep(0.1)

@@ -167,7 +167,8 @@ async def test_setup_post_needing_restart_goes_to_activating_then_dashboard(ui_c
     assert r.status_code == 302
     assert r.headers["location"] == "/setup/activating"
     s.restart_system.assert_awaited_once()
-    page = await ui_client.get("/setup/activating", cookies=_authed())
+    ui_client.cookies.update(_authed())
+    page = await ui_client.get("/setup/activating")
     assert "window.location.href = '/dashboard'" in page.text
     assert "/onboarding" not in page.text
 
@@ -215,7 +216,8 @@ async def test_setup_post_missing_business_type_keeps_typed_values(ui_client):
 async def test_setup_post_twice_is_harmless(ui_client):
     with _Stubs(bootstrapped=True) as s:
         signed_out = await ui_client.post("/setup", data=_VALID)
-        signed_in = await ui_client.post("/setup", data=_VALID, cookies=_authed())
+        ui_client.cookies.update(_authed())
+        signed_in = await ui_client.post("/setup", data=_VALID)
     assert signed_out.status_code == 302 and signed_out.headers["location"] == "/login"
     # The signed-in owner goes to /, which lands on the first page their menu has.
     assert signed_in.status_code == 302 and signed_in.headers["location"] == "/"
@@ -230,7 +232,8 @@ async def test_setup_apply_failure_lands_on_retry_page(ui_client):
         assert r.status_code == 302
         assert r.headers["location"].startswith("/setup/company")
         assert "celerp_token=access-tok" in r.headers.get("set-cookie", "")
-        page = await ui_client.get(r.headers["location"], cookies={"celerp_token": "access-tok"})
+        ui_client.cookies.update({"celerp_token": "access-tok"})
+        page = await ui_client.get(r.headers["location"])
     assert page.status_code == 200
     html = page.text
     assert "could not be finished" in html
@@ -240,10 +243,10 @@ async def test_setup_apply_failure_lands_on_retry_page(ui_client):
 
 @pytest.mark.asyncio
 async def test_retry_page_resubmit_finishes_on_dashboard(ui_client):
+    ui_client.cookies.update(_authed())
     with _Stubs() as s:
         r = await ui_client.post("/setup/company", data={"vertical": "blank", "currency": "EUR",
-                                                         "timezone": "Asia/Tokyo"},
-                                 cookies=_authed())
+                                                         "timezone": "Asia/Tokyo"})
     assert r.status_code == 302
     assert r.headers["location"] == "/dashboard"
     s.set_business_type.assert_awaited_once()
@@ -252,10 +255,10 @@ async def test_retry_page_resubmit_finishes_on_dashboard(ui_client):
 @pytest.mark.asyncio
 async def test_retry_page_with_type_already_set_redirects_and_applies_nothing(ui_client):
     company = {"id": "c1", "vertical": "blank", "settings": {"vertical": "blank"}}
+    ui_client.cookies.update(_authed())
     with _Stubs(company=company) as s:
-        got = await ui_client.get("/setup/company", cookies=_authed())
-        posted = await ui_client.post("/setup/company", data={"vertical": "blank", "currency": "EUR"},
-                                      cookies=_authed())
+        got = await ui_client.get("/setup/company")
+        posted = await ui_client.post("/setup/company", data={"vertical": "blank", "currency": "EUR"})
     assert got.status_code == 302 and got.headers["location"] == "/dashboard"
     assert posted.status_code == 302 and posted.headers["location"] == "/dashboard"
     s.set_business_type.assert_not_awaited()
@@ -359,15 +362,16 @@ async def test_setup_page_in_german(ui_client):
 
 @pytest.mark.asyncio
 async def test_onboarding_routes_gone_and_login_never_redirects_there(ui_client):
-    r = await ui_client.get("/onboarding", cookies=_authed())
+    ui_client.cookies.update(_authed())
+    r = await ui_client.get("/onboarding")
     assert r.status_code == 404
-    r = await ui_client.post("/onboarding/complete", cookies=_authed())
+    r = await ui_client.post("/onboarding/complete")
     assert r.status_code in (404, 405)
     for settings in ({}, {"onboarding_pending": True}, {"vertical": "blank"}):
         company = {"id": "c1", "settings": settings}
         with _Stubs(bootstrapped=True, company=company), \
                 patch("ui.routes.auth.api_get_company", new=AsyncMock(return_value=company)):
-            r = await ui_client.get("/", cookies=_authed())
+            r = await ui_client.get("/")
         assert r.headers["location"] == "/dashboard", settings
 
 

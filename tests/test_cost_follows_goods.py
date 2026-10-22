@@ -31,8 +31,6 @@ from test_consignor_payable_per_consignor import _consignor, _owed
 from test_invoice_unshipped_books import _lot, _ok
 from test_money_stock_and_contact_invariants import _account_net
 
-pytestmark = pytest.mark.asyncio
-
 COGS = "5100"
 OPENING = "1130-OB"
 
@@ -42,7 +40,7 @@ async def _invoice(client, auth, lines: list[tuple[str, str, float]], *, finaliz
     items = [{"entity_id": lot, "sku": sku, "name": "Lot", "quantity": qty, "unit_price": 40.0,
               "line_total": 40.0 * qty} for lot, sku, qty in lines]
     r = await client.post("/docs", headers=auth["headers"], json={
-        "doc_type": "invoice", "ref_id": f"INV-{uuid.uuid4().hex[:6]}", "line_items": items,
+        "doc_type": "invoice", "ref_id": f"INV-{uuid.uuid4().hex}", "line_items": items,
         "total": sum(i["line_total"] for i in items)})
     assert r.status_code == 200, r.text
     doc = r.json()["id"]
@@ -324,7 +322,8 @@ async def _ui_finalize(answer: dict):
 
     with patch("ui.api_client.finalize_doc", new=AsyncMock(return_value=answer)):
         async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as ui:
-            return await ui.post("/docs/doc:B/action/finalize", data={}, cookies=authed_cookies())
+            ui.cookies.update(authed_cookies())
+            return await ui.post("/docs/doc:B/action/finalize", data={})
 
 
 async def test_the_finalize_notice_is_shown_on_the_redirect():
@@ -388,8 +387,8 @@ async def test_the_ship_notice_says_the_other_invoice_cannot_ship_it():
     answer = {"fulfillment_status": "fulfilled", "fulfilled": ["item:1"], "taken_from": moved}
     with patch("ui.api_client.fulfill_lines", new=AsyncMock(return_value=answer)):
         async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as ui:
-            r = await ui.post("/docs/doc:B/fulfill-lines", data={"selected": ["item:1"], "idempotency_key": "page-key-1"},
-                              cookies=authed_cookies())
+            ui.cookies.update(authed_cookies())
+            r = await ui.post("/docs/doc:B/fulfill-lines", data={"selected": ["item:1"], "idempotency_key": "page-key-1"})
     assert r.status_code == 204, r.text
     assert r.headers["HX-Redirect"] == "/docs/doc:B"
     toast = json.loads(r.headers["HX-Trigger"])["celerpToast"]
@@ -531,7 +530,7 @@ async def test_finalizing_reads_no_more_rows_after_many_invoices_elsewhere(clien
     started = time.perf_counter()
     for _ in range(_HISTORY):
         r = await client.post("/docs", headers=auth["headers"], json={
-            "doc_type": "invoice", "ref_id": f"INV-{uuid.uuid4().hex[:6]}", "total": 40.0,
+            "doc_type": "invoice", "ref_id": f"INV-{uuid.uuid4().hex}", "total": 40.0,
             "line_items": [{"name": "Service", "quantity": 1, "unit_price": 40.0, "line_total": 40.0}]})
         assert r.status_code == 200, r.text
         await _ok(client, auth, f"/docs/{r.json()['id']}/finalize")

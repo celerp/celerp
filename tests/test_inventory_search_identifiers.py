@@ -269,7 +269,8 @@ async def test_icon_keeps_after_inline_edit_rerender():
         patch("ui.api_client.get_company", new=AsyncMock(return_value={"currency": "USD", "current_role": "owner"})),
     ):
         async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as c:
-            r = await c.get("/api/items/item:1/row", cookies={"celerp_token": make_test_token(role="owner")},
+            c.cookies.update({"celerp_token": make_test_token(role="owner")})
+            r = await c.get("/api/items/item:1/row",
                             headers={"hx-current-url": "http://ui/inventory?q=742"})
     assert r.status_code == 200, r.text
     assert list_items.await_args.args[1]["q"] == "742"

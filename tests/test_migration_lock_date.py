@@ -172,13 +172,14 @@ def test_manager_lock_date_read_whatever_the_case_of_its_type(tmp_path):
     Manager's type and key GUIDs name the same object in either case; the lock through
     2026-02-28 is carried on the scan and the manifest either way."""
     import sqlite3
+    from contextlib import closing
 
     from celerp.importers.adapters.base import MigrationDecisions
     from celerp.importers.adapters.manager_io import ManagerIOAdapter
     from celerp.importers.schema import CIFMode
 
     path = _locked_book(tmp_path / "upper.manager")
-    with sqlite3.connect(path) as conn:
+    with closing(sqlite3.connect(path)) as conn, conn:
         changed = conn.execute("UPDATE Objects SET ContentType = upper(ContentType), Key = upper(Key) "
                                "WHERE lower(ContentType) = ?", (str(LOCK_GUID),)).rowcount
     assert changed == 1

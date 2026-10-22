@@ -97,25 +97,29 @@ async def _import_file(owner: dict, content: bytes, filename: str = "ChartOfAcco
     """Upload, map, fix types and confirm. Returns (fix-step page, result page, confirmed stage ref)."""
     cookies = {"celerp_token": owner["token"]}
     async with _browser() as ui:
-        r = await ui.post("/accounting/import/chart/preview", cookies=cookies,
+        ui.cookies.update(cookies)
+        r = await ui.post("/accounting/import/chart/preview",
                           files={"csv_file": (filename, content, "text/csv")})
         assert r.status_code == 200, r.text
         header = next(csv.reader(io.StringIO(content.decode())))
         form = {f"map__{col}": _MAPPING.get(col, MAPPING_SKIP) for col in header}
-        r = await ui.post("/accounting/import/chart/mapped", cookies=cookies,
+        ui.cookies.update(cookies)
+        r = await ui.post("/accounting/import/chart/mapped",
                           data={"csv_ref": _csv_ref(r.text), **form})
         assert r.status_code == 200, r.text
         fix_page = r.text
 
         rows = list(csv.DictReader(io.StringIO(content.decode())))
         fixes = {f"{i}__account_type": _TYPE_FOR_XERO[row["*Type"]] for i, row in enumerate(rows)}
-        r = await ui.post("/accounting/import/chart/revalidate", cookies=cookies,
+        ui.cookies.update(cookies)
+        r = await ui.post("/accounting/import/chart/revalidate",
                           data={"csv_ref": _csv_ref(fix_page), "fixes_json": json.dumps(fixes)})
         assert r.status_code == 200, r.text
         assert 'hx-post="/accounting/import/chart/revalidate"' not in r.text, "rows still invalid after fixes"
 
         ref = _csv_ref(r.text)
-        r = await ui.post("/accounting/import/chart/confirm", cookies=cookies, data={"csv_ref": ref})
+        ui.cookies.update(cookies)
+        r = await ui.post("/accounting/import/chart/confirm", data={"csv_ref": ref})
         assert r.status_code == 200, r.text
         return fix_page, r.text, ref
 
@@ -236,7 +240,8 @@ async def test_chart_file_of_more_than_500_accounts_imports_in_one_go(client, ow
 @pytest.mark.asyncio
 async def test_chart_import_page_shows_add_only_copy(client, owner):
     async with _browser() as ui:
-        r = await ui.get("/accounting/import/chart", cookies={"celerp_token": owner["token"]})
+        ui.cookies.update({"celerp_token": owner["token"]})
+        r = await ui.get("/accounting/import/chart")
     assert r.status_code == 200, r.text
     assert "Adds accounts to your chart. Existing codes are kept." in r.text
 
@@ -245,15 +250,18 @@ async def _review_page(owner: dict, content: bytes) -> str:
     """Upload, map and fix types, stopping on the review page before confirm."""
     cookies = {"celerp_token": owner["token"]}
     async with _browser() as ui:
-        r = await ui.post("/accounting/import/chart/preview", cookies=cookies,
+        ui.cookies.update(cookies)
+        r = await ui.post("/accounting/import/chart/preview",
                           files={"csv_file": ("chart.csv", content, "text/csv")})
         header = next(csv.reader(io.StringIO(content.decode())))
         form = {f"map__{col}": _MAPPING.get(col, MAPPING_SKIP) for col in header}
-        r = await ui.post("/accounting/import/chart/mapped", cookies=cookies,
+        ui.cookies.update(cookies)
+        r = await ui.post("/accounting/import/chart/mapped",
                           data={"csv_ref": _csv_ref(r.text), **form})
         rows = list(csv.DictReader(io.StringIO(content.decode())))
         fixes = {f"{i}__account_type": _TYPE_FOR_XERO[row["*Type"]] for i, row in enumerate(rows)}
-        r = await ui.post("/accounting/import/chart/revalidate", cookies=cookies,
+        ui.cookies.update(cookies)
+        r = await ui.post("/accounting/import/chart/revalidate",
                           data={"csv_ref": _csv_ref(r.text), "fixes_json": json.dumps(fixes)})
         assert r.status_code == 200, r.text
         return r.text
@@ -301,7 +309,8 @@ async def test_chart_review_counts_only_new_accounts_as_ready(client, owner):
 @pytest.mark.asyncio
 async def test_chart_upload_error_keeps_add_only_copy(client, owner):
     async with _browser() as ui:
-        r = await ui.post("/accounting/import/chart/preview", cookies={"celerp_token": owner["token"]},
+        ui.cookies.update({"celerp_token": owner["token"]})
+        r = await ui.post("/accounting/import/chart/preview",
                           files={"csv_file": ("chart.csv", b"", "text/csv")})
     assert r.status_code == 200, r.text
     assert "flash--error" in r.text

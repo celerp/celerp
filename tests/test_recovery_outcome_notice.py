@@ -33,8 +33,8 @@ async def _page(client, *, install_owner: bool, role: str = "owner") -> str:
     with patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)), \
          patch("ui.api_client.get_users", new=AsyncMock(return_value={"items": []})), \
          patch("ui.api_client.installation_owner", new=AsyncMock(return_value=install_owner)):
-        r = await client.get("/settings/general?tab=users",
-                             cookies={"celerp_token": make_test_token(role=role)})
+        client.cookies.update({"celerp_token": make_test_token(role=role)})
+        r = await client.get("/settings/general?tab=users")
     assert r.status_code == 200, r.text
     return r.text
 

@@ -317,8 +317,17 @@ def _cleanup_import_stages() -> None:
         logging.getLogger(__name__).exception("Could not clean up staged import files at startup")
 
 
+_REQUEST_SCOPE_KEY = "celerp.ui.request"
+
+
+def _keep_request(req) -> None:
+    """Keep the request in its scope, so CloseFormMiddleware can close its form."""
+    req.scope[_REQUEST_SCOPE_KEY] = req
+
+
 app = FastHTML(
-    before=Beforeware(_auth_guard, skip=[r"/login", r"/login-force", r"/setup.*", r"/logout", r"/static/.*", r"/health"]),
+    before=[_keep_request,
+            Beforeware(_auth_guard, skip=[r"/login", r"/login-force", r"/setup.*", r"/logout", r"/static/.*", r"/health"])],
     secret_key=os.environ.get("JWT_SECRET", "dev-secret"),
     on_startup=[_join_version_fence, _report_module_stops, _cleanup_import_stages],
     on_shutdown=[_close_ui_api_client, _release_version_fence],
@@ -434,6 +443,25 @@ class NoStorePagesMiddleware:
         await self._app(scope, receive, _send)
 
 app.add_middleware(NoStorePagesMiddleware)
+
+
+class CloseFormMiddleware:
+    """Pure ASGI middleware: close the form a page request carried once the request is
+    answered. Every route reads its parameters from the form, and nothing else closes it,
+    so each uploaded file would stay open in a temporary file until garbage collection."""
+
+    def __init__(self, app):
+        self._app = app
+
+    async def __call__(self, scope, receive, send):
+        try:
+            await self._app(scope, receive, send)
+        finally:
+            request = scope.pop(_REQUEST_SCOPE_KEY, None)
+            if request is not None:
+                await request.close()
+
+app.add_middleware(CloseFormMiddleware)
 
 # Added after every middleware that calls the API, so each of those calls names its visitor too.
 from ui.api_client import CallerMiddleware  # noqa: E402

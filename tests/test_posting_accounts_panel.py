@@ -203,10 +203,11 @@ def _cookies() -> dict:
 @pytest.mark.asyncio
 async def test_the_panel_lists_each_role_with_its_account_and_status(ui_client):
     company = {"name": "Test Corp", "current_role": "owner", "settings": {}}
+    ui_client.cookies.update(_cookies())
     with patch("ui.api_client.get_company", new=AsyncMock(return_value=company)), \
          patch("ui.api_client.get_bank_accounts", new=AsyncMock(return_value={"items": []})), \
          patch("ui.api_client.get_posting_accounts", new=AsyncMock(return_value=_PANEL)):
-        r = await ui_client.get("/settings/accounting?tab=posting-accounts", cookies=_cookies())
+        r = await ui_client.get("/settings/accounting?tab=posting-accounts")
     assert r.status_code == 200
     body = r.content.decode()
     assert 'href="/settings/accounting?tab=posting-accounts"' in body
@@ -225,8 +226,9 @@ async def test_the_panel_lists_each_role_with_its_account_and_status(ui_client):
 
 @pytest.mark.asyncio
 async def test_editing_offers_a_searchable_picker_and_escape_cancels(ui_client):
+    ui_client.cookies.update(_cookies())
     with patch("ui.api_client.get_posting_accounts", new=AsyncMock(return_value=_PANEL)):
-        r = await ui_client.get("/settings/accounting/posting-accounts/general_expense/edit", cookies=_cookies())
+        r = await ui_client.get("/settings/accounting/posting-accounts/general_expense/edit")
     assert r.status_code == 200
     body = r.content.decode()
     assert "combobox" in body
@@ -241,8 +243,9 @@ async def test_saving_updates_the_row_in_place_and_shows_a_refusal(ui_client):
     saved = {**_PANEL, "roles": [{**_PANEL["roles"][1], "code": "6001", "name": "Expense 1", "status": "ready",
                                   "problem": None}]}
     put = AsyncMock(return_value=saved)
+    ui_client.cookies.update(_cookies())
     with patch("ui.api_client.set_posting_account", new=put):
-        r = await ui_client.patch("/settings/accounting/posting-accounts/general_expense", cookies=_cookies(),
+        r = await ui_client.patch("/settings/accounting/posting-accounts/general_expense",
                                   data={"value": "6001"})
     assert r.status_code == 200
     assert "hx-redirect" not in r.headers
@@ -253,7 +256,7 @@ async def test_saving_updates_the_row_in_place_and_shows_a_refusal(ui_client):
                                                   "it must be of type expense."))
     with patch("ui.api_client.set_posting_account", new=refused), \
          patch("ui.api_client.get_posting_accounts", new=AsyncMock(return_value=_PANEL)):
-        r = await ui_client.patch("/settings/accounting/posting-accounts/general_expense", cookies=_cookies(),
+        r = await ui_client.patch("/settings/accounting/posting-accounts/general_expense",
                                   data={"value": "1120"})
     assert r.status_code == 200
     assert "it must be of type expense." in r.content.decode()
@@ -276,9 +279,9 @@ async def test_a_role_account_shows_its_code_unless_an_importer_made_it_up(ui_cl
               "code_generated": False},
              {**_PANEL["roles"][1], "role": "general_expense", "code": "M73d6d4fc", "name": "Bank charges",
               "code_generated": True, "status": "ready", "problem": None}]
+    ui_client.cookies.update(_cookies())
     with patch("ui.api_client.get_posting_accounts", new=AsyncMock(return_value={**_PANEL, "roles": roles})):
-        shown = {role: (await ui_client.get(f"/settings/accounting/posting-accounts/{role}/display",
-                                             cookies=_cookies())).content.decode()
+        shown = {role: (await ui_client.get(f"/settings/accounting/posting-accounts/{role}/display")).content.decode()
                  for role in ("receivable", "general_expense")}
     assert "<span>Mdeadbeef Debtors</span>" in shown["receivable"]
     assert "<span>Bank charges</span>" in shown["general_expense"] and "M73d6d4fc" not in shown["general_expense"]
