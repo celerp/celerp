@@ -847,7 +847,8 @@ class TestClickToEdit:
             patch("ui.api_client.get_company", new=AsyncMock(return_value={"settings": {}})),
             patch("ui.api_client.get_units", new=AsyncMock(return_value=units)),
         ):
-            r = await ui_client.get(f"/api/items/gc:123/field/{field}/{route}", cookies=_authed())
+            ui_client.cookies.update(_authed())
+            r = await ui_client.get(f"/api/items/gc:123/field/{field}/{route}")
         assert r.status_code == 200
         assert b"combobox-input" in r.content
         note = b'data-custom-hint="Pick one of your units, or add a new one with Add new unit."'
@@ -13797,6 +13798,7 @@ class TestUnitsSettings:
             "detail": {"message_key": "units.precision_lowered_under_quantities",
                        "message": "carat cannot go to 1 decimal places: items or open documents still hold quantities with more (LOT-1).",
                        "params": {"unit": "carat", "decimals": 1, "examples": "LOT-1", "current": 2}}})
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_units", new=AsyncMock(return_value=list(_DEFAULT_UNITS_SEED))),
             patch("ui.api_client.patch_units", new=AsyncMock(side_effect=refused)),
@@ -13805,7 +13807,6 @@ class TestUnitsSettings:
                 "/settings/units/add",
                 content=b"name=carat&decimals=1",
                 headers={"content-type": "application/x-www-form-urlencoded"},
-                cookies=_authed(),
             )
         assert r.status_code == 200
         assert "hx-redirect" not in r.headers
@@ -13840,11 +13841,12 @@ class TestUnitsSettings:
     async def test_a_refused_unit_delete_says_why_and_stays_on_the_page(self, ui_client):
         from ui.api_client import APIError
         refused = APIError(422, "gram is in use", data={"detail": "gram is in use"})
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_units", new=AsyncMock(return_value=list(_DEFAULT_UNITS_SEED))),
             patch("ui.api_client.patch_units", new=AsyncMock(side_effect=refused)),
         ):
-            r = await ui_client.delete("/settings/units/gram", cookies=_authed())
+            r = await ui_client.delete("/settings/units/gram")
         assert r.status_code == 200
         assert "hx-redirect" not in r.headers
         assert 'class="cell-error"' in r.text and "gram is in use" in r.text
@@ -13900,6 +13902,7 @@ class TestUnitsSettings:
         params = {"unit": "carat", "decimals": 1, "examples": "RAW-1, RAW-2", "current": 2}
         refused = APIError(422, "x", data={"message": "x", "message_key": "units.precision_lowered_under_quantities",
                                            "params": params})
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_units", new=AsyncMock(return_value=current)),
             patch("ui.api_client.patch_units", new=AsyncMock(side_effect=refused)),
@@ -13908,7 +13911,6 @@ class TestUnitsSettings:
                 "/settings/units/carat/decimals",
                 content=b"value=1",
                 headers={"content-type": "application/x-www-form-urlencoded"},
-                cookies=_authed(),
             )
         assert r.status_code == 200
         assert 'class="cell-error"' in r.text, r.text
@@ -20756,14 +20758,15 @@ async def test_transform_handler_raises_a_setting_not_carried_over_as_a_toast_th
     base = {"entity_id": "item:1", "child_sku": "C-1", "child_category": "Processed",
             "child_sell_by": "piece", "child_qty": "4"}
     result = {"child_sku": "C-1", "parent_sku": "P-1"}
+    ui_client.cookies.update(_authed())
     with patch("ui.api_client.transform_item", new=AsyncMock(return_value={**result, "notices": [notice]})):
-        r = await ui_client.post("/api/items/bulk/transform", data=base, cookies=_authed())
+        r = await ui_client.post("/api/items/bulk/transform", data=base)
     assert r.status_code == 200
     toast = _json.loads(r.headers["HX-Trigger"])["celerpToast"]
     assert "Default Sell Qty 0.5 was not carried over: piece cannot hold it." in toast["message"], toast
     assert toast["persist"] is True and "flash--warning" in r.text
     with patch("ui.api_client.transform_item", new=AsyncMock(return_value={**result, "notices": []})):
-        r = await ui_client.post("/api/items/bulk/transform", data=base, cookies=_authed())
+        r = await ui_client.post("/api/items/bulk/transform", data=base)
     assert "celerpToast" not in r.headers["HX-Trigger"] and "flash--success" in r.text
 
 
