@@ -220,14 +220,15 @@ def test_import_where_line_matches_layout(page: Page, fresh_company, width, lang
     expect(note).to_be_visible()
     assert not any(w in note.inner_text().lower() for w in words), note.inner_text()
     page.goto("/inventory")
-    header = page.locator(".page-header").bounding_box()
-    btn = page.locator("[data-import-hint]").bounding_box()
+    page.wait_for_load_state("load")
+    # All rects in one read: late shell layout at phone width moves the header and the
+    # button together, never one without the other.
+    header, btn, content = page.evaluate("""() => ['.page-header', '[data-import-hint]', '#inventory-content']
+        .map(s => document.querySelector(s).getBoundingClientRect().toJSON())""")
     assert header["y"] <= btn["y"] and btn["y"] + btn["height"] <= header["y"] + header["height"]
-    content = page.locator("#inventory-content").bounding_box()
     assert btn["y"] + btn["height"] <= content["y"]
     if width == 1280:
-        main = page.locator(".page-header").bounding_box()
         mid = btn["x"] + btn["width"] / 2
-        on_right = mid > main["x"] + main["width"] / 2
+        on_right = mid > header["x"] + header["width"] / 2
         ltr = page.evaluate("getComputedStyle(document.querySelector('.page-header')).direction") == "ltr"
-        assert on_right == ltr, (lang, btn, main)
+        assert on_right == ltr, (lang, btn, header)
