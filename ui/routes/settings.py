@@ -2290,7 +2290,7 @@ def setup_routes(app):
         form = await request.form()
         name = str(form.get("new_category_name", "")).strip()
         if not name:
-            return P(t("settings.field_is_required", label=t("settings.new_category_name")), cls="cell-error")
+            return P(t("settings.category_name_required"), cls="cell-error")
         try:
             await api.create_category(token, name)
         except APIError as e:
@@ -2367,7 +2367,7 @@ def setup_routes(app):
         form = await request.form()
         new_name = str(form.get("new_name", "")).strip()
         if not new_name:
-            return P(t("settings.field_is_required", label=t("settings.new_category_name")), cls="error-banner")
+            return P(t("settings.category_name_required"), cls="error-banner")
         # Saving the name as shown (a library category reads in the user's language) is
         # no rename: the category keeps its library name and keeps translating.
         if new_name == await _category_name(token, category_key):

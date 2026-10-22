@@ -2926,7 +2926,7 @@
   "settings.cloud_status_last_backup": " - สำรองข้อมูลล่าสุด: {last_backup}",
   "settings.cloud_status_tier_plan": " - แพ็กเกจ {tier}{backup_text}",
   "settings.cloud_status_email_usage": "อีเมล: ส่งแล้ว {email_used} / {email_quota} ในรอบนี้",
-  "settings.field_is_required": "ป้อน{label}",
+  "settings.category_name_required": "Enter a category name.",
   "settings.add_category": "เพิ่มหมวดหมู่",
   "settings.unknown_permission": "ไม่รู้จักสิทธิ์ '{perm_key}'",
   "settings.role_permissions_note": "สิทธิ์ของแต่ละบทบาทถูกกำหนดแยกจากกัน: การให้หรือถอดสิทธิ์ของบทบาทหนึ่งจะไม่มีผลต่อบทบาทอื่นเลย ต้องมีเจ้าของอย่างน้อยหนึ่งคนเสมอ",

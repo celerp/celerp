@@ -2926,7 +2926,7 @@
   "settings.cloud_status_last_backup": "- Último backup: {last_backup}",
   "settings.cloud_status_tier_plan": "- {tier} plano{backup_text}",
   "settings.cloud_status_email_usage": "E-mail: {email_used} / {email_quota} enviados neste período",
-  "settings.field_is_required": "Digite {label}.",
+  "settings.category_name_required": "Enter a category name.",
   "settings.add_category": "Adicionar categoria",
   "settings.unknown_permission": "Permissão desconhecida '{perm_key}'",
   "settings.role_permissions_note": "As permissões de cada função são definidas independentemente: conceder ou remover uma permissão para uma função nunca altera nenhuma outra função. Deve haver sempre pelo menos um Proprietário.",

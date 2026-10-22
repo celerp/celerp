@@ -2926,7 +2926,7 @@
   "settings.cloud_status_last_backup": "- Última copia de seguridad: {last_backup}",
   "settings.cloud_status_tier_plan": "- Plan {tier}{backup_text}",
   "settings.cloud_status_email_usage": "Correo electrónico: {email_used} / {email_quota} enviados este periodo",
-  "settings.field_is_required": "Escriba {label}.",
+  "settings.category_name_required": "Enter a category name.",
   "settings.add_category": "Añadir categoría",
   "settings.unknown_permission": "Permiso desconocido «{perm_key}»",
   "settings.role_permissions_note": "Los permisos de cada rol se configuran de forma independiente: conceder o retirar un permiso a un rol nunca afecta a ningún otro rol. Siempre debe haber al menos un propietario.",

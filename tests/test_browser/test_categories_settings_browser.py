@@ -113,3 +113,17 @@ def test_a_new_category_with_a_taken_name_is_refused_beside_the_form(page, ui_se
         form.locator("button[type=submit]").click()
     expect(page.locator("#your-cats-section tbody tr")).to_have_count(before + 1)
     expect(page.locator(".cat-add-result .cell-error")).to_have_count(0)
+
+
+def test_a_blank_new_category_says_to_enter_a_name_beside_the_form(page, ui_server, fresh_company):
+    _open_categories(page, ui_server)
+    rows = page.locator("#your-cats-section tbody tr")
+    before = rows.count()
+    page.locator("input[name=new_category_name]").fill("")
+    _submit(page, "form.cat-add-form", "/settings/categories")
+
+    refusal = page.locator("form.cat-add-form .cat-add-result .cell-error")
+    expect(refusal).to_have_text("Enter a category name.")
+    expect(refusal).to_be_in_viewport()
+    assert page.evaluate("window.__sameView === true"), "the page reloaded after the refusal"
+    expect(rows).to_have_count(before)

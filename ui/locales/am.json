@@ -3146,7 +3146,7 @@
   "settings.cloud_status_last_backup": "- የመጨረሻው ምትኬ: {last_backup}",
   "settings.cloud_status_tier_plan": "- {tier} እቅድ{backup_text}",
   "settings.cloud_status_email_usage": "ኢሜል፡ {email_used} / {email_quota} ይህን ጊዜ ልኳል",
-  "settings.field_is_required": "{label} ያስገቡ።",
+  "settings.category_name_required": "Enter a category name.",
   "settings.add_category": "ምድብ አክል",
   "settings.unknown_permission": "ያልታወቀ ፍቃድ '{perm_key}'",
   "settings.role_permissions_note": "የእያንዳንዱ ሚና ፈቃዶች በተናጥል ተዋቅረዋል፡ ለአንድ ሚና ፍቃድ መስጠት ወይም ማስወገድ ሌላ ሚና በጭራሽ አይለውጠውም። ሁልጊዜ ቢያንስ አንድ ባለቤት መኖር አለበት።",

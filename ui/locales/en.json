@@ -3165,7 +3165,7 @@
   "settings.cloud_status_last_backup": " - Last backup: {last_backup}",
   "settings.cloud_status_tier_plan": " - {tier} plan{backup_text}",
   "settings.cloud_status_email_usage": "Email: {email_used} / {email_quota} sent this period",
-  "settings.field_is_required": "Enter {label}.",
+  "settings.category_name_required": "Enter a category name.",
   "settings.add_category": "Add Category",
   "settings.unknown_permission": "Unknown permission '{perm_key}'",
   "settings.role_permissions_note": "Each role's permissions are set independently: granting or removing a permission for one role never changes any other role. There must always be at least one Owner.",
