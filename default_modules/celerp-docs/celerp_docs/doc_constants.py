@@ -119,6 +119,13 @@ CREDIT_APPLICATION_METHODS: frozenset[str] = frozenset({"credit_note", "applied"
 # These are recurring template docs - they should never show a fulfill button.
 TEMPLATE_DOC_TYPES: frozenset[str] = frozenset({"subscription_invoice", "subscription_po"})
 
+
+def template_label(state: dict, entity_id: str = "") -> str:
+    """A subscription template's name as the subscriptions list shows it: its reference, else its
+    number, else its name, else the last part of its id. A template made with New subscription
+    has a reference and no name."""
+    return state.get("ref_id") or state.get("doc_number") or state.get("name") or entity_id.split(":")[-1]
+
 # Document types whose line prices are the company's own selling prices, so a
 # price that differs from its reference needs set_sales_doc_prices. Purchase and
 # receiving documents carry the supplier's prices and are never gated by it; the

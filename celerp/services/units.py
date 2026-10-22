@@ -271,7 +271,7 @@ async def check_precision_change(session, company_id, old_units: list[dict], new
     found by item id or SKU."""
     from sqlalchemy import or_, select
 
-    from celerp_docs.doc_constants import TEMPLATE_DOC_TYPES
+    from celerp_docs.doc_constants import TEMPLATE_DOC_TYPES, template_label
     from celerp_manufacturing.movements import run_name
 
     from celerp.models.projections import Projection
@@ -292,13 +292,14 @@ async def check_precision_change(session, company_id, old_units: list[dict], new
     items = {entity_id: state for entity_id, entity_type, state in rows if entity_type == "item"}
     item_unit = _item_units(items)
 
-    rows = [(entity_type, state, None if entity_type == "item" else _still_moving(entity_id, entity_type, state, items))
+    rows = [(entity_id, entity_type, state,
+             None if entity_type == "item" else _still_moving(entity_id, entity_type, state, items))
             for entity_id, entity_type, state in rows]
     for name, decimals in lowered.items():
         holders: list[str] = []
         templates: list[str] = []
         needed = decimals
-        for entity_type, state, lines in rows:
+        for entity_id, entity_type, state, lines in rows:
             template = state.get("doc_type") in TEMPLATE_DOC_TYPES
             if entity_type == "item":
                 sell_qty = stored_sell_qty(state.get("default_sell_qty"))
@@ -309,8 +310,8 @@ async def check_precision_change(session, company_id, old_units: list[dict], new
                 quantities = [qty for line, qty in lines if _line_unit(line, item_unit) == name]
                 if entity_type == "mfg_order":
                     label = run_name(state)
-                elif template:  # named as the subscriptions list and its generated documents name it
-                    label = state.get("name") or state.get("doc_number")
+                elif template:
+                    label = template_label(state, entity_id)
                 else:
                     label = state.get("doc_number") or state.get("ref_id") or state.get("name")
             finer = [q for q in quantities if _finer_than(q, decimals)]

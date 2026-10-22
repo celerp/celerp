@@ -333,9 +333,10 @@ async def test_a_subscription_blocking_fewer_decimals_says_to_cancel_it_and_set_
     assert r.status_code == 422, r.text
     detail = r.json()["detail"]
     assert detail["message_key"] == "units.precision_lowered_under_templates", detail
-    assert detail["params"] == {"unit": "carat", "decimals": 2, "examples": "Monthly stones", "current": 3}, detail
-    assert detail["message"] == ("carat cannot go to 2 decimal places: subscriptions still list quantities with "
-                                 "more (Monthly stones). Cancel them and set up new ones with quantities carat "
+    ref = (await _state(session, auth, sub))["ref_id"]
+    assert detail["params"] == {"unit": "carat", "decimals": 2, "examples": ref, "current": 3}, detail
+    assert detail["message"] == (f"carat cannot go to 2 decimal places: subscriptions still list quantities with "
+                                 f"more ({ref}). Cancel them and set up new ones with quantities carat "
                                  "allows, or keep 3 decimal places."), detail
     assert await _carat_decimals(client, auth) == 3
     # An active or paused template's lines cannot be edited, so the refusal never says to change them.
@@ -362,10 +363,11 @@ async def test_items_and_subscriptions_blocking_fewer_decimals_are_named_with_th
     assert r.status_code == 422, r.text
     detail = r.json()["detail"]
     assert detail["message_key"] == "units.precision_lowered_under_quantities_and_templates", detail
-    assert detail["params"] == {"unit": "carat", "decimals": 2, "examples": sku, "templates": "Monthly stones",
+    ref = (await _state(session, auth, sub))["ref_id"]
+    assert detail["params"] == {"unit": "carat", "decimals": 2, "examples": sku, "templates": ref,
                                 "current": 3}, detail
     assert detail["message"] == (f"carat cannot go to 2 decimal places: items or open documents ({sku}) and "
-                                 f"subscriptions (Monthly stones) still hold quantities with more. Change those "
+                                 f"subscriptions ({ref}) still hold quantities with more. Change those "
                                  f"quantities or finish those documents, and cancel those subscriptions and set up "
                                  f"new ones with quantities carat allows. Or keep 3 decimal places."), detail
 
@@ -405,6 +407,61 @@ async def test_a_paid_invoice_blocking_fewer_decimals_is_finished_by_shipping_it
     assert r.json()["detail"]["params"]["examples"] == sku, r.text
     assert (await client.post(f"/items/{lot}/adjust", headers=auth["headers"], json={"new_qty": 0.27})).status_code == 200
     assert (await _set_carat_decimals(client, auth, 2)).status_code == 200
+
+
+async def _new_subscription(client, session, auth, doc_type: str, qty: float) -> str:
+    """A template made as New subscription makes it: no name, then its customer and lines on the draft."""
+    lot = await _lot(client, auth, qty=1)
+    r = await client.post("/docs", headers=auth["headers"], json={"doc_type": doc_type, "frequency": "monthly"})
+    assert r.status_code == 200, r.text
+    sub = r.json()["id"]
+    line = {"item_id": lot, "sku": await _sku(session, auth, lot), "name": "Stone", "quantity": qty,
+            "unit": "carat", "unit_price": 10}
+    for fields in ({"contact_id": "customer:1", "start_date": "2026-01-01"}, {"line_items": [line]}):
+        r = await client.patch(f"/docs/{sub}", headers=auth["headers"], json={
+            "fields_changed": {key: {"old": None, "new": value} for key, value in fields.items()}})
+        assert r.status_code == 200, r.text
+    assert (await client.post(f"/subscriptions/{sub}/activate", headers=auth["headers"])).status_code == 200
+    assert not (await _state(session, auth, sub)).get("name")
+    return sub
+
+
+async def test_an_unnamed_subscription_is_named_as_the_subscriptions_list_names_it(client, session, auth):
+    from fasthtml.common import to_xml
+
+    from ui.routes.subscriptions import _sub_table
+
+    assert (await _set_carat_decimals(client, auth, 3)).status_code == 200
+    sub = await _new_subscription(client, session, auth, "subscription_invoice", 0.275)
+    ref = (await _state(session, auth, sub))["ref_id"]
+    assert ref in to_xml(_sub_table([{**await _state(session, auth, sub), "id": sub}], "sales"))
+
+    r = await _set_carat_decimals(client, auth, 2)
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert detail["params"]["examples"] == ref, detail
+    assert f"({ref})" in detail["message"], detail
+
+    # Cancelled while carat goes to 2 places, then active again as stored: making its next
+    # document is refused under the same name, and one that fits is made with that name in its note.
+    fits = await _new_subscription(client, session, auth, "subscription_invoice", 0.27)
+    assert (await client.post(f"/subscriptions/{sub}/cancel", headers=auth["headers"])).status_code == 200
+    assert (await _set_carat_decimals(client, auth, 2)).status_code == 200
+    from celerp.models.projections import Projection
+    row = await session.get(Projection, {"company_id": auth["company_id"], "entity_id": sub})
+    row.state = {**row.state, "status": "active"}
+    await session.commit()
+    r = await client.post(f"/subscriptions/{sub}/generate", headers=auth["headers"], json={})
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert detail["message_key"] == "units.template_finer_than_unit", detail
+    assert detail["params"]["template"] == ref, detail
+    assert detail["message"].startswith(f"Subscription {ref} lists Stone at 0.275 carat"), detail
+    r = await client.post(f"/subscriptions/{fits}/generate", headers=auth["headers"], json={})
+    assert r.status_code == 200, r.text
+    fits_ref = (await _state(session, auth, fits))["ref_id"]
+    assert f"Auto-created from subscription template {fits_ref}" in (
+        await _state(session, auth, r.json()["doc_id"]))["notes"]
 
 
 async def test_one_holder_reads_without_a_count(client, session, auth):
@@ -637,9 +694,9 @@ async def test_a_subscription_never_makes_a_document_finer_than_its_units(client
     assert r.status_code == 422, r.text
     detail = r.json()["detail"]
     assert detail["message_key"] == "units.template_finer_than_unit", detail
-    assert detail["params"] == {"template": "Old stones", "label": "Stone", "qty": "0.275", "unit": "carat",
+    assert detail["params"] == {"template": "SUB-OLD", "label": "Stone", "qty": "0.275", "unit": "carat",
                                 "decimals": 2, "places": 3}, detail
-    assert detail["message"].startswith("Subscription Old stones lists Stone at 0.275 carat"), detail
+    assert detail["message"].startswith("Subscription SUB-OLD lists Stone at 0.275 carat"), detail
     assert "set carat back to 3 decimal places" in detail["message"], detail
     assert await _doc_count(session, auth) == before
     assert not (await _state(session, auth, old)).get("generated_doc_ids")
