@@ -54,7 +54,6 @@ from celerp.models.ai import AIBatchJob
 from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
 from celerp.services.company_lock import hold_company
 from celerp.services.permissions import get_current_company_settings, require_permission
-from celerp.session_gate import require_ai_access
 from ui.i18n import t
 
 # AI-specific rate limiter: tighter than the global 60/min default.
@@ -62,8 +61,14 @@ from ui.i18n import t
 _limiter = Limiter(key_func=get_remote_address)
 
 
+async def _require_ai_access(request: Request) -> None:
+    """Refuse AI routes unless this install has a Connect session or an account key."""
+    from celerp.session_gate import require_ai_access
+    await require_ai_access(request)
+
+
 router = APIRouter(
-    dependencies=[Depends(get_current_user), Depends(require_ai_access), require_permission("use_ai_assistant")],
+    dependencies=[Depends(get_current_user), Depends(_require_ai_access), require_permission("use_ai_assistant")],
 )
 
 # Settings endpoints are authenticated separately from AI execution routes.
