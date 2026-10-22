@@ -199,7 +199,9 @@ def update_sequence(company: Company, doc_type: str, prefix: str | None = None,
             raise ValueError(err)
         seq["pattern"] = pattern
     if next_num is not None:
-        seq["next"] = max(1, next_num)
+        # The number belongs to today's period, so the reset for a later period cannot discard it.
+        day = _numbering_day(settings, seq)
+        seq.update(next=max(1, next_num), year=day.year, month=day.month, day=day.day)
 
     sequences[doc_type] = seq
     settings["sequences"] = sequences

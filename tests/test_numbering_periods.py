@@ -54,6 +54,18 @@ def test_saved_next_without_stored_day_is_kept(monkeypatch):
     assert next_doc_ref(company, "invoice") == "INV-2610-0500"
 
 
+def test_saved_next_after_the_period_turned_is_kept(monkeypatch):
+    """A counter last used in September, set to 500 in October: October's documents start at 500."""
+    company = _company(sequences={"invoice": {
+        "prefix": "INV", "pattern": "{PREFIX}-{YY}{MM}-{####}", "next": 7, "year": 2026, "month": 9, "day": 30}})
+    freeze(monkeypatch, datetime(2026, 10, 22, 9, 0, tzinfo=timezone.utc))
+    assert update_sequence(company, "invoice", next_num=500)["preview"] == "INV-2610-0500"
+    assert _preview(company) == "INV-2610-0500"
+    assert next_doc_ref(company, "invoice") == "INV-2610-0500"
+    freeze(monkeypatch, datetime(2026, 11, 1, 9, 0, tzinfo=timezone.utc))
+    assert next_doc_ref(company, "invoice") == "INV-2611-0001"
+
+
 def test_numbering_uses_company_business_day(monkeypatch):
     """18:00 UTC on 31 October is already 1 November in Bangkok."""
     company = _company(timezone="Asia/Bangkok")
