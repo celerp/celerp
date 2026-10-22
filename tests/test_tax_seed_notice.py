@@ -21,14 +21,16 @@ from test_tax_seeds import _OLD_ET
 pytestmark = pytest.mark.asyncio
 
 
-async def _company(session, *, sales: list[dict] | None = None, purchasing: list[dict] | None = None) -> uuid.UUID:
+async def _company(session, *, sales: list[dict] | None = None, purchasing: list[dict] | None = None,
+                   active: bool = True, staged: bool = False) -> uuid.UUID:
     settings: dict = {}
     if sales is not None:
         settings["taxes"] = copy.deepcopy(sales)
     if purchasing is not None:
         settings["purchasing_taxes"] = copy.deepcopy(purchasing)
     company_id = uuid.uuid4()
-    session.add(Company(id=company_id, name="Seed notice co", slug=f"seed-{company_id.hex[:8]}", settings=settings))
+    session.add(Company(id=company_id, name="Seed notice co", slug=f"seed-{company_id.hex[:8]}", settings=settings,
+                        is_active=active, is_migration_staged=staged))
     await session.commit()
     return company_id
 
@@ -64,6 +66,16 @@ async def test_tax_seed_notice_one_per_entry_and_idempotent(session):
 
     await _run(session)
     assert {k: n.id for k, n in (await _notices(session, old)).items()} == {k: n.id for k, n in notices.items()}
+
+
+async def test_tax_seed_notice_skips_a_company_staged_for_a_migration(session):
+    """A company staged for a migration is left exactly as it was; a deactivated one is still told."""
+    staged = await _company(session, sales=_OLD_ET, active=False, staged=True)
+    paused = await _company(session, sales=_OLD_ET, active=False)
+
+    await _run(session)
+    assert await _notices(session, staged) == {}
+    assert set(await _notices(session, paused)) == {"et-wht-2025", "et-tot-2025"}
 
 
 async def test_tax_seed_notice_failure_is_logged_and_start_continues(monkeypatch, caplog):

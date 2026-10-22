@@ -8,9 +8,9 @@ Issue now copies each line's HS code and country of origin from its item
 release saved none: its issued documents printed the item's current codes. This pass gives each
 of them the codes it prints today, so nothing on paper changes, and tells each company once.
 
-Runs at startup, gated by a marker so it runs once per database. Each list is saved in its own
-savepoint: a list that fails is rolled back alone, logged, and the marker stays unset so the next
-start tries it again. The hook never raises, so the module is never held back by it.
+Runs at startup, gated by a marker so it runs once per database. A company staged for a
+migration is skipped. Each list is saved in its own savepoint: a list that fails is rolled back
+alone and logged. Either way the marker stays unset so the next start tries it again. The hook never raises, so the module is never held back by it.
 """
 
 from __future__ import annotations
@@ -34,12 +34,13 @@ async def freeze_issued_customs_lists(session: AsyncSession) -> dict:
     from celerp.models.projections import Projection
     from celerp.notifications.service import notify_once
     from celerp.services.list_behavior import DRAFT, LIST_TYPES, behavior
+    from celerp.services.migrations import is_company_migration_staged
     from celerp_docs.routes import freeze_customs_lines
     from ui.i18n import t
 
     conn = await session.connection()
     if await conn.run_sync(lambda c: get_meta(c, CUSTOMS_FREEZE_KEY)):
-        return {"frozen": 0, "failed": 0}
+        return {"frozen": 0, "failed": 0, "staged": 0}
 
     customs_types = [lt for lt in LIST_TYPES if behavior(lt).customs]
     rows = (await session.execute(
@@ -51,7 +52,12 @@ async def freeze_issued_customs_lists(session: AsyncSession) -> dict:
     )).all()
     frozen: dict = {}
     failed = 0
+    staged: dict = {}
     for company_id, entity_id in rows:
+        if company_id not in staged:
+            staged[company_id] = await is_company_migration_staged(session, company_id)
+        if staged[company_id]:
+            continue
         try:
             async with session.begin_nested():
                 row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
@@ -75,13 +81,14 @@ async def freeze_issued_customs_lists(session: AsyncSession) -> dict:
         await notify_once(session, company_id, "system", t(f"{_NOTICE}.title", "en"),
                           t(f"{_NOTICE}.body", "en", count=count), action_url="/lists",
                           i18n={"title": f"{_NOTICE}.title", "body": f"{_NOTICE}.body", "params": {"count": count}})
-    if not failed:
+    if not failed and not any(staged.values()):
         await conn.run_sync(lambda c: set_meta(c, CUSTOMS_FREEZE_KEY, "done"))
     total = sum(frozen.values())
-    if total or failed:
-        log.info("Saved customs codes on %d issued list(s); %d failed%s", total, failed,
-                 " (marker left unset; the next start retries)" if failed else "")
-    return {"frozen": total, "failed": failed}
+    waiting = sum(staged.values())
+    if total or failed or waiting:
+        log.info("Saved customs codes on %d issued list(s); %d failed, %d company(ies) staged for a migration%s",
+                 total, failed, waiting, " (marker left unset; the next start retries)" if failed or waiting else "")
+    return {"frozen": total, "failed": failed, "staged": waiting}
 
 
 async def customs_freeze_hook(*, session: AsyncSession) -> None:

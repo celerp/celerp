@@ -5,7 +5,8 @@ longer right (tax_regimes.RETIRED_SEED_ROWS).
 
 Runs at every startup. A company's taxes are its own, so this only reads them: each matched
 entry is one notice, told once, linking to the tax list it was found in; an entry the company
-has since fixed has its notice removed, so a notice that stands is always still true.
+has since fixed has its notice removed, so a notice that stands is always still true. A company
+staged for a migration is left as it is until its migration finishes.
 """
 from __future__ import annotations
 
@@ -14,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.models.company import Company
 from celerp.notifications import service as notification_service
+from celerp.services.migrations import is_company_migration_staged
 from celerp.tax_regimes import RETIRED_SEED_ROWS, retired_seed_rows
 from ui.i18n import t
 
@@ -24,6 +26,8 @@ _TAX_TABS = {"sales": "/settings/sales?tab=taxes", "purchase": "/settings/purcha
 async def run_tax_seed_notice(session: AsyncSession) -> None:
     """Bring every company's retired-seed notices up to date. Caller commits."""
     for company_id, settings in (await session.execute(select(Company.id, Company.settings))).all():
+        if await is_company_migration_staged(session, company_id):
+            continue
         found = {m["id"]: m["lists"] for m in retired_seed_rows(settings or {})}
         for entry in RETIRED_SEED_ROWS:
             key = f"notice.tax_seed.{entry['id']}"
