@@ -8567,18 +8567,21 @@ async function celerpAcSearch(input, field) {{
         }});
         list.appendChild(custom);
         list.style.display = 'block';
-        // Reposition to fixed so it escapes overflow:auto scroll containers
-        const rect = wrap.getBoundingClientRect();
-        list.style.position = 'fixed';
-        list.style.left = rect.left + 'px';
-        list.style.width = rect.width + 'px';
-        list.style.zIndex = '9999';
-        // A fixed list cannot be scrolled to: open it above the input when it
-        // does not fit below and there is more room above.
-        const below = window.innerHeight - rect.bottom;
-        const h = list.offsetHeight;
-        list.style.top = (h > below && rect.top > below ? rect.top - Math.min(h, rect.top) : rect.bottom) + 'px';
+        _celerpAcPlace(list, wrap);
+        followAnchor(list, wrap, () => _celerpAcPlace(list, wrap));
     }}, 250);
+}}
+// Fixed to the window so it escapes overflow:auto scroll containers. A fixed list cannot be
+// scrolled to: open it above the field when it does not fit below and there is more room above.
+function _celerpAcPlace(list, wrap) {{
+    const rect = wrap.getBoundingClientRect();
+    list.style.position = 'fixed';
+    list.style.left = rect.left + 'px';
+    list.style.width = rect.width + 'px';
+    list.style.zIndex = '9999';
+    const below = window.innerHeight - rect.bottom;
+    const h = list.offsetHeight;
+    list.style.top = (h > below && rect.top > below ? rect.top - Math.min(h, rect.top) : rect.bottom) + 'px';
 }}
 function celerpAcBlur(input) {{
     const list = input.parentElement.querySelector('.catalog-ac-list');

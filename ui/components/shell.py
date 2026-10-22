@@ -89,6 +89,32 @@ document.addEventListener('keydown', function (e) {
 """
 
 _CLIENT_JS = """
+// A panel with fixed positioning (picker list, row menu, column funnel, tooltip) is placed
+// against its control when it opens. A banner loading in above, a scroll or a resize then
+// moves the control but not the panel, and a click aimed at an option lands beside it. So
+// while the panel is shown, ``place`` runs again on any frame where the control has moved
+// or the window changed size. Following ends once the panel is hidden or either is removed.
+function followAnchor(popup, anchor, place) {
+  popup._anchor = anchor;
+  popup._place = place;
+  if (popup._following) return;
+  popup._following = true;
+  var last = '';
+  function tick() {
+    var a = popup._anchor;
+    if (!popup.isConnected || !a.isConnected || !popup.getClientRects().length
+        || getComputedStyle(popup).visibility === 'hidden') {
+      popup._following = false;
+      return;
+    }
+    var r = a.getBoundingClientRect();
+    var key = [r.top, r.left, r.width, r.height, window.innerWidth, window.innerHeight].join();
+    if (last && key !== last) popup._place();
+    last = key;
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+}
 function _copiedFeedback(btn, restoreLabel) {
   btn.textContent = window.__shellI18n.copied;
   setTimeout(function() { btn.textContent = restoreLabel; }, 2000);
@@ -276,6 +302,23 @@ document.addEventListener('keydown', function(e) {
    under load the change->PATCH->swap commit takes longer than 300ms, so that timer fired
    mid-commit and reloaded the page, dropping the just-made edit (and any other unsaved state).
    The per-cell handler is sufficient, so no global reload is needed. */
+// Fixed to the window against its button so a table's overflow cannot clip it: anchored to
+// the button's right edge, opening upward when too close to the bottom.
+function placeRowMenu(menu, btn) {
+  var r = btn.getBoundingClientRect();
+  var menuH = 200; // estimated max height
+  menu.style.position = 'fixed';
+  menu.style.right = (window.innerWidth - r.right) + 'px';
+  menu.style.left = 'auto';
+  if (window.innerHeight - r.bottom < menuH) {
+    menu.style.bottom = (window.innerHeight - r.top) + 'px';
+    menu.style.top = 'auto';
+  } else {
+    menu.style.top = r.bottom + 'px';
+    menu.style.bottom = 'auto';
+  }
+  menu.style.zIndex = '9999';
+}
 function toggleRowMenu(id) {
   var menu = document.getElementById('menu-' + id);
   if (!menu) return;
@@ -285,26 +328,10 @@ function toggleRowMenu(id) {
     m.style.cssText = '';
   });
   if (!wasOpen) {
-    // Position fixed relative to button so table overflow: hidden can't clip it
     var btn = menu.previousElementSibling;
-    if (btn) {
-      var r = btn.getBoundingClientRect();
-      // Anchor to right edge of button; flip upward if too close to bottom
-      var menuH = 200; // estimated max height
-      var spaceBelow = window.innerHeight - r.bottom;
-      menu.style.position = 'fixed';
-      menu.style.right = (window.innerWidth - r.right) + 'px';
-      menu.style.left = 'auto';
-      if (spaceBelow < menuH) {
-        menu.style.bottom = (window.innerHeight - r.top) + 'px';
-        menu.style.top = 'auto';
-      } else {
-        menu.style.top = r.bottom + 'px';
-        menu.style.bottom = 'auto';
-      }
-      menu.style.zIndex = '9999';
-    }
+    if (btn) placeRowMenu(menu, btn);
     menu.classList.add('open');
+    if (btn) followAnchor(menu, btn, function() { placeRowMenu(menu, btn); });
   }
 }
 document.addEventListener('click', function(e) {
@@ -437,6 +464,12 @@ function initCombobox(wrap) {
     list.style.left = Math.max(gap, Math.min(r.left, vw - gap - list.offsetWidth)) + 'px';
   }
 
+  function showList() {
+    positionList();
+    list.classList.add('open');
+    followAnchor(list, input, positionList);
+  }
+
   // Lazy — always queries the live DOM so HTMX-swapped options are included.
   function currentOpts() {
     return Array.from(list.querySelectorAll('.combobox-option'));
@@ -511,8 +544,9 @@ function initCombobox(wrap) {
       opt.classList.add('combobox-option--selected');
     }
     syncMultiLabel();
-    // Stay open: picking several accounts in a row is the whole point of the mode.
-    positionList();
+    // Stay open: picking several accounts in a row is the whole point of the mode. The list
+    // is not moved here: this runs on mousedown, and moving it would put the mouseup beside
+    // the option. followAnchor places it again on the next frame if the field has moved.
   }
 
   function selectOpt(opt) {
@@ -624,8 +658,7 @@ function initCombobox(wrap) {
     // Clear the summary so typing searches rather than filtering against "3 selected".
     if (isMulti) input.value = '';
     filterOpts('');
-    positionList();
-    list.classList.add('open');
+    showList();
   }
   input.addEventListener('focus', openList);
   // A click on the field after Esc closed it opens it again; focus alone would not.
@@ -640,13 +673,11 @@ function initCombobox(wrap) {
         filterOpts('');
       }
       // Non-empty: HTMX fires the server request and swaps results into the list
-      positionList();
-      list.classList.add('open');
+      showList();
       if (hidden && !isMulti) hidden.value = '';
     } else {
       filterOpts(input.value);
-      positionList();
-      list.classList.add('open');
+      showList();
       if (hidden && !isMulti) hidden.value = allowCustom ? input.value : '';
     }
   });
@@ -818,8 +849,8 @@ document.addEventListener('htmx:afterSettle', revealActiveTabs);
 _INFO_TIP_JS = """
 // One tooltip for every .info-tip icon (info_tip). It lives under <body> with fixed
 // positioning, so no card's overflow can clip it: above the icon when there is room,
-// else below, and always pulled inside the viewport edges. It follows its icon on scroll
-// and resize, and closes once the icon leaves the viewport. On touch screens a tap on the
+// else below, and always pulled inside the viewport edges. It follows its icon wherever
+// the page moves it (followAnchor), and closes once the icon leaves the viewport. On touch screens a tap on the
 // icon opens or closes it, and a tap anywhere else closes it.
 (function() {
   var MARGIN = 8, GAP = 6, bubble = null, owner = null, tapWasOpen = null;
@@ -859,6 +890,7 @@ _INFO_TIP_JS = """
     el.classList.add('info-tip-bubble--open');
     tip.setAttribute('aria-describedby', el.id);
     place();
+    followAnchor(el, tip, follow);
   }
   function follow() {
     if (!owner) return;
@@ -890,8 +922,7 @@ _INFO_TIP_JS = """
     if (tapWasOpen) hide(); else show(t);
     tapWasOpen = null;
   });
-  window.addEventListener('scroll', follow, true);
-  window.addEventListener('resize', follow);
+  // A page swap that removes the icon ends following, so close the tip here.
   document.addEventListener('htmx:afterSettle', follow);
 })();
 """
