@@ -590,7 +590,7 @@ def test_rows_needing_more_memory_than_the_budget_are_refused_with_what_is_held_
         peak = tracemalloc.get_traced_memory()[1]
     finally:
         tracemalloc.stop()
-    assert str(refused.value) == t("migration.err_odoo_backup_too_large", "en", limit=f"{4 * MI / 1024 ** 3:g}")
+    assert str(refused.value) == t("migration.err_odoo_backup_too_large", "en")
     assert peak < 16 * MI, f"held {peak / MI:.0f} MiB"
 
 
@@ -681,7 +681,29 @@ async def test_running_out_of_memory_while_reading_is_refused_as_too_large(clien
     monkeypatch.setattr(*((dump, "_field", exhausted) if stage == "the dump" else (book.steps, "roles_from_ledger", exhausted)))
     r = await scan_upload(client, _backup(17), name="harbour.zip", source="odoo")
     assert r.status_code == 422, r.text
-    assert r.json()["detail"] == t("migration.err_odoo_backup_too_large", "en", limit=f"{dump.MAX_HELD / 1024 ** 3:g}")
+    assert r.json()["detail"] == t("migration.err_odoo_backup_too_large", "en")
+
+
+@pytest.mark.parametrize("step, where", [
+    ("inspect", "_coverage"), ("build_manifest", "build_bundle"), ("source_expectations", "expectations_from"),
+    ("read_attachment", "attachments.read_attachment"), ("inspect", "attachments.screen"), ("inspect", "build_ledger"),
+])
+def test_running_out_of_memory_anywhere_after_the_backup_is_opened_is_refused_as_too_large(tmp_path, monkeypatch,
+                                                                                           step, where):
+    """What is built from the rows read (the ledger, the bundle, the expectations, the files)
+    can need more memory than the rows: running out there is the same refusal as in the reader."""
+    from celerp.importers.adapters.odoo import adapter
+
+    def exhausted(*_, **__):
+        raise MemoryError
+
+    owner, name = (attachments, where.split(".")[1]) if "." in where else (adapter, where)
+    monkeypatch.setattr(owner, name, exhausted)
+    files = _file(tmp_path, _backup(17), f"{step}-{name}.zip")
+    with pytest.raises(SourceRevisionError) as refused:
+        getattr(_adapter(), step)(*{"inspect": (files,), "read_attachment": (files, FULL, "attachment:1")}.get(
+            step, (files, FULL)))
+    assert str(refused.value) == t("migration.err_odoo_backup_too_large", "en")
 
 
 def _longest_line(version: int) -> int:

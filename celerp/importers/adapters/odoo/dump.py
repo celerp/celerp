@@ -114,7 +114,7 @@ def _intact(error: type[Exception] = ScanError) -> Iterator[None]:
 
 def too_large(error: type[Exception] = ScanError) -> Exception:
     """The refusal of a backup whose rows need more memory than MAX_HELD, or than the server has."""
-    return error(t(HELD_TOO_LARGE, limit=f"{MAX_HELD / 1024 ** 3:g}"))
+    return error(t(HELD_TOO_LARGE))
 
 
 def too_long() -> ScanError:

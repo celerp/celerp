@@ -71,18 +71,23 @@ _READING = threading.Lock()
 @lru_cache(maxsize=1)
 def _books(path: Path, sha256: str, company: str | None) -> OdooBook:
     """The books of one company of a backup, read from the dump once for every step of a run
-    (the scan, the manifest, the expectations and each file the import fetches). Running out
-    of memory refuses the backup as too large."""
+    (the scan, the manifest, the expectations and each file the import fetches)."""
     with Backup(path) as backup:
-        try:
-            return read_odoo(backup, company)
-        except MemoryError as exc:
-            raise too_large(SourceRevisionError) from exc
+        return read_odoo(backup, company)
 
 
-def _book(artifacts: ArtifactSet, decisions: MigrationDecisions) -> OdooBook:
+@contextmanager
+def _opened(artifacts: ArtifactSet, decisions: MigrationDecisions) -> Iterator[tuple[OdooBook, Backup]]:
+    """The book of the chosen company and its backup, open, for every step that reads them.
+    Running out of memory anywhere while they are used, in the book or in what is built from
+    it, refuses the backup as too large, as the reader does."""
     artifact = _single(artifacts)
-    return _books(artifact.path, artifact.sha256, decisions.mappings.get(COMPANY_QUESTION))
+    try:
+        odoo = _books(artifact.path, artifact.sha256, decisions.mappings.get(COMPANY_QUESTION))
+        with Backup(artifact.path) as backup:
+            yield odoo, backup
+    except MemoryError as exc:
+        raise too_large(SourceRevisionError) from exc
 
 
 @contextmanager
@@ -90,11 +95,9 @@ def _read(artifacts: ArtifactSet,
           decisions: MigrationDecisions) -> Iterator[tuple[OdooBook, Ledger, attachments.Screened]]:
     """The book, its ledger for these decisions and the files it carries. Every run on a backup
     shares its book and rebuilds the ledger on it, so one run at a time reads and uses them."""
-    with _READING:
-        odoo = _book(artifacts, decisions)
+    with _READING, _opened(artifacts, decisions) as (odoo, backup):
         ledger = build_ledger(odoo.book, decisions)
-        with Backup(_single(artifacts).path) as backup:
-            screened = attachments.screen(backup, odoo.attachments, _carried(ledger))
+        screened = attachments.screen(backup, odoo.attachments, _carried(ledger))
         yield odoo, ledger, screened
 
 
@@ -225,6 +228,5 @@ class OdooAdapter:
     def read_attachment(self, artifacts: ArtifactSet, decisions: MigrationDecisions, key: str) -> bytes:
         """The content of one file of the chosen company that the scan accepts. Raises
         ScanError for any other key."""
-        refs = _book(artifacts, decisions).attachments
-        with Backup(_single(artifacts).path) as backup:
-            return attachments.read_attachment(backup, refs, key)
+        with _opened(artifacts, decisions) as (odoo, backup):
+            return attachments.read_attachment(backup, odoo.attachments, key)

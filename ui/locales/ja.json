@@ -4166,7 +4166,7 @@
   "migration.err_odoo_dump_damaged": "このバックアップは不完全か破損しています。データベースダンプが途中で切れているか、内部のテーブルが壊れているため、データは一切読み取られていません。Odooのデータベース管理画面で新しいバックアップを作成し、再度アップロードしてください。",
   "migration.err_odoo_backup_damaged": "このバックアップファイルは読み取れません。ファイルが破損しているか、アップロードまたはコピー中に途中で切れたか、Celerpで開けない形式に再圧縮されています。何もインポートされていません。Odooのデータベース管理画面で新しいバックアップを作成し、ZIPファイルを変更せずにそのままアップロードしてください。",
   "migration.err_odoo_backup_encrypted": "This backup is protected with a password, so Celerp cannot open it. Nothing was imported. Make a new backup in Odoo's database manager without a password and upload the zip as it is.",
-  "migration.err_odoo_backup_too_large": "This backup is too large to import: reading its records takes more memory than this server can give one import, at most {limit} GB. Nothing was imported. For help with large backups, ask on GitHub Issues or Discussions.",
+  "migration.err_odoo_backup_too_large": "This backup is too large to import: its records need more memory than this server can give one import. Nothing was imported. For help with large backups, ask on GitHub Issues or Discussions.",
   "migration.err_odoo_record_too_large": "One record in this backup holds more than {limit} million characters, more than Celerp reads from a single record. Nothing was imported.",
   "migration.err_attachment_not_found": "この添付ファイルはアップロードされたファイルに含まれていません。",
   "migration.err_odoo_company_missing": "このバックアップには {company} の帳簿がありません。一覧の会社から選択してください。",
