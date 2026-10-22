@@ -12,7 +12,7 @@ from starlette.responses import RedirectResponse
 
 from celerp.gateway.state import PAID_TIERS
 import ui.api_client as api
-from ui.api_client import APIError
+from ui.api_client import APIError, error_message
 from ui.components.activity import QTY_FIELD_KEYS, fmt_price, fmt_qty, is_money_field
 from ui.components.cloud_gate import (
     subscribe_url,
@@ -126,6 +126,157 @@ def _quota_exceeded_card(detail: dict, user_bubble: FT, lang: str = "en") -> tup
     )
 
 
+async def _refusal_reply(token: str, e: APIError, user_bubble: FT, query: str,
+                         lang: str) -> tuple[tuple, bool]:
+    """The reply to a question the AI service refused, and whether the composer keeps
+    the question. The relay's refusal code decides: a free account out of questions
+    or paused gets help pages that may answer it, a refusal of the question itself
+    (too long, too many files) keeps it for editing, a used-up paid plan gets top-up."""
+    data = e.data if isinstance(e.data, dict) else {}
+    code = _api_error_code(e)
+    if e.status == 402 and code == "quota_exceeded" and data.get("tier") == "free":
+        limit = int(data.get("base_limit") or 0)
+        cards = _plan_cards(await _plan_counts(token), lang)
+        return (user_bubble, _msg_bubble("ai", t("ai.free_used_up", lang, limit=limit)),
+                *await _help_hits(token, query, lang), cards), False
+    if e.status == 402 and code == "not_available":
+        return (user_bubble, _msg_bubble("ai", t("ai.free_not_eligible", lang), error=True)), False
+    if e.status == 402 and code == "plan_limit":
+        return (user_bubble, _msg_bubble("ai", error_message(e), error=True)), True
+    if e.status == 402:
+        return _quota_exceeded_card(data, user_bubble, lang), False
+    if e.status == 503 and code == "free_paused":
+        date = str(data.get("resets_at") or "")[:10]
+        return (user_bubble, _msg_bubble("ai", t("ai.free_paused", lang, date=date)),
+                *await _help_hits(token, query, lang)), False
+    if e.status == 413 and code == "free_text_too_large":
+        return (user_bubble, _msg_bubble("ai", t("ai.free_text_too_large", lang), error=True)), True
+    return _failed_reply(user_bubble, e, lang), False
+
+
+async def _help_hits(token: str, query: str, lang: str) -> list[FT]:
+    """Up to three help pages matching the refused question; none when the search fails."""
+    if not query:
+        return []
+    try:
+        hits = (await api.help_search(token, query)).get("hits") or []
+    except APIError:
+        return []
+    links = [(str(h["id"]), str(h.get("title") or h["id"])) for h in hits[:3] if h.get("id")]
+    if not links:
+        return []
+    return [Div(P(t("ai.help_hits", lang), " ", *_page_links(links), cls="ai-msg__sources"),
+                cls="ai-msg ai-msg--ai")]
+
+
+async def _ai_offer(token: str) -> dict:
+    """The AI offer (paid flag and included question counts); empty when it cannot load,
+    so every count line it feeds is left out rather than guessed."""
+    try:
+        return await api.ai_offer(token)
+    except APIError:
+        return {}
+
+
+async def _plan_counts(token: str) -> dict:
+    return (await _ai_offer(token)).get("plan_ai_questions") or {}
+
+
+def _plan_cards(counts: dict, lang: str) -> FT:
+    """The Celerp Connect and Connect + AI subscribe cards. Each count line comes from
+    the relay's included questions per plan and is left out when unknown."""
+    def count_line(key: str, tier: str, *extra_cls: str) -> list[FT]:
+        n = counts.get(tier)
+        if not isinstance(n, int):
+            return []
+        return [P(t(key, lang, n=n), cls=" ".join(("ai-showcase__cta-feature", *extra_cls)))]
+
+    return Div(
+        Div(
+            Span(t("msg.start_here", lang), cls="ai-showcase__cta-badge ai-showcase__cta-badge--default"),
+            P(t("settings.tab_cloud_relay", lang), cls="ai-showcase__cta-name"),
+            P("", cls="ai-showcase__cta-price ai-showcase__cta-price--default"),
+            P(t("msg.secure_remote_access", lang), cls="ai-showcase__cta-feature"),
+            P(t("msg.automated_daily_backups", lang), cls="ai-showcase__cta-feature"),
+            *count_line("ai.plan_lifetime_credits", "cloud", "ai-showcase__cta-feature--highlight"),
+            Div(
+                A(t("msg.start_with_cloud_relay", lang),
+                  href=subscribe_url("cloud"),
+                  target="_blank", cls="btn btn--outline"),
+                P(t("msg.cancel_anytime", lang), cls="ai-showcase__cta-fine"),
+                cls="ai-showcase__cta-actions",
+            ),
+            cls="ai-showcase__cta-card",
+        ),
+        Div(
+            Span(t("msg.recommended", lang), cls="ai-showcase__cta-badge ai-showcase__cta-badge--featured"),
+            P(t("msg.celerp_ai_plan", lang), cls="ai-showcase__cta-name"),
+            P("", cls="ai-showcase__cta-price ai-showcase__cta-price--featured"),
+            *count_line("ai.plan_monthly_credits", "ai"),
+            P(t("msg.batch_invoice_pdf_processing", lang), cls="ai-showcase__cta-feature"),
+            P(t("msg.agentic_record_creation", lang), cls="ai-showcase__cta-feature"),
+            Div(
+                A(t("msg.get_the_ai_plan", lang),
+                  href=subscribe_url("ai"),
+                  target="_blank", cls="btn btn--accent"),
+                P(t("msg.cancel_anytime", lang), cls="ai-showcase__cta-fine"),
+                cls="ai-showcase__cta-actions",
+            ),
+            cls="ai-showcase__cta-card ai-showcase__cta-card--featured",
+        ),
+        cls="ai-showcase__cta-cards",
+    )
+
+
+def _free_card(free_questions, owner: bool | None, lang: str) -> FT:
+    """The free Celerp account offer on an install with no account. Every role that may
+    use the assistant sees the Create button; the sign-up itself checks that the login
+    owns the installation, and the note says so only on a confirmed non-owner."""
+    return Div(
+        P(t("ai.free_no_account_title", lang), cls="ai-showcase__cta-name"),
+        P(t("ai.free_no_account_body", lang), cls="ai-showcase__cta-desc"),
+        *([P(t("ai.free_questions_included", lang, n=free_questions),
+             cls="ai-showcase__cta-feature ai-showcase__cta-feature--highlight")]
+          if isinstance(free_questions, int) and free_questions > 0 else []),
+        Div(
+            Button(t("ai.free_create_account", lang), type="button",
+                   hx_get="/account/panel?intent=signup&panel=account-gate-panel&next=ai&modal=1",
+                   hx_target="#account-gate-host", hx_swap="outerHTML",
+                   cls="btn btn--primary"),
+            *([P(t("ai.free_ask_owner", lang), cls="ai-showcase__cta-fine")] if owner is False else []),
+            cls="ai-showcase__cta-actions",
+        ),
+        cls="ai-showcase__cta-card ai-showcase__free",
+    )
+
+
+def _ai_notice(message: str, lang: str) -> FT:
+    """A state of the AI page that the Web Access settings resolve."""
+    return Div(
+        Div(P(message, cls="ai-notice__text"),
+            A(t("doc.send_relay_error_link", lang), href="/settings/cloud",
+              cls="btn btn--secondary btn--sm"),
+            cls="ai-notice"),
+        cls="ai-page",
+    )
+
+
+async def _account_state(token: str, status, lang: str) -> FT | None:
+    """The page body for an account situation that has no chat, or None for the chat:
+    no account (the showcase with the free offer), signed out, status unknown, or a
+    free account without included questions."""
+    if not isinstance(status, dict) or status.get("unknown"):
+        return Div(load_error(t("ai.service_unavailable", lang), lang, href="/ai"), cls="ai-page")
+    if status.get("local"):
+        offer, owner = await _ai_offer(token), await api.installation_owner(token)
+        return _showcase_view(lang, offer=offer, owner=owner)
+    if status.get("disconnected"):
+        return _ai_notice(t("error.ai_signed_out", lang), lang)
+    if status.get("tier") not in PAID_TIERS and not int(status.get("base_limit") or 0):
+        return _ai_notice(t("ai.free_not_eligible", lang), lang)
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Route setup
 # ---------------------------------------------------------------------------
@@ -154,17 +305,14 @@ def setup_ui_routes(app) -> None:
             status = await api.ai_quota_status(token)
         except Exception:
             status = {"unknown": True}
-        if not isinstance(status, dict) or status.get("unknown") or status.get("disconnected"):
-            return await base_shell(
-                Div(load_error(t("ai.service_unavailable", lang), lang, href="/ai"), cls="ai-page"),
-                title="AI Assistant - Celerp", nav_active="ai", request=request,
-            )
-        has_cloud = not status.get("local") and status.get("tier") in PAID_TIERS
-        if not has_cloud:
-            return await base_shell(
-                _showcase_view(lang=lang),
-                title="AI Assistant - Celerp", nav_active="ai", request=request,
-            )
+        state = await _account_state(token, status, lang)
+        if state is not None:
+            return await base_shell(state, title="AI Assistant - Celerp", nav_active="ai", request=request)
+        paid = status.get("tier") in PAID_TIERS
+        badge = "" if paid else t(
+            "ai.free_questions_left", lang,
+            n=int(status.get("remaining") or 0), limit=int(status.get("base_limit") or 0),
+        )
 
         conversation_id = (request.query_params.get("conversation") or "").strip()
         if conversation_id:
@@ -193,7 +341,7 @@ def setup_ui_routes(app) -> None:
         return await base_shell(
             _chat_view(
                 messages=messages, jobs=jobs, conversation_id=conversation_id,
-                lang=lang, failed=failed,
+                lang=lang, failed=failed, paid=paid, badge=badge,
             ),
             title="AI Assistant - Celerp", nav_active="ai", request=request,
         )
@@ -299,26 +447,20 @@ def setup_ui_routes(app) -> None:
                 document_mode=document_mode,
             )
         except APIError as e:
-            if e.status == 402:
-                failure = _quota_exceeded_card(
-                    e.detail if isinstance(e.detail, dict) else {}, user_bubble, lang,
+            failure, keep_composer = await _refusal_reply(token, e, user_bubble, query, lang)
+            # A question refused for its own size or files keeps the composer
+            # filled so it can be shortened and sent again.
+            headers = {"X-AI-Keep-Composer": "1"} if keep_composer else {}
+            if created_conversation:
+                failure = (
+                    *failure,
+                    Input(type="hidden", name="conversation_id", id="ai-conversation-id",
+                          value=conversation_id, hx_swap_oob="true"),
+                    Div(id="ai-history", hx_swap_oob="true",
+                        hx_get="/ai/conversations-list", hx_trigger="load", hx_swap="innerHTML"),
                 )
-            else:
-                failure = _failed_reply(user_bubble, e, lang)
-            if not created_conversation:
-                return failure
-            oob_id = Input(
-                type="hidden", name="conversation_id", id="ai-conversation-id",
-                value=conversation_id, hx_swap_oob="true",
-            )
-            oob_history = Div(
-                id="ai-history", hx_swap_oob="true",
-                hx_get="/ai/conversations-list", hx_trigger="load", hx_swap="innerHTML",
-            )
-            return HTMLResponse(
-                to_xml((*failure, oob_id, oob_history)),
-                headers={"HX-Push-Url": f"/ai?conversation={conversation_id}"},
-            )
+                headers["HX-Push-Url"] = f"/ai?conversation={conversation_id}"
+            return HTMLResponse(to_xml(failure), headers=headers)
 
         # Out-of-band swaps keep the hidden id and the sidebar list in step with
         # the (possibly newly created) conversation; HX-Push-Url puts the thread
@@ -738,13 +880,13 @@ def _quota_section(status: dict | None) -> FT:
         ),
         Div(
             Span(
-                t("ai.credits_do_not_reset", lang)
+                t("ai.credits_do_not_reset")
                 if str(resets_at).lower() == "never"
-                else (t("ai.resets_on", lang, date=resets_at) if resets_at else ""),
+                else (t("ai.resets_on", date=resets_at) if resets_at else ""),
                 cls="ai-settings__reset-date",
             ),
-            A(t("msg.buy_more_credits"), href=topup_url(), target="_blank",
-              cls="ai-settings__buy-link"),
+            *([A(t("msg.buy_more_credits"), href=topup_url(), target="_blank",
+                 cls="ai-settings__buy-link")] if status.get("tier") in PAID_TIERS else []),
             cls="ai-settings__quota-footer",
         ),
         cls="ai-settings__quota",
@@ -821,11 +963,16 @@ def _help_sources(page_ids: list[str] | None, lang: str) -> list[FT]:
         return [P(t("ai.help_no_coverage", lang), cls="ai-msg__sources")]
     from celerp.help.registry import get_index
     pages = get_index().pages
-    links = [A(pages[i].title, href=f"/help/{i}") for i in page_ids if i in pages]
+    links = [(i, pages[i].title) for i in page_ids if i in pages]
     if not links:
         return []
-    joined = [part for n, link in enumerate(links) for part in ((", ", link) if n else (link,))]
-    return [P(t("ai.help_sources", lang), " ", *joined, cls="ai-msg__sources")]
+    return [P(t("ai.help_sources", lang), " ", *_page_links(links), cls="ai-msg__sources")]
+
+
+def _page_links(pages: list[tuple[str, str]]) -> list:
+    """Comma-separated links to help pages, from (id, title) pairs."""
+    links = [A(title, href=f"/help/{page_id}") for page_id, title in pages]
+    return [part for n, link in enumerate(links) for part in ((", ", link) if n else (link,))]
 
 
 def _failed_reply(user_bubble: FT, e: APIError, lang: str) -> tuple[FT, FT]:
@@ -1442,7 +1589,10 @@ def _empty_state(lang: str = "en") -> FT:
     )
 
 
-def _showcase_view(lang: str = "en") -> FT:
+def _showcase_view(lang: str = "en", *, offer: dict | None = None, owner: bool | None = None) -> FT:
+    """The page for an install with no Celerp account: what the assistant does, the
+    free account offer and the paid plans. ``offer`` is the AI offer (counts), ``owner``
+    whether this login owns the installation (None when that could not be checked)."""
     scenarios = _get_scenarios(lang)
     scenarios_json = json.dumps(scenarios)
     return Div(
@@ -1483,44 +1633,10 @@ def _showcase_view(lang: str = "en") -> FT:
                 cls="ai-showcase__terminal",
             ),
             Div(
+                _free_card((offer or {}).get("free_ai_questions"), owner, lang),
                 P(t("msg.stop_doing_manual_data_entry_hire_an_ai_operator"),
                   cls="ai-showcase__cta-headline"),
-                Div(
-                    Div(
-                        Span(t("msg.start_here"), cls="ai-showcase__cta-badge ai-showcase__cta-badge--default"),
-                        P(t("settings.tab_cloud_relay"), cls="ai-showcase__cta-name"),
-                        P("", cls="ai-showcase__cta-price ai-showcase__cta-price--default"),
-                        P(t("msg.secure_remote_access"), cls="ai-showcase__cta-feature"),
-                        P(t("msg.automated_daily_backups"), cls="ai-showcase__cta-feature"),
-                        P(t("msg.100_lifetime_ai_queries_included"),
-                          cls="ai-showcase__cta-feature ai-showcase__cta-feature--highlight"),
-                        Div(
-                            A(t("msg.start_with_cloud_relay"),
-                              href=subscribe_url("cloud"),
-                              target="_blank", cls="btn btn--outline"),
-                            P(t("msg.cancel_anytime"), cls="ai-showcase__cta-fine"),
-                            cls="ai-showcase__cta-actions",
-                        ),
-                        cls="ai-showcase__cta-card",
-                    ),
-                    Div(
-                        Span(t("msg.recommended"), cls="ai-showcase__cta-badge ai-showcase__cta-badge--featured"),
-                        P(t("msg.celerp_ai_plan"), cls="ai-showcase__cta-name"),
-                        P("", cls="ai-showcase__cta-price ai-showcase__cta-price--featured"),
-                        P(t("msg.200_ai_queries_every_month"), cls="ai-showcase__cta-feature"),
-                        P(t("msg.batch_invoice_pdf_processing"), cls="ai-showcase__cta-feature"),
-                        P(t("msg.agentic_record_creation"), cls="ai-showcase__cta-feature"),
-                        Div(
-                            A(t("msg.get_the_ai_plan"),
-                              href=subscribe_url("ai"),
-                              target="_blank", cls="btn btn--accent"),
-                            P(t("msg.cancel_anytime"), cls="ai-showcase__cta-fine"),
-                            cls="ai-showcase__cta-actions",
-                        ),
-                        cls="ai-showcase__cta-card ai-showcase__cta-card--featured",
-                    ),
-                    cls="ai-showcase__cta-cards",
-                ),
+                _plan_cards((offer or {}).get("plan_ai_questions") or {}, lang),
                 *([] if is_partner_managed() else [
                     Div(
                         P(t("page.already_subscribed", lang),
@@ -1563,7 +1679,10 @@ def _thread(messages: list[dict], jobs: list[dict], conversation_id: str, lang: 
 def _chat_view(
     messages: list[dict] | None = None, jobs: list[dict] | None = None,
     conversation_id: str = "", lang: str = "en", failed: FT | None = None,
+    paid: bool = True, badge: str = "",
 ) -> FT:
+    """The chat. ``paid`` offers the top-up link; a free account's ``badge`` (its
+    questions left) is rendered here, a paid plan's credits are read by the page script."""
     if failed is not None:
         message_children = [failed]
     elif messages or jobs:
@@ -1627,9 +1746,9 @@ def _chat_view(
         # Main chat area
         Div(
             Div(
-                Span(id="ai-quota-display", cls="ai-quota"),
-                A(t("msg.buy_more_credits", lang), id="ai-topup-link", href="#",
-                  target="_blank", cls="ai-topup-link", style="display:none;"),
+                Span(badge, id="ai-quota-display", cls="ai-quota"),
+                *([A(t("msg.buy_more_credits", lang), id="ai-topup-link", href="#",
+                     target="_blank", cls="ai-topup-link", style="display:none;")] if paid else []),
                 cls="ai-chat__header",
             ),
             # Messages + empty state
@@ -1856,7 +1975,9 @@ function celerpAiAfterRequest(event) {
     var typing = document.getElementById('ai-typing-indicator');
     if (typing) typing.remove();
     CELERP_AI_REQUESTING = false;
-    if (event && event.detail && event.detail.successful) celerpAiResetForm();
+    var xhr = event && event.detail && event.detail.xhr;
+    var keep = xhr && xhr.getResponseHeader('X-AI-Keep-Composer') === '1';
+    if (event && event.detail && event.detail.successful && !keep) celerpAiResetForm();
     celerpAiRefreshComposer();
     var m = document.getElementById('ai-messages');
     if (m) m.scrollTop = m.scrollHeight;
@@ -2029,13 +2150,13 @@ function _celerpAiUploadFormData(formData, fileNames, receiptEligible) {
             badge.textContent = CELERP_AI_TEXT.quota_unavailable;
             return;
         }
-        if (data.local) { badge.textContent = ''; return; }
+        if (data.local || !data.paid) return;
         var remaining = data.remaining || 0;
         badge.textContent = CELERP_AI_TEXT.credits_remaining.replace('{n}', remaining);
         if (remaining < 10) {
             badge.classList.add('ai-quota--low');
         }
-        if (remaining < 20 && (data.tier === 'cloud' || data.tier === 'ai' || data.tier === 'team') && data.topup_url) {
+        if (remaining < 20 && link && data.topup_url) {
             link.href = data.topup_url;
             link.style.display = 'inline';
         }

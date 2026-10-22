@@ -264,7 +264,9 @@ async def test_chat_renders_action_card(ui_client):
 
 @pytest.mark.asyncio
 async def test_chat_quota_exceeded_renders_upgrade_card(ui_client):
-    err = APIError(402, {"base_limit": 200, "tier": "ai"})
+    from ui.api_client import _api_error
+    err = _api_error(402, {"detail": {"code": "quota_exceeded", "message": "AI credit limit reached.",
+                                      "tier": "ai", "base_limit": 200}}, "")
     ui_client.cookies.update(_authed())
     with patch("celerp_ai.ui_routes.api.ai_conversation_query", AsyncMock(side_effect=err)):
         r = await ui_client.post("/ai/chat",

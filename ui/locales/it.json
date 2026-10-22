@@ -1087,8 +1087,6 @@
   "modules.tab_local": "Moduli installati",
   "modules.tab_marketplace": "Marketplace",
   "modules.title": "Moduli",
-  "msg.100_lifetime_ai_queries_included": "100 query AI a vita incluse",
-  "msg.200_ai_queries_every_month": "200 query AI ogni mese",
   "msg.29mo": "USD $29/mese",
   "msg.49mo": "USD $49/mese",
   "msg._web_access": "🌐 Accesso web",
@@ -6343,5 +6341,17 @@
   "ai.usage_scope_note": "The account total above also counts questions from other companies on this install, from deleted conversations, and from the API.",
   "dashboard.getting_started_ai": "Questions as you set up? Ask Celerp AI.",
   "ai.free_questions_included": "A free account includes {n} questions.",
-  "account.gate_benefit_ai": "Ask Celerp AI {n} questions free with a Celerp account."
+  "account.gate_benefit_ai": "Ask Celerp AI {n} questions free with a Celerp account.",
+  "ai.free_no_account_title": "Try Celerp AI free",
+  "ai.free_no_account_body": "Create a free Celerp account to ask Celerp AI how to set up and use Celerp.",
+  "ai.free_create_account": "Create a free account",
+  "ai.free_ask_owner": "The person who installed Celerp creates the account. If that is not you, ask them to create it.",
+  "ai.free_questions_left": "{n} of {limit} free questions left",
+  "ai.free_not_eligible": "Celerp AI is not included with this account. Choose a plan in Web Access to use it.",
+  "ai.free_used_up": "You have used all {limit} free questions. Choose a plan to keep asking Celerp AI.",
+  "ai.free_paused": "Free questions are paused until {date}. Paid plans keep working.",
+  "ai.free_text_too_large": "This question is too long for a free account. Shorten it, or choose a plan for longer questions.",
+  "ai.help_hits": "These help pages may answer it:",
+  "ai.plan_lifetime_credits": "{n} query AI a vita incluse",
+  "ai.plan_monthly_credits": "{n} query AI ogni mese"
 }
