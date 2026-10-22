@@ -84,7 +84,7 @@ async def _colored_stone_item(owner_ui) -> str:
 async def test_settings_library_and_rename_form_show_the_users_language(owner_ui):
     await _gem_company(owner_ui)
     settings = await owner_ui.get("/settings/inventory?tab=categories", headers=_DE)
-    assert ">Wein<" in settings.text, "the Browse Library rows are translated"
+    assert re.search(r'<tr[^>]*data-name="wein"', settings.text), "the Browse Library rows are translated"
     edit = await owner_ui.get("/settings/categories/colored_stone/edit", headers=_DE)
     assert 'value="Farbedelstein"' in edit.text, "the rename box starts from the name shown, not the key"
 
@@ -224,3 +224,15 @@ async def test_activity_shows_renamed_and_custom_categories_as_named(owner_ui, l
         assert "books_we_like →" not in text and "→ gear_box" not in text, url
         assert re.search(r"Books we like → Gear Box", text), url
         assert re.search(rf"{'Bier' if lang == 'de' else 'Beer'} → Books we like", text), url
+
+
+@pytest.mark.asyncio
+async def test_a_blank_category_name_is_refused_once_in_plain_words(owner_ui):
+    await _gem_company(owner_ui)
+    before = (await owner_ui.api.get("/companies/me/category-display-names")).json()
+    added = await owner_ui.post("/settings/categories", data={"new_category_name": "  "})
+    renamed = await owner_ui.patch("/settings/categories/colored_stone", data={"new_name": ""})
+    for r in (added, renamed):
+        assert r.status_code == 200 and "Enter a category name." in r.text, r.text
+        assert "HX-Redirect" not in r.headers
+    assert (await owner_ui.api.get("/companies/me/category-display-names")).json() == before

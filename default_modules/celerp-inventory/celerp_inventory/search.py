@@ -27,7 +27,7 @@ from celerp.models.projections import Projection
 from celerp.services.field_schema import get_effective_field_schema
 from celerp.services.permissions import role_has_permission
 from celerp.services.pricing import get_price_config
-from celerp.services.units import get_company_units
+from celerp.services.units import read_company_units
 
 from .routes import (
     _DEFAULT_NUMERIC_FIELDS,
@@ -95,7 +95,7 @@ async def flatten_item_rows(
     loc_map = {str(r.id): r.name for r in loc_rows}
 
     price_config = await get_price_config(session, company_id)
-    units = await get_company_units(session, company_id)
+    units = await read_company_units(session, company_id)
     unit_map = {u["name"]: u for u in units}
     return [
         flatten_item(

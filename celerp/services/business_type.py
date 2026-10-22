@@ -31,6 +31,7 @@ from celerp.modules.registry import (
     commit_with_load_set, company_modules, enable_for_company, hold_module_state, restart_needed,
 )
 from celerp.services.demo import reconcile_vertical_defaults, replace_demo_items
+from celerp.services.units import check_units_change, settings_units
 from celerp.services.vertical_presets import (
     installed_preset_modules,
     load_preset,
@@ -70,6 +71,7 @@ async def set_business_type(
     with_categories, _categories = merge_missing_preset_categories(with_modules, target)
     with_presets = reconcile_preset_settings(with_categories, previous_preset, target)
     with_defaults = reconcile_vertical_defaults(with_presets, previous_vertical, vertical)
+    await check_units_change(session, company_id, settings_units(before), settings_units(with_defaults))
     company.settings = {**with_defaults, "vertical": vertical}
 
     changed = previous_vertical != vertical

@@ -551,6 +551,8 @@ th.cell--number { font-family: inherit; }
 .catalog-channel--warn { background: var(--c-amber-bg); border-color: var(--c-yellow); color: var(--c-amber-dark); }
 .catalog-channel:disabled { cursor: default; opacity: 0.75; }
 .catalog-channel:not(:disabled):hover { filter: brightness(0.96); }
+/* A cell whose value has no effect in the row's current state: greyed, value kept, reason in its title. */
+.cell--locked { color: var(--c-text-muted, #888); cursor: help; }
 .cell-derived { color: var(--c-text-muted, #888); font-style: italic; font-size: 11px; cursor: default; user-select: none; }
 .cell-price-unit { color: var(--c-text-muted, #888); font-style: italic; font-size: 11px; margin-left: 4px; }
 
@@ -1882,6 +1884,7 @@ form:has(> #fa-preview:not(:empty)) ~ .empty-state-cta { display: none; }
 .vert-group[open] > summary.vert-group-heading::before { transform: rotate(90deg); }
 .vert-group-label { flex: 1; text-align: left; }
 .vert-preset-btn { flex-shrink: 0; margin-left: auto; }
+.vert-group-heading .vert-apply-result { text-transform: none; letter-spacing: normal; font-weight: normal; }
 .vert-group > .data-table { margin: 0; border-top: 1px solid var(--c-border); border-radius: 0; }
 .vert-cat-table td { padding: 6px 8px; font-size: 14px; }
 .vert-cat-table .cell--action { width: 100px; text-align: right; }
@@ -1896,6 +1899,8 @@ form:has(> #fa-preview:not(:empty)) ~ .empty-state-cta { display: none; }
 .your-cats-action { text-align: right !important; }
 .cat-add-form { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .cat-add-input { width: 200px !important; flex: 0 0 200px; }
+.cat-add-result { flex-basis: 100%; }
+.cat-add-result:empty { display: none; }
 .cell--left { text-align: left; }
 .cell--center { text-align: center; }
 .th--center { text-align: center; }

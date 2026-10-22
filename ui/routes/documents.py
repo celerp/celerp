@@ -24,7 +24,7 @@ from ui.api_client import APIError, error_message
 from celerp.accounting_roles import account_label
 from celerp.downloads import content_disposition
 from celerp.services.units import (
-    DEFAULT_UNITS, RECEIVE_KINDS, build_unit_map, default_receive_as, line_receive_kind, quantity_step,
+    DEFAULT_UNITS, RECEIVE_KINDS, build_unit_map, default_receive_as, format_qty, line_receive_kind, quantity_step,
 )
 from celerp.services.line_measures import identifier_backfill, item_measure_meta, line_identifier, measure_locks, measure_sublines, qty_label, resolve_line_measures, splitting_allowed
 from ui.components.shell import base_shell, page_header, toast_header, page_title
@@ -63,6 +63,15 @@ from celerp.output.doc_print import (
 # offer is not missing on the first document opened after startup.
 _FREE_SEND_QUOTA_TTL = 300.0
 _free_send_quota_cache: dict = {"value": 0, "fetched_at": None, "pending": False}
+
+
+def _scan_added_label(result: dict, unit_map: dict) -> str:
+    """What the scan bar says for one added code: the SKU and the quantity this scan placed in
+    its unit, and when the scan was held to what is left, that it took all that is left."""
+    qty, unit = result.get("quantity"), result.get("unit") or ""
+    shown = format_qty(qty, unit, unit_map)
+    key = "documents.scan_added_line_capped" if result.get("capped") else "documents.scan_added_line"
+    return t(key, sku=result.get("sku") or "", qty=shown, unit=display_unit(unit)).strip()
 
 
 def _free_send_quota(token: str) -> int:
@@ -4944,7 +4953,8 @@ celerpUpdateBulkAlloc();
           scans had already committed and leave the client able to re-submit and duplicate them;
         - `version`: the record version after the write, so the client's optimistic-lock token
           tracks it (a later line save must not 409 on a stale version);
-        - `lines`: the line ids the run added or raised, which the client highlights until the next run.
+        - `lines`: the line ids the run added or raised, which the client highlights until the next run;
+        - `added`: one label per added code naming the quantity it placed, which the scan bar shows.
         """
         from starlette.responses import JSONResponse as _JSON
         token = _token(request)
@@ -4968,9 +4978,16 @@ celerpUpdateBulkAlloc();
             return _JSON(body, status_code=e.status or 400)
         res = res or {}
         html = (await tbody(token, form)) if tbody else ""
-        lines = list(dict.fromkeys(r["line_id"] for r in res.get("results") or [] if r.get("line_id")))
+        results = res.get("results") or []
+        lines = list(dict.fromkeys(r["line_id"] for r in results if r.get("line_id")))
+        placed = [r for r in results if r.get("state") == "added" and r.get("quantity") is not None]
+        try:  # the run has committed: a units read failure only drops the decimals, never the reply
+            unit_map = build_unit_map(await api.get_units(token)) if placed else {}
+        except APIError:
+            unit_map = {}
         return _JSON({"scanned": res.get("scanned", 0), "failed": res.get("failed") or [],
-                      "html": html, "version": res.get("version"), "lines": lines})
+                      "html": html, "version": res.get("version"), "lines": lines,
+                      "added": [_scan_added_label(r, unit_map) for r in placed]})
 
     @app.post("/docs/{entity_id}/scan")
     async def doc_scan(request: Request, entity_id: str):
@@ -8178,7 +8195,7 @@ function _celerpPickerStatus(text) {{
                 scanStatus.className = 'scan-bar-status scan-bar-status--err';
             }} else {{
                 scanInput.value = '';
-                scanStatus.textContent = '✓ ' + _L.scan_added;
+                scanStatus.textContent = '✓ ' + ((data.added || []).join('; ') || _L.scan_added);
                 scanStatus.className = 'scan-bar-status scan-bar-status--ok';
             }}
             // Best-effort: refresh the visible lines. A failure here never resurrects the pruned codes -

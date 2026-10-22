@@ -286,6 +286,9 @@ async def _emit_order_created(session: AsyncSession, company_id, order_id: str, 
             refuse_deleted(row.state or {}, item_id)
         else:
             movements.require_not_deleted(row.state or {}, item_id)
+    await movements.require_unit_precision(session, company_id, [
+        (rows[data["output_item_id"]].state or {}, quantity),
+        *((rows[i["item_id"]].state or {}, float(i["quantity"])) for i in data.get("inputs") or [])])
     data = {**data, "expected_outputs": [output_line(rows[data["output_item_id"]].state or {}, quantity)]}
     return await emit_event(
         session, company_id=company_id, entity_id=order_id, entity_type="mfg_order",

@@ -416,6 +416,7 @@ _SAMPLES = {
     "description": "Long text", "notes": "A note", "location_name": "Main",
     "inventory_type": "stocked", "gtin": "12345670", "rfid_epc": "ABC123", "reorder_point": "5",
     "reorder_qty": "10", "batch_no": "B-1", "allow_splitting": "true", "pick_method": "fifo",
+    "default_sell_qty": "1",
 }
 # Import-only pseudo targets: resolved by the importer, never stored under their own name.
 _IMPORT_ONLY = {"location_name"}

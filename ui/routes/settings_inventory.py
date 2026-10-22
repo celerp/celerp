@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from fasthtml.common import *
 from starlette.requests import Request
-from starlette.responses import RedirectResponse
+from starlette.responses import RedirectResponse, Response
 
 import ui.api_client as api
 from ui.api_client import APIError
@@ -36,6 +36,7 @@ from ui.routes.settings import (
     _bulk_attach_tab,
     _cat_schema_display_cell,
     _load_cat_schema_sorted,
+    _refusal,
 )
 from ui.routes.settings_general import _section_breadcrumb
 from ui.routes.settings_cloud import _relay_has_paid_access
@@ -107,24 +108,30 @@ def _units_tab(units: list[dict], from_import: str = "") -> FT:
                 Button(
                     "✕",
                     cls="btn btn--danger btn--xs",
+                    type="button",
                     hx_delete=f"/settings/units/{uname}",
                     hx_confirm=t("settings_inventory.delete_unit_confirm", name=uname),
-                    hx_swap="none",
-                    hx_on__after_request="window.location.href='/settings/inventory?tab=units'",
+                    hx_target="#units-add-result",
+                    hx_swap="innerHTML",
                 ),
                 cls="cell",
             ),
             cls="data-row",
         ))
 
+    # The add row belongs to its own form (form="units-add") so Enter in a row's inline editor
+    # sends only that editor's change, never the add form and its required unit name.
+    unit_type = _unit_type_select("unit_type")
+    unit_type.attrs["form"] = "units-add"
     add_row = Tr(
         Td(Input(name="name", placeholder=t("settings_inventory.unit_name_placeholder"), required=True, cls="input-sm",
-                 pattern="[a-z0-9_]+", title=t("settings_inventory.unit_name_pattern_title")),
+                 pattern="[a-z0-9_]+", title=t("settings_inventory.unit_name_pattern_title"), form="units-add"),
            cls="cell"),
         Td(Span(t("settings_inventory.unit_label_auto"), style="color:var(--c-text2);font-size:12px"), cls="cell"),
-        Td(Input(name="decimals", type="number", min="0", max="6", value="0", cls="input-sm"), cls="cell"),
-        Td(_unit_type_select("unit_type"), cls="cell"),
-        Td(Button(t("btn._add"), type="submit", cls="btn btn--primary btn--xs"), cls="cell"),
+        Td(Input(name="decimals", type="number", min="0", max="6", value="0", cls="input-sm", form="units-add"),
+           cls="cell"),
+        Td(unit_type, cls="cell"),
+        Td(Button(t("btn._add"), type="submit", cls="btn btn--primary btn--xs", form="units-add"), cls="cell"),
         cls="data-row",
     )
 
@@ -143,17 +150,15 @@ def _units_tab(units: list[dict], from_import: str = "") -> FT:
         return_banner,
         H3(t("page.units"), cls="settings-section-title"),
         P(t("inv.configure_measurement_units_available_for_inventor"), cls="settings-hint"),
-        Form(
-            Table(
-                Thead(Tr(Th(t("th.name")), Th(t("th.label")), Th(t("th.decimals")), Th(t("th.type")), Th(""))),
-                Tbody(*rows),
-                Tfoot(add_row),
-                cls="data-table",
-            ),
-            hx_post="/settings/units/add",
-            hx_swap="none",
-            hx_on__after_request="window.location.href='/settings/inventory?tab=units'",
+        Table(
+            Thead(Tr(Th(t("th.name")), Th(t("th.label")), Th(t("th.decimals")), Th(t("th.type")), Th(""))),
+            Tbody(*rows),
+            Tfoot(add_row),
+            cls="data-table",
         ),
+        # A saved or deleted unit redirects (HX-Redirect), a refused one shows why below.
+        Form(id="units-add", hx_post="/settings/units/add", hx_target="#units-add-result", hx_swap="innerHTML"),
+        Div(id="units-add-result"),
         P(t("settings_inventory.unit_name_hint"), cls="form-hint"),
         cls="settings-card",
     )
@@ -255,8 +260,7 @@ def _categories_tab(
                     Button("✕", cls="btn btn--danger btn--xs",
                            hx_delete=f"/settings/cat-schema/{enc}/{idx}",
                            hx_confirm=t("settings_inventory.delete_field_confirm", name=f.get('key', idx)),
-                           hx_swap="none",
-                           hx_on__after_request=f"window.location.href='/settings/inventory?tab=categories&cat={enc}'"),
+                           hx_target="#cat-fields-result", hx_swap="innerHTML"),
                     cls="cell",
                 ),
                 cls="data-row",
@@ -266,8 +270,7 @@ def _categories_tab(
             Td(
                 Button(t("btn.add_field"), cls="btn btn--secondary btn--xs",
                        hx_post=f"/settings/cat-schema/{enc}/add",
-                       hx_swap="none",
-                       hx_on__after_request=f"window.location.href='/settings/inventory?tab=categories&cat={enc}'"),
+                       hx_target="#cat-fields-result", hx_swap="innerHTML"),
                 colspan="9", cls="p-sm",
             ),
         )
@@ -287,13 +290,12 @@ def _categories_tab(
                 Tbody(*[_cat_row(i, f) for i, f in enumerate(sorted_fields)], add_row),
                 cls="data-table sticky-head",
             ),
+            # A saved change reloads this page (HX-Redirect); a refused one shows why here.
+            Div(id="cat-fields-result"),
             cls="settings-card",
         )
 
     # ── Library view ──────────────────────────────────────────────────
-
-    # Shared result div targeted by Browse Library
-    result_div = Div(id="verticals-apply-result")
 
     # ── Section A: Your Categories ────────────────────────────────────
     _dn = cat_display_names or {}
@@ -302,9 +304,11 @@ def _categories_tab(
               placeholder=t("settings.new_category_name"),
               cls="form-input form-input--sm cat-add-input"),
         Button(t("settings.add_category"), type="submit", cls="btn btn--secondary btn--sm"),
+        # A new category reloads this page (HX-Redirect); a refused one says why here, the list kept.
+        Div(id="cat-add-result", cls="cat-add-result"),
         hx_post="/settings/categories",
-        hx_target="#your-cats-section",
-        hx_swap="outerHTML",
+        hx_target="#cat-add-result",
+        hx_swap="innerHTML",
         cls="cat-add-form",
     )
     if applied_names:
@@ -360,16 +364,16 @@ def _categories_tab(
                 already = cdisplay in applied_names or cname in applied_names
                 clabel = category_label(cname, cdisplay)
                 rows.append(Tr(
-                    Td(clabel, cls="cell"),
+                    # An added category reloads the tab (HX-Redirect); a refused one says why here.
+                    Td(clabel, Div(cls="vert-apply-result"), cls="cell"),
                     Td(
                         Span(t("settings._applied"), cls="badge badge--active") if already else
                         Form(
                             Input(type="hidden", name="name", value=cname),
                             Button(t("btn._add"), type="submit", cls="btn btn--primary btn--xs"),
                             hx_post="/settings/verticals/apply-category",
-                            hx_target="#verticals-apply-result",
-                            hx_swap="outerHTML",
-                            hx_on__after_request="window.location.href='/settings/inventory?tab=categories'",
+                            hx_target="previous .vert-apply-result",
+                            hx_swap="innerHTML",
                         ),
                         cls="cell cell--action",
                     ),
@@ -381,15 +385,14 @@ def _categories_tab(
                     Summary(
                         Span(_tag_label(tag), cls="vert-group-label"),
                         *(
-                            [Form(
+                            [Div(cls="vert-apply-result"), Form(
                                 Input(type="hidden", name="vertical", value=tag_to_preset[tag].get("name", "")),
                                 Button(t("btn.apply_preset"), type="submit",
                                        cls="btn btn--secondary btn--xs vert-preset-btn",
                                        onclick="event.stopPropagation()"),
                                 hx_post="/settings/verticals/apply-preset",
-                                hx_target="#verticals-apply-result",
-                                hx_swap="outerHTML",
-                                hx_on__after_request="window.location.href='/settings/inventory?tab=categories'",
+                                hx_target="previous .vert-apply-result",
+                                hx_swap="innerHTML",
                             )]
                             if tag in tag_to_preset else []
                         ),
@@ -431,7 +434,6 @@ def _categories_tab(
     )
 
     return Div(
-        result_div,
         section_a,
         section_c,
         cls="settings-card",
@@ -579,8 +581,11 @@ def setup_routes(app):
         if unit_type not in {"weight", "pieces", "quantity"}:
             unit_type = "quantity"
         current.append({"name": name, "label": label, "decimals": decimals, "unit_type": unit_type})
-        await api.patch_units(token, current)
-        return RedirectResponse("/settings/inventory?tab=units", status_code=303)
+        try:
+            await api.patch_units(token, current)
+        except APIError as e:
+            return _refusal(e)
+        return Response(status_code=204, headers={"HX-Redirect": "/settings/inventory?tab=units"})
 
     @app.delete("/settings/units/{name}")
     async def units_delete(name: str, request: Request):
@@ -588,9 +593,11 @@ def setup_routes(app):
         if not token:
             return RedirectResponse("/login", status_code=302)
         current = await api.get_units(token)
-        updated = [u for u in current if u.get("name") != name]
-        await api.patch_units(token, updated)
-        return RedirectResponse("/settings/inventory?tab=units", status_code=303)
+        try:
+            await api.patch_units(token, [u for u in current if u.get("name") != name])
+        except APIError as e:
+            return _refusal(e)
+        return Response(status_code=204, headers={"HX-Redirect": "/settings/inventory?tab=units"})
 
     @app.get("/settings/units/{name}/{field}/edit")
     async def units_field_edit(name: str, field: str, request: Request):
@@ -649,7 +656,13 @@ def setup_routes(app):
                 else:
                     u[field] = raw
             updated.append(u)
-        await api.patch_units(token, updated)
+        try:
+            await api.patch_units(token, updated)
+        except APIError as e:
+            # A refused change leaves the stored value in place and says why under it.
+            stored = next((u for u in units if u.get("name") == name), {})
+            return _unit_display_cell(name, field, stored.get(field, ""))(
+                _refusal(e))
         # Re-fetch to get clean value and return display cell
         fresh = await api.get_units(token)
         unit = next((u for u in fresh if u.get("name") == name), {})

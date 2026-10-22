@@ -1145,7 +1145,7 @@ async def create_category(
     settings = dict(company.settings or {})
     cat_schemas = dict(settings.get("category_schemas") or {})
     if key in cat_schemas:
-        raise HTTPException(status_code=409, detail=t("company.err_category_exists", name=key))
+        raise HTTPException(status_code=409, detail=t("company.err_category_exists", name=name))
     cat_schemas[key] = []
     settings["category_schemas"] = cat_schemas
     display_names = dict(settings.get("category_display_names") or {})
@@ -1186,7 +1186,7 @@ async def rename_category(
     if new_key == category_key:
         return {"ok": True, "items_updated": 0}
     if new_key in cat_schemas:
-        raise HTTPException(status_code=409, detail=t("company.err_category_exists", name=new_key))
+        raise HTTPException(status_code=409, detail=t("company.err_category_exists", name=new_name))
     # Rename schema key
     cat_schemas[new_key] = cat_schemas.pop(category_key)
     settings["category_schemas"] = cat_schemas
@@ -1720,7 +1720,7 @@ async def import_purchasing_payment_terms_batch(
 
 import re as _re
 
-from celerp.services.units import DEFAULT_UNITS
+from celerp.services.units import check_units_change, settings_units
 
 _UNIT_NAME_RE = _re.compile(r"^[a-z0-9_]+$")
 
@@ -1747,7 +1747,7 @@ async def get_units(company_id=Depends(get_current_company_id), session: AsyncSe
     company = await session.get(Company, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
-    return company.settings.get("units") or DEFAULT_UNITS
+    return settings_units(company.settings)
 
 
 @router.put("/me/units")
@@ -1762,7 +1762,9 @@ async def put_units(
     if company is None:
         raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
     settings = dict(company.settings)
-    settings["units"] = [u.model_dump() for u in payload.units]
+    new_units = [u.model_dump() for u in payload.units]
+    await check_units_change(session, company_id, settings_units(settings), settings_units({"units": new_units}))
+    settings["units"] = new_units
     company.settings = settings
     await session.commit()
     return settings["units"]
