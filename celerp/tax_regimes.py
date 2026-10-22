@@ -8,8 +8,8 @@ Used to seed company.settings["taxes"] and company.settings["currency"]
 when a default location with a known country is first set.
 
 Each entry:
-  currency: str          — ISO 4217 code
-  taxes: list[dict]      — matches TaxRate schema in routers/companies.py
+  currency: str          ISO 4217 code
+  taxes: list[dict]      matches the TaxRate schema in routers/companies.py
 
 "_default" is the fallback for unknown/unset country.
 """
@@ -152,7 +152,7 @@ TAX_REGIMES: dict[str, _T] = {
         "taxes": [
             # No federal VAT; state/local sales taxes vary. User must configure.
             {"name": "Sales Tax", "rate": 0.0, "tax_type": "sales", "is_default": True,
-             "description": "State/local sales tax — set rate for your jurisdiction",
+             "description": "State and local sales tax. Set the rate for your area",
              "is_compound": False, "default_order": 0},
             {"name": "Exempt", "rate": 0.0, "tax_type": "both", "is_default": False,
              "description": "Tax-exempt", "is_compound": False, "default_order": 0},
@@ -164,11 +164,11 @@ TAX_REGIMES: dict[str, _T] = {
             {"name": "GST 5%", "rate": 5.0, "tax_type": "both", "is_default": True,
              "description": "Canada federal GST", "is_compound": False, "default_order": 0},
             {"name": "PST", "rate": 0.0, "tax_type": "both", "is_default": False,
-             "description": "Provincial sales tax — set rate for your province",
+             "description": "Provincial sales tax. Set the rate for your province",
              "is_compound": False, "default_order": 1},
             {"name": "QST 9.975%", "rate": 9.975, "tax_type": "both", "is_default": False,
-             "description": "Quebec sales tax (compound — applies on GST-inclusive amount)",
-             "is_compound": True, "default_order": 1},
+             "description": "Quebec sales tax, charged on the price before GST",
+             "is_compound": False, "default_order": 1},
             {"name": "Exempt", "rate": 0.0, "tax_type": "both", "is_default": False,
              "description": "Tax-exempt", "is_compound": False, "default_order": 0},
         ],
@@ -198,7 +198,7 @@ TAX_REGIMES: dict[str, _T] = {
             {"name": "消費税 10%", "rate": 10.0, "tax_type": "both", "is_default": True,
              "description": "Japan consumption tax (standard)", "is_compound": False, "default_order": 0},
             {"name": "消費税 8%", "rate": 8.0, "tax_type": "both", "is_default": False,
-             "description": "Japan consumption tax (reduced — food/drink)", "is_compound": False, "default_order": 0},
+             "description": "Japan consumption tax (reduced rate for food and drink)", "is_compound": False, "default_order": 0},
             {"name": "Exempt", "rate": 0.0, "tax_type": "both", "is_default": False,
              "description": "Tax-exempt", "is_compound": False, "default_order": 0},
         ],
