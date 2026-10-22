@@ -260,14 +260,14 @@ _SWOLLEN_JSON = {
 def test_what_decoding_json_holds_is_never_more_than_its_measure(shape):
     from celerp.importers.adapters.odoo.dump import json_size, json_value
 
-    for text in (_SWOLLEN_JSON[shape], _in_every_language(_SALES_TEXT), '{"1": 100.0}'):
+    for value in (_SWOLLEN_JSON[shape], _in_every_language(_SALES_TEXT), '{"1": 100.0}'):
         tracemalloc.start()
         try:
-            json_value(text)
+            json_value(value)
             peak = tracemalloc.get_traced_memory()[1]
         finally:
             tracemalloc.stop()
-        assert peak <= json_size(text), f"{peak / json_size(text):.2f}x"
+        assert peak <= json_size(value), f"{peak / json_size(value):.2f}x"
 
 
 @pytest.mark.parametrize("table, column", [("product_template", "name"), ("account_move_line", "analytic_distribution")])
