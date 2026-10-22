@@ -13700,11 +13700,11 @@ class TestUnitsSettings:
         """PUT /companies/me/units stores the list and returns it."""
         headers = await _api_headers(client)
         payload = {"units": [
-            {"name": "piece", "label": "Piece", "decimals": 0},
-            {"name": "gram", "label": "Gram", "decimals": 2},
+            {"name": "piece", "label": "Piece", "decimals": 0, "unit_type": "pieces"},
+            {"name": "gram", "label": "Gram", "decimals": 2, "unit_type": "weight"},
         ]}
         r = await client.put("/companies/me/units", json=payload, headers=headers)
-        assert r.status_code == 200
+        assert r.status_code == 200, r.text
         units = r.json()
         assert len(units) == 2
         assert units[0]["name"] == "piece"
