@@ -94,7 +94,7 @@ def _members(name: str, data: bytes) -> list[tuple[str, bytes]]:
         return [(name, data)]
     try:
         archive = zipfile.ZipFile(io.BytesIO(data))
-    except zipfile.BadZipFile as exc:
+    except tabular.ZIP_ERRORS as exc:
         raise ScanError(t("migration.err_export_unreadable", name=name)) from exc
     if _is_workbook(archive):
         return [(name, data)]
@@ -102,7 +102,10 @@ def _members(name: str, data: bytes) -> list[tuple[str, bytes]]:
              and "__MACOSX" not in i.filename]
     if len(infos) > MAX_MEMBERS or sum(i.file_size for i in infos) > LIMITS.uncompressed:
         raise ScanError(t("migration.err_export_archive_too_large", name=name))
-    return [(f"{name}: {i.filename.split('/')[-1]}", archive.read(i)) for i in infos]
+    try:
+        return [(f"{name}: {i.filename.split('/')[-1]}", archive.read(i)) for i in infos]
+    except tabular.ZIP_ERRORS as exc:
+        raise ScanError(t("migration.err_export_unreadable", name=name)) from exc
 
 
 def _match(lines: list[list[str]], layouts: tuple[Layout, ...]) -> tuple[Layout, int] | None:

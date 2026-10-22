@@ -409,6 +409,73 @@ async def test_a_backup_that_cannot_be_read_is_refused_with_its_reason(client, m
                                   '"harbour.zip" is not a Odoo file. Accepted: Odoo backup (.zip).')
 
 
+def _directory_entry(data: bytes | bytearray, name: str) -> int:
+    """Where `name`'s record starts in the zip's central directory, the index at its end."""
+    at = zipfile.ZipFile(io.BytesIO(bytes(data))).start_dir
+    while data[at:at + 4] == b"PK\x01\x02":
+        lengths = [int.from_bytes(data[at + o:at + o + 2], "little") for o in (28, 30, 32)]
+        if data[at + 46:at + 46 + lengths[0]] == name.encode():
+            return at
+        at += 46 + sum(lengths)
+    raise KeyError(name)
+
+
+def _misindexed(damage: str) -> bytes:
+    """A whole backup whose central directory record of the manifest is damaged."""
+    data = bytearray(_stored(build.dump_sql(build.tables(17)).encode()))
+    at = _directory_entry(data, "manifest.json")
+    if damage == "a name that differs from its header":
+        data[at + 46] = ord("o")
+    elif damage == "a newer zip version than any reader unpacks":
+        data[at + 6:at + 8] = (84).to_bytes(2, "little")
+    else:  # a name flagged UTF-8 that is not
+        data[at + 9] |= 0x08
+        data[at + 46] = 0xE6
+    return bytes(data)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", ["odoo", None])
+@pytest.mark.parametrize("damage", ["a name that differs from its header", "a newer zip version than any reader unpacks",
+                                    "a name flagged UTF-8 that is not"])
+async def test_a_damaged_index_of_the_zip_is_refused_whether_odoo_was_chosen_or_detected(
+        client, monkeypatch, tmp_path, damage, source):
+    """The zip's index is read by every reader that tries the upload: whichever one does, the
+    damage is a refusal with a reason, never a server error."""
+    from celerp.config import settings
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    r = await scan_upload(client, _misindexed(damage), name="harbour.zip", source=source)
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    if damage != "a name that differs from its header":  # the zip names no manifest: not recognisable as Odoo's
+        assert detail == t("migration.err_odoo_backup_damaged", "en")
+    elif source:
+        assert detail == '"harbour.zip" is not a Odoo file. Accepted: Odoo backup (.zip).'
+    else:
+        assert detail.startswith('Celerp cannot read "harbour.zip" yet.')
+
+
+@pytest.mark.asyncio
+async def test_any_changed_byte_in_the_index_of_the_zip_is_refused_with_a_reason(client, monkeypatch, tmp_path):
+    """One bit of the zip's index flipped, 200 times, with Odoo chosen and detected: each upload
+    is read or refused with a reason by whichever reader tries it; no server error."""
+    from celerp.config import settings
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    whole = _stored(build.dump_sql(build.tables(17)).encode())
+    start = zipfile.ZipFile(io.BytesIO(whole)).start_dir
+    rng = random.Random(8)
+    escaped = []
+    for i in range(200):
+        at = rng.randrange(start, len(whole))
+        data = whole[:at] + bytes([whole[at] ^ (1 << rng.randrange(8))]) + whole[at + 1:]
+        r = await scan_upload(client, data, name=f"{i}.zip", source=("odoo", None)[i % 2])
+        if r.status_code not in (200, 422):
+            escaped.append((at, r.status_code, r.text[:80]))
+    assert not escaped, escaped[:8]
+
+
 def test_a_backup_zipped_with_bzip2_or_lzma_is_read_as_one_zipped_by_odoo(tmp_path):
     sql = build.dump_sql(build.tables(17))
     whole = _adapter().build_manifest(_file(tmp_path, _packed(sql)), FULL).bundle

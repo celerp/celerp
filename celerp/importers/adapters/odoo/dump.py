@@ -14,11 +14,9 @@ from __future__ import annotations
 
 import io
 import json
-import lzma
 import math
 import re
 import zipfile
-import zlib
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from functools import partial
@@ -26,6 +24,7 @@ from pathlib import Path
 from typing import IO
 
 from celerp.importers.adapters.base import ScanError, SourceRevisionError
+from celerp.importers.tabular import ZIP_ERRORS
 from ui.i18n import t
 
 MANIFEST = "manifest.json"
@@ -52,9 +51,6 @@ ID_DIGITS = 19  # the most a PostgreSQL bigint id writes
 # each row a tuple of its kept values, each distinct value a string held once in its table.
 MAX_HELD = 1024 ** 3
 ROW_BYTES, FIELD_BYTES, VALUE_BYTES = 64, 8, 100
-# How a file in a zip fails to unpack, whichever way it is packed: a stream that does not
-# decompress or ends early, a failed checksum, or a method or option this reader cannot unpack.
-BROKEN = (EOFError, NotImplementedError, OSError, lzma.LZMAError, zipfile.BadZipFile, zlib.error)
 PASSWORD = 0x1  # the zip flag of a file packed with a password
 OLDEST, NEWEST = 13, 17
 LANGUAGE = "en_US"
@@ -102,13 +98,13 @@ def _major(manifest: dict) -> int | None:
 
 @contextmanager
 def _intact(error: type[Exception] = ScanError) -> Iterator[None]:
-    """Reading the zip: a file in it that does not unpack (BROKEN), or a dump that is not
+    """Reading the zip: a file in it that does not unpack (ZIP_ERRORS), or a dump that is not
     UTF-8 text (every Odoo database is), is refused with `error`, and so is running out of memory."""
     try:
         yield
     except UnicodeDecodeError as exc:
         raise error(t(DAMAGED)) from exc
-    except BROKEN as exc:
+    except ZIP_ERRORS as exc:
         raise error(t(UNREADABLE)) from exc
     except MemoryError as exc:
         raise too_large(error) from exc
@@ -244,12 +240,12 @@ class Backup:
     def __init__(self, path: Path) -> None:
         try:
             self.archive = zipfile.ZipFile(path)
-        except zipfile.BadZipFile as exc:
+        except OSError as exc:
+            raise ScanError(t("migration.err_odoo_not_backup")) from exc
+        except ZIP_ERRORS as exc:
             _refuse_custom_format([partial(open, path, "rb")])
             if _cut_short(path):
                 raise SourceRevisionError(t(UNREADABLE)) from exc
-            raise ScanError(t("migration.err_odoo_not_backup")) from exc
-        except OSError as exc:
             raise ScanError(t("migration.err_odoo_not_backup")) from exc
         # A damaged backup is still recognised as one, so detection gives the reason it cannot be read.
         try:

@@ -15,10 +15,12 @@ from __future__ import annotations
 import csv
 import datetime
 import io
+import lzma
 import math
 import re
 import unicodedata
 import zipfile
+import zlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Collection, Mapping
@@ -39,6 +41,12 @@ MAX_CELLS = 200_000
 MAX_TABLE_BYTES = 10 * 1024 * 1024
 MAX_XLSX_UNCOMPRESSED = 50 * 1024 * 1024
 MAX_XLSX_ENTRIES = 4096
+# Every way the zipfile module fails on a damaged archive, opening it or unpacking a file from
+# it: an index or header it cannot parse, a zip version or method it cannot unpack, a name
+# flagged UTF-8 that is not, a file packed with a password, or a stream that does not
+# decompress, ends early or fails its checksum.
+ZIP_ERRORS = (zipfile.BadZipFile, NotImplementedError, RuntimeError, ValueError, EOFError, OSError,
+              lzma.LZMAError, zlib.error)
 
 
 @dataclass(frozen=True)
@@ -766,7 +774,7 @@ def _xlsx_lines(data: bytes, *, sheet: str | None, limits: Limits | None = None)
 
     try:
         archive = zipfile.ZipFile(io.BytesIO(data))
-    except zipfile.BadZipFile as exc:
+    except ZIP_ERRORS as exc:
         raise TabularError(t("import.err_not_xlsx"), code="not_workbook") from exc
     infos = archive.infolist()
     if len(infos) > MAX_XLSX_ENTRIES:
@@ -776,7 +784,7 @@ def _xlsx_lines(data: bytes, *, sheet: str | None, limits: Limits | None = None)
 
     try:
         workbook = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=False)
-    except (InvalidFileException, zipfile.BadZipFile, KeyError) as exc:
+    except (InvalidFileException, KeyError, *ZIP_ERRORS) as exc:
         raise TabularError(t("import.err_xlsx_open"), code="not_workbook") from exc
 
     try:
