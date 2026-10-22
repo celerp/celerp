@@ -86,17 +86,17 @@ async def _until_blocked_or_done(engine, task: asyncio.Task) -> None:
     raise AssertionError("the precision change neither finished nor waited")
 
 
-def _arm(monkeypatch, engine, module, attr, http, auth, *, before=False):
+def _arm(monkeypatch, engine, module, attr, http, auth, *, before=False, b=None):
     """At A's hook point (just after ``module.attr`` returns, or just before it is called
-    when ``before``) start B, lowering carat to 1 decimal place, and let it run until it
-    commits or waits for A's lock."""
+    when ``before``) start B, by default lowering carat to 1 decimal place, and let it run
+    until it commits or waits for A's lock."""
     real = getattr(module, attr)
     state = {"armed": True, "b": None}
 
     async def run_b():
         if state["armed"]:
             state["armed"] = False
-            state["b"] = asyncio.ensure_future(_carat(http, auth, 1))
+            state["b"] = asyncio.ensure_future(b() if b else _carat(http, auth, 1))
             await _until_blocked_or_done(engine, state["b"])
 
     async def hooked(*args, **kwargs):
@@ -236,6 +236,76 @@ async def test_a_batch_import_after_decimals_dropped_just_before_its_lock_refuse
     assert a.json()["created"] == 0 and len(a.json()["errors"]) == 1 and "0.27" in a.text, seen
     assert next(u["decimals"] for u in units if u["name"] == "carat") == 1, seen
     assert 0.27 not in qtys, seen
+
+
+# B removes carat, or makes it a piece unit, while A creates an item sold by it. Either the item
+# exists and the change is refused because it is in use, or the change is stored first and the
+# item is checked against it: refused for a unit that no longer exists, or created in carat as a
+# piece unit, the same as doing the two one after the other.
+
+def _without_carat(units):
+    return [u for u in units if u["name"] != "carat"]
+
+
+def _carat_as_pieces(units):
+    return [{**u, "unit_type": "pieces"} if u["name"] == "carat" else u for u in units]
+
+
+_UNIT_CHANGES = {"removed": (_without_carat, "units.unit_removed_in_use"),
+                 "retyped": (_carat_as_pieces, "units.unit_type_changed_in_use")}
+
+
+def _change_carat(http, auth, edit):
+    async def put():
+        units = (await http.get("/companies/me/units", headers=auth["headers"])).json()
+        return await http.put("/companies/me/units", headers=auth["headers"], json={"units": edit(units)})
+    return put
+
+
+async def _create_carat_item(http, auth):
+    return await http.post("/items", headers=auth["headers"], json={
+        "sku": "R-NEW", "name": "Parcel", "quantity": 3.5, "sell_by": "carat", "status": "available",
+        "allow_splitting": True})
+
+
+async def _assert_unit_serial(http, factory, auth, a, state, change, *, a_first: bool):
+    assert state["b"] is not None, "the hook point was never reached"
+    b = await state["b"]
+    edit, key = _UNIT_CHANGES[change]
+    units = (await http.get("/companies/me/units", headers=auth["headers"])).json()
+    carat = next((u for u in units if u["name"] == "carat"), None)
+    stored = await _carat_quantities(factory, auth)
+    seen = (a.status_code, a.text[:200], b.status_code, b.text[:200], carat, stored)
+    if a_first:
+        assert (a.status_code, b.status_code) == (200, 422), seen
+        assert b.json()["detail"]["message_key"] == key and "R-NEW" in b.text, seen
+        assert carat == {**carat, "unit_type": "weight"} and stored == [3.5], seen
+    elif change == "removed":
+        assert (a.status_code, b.status_code) == (422, 200), seen
+        assert units == edit(units) and stored == [], seen
+    else:  # the item is created in carat as it now is, a piece unit
+        assert (a.status_code, b.status_code) == (200, 200), seen
+        assert units == edit(units) and stored == [3.5], seen
+
+
+@pytest.mark.parametrize("change", list(_UNIT_CHANGES))
+async def test_creating_an_item_while_its_unit_changes_is_checked_against_the_committed_units(
+        http, factory, auth, committed_engine, monkeypatch, change):
+    import celerp_inventory.routes as inv
+    state = _arm(monkeypatch, committed_engine, inv, "_get_company_units", http, auth,
+                 b=_change_carat(http, auth, _UNIT_CHANGES[change][0]))
+    a = await _create_carat_item(http, auth)
+    await _assert_unit_serial(http, factory, auth, a, state, change, a_first=True)
+
+
+@pytest.mark.parametrize("change", list(_UNIT_CHANGES))
+async def test_an_item_created_after_its_unit_changed_just_before_its_lock_sees_the_new_units(
+        http, factory, auth, committed_engine, monkeypatch, change):
+    import celerp.services.company_lock as cl
+    state = _arm(monkeypatch, committed_engine, cl, "lock_company", http, auth, before=True,
+                 b=_change_carat(http, auth, _UNIT_CHANGES[change][0]))
+    a = await _create_carat_item(http, auth)
+    await _assert_unit_serial(http, factory, auth, a, state, change, a_first=False)
 
 
 # Only reads that validate nothing may use the unlocked units read; every writer goes through
