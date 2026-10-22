@@ -704,6 +704,7 @@
   "item.default_sell_qty_not_carried": "Default Sell Qty {qty} was not carried over: {unit} cannot hold it. Scanning the new item adds its normal quantity until you set a Default Sell Qty.",
   "units.precision_lowered_under_quantities": "{unit} cannot go to {decimals} decimal places: {count} items or open documents still hold quantities with more ({examples}). Change those quantities first, or keep {current} decimal places.",
   "units.moving_finer_than_unit": "{label} holds {qty} {unit}, but {unit} now allows only {decimals} decimal places. To go ahead, set {unit} back to {places} decimal places in Global Config, Inventory, Units.",
+  "units.template_finer_than_unit": "Subscription {template} lists {label} at {qty} {unit}, but {unit} now allows only {decimals} decimal places. To go ahead, set {unit} back to {places} decimal places in Global Config, Inventory, Units, or cancel this subscription and set up a new one with a quantity {unit} allows.",
   "field.tooltip.barcode": "Código de barras único para este item ou lote de estoque específico. Ao lê-lo, seleciona-se exatamente este item físico.",
   "field.tooltip.country_of_origin": "País onde este item foi produzido ou fabricado. Vai para as guias de remessa e a documentação aduaneira.",
   "field.tooltip.gross_weight": "Peso embalado de uma unidade, incluindo a embalagem. Alimenta o peso bruto por linha nos documentos de envio; o peso líquido é o campo Peso do item.",

@@ -209,13 +209,14 @@ def _still_moving(entity_id: str, entity_type: str, state: dict, items: dict[str
 
 
 async def require_moving_fits_units(session, company_id, entity_id: str, entity_type: str, state: dict,
-                                    also: list[tuple[dict, float]] = ()) -> None:
+                                    also: list[tuple[dict, float]] = (), template: str | None = None) -> None:
     """A document, list or manufacturing run about to move again (unvoided, reopened, back to
-    draft, undone, or copied into a new draft) holds what it can then still move, and the item
-    quantities ``also`` names, to its units' decimal places today: a precision change let them
-    through while they were history, so they are checked as a line writer checks them, under the
-    company lock. ``state`` is the state it is about to take. A quantity finer than its unit
-    allows is refused 422 naming the line, the unit and the way out, before anything is written."""
+    draft, undone, or copied into a new draft or a new document) holds what it can then still
+    move, and the item quantities ``also`` names, to its units' decimal places today: a precision
+    change let them through while they were history, so they are checked as a line writer checks
+    them, under the company lock. ``state`` is the state it is about to take. A quantity finer
+    than its unit allows is refused 422 naming the line, the unit and the way out, before anything
+    is written; a document a subscription makes names that subscription (``template``)."""
     from sqlalchemy import or_, select
 
     from celerp.models.projections import Projection
@@ -241,10 +242,18 @@ async def require_moving_fits_units(session, company_id, entity_id: str, entity_
         label = str(line.get("name") or line.get("sku") or item.get("sku") or item.get("name") or "-")
         places = _places(qty)
         shown = plain_number(float(qty))
+        way_out = f"set {unit} back to {places} decimal places in Global Config, Inventory, Units"
+        if template:
+            raise HTTPException(status_code=422, detail=refusal(
+                "units.template_finer_than_unit",
+                f"Subscription {template} lists {label} at {shown} {unit}, but {unit} now allows only "
+                f"{decimals} decimal places. To go ahead, {way_out}, or cancel this subscription and set up "
+                f"a new one with a quantity {unit} allows.",
+                template=template, label=label, qty=shown, unit=unit, decimals=decimals, places=places))
         raise HTTPException(status_code=422, detail=refusal(
             "units.moving_finer_than_unit",
             f"{label} holds {shown} {unit}, but {unit} now allows only {decimals} decimal places. "
-            f"To go ahead, set {unit} back to {places} decimal places in Global Config, Inventory, Units.",
+            f"To go ahead, {way_out}.",
             label=label, qty=shown, unit=unit, decimals=decimals, places=places))
 
 

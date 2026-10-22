@@ -7309,6 +7309,8 @@ async def create_shipment_from_docs(
         "reason_for_export": "sale" if any(s.get("doc_type") == "invoice" for s in states)
                              else "not_for_resale",
     }.items() if v is not None}
+    # A shipped document is history, so its lines may predate a precision change.
+    await require_moving_fits_units(session, company_id, new_entity_id, "list", data)
     entry = await _emit_list(session, company_id, new_entity_id, "list.created", data, user)
     await session.commit()
     return {"event_id": entry.id, "id": new_entity_id}

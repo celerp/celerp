@@ -278,11 +278,11 @@ async def _sku(session, auth, item_id: str) -> str:
 
 
 async def _carat_doc(session, auth, status: str, qty: float, number: str, doc_type: str = "invoice",
-                     entity_type: str = "doc") -> None:
+                     entity_type: str = "doc", **state) -> None:
     kind = {"doc_type": doc_type} if entity_type == "doc" else {"list_type": doc_type}
     await emit_event(session, company_id=auth["company_id"], entity_id=f"{entity_type}:{uuid.uuid4()}",
                      entity_type=entity_type, event_type=f"{entity_type}.created",
-                     data={**kind, "doc_number": number, "status": status,
+                     data={**kind, "doc_number": number, "status": status, **state,
                            "line_items": [{"name": "Stone", "quantity": qty, "unit": "carat", "unit_price": 10}]},
                      actor_id=None, location_id=None, source="test", idempotency_key=str(uuid.uuid4()), metadata_={})
     await session.commit()
@@ -313,18 +313,21 @@ async def test_fewer_decimals_that_every_quantity_fits_and_more_decimals_pass(cl
     assert await _carat_decimals(client, auth) == 1
 
 
-# A document blocks while its lines can still be received, shipped, sent back or converted; one in
-# any other status is history.
+# A document blocks while its lines can still be received, shipped, sent back or converted, and a
+# subscription template until it is cancelled, since it keeps making documents; one in any other
+# status is history.
 _STILL_MOVING = [("doc", "invoice", "draft"), ("doc", "invoice", "final"), ("doc", "invoice", "paid"),
                  ("doc", "purchase_order", "sent"), ("doc", "purchase_order", "partially_received"),
                  ("doc", "bill", "received"), ("doc", "memo", "sent"), ("doc", "consignment_in", "final"),
                  ("doc", "consignment_in", "partially_received"), ("doc", "consignment_in", "returned"),
                  ("doc", "quotation", "sent"), ("doc", "quotation", "accepted"), ("list", "transfer", "draft"),
-                 ("list", "audit", "finalized")]
+                 ("list", "audit", "finalized"), ("doc", "subscription_invoice", "draft"),
+                 ("doc", "subscription_invoice", "active"), ("doc", "subscription_po", "paused")]
 # A converted memo or consignment billed what sat in its lots, which are items counted on their own.
 _HISTORY = [("doc", "invoice", "void"), ("doc", "memo", "closed"), ("doc", "memo", "converted"),
             ("doc", "quotation", "converted"), ("doc", "quotation", "void"), ("doc", "consignment_in", "converted"),
-            ("doc", "credit_note", "final"), ("list", "transfer", "closed"), ("list", "quotation", "void")]
+            ("doc", "credit_note", "final"), ("list", "transfer", "closed"), ("list", "quotation", "void"),
+            ("doc", "subscription_po", "cancelled")]
 
 
 @pytest.mark.parametrize("entity_type, doc_type, status", _STILL_MOVING)
@@ -481,6 +484,79 @@ async def test_a_reopened_memo_or_a_document_back_to_draft_is_held_to_its_units(
             assert r.status_code == 200, r.text
         assert (await _state(session, auth, doc))["status"] == ({"reopen": "closed", "revert-to-draft": "final"}[path]
                                                                 if refused else back)
+
+
+@pytest.mark.parametrize("doc_type", ["subscription_invoice", "subscription_po"])
+async def test_a_subscription_never_makes_a_document_finer_than_its_units(client, session, auth, doc_type):
+    assert (await _set_carat_decimals(client, auth, 3)).status_code == 200
+    lot = await _lot(client, auth, qty=1)
+    r = await client.post("/docs", headers=auth["headers"], json={
+        "doc_type": doc_type, "contact_id": "customer:1", "frequency": "monthly", "start_date": "2026-01-01",
+        "name": "Monthly stones", "line_items": [
+            {"item_id": lot, "sku": await _sku(session, auth, lot), "name": "Stone", "quantity": 0.275,
+             "unit": "carat", "unit_price": 10}]})
+    assert r.status_code == 200, r.text
+    sub = r.json()["id"]
+    assert (await client.post(f"/subscriptions/{sub}/activate", headers=auth["headers"])).status_code == 200
+    # An active template keeps making documents, so it blocks fewer decimal places.
+    r = await _set_carat_decimals(client, auth, 2)
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"]["message_key"] == "units.precision_lowered_under_quantities", r.text
+    assert await _carat_decimals(client, auth) == 3
+
+    # A template saved before a precision change looked at it is refused when it makes the next one,
+    # naming the subscription, and nothing is made. Stand-in for one the precision check never saw:
+    # cancelled while carat goes to 2 places, then active again as it was stored.
+    await _carat_doc(session, auth, "cancelled", 0.275, "SUB-OLD", doc_type, name="Old stones", frequency="monthly")
+    await _carat_doc(session, auth, "active", 0.27, "SUB-FITS", doc_type, name="Fitting stones", frequency="monthly")
+    rows = await _rows(session, auth)
+    old, fits = rows["SUB-OLD"], rows["SUB-FITS"]
+    assert (await client.post(f"/subscriptions/{sub}/cancel", headers=auth["headers"])).status_code == 200
+    assert (await _set_carat_decimals(client, auth, 2)).status_code == 200
+    from celerp.models.projections import Projection
+    row = await session.get(Projection, {"company_id": auth["company_id"], "entity_id": old})
+    row.state = {**row.state, "status": "active"}
+    await session.commit()
+
+    before = await _doc_count(session, auth)
+    r = await client.post(f"/subscriptions/{old}/generate", headers=auth["headers"], json={})
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert detail["message_key"] == "units.template_finer_than_unit", detail
+    assert detail["params"] == {"template": "Old stones", "label": "Stone", "qty": "0.275", "unit": "carat",
+                                "decimals": 2, "places": 3}, detail
+    assert detail["message"].startswith("Subscription Old stones lists Stone at 0.275 carat"), detail
+    assert "set carat back to 3 decimal places" in detail["message"], detail
+    assert await _doc_count(session, auth) == before
+    assert not (await _state(session, auth, old)).get("generated_doc_ids")
+
+    # A template whose lines fit makes its document as before.
+    r = await client.post(f"/subscriptions/{fits}/generate", headers=auth["headers"], json={})
+    assert r.status_code == 200, r.text
+    assert (await _state(session, auth, r.json()["doc_id"]))["line_items"][0]["quantity"] == 0.27
+
+    # The way out the message names: the unit back to 3 places, then the old template makes its document.
+    assert (await _set_carat_decimals(client, auth, 3)).status_code == 200
+    r = await client.post(f"/subscriptions/{old}/generate", headers=auth["headers"], json={})
+    assert r.status_code == 200, r.text
+    assert (await _state(session, auth, r.json()["doc_id"]))["line_items"][0]["quantity"] == 0.275
+
+
+@pytest.mark.parametrize("qty, refused", [(0.275, True), (0.27, False)])
+async def test_a_shipment_copied_from_a_shipped_invoice_is_held_to_its_units(client, session, auth, qty, refused):
+    # A paid invoice whose goods all went out is history, so it never blocked the precision change.
+    await _carat_doc(session, auth, "paid", qty, "INV-SHIPPED", fulfillment_status="fulfilled",
+                     contact_id="customer:1", contact_name="Customer", currency="USD")
+    assert (await _set_carat_decimals(client, auth, 2)).status_code == 200
+    doc = (await _rows(session, auth))["INV-SHIPPED"]
+    before = await _doc_count(session, auth)
+    r = await client.post("/docs/shipment", headers=auth["headers"], json={"doc_ids": [doc]})
+    if refused:
+        _finer_refusal(r)
+        assert await _doc_count(session, auth) == before
+    else:
+        assert r.status_code == 200, r.text
+        assert (await _state(session, auth, r.json()["id"]))["line_items"][0]["quantity"] == 0.27
 
 
 async def test_undoing_a_stock_count_never_puts_back_a_quantity_finer_than_its_unit(client, session, auth):

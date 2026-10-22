@@ -44,6 +44,7 @@
     "th.position",
     "th.sku",
     "units.moving_finer_than_unit",
+    "units.template_finer_than_unit",
     "units.precision_lowered_under_quantities"
   ],
   "ar": [
@@ -79,6 +80,7 @@
     "th.position",
     "th.sku",
     "units.moving_finer_than_unit",
+    "units.template_finer_than_unit",
     "units.precision_lowered_under_quantities"
   ],
   "de": [
@@ -185,6 +187,7 @@
     "th.text",
     "th.version",
     "units.moving_finer_than_unit",
+    "units.template_finer_than_unit",
     "units.precision_lowered_under_quantities"
   ],
   "es": [
@@ -264,6 +267,7 @@
     "th.sku",
     "th.total",
     "units.moving_finer_than_unit",
+    "units.template_finer_than_unit",
     "units.precision_lowered_under_quantities"
   ],
   "fr": [
@@ -384,6 +388,7 @@
     "th.total",
     "th.version",
     "units.moving_finer_than_unit",
+    "units.template_finer_than_unit",
     "units.precision_lowered_under_quantities"
   ],
   "id": [
@@ -488,6 +493,7 @@
     "th.status",
     "th.total",
     "units.moving_finer_than_unit",
+    "units.template_finer_than_unit",
     "units.precision_lowered_under_quantities"
   ],
   "it": [
@@ -564,6 +570,7 @@
     "th.position",
     "th.sku",
     "units.moving_finer_than_unit",
+    "units.template_finer_than_unit",
     "units.precision_lowered_under_quantities"
   ],
   "ja": [
@@ -609,6 +616,7 @@
     "th.position",
     "th.sku",
     "units.moving_finer_than_unit",
+    "units.template_finer_than_unit",
     "units.precision_lowered_under_quantities"
   ],
   "pt": [
@@ -699,6 +707,7 @@
     "th.status",
     "th.total",
     "units.moving_finer_than_unit",
+    "units.template_finer_than_unit",
     "units.precision_lowered_under_quantities"
   ],
   "th": [
@@ -742,6 +751,7 @@
     "th.position",
     "th.sku",
     "units.moving_finer_than_unit",
+    "units.template_finer_than_unit",
     "units.precision_lowered_under_quantities"
   ],
   "vi": [
@@ -789,6 +799,7 @@
     "th.position",
     "th.sku",
     "units.moving_finer_than_unit",
+    "units.template_finer_than_unit",
     "units.precision_lowered_under_quantities"
   ]
 }
