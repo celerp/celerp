@@ -209,14 +209,11 @@ TAX_REGIMES: dict[str, _T] = {
         "taxes": [
             {"name": "VAT 15%", "rate": 15.0, "tax_type": "both", "is_default": True,
              "description": "Ethiopia standard VAT", "is_compound": False, "default_order": 0},
-            {"name": "TOT 2%", "rate": 2.0, "tax_type": "sales", "is_default": False,
-             "description": "Turnover tax on goods (non-VAT-registered)", "is_compound": False, "default_order": 0},
-            {"name": "TOT 10%", "rate": 10.0, "tax_type": "sales", "is_default": False,
-             "description": "Turnover tax on services (non-VAT-registered)", "is_compound": False, "default_order": 0},
             {"name": "Exempt", "rate": 0.0, "tax_type": "both", "is_default": False,
              "description": "VAT-exempt", "is_compound": False, "default_order": 0},
-            {"name": "WHT 2%", "rate": -2.0, "tax_type": "purchase", "is_default": False,
-             "description": "Withholding tax on supply of goods", "is_compound": False, "default_order": 1},
+            {"name": "WHT 3%", "rate": -3.0, "tax_type": "purchase", "is_default": False,
+             "description": "Withholding on goods contracts above ETB 20,000 and services from ETB 10,000. "
+                            "30% when the supplier gives no TIN", "is_compound": False, "default_order": 1},
         ],
     },
     # ── Fallback ──────────────────────────────────────────────────────────
