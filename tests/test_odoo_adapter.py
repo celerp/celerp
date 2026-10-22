@@ -99,7 +99,6 @@ def test_only_a_real_odoo_backup_is_recognised(tmp_path):
     strangers = {
         "no manifest": _zip({"dump.sql": dump}),
         "not an odoo manifest": _zip({"dump.sql": dump, "manifest.json": json.dumps({"version": "17.0"})}),
-        "not a database dump": _zip({"dump.sql": "SELECT 1;\n", "manifest.json": json.dumps(manifest)}),
         "manifest not json": _zip({"dump.sql": dump, "manifest.json": "odoo_dump"}),
         "not a zip": b"-- PostgreSQL database dump\n",
     }
@@ -107,9 +106,11 @@ def test_only_a_real_odoo_backup_is_recognised(tmp_path):
         result = _adapter().detect(_file(tmp_path, data, f"{label}.zip"))
         assert result.matched is False, label
         assert "not an Odoo backup" in result.reason, label
-    # A backup without its dump is one, damaged: it is refused with that reason rather than as a stranger.
-    with pytest.raises(SourceRevisionError, match="cannot be read"):
-        _adapter().detect(_file(tmp_path, _zip({"manifest.json": json.dumps(manifest)}), "no dump.zip"))
+    # A backup without its dump, or with one that is not a database dump, is one, damaged: it is
+    # refused with that reason rather than as a stranger.
+    for label, members in {"no dump": {}, "not a database dump": {"dump.sql": "SELECT 1;\n"}}.items():
+        with pytest.raises(SourceRevisionError, match="cannot be read"):
+            _adapter().detect(_file(tmp_path, _zip({**members, "manifest.json": json.dumps(manifest)}), f"{label}.zip"))
     # Two files, a Manager business file and an export set are not a backup; each keeps its own adapter.
     assert _adapter().detect([*_file(tmp_path, _backup(17)), *_file(tmp_path, _backup(14), "b.zip")]).matched is False
     assert _adapter().detect([artifact(BASIC)]).matched is False
@@ -147,6 +148,9 @@ def test_a_pg_dump_custom_format_backup_is_refused_with_its_own_message(tmp_path
                         "zipped in a folder": _zip({"backups/harbour.dump": custom, "backups/notes.txt": "x"})}.items():
         with pytest.raises(SourceRevisionError, match="pg_dump custom format.*choose the zip format"):
             detect_adapter(_file(tmp_path, data, "harbour.dump"))
+    # A backup whose manifest is Odoo's with a dump in this format is refused the same way.
+    with pytest.raises(SourceRevisionError, match="pg_dump custom format.*choose the zip format"):
+        detect_adapter(_file(tmp_path, _zip({"dump.sql": custom, "manifest.json": json.dumps(build.manifest(17))})))
     # Deeper than one folder it is just some zip, and not recognised.
     deeper = _adapter().detect(_file(tmp_path, _zip({"a/b/harbour.dump": custom}), "deeper.zip"))
     assert deeper.matched is False and "not an Odoo backup" in deeper.reason
@@ -377,6 +381,9 @@ def _unreadable() -> dict[str, tuple[bytes, str | None]]:
         "a changed byte in the dump": (_corrupt(_stored(dump), b"Lakeshore Trading Co", 0, b"l"), backup_damaged),
         "a changed byte in a filestore file": (_corrupt(_stored(dump), _FILED, 0, bytes([_FILED[0] ^ 1])),
                                                backup_damaged),
+        # A damaged stream can unpack to wrong bytes before its checksum is reached.
+        "a changed byte at the start of the dump": (_corrupt(_stored(dump), b"PostgreSQL database dump", 0, b"p"),
+                                                    backup_damaged),
         "a broken compressed stream": (_broken(whole), backup_damaged),
         # Other tools than Odoo zip with bzip2 or LZMA too.
         "a broken bzip2 stream": (_broken(_packed(sql, zipfile.ZIP_BZIP2)), backup_damaged),

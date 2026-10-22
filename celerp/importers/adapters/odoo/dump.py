@@ -197,9 +197,10 @@ def _root(archive: zipfile.ZipFile) -> str | None:
 
 def _manifest(archive: zipfile.ZipFile, root: str) -> dict | None:
     """The backup's manifest, or None when the files are not an Odoo backup. Raises
-    SourceRevisionError when they are one without its dump, or with a manifest or dump that
-    would unpack beyond what the server reads; the sizes are the ones the zip declares, which
-    unpacking never goes past."""
+    SourceRevisionError when they are one without its dump, with a dump that does not start as
+    a plain SQL dump (damaged, as a broken stream can unpack to wrong bytes before its checksum
+    is reached, or pg_dump custom format), or with a manifest or dump that would unpack beyond
+    what the server reads; the sizes are the ones the zip declares, which unpacking never goes past."""
     if archive.getinfo(root + MANIFEST).file_size > MAX_MANIFEST:
         raise SourceRevisionError(t(TOO_LARGE))
     try:
@@ -217,7 +218,10 @@ def _manifest(archive: zipfile.ZipFile, root: str) -> dict | None:
         raise SourceRevisionError(t(TOO_LARGE))
     with _open(archive, info.filename) as dump:
         head = dump.read(256).decode("utf-8", "replace")
-    return manifest if DUMP_HEADER in head else None
+    if DUMP_HEADER not in head:
+        _refuse_custom_format([partial(_open, archive, info.filename)])
+        raise SourceRevisionError(t(UNREADABLE))
+    return manifest
 
 
 def _refuse_custom_format(files: Iterable[Callable[[], IO[bytes]]]) -> None:
