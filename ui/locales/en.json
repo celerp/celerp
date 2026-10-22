@@ -6335,5 +6335,10 @@
   "help.empty_query": "Type what you want to find.",
   "help.no_module": "No module named {module}.",
   "ai.help_sources": "Sources:",
-  "ai.help_no_coverage": "No help page covers this yet, so this answer is not from the Celerp help."
+  "ai.help_no_coverage": "No help page covers this yet, so this answer is not from the Celerp help.",
+  "ai.usage_all_time": "All-Time Usage",
+  "ai.usage_period_month": "Counts questions from {date} to today.",
+  "ai.usage_period_all": "Counts every question the free account has answered in this company.",
+  "ai.usage_none_all_time": "No questions yet.",
+  "ai.usage_scope_note": "The account total above also counts questions from other companies on this install, from deleted conversations, and from the API."
 }

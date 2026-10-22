@@ -224,8 +224,12 @@ def setup_ui_routes(app) -> None:
         from celerp.gateway.state import get_session_token
         session_token = get_session_token()
 
-        # Quota section
-        quota_section = await _quota_section(token, session_token)
+        # One quota status read feeds the quota section and the usage period.
+        try:
+            status = await api.ai_quota_status(token, session_token)
+        except Exception:
+            status = None
+        quota_section = _quota_section(status)
 
         # Per-user usage is company-private administrative data. Hide the section
         # entirely for roles that cannot manage users rather than rendering a 403 as
@@ -236,7 +240,7 @@ def setup_ui_routes(app) -> None:
         except APIError:
             company_settings = {}
         usage_table = (
-            await _usage_table(token, session_token)
+            await _usage_table(token, session_token, status)
             if role_has_permission(company_settings, get_role(request), "manage_users")
             else None
         )
@@ -676,11 +680,13 @@ def setup_ui_routes(app) -> None:
 # Settings helpers
 # ---------------------------------------------------------------------------
 
-async def _quota_section(token: str, session_token: str) -> FT:
-    """Render quota overview. Falls back to local-install message if no relay."""
-    try:
-        status = await api.ai_quota_status(token, session_token)
-    except Exception:
+def _quota_section(status: dict | None) -> FT:
+    """Render quota overview. Falls back to local-install message if no relay.
+
+    ``status`` is None when the quota status failed to load; the ``unknown`` and
+    ``disconnected`` sentinels carry no figures, so they render as not loaded too.
+    """
+    if status is None or status.get("unknown") or status.get("disconnected"):
         return Div(
             H3(t("page.quota"), cls="ai-settings__section-title"),
             P(t("msg.could_not_load_quota_data"), cls="ai-settings__error"),
@@ -745,48 +751,51 @@ async def _quota_section(token: str, session_token: str) -> FT:
     )
 
 
-async def _usage_table(token: str, session_token: str) -> FT:
-    """Render per-user usage table for current month."""
+async def _usage_table(token: str, session_token: str, status: dict | None) -> FT:
+    """Render per-user AI questions: all time on a free account (free questions never
+    reset), this month otherwise, including when the quota status is not known."""
+    period = "all" if (status or {}).get("tier") == "free" else "month"
+    title = t("ai.usage_all_time") if period == "all" else t("page.this_months_usage")
     try:
-        data = await api.ai_usage_stats(token, session_token)
+        data = await api.ai_usage_stats(token, session_token, period=period)
         rows = data.get("users", [])
     except Exception:
         return Div(
-            H3(t("page.this_months_usage"), cls="ai-settings__section-title"),
+            H3(title, cls="ai-settings__section-title"),
             P(t("msg.could_not_load_usage_data"), cls="ai-settings__error"),
         )
 
-    if not rows:
-        return Div(
-            H3(t("page.this_months_usage"), cls="ai-settings__section-title"),
-            P(t("msg.no_queries_this_month_yet"), cls="ai-settings__empty"),
-        )
+    start = (data.get("period") or {}).get("start")
+    period_line = t("ai.usage_period_all") if period == "all" else t("ai.usage_period_month", date=start or "--")
+    heading = (H3(title, cls="ai-settings__section-title"), P(period_line, cls="ai-settings__text"))
 
-    table_rows = []
-    for r in rows:
-        last_q = r.get("last_query_at") or ""
-        if last_q:
-            # Show date only
-            last_q = last_q[:10]
-        table_rows.append(Tr(
-            Td(r.get("user_name", "--"), cls="td-left"),
-            Td(str(r.get("query_count", 0)), cls="td-right"),
-            Td(str(r.get("credits_used", 0)), cls="td-right"),
-            Td(last_q, cls="td-right"),
-        ))
+    if not rows:
+        empty = t("ai.usage_none_all_time") if period == "all" else t("msg.no_queries_this_month_yet")
+        return Div(*heading, P(empty, cls="ai-settings__text"), cls="ai-settings__usage")
+
+    table_rows = [
+        Tr(
+            Td(r.get("user_name", "--")),
+            Td(str(r.get("query_count", 0)), cls="cell--number"),
+            Td(str(r.get("credits_used", 0)), cls="cell--number"),
+            Td((r.get("last_query_at") or "")[:10] or "--"),
+        )
+        for r in rows
+    ]
 
     return Div(
-        H3(t("page.this_months_usage"), cls="ai-settings__section-title"),
+        *heading,
         Table(
             Thead(Tr(
-                Th(t("th.user"), cls="th-center"),
-                Th(t("th.queries"), cls="th-center"),
-                Th(t("th.credits_used"), cls="th-center"),
-                Th(t("th.last_query"), cls="th-center"),
+                Th(t("th.user")),
+                Th(t("th.queries"), cls="cell--number"),
+                Th(t("th.credits_used"), cls="cell--number"),
+                Th(t("th.last_query")),
             )),
             Tbody(*table_rows),
-            cls="table ai-settings__usage-table",
+            cls="data-table ai-settings__usage-table",
         ),
+        P(t("ai.usage_scope_note"), cls="ai-settings__text"),
         cls="ai-settings__usage",
     )
 

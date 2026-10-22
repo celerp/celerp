@@ -3330,13 +3330,14 @@ async def ai_upload(token: str, session_token: str, files: list[tuple[str, bytes
         return _raise(await c.post("/ai/upload", files=multipart)).json()
 
 
-async def ai_usage_stats(token: str, session_token: str = "") -> dict:
-    """GET /ai/usage-stats - per-user query/credit usage for current month."""
+async def ai_usage_stats(token: str, session_token: str = "", *, period: str = "month") -> dict:
+    """GET /ai/usage-stats - per-user questions and credits, ``period`` month or all."""
+    params = {"period": period}
     if session_token:
         async with _ai_api_client(token, session_token) as c:
-            return _raise(await c.get("/ai/usage-stats")).json()
+            return _raise(await c.get("/ai/usage-stats", params=params)).json()
     async with _api_client(token) as c:
-        return _raise(await c.get("/ai/usage-stats")).json()
+        return _raise(await c.get("/ai/usage-stats", params=params)).json()
 
 
 async def ai_quota_status(token: str, session_token: str = "") -> dict:

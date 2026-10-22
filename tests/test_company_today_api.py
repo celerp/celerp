@@ -151,7 +151,7 @@ async def test_ai_usage_month_starts_at_the_company_month(co, client, session):
     session.add(conversation)
     await session.flush()
     for when in (month_start - timedelta(hours=1), month_start + timedelta(hours=1)):
-        session.add(AIMessage(conversation_id=conversation.id, role="user", content="q", created_at=when))
+        session.add(AIMessage(conversation_id=conversation.id, role="user", content="q", credits_used=1, created_at=when))
     await session.commit()
     users = (await client.get("/ai/usage-stats", headers=co.headers)).json()["users"]
     assert [u["query_count"] for u in users] == [1]

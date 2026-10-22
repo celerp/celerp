@@ -997,10 +997,12 @@ def test_es_uses_usted_register():
     root = Path(__file__).resolve().parents[1]
     catalogs = [Path(_LOCALES_DIR) / "es.json",
                 *sorted(root.glob("default_modules/*/*/locales/es.json"))]
+    # A value still identical to its English source is an untranslated placeholder, not Spanish.
     informal = {f"{p.parent.parent.name}:{k}": hits
                 for p in catalogs
+                for en in [json.loads((p.parent / "en.json").read_text(encoding="utf-8"))]
                 for k, v in json.loads(p.read_text(encoding="utf-8")).items()
-                if (hits := _tu_forms(v))}
+                if v != en.get(k) and (hits := _tu_forms(v))}
     assert not informal, informal
 
 

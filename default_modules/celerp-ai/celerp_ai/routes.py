@@ -26,7 +26,7 @@ Endpoints:
   POST   /ai/conversations/{id}/confirm-all          Run every proposed change on a message
   POST   /ai/conversations/{id}/jobs/{job}/proposals Turn read receipts into bill proposals
   GET    /ai/batch/{job_id}                          Job status and per-file results
-  GET    /settings/ai/usage-stats                    Per-user usage this month
+  GET    /settings/ai/usage-stats                    Per-user questions this month or all time
 """
 
 from __future__ import annotations
@@ -1503,14 +1503,18 @@ async def propose_from_job(
 
 @settings_router.get("/usage-stats")
 async def usage_stats(
+    period: Literal["month", "all"] = "month",
     company_id=Depends(get_current_company_id),
     _: None = require_permission("manage_users"),
     company_settings: dict = Depends(get_current_company_settings),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Per-user AI usage for the company's current calendar month.
+    """Per-user AI questions in the period: the company's current calendar month, or all time.
 
-    Returns list of {user_id, user_name, query_count, credits_used, last_query_at}.
+    A question counts once, when the relay charged it: a user message with credits, or a
+    receipts batch job with credits. Returns ``period`` {kind, start} (start is the ISO
+    month start, null for all time) and ``users``, a list of {user_id, user_name,
+    query_count, credits_used, last_query_at} with the latest question first.
     """
     from datetime import datetime
     from sqlalchemy import func, select
@@ -1521,6 +1525,7 @@ async def usage_stats(
     tz = company_settings.get("timezone")
     today = business_today(tz)
     month_start = datetime(today.year, today.month, 1, tzinfo=business_timezone(tz))
+    since = month_start if period == "month" else None
 
     message_rows = (await session.execute(
         select(
@@ -1533,17 +1538,23 @@ async def usage_stats(
         .where(
             AIConversation.company_id == company_id,
             AIMessage.role == "user",
-            AIMessage.created_at >= month_start,
+            AIMessage.credits_used > 0,
+            *([AIMessage.created_at >= since] if since else []),
         )
         .group_by(AIConversation.user_id)
     )).all()
     batch_rows = (await session.execute(
         select(
             AIBatchJob.user_id,
+            func.count(AIBatchJob.id).label("query_count"),
             func.sum(AIBatchJob.credits_consumed).label("credits_used"),
             func.max(AIBatchJob.created_at).label("last_query_at"),
         )
-        .where(AIBatchJob.company_id == company_id, AIBatchJob.created_at >= month_start)
+        .where(
+            AIBatchJob.company_id == company_id,
+            AIBatchJob.credits_consumed > 0,
+            *([AIBatchJob.created_at >= since] if since else []),
+        )
         .group_by(AIBatchJob.user_id)
     )).all()
 
@@ -1557,6 +1568,7 @@ async def usage_stats(
     }
     for r in batch_rows:
         row = metrics.setdefault(r.user_id, {"query_count": 0, "credits_used": 0, "last_query_at": None})
+        row["query_count"] += int(r.query_count or 0)
         row["credits_used"] += int(r.credits_used or 0)
         if r.last_query_at and (row["last_query_at"] is None or r.last_query_at > row["last_query_at"]):
             row["last_query_at"] = r.last_query_at
@@ -1569,8 +1581,11 @@ async def usage_stats(
         )).all()
         users = {u.id: u.name for u in user_rows}
 
-    ordered = sorted(metrics.items(), key=lambda item: (-item[1]["query_count"], str(item[0])))
+    # Newest first: by last question descending, user id ascending as the tie-break.
+    ordered = sorted(metrics.items(), key=lambda item: str(item[0]))
+    ordered.sort(key=lambda item: item[1]["last_query_at"], reverse=True)
     return {
+        "period": {"kind": period, "start": month_start.date().isoformat() if since else None},
         "users": [
             {
                 "user_id": str(user_id),

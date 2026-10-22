@@ -2789,7 +2789,7 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
 .ai-settings__section-title { font-size: 1rem; font-weight: 600; margin-bottom: 0.75rem; }
 .ai-settings__local-msg { color: var(--c-text2); font-size: 0.9rem; }
 .ai-settings__error { color: var(--c-danger, #ef4444); font-size: 0.9rem; }
-.ai-settings__empty { color: var(--c-text2); font-size: 0.9rem; }
+.ai-settings__text { color: var(--c-text2); font-size: 0.9rem; }
 
 .ai-settings__quota { background: var(--c-bg2); border: 1px solid var(--c-border); border-radius: 0.5rem; padding: 1.25rem; margin-bottom: 1.5rem; }
 .ai-settings__stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.75rem; margin-bottom: 1rem; }
