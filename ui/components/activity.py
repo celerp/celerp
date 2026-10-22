@@ -588,23 +588,28 @@ def _discount_change_summary(fields_changed: dict, currency: str | None):
 
     Detection keys on the user-controlled inputs (``discount`` / ``discount_type``), NOT on the
     derived ``discount_amount`` - the latter also shifts when a line edit changes the subtotal of
-    a percentage discount, which is not itself a discount action.
+    a percentage discount, which is not itself a discount action. A missing discount reads as
+    zero, and a discount type change counts only while there is a discount to apply it to: a
+    save that stamps the type on a document with no discount is not a discount action.
     """
-    changed = False
-    for key in ("discount", "discount_type"):
-        if key in fields_changed:
-            old, new = _change_old_new(fields_changed[key])
-            if old != new:
-                changed = True
-                break
-    if not changed:
-        return None, frozenset()
-
     amt_old = amt_new = None
     for key in ("discount_amount", "discount"):
         if key in fields_changed:
             amt_old, amt_new = _change_old_new(fields_changed[key])
             break
+    has_amount = bool(float(amt_old or 0) or float(amt_new or 0))
+
+    changed = False
+    if "discount" in fields_changed:
+        old, new = _change_old_new(fields_changed["discount"])
+        changed = float(old or 0) != float(new or 0)
+    if not changed and has_amount and "discount_type" in fields_changed:
+        old, new = _change_old_new(fields_changed["discount_type"])
+        changed = old != new
+    if not changed:
+        # Discount inputs that did not change the discount are hidden, not dumped as fields.
+        return None, frozenset({"discount", "discount_type"})
+
     if float(amt_new or 0) > 0:
         new_str = fmt_price(amt_new, "discount_amount", currency)
         # When an existing discount is changed, show "old → new" like every other field;
@@ -678,6 +683,38 @@ def _line_tax_change_summary(fields_changed: dict, currency: str | None):
     return parts, (frozenset({"tax"}) if parts else frozenset())
 
 
+def _doc_tax_change_summary(fields_changed: dict, currency: str | None, show_total: bool):
+    """Document-level tax edits from a ``doc_taxes`` diff, e.g. 'Removed Levy 5%, Total:
+    210.00 → 200.00'. Returns (parts, consumed); the ``tax`` and ``total`` scalars the edit
+    recomputes are consumed, and Total is shown only when no other summary already shows it."""
+    change = fields_changed.get("doc_taxes")
+    if not isinstance(change, dict):
+        return [], frozenset()
+
+    def _by_code(value) -> dict[str, float]:
+        return {str(tx.get("code") or ""): float(tx.get("rate") or 0) for tx in tax_entries(value)}
+
+    def _name(code: str, rate: float) -> str:
+        pct = f"{rate:g}%"
+        return code if code.endswith(pct) else f"{code} {pct}".strip()
+
+    old, new = _by_code(change.get("old")), _by_code(change.get("new"))
+    parts = (
+        [t("activity.added", item=_name(c, r)) for c, r in new.items() if c not in old]
+        + [t("activity.changed", item=f"{c} {old[c]:g}% → {r:g}%") for c, r in new.items()
+           if c in old and old[c] != r]
+        + [t("activity.removed", item=_name(c, r)) for c, r in old.items() if c not in new]
+    )
+    if not parts:
+        return [], frozenset({"doc_taxes"})
+    if show_total and "total" in fields_changed:
+        o, n = _change_old_new(fields_changed["total"])
+        if o is not None and n is not None and o != n:
+            parts.append(t("activity.total_change",
+                           old=fmt_price(o, 'total', currency), new=fmt_price(n, 'total', currency)))
+    return parts, frozenset({"doc_taxes", "tax", "total"})
+
+
 def _fields_changed_summary(fields_changed: dict, currency: str | None = None,
                             category_names: dict | None = None) -> str:
     """Compact summary of field changes from a ledger data dict.
@@ -698,7 +735,11 @@ def _fields_changed_summary(fields_changed: dict, currency: str | None = None,
     # Per-item tax-rate changes render explicitly (which item, the % and the amount); doing so
     # consumes the document-level `tax` scalar so the same change isn't also dumped item-less.
     tax_parts, tax_consumed = _line_tax_change_summary(fields_changed, currency)
-    consumed = consumed | tax_consumed
+    # Document-level taxes name the tax added, removed or re-rated, never the internal key.
+    doc_tax_parts, doc_tax_consumed = _doc_tax_change_summary(
+        fields_changed, currency, show_total="total" not in consumed)
+    tax_parts = doc_tax_parts + tax_parts
+    consumed = consumed | tax_consumed | doc_tax_consumed
 
     user_fields = {k: v for k, v in fields_changed.items()
                    if k not in _SYSTEM_FIELDS and k not in _DERIVED_DOC_FIELDS

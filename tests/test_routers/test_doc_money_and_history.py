@@ -192,3 +192,63 @@ class TestDiscountHistorySummary:
         # Even when tax is shown (non-discount context), the IEEE-754 tail never reaches the user.
         summary = _fields_changed_summary({"tax": {"old": 346.50000000000006, "new": 385.00000000000006}}, "USD")
         assert summary == "Tax: $346.50 → $385.00"
+
+
+# ── Document-level tax edits read as what the user did ───────────────────────
+
+class TestDocTaxHistorySummary:
+    """Removing or adding a document tax names the tax, not a discount or an internal key."""
+
+    # The changeset a line-save writes when the user removes the only document tax: the save
+    # also stamps discount_type on a document that never had one.
+    _REMOVE_LEVY = {
+        "tax": {"old": 10.0, "new": 0.0},
+        "total": {"old": 210.0, "new": 200.0},
+        "doc_taxes": {
+            "old": [{"code": "Levy 5%", "rate": 5.0, "label": "", "order": 1, "amount": 10.0,
+                     "is_compound": False}],
+            "new": [],
+        },
+        "discount_type": {"old": None, "new": "flat"},
+    }
+
+    def test_removing_a_doc_tax_names_it_and_the_total_effect(self):
+        summary = _fields_changed_summary(self._REMOVE_LEVY, "USD")
+        assert summary == "Removed Levy 5%, Total: $210.00 → $200.00"
+
+    def test_adding_a_doc_tax_names_it(self):
+        summary = _fields_changed_summary({
+            "tax": {"old": 0.0, "new": 7.0},
+            "total": {"old": 100.0, "new": 107.0},
+            "doc_taxes": {"old": [], "new": [{"code": "VAT", "rate": 7.0, "amount": 7.0}]},
+        }, "USD")
+        assert summary == "Added VAT 7%, Total: $100.00 → $107.00"
+
+    def test_changing_a_doc_tax_rate_names_old_and_new(self):
+        summary = _fields_changed_summary({
+            "doc_taxes": {"old": [{"code": "VAT", "rate": 7.0}], "new": [{"code": "VAT", "rate": 10.0}]},
+        }, "USD")
+        assert summary == "Changed VAT 7% → 10%"
+
+    def test_discount_type_stamped_without_any_discount_is_not_a_discount_event(self):
+        summary = _fields_changed_summary({
+            "discount_type": {"old": None, "new": "flat"},
+            "discount": {"old": None, "new": 0},
+            "total": {"old": 210.0, "new": 200.0},
+        }, "USD")
+        assert "Discount" not in summary
+
+    def test_every_list_field_on_a_document_has_a_readable_summary(self):
+        # Guard: a list-valued document field must never fall back to its title-cased key
+        # ("Doc Taxes updated", "Line Items updated").
+        import typing
+        from celerp_docs.routes import DocCreatePayload
+        from ui.components.activity import _field_name
+        list_fields = [name for name, f in DocCreatePayload.model_fields.items()
+                       if typing.get_origin(f.annotation) is list]
+        assert "doc_taxes" in list_fields
+        for name in list_fields:
+            entry = {"code": "X", "rate": 1.0, "sku": "X", "name": "X", "quantity": 1}
+            summary = _fields_changed_summary({name: {"old": [entry], "new": []}}, "USD")
+            assert summary, name
+            assert _field_name(name) not in summary, (name, summary)
