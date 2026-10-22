@@ -347,6 +347,8 @@ def _damaged() -> dict[str, str]:
     dump = build.dump_sql(build.tables(17))
     copy = "COPY public.account_move_line ("
     row = dump.index("\n", dump.index(copy)) + 1
+    creates = re.compile(r"(?ms)^CREATE TABLE .*?^\);\n")
+    end = dump.rindex("--\n-- PostgreSQL database dump complete")
     return {
         # The upload stopped after the books, before the stock.
         "truncated between tables": _cut(dump, "--\n-- Data for Name: stock_location"),
@@ -355,6 +357,9 @@ def _damaged() -> dict[str, str]:
         "a row short of a field": dump[:row] + dump[row:].replace("\t", " ", 1),
         "a table left without its data": dump.replace(_cut(dump[dump.index("--\n-- Data for Name: stock_quant;"):],
                                                            "--\n-- Data for Name: stock_lot"), ""),
+        # Data whose tables are not declared first: which of their columns hold translated names is unknown.
+        "data only, without its tables": creates.sub("", dump),
+        "its tables declared after their data": creates.sub("", dump[:end]) + "".join(creates.findall(dump)) + dump[end:],
     }
 
 

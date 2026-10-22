@@ -507,8 +507,9 @@ class Backup:
         when a row of another wanted table, or one whose leading field is not an id, keeps that
         much, when the rows kept, with what is built from them (BUILT_BYTES), would take more
         than MAX_HELD of memory, or when the dump is cut short or damaged: it does not unpack,
-        has no closing line, a table's data never ends or never starts, a row has more or fewer
-        fields than its table, a kept column of a kind in `kinds` (column -> a key of KINDS) holds
+        has no closing line, a table's data never ends or never starts, a wanted table's data comes
+        before its CREATE TABLE (which declares the columns holding translated names), a row has
+        more or fewer fields than its table, a kept column of a kind in `kinds` (column -> a key of KINDS) holds
         a value not of that kind, or a `required` table (one an installed module makes) is missing.
         A kept column of the TRANSLATED kind that the dump declares jsonb is read as its English
         name (the first stored when it has none): one that is not a non-empty JSON object of
@@ -581,6 +582,8 @@ class Backup:
                     declaring = created.group(1) if created.group(1) in wanted else None
                 elif line.startswith("COPY ") and (match := _COPY.match(line.rstrip("\n"))):
                     copying = match.group(1)
+                    if copying in wanted and copying not in made:
+                        raise ScanError(t(DAMAGED))
                     if copying in wanted:
                         header = [c.strip().strip('"') for c in match.group(2).split(",")]
                         width, kept = len(header), [i for i, name in enumerate(header) if name in columns]
