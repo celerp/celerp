@@ -12,8 +12,10 @@ tests/helpers.py is a shim that re-exports from here for backward compatibility.
 from __future__ import annotations
 
 import base64
+import gc
 import json
 import os
+import time
 import uuid
 from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
@@ -502,3 +504,20 @@ def released_migration_history(database_url: str = DATABASE_URL):
             else:
                 cur.execute("DROP TABLE IF EXISTS alembic_version")
         conn.close()
+
+
+def fastest_cpu_seconds(run, times: int = 2) -> float:
+    """The least CPU time ``run()`` spends over ``times`` calls, with the garbage collector
+    paused (its passes over everything the test process holds are not the run's). CPU time,
+    not the wall clock, which other processes on a busy machine stretch."""
+    took = float("inf")
+    for _ in range(times):
+        gc.collect()
+        gc.disable()
+        try:
+            began = time.process_time()
+            run()
+            took = min(took, time.process_time() - began)
+        finally:
+            gc.enable()
+    return took

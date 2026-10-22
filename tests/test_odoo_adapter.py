@@ -15,7 +15,6 @@ import json
 import os
 import random
 import re
-import time
 import tracemalloc
 import zipfile
 from collections import defaultdict
@@ -33,6 +32,7 @@ from celerp.importers.schema import CIFMode, CoverageClass, ReconciliationMeasur
 from fixtures.manager_io.support import BASIC, artifact
 from fixtures.odoo_backup import build
 from migration_support import count, load_run, maker, real_engine, recognition_peak, scan_upload  # noqa: F401
+from test_helpers import fastest_cpu_seconds
 from test_migration_e2e import _passing, migrate_set
 from ui.i18n import t
 
@@ -1487,22 +1487,13 @@ def test_reading_four_times_the_rows_takes_about_four_times_as_long(tmp_path, mo
     revaluation every holding, each line every account, each hop along a chain of settlements
     every settlement). The chain is read at a cutover, where what one settlement carries
     carries the documents it links. Four times the rows within six times the time (in the
-    square of them it is sixteen), the faster of two reads of each, with the garbage collector
-    paused: its passes over everything the test process holds are not the read's."""
+    square of them it is sixteen), the faster of two reads of each, in CPU time."""
     decisions = MigrationDecisions(mode=CIFMode.CUTOVER, cutover_date=CUTOVER) if shape == "chain" else FULL
     took = {}
     for n in (TIMED[shape], 4 * TIMED[shape]):
         path = _shaped(tmp_path / f"{shape}-{n}.zip", monkeypatch, shape, n)
         monkeypatch.undo()
-        for _ in range(2):
-            gc.collect()
-            gc.disable()
-            try:
-                began = time.perf_counter()
-                _read_whole(path, decisions)
-                took[n] = min(took.get(n, float("inf")), time.perf_counter() - began)
-            finally:
-                gc.enable()
+        took[n] = fastest_cpu_seconds(lambda: _read_whole(path, decisions))
     assert took[4 * TIMED[shape]] < 6 * took[TIMED[shape]], took
 
 

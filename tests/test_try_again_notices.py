@@ -210,7 +210,7 @@ def test_a_long_notice_is_checked_in_time_proportional_to_its_length(module_cata
     """Every message with its Try again sentence cut, run together: words the pattern starts on
     again and again, so a pattern that backtracks over the whole notice would hang the page.
     Four times the text may take about four times as long; backtracking takes 16 or 64 times."""
-    import time
+    from test_helpers import fastest_cpu_seconds
     from ui.i18n import t, try_again_pattern
     en = _catalog("en")
     cut = " ".join(re.sub(r"[Ss]elect Try again", "", _filled(t(k, "en")))
@@ -218,12 +218,8 @@ def test_a_long_notice_is_checked_in_time_proportional_to_its_length(module_cata
     pattern = re.compile(try_again_pattern("en"))
 
     def fastest(notice: str) -> float:
-        times = []
-        for _ in range(3):
-            started = time.perf_counter()
-            assert pattern.search(notice) is None
-            times.append(time.perf_counter() - started)
-        return min(times)
+        assert pattern.search(notice) is None
+        return fastest_cpu_seconds(lambda: pattern.search(notice), times=3)
 
     assert fastest(cut * 4) < 10 * fastest(cut)
 
