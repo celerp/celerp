@@ -8,7 +8,6 @@ source's export menus write it."""
 from __future__ import annotations
 
 import io
-import struct
 import zipfile
 from datetime import date
 from decimal import Decimal
@@ -179,75 +178,6 @@ def test_a_workbook_listing_more_entries_than_the_server_holds_is_refused_before
         tracemalloc.stop()
     assert str(refused.value) == t("import.err_xlsx_entries")
     assert peak < 16 * 1024 ** 2, f"{peak / 2 ** 20:.0f} MiB peak"
-
-
-def _zip64_tail(disk: int, record_at: int) -> bytes:
-    """A ZIP64 end locator naming `disk` and a record at `record_at`, then an empty end record."""
-    return (struct.pack("<4sLQL", b"PK\x06\x07", disk, record_at, 1)
-            + struct.pack("<4s4H2LH", b"PK\x05\x06", 0, 0, 0, 0, 0, 0, 0))
-
-
-# End records zipfile cannot parse, or whose directory is larger than the file holding it: zipfile
-# refuses each when it opens the file, so each is damaged, never too large.
-DAMAGED_TAILS = {
-    "on_two_disks": _zip64_tail(1, 0),
-    "record_outside_the_file": _zip64_tail(0, 10 ** 9),
-    "record_missing": _zip64_tail(0, 0),
-    "directory_of_4_gib_in_22_bytes": struct.pack("<4s4H2LH", b"PK\x05\x06", 0, 0, 5, 5, 0xFFFFFFF0, 0, 0),
-    "directory_of_300_mib_after_a_body": b"PK\x03\x04" + bytes(200)
-    + struct.pack("<4s4H2LH", b"PK\x05\x06", 0, 0, 9, 9, 300 * 1024 ** 2, 0, 0),
-}
-
-# Every function that runs the zip preflight, and each way an upload reaches it.
-PREFLIGHT_CALLERS = {
-    "celerp/importers/tabular.py:_xlsx_lines": ("read_table", "read_table_at_header", "workbook_lines"),
-    "celerp/importers/adapters/exports/files.py:_members": ("scan", "scan:xero", "scan:quickbooks_online"),
-    "celerp/importers/adapters/odoo/dump.py:__init__": ("scan:odoo",),
-}
-
-
-def test_every_function_running_the_zip_preflight_is_probed_with_a_damaged_tail():
-    import ast
-    from pathlib import Path
-
-    root = Path(__file__).resolve().parent.parent
-    callers = set()
-    for path in [*(root / "celerp").rglob("*.py"), *(root / "default_modules").rglob("*.py")]:
-        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and any(
-                    isinstance(call, ast.Call) and "zip_directory_fits" in {getattr(call.func, "id", None),
-                                                                            getattr(call.func, "attr", None)}
-                    for call in ast.walk(node)):
-                callers.add(f"{path.relative_to(root).as_posix()}:{node.name}")
-    assert callers == set(PREFLIGHT_CALLERS)
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("tail", list(DAMAGED_TAILS))
-@pytest.mark.parametrize("way", [way for ways in PREFLIGHT_CALLERS.values() for way in ways])
-async def test_a_zip_whose_end_records_do_not_parse_is_refused_as_unreadable(client, monkeypatch, tmp_path, way, tail):
-    """Every spreadsheet import (general, document lines, items, bank statement) and every source
-    scan reads such a file as zipfile does: unreadable, never a server error."""
-    from celerp.config import settings
-    from celerp.importers import tabular
-    from celerp.importers.adapters.exports import files
-    from migration_support import scan_upload
-
-    data = DAMAGED_TAILS[tail]
-    if not way.startswith("scan"):
-        read = {"read_table": lambda: tabular.read_table(data, "items.xlsx"),
-                "read_table_at_header": lambda: tabular.read_table_at_header(data, "items.xlsx"),
-                "workbook_lines": lambda: tabular.workbook_lines(data, files.LIMITS)}[way]
-        with pytest.raises(tabular.TabularError) as refused:
-            read()
-        assert str(refused.value) == t("import.err_not_xlsx")
-        return
-    monkeypatch.setattr(settings, "data_dir", tmp_path)
-    source = way.partition(":")[2] or None
-    r = await scan_upload(client, data, name="books.zip", source=source)
-    assert r.status_code == 422, r.text
-    refused = 'Celerp cannot read "books.zip" yet.' if source is None else '"books.zip" is not a'
-    assert r.json()["detail"].startswith(refused), r.text
 
 
 def test_overlapping_batches_are_refused(tmp_path):

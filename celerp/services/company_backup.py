@@ -59,6 +59,7 @@ from packaging.version import InvalidVersion
 
 import celerp.db
 from celerp import db_catalog
+from celerp.importers.tabular import ZIP_ERRORS, zip_directory_fits
 from celerp.migrations.compatibility import is_newer_than_running, running_version
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, User
@@ -1012,6 +1013,9 @@ def read_backup(path: Path) -> BackupFile:
         if _starts_like_zip(path):
             raise BackupError(422, t(INCOMPLETE))
         raise BackupError(422, t(SYSTEM_BACKUP if _looks_like_system_backup(path) else NOT_A_BACKUP))
+    with open(path, "rb") as raw:
+        if not zip_directory_fits(raw):
+            raise BackupError(422, t(TOO_LARGE))
     try:
         with zipfile.ZipFile(path) as zf:
             infos = zf.infolist()
@@ -1038,7 +1042,7 @@ def read_backup(path: Path) -> BackupFile:
                 _check_member(budget, zf, f"attachments/{f['name']}", f["sha256"], size=f["size"])
     except (zlib.error, EOFError):
         raise BackupError(422, t(INCOMPLETE)) from None
-    except (zipfile.BadZipFile, zipfile.LargeZipFile, OSError, ValueError, KeyError, RuntimeError, NotImplementedError):
+    except (zipfile.LargeZipFile, KeyError, *ZIP_ERRORS):
         raise BackupError(422, t(DAMAGED)) from None
     whole = hashlib.sha256()
     with open(path, "rb") as f:

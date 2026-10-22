@@ -41,6 +41,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Mapping
 
+from celerp.importers.tabular import ZIP_ERRORS, zip_directory_fits
 from celerp.modules.meta import write_meta
 from ui.i18n import t
 
@@ -653,44 +654,46 @@ def install_from_zip(data: bytes, *, official: bool = False,
     try:
         tmp_zip = staging / "_pkg.zip"
         tmp_zip.write_bytes(data)
+        with open(tmp_zip, "rb") as raw:
+            if not zip_directory_fits(raw):
+                raise ModuleImportError(t("module_import.too_many_files"))
         try:
-            zf = zipfile.ZipFile(tmp_zip)
-        except zipfile.BadZipFile:
-            raise ModuleImportError(t("module_import.not_zip"))
-        with zf:
-            root = _zip_root(zf)
-            unpacked = 0
-            out = staging / "pkg"
-            out.mkdir()
-            for info in zf.infolist():
-                rel = info.filename[len(root):] if root else info.filename
-                if not rel or rel.endswith("/"):
-                    continue
-                # zip-slip guard: resolve inside the staging package only
-                dest = (out / rel)
-                try:
-                    dest.resolve().relative_to(out.resolve())
-                except ValueError:
-                    raise ModuleImportError(t("module_import.unsafe"))
-                # symlink entries carry the link mode in external_attr
-                mode = (info.external_attr >> 16) & 0xFFFF
-                if stat.S_ISLNK(mode):
-                    raise ModuleImportError(t("module_import.symlinks"))
-                if rel == PREMIUM_MARKER:
-                    # Only the installer itself may write this file (it's how
-                    # the license gate decides a module is paid) - a package
-                    # that ships it would either fake premium status on a free
-                    # module or collide with a genuinely paid install's marker.
-                    raise ModuleImportError(t("module_import.reserved_name"))
-                unpacked += info.file_size
-                if unpacked > MAX_UNPACKED_BYTES:
-                    raise ModuleImportError(t("module_import.unpacked_too_large"))
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                with zf.open(info) as src, open(dest, "wb") as f:
-                    shutil.copyfileobj(src, f, length=1024 * 256)
-            module_root, manifest = _locate_module(out)
-            return _finish(module_root, manifest, official=official,
-                           premium=premium, source=source, expected=expected)
+            with zipfile.ZipFile(tmp_zip) as zf:
+                root = _zip_root(zf)
+                unpacked = 0
+                out = staging / "pkg"
+                out.mkdir()
+                for info in zf.infolist():
+                    rel = info.filename[len(root):] if root else info.filename
+                    if not rel or rel.endswith("/"):
+                        continue
+                    # zip-slip guard: resolve inside the staging package only
+                    dest = (out / rel)
+                    try:
+                        dest.resolve().relative_to(out.resolve())
+                    except ValueError:
+                        raise ModuleImportError(t("module_import.unsafe"))
+                    # symlink entries carry the link mode in external_attr
+                    mode = (info.external_attr >> 16) & 0xFFFF
+                    if stat.S_ISLNK(mode):
+                        raise ModuleImportError(t("module_import.symlinks"))
+                    if rel == PREMIUM_MARKER:
+                        # Only the installer itself may write this file (it's how
+                        # the license gate decides a module is paid) - a package
+                        # that ships it would either fake premium status on a free
+                        # module or collide with a genuinely paid install's marker.
+                        raise ModuleImportError(t("module_import.reserved_name"))
+                    unpacked += info.file_size
+                    if unpacked > MAX_UNPACKED_BYTES:
+                        raise ModuleImportError(t("module_import.unpacked_too_large"))
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    with zf.open(info) as src, open(dest, "wb") as f:
+                        shutil.copyfileobj(src, f, length=1024 * 256)
+        except ZIP_ERRORS:
+            raise ModuleImportError(t("module_import.not_zip")) from None
+        module_root, manifest = _locate_module(out)
+        return _finish(module_root, manifest, official=official,
+                       premium=premium, source=source, expected=expected)
     finally:
         shutil.rmtree(staging, ignore_errors=True)
 
