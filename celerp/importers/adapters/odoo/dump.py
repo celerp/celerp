@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import IO
 
 from celerp.importers.adapters.base import ScanError, SourceRevisionError
-from celerp.importers.tabular import ZIP_ERRORS, zip_directory_fits
+from celerp.importers.tabular import ZIP_ERRORS, ZipMemberRefused, open_zip_member, zip_directory_fits
 from ui.i18n import t
 
 MANIFEST = "manifest.json"
@@ -92,8 +92,6 @@ KEY_ID_BYTES = 120
 # Reading a line holds it a few times over while it is split (the decoded text, the line, its
 # fields): the longest line read is charged LINE_COPIES times its size, once.
 LINE_COPIES = 4
-PASSWORD = 0x1  # the zip flag of a file packed with a password
-METHODS = (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED)  # what Odoo, and a zip made again from its backup, packs with
 OLDEST, NEWEST = 13, 17
 LANGUAGE = "en_US"
 
@@ -322,14 +320,11 @@ def _long_row(first: str, lines: IO[str], limits: Mapping[int, float]) -> tuple[
 def _open(archive: zipfile.ZipFile, name: str) -> IO[bytes]:
     """One file of the zip, open for reading. Raises SourceRevisionError when it is packed with
     a password, which a backup must be made again without, or with a method Odoo does not zip
-    with: LZMA keeps as much of the unpacked file resident as the dictionary its entry declares,
-    up to 4 GB, outside any budget."""
-    info = archive.getinfo(name)
-    if info.flag_bits & PASSWORD:
-        raise SourceRevisionError(t(ENCRYPTED))
-    if info.compress_type not in METHODS:
-        raise SourceRevisionError(t(UNREADABLE))
-    return archive.open(info)
+    with (see ZIP_METHODS)."""
+    try:
+        return open_zip_member(archive, name)
+    except ZipMemberRefused as exc:
+        raise SourceRevisionError(t(ENCRYPTED if exc.password else UNREADABLE)) from exc
 
 
 def _cut_short(path: Path) -> bool:

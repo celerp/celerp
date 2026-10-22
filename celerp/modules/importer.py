@@ -41,7 +41,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Mapping
 
-from celerp.importers.tabular import ZIP_ERRORS, zip_directory_fits
+from celerp.importers.tabular import ZIP_ERRORS, open_zip_member, zip_directory_fits
 from celerp.modules.meta import write_meta
 from ui.i18n import t
 
@@ -687,7 +687,7 @@ def install_from_zip(data: bytes, *, official: bool = False,
                     if unpacked > MAX_UNPACKED_BYTES:
                         raise ModuleImportError(t("module_import.unpacked_too_large"))
                     dest.parent.mkdir(parents=True, exist_ok=True)
-                    with zf.open(info) as src, open(dest, "wb") as f:
+                    with open_zip_member(zf, info) as src, open(dest, "wb") as f:
                         shutil.copyfileobj(src, f, length=1024 * 256)
         except ZIP_ERRORS:
             raise ModuleImportError(t("module_import.not_zip")) from None
