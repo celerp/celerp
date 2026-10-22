@@ -297,11 +297,122 @@ async def test_fewer_decimals_under_a_finer_item_quantity_is_refused_and_names_i
     assert r.status_code == 422, r.text
     detail = r.json()["detail"]
     assert detail["message_key"] == "units.precision_lowered_under_quantities", detail
-    assert detail["params"] == {"unit": "carat", "decimals": 1, "count": 1,
+    assert detail["params"] == {"unit": "carat", "decimals": 1,
                                 "examples": await _sku(session, auth, lot), "current": 2}, detail
-    assert "Change those quantities first, or keep 2 decimal places." in detail["message"], detail
+    assert detail["message"] == (f"carat cannot go to 1 decimal places: items or open documents still hold "
+                                 f"quantities with more ({await _sku(session, auth, lot)}). Change those quantities "
+                                 f"or finish those documents first, or keep 2 decimal places."), detail
     assert await _carat_decimals(client, auth) == 2
     assert await _sell_qty(session, auth, lot) == fields.get("default_sell_qty")
+
+
+async def _template(client, session, auth, doc_type: str, qty: float, status: str = "active",
+                    name: str = "Monthly stones") -> str:
+    lot = await _lot(client, auth, qty=1)
+    r = await client.post("/docs", headers=auth["headers"], json={
+        "doc_type": doc_type, "contact_id": "customer:1", "frequency": "monthly", "start_date": "2026-01-01",
+        "name": name, "line_items": [{"item_id": lot, "sku": await _sku(session, auth, lot), "name": "Stone",
+                                      "quantity": qty, "unit": "carat", "unit_price": 10}]})
+    assert r.status_code == 200, r.text
+    sub = r.json()["id"]
+    assert (await client.post(f"/subscriptions/{sub}/activate", headers=auth["headers"])).status_code == 200
+    if status == "paused":
+        assert (await client.post(f"/subscriptions/{sub}/pause", headers=auth["headers"])).status_code == 200
+    return sub
+
+
+# Each refusal's advice, followed exactly, ends in the lower it refused.
+@pytest.mark.parametrize("doc_type", ["subscription_invoice", "subscription_po"])
+@pytest.mark.parametrize("status", ["active", "paused"])
+async def test_a_subscription_blocking_fewer_decimals_says_to_cancel_it_and_set_up_a_new_one(
+        client, session, auth, doc_type, status):
+    assert (await _set_carat_decimals(client, auth, 3)).status_code == 200
+    sub = await _template(client, session, auth, doc_type, 0.275, status)
+
+    r = await _set_carat_decimals(client, auth, 2)
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert detail["message_key"] == "units.precision_lowered_under_templates", detail
+    assert detail["params"] == {"unit": "carat", "decimals": 2, "examples": "Monthly stones", "current": 3}, detail
+    assert detail["message"] == ("carat cannot go to 2 decimal places: subscriptions still list quantities with "
+                                 "more (Monthly stones). Cancel them and set up new ones with quantities carat "
+                                 "allows, or keep 3 decimal places."), detail
+    assert await _carat_decimals(client, auth) == 3
+    # An active or paused template's lines cannot be edited, so the refusal never says to change them.
+    line = {**(await _state(session, auth, sub))["line_items"][0], "quantity": 0.27}
+    r = await client.patch(f"/docs/{sub}", headers=auth["headers"], json={
+        "fields_changed": {"line_items": {"old": None, "new": [line]}}})
+    assert r.status_code == 409, r.text
+
+    assert (await client.post(f"/subscriptions/{sub}/cancel", headers=auth["headers"])).status_code == 200
+    assert (await _set_carat_decimals(client, auth, 2)).status_code == 200
+    new = await _template(client, session, auth, doc_type, 0.27, status, name="Monthly stones again")
+    assert (await _state(session, auth, new))["status"] == status
+    assert await _carat_decimals(client, auth) == 2
+
+
+async def test_items_and_subscriptions_blocking_fewer_decimals_are_named_with_the_way_out_of_each(
+        client, session, auth):
+    assert (await _set_carat_decimals(client, auth, 3)).status_code == 200
+    lot = await _lot(client, auth, qty=0.275)
+    sku = await _sku(session, auth, lot)
+    sub = await _template(client, session, auth, "subscription_invoice", 0.125)
+
+    r = await _set_carat_decimals(client, auth, 2)
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert detail["message_key"] == "units.precision_lowered_under_quantities_and_templates", detail
+    assert detail["params"] == {"unit": "carat", "decimals": 2, "examples": sku, "templates": "Monthly stones",
+                                "current": 3}, detail
+    assert detail["message"] == (f"carat cannot go to 2 decimal places: items or open documents ({sku}) and "
+                                 f"subscriptions (Monthly stones) still hold quantities with more. Change those "
+                                 f"quantities or finish those documents, and cancel those subscriptions and set up "
+                                 f"new ones with quantities carat allows. Or keep 3 decimal places."), detail
+
+    assert (await client.post(f"/items/{lot}/adjust", headers=auth["headers"], json={"new_qty": 0.27})).status_code == 200
+    r = await _set_carat_decimals(client, auth, 2)
+    assert r.json()["detail"]["message_key"] == "units.precision_lowered_under_templates", r.text
+    assert (await client.post(f"/subscriptions/{sub}/cancel", headers=auth["headers"])).status_code == 200
+    assert (await _set_carat_decimals(client, auth, 2)).status_code == 200
+
+
+async def test_a_paid_invoice_blocking_fewer_decimals_is_finished_by_shipping_it(client, session, auth):
+    assert (await _set_carat_decimals(client, auth, 3)).status_code == 200
+    lot = await _lot(client, auth, qty=0.275)
+    sku = await _sku(session, auth, lot)
+    r = await client.post("/docs", headers=auth["headers"], json={
+        "doc_type": "invoice", "contact_id": "customer:1", "line_items": [
+            {"item_id": lot, "sku": sku, "name": "Stone", "quantity": 0.275, "unit": "carat", "unit_price": 10}]})
+    assert r.status_code == 200, r.text
+    invoice = r.json()["id"]
+    assert (await client.post(f"/docs/{invoice}/finalize", headers=auth["headers"])).status_code == 200
+    total = (await _state(session, auth, invoice))["total"]
+    r = await client.post(f"/docs/{invoice}/payment", headers=auth["headers"], json={
+        "amount": total, "payment_date": "2026-10-01", "bank_account": "1111"})
+    assert r.status_code == 200, r.text
+    number = (await _state(session, auth, invoice))["doc_number"]
+
+    r = await _set_carat_decimals(client, auth, 2)
+    assert r.status_code == 422, r.text
+    assert set(r.json()["detail"]["params"]["examples"].split(", ")) == {sku, number}, r.text
+    assert "Change those quantities or finish those documents first" in r.json()["detail"]["message"], r.text
+    # A paid invoice's lines cannot be changed: it does not go back to draft.
+    assert (await client.post(f"/docs/{invoice}/revert-to-draft", headers=auth["headers"], json={})).status_code == 409
+
+    r = await client.post(f"/docs/{invoice}/fulfill-lines", headers=auth["headers"], json={"line_entity_ids": [lot]})
+    assert r.status_code == 200, r.text
+    r = await _set_carat_decimals(client, auth, 2)
+    assert r.json()["detail"]["params"]["examples"] == sku, r.text
+    assert (await client.post(f"/items/{lot}/adjust", headers=auth["headers"], json={"new_qty": 0.27})).status_code == 200
+    assert (await _set_carat_decimals(client, auth, 2)).status_code == 200
+
+
+async def test_one_holder_reads_without_a_count(client, session, auth):
+    await _lot(client, auth, qty=0.27)
+    r = await _set_carat_decimals(client, auth, 1)
+    assert r.status_code == 422, r.text
+    assert "count" not in r.json()["detail"]["params"], r.text
+    assert re.search(r"\d items", r.json()["detail"]["message"]) is None, r.text
 
 
 async def test_fewer_decimals_that_every_quantity_fits_and_more_decimals_pass(client, session, auth):
@@ -335,8 +446,11 @@ async def test_an_open_document_line_blocks_fewer_decimals(client, session, auth
     await _carat_doc(session, auth, status, 0.27, "OPEN-1", doc_type, entity_type)
     r = await _set_carat_decimals(client, auth, 1)
     assert r.status_code == 422, r.text
-    assert r.json()["detail"]["params"]["examples"] == "OPEN-1", r.text
-    assert "still hold quantities with more (OPEN-1)" in r.json()["detail"]["message"], r.text
+    detail = r.json()["detail"]
+    assert detail["message_key"] == ("units.precision_lowered_under_templates" if doc_type.startswith("subscription")
+                                     else "units.precision_lowered_under_quantities"), detail
+    assert detail["params"]["examples"] == "OPEN-1", detail
+    assert "quantities with more (OPEN-1)" in detail["message"], detail
     assert await _carat_decimals(client, auth) == 2
 
 
@@ -501,7 +615,7 @@ async def test_a_subscription_never_makes_a_document_finer_than_its_units(client
     # An active template keeps making documents, so it blocks fewer decimal places.
     r = await _set_carat_decimals(client, auth, 2)
     assert r.status_code == 422, r.text
-    assert r.json()["detail"]["message_key"] == "units.precision_lowered_under_quantities", r.text
+    assert r.json()["detail"]["message_key"] == "units.precision_lowered_under_templates", r.text
     assert await _carat_decimals(client, auth) == 3
 
     # A template saved before a precision change looked at it is refused when it makes the next one,
@@ -718,7 +832,7 @@ async def test_a_line_with_no_unit_is_checked_in_its_items_unit(client, session,
 
     r = await _set_carat_decimals(client, auth, 1)
     assert r.status_code == 422, r.text
-    assert r.json()["detail"]["params"]["count"] == 1, r.text
+    assert ", " not in r.json()["detail"]["params"]["examples"], r.text  # one holder: the document
     assert await _carat_decimals(client, auth) == 2
     # The gram item's line counts once, under gram.
     assert (await client.put("/companies/me/units", headers=auth["headers"], json={"units": [
@@ -741,7 +855,7 @@ async def test_a_unit_deleted_then_added_back_is_checked_against_what_it_holds(c
 
     r = await _put_units(client, auth, [*without, {**carat, "decimals": 1}])
     assert r.status_code == 422, r.text
-    assert r.json()["detail"]["params"] == {"unit": "carat", "decimals": 1, "count": 1,
+    assert r.json()["detail"]["params"] == {"unit": "carat", "decimals": 1,
                                             "examples": await _sku(session, auth, lot), "current": 2}, r.text
     assert all(u["name"] != "carat" for u in await _units(client, auth))
     # Back at a precision that holds the stored quantity, and a new unit nothing uses, both pass.

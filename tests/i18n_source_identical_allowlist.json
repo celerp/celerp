@@ -46,7 +46,9 @@
     "th.sku",
     "units.moving_finer_than_unit",
     "units.template_finer_than_unit",
-    "units.precision_lowered_under_quantities"
+    "units.precision_lowered_under_quantities",
+    "units.precision_lowered_under_quantities_and_templates",
+    "units.precision_lowered_under_templates"
   ],
   "ar": [
     "account.email_placeholder",
@@ -83,7 +85,9 @@
     "th.sku",
     "units.moving_finer_than_unit",
     "units.template_finer_than_unit",
-    "units.precision_lowered_under_quantities"
+    "units.precision_lowered_under_quantities",
+    "units.precision_lowered_under_quantities_and_templates",
+    "units.precision_lowered_under_templates"
   ],
   "de": [
     "acct.source_system",
@@ -191,7 +195,9 @@
     "th.version",
     "units.moving_finer_than_unit",
     "units.template_finer_than_unit",
-    "units.precision_lowered_under_quantities"
+    "units.precision_lowered_under_quantities",
+    "units.precision_lowered_under_quantities_and_templates",
+    "units.precision_lowered_under_templates"
   ],
   "es": [
     "account.plan",
@@ -272,7 +278,9 @@
     "th.total",
     "units.moving_finer_than_unit",
     "units.template_finer_than_unit",
-    "units.precision_lowered_under_quantities"
+    "units.precision_lowered_under_quantities",
+    "units.precision_lowered_under_quantities_and_templates",
+    "units.precision_lowered_under_templates"
   ],
   "fr": [
     "acct.tab_journal",
@@ -394,7 +402,9 @@
     "th.version",
     "units.moving_finer_than_unit",
     "units.template_finer_than_unit",
-    "units.precision_lowered_under_quantities"
+    "units.precision_lowered_under_quantities",
+    "units.precision_lowered_under_quantities_and_templates",
+    "units.precision_lowered_under_templates"
   ],
   "id": [
     "acct.source_manual",
@@ -500,7 +510,9 @@
     "th.total",
     "units.moving_finer_than_unit",
     "units.template_finer_than_unit",
-    "units.precision_lowered_under_quantities"
+    "units.precision_lowered_under_quantities",
+    "units.precision_lowered_under_quantities_and_templates",
+    "units.precision_lowered_under_templates"
   ],
   "it": [
     "attr.volume_l",
@@ -578,7 +590,9 @@
     "th.sku",
     "units.moving_finer_than_unit",
     "units.template_finer_than_unit",
-    "units.precision_lowered_under_quantities"
+    "units.precision_lowered_under_quantities",
+    "units.precision_lowered_under_quantities_and_templates",
+    "units.precision_lowered_under_templates"
   ],
   "ja": [
     "account.email_placeholder",
@@ -625,7 +639,9 @@
     "th.sku",
     "units.moving_finer_than_unit",
     "units.template_finer_than_unit",
-    "units.precision_lowered_under_quantities"
+    "units.precision_lowered_under_quantities",
+    "units.precision_lowered_under_quantities_and_templates",
+    "units.precision_lowered_under_templates"
   ],
   "pt": [
     "acct.source_manual",
@@ -717,7 +733,9 @@
     "th.total",
     "units.moving_finer_than_unit",
     "units.template_finer_than_unit",
-    "units.precision_lowered_under_quantities"
+    "units.precision_lowered_under_quantities",
+    "units.precision_lowered_under_quantities_and_templates",
+    "units.precision_lowered_under_templates"
   ],
   "th": [
     "account.email_placeholder",
@@ -762,7 +780,9 @@
     "th.sku",
     "units.moving_finer_than_unit",
     "units.template_finer_than_unit",
-    "units.precision_lowered_under_quantities"
+    "units.precision_lowered_under_quantities",
+    "units.precision_lowered_under_quantities_and_templates",
+    "units.precision_lowered_under_templates"
   ],
   "vi": [
     "btn.u00d7",
@@ -811,6 +831,8 @@
     "th.sku",
     "units.moving_finer_than_unit",
     "units.template_finer_than_unit",
-    "units.precision_lowered_under_quantities"
+    "units.precision_lowered_under_quantities",
+    "units.precision_lowered_under_quantities_and_templates",
+    "units.precision_lowered_under_templates"
   ]
 }

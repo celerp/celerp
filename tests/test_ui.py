@@ -13343,8 +13343,8 @@ class TestUnitsSettings:
         from ui.api_client import APIError
         refused = APIError(422, "carat cannot go to 1 decimal places", data={
             "detail": {"message_key": "units.precision_lowered_under_quantities",
-                       "message": "carat cannot go to 1 decimal places: 1 items or open documents still hold quantities with more (LOT-1).",
-                       "params": {"unit": "carat", "decimals": 1, "count": 1, "examples": "LOT-1", "current": 2}}})
+                       "message": "carat cannot go to 1 decimal places: items or open documents still hold quantities with more (LOT-1).",
+                       "params": {"unit": "carat", "decimals": 1, "examples": "LOT-1", "current": 2}}})
         with (
             patch("ui.api_client.get_units", new=AsyncMock(return_value=list(_DEFAULT_UNITS_SEED))),
             patch("ui.api_client.patch_units", new=AsyncMock(side_effect=refused)),
@@ -13445,7 +13445,7 @@ class TestUnitsSettings:
         refusal under it, in the user's words, not a server error."""
         from ui.api_client import APIError
         current = [{"name": "carat", "label": "Carat", "decimals": 2}]
-        params = {"unit": "carat", "decimals": 1, "count": 2, "examples": "RAW-1, RAW-2", "current": 2}
+        params = {"unit": "carat", "decimals": 1, "examples": "RAW-1, RAW-2", "current": 2}
         refused = APIError(422, "x", data={"message": "x", "message_key": "units.precision_lowered_under_quantities",
                                            "params": params})
         with (
@@ -13460,8 +13460,8 @@ class TestUnitsSettings:
             )
         assert r.status_code == 200
         assert 'class="cell-error"' in r.text, r.text
-        assert ("carat cannot go to 1 decimal places: 2 items or open documents still hold quantities with more "
-                "(RAW-1, RAW-2). Change those quantities first, or keep 2 decimal places."
+        assert ("carat cannot go to 1 decimal places: items or open documents still hold quantities with more "
+                "(RAW-1, RAW-2). Change those quantities or finish those documents first, or keep 2 decimal places."
                 ) in r.text, r.text
         assert '<span class="cell-text">2</span>' in r.text, r.text
 

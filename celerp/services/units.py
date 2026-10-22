@@ -259,7 +259,9 @@ async def require_moving_fits_units(session, company_id, entity_id: str, entity_
 
 async def check_precision_change(session, company_id, old_units: list[dict], new_units: list[dict]) -> None:
     """Fewer decimal places for a unit that still holds finer quantities: refused with 422, naming
-    how many items and open documents hold them, a few of them, and what to change. Every item
+    a few of the items and open documents that hold them and, apart, the subscriptions, with the
+    way out of each: an item's quantity can be changed and a document finished, while an active or
+    paused subscription's lines cannot be edited, so it is cancelled and set up again. Every item
     counts, whatever its status, since any item can come back into stock; a document, list or run
     counts what it can still move (_still_moving). What a document received or shipped is history
     and never blocks; a document, list or run that later moves again is held to the precision of
@@ -269,6 +271,7 @@ async def check_precision_change(session, company_id, old_units: list[dict], new
     found by item id or SKU."""
     from sqlalchemy import or_, select
 
+    from celerp_docs.doc_constants import TEMPLATE_DOC_TYPES
     from celerp_manufacturing.movements import run_name
 
     from celerp.models.projections import Projection
@@ -293,8 +296,10 @@ async def check_precision_change(session, company_id, old_units: list[dict], new
             for entity_id, entity_type, state in rows]
     for name, decimals in lowered.items():
         holders: list[str] = []
+        templates: list[str] = []
         needed = decimals
         for entity_type, state, lines in rows:
+            template = state.get("doc_type") in TEMPLATE_DOC_TYPES
             if entity_type == "item":
                 sell_qty = stored_sell_qty(state.get("default_sell_qty"))
                 quantities = [state.get("quantity"), *([] if sell_qty in (None, FULL) else [sell_qty])] \
@@ -302,21 +307,42 @@ async def check_precision_change(session, company_id, old_units: list[dict], new
                 label = state.get("sku") or state.get("name")
             else:
                 quantities = [qty for line, qty in lines if _line_unit(line, item_unit) == name]
-                label = run_name(state) if entity_type == "mfg_order" else \
-                    state.get("doc_number") or state.get("ref_id") or state.get("name")
+                if entity_type == "mfg_order":
+                    label = run_name(state)
+                elif template:  # named as the subscriptions list and its generated documents name it
+                    label = state.get("name") or state.get("doc_number")
+                else:
+                    label = state.get("doc_number") or state.get("ref_id") or state.get("name")
             finer = [q for q in quantities if _finer_than(q, decimals)]
             if finer:
-                holders.append(str(label or "-"))
+                (templates if template else holders).append(str(label or "-"))
                 needed = max(needed, *(_places(q) for q in finer))
-        if holders:
-            examples = ", ".join(holders[:3])
-            current = old.get(name, needed)
-            raise HTTPException(status_code=422, detail=refusal(
+        if not (holders or templates):
+            continue
+        examples, named = ", ".join(holders[:3]), ", ".join(templates[:3])
+        current = old.get(name, needed)
+        lead = f"{name} cannot go to {decimals} decimal places"
+        change = "Change those quantities or finish those documents"
+        cancel = f"set up new ones with quantities {name} allows"
+        if not templates:
+            detail = refusal(
                 "units.precision_lowered_under_quantities",
-                f"{name} cannot go to {decimals} decimal places: {len(holders)} items or open documents "
-                f"still hold quantities with more ({examples}). Change those quantities first, or keep "
-                f"{current} decimal places.",
-                unit=name, decimals=decimals, count=len(holders), examples=examples, current=current))
+                f"{lead}: items or open documents still hold quantities with more ({examples}). {change} first, "
+                f"or keep {current} decimal places.",
+                unit=name, decimals=decimals, examples=examples, current=current)
+        elif not holders:
+            detail = refusal(
+                "units.precision_lowered_under_templates",
+                f"{lead}: subscriptions still list quantities with more ({named}). Cancel them and {cancel}, "
+                f"or keep {current} decimal places.",
+                unit=name, decimals=decimals, examples=named, current=current)
+        else:
+            detail = refusal(
+                "units.precision_lowered_under_quantities_and_templates",
+                f"{lead}: items or open documents ({examples}) and subscriptions ({named}) still hold quantities "
+                f"with more. {change}, and cancel those subscriptions and {cancel}. Or keep {current} decimal places.",
+                unit=name, decimals=decimals, examples=examples, templates=named, current=current)
+        raise HTTPException(status_code=422, detail=detail)
 
 
 def validate_positive(qty: float, *, label: str = "Quantity") -> None:
