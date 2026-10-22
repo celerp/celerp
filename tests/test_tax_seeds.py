@@ -1,0 +1,173 @@
+# Copyright (c) 2026 Noah Severs
+# SPDX-License-Identifier: LicenseRef-Proprietary
+"""The tax codes a new company starts with match the law in force, each country has one
+clear default, a new line's tax is built one way everywhere, and an existing company still
+on a code that has been replaced is found so it can be told."""
+from __future__ import annotations
+
+import copy
+import inspect
+
+import pytest
+
+from celerp import tax_regimes
+from celerp.tax_regimes import TAX_REGIMES, default_tax
+
+
+def _rows(country: str) -> dict[str, dict]:
+    return {t["name"]: t for t in TAX_REGIMES[country]["taxes"]}
+
+
+def test_every_regime_has_exactly_one_default():
+    for country, regime in TAX_REGIMES.items():
+        defaults = [t["name"] for t in regime["taxes"] if t.get("is_default")]
+        assert len(defaults) == 1, (country, defaults)
+
+
+def test_india_default_is_igst():
+    taxes = TAX_REGIMES["IN"]["taxes"]
+    assert default_tax(taxes, "invoice")["name"] == "IGST 18%"
+    assert default_tax(taxes, "bill")["name"] == "IGST 18%"
+    rows = _rows("IN")
+    assert not rows["CGST 9%"]["is_default"] and not rows["SGST 9%"]["is_default"]
+    assert "CGST 9%" in rows["IGST 18%"]["description"] and "SGST 9%" in rows["IGST 18%"]["description"]
+
+
+def test_ethiopia_seeds_current_law():
+    rows = _rows("ET")
+    assert not [n for n in rows if n.startswith("TOT")]
+    assert "WHT 2%" not in rows
+    wht = rows["WHT 3%"]
+    assert wht["rate"] == -3.0 and wht["tax_type"] == "purchase" and not wht["is_default"]
+    assert "20,000" in wht["description"] and "10,000" in wht["description"] and "30%" in wht["description"]
+
+
+def test_quebec_qst_is_not_compound_and_charges_on_the_price():
+    from celerp_docs.taxes import TaxApplication, compute_tax_amounts
+
+    rows = _rows("CA")
+    qst = rows["QST 9.975%"]
+    assert qst["is_compound"] is False
+    applied = [TaxApplication(code=r["name"], rate=r["rate"], order=r["default_order"], is_compound=r["is_compound"])
+               for r in (rows["GST 5%"], qst)]
+    amounts = compute_tax_amounts(applied, 1000.0, "CAD")
+    assert 1000.0 + sum(a.amount for a in amounts) == pytest.approx(1149.75)
+
+
+def test_malaysia_seeds_codes_in_force():
+    rows = _rows("MY")
+    assert "SST 6%" not in rows
+    assert default_tax(TAX_REGIMES["MY"]["taxes"], "invoice")["name"] == "Sales Tax 10%"
+    assert rows["Sales Tax 10%"]["rate"] == 10.0 and rows["Sales Tax 10%"]["tax_type"] == "sales"
+    assert rows["Sales Tax 5%"]["rate"] == 5.0 and not rows["Sales Tax 5%"]["is_default"]
+    assert rows["Service Tax 8%"]["rate"] == 8.0
+    assert rows["Service Tax 6%"]["rate"] == 6.0 and not rows["Service Tax 6%"]["is_default"]
+    assert "Exempt" in rows
+
+
+def test_vietnam_reduced_rate_is_not_default():
+    rows = _rows("VN")
+    assert rows["VAT 8%"]["rate"] == 8.0 and rows["VAT 8%"]["tax_type"] == "both"
+    assert not rows["VAT 8%"]["is_default"] and rows["VAT 10%"]["is_default"]
+    assert "2026" in rows["VAT 8%"]["description"]
+
+
+def test_indonesia_ppn_rows():
+    rows = _rows("ID")
+    assert "11/12" in rows["PPN 11%"]["description"] and rows["PPN 11%"]["is_default"]
+    assert rows["PPN 12%"]["rate"] == 12.0 and not rows["PPN 12%"]["is_default"]
+    assert rows["PPN 12%"]["tax_type"] == "both"
+
+
+_EM_DASH = "\u2014"
+
+
+def test_no_seed_text_has_an_em_dash():
+    for country, regime in TAX_REGIMES.items():
+        for tax in regime["taxes"]:
+            assert _EM_DASH not in tax["name"] + tax.get("description", ""), (country, tax["name"])
+    assert _EM_DASH not in (tax_regimes.__doc__ or "")
+
+
+def test_default_line_taxes_matches_the_scan_line():
+    """Every path that builds a new line (scan, from items, append, reorder) takes its tax
+    from one helper, so a line looks the same whichever way it was added."""
+    from celerp.tax_regimes import default_line_taxes
+    from celerp_docs import routes
+
+    th = TAX_REGIMES["TH"]["taxes"]
+    assert default_line_taxes(th, "invoice") == [
+        {"code": "VAT 7%", "rate": 7.0, "amount": 0, "order": 0, "is_compound": False, "label": ""}]
+    assert default_line_taxes(TAX_REGIMES["IN"]["taxes"], "bill")[0]["code"] == "IGST 18%"
+    assert default_line_taxes(TAX_REGIMES["US"]["taxes"], "invoice") == []
+    assert default_line_taxes(TAX_REGIMES["MY"]["taxes"], "bill") == []
+    assert default_line_taxes(TAX_REGIMES["TH"]["taxes"], None)[0]["code"] == "VAT 7%"
+    # The scan line takes the helper's list as it is; it builds no tax dict of its own.
+    assert "line_taxes" in inspect.signature(routes._scan_doc_line).parameters
+    assert '"is_compound": bool(' not in inspect.getsource(routes._scan_doc_line)
+
+
+def _settings(sales: list[dict] | None = None, purchasing: list[dict] | None = None) -> dict:
+    settings: dict = {}
+    if sales is not None:
+        settings["taxes"] = copy.deepcopy(sales)
+    if purchasing is not None:
+        settings["purchasing_taxes"] = copy.deepcopy(purchasing)
+    return settings
+
+
+_OLD_ET = [
+    {"name": "VAT 15%", "rate": 15.0, "tax_type": "both", "is_default": True, "is_compound": False},
+    {"name": "TOT 2%", "rate": 2.0, "tax_type": "sales", "is_default": False, "is_compound": False},
+    {"name": "TOT 10%", "rate": 10.0, "tax_type": "sales", "is_default": False, "is_compound": False},
+    {"name": "WHT 2%", "rate": -2.0, "tax_type": "purchase", "is_default": False, "is_compound": False},
+]
+_OLD_IN = [
+    {"name": "CGST 9%", "rate": 9.0, "tax_type": "both", "is_default": True, "is_compound": False},
+    {"name": "SGST 9%", "rate": 9.0, "tax_type": "both", "is_default": True, "is_compound": False},
+    {"name": "IGST 18%", "rate": 18.0, "tax_type": "both", "is_default": False, "is_compound": False},
+]
+
+
+def test_retired_seed_rows_matches_old_seeds():
+    from celerp.tax_regimes import retired_seed_rows
+
+    found = {m["id"]: m["lists"] for m in retired_seed_rows(_settings(_OLD_ET))}
+    assert set(found) == {"et-wht-2025", "et-tot-2025"}
+    assert found["et-tot-2025"] == {"sales"}
+    assert {m["id"] for m in retired_seed_rows(_settings(_OLD_IN))} == {"in-default-2025"}
+    # Names match whatever their case and surrounding spaces.
+    renamed = [{**t, "name": f"  {t['name'].lower()} "} for t in _OLD_IN]
+    assert {m["id"] for m in retired_seed_rows(_settings(renamed))} == {"in-default-2025"}
+    # A row only in the saved purchasing list is found there, once.
+    purchasing_only = retired_seed_rows(_settings([_OLD_ET[0]], [_OLD_ET[3]]))
+    assert [(m["id"], m["lists"]) for m in purchasing_only] == [("et-wht-2025", {"purchase"})]
+    # The same old row in both saved lists is one entry naming both lists.
+    both = retired_seed_rows(_settings([_OLD_ET[3]], [_OLD_ET[3]]))
+    assert [(m["id"], m["lists"]) for m in both] == [("et-wht-2025", {"sales", "purchase"})]
+    # Without a saved purchasing list the derived copy of the sales list is not read twice.
+    assert [m["lists"] for m in retired_seed_rows(_settings([_OLD_ET[3]]))] == [{"sales"}]
+    # Old Quebec compound QST and Malaysia SST 6%.
+    qst = {"name": "QST 9.975%", "rate": 9.975, "tax_type": "both", "is_default": False, "is_compound": True}
+    sst = {"name": "SST 6%", "rate": 6.0, "tax_type": "sales", "is_default": True, "is_compound": False}
+    assert {m["id"] for m in retired_seed_rows(_settings([qst, sst]))} == {"ca-qst-compound", "my-sst-6"}
+    # A fixed row no longer matches: one default left, QST not compound.
+    fixed = [{**_OLD_IN[0], "is_default": False}, _OLD_IN[1], _OLD_IN[2]]
+    assert retired_seed_rows(_settings(fixed)) == []
+    assert retired_seed_rows(_settings([{**qst, "is_compound": False}])) == []
+
+
+@pytest.mark.parametrize("bad", [{}, {"taxes": None}, {"taxes": "VAT"}, {"taxes": [{"rate": 2}, "x", None]},
+                                 {"taxes": [], "purchasing_taxes": {"name": "WHT 2%"}}])
+def test_retired_seed_rows_reads_bad_shapes_as_empty(bad):
+    from celerp.tax_regimes import retired_seed_rows
+
+    assert retired_seed_rows(bad) == []
+
+
+def test_retired_seed_rows_finds_no_match_on_any_fresh_seed():
+    from celerp.tax_regimes import retired_seed_rows
+
+    for country, regime in TAX_REGIMES.items():
+        taxes = regime["taxes"]
+        assert retired_seed_rows(_settings(taxes, taxes)) == [], country

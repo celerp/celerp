@@ -85,9 +85,9 @@ async def test_a_bill_with_withholding_tax_reduces_what_is_payable_and_finalizes
 async def test_a_sales_only_tax_is_refused_on_a_purchase_bill(client, session):
     auth = await _with_taxes(client, session, "MY")
     r = await client.post("/docs", headers=auth["headers"],
-                          json=_doc("bill", line_taxes=[{"code": "SST 6%", "rate": 6.0, "order": 0, "is_compound": False}]))
+                          json=_doc("bill", line_taxes=[{"code": "Sales Tax 10%", "rate": 10.0, "order": 0, "is_compound": False}]))
     assert r.status_code == 422, r.text
-    assert "SST 6%" in r.json()["detail"] and "purchase document" in r.json()["detail"]
+    assert "Sales Tax 10%" in r.json()["detail"] and "purchase document" in r.json()["detail"]
 
 
 @pytest.mark.asyncio
@@ -140,17 +140,13 @@ def test_each_document_offers_only_taxes_for_its_side():
 
     assert [t["name"] for t in taxes_for(th, "invoice")] == ["VAT 7%", "Exempt"]
     assert [t["name"] for t in taxes_for(th, "bill")] == ["VAT 7%", "Exempt", "WHT 3%", "WHT 5%"]
-    assert "SST 6%" not in [t["name"] for t in taxes_for(TAX_REGIMES["MY"]["taxes"], "bill")]
+    assert "Sales Tax 10%" not in [t["name"] for t in taxes_for(TAX_REGIMES["MY"]["taxes"], "bill")]
 
 
-@pytest.mark.asyncio
-async def test_a_new_invoice_from_items_starts_with_sales_taxes_only(monkeypatch):
-    from ui.routes import documents
+def test_a_new_line_starts_with_the_default_tax_for_its_side():
+    """A new line takes its document side's default tax: never a withholding tax on a sale or a purchase."""
+    from celerp.tax_regimes import default_line_taxes
 
-    async def _taxes(token):
-        return TAX_REGIMES["TH"]["taxes"]
-
-    monkeypatch.setattr(documents.api, "get_taxes", _taxes)
-    monkeypatch.setattr(documents.api, "get_purchasing_taxes", _taxes)
-    assert [t["code"] for t in await documents._company_doc_taxes("tok", "invoice")] == ["VAT 7%"]
-    assert [t["code"] for t in await documents._company_doc_taxes("tok", "bill")] == ["VAT 7%", "WHT 3%", "WHT 5%"]
+    th = TAX_REGIMES["TH"]["taxes"]
+    assert [t["code"] for t in default_line_taxes(th, "invoice")] == ["VAT 7%"]
+    assert [t["code"] for t in default_line_taxes(th, "bill")] == ["VAT 7%"]
