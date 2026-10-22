@@ -338,3 +338,24 @@ describe("classifyNavigation", () => {
     expect(classifyNavigation("http://127.0.0.1/", 36303)).toBe("external");
   });
 });
+
+describe("restartUrl", () => {
+  const { restartUrl } = require("../restart");
+
+  test("keeps the page the window was on, on the new UI port", () => {
+    expect(restartUrl("http://127.0.0.1:41001/migrations/run-1?step=2#log", 41005, new Set([41001])))
+      .toBe("http://127.0.0.1:41005/migrations/run-1?step=2#log");
+  });
+
+  test("a page already on the new port keeps its path", () => {
+    expect(restartUrl("http://127.0.0.1:41005/docs?type=invoice", 41005, new Set()))
+      .toBe("http://127.0.0.1:41005/docs?type=invoice");
+  });
+
+  test("anything that is not the app's own page goes to the root", () => {
+    for (const url of ["", "about:blank", "file:///app/loading.html", "http://127.0.0.1:9999/x",
+                       "https://celerp.com/pricing", "not a url"]) {
+      expect(restartUrl(url, 41005, new Set([41001]))).toBe("http://127.0.0.1:41005");
+    }
+  });
+});

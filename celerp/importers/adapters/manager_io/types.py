@@ -17,7 +17,7 @@ observing the format; no vendor source is reproduced here.
 
 from __future__ import annotations
 
-from celerp.importers.schema import CoverageClass
+from celerp.importers.schema import DEBIT_NOTE_NOTE, CoverageClass
 
 _M = CoverageClass.MAPPED
 _L = CoverageClass.MAPPED_WITH_LOSS
@@ -521,7 +521,7 @@ NOTES: dict[str, str] = {
                    "to an invoice like any quotation."),
     "PurchaseQuote": ("Imported as a draft purchase order: Celerp has no purchase quote. It keeps its lines and "
                       "can be sent as an order."),
-    "DebitNote": "Posted as a journal on the bill it notes and applied to that bill; Celerp has no debit note document.",
+    "DebitNote": DEBIT_NOTE_NOTE,
     "BalanceSheetGroup": "Sets the account type of the accounts in the group; the group itself is not carried.",
     "ProfitAndLossStatementGroup": "Sets the account type of the accounts in the group; the group itself is not carried.",
     "Assets": "Sets the account type of the accounts in the group; the group itself is not carried.",

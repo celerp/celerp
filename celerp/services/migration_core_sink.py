@@ -90,14 +90,15 @@ async def mapped_targets(
     return {ext: target for ext, target in rows}
 
 
-async def run_targets(context: SinkContext, target_entity_type: str) -> list[str]:
-    """Every Celerp id of one entity type this run imported."""
-    return list((await context.session.execute(
-        select(MigrationEntityMap.target_entity_id).where(
+async def run_targets(context: SinkContext, target_entity_type: str) -> dict[str, str]:
+    """Celerp id -> source external id, for every record of one entity type this run imported."""
+    rows = (await context.session.execute(
+        select(MigrationEntityMap.target_entity_id, MigrationEntityMap.source_external_id).where(
             MigrationEntityMap.migration_run_id == context.run_id,
             MigrationEntityMap.target_entity_type == target_entity_type,
         )
-    )).scalars())
+    )).all()
+    return {target: ext for target, ext in rows}
 
 
 def sink_result(
@@ -282,7 +283,7 @@ async def _import_attachment(context: SinkContext, record: CIFAttachment) -> tup
         raise AttachmentStorageError(record.file_name) from exc
     document_tag, is_hero = None, None
     if entity_type == "item":
-        is_hero, document_tag = item_file_role(row.state.get("files", []), mime)
+        is_hero, document_tag = item_file_role(row.state.get("files", []), mime, as_hero=record.item_image)
     await attach_file(context.session, context.company_id, entity_type, entity_id, meta, context.user_id,
                       source="migration", idempotency_key=key, document_tag=document_tag, is_hero=is_hero)
     await context.session.execute(delete(MigrationCleanupTask).where(MigrationCleanupTask.id == task_id))
@@ -325,7 +326,7 @@ def _apply_tax_code(company: Company, tax: CIFTaxCode) -> str | None:
                 return f"A tax named {tax.name} already exists with a different rate."
             return None
     taxes.append({
-        "name": tax.name, "rate": rate, "tax_type": "both", "is_default": False,
+        "name": tax.name, "rate": rate, "tax_type": "purchase" if rate < 0 else "both", "is_default": False,
         "description": "", "is_compound": False, "default_order": 0,
     })
     settings["taxes"] = taxes

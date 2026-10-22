@@ -8552,10 +8552,14 @@ async function celerpAcSearch(input, field) {{
         // Reposition to fixed so it escapes overflow:auto scroll containers
         const rect = wrap.getBoundingClientRect();
         list.style.position = 'fixed';
-        list.style.top = rect.bottom + 'px';
         list.style.left = rect.left + 'px';
         list.style.width = rect.width + 'px';
         list.style.zIndex = '9999';
+        // A fixed list cannot be scrolled to: open it above the input when it
+        // does not fit below and there is more room above.
+        const below = window.innerHeight - rect.bottom;
+        const h = list.offsetHeight;
+        list.style.top = (h > below && rect.top > below ? rect.top - Math.min(h, rect.top) : rect.bottom) + 'px';
     }}, 250);
 }}
 function celerpAcBlur(input) {{

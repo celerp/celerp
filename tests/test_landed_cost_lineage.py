@@ -174,6 +174,7 @@ _SPREADERS = {
     (_INV, "carve_cost"): "a lot's cost over a part and the rest",
     (_INV, "kept"): "carve_cost's share of one amount",
     ("default_modules/celerp-docs/celerp_docs/consignment_buy.py", "_lot_costs"): "a consignment bill line's cost over the lots it buys",
+    ("celerp/importers/adapters/odoo/book.py", "read_stock"): "an Odoo stock move's value over its move lines, and a valuation layer over the lots and locations holding the product",
 }
 
 # Functions that put a rounding unit on one part, and why that is not a spread over parts.
