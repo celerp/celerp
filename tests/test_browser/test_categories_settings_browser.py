@@ -10,8 +10,12 @@ is refused beside the add form, which keeps what was typed, and the list stays a
 """
 from __future__ import annotations
 
+import json
+
 import pytest
 from playwright.sync_api import expect
+
+from .conftest import _test_db
 
 pytestmark = pytest.mark.browser
 
@@ -54,8 +58,14 @@ def _gram_lot_then_delete_gram(api) -> None:
     lot = api.post("/items", json={"sku": "CAT-FINE", "name": "Gold dust", "quantity": 0.275,
                                    "sell_by": "gram", "status": "available"})
     assert lot.status_code == 200, lot.text
+    # Removing a unit in use is refused, so gram goes the way data saved before that check holds it.
     without_gram = [u for u in finer if u["name"] != "gram"]
-    assert api.put("/companies/me/units", json={"units": without_gram}).status_code == 200
+    company = api.get("/companies/me").json()
+    conn = _test_db()
+    with conn.cursor() as cur:
+        cur.execute("UPDATE companies SET settings = %s WHERE id = %s",
+                    (json.dumps({**company["settings"], "units": without_gram}), company["id"]))
+    conn.close()
 
 
 @pytest.mark.parametrize("selector, path", [(ADD_BOOK, "/settings/verticals/apply-category"),
