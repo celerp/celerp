@@ -3192,7 +3192,7 @@ celerpUpdateBulkAlloc();
                 payload["reserved_conflicts"] = e.data["conflicts"]
             return JSONResponse(payload, status_code=400)
         saved = {"ok": True, "version": result.get("version")}
-        # The page shows the document taxes and total the API just computed, never its own copy.
+        # The page shows the document taxes, total and outstanding the API just computed, never its own copy.
         try:
             doc = await api.get_doc(token, entity_id)
         except APIError as e:
@@ -3200,7 +3200,8 @@ celerpUpdateBulkAlloc();
         currency = doc.get("currency") or "USD"
         return JSONResponse({**saved,
                              "stored_tax_rows_html": to_xml(_stored_doc_tax_rows(doc, currency, doc.get("status") == "draft")),
-                             "total": fmt_money(float(doc.get("total") or 0), currency)})
+                             "total": fmt_money(float(doc.get("total") or 0), currency),
+                             "outstanding": fmt_money(float(_outstanding_value(doc) or 0), currency)})
 
     async def _proxy_reprice(request: Request, entity_id: str, reprice_fn):
         """Transport-only Web UI adapter; all repricing semantics live in celerp-docs."""
@@ -6616,6 +6617,14 @@ def _stored_doc_tax_rows(doc: dict, currency: str | None, can_edit: bool) -> FT:
     return Div(*rows, state, id="doc-stored-tax-rows")
 
 
+def _outstanding_value(doc: dict):
+    """The amount still owed that a document page shows, or None when the document carries none."""
+    for key in ("outstanding_balance", "amount_outstanding"):
+        if doc.get(key) is not None:
+            return doc[key]
+    return None
+
+
 def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", settings: dict | None = None, item_categories: dict | None = None, notes: list | None = None, company_currency: str = "USD", suppress_doc_actions: bool = False, extra_left_actions: list | None = None, extra_right_actions: list | None = None, suppress_pdf: bool = False, free_send_offer: bool = False, email_used: int = 0, email_quota: int = 0, email_resets_on: str | None = None, share_enabled: bool = False, share_active: bool = False, payments_on: bool = False, item_status_map: dict | None = None, item_status_doc_map: dict | None = None, item_meta_map: dict | None = None, chart_accounts: list | None = None, contact_shipping_addresses: list | None = None, line_suggestions: dict | None = None, line_identifier_mode: str = "sku", relay_error: bool = False, line_offset: int = 0, line_total: int | None = None, line_limit: int = 100,
                 connected_connectors: set[str] | None = None, note_targets: list | None = None, original: dict | None = None) -> FT:
     def _pick(*keys: str):
@@ -6707,7 +6716,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
     due_date_value = _pick("due_date", "payment_due_date")
     total_value = _pick("total_amount", "total")
     tax_value = _pick("tax_amount", "tax")
-    outstanding_value = _pick("outstanding_balance", "amount_outstanding")
+    outstanding_value = _outstanding_value(doc)
     subtotal_value = _pick("subtotal")
     discount_value = _pick("discount_amount") or 0
     currency = doc.get("currency") or "USD"
@@ -9207,13 +9216,15 @@ async function _celerpRefreshHeldBadges() {{
         try {{
             const data = await resp.json();
             if (data && data.version != null) _celerpEntityVersion = data.version;
-            // The server's document taxes and total for what was just saved, unless a newer
+            // The server's document taxes, total and outstanding for what was just saved, unless a newer
             // edit is already pending (its own save brings fresher figures).
             if (data && data.stored_tax_rows_html != null && revision === window._celerpLineRevision) {{
                 const storedEl = document.getElementById('doc-stored-tax-rows');
                 if (storedEl) storedEl.outerHTML = data.stored_tax_rows_html;
                 const totEl = document.getElementById('doc-total');
                 if (totEl && data.total) totEl.textContent = data.total;
+                const owedEl = document.getElementById('doc-outstanding');
+                if (owedEl && data.outstanding) owedEl.textContent = data.outstanding;
             }}
         }} catch (_e) {{}}
         // The rows just written become this page's stored window, so a follow-up save
@@ -10229,7 +10240,7 @@ async function celerpCsvImport(input, entityId) {{
             _rate_display = str(_rate_val) if _rate_val else "--"
             _contact_rows.append(Div(Div(t("label.conversion_rate"), cls="form-label"), _cell("conversion_rate", _rate_display), cls="form-group"))
         if not is_list and outstanding_value is not None:
-            _contact_rows.append(Div(Div(t("doc.outstanding"), cls="form-label"), Span(fmt_money(float(outstanding_value or 0), currency), cls="meta-value"), cls="form-group"))
+            _contact_rows.append(Div(Div(t("doc.outstanding"), cls="form-label"), Span(fmt_money(float(outstanding_value or 0), currency), id="doc-outstanding", cls="meta-value"), cls="form-group"))
 
     _is_sub_template = doc_type in ("subscription_invoice", "subscription_po")
 

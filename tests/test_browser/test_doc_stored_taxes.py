@@ -43,12 +43,16 @@ def _draft(api, doc_taxes: list[dict]) -> dict:
     return api.get(f"/docs/{r.json()['id']}").json() | {"id": r.json()["id"]}
 
 
-def _shown_total_equals(page, total: float, timeout: int = 5000) -> None:
+def _shown_amount_equals(page, selector: str, amount: float, timeout: int = 5000) -> None:
     page.wait_for_function(
-        "(t) => { const el = document.querySelector('#doc-total'); if (!el) return false;"
+        "([s, t]) => { const el = document.querySelector(s); if (!el) return false;"
         " const v = parseFloat(el.textContent.replace(/[^0-9.\\-]/g, ''));"
         " return Math.abs(v - t) < 0.005; }",
-        arg=total, timeout=timeout)
+        arg=[selector, amount], timeout=timeout)
+
+
+def _shown_total_equals(page, total: float, timeout: int = 5000) -> None:
+    _shown_amount_equals(page, "#doc-total", total, timeout)
 
 
 def test_stored_doc_tax_can_be_removed_on_a_draft(page, ui_server, api):
@@ -65,6 +69,8 @@ def test_stored_doc_tax_can_be_removed_on_a_draft(page, ui_server, api):
     assert stored is not None, "the removed document tax was not saved"
     assert abs(float(stored["total"]) - 100.0) < 0.01, stored
     _shown_total_equals(page, float(stored["total"]))
+    # Every figure the save changes follows it on screen, Outstanding included.
+    _shown_amount_equals(page, "#doc-outstanding", float(stored["amount_outstanding"]))
 
     issued = _draft(api, [_PLAIN])
     r = api.post(f"/docs/{issued['id']}/finalize")
@@ -87,3 +93,4 @@ def test_stored_doc_tax_survives_a_line_edit_on_screen(page, ui_server, api):
     assert stored is not None, "the quantity edit was not saved"
     assert len(stored.get("doc_taxes") or []) == 2, stored.get("doc_taxes")
     _shown_total_equals(page, float(stored["total"]))
+    _shown_amount_equals(page, "#doc-outstanding", float(stored["amount_outstanding"]))
