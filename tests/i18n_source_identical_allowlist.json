@@ -1,6 +1,8 @@
 {
   "am": [
     "account.email_placeholder",
+    "account.gate_benefit_ai",
+    "ai.free_questions_included",
     "ai.help_no_coverage",
     "ai.help_sources",
     "ai.usage_all_time",
@@ -17,6 +19,7 @@
     "connectors.status_ok",
     "dashboard.ap",
     "dashboard.b2b_crm",
+    "dashboard.getting_started_ai",
     "dashboard.sub.mtd",
     "dashboard.sub.ytd",
     "doc.incoterms",
@@ -63,6 +66,8 @@
   ],
   "ar": [
     "account.email_placeholder",
+    "account.gate_benefit_ai",
+    "ai.free_questions_included",
     "ai.help_no_coverage",
     "ai.help_sources",
     "ai.usage_all_time",
@@ -75,6 +80,7 @@
     "cloud.plan_cloud_name",
     "company_backup.file_failed",
     "connectors.shop_url_placeholder",
+    "dashboard.getting_started_ai",
     "doc.original_label",
     "doc.u2630",
     "documents.sku_placeholder",
@@ -112,8 +118,10 @@
     "th.sku"
   ],
   "de": [
+    "account.gate_benefit_ai",
     "acct.source_system",
     "acct.tab_journal",
+    "ai.free_questions_included",
     "ai.help_no_coverage",
     "ai.help_sources",
     "ai.usage_all_time",
@@ -142,6 +150,7 @@
     "contacts.field_website",
     "currency.name.EUR",
     "dashboard.back_dashboard",
+    "dashboard.getting_started_ai",
     "dashboard.pipeline",
     "doc.incoterms",
     "doc.original_label",
@@ -233,9 +242,11 @@
     "th.version"
   ],
   "es": [
+    "account.gate_benefit_ai",
     "account.plan",
     "acct.source_manual",
     "activity.total_change",
+    "ai.free_questions_included",
     "ai.help_no_coverage",
     "ai.help_sources",
     "ai.usage_all_time",
@@ -256,6 +267,7 @@
     "connectors.freq_manual",
     "connectors.shop_url_placeholder",
     "currency.name.EUR",
+    "dashboard.getting_started_ai",
     "doc.incoterms",
     "doc.original_label",
     "doc.total",
@@ -327,9 +339,11 @@
     "th.total"
   ],
   "fr": [
+    "account.gate_benefit_ai",
     "acct.tab_journal",
     "activity.document",
     "activity.m_pcs",
+    "ai.free_questions_included",
     "ai.help_no_coverage",
     "ai.help_sources",
     "ai.usage_all_time",
@@ -367,6 +381,7 @@
     "dashboard.acquisitions",
     "dashboard.clients",
     "dashboard.contacts",
+    "dashboard.getting_started_ai",
     "dashboard.getting_started_documents",
     "dashboard.pipeline",
     "dashboard.prospects",
@@ -462,11 +477,13 @@
     "th.version"
   ],
   "id": [
+    "account.gate_benefit_ai",
     "acct.source_manual",
     "acct.source_transfer",
     "activity.m_pcs",
     "activity.m_wt",
     "activity.total_change",
+    "ai.free_questions_included",
     "ai.help_no_coverage",
     "ai.help_sources",
     "ai.usage_all_time",
@@ -499,6 +516,7 @@
     "connectors.status_ok",
     "contacts.file_source_item",
     "currency.name.EUR",
+    "dashboard.getting_started_ai",
     "dashboard.na",
     "doc.incoterms",
     "doc.original_label",
@@ -581,6 +599,8 @@
     "th.total"
   ],
   "it": [
+    "account.gate_benefit_ai",
+    "ai.free_questions_included",
     "ai.help_no_coverage",
     "ai.help_sources",
     "ai.usage_all_time",
@@ -598,6 +618,7 @@
     "connectors.status_ok",
     "currency.name.EUR",
     "dashboard.back_dashboard",
+    "dashboard.getting_started_ai",
     "dashboard.pipeline",
     "doc.email",
     "doc.incoterms",
@@ -673,6 +694,8 @@
   ],
   "ja": [
     "account.email_placeholder",
+    "account.gate_benefit_ai",
+    "ai.free_questions_included",
     "ai.help_no_coverage",
     "ai.help_sources",
     "ai.usage_all_time",
@@ -689,6 +712,7 @@
     "connectors.shop_url_placeholder",
     "connectors.status_ok",
     "dashboard.b2b_crm",
+    "dashboard.getting_started_ai",
     "doc.u2630",
     "documents.bcc",
     "documents.cc",
@@ -732,8 +756,10 @@
     "th.sku"
   ],
   "pt": [
+    "account.gate_benefit_ai",
     "acct.source_manual",
     "activity.total_change",
+    "ai.free_questions_included",
     "ai.help_no_coverage",
     "ai.help_sources",
     "ai.usage_all_time",
@@ -760,6 +786,7 @@
     "contacts.doc_ref_fallback",
     "contacts.file_source_item",
     "currency.name.EUR",
+    "dashboard.getting_started_ai",
     "doc.incoterms",
     "doc.original_label",
     "doc.status",
@@ -838,6 +865,8 @@
   ],
   "th": [
     "account.email_placeholder",
+    "account.gate_benefit_ai",
+    "ai.free_questions_included",
     "ai.help_no_coverage",
     "ai.help_sources",
     "ai.usage_all_time",
@@ -852,6 +881,7 @@
     "connectors.consumer_key_placeholder",
     "connectors.consumer_secret_placeholder",
     "connectors.shop_url_placeholder",
+    "dashboard.getting_started_ai",
     "doc.incoterms",
     "doc.original_label",
     "doc.u2630",
@@ -895,6 +925,8 @@
     "th.sku"
   ],
   "vi": [
+    "account.gate_benefit_ai",
+    "ai.free_questions_included",
     "ai.help_no_coverage",
     "ai.help_sources",
     "ai.usage_all_time",
@@ -909,6 +941,7 @@
     "connectors.shop_url_placeholder",
     "connectors.status_ok",
     "currency.name.EUR",
+    "dashboard.getting_started_ai",
     "doc.incoterms",
     "doc.original_label",
     "doc.u2630",

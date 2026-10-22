@@ -450,16 +450,22 @@ def _ensure_slots() -> None:
 
 @pytest.fixture(autouse=True)
 def _reset_hot_path_caches():
-    """Bust the in-process drain cache before each test.
+    """Bust the in-process drain cache and relay methods cache before each test.
 
-    The module-level cache is correct at runtime (single process, explicit bust
-    on mutation).  In tests, each test rolls back its database changes, so the
-    cache must be cleared to avoid leaking state between tests.
+    The module-level caches are correct at runtime (single process, explicit
+    bust on mutation, or a time-limited relay answer). In tests, each test rolls
+    back its database changes and mocks its own relay, so the caches must be
+    cleared to avoid leaking state between tests.
     """
+    import asyncio
+    from celerp.routers import health
     from celerp.services.runtime_state import _drain_cache_bust
     _drain_cache_bust()
+    health._relay_methods.clear()
+    health._relay_methods_lock = asyncio.Lock()
     yield
     _drain_cache_bust()
+    health._relay_methods.clear()
 
 
 @pytest.fixture(autouse=True)

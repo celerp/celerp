@@ -3645,6 +3645,7 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
 .import-icon { display: inline-flex; vertical-align: -0.125em; margin-inline-end: 6px; }
 .btn--icon > .import-icon { margin-inline-end: 0; font-size: 16px; }
 .getting-started-note { font-size: 13px; color: var(--c-text2); margin: 8px 0; }
+.getting-started-ai { font-size: 13px; margin: 8px 0; }
 .import-arrow { position: relative; width: fit-content; max-width: 100%; box-sizing: border-box;
   margin: -4px 0 16px; padding: 8px 12px; border-radius: 6px; background: var(--c-accent); color: #fff; font-size: 13px; font-weight: 500;
   line-height: 1.4; box-shadow: 0 4px 14px rgba(0,0,0,.2); animation: import-arrow-in .2s ease-out; }

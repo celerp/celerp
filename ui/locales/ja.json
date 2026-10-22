@@ -6340,5 +6340,8 @@
   "ai.usage_period_month": "Counts questions from {date} to today.",
   "ai.usage_period_all": "Counts every question the free account has answered in this company.",
   "ai.usage_none_all_time": "No questions yet.",
-  "ai.usage_scope_note": "The account total above also counts questions from other companies on this install, from deleted conversations, and from the API."
+  "ai.usage_scope_note": "The account total above also counts questions from other companies on this install, from deleted conversations, and from the API.",
+  "dashboard.getting_started_ai": "Questions as you set up? Ask Celerp AI.",
+  "ai.free_questions_included": "A free account includes {n} questions.",
+  "account.gate_benefit_ai": "Ask Celerp AI {n} questions free with a Celerp account."
 }

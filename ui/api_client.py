@@ -3834,6 +3834,15 @@ async def account_methods(token: str) -> dict:
     return await _with_total_timeout(_request(), ACCOUNT_METHODS_TIMEOUT)
 
 
+async def ai_offer(token: str) -> dict:
+    """GET /settings/ai-offer - paid AI plan flag and the included AI question counts.
+
+    The API bounds its relay read to 2 seconds; the short client timeout keeps a
+    slow answer from holding up the page that asked."""
+    async with _api_client(token, timeout=5.0) as c:
+        return _raise(await c.get("/settings/ai-offer")).json()
+
+
 ACCOUNT_SIGNUP_TIMEOUT = 15.0
 
 

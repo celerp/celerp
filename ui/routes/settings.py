@@ -1869,17 +1869,11 @@ def setup_routes(app):
         iid = data.get("instance_id") or iid
 
         if data.get("verification_required"):
-            from ui.routes.account import account_panel
-            google, quota = False, 0
-            try:
-                methods = await _api.account_methods(ui_token)
-                google = bool(methods.get("google"))
-                quota = int(methods.get("free_email_quota") or 0)
-            except Exception:
-                pass
+            from ui.routes.account import account_panel, signup_methods
+            methods = await signup_methods(ui_token)
             return account_panel(
                 get_lang(request), intent="signup", panel_id="cloud-relay-tab",
-                google=google, free_quota=quota)
+                google=bool(methods.get("google")), counts=methods)
 
         if err := data.get("error"):
             return _cloud_relay_unconnected(iid, error=err)
