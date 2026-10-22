@@ -48,10 +48,17 @@ TAX_REGIMES: dict[str, _T] = {
     "MY": {
         "currency": "MYR",
         "taxes": [
-            {"name": "SST 6%", "rate": 6.0, "tax_type": "sales", "is_default": True,
-             "description": "Malaysia Sales and Service Tax", "is_compound": False, "default_order": 0},
+            {"name": "Sales Tax 10%", "rate": 10.0, "tax_type": "sales", "is_default": True,
+             "description": "Malaysia sales tax, standard rate", "is_compound": False, "default_order": 0},
+            {"name": "Sales Tax 5%", "rate": 5.0, "tax_type": "sales", "is_default": False,
+             "description": "Malaysia sales tax, reduced rate for listed goods",
+             "is_compound": False, "default_order": 0},
             {"name": "Service Tax 8%", "rate": 8.0, "tax_type": "sales", "is_default": False,
              "description": "Malaysia service tax (selected services)", "is_compound": False, "default_order": 0},
+            {"name": "Service Tax 6%", "rate": 6.0, "tax_type": "sales", "is_default": False,
+             "description": "Malaysia service tax on listed services such as food and drink, telecoms, "
+                            "logistics, parking and rentals",
+             "is_compound": False, "default_order": 0},
             {"name": "Exempt", "rate": 0.0, "tax_type": "both", "is_default": False,
              "description": "Tax-exempt", "is_compound": False, "default_order": 0},
         ],
@@ -73,7 +80,10 @@ TAX_REGIMES: dict[str, _T] = {
         "currency": "IDR",
         "taxes": [
             {"name": "PPN 11%", "rate": 11.0, "tax_type": "both", "is_default": True,
-             "description": "Indonesia VAT (PPN)", "is_compound": False, "default_order": 0},
+             "description": "12% on a base of 11/12 of the price, for goods that are not luxury goods",
+             "is_compound": False, "default_order": 0},
+            {"name": "PPN 12%", "rate": 12.0, "tax_type": "both", "is_default": False,
+             "description": "Luxury goods, on the full price", "is_compound": False, "default_order": 0},
             {"name": "Exempt", "rate": 0.0, "tax_type": "both", "is_default": False,
              "description": "PPN-exempt", "is_compound": False, "default_order": 0},
             {"name": "PPh 2%", "rate": -2.0, "tax_type": "purchase", "is_default": False,
@@ -85,6 +95,9 @@ TAX_REGIMES: dict[str, _T] = {
         "taxes": [
             {"name": "VAT 10%", "rate": 10.0, "tax_type": "both", "is_default": True,
              "description": "Vietnam standard VAT", "is_compound": False, "default_order": 0},
+            {"name": "VAT 8%", "rate": 8.0, "tax_type": "both", "is_default": False,
+             "description": "Reduced rate until 31 Dec 2026. Excluded sectors stay at 10%",
+             "is_compound": False, "default_order": 0},
             {"name": "VAT 5%", "rate": 5.0, "tax_type": "both", "is_default": False,
              "description": "Vietnam reduced VAT (essential goods)", "is_compound": False, "default_order": 0},
             {"name": "Exempt", "rate": 0.0, "tax_type": "both", "is_default": False,
