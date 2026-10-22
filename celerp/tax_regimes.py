@@ -305,6 +305,18 @@ def default_line_taxes(taxes: list[dict], doc_type: str | None) -> list[dict]:
              "is_compound": bool(tax.get("is_compound")), "label": ""}]
 
 
+def tax_entries(value) -> list[dict]:
+    """The taxes a stored ``doc_taxes`` or line ``taxes`` value holds: its tax objects when it
+    is a list, else none. Every write refuses another shape, so one stored by an older version
+    reads as no taxes rather than failing the page or printout that shows it."""
+    return [tax for tax in value if isinstance(tax, dict)] if isinstance(value, list) else []
+
+
+def well_formed_taxes(value) -> bool:
+    """Whether a ``doc_taxes`` or line ``taxes`` value is absent or a list of tax objects."""
+    return value is None or (isinstance(value, list) and len(tax_entries(value)) == len(value))
+
+
 def _tax_name_key(name) -> str:
     """A tax name as a lookup key: the same name in another case or with spaces around it
     is the same tax."""

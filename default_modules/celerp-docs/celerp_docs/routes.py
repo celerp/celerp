@@ -33,7 +33,7 @@ from celerp.modules.slots import fire_lifecycle
 from celerp.models.projections import Projection
 from celerp.inventory_codes import MAX_SCAN_CODE_LEN, PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES
 from celerp_docs.consignment_buy import bought_parcels, bought_receipt_lots, buy_consignment
-from celerp_docs.doc_money import document_money, money_from_lines
+from celerp_docs.doc_money import document_money, money_from_lines, refuse_malformed_taxes
 from celerp_docs.doc_projections import UNISSUED_STATUSES, payment_status
 from celerp_docs.taxes import TaxApplication
 from celerp.services.field_schema import reject_system_item_fields
@@ -47,7 +47,7 @@ from celerp.services.lot_origin import in_stock, is_stock_type, rerun_after_plac
 from celerp.services.physical_codes import lock_item_code_namespace
 from celerp.services.peer_import import SourceRevision, peer_batch, receive_file
 from celerp.services.payments import recorded_unmatched, return_unmatched
-from celerp.tax_regimes import default_line_taxes, side_taxes
+from celerp.tax_regimes import default_line_taxes, side_taxes, tax_entries
 from celerp.services.business_time import business_date_at, business_date_of, company_today
 from celerp.services.landed_cost import compute_bill_landed_allocation
 from celerp.services.line_measures import (FULL, floor_to_unit, line_label, proposed_sell_qty, splitting_allowed,
@@ -1910,6 +1910,7 @@ async def write_doc_patch(session: AsyncSession, company_id, role: str, settings
     fields_changed = dict(payload.fields_changed)
     require_currency_code((fields_changed.get("currency") or {}).get("new"))
     _refuse_protected_fields(fields_changed)
+    refuse_malformed_taxes({k: (v or {}).get("new") for k, v in fields_changed.items()})
     if scan_runs is not None:
         fields_changed[SCAN_RUNS_FIELD] = {"new": scan_runs}
     selecting = "contact_id" in fields_changed
@@ -7430,12 +7431,12 @@ async def convert_doc(entity_id: str, payload: DocConvertBody | None = None, com
                 if _line.get("line_total") is not None:
                     billed["line_total"] = to_stored_float(round_money(
                         to_decimal(_line["line_total"]) * _kept, _currency))
-                if _line.get("taxes"):
+                if tax_entries(_line.get("taxes")):
                     billed["taxes"] = [
                         {**tx, "amount": to_stored_float(round_money(
                             to_decimal(tx.get("amount") or 0) * _kept, _currency))}
                         if tx.get("amount") is not None else {**tx}
-                        for tx in _line["taxes"]
+                        for tx in tax_entries(_line["taxes"])
                     ]
             billed_by_bound_eid[_lot_eid] = billed
 
@@ -8584,6 +8585,7 @@ async def write_list_patch(session: AsyncSession, company_id, role: str, setting
     fields_changed = dict(payload.fields_changed)
     require_currency_code((fields_changed.get("currency") or {}).get("new"))
     _refuse_protected_fields(fields_changed)
+    refuse_malformed_taxes({k: (v or {}).get("new") for k, v in fields_changed.items()})
     selecting = "contact_id" in fields_changed
     new_contact_id = str((fields_changed.get("contact_id") or {}).get("new") or "")
     if selecting and "line_items" in fields_changed:
@@ -9099,6 +9101,7 @@ async def patch_list_line_page(
     the window is exactly the submitted page's own length (a pure in-place replace that never drops
     off-window rows), so a delete or insert must carry the loaded window length, which the editor
     always sends."""
+    refuse_malformed_taxes({"line_items": payload.line_items})
     row = await _get_list_for_update(session, company_id, entity_id)
     if row.state.get("status") != "draft":
         raise HTTPException(status_code=409, detail=t("documents.err_list_not_draft"))

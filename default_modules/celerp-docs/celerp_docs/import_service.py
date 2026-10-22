@@ -23,7 +23,7 @@ from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.services.journal_accounts import require_line_destinations
 from celerp.services.locations import require_ship_from
-from celerp_docs.doc_money import money_from_lines
+from celerp_docs.doc_money import money_from_lines, refuse_malformed_taxes
 from celerp_docs.doc_projections import UNISSUED_STATUSES
 from celerp_docs.routes import (
     RECORD_NOW,
@@ -181,6 +181,7 @@ async def create_imported_doc(
     await _assert_import_number_free(session, company_id, "doc", rec.data)
     if auto_je.imported_issue_kind(rec.data) is not None:
         _require_doc_rate_http(rec.data, base_currency)
+    refuse_malformed_taxes(rec.data)
     await check_imported_snapshot(session, company_id, rec.entity_id, rec.data, base_currency)
     await require_ship_from(session, company_id, rec.data.get("from_location_id"))
     priced = rec.data

@@ -52,6 +52,7 @@ from celerp.output.doc_print import (
 )
 from celerp.output.share_render import _not_found_page
 from celerp.output.document_context import prepare_document_output
+from celerp.tax_regimes import tax_entries
 from celerp_docs import received
 from celerp_docs.doc_constants import SHAREABLE_DOC_TYPES, is_shareable, share_doc_type
 from celerp_docs.doc_money import UnratedTaxError, document_money
@@ -156,12 +157,8 @@ def _str(v, limit: int = _MAX_STR) -> str | None:
 
 
 def _sanitize_taxes(raw) -> list[TaxApplication]:
-    if not isinstance(raw, list):
-        return []
     out: list[TaxApplication] = []
-    for t in raw[:20]:
-        if not isinstance(t, dict):
-            continue
+    for t in tax_entries(raw)[:20]:
         out.append(TaxApplication(
             code=str(t.get("code") or "")[:64],
             rate=_num(t.get("rate")),
@@ -174,8 +171,6 @@ def _sanitize_taxes(raw) -> list[TaxApplication]:
 
 
 def _public_taxes(raw) -> list[dict]:
-    if not isinstance(raw, list):
-        return []
     return [
         {
             "code": str(t.get("code") or "")[:64],
@@ -185,7 +180,7 @@ def _public_taxes(raw) -> list[dict]:
             "is_compound": bool(t.get("is_compound")),
             "label": str(t.get("label") or "")[:64],
         }
-        for t in raw[:20] if isinstance(t, dict)
+        for t in tax_entries(raw)[:20]
     ]
 
 

@@ -38,6 +38,7 @@ from celerp.services.auth import get_current_company_id, get_current_role, get_c
 from celerp.services.company_lock import lock_company
 from celerp.services.money import round_money, to_decimal
 from celerp.services.permissions import get_current_company_settings, require_permission
+from celerp.tax_regimes import tax_entries
 from celerp_docs.doc_projections import _recalc_list_totals
 from ui.i18n import t
 
@@ -380,8 +381,8 @@ def unrepresentable(document: dict, target: BookTarget) -> str | None:
     if target.kind != "list":
         return None
     currency = document.get("currency")
-    doc_taxes = document.get("doc_taxes") or []
-    line_taxes = [t for li in document.get("line_items") or [] for t in li.get("taxes") or []]
+    doc_taxes = tax_entries(document.get("doc_taxes"))
+    line_taxes = [t for li in document.get("line_items") or [] for t in tax_entries(li.get("taxes"))]
     if _money(document.get("shipping"), currency):
         return "A quotation has no shipping charge, so this document cannot become one without changing its total."
     if any(t.get("is_compound") for t in (*doc_taxes, *line_taxes)):

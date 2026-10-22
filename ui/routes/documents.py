@@ -34,7 +34,7 @@ from celerp.services.business_time import business_today
 from celerp.services.doc_balance import awaiting_status_param, is_awaiting_payment, is_owed, outstanding_balance
 from celerp.services.money import to_decimal, to_stored_float, round_money, currency_dp, rate_dp
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, line_price_list, resolve_price
-from celerp.tax_regimes import default_line_taxes, default_tax, taxes_for
+from celerp.tax_regimes import default_line_taxes, default_tax, tax_entries, taxes_for
 from celerp.services.payment_terms import due_date_for_terms
 from celerp.services.permissions import missing_permission_text, role_has_permission
 from ui.components.import_access import can_import_documents
@@ -6576,7 +6576,7 @@ async def doc_detail_connectors(company: dict) -> set[str]:
 
 def _line_tax_rate(li: dict) -> float:
     """A line's tax rate: the sum of its taxes' rates, or its tax_rate when it has none."""
-    stored = [tx for tx in (li.get("taxes") or []) if isinstance(tx, dict)]
+    stored = tax_entries(li.get("taxes"))
     if stored:
         return sum(float(tx.get("rate", 0) or 0) for tx in stored)
     return float(li.get("tax_rate", 0) or 0)
@@ -6600,7 +6600,7 @@ def _stored_doc_tax_rows(doc: dict, currency: str | None, can_edit: bool) -> FT:
     """The document-level taxes stored on a document, each with the amount the API computed for
     it. The page adds these amounts to its live total and never recomputes them. On an editable
     draft each row can be removed, and the rows' state rides along with the next line save."""
-    doc_taxes = doc.get("doc_taxes") or []
+    doc_taxes = tax_entries(doc.get("doc_taxes"))
     rows = []
     for i, dtax in enumerate(doc_taxes):
         amount = float(dtax.get("amount") or 0)
@@ -7391,7 +7391,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             two or more on one line included, show as a single option naming them all.
             """
             li = li or {}
-            stored = [tx for tx in (li.get("taxes") or []) if isinstance(tx, dict)]
+            stored = tax_entries(li.get("taxes"))
             current_rate = _line_tax_rate(li)
             if len(stored) == 1:
                 current_code = stored[0].get("code", "") or ""
@@ -10085,13 +10085,13 @@ async function celerpCsvImport(input, entityId) {{
         code_totals.setdefault(key, {"label": label, "amount": 0.0})["amount"] += float(amount or 0)
 
     for li in line_items:
-        for item in li.get("taxes") or []:
+        for item in tax_entries(li.get("taxes")):
             code = item.get("code") or ""
             rate = float(item.get("rate", 0) or 0)
             label = f"{code} ({rate:g}%)" if code else f"{item.get('label') or t('documents.tax')} ({rate:g}%)"
             _add_tax(code or f"custom_{rate}", label, item.get("amount"))
     stored_tax_rows = _stored_doc_tax_rows(doc, currency, can_edit_lines)
-    stored_tax = sum(float(d.get("amount") or 0) for d in doc.get("doc_taxes") or [])
+    stored_tax = sum(float(d.get("amount") or 0) for d in tax_entries(doc.get("doc_taxes")))
     if abs(sum(v["amount"] for v in code_totals.values()) + stored_tax - tax_amount) > 0.005:
         # The stored breakdown does not account for the stored tax (a line or header rate with no
         # per-line amounts): show the stored tax as one row, labelled with its rate when single.

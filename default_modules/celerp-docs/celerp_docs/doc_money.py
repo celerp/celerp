@@ -11,6 +11,7 @@ from __future__ import annotations
 from fastapi import HTTPException
 
 from celerp.services.money import round_money, to_decimal, to_stored_float
+from celerp.tax_regimes import tax_entries, well_formed_taxes
 from celerp_docs.taxes import TaxApplication, compute_tax_amounts
 from ui.i18n import t
 
@@ -39,6 +40,18 @@ def _recompute_tax_applications(raw, base, currency: str):
         (to_decimal(item.amount) for item in resolved), to_decimal(0))
 
 
+def refuse_malformed_taxes(values: dict) -> None:
+    """Refuse (422) ``doc_taxes`` or a line's ``taxes`` in *values* given as anything but a
+    list of tax objects. Every write of a document's or a list's taxes checks it, so nothing
+    stored holds a tax value its totals and pages cannot read."""
+    lines = values.get("line_items")
+    held = [values.get("doc_taxes")]
+    if isinstance(lines, list):
+        held += [line.get("taxes") for line in lines if isinstance(line, dict)]
+    if not all(well_formed_taxes(value) for value in held):
+        raise HTTPException(status_code=422, detail=t("documents.err_tax_invalid"))
+
+
 def _line_amount(line: dict):
     value = line.get("line_total")
     if value not in (None, ""):
@@ -52,9 +65,9 @@ def _line_amount(line: dict):
 def _has_rate(state: dict) -> bool:
     """Whether a document's tax comes from a rate: a line's ``taxes`` or ``tax_rate``, a
     document tax or a header ``tax_rate``."""
-    if state.get("doc_taxes") or to_decimal(state.get("tax_rate", 0) or 0):
+    if tax_entries(state.get("doc_taxes")) or to_decimal(state.get("tax_rate", 0) or 0):
         return True
-    return any(isinstance(line, dict) and (line.get("taxes") or to_decimal(line.get("tax_rate", 0) or 0))
+    return any(isinstance(line, dict) and (tax_entries(line.get("taxes")) or to_decimal(line.get("tax_rate", 0) or 0))
                for line in state.get("line_items") or [])
 
 

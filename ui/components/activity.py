@@ -18,6 +18,7 @@ from celerp.services.field_schema import DEFAULT_ITEM_SCHEMA, cost_columns
 from celerp.services.list_behavior import SCAN_RUNS_FIELD, SUPPLIER_DOC_TYPES
 from celerp.services.pricing import PRICE_LISTS_FALLBACK
 from celerp.services.units import line_receive_kind
+from celerp.tax_regimes import tax_entries
 from ui.i18n import t, get_lang, category_label, doc_type_label, field_label, price_list_label
 from ui.components.table import EMPTY, display_enum, fmt_money, fmt_rate
 from ui.components.deleted_items import deleted_label
@@ -630,8 +631,8 @@ def _line_effective_tax(li: dict) -> tuple[float, float]:
     per-line formula list totals are recomputed with (see doc_projections._recalc_list_totals)."""
     try:
         rate = float(li.get("tax_rate") or 0)
-        if not rate and isinstance(li.get("taxes"), list):
-            rate = sum(float(tx.get("rate") or 0) for tx in li["taxes"] if isinstance(tx, dict))
+        if not rate:
+            rate = sum(float(tx.get("rate") or 0) for tx in tax_entries(li.get("taxes")))
         line_total = float(li.get("line_total") or 0)
     except (TypeError, ValueError):
         return 0.0, 0.0
