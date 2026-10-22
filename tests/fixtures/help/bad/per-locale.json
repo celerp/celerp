@@ -1,0 +1,29 @@
+{
+  "id": "inventory.per-locale",
+  "title": "Add an item",
+  "summary": "Create a stock item.",
+  "keywords": [
+    "item"
+  ],
+  "routes": [
+    "/inventory"
+  ],
+  "permission": "view_inventory",
+  "order": 1,
+  "steps": [
+    {
+      "text": "Open {inv} from the sidebar.",
+      "labels": {
+        "inv": "nav.inventory"
+      },
+      "image": null,
+      "capture": {
+        "route": "/inventory",
+        "selector": "main",
+        "actions": []
+      }
+    }
+  ],
+  "related": [],
+  "title_th": "เพิ่มสินค้า"
+}
