@@ -129,3 +129,48 @@ async def test_tax_seed_notice_never_changes_company_taxes(session):
     session.expire_all()
     assert await _notices(session, company_id)
     assert json.dumps((await session.get(Company, company_id)).settings, sort_keys=True) == before
+
+
+async def _register(client) -> dict:
+    r = await client.post("/auth/register", json={
+        "company_name": "Seed notice co", "email": f"sn-{uuid.uuid4().hex[:8]}@test.example",
+        "name": "Admin", "password": "pwvalid1"})
+    assert r.status_code == 200, r.text
+    return {"Authorization": f"Bearer {r.json()['access_token']}"}
+
+
+async def _bell(client, h) -> set[str]:
+    """The tax seed notices the company's bell shows, by retired-seed entry."""
+    r = await client.get("/notifications", headers=h, params={"limit": 100})
+    assert r.status_code == 200, r.text
+    prefix = "notice.tax_seed."
+    return {n["i18n"]["title"][len(prefix):-len(".title")] for n in r.json()["items"]
+            if ((n.get("i18n") or {}).get("title") or "").startswith(prefix)}
+
+
+def _record(row: dict) -> dict:
+    return {"entity_id": "company", "event_type": "tax.import", "source": "import",
+            "idempotency_key": f"tax-{uuid.uuid4().hex[:8]}", "data": row}
+
+
+@pytest.mark.parametrize("path", ["/companies/me/taxes", "/companies/me/purchasing-taxes"])
+async def test_saving_a_tax_list_brings_its_notices_up_to_date_at_once(client, path):
+    """No restart needed: saving a list holding a retired row raises its notice, and saving it
+    fixed clears the notice the same moment."""
+    h = await _register(client)
+    assert (await client.patch(path, headers=h, json={"taxes": _OLD_ET})).status_code == 200
+    assert await _bell(client, h) == {"et-wht-2025", "et-tot-2025"}
+
+    fixed = [r for r in _OLD_ET if r["name"] not in ("WHT 2%", "TOT 2%", "TOT 10%")]
+    assert (await client.patch(path, headers=h, json={"taxes": fixed})).status_code == 200
+    assert await _bell(client, h) == set()
+
+
+@pytest.mark.parametrize("path", ["/companies/me/taxes/import/batch",
+                                  "/companies/me/purchasing-taxes/import/batch"])
+async def test_importing_a_retired_tax_row_raises_its_notice_at_once(client, path):
+    h = await _register(client)
+    sst = {"name": "SST 6%", "rate": 6.0, "tax_type": "both"}
+    r = await client.post(path, headers=h, json={"records": [_record(sst)]})
+    assert r.status_code == 200 and r.json()["created"] == 1, r.text
+    assert await _bell(client, h) == {"my-sst-6"}

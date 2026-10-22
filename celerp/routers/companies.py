@@ -53,6 +53,7 @@ from celerp.services.payment_terms import DEFAULT_PAYMENT_TERMS, company_payment
 from celerp.services.business_time import business_timezone
 from celerp.services.company_settings import BOOKS_KEYS, record_change, require_general
 from celerp.services.company_lock import lock_company, lock_company_for_deletion, locked_company
+from celerp.services.tax_seed_notice import reconcile_tax_seed_notices
 from ui.i18n import t
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
@@ -1308,6 +1309,7 @@ async def patch_taxes(
     settings = dict(company.settings)
     settings["taxes"] = [t.model_dump() for t in payload.taxes]
     company.settings = settings
+    await reconcile_tax_seed_notices(session, company_id, settings)
     await session.commit()
     return {"ok": True}
 
@@ -1379,6 +1381,7 @@ async def import_taxes_batch(
 
     settings["taxes"] = taxes
     company.settings = settings
+    await reconcile_tax_seed_notices(session, company_id, settings)
     await session.commit()
     return res
 
@@ -1602,6 +1605,7 @@ async def patch_purchasing_taxes(
     settings = dict(company.settings)
     settings["purchasing_taxes"] = [t.model_dump() for t in payload.taxes]
     company.settings = settings
+    await reconcile_tax_seed_notices(session, company_id, settings)
     await session.commit()
     return {"ok": True}
 
@@ -1645,6 +1649,7 @@ async def import_purchasing_taxes_batch(
     settings = dict(company.settings)
     settings["purchasing_taxes"] = taxes
     company.settings = settings
+    await reconcile_tax_seed_notices(session, company_id, settings)
     await session.commit()
     return res
 
