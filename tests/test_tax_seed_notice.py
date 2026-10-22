@@ -14,6 +14,7 @@ from sqlalchemy import select
 
 from celerp.models.company import Company
 from celerp.models.notification import Notification
+from celerp.services.company_lock import locked_company
 
 from test_tax_seeds import _OLD_ET
 
@@ -84,7 +85,7 @@ async def test_tax_seed_notice_clears_when_row_fixed(session):
     await _run(session)
     assert set(await _notices(session, company_id)) == {"et-wht-2025", "et-tot-2025"}
 
-    company = await session.get(Company, company_id)
+    company = await locked_company(session, company_id)
     fixed = [r for r in copy.deepcopy(_OLD_ET) if r["name"] != "WHT 2%"]
     fixed.append({"name": "WHT 3%", "rate": -3.0, "tax_type": "purchase", "is_default": False, "is_compound": False})
     company.settings = {**company.settings, "taxes": fixed}

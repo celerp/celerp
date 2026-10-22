@@ -313,6 +313,19 @@ async def _bring_data_current(app: FastAPI, *, modules_ready: bool) -> bool:
             "missing COGS until a later boot retries"
         )
 
+    # Tell each company its saved taxes still hold a row an earlier seed wrote that is no
+    # longer right; reads only, non-fatal like the backfills above.
+    try:
+        from celerp.db import LifecycleSessionLocal as _TaxSeedSession
+        from celerp.services.tax_seed_notice import run_tax_seed_notice
+        async with _TaxSeedSession() as _tax_sess:
+            await run_tax_seed_notice(_tax_sess)
+            await _tax_sess.commit()
+    except Exception:
+        logging.getLogger(__name__).exception(
+            "Tax seed notice failed (non-fatal); companies are told at a later boot"
+        )
+
     app.state.data_current, app.state.held_back = True, None
     try:
         from celerp.db import LifecycleSessionLocal as _NoticeSession

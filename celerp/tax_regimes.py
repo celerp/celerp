@@ -331,3 +331,52 @@ def misplaced_tax(settings: dict, doc_type: str | None, applied: list[dict]) -> 
         if tax_side not in (side, "both"):
             return code or f"{rate:g}%"
     return None
+
+
+# Rows earlier seeds wrote that are no longer right. A company keeps the taxes it saved, so each
+# entry is told to the company as a notice (services/tax_seed_notice.py) and never changed for it.
+# An entry matches a tax list holding a row for each of its ``rows`` ("all") or for any one of them
+# ("any"); a row matches on its name (as _tax_name_key) and every other field given.
+RETIRED_SEED_ROWS: tuple[dict, ...] = (
+    {"id": "in-default-2025", "match": "all",
+     "rows": ({"name": "CGST 9%", "is_default": True}, {"name": "SGST 9%", "is_default": True})},
+    {"id": "et-wht-2025", "match": "any", "rows": ({"name": "WHT 2%", "rate": -2.0},)},
+    {"id": "et-tot-2025", "match": "any", "rows": ({"name": "TOT 2%"}, {"name": "TOT 10%"})},
+    {"id": "ca-qst-compound", "match": "any", "rows": ({"name": "QST 9.975%", "is_compound": True},)},
+    {"id": "my-sst-6", "match": "any", "rows": ({"name": "SST 6%", "rate": 6.0},)},
+)
+
+
+def _row_matches(row: dict, want: dict) -> bool:
+    """Whether a stored tax row is the retired row ``want`` describes."""
+    for field, value in want.items():
+        if field == "name":
+            if _tax_name_key(row.get("name")) != _tax_name_key(value):
+                return False
+        elif field == "rate":
+            try:
+                if float(row.get("rate") or 0) != value:
+                    return False
+            except (TypeError, ValueError):
+                return False
+        elif bool(row.get(field)) != value:
+            return False
+    return True
+
+
+def retired_seed_rows(settings: dict) -> list[dict]:
+    """The RETIRED_SEED_ROWS entries a company's saved tax lists still hold, in that order, each
+    ``{"id", "lists"}`` naming the lists ("sales", "purchase") it was found in. Only lists the
+    company saved are read: a purchasing list never saved is a copy of the sales list, not a
+    second place to find the same row. A list or row of the wrong shape holds nothing."""
+    saved = {"sales": settings.get("taxes"), "purchase": settings.get("purchasing_taxes")}
+    lists = {side: [r for r in rows if isinstance(r, dict)]
+             for side, rows in saved.items() if isinstance(rows, list)}
+    found = []
+    for entry in RETIRED_SEED_ROWS:
+        test = all if entry["match"] == "all" else any
+        sides = {side for side, rows in lists.items()
+                 if test(any(_row_matches(r, want) for r in rows) for want in entry["rows"])}
+        if sides:
+            found.append({"id": entry["id"], "lists": sides})
+    return found

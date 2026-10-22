@@ -80,7 +80,7 @@ async def test_taxes_tab_shows_a_compound_column(ui_client):
 async def test_tax_cell_display_get_refuses_bad_input_and_shows_api_error(ui_client):
     url = "/settings/taxes/{idx}/{field}/display"
     r = await ui_client.get(url.format(idx=0, field="name"))
-    assert "cell-error" in r.text and t("error.session_expired") in r.text
+    assert r.status_code == 302 and r.headers["location"].startswith("/login")
 
     ui_client.cookies.update(_authed())
     with patch("ui.api_client.get_taxes", new=AsyncMock(side_effect=APIError(503, "Taxes are unavailable."))):

@@ -203,6 +203,11 @@ def _load_cat_schema_sorted(fields_raw: list[dict]) -> list[dict]:
 
 # ── DRY tax/terms CRUD registration helpers ──────────────────────────────
 
+_TAX_FIELDS = frozenset({"name", "rate", "tax_type", "is_default", "is_compound", "description"})
+_TAX_BOOL_FIELDS = frozenset({"is_default", "is_compound"})
+_TAX_SELECT_FIELDS = _TAX_BOOL_FIELDS | {"tax_type"}
+_YES_NO = {"true": True, "yes": True, "1": True, "false": False, "no": False, "0": False}
+
 def _register_tax_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str, redirect_url: str):
     """Register GET edit, PATCH, POST new, DELETE for tax CRUD at /settings/{prefix}/...
 
@@ -210,30 +215,49 @@ def _register_tax_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str, r
     at call time so that ``unittest.mock.patch`` can intercept them.
     """
 
+    async def _tax_at(request: Request, gname: str, idx: int, field: str) -> dict | FT:
+        """The tax row ``idx`` of the list ``gname`` reads (an empty row past its end), or the
+        cell-error paragraph to show instead."""
+        token = _token(request)
+        if not token:
+            return P(t("error.session_expired"), cls="cell-error")
+        if idx < 0 or field not in _TAX_FIELDS:
+            return P(t("error.invalid_value"), cls="cell-error")
+        try:
+            taxes = await getattr(api, gname)(token)
+        except APIError as e:
+            return P(str(e.detail), cls="cell-error")
+        return taxes[idx] if idx < len(taxes) else {}
+
     def _make_edit(pfx, gname):
         async def tax_field_edit(request: Request, idx: int, field: str):
-            token = _token(request)
-            if not token:
-                return P(t("error.session_expired"), cls="cell-error")
-            try:
-                taxes = await getattr(api, gname)(token)
-            except APIError as e:
-                return P(e.detail, cls="cell-error")
-            tax = taxes[idx] if idx < len(taxes) else {}
-            val = str(tax.get(field, "") or "")
-            if field == "tax_type":
+            tax = await _tax_at(request, gname, idx, field)
+            if not isinstance(tax, dict):
+                return tax
+            restore_url = f"/settings/{pfx}/{idx}/{field}/display"
+            esc_js = (f"if(event.key==='Escape'){{htmx.ajax('GET','{restore_url}',"
+                      f"{{target:this.closest('td'),swap:'outerHTML'}});event.preventDefault();}}")
+            if field in _TAX_SELECT_FIELDS:
+                if field in _TAX_BOOL_FIELDS:
+                    val = str(bool(tax.get(field))).lower()
+                    choices = [("true", "settings.yes"), ("false", "settings.no")]
+                else:
+                    val = str(tax.get(field, "") or "")
+                    choices = [("sales", "settings.tax_type_sales"), ("purchase", "settings.tax_type_purchase"),
+                               ("both", "settings.tax_type_both")]
                 return Td(
                     Select(
-                        *[Option(t(label), value=v, selected=(v == val))
-                          for v, label in [("sales", "settings.tax_type_sales"), ("purchase", "settings.tax_type_purchase"), ("both", "settings.tax_type_both")]],
+                        *[Option(t(label), value=v, selected=(v == val)) for v, label in choices],
                         name="value",
                         hx_patch=f"/settings/{pfx}/{idx}/{field}",
                         hx_target="closest td", hx_swap="outerHTML", hx_include="this",
                         hx_trigger="change",
                         cls="cell-input cell-input--select", autofocus=True,
+                        onkeydown=esc_js,
                     ),
                     cls="cell cell--editing",
                 )
+            val = str(tax.get(field, "") or "")
             input_type = "number" if field == "rate" else "text"
             return Td(
                 Input(
@@ -243,19 +267,31 @@ def _register_tax_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str, r
                     hx_trigger="blur delay:200ms",
                     cls="cell-input" + (" cell-input--number" if input_type == "number" else ""),
                     autofocus=True,
+                    onkeydown=esc_js,
                     **({"step": "0.01"} if field == "rate" else {}),
                 ),
                 cls="cell cell--editing",
             )
         return tax_field_edit
 
+    def _make_display(pfx, gname):
+        async def tax_field_display(request: Request, idx: int, field: str):
+            """The display cell again (the Escape cancel handler)."""
+            tax = await _tax_at(request, gname, idx, field)
+            return _tax_display_cell(idx, field, tax, prefix=pfx) if isinstance(tax, dict) else tax
+        return tax_field_display
+
     def _make_patch(pfx, gname, pname):
         async def tax_field_patch(request: Request, idx: int, field: str):
             token = _token(request)
             if not token:
                 return P(t("error.session_expired"), cls="cell-error")
+            if idx < 0 or field not in _TAX_FIELDS:
+                return P(t("error.invalid_value"), cls="cell-error")
             form = await request.form()
             value = str(form.get("value", ""))
+            if field in _TAX_BOOL_FIELDS and value.strip().lower() not in _YES_NO:
+                return P(t("settings.value_must_be_yes_or_no"), cls="cell-error")
             if field == "tax_type" and value not in {"sales", "purchase", "both"}:
                 return P(t("error.invalid_tax_type", value=repr(value)), cls="cell-error")
             if field == "rate":
@@ -268,8 +304,8 @@ def _register_tax_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str, r
                 if idx < len(taxes):
                     if field == "rate":
                         taxes[idx][field] = float(value)
-                    elif field == "is_default":
-                        taxes[idx][field] = value.lower() in ("true", "yes", "1")
+                    elif field in _TAX_BOOL_FIELDS:
+                        taxes[idx][field] = _YES_NO[value.strip().lower()]
                     else:
                         taxes[idx][field] = value
                 await getattr(api, pname)(token, taxes)
@@ -313,6 +349,7 @@ def _register_tax_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str, r
 
     app.get(f"/settings/{prefix}/{{idx}}/{{field}}/edit")(_make_edit(prefix, get_fn_name))
     app.patch(f"/settings/{prefix}/{{idx}}/{{field}}")(_make_patch(prefix, get_fn_name, patch_fn_name))
+    app.get(f"/settings/{prefix}/{{idx}}/{{field}}/display")(_make_display(prefix, get_fn_name))
     app.post(f"/settings/{prefix}/new")(_make_new(get_fn_name, patch_fn_name, redirect_url))
     app.delete(f"/settings/{prefix}/{{idx}}")(_make_delete(get_fn_name, patch_fn_name, redirect_url))
 
@@ -2844,7 +2881,7 @@ def _tax_display_cell(idx: int, field: str, tax: dict, prefix: str = "taxes") ->
     val = tax.get(field, "")
     if field == "rate":
         display = f"{val}%" if val else EMPTY
-    elif field == "is_default":
+    elif field in _TAX_BOOL_FIELDS:
         display = t("settings.yes") if val else t("settings.no")
     else:
         display = str(val) if val and str(val).strip() else EMPTY
@@ -3442,6 +3479,7 @@ def _taxes_tab(taxes: list[dict], lang: str = "en", prefix: str = "taxes", impor
             _tax_display_cell(idx, "rate", tax, prefix=prefix),
             _tax_display_cell(idx, "tax_type", tax, prefix=prefix),
             _tax_display_cell(idx, "is_default", tax, prefix=prefix),
+            _tax_display_cell(idx, "is_compound", tax, prefix=prefix),
             _tax_display_cell(idx, "description", tax, prefix=prefix),
             Td(
                 Button(t("btn.delete"), cls="btn btn--danger btn--xs",
@@ -3465,7 +3503,7 @@ def _taxes_tab(taxes: list[dict], lang: str = "en", prefix: str = "taxes", impor
     return Div(
         Div(*actions, cls="page-actions mb-md"),
         Table(
-            Thead(Tr(Th(t("th.name")), Th(t("th.rate")), Th(t("label.tax_type")), Th(t("th.default")), Th(t("th.description")), Th(""))),
+            Thead(Tr(Th(t("th.name")), Th(t("th.rate")), Th(t("label.tax_type")), Th(t("th.default")), Th(t("th.compound")), Th(t("th.description")), Th(""))),
             Tbody(*[_row(i, tax) for i, tax in enumerate(taxes)]),
             cls="data-table",
         ),
