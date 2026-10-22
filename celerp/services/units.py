@@ -358,13 +358,15 @@ async def check_precision_change(session, company_id, old_units: list[dict], new
                 f"or keep {current} decimal places.",
                 unit=name, decimals=decimals, examples=named, current=current)
         else:
-            detail = refusal(
-                "units.precision_lowered_under_received_and_templates" if partly_received
-                else "units.precision_lowered_under_quantities_and_templates",
-                f"{lead}: items or open documents ({examples}) and subscriptions ({named}) still hold quantities "
-                f"with more. {change}, and cancel those subscriptions and {cancel}."
-                f"{f' {received}' if partly_received else ''} Or keep {current} decimal places.",
-                unit=name, decimals=decimals, examples=examples, templates=named, current=current)
+            both = (f"{lead}: items or open documents ({examples}) and subscriptions ({named}) still hold quantities "
+                    f"with more. {change}, and cancel those subscriptions and {cancel}.")
+            params = dict(unit=name, decimals=decimals, examples=examples, templates=named, current=current)
+            if partly_received:
+                detail = refusal("units.precision_lowered_under_received_and_templates",
+                                 f"{both} {received} Or keep {current} decimal places.", **params)
+            else:
+                detail = refusal("units.precision_lowered_under_quantities_and_templates",
+                                 f"{both} Or keep {current} decimal places.", **params)
         raise HTTPException(status_code=422, detail=detail)
 
 
