@@ -16,13 +16,18 @@ The data directory has the same rule (resolve_worker_data_dir). It defaulted to
 the checkout's own ./data, shared by every worker and by any app booted from the
 same checkout: a System Recovery run there wrote its in-progress marker, and the
 maintenance gate then answered 503 to every API request of the running suite.
+
+Both paths are keyed by the test run as well as the worker (worker_label). Keyed by
+the worker alone, two suites run at once on one machine (two checkouts) shared
+/tmp/celerp-test-config-gw1.toml: one run's restore wrote its module list there and
+the other run's module check read it.
 """
 from __future__ import annotations
 
 from pathlib import Path
 
 from celerp.config import settings
-from conftest_support import is_own_test_config, resolve_worker_config, resolve_worker_data_dir
+from conftest_support import is_own_test_config, resolve_worker_config, resolve_worker_data_dir, worker_label
 
 _TMP = "/tmp"
 
@@ -88,3 +93,24 @@ class TestResolveWorkerDataDir:
 def test_the_suite_never_uses_the_checkout_data_dir():
     """An app booted from this checkout writes ./data; the suite must not read it."""
     assert Path(settings.data_dir).resolve() != Path("data").resolve()
+
+
+class TestWorkerLabel:
+    def test_two_runs_with_the_same_worker_never_share_a_label(self):
+        first, second = {"PYTEST_XDIST_WORKER": "gw1"}, {"PYTEST_XDIST_WORKER": "gw1"}
+        a, b = worker_label(first), worker_label(second)
+        assert a != b
+        assert resolve_worker_config(None, a, _TMP) != resolve_worker_config(None, b, _TMP)
+        assert resolve_worker_data_dir(None, a, _TMP) != resolve_worker_data_dir(None, b, _TMP)
+
+    def test_the_workers_of_one_run_share_its_run_and_differ_by_worker(self):
+        controller: dict[str, str] = {}
+        worker_label(controller)  # the controller's conftest runs first; its workers inherit its environment
+        gw0, gw1 = worker_label({**controller, "PYTEST_XDIST_WORKER": "gw0"}), \
+            worker_label({**controller, "PYTEST_XDIST_WORKER": "gw1"})
+        assert gw0 != gw1
+        assert gw0.removesuffix("-gw0") == gw1.removesuffix("-gw1") == worker_label(dict(controller))[:-len("-main")]
+
+    def test_a_run_label_is_still_our_own_path(self):
+        label = worker_label({"PYTEST_XDIST_WORKER": "gw0"})
+        assert is_own_test_config(resolve_worker_config(None, label, _TMP), _TMP)
