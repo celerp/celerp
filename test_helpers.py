@@ -419,14 +419,17 @@ def sidebar_label(item: str, lang: str) -> str:
 def real_agent_app() -> FastAPI:
     """The real Celerp API surface with every first-party module enabled.
 
-    Built the same way `celerp.main` builds the live app: the core search router
-    plus every bundled pluggable module's routes. `docs_url`/`redoc_url` are off
+    Built the same way `celerp.main` builds the live app: the core search and help
+    routers plus every bundled pluggable module's routes. `docs_url`/`redoc_url` are off
     exactly as in production, so FastAPI's own `/docs` never shadows the
     documents module. The autouse loader-reset fixture tears `_loaded` and the
     slot registry back down after the test.
     """
+    from celerp.routers import help as help_router_mod
+
     app = FastAPI(docs_url=None, redoc_url=None)
     app.include_router(search_router_mod.router, tags=["search"])
+    app.include_router(help_router_mod.router, tags=["help"])
     loaded = load_all(_BUNDLED_MODULES_DIRS[0], _bundled_pluggable_names())
     register_api_routes(app, loaded)
     app.openapi_schema = None
@@ -446,9 +449,9 @@ def invoices_booking_one_lot_twice():
         yield
 
 
-async def ui_get(headers: dict, path: str):
+async def ui_get(headers: dict, path: str, *, lang: str | None = None):
     """GET a UI page as the user whose API ``headers`` are given, the UI talking to the real
-    API in process (the ``client`` fixture's database and transaction)."""
+    API in process (the ``client`` fixture's database and transaction), in ``lang`` when given."""
     from unittest.mock import patch
 
     from httpx import ASGITransport, AsyncClient
@@ -462,8 +465,9 @@ async def ui_get(headers: dict, path: str):
 
     token = headers["Authorization"].removeprefix("Bearer ")
     with patch("ui.api_client._client", _bridged):
+        cookies = {"celerp_token": token, **({"celerp_lang": lang} if lang else {})}
         async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui",
-                               cookies={"celerp_token": token}) as ui:
+                               cookies=cookies) as ui:
             return await ui.get(path)
 
 

@@ -1,0 +1,157 @@
+# Copyright (c) 2026 Noah Severs
+# SPDX-License-Identifier: LicenseRef-Proprietary
+"""The help viewer: search and browse at /help, one page at /help/{id}, its screenshots,
+and the "Help for this page" panel in the top bar.
+
+The index is replaced by a small fixed set of pages; the UI either talks to the real
+API in process (``ui_get``) or to a stubbed API client where the failure path is the point.
+"""
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
+
+import pytest
+import pytest_asyncio
+from httpx import ASGITransport, AsyncClient
+
+import ui.routes.help as help_route
+from celerp.help import registry
+from celerp.help.schema import HelpPage
+from ui.api_client import APIError
+from ui.i18n import t
+from test_helpers import make_test_token, register_admin, ui_get
+
+_GOOD = Path(__file__).parent / "fixtures" / "help" / "good"
+
+
+def _page(page_id: str, title: str, *, steps: list | None = None, routes: list | None = None,
+          module: str = "celerp-contacts") -> HelpPage:
+    return HelpPage(
+        id=page_id, title=title, summary="A page.", keywords=[], routes=routes or ["/contacts"],
+        permission=None, order=1,
+        steps=steps or [{"text": "Open the list.", "labels": {}, "image": None,
+                         "capture": {"route": "/contacts", "selector": "main", "actions": []}}],
+        related=[], help_dir=_GOOD, source="first_party", module=module, module_display="Contacts",
+    )
+
+
+@pytest.fixture
+def pages(monkeypatch):
+    found = [
+        _page("contacts.add-supplier", "Add a supplier", routes=["/contacts", "/contacts/{id}"],
+              steps=[{"text": "Open {nav}, then add the supplier.", "labels": {"nav": "nav.contacts"},
+                      "image": "img/add-item-1.webp",
+                      "capture": {"route": "/contacts", "selector": "main", "actions": []}}]),
+        _page("inventory.add-item", "Add an item", module="celerp-inventory", routes=["/inventory"]),
+    ]
+    monkeypatch.setattr(registry, "_index", registry.Index(pages={p.id: p for p in found}))
+    return found
+
+
+@pytest_asyncio.fixture
+async def ui_client():
+    from ui.app import app as ui_app
+    async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui",
+                           follow_redirects=False) as c:
+        yield c
+
+
+def _signed_in(ui_client):
+    ui_client.cookies.update({"celerp_token": make_test_token()})
+    return ui_client
+
+
+@pytest.mark.asyncio
+async def test_help_requires_login(ui_client, pages):
+    for path in ("/help", "/help/contacts.add-supplier", "/help/img/contacts.add-supplier/1",
+                 "/help/for-page?path=/contacts"):
+        r = await ui_client.get(path)
+        assert r.status_code in (302, 303), path
+        assert r.headers["location"].startswith("/login"), path
+
+
+@pytest.mark.asyncio
+async def test_help_search_q_in_url(client, pages):
+    headers = {"Authorization": f"Bearer {await register_admin(client)}"}
+    r = await ui_get(headers, "/help?q=supplier")
+    assert r.status_code == 200
+    assert 'method="get"' in r.text and 'name="q"' in r.text and 'value="supplier"' in r.text
+    assert 'href="/help/contacts.add-supplier"' in r.text
+    assert 'href="/help/inventory.add-item"' not in r.text
+
+    # No q: browse by module, every page listed under its module.
+    browse = await ui_get(headers, "/help")
+    assert t("help.browse") in browse.text
+    assert 'href="/help/contacts.add-supplier"' in browse.text and 'href="/help/inventory.add-item"' in browse.text
+    one = await ui_get(headers, "/help?module=celerp-inventory")
+    assert 'href="/help/inventory.add-item"' in one.text and 'href="/help/contacts.add-supplier"' not in one.text
+
+    none = await ui_get(headers, "/help?q=zzzzqqq")
+    assert t("help.no_results") in none.text
+    assert 'href="/ai"' in none.text
+
+
+@pytest.mark.asyncio
+async def test_help_page_labels_in_user_language_with_note(client, pages):
+    headers = {"Authorization": f"Bearer {await register_admin(client)}"}
+    r = await ui_get(headers, "/help/contacts.add-supplier", lang="th")
+    assert r.status_code == 200
+    assert f"Open {t('nav.contacts', 'th')}, then add the supplier." in r.text
+    assert t("help.answers_in_your_language", "th") in r.text
+    assert 'src="/help/img/contacts.add-supplier/1"' in r.text
+    assert 'href="/help"' in r.text and t("acct.post_again_back", "th", page=t("help.title", "th")) in r.text
+
+    missing = await ui_get(headers, "/help/contacts.nothing")
+    assert missing.status_code == 404
+    assert t("error.not_found_title") in missing.text and 'href="/help"' in missing.text
+
+
+@pytest.mark.asyncio
+async def test_help_img_unknown_step_404(ui_client, pages):
+    _signed_in(ui_client)
+    good = await ui_client.get("/help/img/contacts.add-supplier/1")
+    assert good.status_code == 200
+    assert good.headers["content-type"] == "image/webp"
+    assert good.headers["x-content-type-options"] == "nosniff"
+    assert good.content == (_GOOD / "img" / "add-item-1.webp").read_bytes()
+    for path in ("/help/img/contacts.add-supplier/2", "/help/img/contacts.add-supplier/0",
+                 "/help/img/contacts.add-supplier/x", "/help/img/inventory.add-item/1",
+                 "/help/img/contacts.nothing/1"):
+        assert (await ui_client.get(path)).status_code == 404, path
+
+
+@pytest.mark.asyncio
+async def test_help_page_api_error_shows_retry(ui_client, pages, monkeypatch):
+    async def _fail(*_a, **_k):
+        raise APIError(500, "boom")
+
+    monkeypatch.setattr(help_route.api, "help_read", _fail)
+    monkeypatch.setattr(help_route.api, "help_search", _fail)
+    _signed_in(ui_client)
+    for path in ("/help/contacts.add-supplier", "/help?q=supplier"):
+        r = await ui_client.get(path)
+        assert r.status_code == 200, path
+        assert t("btn.retry") in r.text, path
+        assert f'href="{path}"' in r.text, path
+
+
+@pytest.mark.asyncio
+async def test_help_for_page_lists_matching_pages(client, ui_client, pages):
+    headers = {"Authorization": f"Bearer {await register_admin(client)}"}
+    r = await ui_get(headers, "/help/for-page?path=/contacts/abc")
+    assert r.status_code == 200
+    assert t("help.for_this_page") in r.text
+    assert 'href="/help/contacts.add-supplier"' in r.text
+    assert 'href="/help"' in r.text and 'href="/ai"' in r.text
+
+    empty = await ui_get(headers, "/help/for-page?path=/reports")
+    assert t("help.none_for_this_page") in empty.text
+    assert 'href="/help"' in empty.text and 'href="/ai"' in empty.text
+
+    # The slot sits in the top bar of every page and loads the panel for the page it is on.
+    page = await ui_get(headers, "/help")
+    assert 'hx-get="/help/for-page"' in page.text
+    assert "location.pathname" in page.text
