@@ -38,6 +38,7 @@ from celerp.services.fulfill import outstanding_physical_lines
 from celerp.services.journal_accounts import UnbalancedJournalEntry
 from celerp.services.lot_origin import refuse_deleted, refuse_draft
 from celerp.services.goods_cost import lot_label, negative_cost_error
+from celerp.services.record_quantities import INCOMPLETE_RUN_STATUSES, outstanding_output
 from celerp.services.permissions import locked_authority, require_permission
 from celerp.schemas.numbers import FiniteFloat
 from ui.i18n import t
@@ -51,7 +52,7 @@ DEFAULT_HOURS_PER_DAY = 8.0
 from .expansion import expand_recipe, explode_demand, for_product, mfg_idem_key, output_line
 from . import movements
 from .labor import apply_labor_providers
-from .search import _INCOMPLETE_STATUSES, search_orders
+from .search import search_orders
 
 # Every endpoint, reads included, requires manage_manufacturing: work orders carry costs.
 router = APIRouter(
@@ -705,12 +706,12 @@ def _in_progress_by_item(runs: list) -> dict[str, float]:
     out: dict[str, float] = {}
     for r in runs:
         rs = r.state or {}
-        if (rs.get("status") or "").lower() not in _INCOMPLETE_STATUSES:
+        if (rs.get("status") or "").lower() not in INCOMPLETE_RUN_STATUSES:
             continue
         item_id = rs.get("output_item_id")
         if not item_id:
             continue
-        out[item_id] = out.get(item_id, 0.0) + movements.outstanding_output(rs)
+        out[item_id] = out.get(item_id, 0.0) + outstanding_output(rs)
     return out
 
 
@@ -1634,7 +1635,7 @@ def _stock_by_product(states: dict[str, dict]) -> tuple[dict[str, float], dict[t
 # ---------------------------------------------------------------------------
 
 # Canonical run statuses. "incomplete" = everything still needing attention.
-# _INCOMPLETE_STATUSES is single-sourced in search.py, which owns the list filter.
+# INCOMPLETE_RUN_STATUSES is single-sourced in celerp.services.record_quantities.
 _RUN_STATUSES = ("planned", "in_progress", "on_hold", "completed", "cancelled")
 
 

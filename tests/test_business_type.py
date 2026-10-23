@@ -6,19 +6,16 @@ system-owned defaults only, demo-only inventory replacement, retry-safe restart
 reporting, no generic settings bypass)."""
 from __future__ import annotations
 
-import sys
 import uuid
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from fastapi import HTTPException
 
 from celerp.config import read_config, write_config
 from celerp.modules.registry import get_enabled
 from celerp.services.demo import payment_terms_for, terms_conditions_for
 from celerp.services.terms import normalize_terms_templates
-from celerp.services.units import check_units_change
 
 
 _DEFAULT_MODULES = str(Path(__file__).resolve().parents[1] / "default_modules")
@@ -496,45 +493,41 @@ async def test_retry_after_failed_db_step_still_requires_restart(client, monkeyp
     assert (await _settings(client, h))["vertical"] == "gemstones"
 
 
-_DOCS_AND_MANUFACTURING = ("celerp_docs", "celerp_docs.doc_constants",
-                           "celerp_manufacturing", "celerp_manufacturing.movements")
+# Turned off for one company, a module still runs for another; the first company's records keep
+# their meaning, so its units check still counts them. Documents is turned off with every module
+# that needs it.
+_NEED_DOCUMENTS = ("celerp-subscriptions", "celerp-fixed-assets", "celerp-reports",
+                   "celerp-accounting", "celerp-docs")
 
 
-async def _units_without_documents_or_manufacturing(client, monkeypatch):
-    """A company's id and units, with Documents and Manufacturing made unimportable afterwards,
-    as on a new install, which loads only Inventory and Contacts."""
+@pytest.mark.asyncio
+async def test_units_check_counts_a_companys_documents_after_it_turns_documents_off(client, monkeypatch):
+    monkeypatch.setenv("MODULE_DIR", str(Path(__file__).resolve().parents[1] / "default_modules"))
     h = await _owner(client)
-    company_id = uuid.UUID((await client.get("/companies/me", headers=h)).json()["id"])
+    kg = {"sku": "FLOUR", "name": "Flour", "quantity": 10, "sell_by": "kg", "status": "available"}
+    item = (await client.post("/items", json=kg, headers=h)).json()["id"]
+    r = await client.post("/docs", headers=h, json={"doc_type": "invoice", "contact_id": "customer:1", "line_items": [
+        {"item_id": item, "sku": "FLOUR", "name": "Flour", "quantity": 0.275, "unit": "kg", "unit_price": 10}]})
+    assert r.status_code == 200, r.text
+    invoice = r.json()["id"]
+    r = await client.post("/companies", json={"name": "Other Co"}, headers=h)
+    assert r.status_code == 200, r.text
+    other = {"Authorization": f"Bearer {r.json()['access_token']}"}
+    assert (await client.post("/companies/me/modules/celerp-docs/enable", headers=other)).status_code == 200
+
+    on = {m["name"] for m in (await client.get("/companies/me/modules", headers=h)).json() if m["enabled"]}
+    for name in _NEED_DOCUMENTS:
+        if name in on:
+            r = await client.post(f"/companies/me/modules/{name}/disable", headers=h)
+            assert r.status_code == 200, r.text
+    enabled = [{m["name"]: m["enabled"] for m in (await client.get("/companies/me/modules", headers=x)).json()}
+               for x in (h, other)]
+    assert [e["celerp-docs"] for e in enabled] == [False, True]
+
     units = (await client.get("/companies/me/units", headers=h)).json()
-    items = (await client.get("/items", headers=h)).json()["items"]
-    for name in _DOCS_AND_MANUFACTURING:
-        monkeypatch.setitem(sys.modules, name, None)
-    return company_id, units, items
-
-
-@pytest.mark.asyncio
-async def test_units_check_on_a_new_install_needs_neither_documents_nor_manufacturing(
-        client, session, monkeypatch):
-    """Choosing the business type in the setup wizard checks the company's units. A company with
-    no documents or runs never needs either module for that check, so the change goes through."""
-    company_id, units, items = await _units_without_documents_or_manufacturing(client, monkeypatch)
-    held = {i.get("sell_by") for i in items} | {i.get("weight_unit") for i in items}
-    unused = next(u for u in units if u["name"] not in held)
-
-    await check_units_change(session, company_id, units, [u for u in units if u is not unused])
-
-
-@pytest.mark.asyncio
-async def test_units_change_held_by_an_item_is_refused_without_documents_or_manufacturing(
-        client, session, monkeypatch):
-    """Without those modules the units check still runs: removing a unit an item is sold by is
-    refused, naming the items that use it."""
-    company_id, units, items = await _units_without_documents_or_manufacturing(client, monkeypatch)
-    unit = next(u for u in units if any(i.get("sell_by") == u["name"] for i in items))
-
-    with pytest.raises(HTTPException) as refused:
-        await check_units_change(session, company_id, units, [u for u in units if u is not unit])
-
-    assert refused.value.status_code == 422
-    named = refused.value.detail["params"]["examples"]
-    assert any(i["sku"] in named for i in items if i.get("sell_by") == unit["name"]), named
+    lowered = [{**u, "decimals": 2} if u["name"] == "kg" else u for u in units]
+    r = await client.put("/companies/me/units", json={"units": lowered}, headers=h)
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert detail["message_key"] == "units.precision_lowered_under_quantities", detail
+    assert detail["params"]["examples"] == (await client.get(f"/docs/{invoice}", headers=h)).json()["ref_id"], detail

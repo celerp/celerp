@@ -32,6 +32,7 @@ from ui.security import not_permitted_redirect
 from ui.components.table import search_bar, search_results, EMPTY, pagination, per_page_value, server_pager, searchable_select, breadcrumbs, status_cards, empty_state_cta, fmt_money, fmt_rate, format_value, currency_symbol, unwrap_address, col_resize_script, bank_account_options as _bank_account_options, display_cell, editable_cell, display_enum, display_unit, doc_href
 from celerp.services.business_time import business_today
 from celerp.services.doc_balance import awaiting_status_param, is_awaiting_payment, is_owed, outstanding_balance
+from celerp.services.record_quantities import FULFILLABLE_STATUSES, RECEIVABLE_STATUSES
 from celerp.services.money import to_decimal, to_stored_float, round_money, currency_dp, rate_dp
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, line_price_list, resolve_price
 from celerp.tax_regimes import default_tax, taxes_for
@@ -767,9 +768,8 @@ def _lists_content(state: dict[str, str], lists: list[dict], total_count: int, s
 
 _DOC_TYPES = ["invoice", "purchase_order", "bill", "receipt", "credit_note", "memo", "consignment_in", "list"]
 # Doc types that support per-line inventory item status display (fetch + render).
-# Keep in sync with doc_constants.FULFILLABLE_STATUSES (different package - cannot import directly).
 # Inbound doc types (bill, consignment_in) show item status but use /receive not fulfill-lines.
-_FULFILLABLE_DOC_TYPES: frozenset[str] = frozenset({"memo", "invoice"})
+_FULFILLABLE_DOC_TYPES: frozenset[str] = frozenset(FULFILLABLE_STATUSES)
 # Outbound, item-priced doc types that use the invoice line-table design: a single-level
 # header with PCS/WEIGHT shown inline (and editable) inside the description cell, the unit
 # merged into the quantity cell, and no standalone UNIT/PCS/WEIGHT columns.
@@ -842,7 +842,7 @@ def _doc_line_actions(doc_type: str, status: str) -> _LineActions:
     """Which line actions a document's status allows, read from the maps the API enforces
     so the page never offers an action the API refuses. Inbound doc types (bill,
     consignment_in) are in none of them: they receive through POST /receive."""
-    from celerp_docs.doc_constants import FULFILLABLE_STATUSES, RESERVABLE_DOC_STATUSES, REVERTIBLE_STATUSES
+    from celerp_docs.doc_constants import RESERVABLE_DOC_STATUSES, REVERTIBLE_STATUSES
     return _LineActions(
         fulfil=status in FULFILLABLE_STATUSES.get(doc_type, frozenset()),
         revert=status in REVERTIBLE_STATUSES.get(doc_type, frozenset()),
@@ -9620,7 +9620,6 @@ async function celerpCsvImport(input, entityId) {{
         _fulfillable_status = (_line_acts.fulfil or _line_acts.revert) and _stocked_lines
         # Inbound docs (bill, consignment_in) show Receive Goods / Return Goods in toolbar.
         # They do NOT use fulfill-lines; the toolbar posts to /receive instead.
-        from celerp_docs.doc_constants import RECEIVABLE_STATUSES
         _inbound_receivable = (
             _is_vendor_doc
             and doc_type in ("bill", "consignment_in")

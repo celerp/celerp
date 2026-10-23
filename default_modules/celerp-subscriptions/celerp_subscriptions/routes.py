@@ -27,7 +27,7 @@ from celerp.services.company_lock import locked_company
 from celerp.services.permissions import require_permission
 from celerp.services.terms import resolve_document_terms
 from celerp.services.units import require_moving_fits_units
-from celerp_docs.doc_constants import template_label
+from celerp.services.record_quantities import template_label
 from celerp_docs.doc_money import document_money
 from celerp_docs.routes import finalize_document
 from celerp_docs.sequences import next_draft_ref
