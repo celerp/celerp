@@ -183,3 +183,22 @@ def test_import_mapping_panel_follows_its_button(page, ui_server):
     page.locator(".mapping-dd-trigger").first.click()
     page.wait_for_selector(".mapping-dd-panel[style*='flex']", timeout=3000)
     _assert_follows(page, ".mapping-dd-panel[style*='flex']", ".mapping-dd-trigger")
+
+
+def test_a_panel_follows_its_control_when_the_page_moves_before_the_next_frame(page, ui_server, api):
+    """The page moves in the same moment the menu opens (a late banner on a slow machine), before
+    the browser draws again: the menu still ends up beside its button."""
+    tag = uuid.uuid4().hex[:6]
+    item_id = api.post("/items", json={"sku": f"PF-{tag}", "name": "Follow", "sell_by": "piece",
+                                       "quantity": 1}).json()["id"]
+    _open_loaded(page, f"{ui_server}/inventory?q={tag}")
+    btn = f"#row-{item_id.replace(':', '-')} .row-menu-btn"
+    page.evaluate("""(sel) => {
+        document.querySelector(sel).click();
+        const d = document.createElement('div');
+        d.style.height = '60px';
+        document.getElementById('main-content').prepend(d);
+    }""", btn)
+    page.wait_for_selector(".row-menu-dropdown.open", timeout=3000)
+    _settle(page)
+    assert page.evaluate(_GAP_JS, [".row-menu-dropdown.open", btn]) <= 8, "panel stayed where the button was"

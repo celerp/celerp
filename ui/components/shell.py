@@ -93,24 +93,27 @@ _CLIENT_JS = """
 // against its control when it opens. A banner loading in above, a scroll or a resize then
 // moves the control but not the panel, and a click aimed at an option lands beside it. So
 // while the panel is shown, ``place`` runs again on any frame where the control has moved
-// or the window changed size. Following ends once the panel is hidden or either is removed.
+// or the window changed size. Where the control stood is taken when the panel was placed, so
+// a move before the next frame is followed too. Following ends once the panel is hidden or
+// either is removed.
 function followAnchor(popup, anchor, place) {
+  function where() {
+    var r = popup._anchor.getBoundingClientRect();
+    return [r.top, r.left, r.width, r.height, window.innerWidth, window.innerHeight].join();
+  }
   popup._anchor = anchor;
   popup._place = place;
+  popup._placedAt = where();
   if (popup._following) return;
   popup._following = true;
-  var last = '';
   function tick() {
-    var a = popup._anchor;
-    if (!popup.isConnected || !a.isConnected || !popup.getClientRects().length
+    if (!popup.isConnected || !popup._anchor.isConnected || !popup.getClientRects().length
         || getComputedStyle(popup).visibility === 'hidden') {
       popup._following = false;
       return;
     }
-    var r = a.getBoundingClientRect();
-    var key = [r.top, r.left, r.width, r.height, window.innerWidth, window.innerHeight].join();
-    if (last && key !== last) popup._place();
-    last = key;
+    var key = where();
+    if (key !== popup._placedAt) { popup._place(); popup._placedAt = key; }
     requestAnimationFrame(tick);
   }
   requestAnimationFrame(tick);
