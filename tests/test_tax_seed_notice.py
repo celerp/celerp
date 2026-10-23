@@ -92,6 +92,26 @@ async def test_tax_seed_notice_failure_is_logged_and_start_continues(monkeypatch
     assert "cogs_backfill" in order
 
 
+async def test_one_company_that_fails_leaves_every_other_company_told(session, monkeypatch, caplog):
+    import celerp.services.tax_seed_notice as tax_seed_notice
+
+    failing, told = await _company(session, sales=_OLD_ET), await _company(session, sales=_OLD_ET)
+    real = tax_seed_notice.reconcile_tax_seed_notices
+
+    async def _reconcile(sess, company_id, settings):
+        await real(sess, company_id, settings)
+        if company_id == failing:
+            raise RuntimeError("stored settings unreadable")
+
+    monkeypatch.setattr(tax_seed_notice, "reconcile_tax_seed_notices", _reconcile)
+    with caplog.at_level(logging.ERROR, logger="celerp.services.tax_seed_notice"):
+        await _run(session)
+
+    assert str(failing) in caplog.text and "stored settings unreadable" in caplog.text
+    assert await _notices(session, failing) == {}
+    assert set(await _notices(session, told)) == {"et-wht-2025", "et-tot-2025"}
+
+
 async def test_tax_seed_notice_clears_when_row_fixed(session):
     company_id = await _company(session, sales=_OLD_ET)
     await _run(session)
@@ -105,6 +125,26 @@ async def test_tax_seed_notice_clears_when_row_fixed(session):
 
     await _run(session)
     assert set(await _notices(session, company_id)) == {"et-tot-2025"}
+
+
+async def test_tax_seed_notice_links_to_the_list_that_still_holds_the_row(session):
+    """WHT 2% in both lists: fixed in the sales list, the notice stands and now links to the
+    purchasing list, where the row still is. It is the same notice, read or not."""
+    vat = [r for r in _OLD_ET if r["name"] == "VAT 15%"]
+    company_id = await _company(session, sales=_OLD_ET, purchasing=_OLD_ET)
+    await _run(session)
+    first = (await _notices(session, company_id))["et-wht-2025"]
+    assert first.action_url == "/settings/sales?tab=taxes"
+
+    company = await locked_company(session, company_id)
+    company.settings = {**company.settings, "taxes": vat}
+    await session.commit()
+    await _run(session)
+    session.expire_all()
+    notices = await _notices(session, company_id)
+    assert set(notices) == {"et-wht-2025", "et-tot-2025"}
+    assert notices["et-wht-2025"].id == first.id
+    assert notices["et-wht-2025"].action_url == "/settings/purchasing?tab=taxes"
 
 
 # What each retired entry's notice tells the company to do instead. A new entry fails the test
