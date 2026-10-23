@@ -24,30 +24,56 @@ def _unreadable(tax: str) -> HTTPException:
     return HTTPException(status_code=422, detail=t("documents.err_tax_unreadable", tax=tax))
 
 
+def _definition(entry) -> TaxApplication | None:
+    """A stored tax entry as the tax definition its amount is computed from, or None when it is
+    not one (not a tax object, or a rate that is not a number)."""
+    if not isinstance(entry, dict):
+        return None
+    try:
+        return TaxApplication.model_validate({**entry, "amount": 0.0})
+    except ValueError:
+        return None
+
+
+def computable_tax(entry) -> bool:
+    """Whether a stored tax entry is a tax a total can be computed from."""
+    return _definition(entry) is not None
+
+
 def _recompute_tax_applications(entries: list, base, currency: str):
-    """Recompute stored tax definitions against a new base, never stale amounts. An entry that
-    is not a tax this can recompute is refused by name."""
-    definitions = []
-    for value in entries:
-        try:
-            definitions.append(TaxApplication.model_validate({**value, "amount": 0.0}))
-        except Exception as exc:
-            raise _unreadable(tax_text(value)) from exc
-    resolved = compute_tax_amounts(definitions, to_stored_float(round_money(base, currency)), currency)
+    """Recompute stored tax definitions against a new base, never stale amounts. The entries
+    were checked first (refuse_malformed_taxes)."""
+    resolved = compute_tax_amounts([_definition(value) for value in entries],
+                                   to_stored_float(round_money(base, currency)), currency)
     return [item.model_dump() for item in resolved], sum(
         (to_decimal(item.amount) for item in resolved), to_decimal(0))
 
 
-def refuse_malformed_taxes(values: dict) -> None:
-    """Refuse (422, naming the entry) ``doc_taxes`` or a line's ``taxes`` in *values* holding
-    anything but a list of tax objects. Every write of a document's or a list's taxes checks
-    it, and so does every recalculation of a document's money (document_money), so a value an
-    older version stored is never dropped from a total in silence."""
+def uncomputable_tax(values: dict) -> str | None:
+    """The first entry of ``doc_taxes`` or a line's ``taxes`` in *values* that is not a tax a
+    total can be computed from (computable_tax), as tax_text, or the whole value when it is not
+    a list; None when every one is."""
     lines = values.get("line_items")
     held = [values.get("doc_taxes")]
     if isinstance(lines, list):
         held += [line.get("taxes") for line in lines if isinstance(line, dict)]
-    named = next((tax for tax in map(unreadable_tax, held) if tax is not None), None)
+    for value in held:
+        named = unreadable_tax(value)
+        if named is not None:
+            return named
+        named = next((tax_text(entry) for entry in value or [] if not computable_tax(entry)), None)
+        if named is not None:
+            return named
+    return None
+
+
+def refuse_malformed_taxes(values: dict) -> None:
+    """Refuse (422, naming the entry) ``doc_taxes`` or a line's ``taxes`` in *values* holding
+    anything but a list of taxes a total can be computed from (uncomputable_tax). Every write of
+    a document's or a list's taxes checks it, and so does every recalculation of a document's
+    money (document_money), so a value an older version stored is never dropped from a total
+    or charged at another rate in silence."""
+    named = uncomputable_tax(values)
     if named is not None:
         raise _unreadable(named)
 

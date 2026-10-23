@@ -540,3 +540,60 @@ def test_the_editor_keeps_a_tax_it_cannot_read_until_it_is_removed(page, api_ser
             ctx.close()
     assert [tax["code"] for tax in doc["doc_taxes"]] == ["VAT 7%"]
     assert (float(doc["tax"]), float(doc["total"])) == (7.0, 107.0)
+
+
+def _issued(company, doc_type: str, quantity: float = 2) -> str:
+    """An issued `doc_type` of `quantity` x $100 taxed as a whole at VAT 7%."""
+    r = company.post("/docs", json={"doc_type": doc_type, "status": "draft", "doc_taxes": [_VAT_WHOLE],
+                                    "line_items": [{"description": "Service", "quantity": quantity,
+                                                    "unit_price": 100.0, "receive_as": "expense"}]})
+    assert r.status_code in (200, 201), r.text
+    doc_id = r.json()["id"]
+    r = company.post(f"/docs/{doc_id}/finalize", json={})
+    assert r.status_code == 200, r.text
+    return doc_id
+
+
+def test_a_credit_note_keeps_the_tax_of_an_invoice_taxed_as_a_whole(api_server, ui_server, api):
+    """A credit note for a $200 invoice charging VAT 7% on the whole (tax 14, total 214) charges that
+    VAT too, so crediting one of the two units leaves tax 7 and total 107."""
+    with _demo_company(api_server, ui_server, api, "TH") as (company, ui, _, _items):
+        r = ui.post(f"/docs/{_issued(company, 'invoice')}/action/create-credit-note")
+        assert r.status_code == 204, r.text
+        note_id = r.headers["HX-Redirect"].rsplit("/", 1)[-1]
+        note = company.get(f"/docs/{note_id}").json()
+        one = [{**line, "quantity": 1} for line in note["line_items"]]
+        r = ui.post(f"/docs/{note_id}/lines", json={
+            "line_items": one, "offset": 0, "doc_taxes": note["doc_taxes"], "expected_version": note.get("version")})
+        assert r.status_code == 200, r.text
+        edited = company.get(f"/docs/{note_id}").json()
+    assert [tax["code"] for tax in note["doc_taxes"]] == ["VAT 7%"]
+    assert (float(note["tax"]), float(note["total"])) == (14.0, 214.0)
+    assert (float(edited["tax"]), float(edited["total"])) == (7.0, 107.0)
+
+
+def test_a_supplier_credit_note_keeps_the_tax_of_a_bill_taxed_as_a_whole(api_server, ui_server, api):
+    with _demo_company(api_server, ui_server, api, "TH") as (company, ui, _, _items):
+        r = ui.post(f"/docs/{_issued(company, 'bill')}/action/create-supplier-credit-note")
+        assert r.status_code == 204, r.text
+        note = company.get(f"/docs/{r.headers['HX-Redirect'].rsplit('/', 1)[-1]}").json()
+    assert note["doc_type"] == "debit_note"
+    assert [tax["code"] for tax in note["doc_taxes"]] == ["VAT 7%"]
+
+
+@pytest.mark.parametrize(("doc_type", "action"), [("invoice", "create-credit-note"),
+                                                  ("bill", "create-supplier-credit-note")])
+@pytest.mark.parametrize("levy", ["Levy 5%", {"code": "Levy 5%", "rate": "five", "amount": 5.0}])
+def test_a_credit_note_is_refused_naming_a_tax_it_cannot_read(api_server, ui_server, api, doc_type, action, levy):
+    """An issued $100 document charging VAT 7% and a "Levy 5%" stored in a shape no write takes
+    (tax 12, total 112): no credit note is made, and the refusal names the levy rather than leaving
+    it out."""
+    with _demo_company(api_server, ui_server, api, "TH") as (company, ui, _, _items):
+        doc_id = _issued(company, doc_type, quantity=1)
+        _store_doc_taxes(company.get("/companies/me").json()["id"], doc_id,
+                         [{**_VAT_WHOLE, "amount": 7.0}, levy], 12.0, 112.0)
+        r = ui.post(f"/docs/{doc_id}/action/{action}")
+        notes = company.get("/docs", params={"doc_type": "credit_note" if doc_type == "invoice" else "debit_note"})
+    toast = json.loads(r.headers.get("HX-Trigger") or "{}").get("celerpToast") or {}
+    assert toast.get("type") == "error" and "Levy 5%" in toast.get("message", ""), (r.status_code, r.headers)
+    assert notes.json()["items"] == [], notes.text

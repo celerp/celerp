@@ -3233,6 +3233,7 @@ celerpUpdateBulkAlloc();
     @app.post("/docs/{entity_id}/action/{action}")
     async def doc_action(request: Request, entity_id: str, action: str):
         from starlette.responses import Response as _R
+        from celerp_docs.doc_money import uncomputable_tax
         token = _token(request)
         if not token:
             return _R("", status_code=401, headers={"HX-Redirect": "/login"})
@@ -3289,7 +3290,10 @@ celerpUpdateBulkAlloc();
                 return _R("", status_code=204, headers={"HX-Redirect": f"/docs?type={doc_type}"})
             elif action == "create-credit-note":
                 # Fetch source invoice and pre-populate CN with its line items (negated quantities)
+                # and its taxes: one it cannot carry is refused by name, never left off the note.
                 source = await api.get_doc(token, entity_id)
+                if (named := uncomputable_tax(source)) is not None:
+                    return _action_error(t("documents.err_tax_unreadable", tax=named))
                 line_items = [
                     {k: v for k, v in li.items() if k not in ("id", "line_total")}
                     for li in (source.get("line_items") or [])
@@ -3299,6 +3303,7 @@ celerpUpdateBulkAlloc();
                     "original_doc_id": entity_id,
                     "contact_id": source.get("contact_id"),
                     "line_items": line_items,
+                    "doc_taxes": source.get("doc_taxes") or [],
                     "subtotal": source.get("subtotal") or 0,
                     "tax": source.get("tax") or 0,
                     "total": source.get("total") or 0,
@@ -3308,8 +3313,11 @@ celerpUpdateBulkAlloc();
                 return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{cn_id}"})
             elif action == "create-supplier-credit-note":
                 # A draft supplier credit note against this bill, for a price or charge the
-                # supplier gives back. Goods go back through Return items, so no lines are copied.
+                # supplier gives back, taxed as the bill is taxed as a whole. Goods go back
+                # through Return items, so no lines are copied.
                 source = await api.get_doc(token, entity_id)
+                if (named := uncomputable_tax({"doc_taxes": source.get("doc_taxes")})) is not None:
+                    return _action_error(t("documents.err_tax_unreadable", tax=named))
                 result = await api.create_doc(token, {
                     "doc_type": "debit_note",
                     "original_doc_id": entity_id,
@@ -3317,6 +3325,7 @@ celerpUpdateBulkAlloc();
                     "currency": source.get("currency"),
                     "conversion_rate": source.get("conversion_rate"),
                     "line_items": [],
+                    "doc_taxes": source.get("doc_taxes") or [],
                 })
                 note_id = result.get("entity_id") or result.get("id", "")
                 return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{note_id}"})

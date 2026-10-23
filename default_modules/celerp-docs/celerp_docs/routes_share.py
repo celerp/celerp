@@ -51,10 +51,10 @@ from celerp.output.doc_print import (
 )
 from celerp.output.share_render import _not_found_page
 from celerp.output.document_context import prepare_document_output
-from celerp.tax_regimes import tax_text, unreadable_tax
+from celerp.tax_regimes import line_tax_unset, tax_text, unreadable_tax
 from celerp_docs import received
 from celerp_docs.doc_constants import SHAREABLE_DOC_TYPES, is_shareable, share_doc_type
-from celerp_docs.doc_money import UnratedTaxError, document_money
+from celerp_docs.doc_money import UnratedTaxError, computable_tax, document_money
 from celerp_docs.taxes import TaxApplication
 from celerp.services.currencies import CURRENCY_CODES
 from ui.i18n import t
@@ -175,8 +175,9 @@ def _sanitize_taxes(raw) -> list[TaxApplication]:
 
 
 def _public_taxes(raw) -> list:
-    """The taxes a bundle carries. An entry that is not a tax object leaves as its text
-    (tax_text), so the recipient is told about it rather than given totals without it."""
+    """The taxes a bundle carries. An entry that is not a tax a total can be computed from
+    (computable_tax) leaves as its text (tax_text), so the recipient is told about it rather
+    than given totals without it or at another rate."""
     if raw is None:
         return []
     return [
@@ -187,7 +188,7 @@ def _public_taxes(raw) -> list:
             "order": int(_num(tax.get("order"))),
             "is_compound": bool(tax.get("is_compound")),
             "label": str(tax.get("label") or "")[:64],
-        } if isinstance(tax, dict) else tax_text(tax)
+        } if computable_tax(tax) else tax_text(tax)
         for tax in (raw if isinstance(raw, list) else [raw])[:20]
     ]
 
@@ -234,6 +235,8 @@ def _public_bundle_doc(doc: dict) -> dict:
         taxes = _public_taxes(raw.get("taxes"))
         if taxes:
             line["taxes"] = taxes
+        elif line_tax_unset(raw):
+            line["taxes"] = None
         lines.append(line)
     out["line_items"] = lines
 
@@ -284,6 +287,8 @@ def _sanitize_bundle_doc(doc: dict) -> dict:
         taxes = _sanitize_taxes(raw.get("taxes"))
         if taxes:
             line["taxes"] = [t.model_dump() for t in taxes]
+        elif line_tax_unset(raw):
+            line["taxes"] = None
         lines.append(line)
     out["line_items"] = lines
 
