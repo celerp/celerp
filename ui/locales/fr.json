@@ -3581,6 +3581,8 @@
   "modules.off_for_company": "Le module {module} est désactivé pour votre entreprise.",
   "modules.off_for_company_title": "Module désactivé",
   "modules.starts_after_restart": "The {module} module starts after Celerp restarts.",
+  "modules.starts_after_restart_title": "Module not started yet",
+  "modules.ask_admin_to_restart": "Ask an administrator to restart Celerp.",
   "modules.ask_admin_to_turn_on": "Demandez à un administrateur de l'activer dans Modules.",
   "modules.load_failed": "Le module {label} n'a pas pu démarrer : {error}. Demandez une version à jour au développeur du module, ou désactivez le module.",
   "modules.not_reported": "Le module {label} ne fonctionne pas : il n'a pas démarré et n'a donné aucune raison. Redémarrez Celerp ; s'il ne démarre toujours pas, contactez le développeur du module.",

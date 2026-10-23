@@ -1178,6 +1178,8 @@
   "modules.off_for_company": "የ{module} ሞጁል ለድርጅትዎ ተዘግቷል።",
   "modules.off_for_company_title": "ሞጁሉ ተዘግቷል",
   "modules.starts_after_restart": "The {module} module starts after Celerp restarts.",
+  "modules.starts_after_restart_title": "Module not started yet",
+  "modules.ask_admin_to_restart": "Ask an administrator to restart Celerp.",
   "modules.ask_admin_to_turn_on": "በሞጁሎች ገጽ ላይ እንዲያበራው አስተዳዳሪን ይጠይቁ።",
   "modules.load_failed": "ሞጁል {label} መጀመር አልቻለም፦ {error}። የሞጁሉን ገንቢ የዘመነ ስሪት ይጠይቁ፣ ወይም ሞጁሉን ያጥፉ።",
   "modules.not_reported": "ሞጁል {label} እየሠራ አይደለም፦ አልጀመረም፣ ምክንያትም አልሰጠም። Celerpን እንደገና ያስጀምሩ፤ አሁንም ካልጀመረ የሞጁሉን ገንቢ ይጠይቁ።",

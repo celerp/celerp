@@ -3580,6 +3580,8 @@
   "modules.off_for_company": "{module} モジュールはあなたの会社では無効になっています。",
   "modules.off_for_company_title": "モジュールは無効です",
   "modules.starts_after_restart": "The {module} module starts after Celerp restarts.",
+  "modules.starts_after_restart_title": "Module not started yet",
+  "modules.ask_admin_to_restart": "Ask an administrator to restart Celerp.",
   "modules.ask_admin_to_turn_on": "管理者に「モジュール」で有効にするよう依頼してください。",
   "modules.load_failed": "モジュール {label} を起動できませんでした: {error}。モジュールの開発者に更新版を依頼するか、モジュールを無効にしてください。",
   "modules.not_reported": "モジュール {label} は動作していません。起動せず、理由も示されませんでした。Celerp を再起動し、それでも起動しない場合はモジュールの開発者に問い合わせてください。",

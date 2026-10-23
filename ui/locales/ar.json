@@ -3580,6 +3580,8 @@
   "modules.off_for_company": "الوحدة {module} متوقفة لشركتك.",
   "modules.off_for_company_title": "الوحدة متوقفة",
   "modules.starts_after_restart": "The {module} module starts after Celerp restarts.",
+  "modules.starts_after_restart_title": "Module not started yet",
+  "modules.ask_admin_to_restart": "Ask an administrator to restart Celerp.",
   "modules.ask_admin_to_turn_on": "اطلب من المسؤول تفعيلها من صفحة الوحدات.",
   "modules.load_failed": "تعذّر تشغيل الوحدة {label}: {error}. اطلب من مطوّر الوحدة نسخة محدّثة، أو أوقف تشغيل الوحدة.",
   "modules.not_reported": "الوحدة {label} لا تعمل: لم تبدأ ولم تذكر سببًا. أعد تشغيل Celerp؛ وإذا لم تبدأ بعد ذلك، فاسأل مطوّر الوحدة.",

@@ -3580,6 +3580,8 @@
   "modules.off_for_company": "Mô-đun {module} đã tắt cho công ty của bạn.",
   "modules.off_for_company_title": "Mô-đun đã tắt",
   "modules.starts_after_restart": "The {module} module starts after Celerp restarts.",
+  "modules.starts_after_restart_title": "Module not started yet",
+  "modules.ask_admin_to_restart": "Ask an administrator to restart Celerp.",
   "modules.ask_admin_to_turn_on": "Hãy nhờ quản trị viên bật nó trong Mô-đun.",
   "modules.load_failed": "Mô-đun {label} không khởi động được: {error}. Hãy xin nhà phát triển mô-đun phiên bản mới hơn, hoặc tắt mô-đun.",
   "modules.not_reported": "Mô-đun {label} không chạy: nó không khởi động và không cho biết lý do. Hãy khởi động lại Celerp; nếu vẫn không chạy, hãy hỏi nhà phát triển mô-đun.",

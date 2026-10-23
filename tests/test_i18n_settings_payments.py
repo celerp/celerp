@@ -24,7 +24,7 @@ from unittest.mock import AsyncMock, patch
 from httpx import ASGITransport, AsyncClient
 
 from ui import i18n
-from test_helpers import make_test_token
+from test_helpers import make_test_token, mark_running
 
 # Sentinel catalog: an unmistakable value for the key the payments page renders
 # into its browser <title>.
@@ -59,10 +59,11 @@ async def ui_client():
         yield c
 
 
-async def test_payments_browser_title_translates(ui_client):
+async def test_payments_browser_title_translates(ui_client, monkeypatch):
     """The <title> the payments settings page renders resolves through page_title
     at render time. The relay/status/company calls are stubbed so the pre-connect
     pitch renders deterministically; the full shell carries the title."""
+    mark_running(monkeypatch, "celerp-docs")
     ui_client.cookies.update({"celerp_token": make_test_token(), "celerp_lang": "xx"})
     with patch("ui.api_client.get_company", new=AsyncMock(return_value={"settings": {}, "current_role": "owner"})), \
          patch("ui.api_client.get_relay_status", new=AsyncMock(return_value={"connected": True})), \

@@ -11962,6 +11962,12 @@ class TestPaymentsSettingsPage:
     no relay = Web Access upsell; relay without Stripe = a single-CTA sales
     pitch with no admin controls; connected = deposit selector + disconnect."""
 
+    @pytest.fixture(autouse=True)
+    def _documents_running(self, monkeypatch):
+        """Online payments are recorded on invoices: the page opens while Documents runs."""
+        from test_helpers import mark_running
+        mark_running(monkeypatch, "celerp-docs")
+
     def _mocks(self, relay=True, enabled=False, banks=None, deposit="", state=None, unmatched=None, refunds=None):
         from contextlib import ExitStack
         stack = ExitStack()

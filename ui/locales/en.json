@@ -1302,6 +1302,8 @@
   "modules.off_for_company": "The {module} module is turned off for your company.",
   "modules.off_for_company_title": "Module turned off",
   "modules.starts_after_restart": "The {module} module starts after Celerp restarts.",
+  "modules.starts_after_restart_title": "Module not started yet",
+  "modules.ask_admin_to_restart": "Ask an administrator to restart Celerp.",
   "modules.ask_admin_to_turn_on": "Ask an administrator to turn it on in Modules.",
   "modules.load_failed": "Module {label} could not start: {error}. Ask the module's developer for an updated version, or turn the module off.",
   "modules.not_reported": "Module {label} isn't running: it didn't start and gave no reason. Restart Celerp; if it still doesn't start, ask the module's developer.",

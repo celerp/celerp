@@ -698,6 +698,14 @@
       "params": [
         "module"
       ]
+    },
+    "modules.starts_after_restart_title": {
+      "en": "Module not started yet",
+      "params": []
+    },
+    "modules.ask_admin_to_restart": {
+      "en": "Ask an administrator to restart Celerp.",
+      "params": []
     }
   }
 }

@@ -3580,6 +3580,8 @@
   "modules.off_for_company": "โมดูล {module} ปิดอยู่สำหรับบริษัทของคุณ",
   "modules.off_for_company_title": "ปิดโมดูลแล้ว",
   "modules.starts_after_restart": "The {module} module starts after Celerp restarts.",
+  "modules.starts_after_restart_title": "Module not started yet",
+  "modules.ask_admin_to_restart": "Ask an administrator to restart Celerp.",
   "modules.ask_admin_to_turn_on": "โปรดขอให้ผู้ดูแลระบบเปิดใช้งานในหน้าโมดูล",
   "modules.load_failed": "โมดูล {label} เริ่มทำงานไม่ได้: {error} ขอเวอร์ชันอัปเดตจากผู้พัฒนาโมดูล หรือปิดโมดูลนี้",
   "modules.not_reported": "โมดูล {label} ไม่ได้ทำงาน: ไม่ได้เริ่มทำงานและไม่ได้แจ้งเหตุผล รีสตาร์ต Celerp หากยังไม่เริ่มทำงาน ให้ติดต่อผู้พัฒนาโมดูล",

@@ -3580,6 +3580,8 @@
   "modules.off_for_company": "O módulo {module} está desativado para a sua empresa.",
   "modules.off_for_company_title": "Módulo desativado",
   "modules.starts_after_restart": "The {module} module starts after Celerp restarts.",
+  "modules.starts_after_restart_title": "Module not started yet",
+  "modules.ask_admin_to_restart": "Ask an administrator to restart Celerp.",
   "modules.ask_admin_to_turn_on": "Peça a um administrador para ativá-lo em Módulos.",
   "modules.load_failed": "O módulo {label} não conseguiu iniciar: {error}. Peça ao desenvolvedor do módulo uma versão atualizada ou desative o módulo.",
   "modules.not_reported": "O módulo {label} não está em execução: ele não iniciou e não informou o motivo. Reinicie o Celerp; se ainda não iniciar, fale com o desenvolvedor do módulo.",
