@@ -1555,7 +1555,7 @@ def setup_routes(app):
         except APIError as exc:
             if exc.status == 402:  # no active/trialing subscription
                 return _entitlement_cta(lang)
-            return Span(str(exc), cls="flash flash--warning")
+            return Span(exc.detail, cls="flash flash--warning")
         except Exception as exc:
             return Span(str(exc), cls="flash flash--warning")
 

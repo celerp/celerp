@@ -36,6 +36,7 @@ from celerp.connectors.base import (
     store_holds_records,
 )
 import celerp.connectors.upsert as _upsert
+from celerp.modules.boundary import needs_modules
 
 log = logging.getLogger(__name__)
 
@@ -164,6 +165,7 @@ class QuickBooksConnector(ConnectorBase):
 
     # -- Products (Items in QB) ------------------------------------------------
 
+    @needs_modules("celerp-inventory")
     async def sync_products(self, ctx: ConnectorContext, since: datetime | None = None) -> SyncResult:
         """
         Pull QuickBooks Items -> Celerp items.
@@ -224,6 +226,7 @@ class QuickBooksConnector(ConnectorBase):
 
     # -- Invoices / Orders -----------------------------------------------------
 
+    @needs_modules("celerp-docs")
     async def sync_orders(self, ctx: ConnectorContext, since: datetime | None = None) -> SyncResult:
         """
         Pull QuickBooks Invoices -> Celerp documents.
@@ -260,6 +263,7 @@ class QuickBooksConnector(ConnectorBase):
 
     # -- Contacts --------------------------------------------------------------
 
+    @needs_modules("celerp-contacts")
     async def sync_contacts(self, ctx: ConnectorContext, since: datetime | None = None) -> SyncResult:
         """Pull QuickBooks Customers -> Celerp CRM contacts."""
         result = SyncResult(entity=SyncEntity.CONTACTS)
@@ -283,6 +287,7 @@ class QuickBooksConnector(ConnectorBase):
 
     # -- Outbound: Invoices push -----------------------------------------------
 
+    @needs_modules("celerp-docs")
     async def sync_invoices_out(self, ctx: ConnectorContext) -> SyncResult:
         """Push Celerp invoices -> QuickBooks (outbound)."""
         result = SyncResult(entity=SyncEntity.INVOICES, direction=SyncDirection.OUTBOUND)

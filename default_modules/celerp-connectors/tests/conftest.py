@@ -10,6 +10,13 @@ import pytest
 from unittest.mock import AsyncMock, patch
 
 from celerp.connectors.base import ConnectorContext
+from test_helpers import mark_running
+
+
+@pytest.fixture(autouse=True)
+def _connector_modules_running(monkeypatch):
+    """Connectors depend on Inventory, Documents and Contacts, so they run here."""
+    mark_running(monkeypatch, "celerp-inventory", "celerp-docs", "celerp-contacts")
 
 
 @pytest.fixture

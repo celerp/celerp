@@ -969,7 +969,6 @@ def files_unchecked(monkeypatch):
 
 @pytest.fixture
 def docs_running(monkeypatch):
-    """Record Documents as loaded, as it is in an installation that takes online payments.
-    The harness mounts its routes directly, so the loader would otherwise not list it."""
-    from celerp.modules import loader
-    monkeypatch.setattr(loader, "_loaded", [*loader._loaded, {"name": "celerp-docs", "version": "1.0.0"}])
+    """Record Documents as loaded, as it is in an installation that takes online payments."""
+    from test_helpers import mark_running
+    mark_running(monkeypatch, "celerp-docs")

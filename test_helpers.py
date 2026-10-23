@@ -59,6 +59,13 @@ _crm_src = os.path.join(os.path.dirname(__file__), "..", "premium_modules", "cel
 _crm_available = os.path.isfile(os.path.join(_crm_src, "celerp_sales_funnel", "__init__.py"))
 
 
+def mark_running(monkeypatch, *names: str) -> None:
+    """Record *names* as loaded. The unit harness mounts module routes directly, so the
+    loader would otherwise list none of them as running."""
+    from celerp.modules import loader
+    monkeypatch.setattr(loader, "_loaded", [*loader._loaded, *({"name": n, "version": "1.0.0"} for n in names)])
+
+
 def make_test_token(
     role: str = "owner",
     user_id: str = "00000000-0000-0000-0000-000000000001",

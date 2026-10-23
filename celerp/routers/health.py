@@ -1271,6 +1271,12 @@ async def connector_authorize_url(
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=t("connectors.unknown_connector", platform=platform)) from exc
 
+    if platform in PRODUCT_CHANNEL_PLATFORMS:
+        # Connecting moves the store's product links in Inventory; refused before
+        # anything is claimed while it is not running.
+        from celerp.modules.boundary import require_running
+        require_running("celerp-inventory")
+
     category = getattr(connector.category, "value", connector.category)
     default_frequency = (
         SyncFrequency.REALTIME.value

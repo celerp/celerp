@@ -6,6 +6,11 @@ The instance stores no Stripe credentials: it asks Celerp Connect to create a Ch
 Session on the merchant's connected account. Payment surfaces are gated on a
 "payments enabled" flag; Celerp Cloud delivers each confirmed payment, which records
 through the same path as a manual payment.
+
+A delivery (payment, fees, refund, release) is recorded on invoices, so while Documents
+is not running it is refused before anything is written (``needs_modules``). It is not
+acknowledged, so Celerp Cloud keeps it and delivers it again; once Documents runs it is
+recorded as any other, and recording it twice changes nothing.
 """
 from __future__ import annotations
 
@@ -17,6 +22,7 @@ from decimal import Decimal
 from sqlalchemy import delete, func, select
 
 from celerp.models.payment_closure import PaymentClosure, PaymentRecovery, UnmatchedPayment, UnmatchedRefund
+from celerp.modules.boundary import needs_modules
 from celerp.services.money import round_money, to_decimal
 from ui.i18n import t
 
@@ -219,6 +225,7 @@ def _reached(answer: tuple[int, dict] | None, closure: PaymentClosure, states: t
         for state in states]
 
 
+@needs_modules("celerp-docs")
 async def receive_payment(payload: dict) -> bool:
     """Record an online payment delivered by Celerp Cloud: on its invoice, on the
     books its payment page opened with and the day it was paid (``managed``: Stripe
@@ -294,6 +301,7 @@ async def receive_payment(payload: dict) -> bool:
     return True
 
 
+@needs_modules("celerp-docs")
 async def receive_fees(payload: dict) -> bool:
     """Record actual online-fee transactions on the books holding their gross receipt.
 
@@ -569,6 +577,7 @@ async def _apply_parked_refunds(session, cid, entity_id: str, reference: str, *,
             "context": p.context}, recorded=recorded)
 
 
+@needs_modules("celerp-docs")
 async def receive_refund(payload: dict) -> bool:
     """Apply a change to a refund of an online payment delivered by Celerp Cloud
     (``record_stripe_refund``), or keep it with the unmatched payments, whole, when it
@@ -638,6 +647,7 @@ async def _apply_release(session, cid, entity_id: str, reference: str, released_
     return True
 
 
+@needs_modules("celerp-docs")
 async def receive_release(payload: dict) -> bool:
     """Record that an online payment delivered by Celerp Cloud is no longer linked to
     Stripe (Stripe was disconnected): on its invoice (``record_stripe_release``), or on
