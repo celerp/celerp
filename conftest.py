@@ -847,7 +847,9 @@ async def auth(session, ids):
 
 @pytest_asyncio.fixture
 async def client(session: AsyncSession):
+    import asyncio
     from httpx import ASGITransport, AsyncClient
+    from celerp.services import background
     from celerp.services.session_tracker import clear as _clear_tracker
     from celerp.gateway.state import set_session_token as _set_session_token
     from unittest.mock import patch, MagicMock
@@ -899,6 +901,9 @@ async def client(session: AsyncSession):
          patch("celerp.db.LifecycleSessionLocal", lifecycle_factory):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             yield c
+        # Work a request left running (an email send and its receipt) finishes on this
+        # test's loop: cut off by the loop closing, it would leave its connection open.
+        await asyncio.gather(*list(background._BG_TASKS), return_exceptions=True)
     app.dependency_overrides.clear()
     app.state.data_current = True  # a test that started on held-back records leaves none behind
     await _clear_tracker(session)

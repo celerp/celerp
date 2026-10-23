@@ -1223,6 +1223,30 @@ async def test_send_doc_failure_creates_failure_notification(client: AsyncClient
 
 
 @pytest.mark.asyncio
+async def test_a_send_still_in_flight_is_held_until_it_ends(client: AsyncClient, monkeypatch):
+    """The delivery and its receipt run after the response, held as a background task so it
+    cannot be collected halfway, and shutdown or a test teardown can wait for it to finish."""
+    import asyncio
+    from celerp.services import background
+    release = asyncio.Event()
+
+    async def _slow_send(*a, **kw):
+        await release.wait()
+        return True, "delivered"
+
+    monkeypatch.setattr("celerp.services.email.send_email", _slow_send)
+    before = set(background._BG_TASKS)
+    tok = await _token(client)
+    entity_id = await _create_doc(client, tok)
+    r = await client.post(f"/docs/{entity_id}/send", json={"sent_to": "cust@shop.example"}, headers=_h(tok))
+    assert r.status_code == 200
+    in_flight = background._BG_TASKS - before
+    assert len(in_flight) == 1
+    release.set()
+    await asyncio.gather(*in_flight)
+
+
+@pytest.mark.asyncio
 async def test_send_email_no_link_when_not_cloud_connected(client: AsyncClient, monkeypatch):
     from celerp.config import settings as cfg
     monkeypatch.setattr(cfg, "celerp_public_url", "")
