@@ -12,12 +12,12 @@ from starlette.requests import Request
 from starlette.responses import RedirectResponse
 
 import ui.api_client as api
+from ui.components.currency import currency_options
 from ui.components.icons import import_icon
 from ui.api_client import APIError
 from ui.components.shell import base_shell, bug_report_url, flash, page_header, page_title
 from celerp.accounting_roles import account_label
 from celerp.services.lot_origin import OLDER_STOCK_PATH
-from celerp.constants import ISO_4217_CURRENCIES as _ISO_CURRENCIES
 from ui.components.table import (EMPTY, add_new_option, bulk_toolbar, searchable_select, display_enum, fmt_money,
                                  server_pager)
 
@@ -998,10 +998,8 @@ def setup_routes(app):
                             Tr(
                                 Td(t("th.currency"), cls="detail-label"),
                                 Td(
-                                    Select(
-                                        *[Option(c, value=c, selected=(c == currency)) for c in sorted(_ISO_CURRENCIES)],
-                                        name="currency", cls="cell-input cell-input--select", required=True,
-                                    ),
+                                    searchable_select("currency", currency_options(), value=currency,
+                                                      aria_label=t("th.currency")),
                                     P(t("acct.using_a_foreigncurrency_account_the_multicurrency"), cls="form-hint"),
                                 ),
                             ),
@@ -1103,10 +1101,8 @@ def setup_routes(app):
                             ),
                             Tr(
                                 Td(t("th.currency"), cls="detail-label"),
-                                Td(Select(
-                                    *[Option(c, value=c, selected=(c == b.get("currency", ""))) for c in sorted(_ISO_CURRENCIES)],
-                                    name="currency", cls="cell-input cell-input--select", required=True,
-                                )),
+                                Td(searchable_select("currency", currency_options(b.get("currency", "")),
+                                                     value=b.get("currency", ""), aria_label=t("th.currency"))),
                             ),
                             cls="detail-table",
                         ),

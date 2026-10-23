@@ -64,8 +64,9 @@ async def _cloud_post(path: str, payload: dict) -> dict | None:
 
 # ── Stripe amount units ──────────────────────────────────────────────────────
 # Stripe's own unit rules (docs.stripe.com/currencies), which are not the books'
-# precision (money.currency_dp): IDR is kept in whole rupiah but charged in
-# hundredths. Every amount sent to or received from Stripe crosses here.
+# precision (money.currency_dp): MGA is kept in hundredths but charged in whole
+# ariary, and ISK and UGX are counted in hundredths but charged in whole units.
+# Every amount sent to or received from Stripe crosses here.
 
 _STRIPE_ZERO_DECIMAL = frozenset(
     "BIF CLP DJF GNF JPY KMF KRW MGA PYG RWF VND VUV XAF XOF XPF".split())

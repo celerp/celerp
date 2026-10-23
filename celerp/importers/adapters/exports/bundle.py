@@ -216,9 +216,10 @@ def build_bundle(ledger: Ledger, src: Source) -> CIFImportBundle:
     )
 
 
-def coverage(ledger: Ledger, skipped: dict[str, CoverageClass]) -> list[CIFCoverageEntry]:
+def coverage(ledger: Ledger, skipped: dict[str, CoverageClass],
+             notes: dict[str, str] | None = None) -> list[CIFCoverageEntry]:
     """How each kind of source record is carried. `skipped` classes the records the book
-    counted but does not carry."""
+    counted but does not carry, and `notes` names the catalog note that says why for any of them."""
     book = ledger.book
     mapped: Counter = Counter({"Account": len(book.accounts), "Contact": len(book.contacts),
                                "Item": len(book.items), "Tax rate": len(book.tax_codes)})
@@ -237,7 +238,9 @@ def coverage(ledger: Ledger, skipped: dict[str, CoverageClass]) -> list[CIFCover
     rows += [CIFCoverageEntry(source_type=FALLBACK.format(label), count=count,
                               coverage_class=CoverageClass.MAPPED_WITH_LOSS, note=t(FALLBACK_NOTE))
              for label, count in fallbacks.items()]
-    rows += [CIFCoverageEntry(source_type=label, count=count, coverage_class=skipped[label])
+    notes = notes or {}
+    rows += [CIFCoverageEntry(source_type=label, count=count, coverage_class=skipped[label],
+                              note=t(notes[label]) if label in notes else None)
              for label, count in book.skipped.items() if count]
     if book.tracking:
         rows.append(CIFCoverageEntry(source_type=TRACKING, count=len(book.tracking),

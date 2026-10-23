@@ -101,7 +101,7 @@ def test_an_amount_converts_to_stripe_and_back_exactly(amount, currency, api):
 
 
 _NOT_CHARGEABLE = [
-    ("12.345", "USD"), ("0.5", "IDR"), ("5.5", "ISK"), ("5.5", "UGX"),
+    ("12.345", "USD"), ("0.505", "IDR"), ("5.5", "ISK"), ("5.5", "UGX"),
     *[("1234.5", c) for c in _STRIPE_ZERO_DECIMAL],
     *[("5.124", c) for c in _STRIPE_THREE_DECIMAL],
     ("0", "USD"), ("-1", "USD"),
@@ -119,7 +119,6 @@ def test_an_amount_stripe_cannot_charge_exactly_is_refused_not_rounded(amount, c
 _NOT_RECORDABLE = [
     (550, "UGX"),        # 5.50 UGX: Stripe charges whole shillings only
     (550, "ISK"),        # 5.50 ISK: likewise
-    (10000050, "IDR"),   # 100000.50 IDR: finer than the books keep IDR
     *[(5124, c) for c in _STRIPE_THREE_DECIMAL],  # a three-decimal amount not ending in 0
     (0, "USD"), (-100, "USD"),
 ]
@@ -132,14 +131,15 @@ def test_a_stripe_amount_that_does_not_convert_exactly_is_refused(api, currency)
         from_stripe_amount(api, currency)
 
 
-async def _idr_invoice(client: AsyncClient, tok: str, total: float = 100000.0) -> tuple[str, str]:
-    """A finalized, shared invoice for *total* IDR in a company that keeps its books in IDR."""
-    assert (await client.patch("/companies/me/books", json={"currency": "IDR"},
+async def _invoice(client: AsyncClient, tok: str, total: float = 100000.0,
+                       currency: str = "IDR") -> tuple[str, str]:
+    """A finalized, shared invoice for *total* in a company that keeps its books in *currency*."""
+    assert (await client.patch("/companies/me/books", json={"currency": currency},
                                headers=_h(tok))).status_code == 200
     r = await client.post("/docs", json={
         "doc_type": "invoice", "contact_name": "Buyer",
         "line_items": [{"description": "Widget", "quantity": 1, "unit_price": total}],
-        "subtotal": total, "tax": 0.0, "total": total, "currency": "IDR",
+        "subtotal": total, "tax": 0.0, "total": total, "currency": currency,
     }, headers=_h(tok))
     eid = r.json()["id"]
     assert (await client.post(f"/docs/{eid}/finalize", headers=_h(tok))).status_code == 200
@@ -157,7 +157,7 @@ async def test_a_100000_idr_invoice_opens_a_payment_for_100000_idr(client, payme
         return {"url": "https://stripe.test/cs_idr"}
     monkeypatch.setattr("celerp.services.payments.create_checkout", _mk)
     tok = await _register(client)
-    _, token = await _idr_invoice(client, tok)
+    _, token = await _invoice(client, tok)
 
     r = await client.get(f"/pay/{token}", follow_redirects=False)
 
@@ -171,7 +171,7 @@ async def test_a_payment_of_a_hundredth_of_an_idr_invoice_does_not_mark_it_paid(
     invoice's 100,000."""
     from celerp.services.payments import receive_payment
     tok = await _register(client)
-    eid, _ = await _idr_invoice(client, tok)
+    eid, _ = await _invoice(client, tok)
     delivery = {"company_id": _company_id(tok), "entity_id": eid, "reference": "pi_idr",
                 "amount_minor": 100000, "currency": "idr", "paid_at": PAID.isoformat(),
                 "context": {**BOOKS, "base_currency": "IDR"}, "managed": True}
@@ -208,14 +208,14 @@ async def test_a_delivery_without_a_whole_amount_and_a_currency_records_nothing(
 
 @pytest.mark.asyncio
 async def test_a_stripe_amount_the_books_cannot_hold_is_kept_among_the_unmatched(client, session, payments_on):
-    """100,000.50 IDR cannot be recorded on books that keep IDR in whole rupiah: the
+    """100,000.50 UGX cannot be recorded on books that keep UGX in whole shillings: the
     whole charge is kept among the unmatched payments, never rounded onto the invoice."""
     from celerp.services.payments import receive_payment
     tok = await _register(client)
-    eid, _ = await _idr_invoice(client, tok)
-    delivery = {"company_id": _company_id(tok), "entity_id": eid, "reference": "pi_idr_frac",
-                "amount_minor": 10000050, "currency": "idr", "paid_at": PAID.isoformat(),
-                "context": {**BOOKS, "base_currency": "IDR"}, "managed": True}
+    eid, _ = await _invoice(client, tok, currency="UGX")
+    delivery = {"company_id": _company_id(tok), "entity_id": eid, "reference": "pi_ugx_frac",
+                "amount_minor": 10000050, "currency": "ugx", "paid_at": PAID.isoformat(),
+                "context": {**BOOKS, "base_currency": "UGX"}, "managed": True}
 
     assert await receive_payment(delivery) is True
 
@@ -224,7 +224,7 @@ async def test_a_stripe_amount_the_books_cannot_hold_is_kept_among_the_unmatched
     assert await _pay_je_entities(session, _company_id(tok), eid) == []
     r = await client.get("/payments/unmatched", headers=_h(tok))
     assert [(p["reference"], p["amount"], p["currency"]) for p in r.json()["items"]] == [
-        ("pi_idr_frac", 100000.5, "IDR")]
+        ("pi_ugx_frac", 100000.5, "UGX")]
 
 
 @pytest.mark.asyncio
@@ -872,7 +872,7 @@ _NOT_HTTPS = ["javascript:alert(1)", "http://stripe.test/cs_1", "//other.test/x"
 async def test_a_checkout_address_that_is_not_https_is_never_followed(client, payments_on, monkeypatch, url):
     monkeypatch.setattr("celerp.services.payments.create_checkout", lambda **kw: _async({"url": url}))
     tok = await _register(client)
-    _, token = await _idr_invoice(client, tok)
+    _, token = await _invoice(client, tok)
     r = await client.get(f"/pay/{token}", follow_redirects=False)
     assert r.status_code == 502
 
