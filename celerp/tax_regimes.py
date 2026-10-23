@@ -289,28 +289,40 @@ def taxes_for(taxes: list[dict], doc_type: str | None) -> list[dict]:
     return [x for x in taxes if (x.get("tax_type") or "both") in (side, "both")]
 
 
-def default_line_taxes(taxes: list[dict], doc_type: str | None, *, doc_taxes) -> list[dict]:
+def default_line_taxes(taxes: list[dict], doc_type: str | None, *, doc: dict | None) -> list[dict] | None:
     """The taxes list a new line starts with, whichever way it is added (scan, from items, append,
-    reorder, the editor): every company default for the document's side with a rate that is not
-    zero, in list order (a company may hold two, such as CGST 9% and SGST 9%), each in its saved
-    calculation order. A default the document already charges as a whole (the same tax_key in
-    `doc_taxes`, the target document's stored value, whatever rate or calculation the document
-    holds it at) is left off, so no tax is charged twice; a document tax that is another tax, or
-    one with no name, leaves the defaults as they are. A new document passes None."""
-    held = {tax_key(tax) for tax in tax_entries(doc_taxes)} - {None}
-    return [{"code": tax.get("name"), "rate": float(tax["rate"]), "amount": 0,
-             "order": int(tax.get("default_order") or 0), "is_compound": bool(tax.get("is_compound")),
-             "label": ""}
-            for tax in taxes_for(taxes, doc_type)
-            if tax.get("is_default") and float(tax.get("rate") or 0) and tax_key(tax) not in held]
+    reorder, the editor). `doc` is the target document's stored state, None for a new one.
+
+    On a document with no document tax: every company default for the document's side with a
+    rate that is not zero, in list order (a company may hold two, such as CGST 9% and SGST 9%),
+    each as line_tax builds it. On a draft that already charges a tax as a whole, its taxation
+    stands: a new line takes the taxes its lines all carry (as line_tax_key), copied whole, never
+    a company default. When they differ or there are none, None: the line carries no tax of its
+    own until the user sets one (the editor shows "--"). Nothing is matched by name, so a tax
+    renamed or changed in settings since is never charged next to the one the document holds.
+    The editor mirrors this live (_celerpApplyDefaultTaxes in ui/routes/documents.py)."""
+    if doc and tax_entries(doc.get("doc_taxes")):
+        lines = [line for line in doc.get("line_items") or [] if isinstance(line, dict)]
+        if len({line_tax_key(line.get("taxes")) for line in lines}) != 1:
+            return None
+        return [{**tax, "amount": 0} for tax in tax_entries(lines[0].get("taxes"))]
+    return [line_tax(tax) for tax in taxes_for(taxes, doc_type)
+            if tax.get("is_default") and float(tax.get("rate") or 0)]
 
 
-def tax_key(tax: dict) -> str | None:
-    """A tax's identity, alike for a company tax (``name``) and an applied one (``code``): its
-    name as _tax_name_key. Its rate and whether it is compound are what it holds, not what it
-    is, so a document keeps charging a tax at the rate it was given after the company changes
-    that tax in settings. None when it has no name, so it is never taken for another tax."""
-    return _tax_name_key(tax.get("code") or tax.get("name")) or None
+def line_tax(tax: dict) -> dict:
+    """A company tax as a line carries it: its name, rate, saved calculation order and whether
+    it is compound, with no amount yet."""
+    return {"code": tax.get("name"), "rate": float(tax["rate"]), "amount": 0,
+            "order": int(tax.get("default_order") or 0), "is_compound": bool(tax.get("is_compound")),
+            "label": ""}
+
+
+def line_tax_key(value) -> tuple:
+    """What a line's ``taxes`` value charges, for telling whether two lines carry the same taxes:
+    each tax's code, rate, order, compounding and label, amounts aside."""
+    return tuple((tax.get("code"), float(tax.get("rate") or 0), int(tax.get("order") or 0),
+                  bool(tax.get("is_compound")), tax.get("label") or "") for tax in tax_entries(value))
 
 
 def tax_entries(value) -> list[dict]:

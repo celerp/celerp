@@ -12725,7 +12725,7 @@ async def scan_doc(
     price_list = line_price_list(doc_type, payload.price_list)
     priced = sb.priced and (not is_cost_list_name(price_list) or role_has_permission(settings, role, "view_inventory_costs"))
     currency = state.get("currency")
-    line_taxes = default_line_taxes(side_taxes(settings, doc_type), doc_type, doc_taxes=state.get("doc_taxes"))
+    line_taxes = default_line_taxes(side_taxes(settings, doc_type), doc_type, doc=state) or []
     existing = [dict(l) for l in (state.get("line_items") or [])]
     known = line_id_counts(existing)
 

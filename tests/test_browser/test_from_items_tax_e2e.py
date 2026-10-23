@@ -9,9 +9,11 @@ document editor's item picker.
 
 - A line takes every default tax of the company, never only the first: a company set up before
   IGST became the India default holds CGST 9% and SGST 9% both as defaults, 18% in all.
-- A draft taxed as a whole (document taxes) leaves off a new line only the defaults the
-  document already charges, so no tax is charged twice and none is left out. A tax is the same
-  tax by its name: one whose rate or calculation changed in settings since is still left off.
+- A draft taxed as a whole (document taxes) keeps its taxation: a new line takes the taxes its
+  lines all carry, copied whole, never a company default, so a tax renamed or changed in
+  settings since is never charged next to the one the document holds. Where the lines differ
+  the new line takes none, and the editor shows "--" for the user to set.
+- A tax picked for a line keeps its calculation order and compounding.
 - A stored tax entry the editor cannot read is kept on every save: an edit is refused naming
   it, and removing it on the page lets the next save through.
 """
@@ -248,13 +250,14 @@ def test_a_document_wide_levy_leaves_vat_on_a_line_added_next_to_it(page, api_se
     assert (float(doc["subtotal"]), float(doc["total"])) == (200.0, 224.0)
 
 
-@pytest.mark.parametrize("change", [{"rate": 8.0}, {"is_compound": True}], ids=["rate", "compound"])
+@pytest.mark.parametrize("change", [{"rate": 8.0}, {"is_compound": True}, {"name": "VAT 8%", "rate": 8.0}],
+                         ids=["rate", "compound", "renamed"])
 @pytest.mark.parametrize("path", ["from_items", "send_to", "reorder", "scan", "picker", "add_line"])
 def test_a_tax_changed_in_settings_is_not_charged_again_on_a_draft_that_holds_it(page, api_server, ui_server, api,
                                                                                  path, change):
     """A draft with a $100 line and VAT 7% charged as a whole; the company then changes VAT 7% to
-    8% (or to compound) under the same name. A $100 line added to the draft takes no VAT of its
-    own: the document's VAT 7% covers it, $14, total $214 (not $222 with VAT on the line again)."""
+    8% (or to compound, or replaces it with VAT 8%). A $100 line added to the draft takes no VAT of
+    its own: the document's VAT 7% covers it, $14, total $214 (not $222 with VAT on the line again)."""
     with _demo_company(api_server, ui_server, api, "TH") as (company, ui, token, items):
         doc_type = "purchase_order" if path == "reorder" else "invoice"
         r = company.post("/docs", json={
@@ -266,7 +269,8 @@ def test_a_tax_changed_in_settings_is_not_charged_again_on_a_draft_that_holds_it
         for kind in ("taxes", "purchasing-taxes"):
             taxes = [{**tax, **change} if tax["name"] == "VAT 7%" else tax
                      for tax in company.get(f"/companies/me/{kind}").json()]
-            assert any(tax["name"] == "VAT 7%" and tax["is_default"] for tax in taxes), taxes
+            # Purchasing taxes the company never saved mirror its sales taxes, already changed.
+            assert any(tax["name"] == change.get("name", "VAT 7%") and tax["is_default"] for tax in taxes), taxes
             r = company.patch(f"/companies/me/{kind}", json={"taxes": taxes})
             assert r.status_code == 200, r.text
         _add_line(path, page, ui_server, company, ui, token, doc_id, items[1])
@@ -274,6 +278,104 @@ def test_a_tax_changed_in_settings_is_not_charged_again_on_a_draft_that_holds_it
     assert [_codes(line) for line in doc["line_items"]] == [[], []]
     assert [(tax["code"], float(tax["rate"])) for tax in doc["doc_taxes"]] == [("VAT 7%", 7.0)]
     assert (float(doc["subtotal"]), float(doc["total"])) == (200.0, 214.0)
+
+
+def _mixed_draft(company, items: list[dict]) -> str:
+    """A draft charging a 5% levy as a whole, with a $100 line taxed VAT 7% and a $100 line with no
+    tax of its own."""
+    r = company.post("/docs", json={
+        "doc_type": "invoice", "status": "draft", "doc_taxes": [_LEVY],
+        "line_items": [{"description": items[0]["name"], "entity_id": items[0]["id"], "quantity": 1,
+                        "unit_price": 100.0, "taxes": [{**_VAT_WHOLE, "amount": 7.0}]},
+                       {"description": items[1]["name"], "entity_id": items[1]["id"], "quantity": 1,
+                        "unit_price": 100.0, "taxes": []}]})
+    assert r.status_code in (200, 201), r.text
+    return r.json()["id"]
+
+
+@pytest.mark.parametrize("path", ["from_items", "send_to", "scan", "picker", "add_line"])
+def test_a_line_added_where_the_lines_differ_takes_no_tax_of_its_own(page, api_server, ui_server, api, path):
+    """A draft charging a 5% levy as a whole, one $100 line taxed VAT 7% and one with no tax: a
+    $100 line added to it takes no tax of its own, never the company default, so VAT is $7, the
+    levy $15 and the total $322."""
+    with _demo_company(api_server, ui_server, api, "TH") as (company, ui, token, items):
+        doc_id = _mixed_draft(company, items)
+        _add_line(path, page, ui_server, company, ui, token, doc_id, items[2])
+        doc = _each_line_at_100(company, doc_id)
+    assert [_codes(line) for line in doc["line_items"]] == [["VAT 7%"], [], []]
+    assert (float(doc["subtotal"]), float(doc["total"])) == (300.0, 322.0)
+
+
+def _editor(page, ui_server, token: str, doc_id: str):
+    """A fresh signed-in tab on the draft's editor, its totals drawn."""
+    ctx = page.context.browser.new_context(base_url=ui_server)
+    ctx.add_cookies([{"name": "celerp_token", "value": token, "domain": "127.0.0.1", "path": "/"}])
+    ctx.route("**/health/system", lambda route: route.fulfill(json={"overall": "ok"}))
+    tab = ctx.new_page()
+    tab.goto(f"{ui_server}/docs/{doc_id}", wait_until="domcontentloaded")
+    tab.wait_for_selector("#doc-total", timeout=8000)
+    return ctx, tab
+
+
+def test_the_editor_asks_for_the_tax_of_a_line_added_where_the_lines_differ(page, api_server, ui_server, api):
+    """Where the lines of a draft taxed as a whole carry different taxes, a line added in the editor
+    shows "--" for its tax, with a hint to choose it."""
+    with _demo_company(api_server, ui_server, api, "TH") as (company, _, token, items):
+        doc_id = _mixed_draft(company, items)
+        ctx, tab = _editor(page, ui_server, token, doc_id)
+        try:
+            tab.evaluate("celerpAddLine()")
+            sel = tab.locator("table.doc-lines tbody tr").last.locator('[data-name="tax_select"]')
+            shown = sel.evaluate("s => [s.selectedOptions[0].text, s.title]")
+        finally:
+            ctx.close()
+    assert shown == ["--", "Choose this line's tax: the document is taxed as a whole, so no default tax was added"]
+
+
+_LEVY_COMPOUND = {"code": "Levy 10%", "rate": 10.0, "amount": 0, "order": 1, "is_compound": True, "label": ""}
+
+
+def _stored(tax: dict) -> dict:
+    return {key: tax[key] for key in ("code", "rate", "order", "is_compound")}
+
+
+def test_a_tax_picked_for_a_line_keeps_its_calculation(page, api_server, ui_server, api):
+    """Picking the compound 10% levy (calculated second) for a $100 line stores it compound and
+    second, as the company saved it, never as a plain first tax."""
+    with _demo_company(api_server, ui_server, api, "TH", _COMPOUND_AFTER_VAT) as (company, _, token, items):
+        r = company.post("/docs", json={"doc_type": "invoice", "status": "draft", "line_items": [
+            {"description": items[0]["name"], "entity_id": items[0]["id"], "quantity": 1, "unit_price": 100.0,
+             "taxes": []}]})
+        assert r.status_code in (200, 201), r.text
+        doc_id = r.json()["id"]
+        ctx, tab = _editor(page, ui_server, token, doc_id)
+        try:
+            sel = tab.locator("table.doc-lines tbody tr").first.locator('[data-name="tax_select"]')
+            sel.select_option("Levy 10%|10.0")
+            sel.dispatch_event("blur")
+            for _ in range(120):
+                taxes = company.get(f"/docs/{doc_id}").json()["line_items"][0].get("taxes") or []
+                if taxes:
+                    break
+                time.sleep(0.25)
+        finally:
+            ctx.close()
+    assert [_stored(tax) for tax in taxes] == [_stored(_LEVY_COMPOUND)]
+
+
+def test_a_line_added_in_the_editor_copies_the_lines_taxes_whole(page, api_server, ui_server, api):
+    """A draft charging VAT 5% as a whole with a line taxed the compound 10% levy (calculated
+    second): a line added in the editor takes that levy compound and second, as the line holds it."""
+    vat = {"code": "VAT 5%", "rate": 5.0, "amount": 0, "order": 0, "is_compound": False, "label": ""}
+    with _demo_company(api_server, ui_server, api, "TH", _COMPOUND_AFTER_VAT) as (company, ui, token, items):
+        r = company.post("/docs", json={"doc_type": "invoice", "status": "draft", "doc_taxes": [vat], "line_items": [
+            {"description": items[0]["name"], "entity_id": items[0]["id"], "quantity": 1, "unit_price": 100.0,
+             "taxes": [_LEVY_COMPOUND]}]})
+        assert r.status_code in (200, 201), r.text
+        doc_id = r.json()["id"]
+        _add_line("add_line", page, ui_server, company, ui, token, doc_id, items[1])
+        doc = company.get(f"/docs/{doc_id}").json()
+    assert [[_stored(tax) for tax in line["taxes"]] for line in doc["line_items"]] == [[_stored(_LEVY_COMPOUND)]] * 2
 
 
 @pytest.mark.parametrize("path", ["from_items", "picker"])
@@ -290,11 +392,12 @@ def test_a_new_line_is_taxed_in_the_companys_calculation_order(page, api_server,
     assert (float(doc["subtotal"]), float(doc["total"])) == (100.0, 115.5)
 
 
-@pytest.mark.parametrize(("removed", "line_codes"), [(False, ["SGST 9%"]), (True, ["CGST 9%", "SGST 9%"])])
-def test_the_editor_leaves_off_only_a_default_the_document_charges(page, api_server, ui_server, api, removed,
-                                                                   line_codes):
-    """A company with CGST 9% and SGST 9% as defaults, on a draft charging CGST 9% as a whole: a
-    line picked in the editor takes SGST 9% alone, and both once CGST is removed on the page."""
+@pytest.mark.parametrize(("removed", "line_codes", "factor"), [(False, [], 1.09), (True, ["CGST 9%", "SGST 9%"], 1.18)])
+def test_the_editor_gives_a_new_line_the_defaults_once_the_document_taxes_are_removed(
+        page, api_server, ui_server, api, removed, line_codes, factor):
+    """A company with CGST 9% and SGST 9% as defaults, on an empty draft charging CGST 9% as a
+    whole: a line picked in the editor takes no tax of its own, so CGST is charged once, and both
+    defaults once CGST is removed on the page."""
     cgst = {"code": "CGST 9%", "rate": 9.0, "amount": 0, "order": 0, "is_compound": False, "label": ""}
     with _demo_company(api_server, ui_server, api, "IN", _INDIA_BEFORE) as (company, _, token, items):
         r = company.post("/docs", json={"doc_type": "invoice", "status": "draft", "doc_taxes": [cgst],
@@ -320,7 +423,7 @@ def test_the_editor_leaves_off_only_a_default_the_document_charges(page, api_ser
             ctx.close()
     assert sorted(_codes(doc["line_items"][0])) == line_codes
     assert [tax["code"] for tax in doc.get("doc_taxes") or []] == ([] if removed else ["CGST 9%"])
-    _taxed_once(doc, 1.18)
+    _taxed_once(doc, factor)
 
 
 def _store_doc_taxes(company_id: str, doc_id: str, doc_taxes: list, tax: float, total: float) -> None:

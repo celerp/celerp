@@ -213,7 +213,8 @@
     "error.company_timezone_unknown",
     "documents.igst_note",
     "company.err_location_name_taken",
-    "documents.err_tax_unreadable"
+    "documents.err_tax_unreadable",
+    "documents.line_tax_unset"
   ],
   "ar": [
     "account.email_placeholder",
@@ -417,7 +418,8 @@
     "error.company_timezone_unknown",
     "documents.igst_note",
     "company.err_location_name_taken",
-    "documents.err_tax_unreadable"
+    "documents.err_tax_unreadable",
+    "documents.line_tax_unset"
   ],
   "de": [
     "acct.source_system",
@@ -692,7 +694,8 @@
     "error.company_timezone_unknown",
     "documents.igst_note",
     "company.err_location_name_taken",
-    "documents.err_tax_unreadable"
+    "documents.err_tax_unreadable",
+    "documents.line_tax_unset"
   ],
   "es": [
     "account.plan",
@@ -940,7 +943,8 @@
     "error.company_timezone_unknown",
     "documents.igst_note",
     "company.err_location_name_taken",
-    "documents.err_tax_unreadable"
+    "documents.err_tax_unreadable",
+    "documents.line_tax_unset"
   ],
   "fr": [
     "acct.tab_journal",
@@ -1229,7 +1233,8 @@
     "error.company_timezone_unknown",
     "documents.igst_note",
     "company.err_location_name_taken",
-    "documents.err_tax_unreadable"
+    "documents.err_tax_unreadable",
+    "documents.line_tax_unset"
   ],
   "id": [
     "acct.source_manual",
@@ -1502,7 +1507,8 @@
     "error.company_timezone_unknown",
     "documents.igst_note",
     "company.err_location_name_taken",
-    "documents.err_tax_unreadable"
+    "documents.err_tax_unreadable",
+    "documents.line_tax_unset"
   ],
   "it": [
     "attr.volume_l",
@@ -1747,7 +1753,8 @@
     "error.company_timezone_unknown",
     "documents.igst_note",
     "company.err_location_name_taken",
-    "documents.err_tax_unreadable"
+    "documents.err_tax_unreadable",
+    "documents.line_tax_unset"
   ],
   "ja": [
     "account.email_placeholder",
@@ -1961,7 +1968,8 @@
     "error.company_timezone_unknown",
     "documents.igst_note",
     "company.err_location_name_taken",
-    "documents.err_tax_unreadable"
+    "documents.err_tax_unreadable",
+    "documents.line_tax_unset"
   ],
   "pt": [
     "acct.source_manual",
@@ -2220,7 +2228,8 @@
     "error.company_timezone_unknown",
     "documents.igst_note",
     "company.err_location_name_taken",
-    "documents.err_tax_unreadable"
+    "documents.err_tax_unreadable",
+    "documents.line_tax_unset"
   ],
   "th": [
     "account.email_placeholder",
@@ -2432,7 +2441,8 @@
     "error.company_timezone_unknown",
     "documents.igst_note",
     "company.err_location_name_taken",
-    "documents.err_tax_unreadable"
+    "documents.err_tax_unreadable",
+    "documents.line_tax_unset"
   ],
   "vi": [
     "btn.u00d7",
@@ -2648,6 +2658,7 @@
     "error.company_timezone_unknown",
     "documents.igst_note",
     "company.err_location_name_taken",
-    "documents.err_tax_unreadable"
+    "documents.err_tax_unreadable",
+    "documents.line_tax_unset"
   ]
 }

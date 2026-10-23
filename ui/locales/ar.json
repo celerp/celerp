@@ -2548,6 +2548,7 @@
   "documents.already_received": "تم الاستلام بالفعل",
   "documents.remaining_amount": "المتبقي: {amount}",
   "documents.remove_doc_tax": "Remove this tax",
+  "documents.line_tax_unset": "Choose this line's tax: the document is taxed as a whole, so no default tax was added",
   "documents.igst_note": "IGST 18% applies to a sale or purchase between states. Within one state, the same 18% is CGST 9% plus SGST 9%.",
   "documents.remove_from_draft": "إزالة من المسودة",
   "documents.reprice_failed": "تعذّرت إعادة حساب الأسعار. اختر إعادة المحاولة.",
