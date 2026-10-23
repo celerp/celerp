@@ -15,7 +15,8 @@ Proves:
 4. Clicking a ticked option unticks it.
 5. The closed input names a single selection and counts several.
 6. Submitting renders one section per selected subject.
-7. The open list follows the field when content loads above it.
+7. The open list follows the field when content loads above it, and a pick made
+   while the list moves keeps it open.
 """
 from __future__ import annotations
 
@@ -117,17 +118,26 @@ _LIST_OFFSET = """(() => {
 
 def test_the_open_list_follows_the_field_when_content_loads_above_it(page, statement_url):
     """The list is position:fixed and placed when it opens. A notice that loads above the
-    form afterwards moves the field down; a list left where it was covers the wrong spot,
-    and a pick there moves it under the field mid-click, so the click lands outside the
-    field and closes the list."""
+    form afterwards moves the field down, and the list has to move with it."""
     _open_picker(page, statement_url)
     offset = page.evaluate(_LIST_OFFSET)
     page.evaluate(
         "htmx.swap('#main-content', '<div style=\"height:80px\"></div>', {swapStyle: 'afterbegin'})")
     page.wait_for_function(f"Math.abs({_LIST_OFFSET} - {offset}) < 1", timeout=3000)
 
+
+def test_a_pick_keeps_the_list_open_when_the_list_moves_under_the_pointer(page, statement_url):
+    """Content that lands above the form while the list is open moves the field at once,
+    before the list follows. A pick then places the list under its field mid-click, so the
+    button comes up over the page around it. The pick still counts, and the list stays
+    open for the next one."""
+    _open_picker(page, statement_url)
+    page.evaluate("document.querySelector('#main-content')"
+                  ".insertAdjacentHTML('afterbegin', '<div style=\"height:80px\"></div>')")
     opt = _options(page).first
     opt.click()
+    assert _selected_inputs(page).count() == 1
+    assert page.locator(".combobox-list.open").is_visible(), "the pick closed the list"
     opt.click()
     assert _selected_inputs(page).count() == 0
     assert page.locator(".combobox-list.open").is_visible(), "unticking closed the list"
