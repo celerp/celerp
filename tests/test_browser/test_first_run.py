@@ -9,6 +9,7 @@ before each test: every test starts exactly where a new user starts.
 from __future__ import annotations
 
 import os
+import secrets
 import shutil
 import socket
 import subprocess
@@ -55,6 +56,17 @@ def _wait_http(url: str, proc: subprocess.Popen, timeout: float = 60.0) -> None:
     raise RuntimeError(f"{url} did not answer within {timeout}s")
 
 
+# What a new install's servers inherit from the machine. Everything else the test process holds
+# (ENABLED_MODULES and the data folder the shared browser servers set, any PYTHONPATH) is left
+# out, as the desktop app leaves it out, so this install loads only what a new install loads
+# whichever tests ran before it.
+_MACHINE_ENV = ("PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "TEMP", "TMP", "SYSTEMROOT")
+
+
+def _install_env() -> dict:
+    return {k: os.environ[k] for k in _MACHINE_ENV if k in os.environ}
+
+
 class _FreshInstall:
     """An API and a UI process on their own database, with no owner yet."""
 
@@ -83,9 +95,10 @@ class _FreshInstall:
         cfg = self.tmp / "config"
         shutil.rmtree(cfg, ignore_errors=True)
         cfg.mkdir()
-        env = dict(os.environ)
-        env.pop("PYTEST_XDIST_WORKER", None)
+        env = _install_env()
         env.update({
+            "DATA_DIR": str(self.tmp / "data"),
+            "JWT_SECRET": secrets.token_urlsafe(32),
             "DATABASE_URL": self.db_url,
             "CELERP_CONFIG": str(cfg / "config.toml"),
             "MODULE_DIR": ",".join(str(_REPO / d) for d in ("default_modules", "premium_modules")
@@ -189,6 +202,19 @@ def _fill_text_fields(page: Page, email: str) -> None:
 
 def _hidden(page: Page, name: str) -> str:
     return page.locator(f'#setup-form input[type="hidden"][name="{name}"]').input_value()
+
+
+def test_a_new_install_inherits_nothing_the_other_tests_set(monkeypatch):
+    """The shared browser servers turn every module on through ENABLED_MODULES; a new install
+    started after them must still load only what a new install loads."""
+    for name, value in (("ENABLED_MODULES", "celerp-docs"), ("PYTHONPATH", "/elsewhere"),
+                        ("DATA_DIR", "/shared"), ("MODULE_DIR", "/shared/modules")):
+        monkeypatch.setenv(name, value)
+
+    env = _install_env()
+
+    assert not {"ENABLED_MODULES", "PYTHONPATH", "DATA_DIR", "MODULE_DIR"} & set(env)
+    assert env["PATH"] == os.environ["PATH"]
 
 
 @pytest.mark.parametrize("width", [390, 1280])
