@@ -473,10 +473,10 @@ class Backup:
         self.fits(json_size(text))
         return text
 
-    def hold_text(self, *parts: str, sep: str = "", width: int = 1) -> None:
+    def hold_text(self, *parts: str, sep: str = "") -> None:
         """Counts a string built per record from values the backup holds, `parts` joined by `sep`,
         before it is built, so building it never takes more than the budget allows."""
-        self.hold(TEXT_COPIES * text_size(parts, sep, width))
+        self.hold(TEXT_COPIES * text_size(parts, sep))
 
     def held_text(self, *parts: str, sep: str = "") -> str:
         """`parts` joined by `sep`, a string built per record from values the backup holds,
