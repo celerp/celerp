@@ -86,7 +86,7 @@ async def help_read(
         **_summary(page),
         **_flags(help_search_mod.flag(page, settings, role)),
         "steps": [{"text": render_step(step, lang, page.catalogs),
-                   "image_url": f"/help/img/{page.id}/{n}" if step["image"] else None}
+                   "image_url": f"/help/img/{page.id}/{n}" if read_image(page, n) is not None else None}
                   for n, step in enumerate(page.steps, start=1)],
         "related": page.related,
     }

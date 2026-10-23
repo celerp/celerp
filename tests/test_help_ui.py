@@ -111,6 +111,31 @@ async def test_help_page_labels_in_user_language_with_note(client, pages):
 
 
 @pytest.mark.asyncio
+async def test_help_page_step_with_unreadable_image_keeps_its_text(client, monkeypatch):
+    """A step whose screenshot cannot be shown keeps its text and shows no image;
+    the other steps keep theirs."""
+    def _step(text, image):
+        return {"text": text, "labels": {}, "image": image,
+                "capture": {"route": "/contacts", "selector": "main", "actions": []}}
+
+    page = _page("contacts.add-supplier", "Add a supplier", steps=[
+        _step("Open the list.", "img/add-item-1.webp"),
+        _step("Choose New.", "img/not-there.webp"),
+        _step("Save the supplier.", None),
+    ])
+    monkeypatch.setattr(registry, "_index", registry.Index(pages={page.id: page}))
+    headers = {"Authorization": f"Bearer {await register_admin(client)}"}
+    api = (await client.get("/help/page/contacts.add-supplier", headers=headers)).json()
+    assert [s["image_url"] for s in api["steps"]] == ["/help/img/contacts.add-supplier/1", None, None]
+
+    r = await ui_get(headers, "/help/contacts.add-supplier")
+    assert r.status_code == 200
+    assert all(text in r.text for text in ("Open the list.", "Choose New.", "Save the supplier."))
+    assert 'src="/help/img/contacts.add-supplier/1"' in r.text
+    assert r.text.count("help-step__img") == 1
+
+
+@pytest.mark.asyncio
 async def test_help_img_unknown_step_404(client, pages):
     headers = {"Authorization": f"Bearer {await register_admin(client)}"}
     good = await ui_get(headers, "/help/img/contacts.add-supplier/1")
