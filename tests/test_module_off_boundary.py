@@ -289,6 +289,68 @@ async def test_a_company_that_turned_documents_off_has_its_order_sync_refused(cl
     assert not result.errors and finished["status"] == "success", finished
 
 
+async def _product_deleted(monkeypatch, company_id: str):
+    """A WooCommerce product-deleted delivery for a connected store: the store's sync
+    history it leaves, and the connector that received it."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    import celerp.connectors as connector_registry
+    from celerp.connectors import sync_runner
+    from celerp.connectors.base import ConnectorContext, SyncDirection
+    from celerp.connectors.webhooks import WebhookEvent, handle_webhook
+    from celerp.connectors.woocommerce import WooCommerceConnector
+
+    history = []
+
+    async def finish(run_id, company_id, connector, entity, result, started, ended, status):
+        history.append({"entity": entity, "errors": result.errors, "status": status})
+    ctx = ConnectorContext(company_id=company_id, access_token="t", store_handle="https://shop.test")
+    config = SimpleNamespace(id="config-1", webhook_secret="s", direction="both")
+    monkeypatch.setattr(sync_runner, "_begin_run", AsyncMock(return_value="run-1"))
+    monkeypatch.setattr(sync_runner, "_finish_run", finish)
+    monkeypatch.setattr(sync_runner, "_last_success_watermark", AsyncMock(return_value=None))
+    monkeypatch.setattr("celerp.connectors.ownership.lock_connector_operation", AsyncMock(return_value=config))
+    monkeypatch.setattr("celerp.connectors.ownership.bind_connector_store", AsyncMock())
+    monkeypatch.setattr("celerp.connectors.relay_token.fetch_context", AsyncMock(return_value=ctx))
+    woo = WooCommerceConnector()
+    monkeypatch.setattr(woo, "_paginate", _not_fetched())
+    monkeypatch.setattr(connector_registry, "get", lambda name: woo)
+    await handle_webhook(WebhookEvent(platform="woocommerce", topic="product.deleted", payload={"id": 88}),
+                         ctx, SyncDirection.BOTH)
+    return history, woo
+
+
+@pytest.mark.asyncio
+async def test_a_deleted_store_product_before_inventory_starts_is_recorded(client, monkeypatch):
+    """The deletion is refused before anything changes and left on the store's sync
+    history in the refusal's words, never dropped unseen; nothing is fetched."""
+    tok = await _register(client)
+    history, _ = await _product_deleted(monkeypatch, _company_id(tok))
+    assert history == [{"entity": "products", "errors": [_STARTS.format("Inventory")], "status": "failed"}]
+
+
+@pytest.mark.asyncio
+async def test_a_deleted_store_product_with_inventory_off_is_recorded(client, monkeypatch):
+    mark_running(monkeypatch, "celerp-inventory")
+    tok = await _register(client)
+    r = await client.post("/companies/me/modules/celerp-inventory/disable", headers=_h(tok))
+    assert r.status_code == 200, r.text
+    history, _ = await _product_deleted(monkeypatch, _company_id(tok))
+    assert history == [{"entity": "products", "errors": [_OFF.format("Inventory")], "status": "failed"}]
+
+
+@pytest.mark.asyncio
+async def test_a_deleted_store_product_with_inventory_on_is_handled_alone(client, monkeypatch):
+    """With Inventory on, the targeted handler takes the deletion and no product sync runs."""
+    from unittest.mock import AsyncMock
+    mark_running(monkeypatch, "celerp-inventory")
+    tok = await _register(client)
+    handled = AsyncMock()
+    monkeypatch.setattr("celerp.connectors.woocommerce.WooCommerceConnector.handle_product_deleted", handled)
+    history, _ = await _product_deleted(monkeypatch, _company_id(tok))
+    assert history == [] and handled.await_count == 1
+
+
 # ── Choosing a deposit account ───────────────────────────────────────────────
 
 async def _choose_deposit(client, tok: str):
