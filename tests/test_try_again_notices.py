@@ -217,11 +217,9 @@ def test_a_long_notice_is_checked_in_time_proportional_to_its_length(module_cata
                    for k in en if re.search(r"[Ss]elect Try again", en[k]))
     pattern = re.compile(try_again_pattern("en"))
 
-    def fastest(notice: str) -> float:
-        assert pattern.search(notice) is None
-        return fastest_cpu_seconds(lambda: pattern.search(notice), times=3)
-
-    assert fastest(cut * 4) < 10 * fastest(cut)
+    assert [pattern.search(cut), pattern.search(cut * 4)] == [None, None]
+    once, four_times = fastest_cpu_seconds(lambda: pattern.search(cut), lambda: pattern.search(cut * 4))
+    assert four_times < 10 * once
 
 
 @pytest.mark.parametrize("lang", ["en", "th", "ja", "de"])

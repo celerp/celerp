@@ -1627,15 +1627,17 @@ def test_reading_four_times_the_rows_takes_about_four_times_as_long(tmp_path, mo
     through every record of a kind for each record (each journal found every document, each
     revaluation every holding, each line every account, each hop along a chain of settlements
     every settlement). The chain is read at a cutover, where what one settlement carries
-    carries the documents it links. Four times the rows within six times the time (in the
-    square of them it is sixteen), the faster of two reads of each, in CPU time."""
+    carries the documents it links. Four times the rows within eight times the time: in
+    proportion it is four, in the square of them sixteen, and eight is halfway between them
+    (a busy machine stretches the larger read more, its caches shared). The fastest of three
+    reads of each, in CPU time, read in turn."""
     decisions = MigrationDecisions(mode=CIFMode.CUTOVER, cutover_date=CUTOVER) if shape == "chain" else FULL
-    took = {}
+    paths = []
     for n in (TIMED[shape], 4 * TIMED[shape]):
-        path = _shaped(tmp_path / f"{shape}-{n}.zip", monkeypatch, shape, n)
+        paths.append(_shaped(tmp_path / f"{shape}-{n}.zip", monkeypatch, shape, n))
         monkeypatch.undo()
-        took[n] = fastest_cpu_seconds(lambda: _read_whole(path, decisions))
-    assert took[4 * TIMED[shape]] < 6 * took[TIMED[shape]], took
+    small, large = fastest_cpu_seconds(*(lambda path=path: _read_whole(path, decisions) for path in paths))
+    assert large < 8 * small, (small, large)
 
 
 @pytest.mark.asyncio

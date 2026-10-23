@@ -506,18 +506,20 @@ def released_migration_history(database_url: str = DATABASE_URL):
         conn.close()
 
 
-def fastest_cpu_seconds(run, times: int = 2) -> float:
-    """The least CPU time ``run()`` spends over ``times`` calls, with the garbage collector
-    paused (its passes over everything the test process holds are not the run's). CPU time,
-    not the wall clock, which other processes on a busy machine stretch."""
-    took = float("inf")
+def fastest_cpu_seconds(*runs, times: int = 3) -> list[float]:
+    """The least CPU time each of ``runs`` spends over ``times`` rounds, the runs called in turn
+    in every round, with the garbage collector paused (its passes over everything the test
+    process holds are not the runs'). CPU time, not the wall clock, which other processes on a
+    busy machine stretch; in turn, so a load that comes and goes falls on every run alike."""
+    took = [float("inf")] * len(runs)
     for _ in range(times):
-        gc.collect()
-        gc.disable()
-        try:
-            began = time.process_time()
-            run()
-            took = min(took, time.process_time() - began)
-        finally:
-            gc.enable()
+        for i, run in enumerate(runs):
+            gc.collect()
+            gc.disable()
+            try:
+                began = time.process_time()
+                run()
+                took[i] = min(took[i], time.process_time() - began)
+            finally:
+                gc.enable()
     return took
