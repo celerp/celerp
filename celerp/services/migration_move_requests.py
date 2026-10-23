@@ -15,6 +15,7 @@ import uuid
 
 from fastapi import HTTPException
 
+from celerp.importers.adapters.base import SourceRevisionError
 from celerp.importers.adapters.registry import get_adapter
 from celerp.services import migration_scan_store as store
 from celerp.services.company_handoff_sender import cloud_json
@@ -44,7 +45,10 @@ async def send(*, operation_id: uuid.UUID, firm_name: str, client_name: str, rep
     check = getattr(adapter, "check", None)
     if check is None or not artifacts:
         raise HTTPException(status_code=422, detail=NO_SET)
-    checked = await asyncio.to_thread(check, artifacts)
+    try:
+        checked = await asyncio.to_thread(check, artifacts)
+    except SourceRevisionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
     if not checked.complete:
         raise HTTPException(status_code=422, detail=(
             "Finish the export set before asking us to move this client: " + " ".join(checked.problems)))

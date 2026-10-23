@@ -25,7 +25,7 @@ from celerp.db import get_session
 from celerp.events.engine import emit_event, write_period_lock
 from celerp.importers.results import failure_reason
 from celerp.importers.tabular import TabularError, _rows_to_csv, read_table, read_upload_bytes
-from celerp.constants import ISO_4217_CURRENCIES
+from celerp.services.currencies import CURRENCY_CODES
 from celerp_accounting import import_service
 from celerp_accounting.account_tree import account_tree_lines
 from celerp_accounting.chart_rules import (
@@ -1000,7 +1000,7 @@ def _validated_line_fx(base: str, line: "ManualJELine", index: int) -> tuple[str
             status_code=422,
             detail=t("acct.err_fx_rate_no_currency", line=where),
         )
-    if currency not in ISO_4217_CURRENCIES:
+    if currency not in CURRENCY_CODES:
         raise HTTPException(
             status_code=422,
             detail=t("acct.err_currency_unknown", currency=line.currency),
@@ -2666,7 +2666,7 @@ async def create_bank_account(
     if payload.bank_type not in _BANK_TYPES:
         raise HTTPException(status_code=422, detail=t("acct.err_bank_type", types=_enum_labels("bank_type", sorted(_BANK_TYPES))))
     currency = payload.currency.upper()
-    if currency not in ISO_4217_CURRENCIES:
+    if currency not in CURRENCY_CODES:
         raise HTTPException(status_code=422, detail=t("acct.err_currency_unknown", currency=payload.currency))
 
     opening = bool(payload.opening_balance)
@@ -2769,7 +2769,8 @@ async def patch_bank_account(
         b.bank_type = payload.bank_type
     if payload.currency is not None:
         normed = payload.currency.upper()
-        if normed not in ISO_4217_CURRENCIES:
+        # An account kept in a currency ISO 4217 has since withdrawn keeps it; none is moved to one.
+        if normed not in CURRENCY_CODES and normed != b.currency:
             raise HTTPException(status_code=422, detail=t("acct.err_currency_unknown", currency=payload.currency))
         b.currency = normed
     if payload.is_active and not b.is_active:

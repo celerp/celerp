@@ -137,10 +137,13 @@ class Ledger:
 
 
 def find_document(book: Book, sales: bool, number: str, contact: str) -> Document | None:
-    """The document of `number` on one side of the books that is `contact`'s: the one keyed
-    by number and contact where numbers repeat, else the one keyed by number alone. Never
-    another contact's document."""
+    """The document of `number` on one side of the books that is `contact`'s: keyed by number
+    and contact where numbers repeat, else by number alone. Never another contact's document;
+    when the contact has two documents of that number, the reference names neither, and the set
+    is refused rather than one chosen."""
     side = "S" if sales else "P"
+    if (side, number, contact) in book.repeated:
+        raise ScanError(t("migration.err_export_reference_ambiguous", number=number, contact=contact))
     for key in (f"{side}:{number}|{contact}", f"{side}:{number}"):
         doc = book.documents.get(key)
         if doc is not None and (not contact or doc.contact == contact):

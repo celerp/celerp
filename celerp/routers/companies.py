@@ -351,7 +351,8 @@ async def _check_books_change(session: AsyncSession, company_id, current: dict, 
 
     if key == "currency":
         value = str(value).strip().upper()
-        if value not in CURRENCY_CODES:
+        # Books kept in a currency ISO 4217 has since withdrawn keep it; none is moved to one.
+        if value not in CURRENCY_CODES and value != current.get("currency"):
             raise HTTPException(status_code=422, detail=refusal(
                 "company.currency_unknown",
                 f"{value} is not a currency Celerp knows. Pick a currency from the list.", currency=value))

@@ -17,7 +17,7 @@ from ui.api_client import APIError
 from ui.components.attrs import hx_vals
 from ui.components.shell import base_shell, page_header, flash, toast_header, page_title
 from ui.components.table import EMPTY, unwrap_address
-from celerp.services.currencies import CURRENCY_CODES
+from celerp.services.currencies import KNOWN_CURRENCY_CODES
 from celerp.services.field_schema import SYSTEM_ITEM_KEYS
 from ui.components.currency import currency_combobox_td, currency_label
 from ui.components.phone import phone_input_td as _phone_input_td
@@ -1023,7 +1023,8 @@ def setup_routes(app):
             import re as _re
             if not value.strip() or not _re.fullmatch(r"[a-z0-9][a-z0-9\-]*", value.strip()):
                 return P(t("error.invalid_slug"), cls="cell-error")
-        if field == "currency" and value not in CURRENCY_CODES:
+        # A withdrawn currency the books are already kept in may be saved unchanged; the API refuses moving to one.
+        if field == "currency" and value not in KNOWN_CURRENCY_CODES:
             return P(t("error.invalid_currency", value=repr(value)), cls="cell-error")
         if field == "fiscal_year_start" and value not in _FISCAL_VALUES:
             return P(t("error.invalid_fiscal_year", value=repr(value)), cls="cell-error")

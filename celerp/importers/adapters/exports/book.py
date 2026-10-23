@@ -192,6 +192,9 @@ class Book:
     items: dict[str, Item] = field(default_factory=dict)
     tax_codes: dict[str, TaxCode] = field(default_factory=dict)
     documents: dict[str, Document] = field(default_factory=dict)
+    # (S or P, number, contact) of each number one contact holds more than one document of: a
+    # reference by that number names neither.
+    repeated: set[tuple[str, str, str]] = field(default_factory=set)
     journals: list[GLJournal] = field(default_factory=list)
     # Month end -> account code -> balance from the first record, debit positive.
     trial_balances: dict[date, dict[str, Decimal]] = field(default_factory=dict)

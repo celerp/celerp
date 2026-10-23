@@ -2,6 +2,6 @@
 # SPDX-License-Identifier: BUSL-1.1
 """Adapters for sources read from their own export files."""
 
-from celerp.importers.adapters.exports.adapter import QuickBooksOnlineAdapter, XeroAdapter
+from celerp.importers.adapters.exports.adapter import QuickBooksOnlineAdapter, Sage50Adapter, XeroAdapter
 
-__all__ = ["QuickBooksOnlineAdapter", "XeroAdapter"]
+__all__ = ["QuickBooksOnlineAdapter", "Sage50Adapter", "XeroAdapter"]

@@ -23,7 +23,7 @@ from ui.components.table import search_bar, search_results, pagination, per_page
 from ui.components.notes import notes_tab as _shared_notes_tab, note_edit_form as _shared_note_edit_form
 from ui.components.files import files_error, files_error_block, files_section as _shared_files_section, files_session_expired, linked_files, _DOCUMENT_TAGS
 from celerp.services.business_time import business_today
-from celerp.services.currencies import CURRENCY_CODES as _CURRENCY_CODES
+from celerp.services.currencies import KNOWN_CURRENCY_CODES
 from ui.components.currency import currency_combobox_td
 from ui.components.phone import phone_input_td, phone_head_items as _phone_head_items
 from ui.config import get_token as _token, get_role as _get_role
@@ -1890,7 +1890,8 @@ def setup_routes(app):
         value = str(form.get("value", ""))
         if field not in _EDITABLE:
             return P(t("label.not_editable"), cls="cell-error")
-        if field == "currency" and value and value not in _CURRENCY_CODES:
+        # A withdrawn currency the contact already has may be saved unchanged; the API refuses moving to one.
+        if field == "currency" and value and value not in KNOWN_CURRENCY_CODES:
             return P(t("contacts.invalid_currency", code=value), cls="cell-error")
         data = {field: float(value) if field == "credit_limit" and value else value}
         try:
