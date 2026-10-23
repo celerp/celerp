@@ -1692,7 +1692,6 @@ def setup_routes(app):
             return RedirectResponse("/login", status_code=302)
         # The export is the list the user is looking at, in full: every filter and the
         # date window travel; the page does not.
-        from starlette.responses import Response
 
         from ui.streaming import ClosingStreamingResponse
         state = _doc_list_state(request)
@@ -1703,10 +1702,7 @@ def setup_routes(app):
                 token, _doc_api_params(state, date_from, date_to, limit=None),
             )
         except APIError as e:
-            if e.status == 401:
-                return RedirectResponse("/login", status_code=302)
-            # A failed export is an error page, never a downloaded file that says "error".
-            return Response(content=error_message(e), status_code=e.status, media_type="text/plain")
+            return api.refusal_response(e)
         out_headers = {"Content-Disposition": "attachment; filename=documents.csv"}
         if "content-length" in headers:
             out_headers["Content-Length"] = headers["content-length"]
@@ -1921,9 +1917,7 @@ def setup_routes(app):
         try:
             doc = await api.get_doc(token, entity_id)
         except APIError as e:
-            if e.status == 401:
-                return RedirectResponse("/login", status_code=302)
-            return _Resp(content=error_message(e), status_code=e.status)
+            return api.refusal_response(e)
         line_items = doc.get("line_items") or []
         doc_ref = (doc.get("ref_id") or doc.get("doc_number") or entity_id).replace(" ", "_")
 
@@ -4376,7 +4370,6 @@ celerpUpdateBulkAlloc();
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
-        from starlette.responses import Response
 
         from ui.streaming import ClosingStreamingResponse
         state = _list_page_state(request)
@@ -4387,9 +4380,7 @@ celerpUpdateBulkAlloc();
                 token, _list_api_params(state, date_from, date_to, limit=None),
             )
         except APIError as e:
-            if e.status == 401:
-                return RedirectResponse("/login", status_code=302)
-            return Response(content=error_message(e), status_code=e.status, media_type="text/plain")
+            return api.refusal_response(e)
         out_headers = {"Content-Disposition": "attachment; filename=lists.csv"}
         if "content-length" in headers:
             out_headers["Content-Length"] = headers["content-length"]
@@ -4409,7 +4400,7 @@ celerpUpdateBulkAlloc();
             entity_id = result.get("entity_id") or result.get("id", "")
         except APIError as e:
             logger.warning("API error on create_blank_list: %s", e.detail)
-            return _R("", status_code=500)
+            return api.refusal_response(e)
         return _R("", status_code=204, headers={"HX-Redirect": f"/lists/{entity_id}"})
 
     @app.post("/lists/from-items")
@@ -5034,7 +5025,7 @@ celerpUpdateBulkAlloc();
         try:
             await api.set_scanned(token, entity_id, ids or None, scanned)
         except APIError as e:
-            return _R(error_message(e), status_code=e.status or 400)
+            return api.refusal_response(e)
         return HTMLResponse(to_xml(await _audit_line_tbody(token, entity_id, *_line_window(form))))
 
     @app.post("/lists/{entity_id}/line/{item_id}")

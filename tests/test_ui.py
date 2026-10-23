@@ -5969,7 +5969,8 @@ class TestSplitCardLiveRefresh:
 
     @pytest.mark.asyncio
     async def test_advanced_panel_endpoint_get_item_failure(self, ui_client):
-        """When api.get_item raises, the endpoint returns 500 carrying the error detail."""
+        """When api.get_item raises, the endpoint answers with the API's status and its message
+        as plain text, which the page's error banner shows."""
         from ui.api_client import APIError
         ui_client.cookies.update(_authed())
         with (
@@ -5977,8 +5978,9 @@ class TestSplitCardLiveRefresh:
             patch("ui.api_client.get_company", new=AsyncMock(return_value={"settings": {}})),
         ):
             r = await ui_client.get("/api/items/gc:404/advanced-panel")
-        assert r.status_code == 500
-        assert "no such item" in r.text
+        assert r.status_code == 404
+        assert r.headers["content-type"].startswith("text/plain")
+        assert r.text == "no such item"
 
     @pytest.mark.asyncio
     async def test_advanced_panel_endpoint_split_preview_failure(self, ui_client):

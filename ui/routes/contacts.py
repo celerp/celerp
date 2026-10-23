@@ -1119,9 +1119,7 @@ def setup_routes(app):
             result = await api.create_contact(token, {"name": default_name, "contact_type": contact_type})
             contact_id = result.get("entity_id") or result.get("id", "")
         except APIError as e:
-            if e.status == 401:
-                return _R("", status_code=401, headers={"HX-Redirect": "/login"})
-            return _R("", status_code=500)
+            return api.refusal_response(e)
         return _R("", status_code=204, headers={"HX-Redirect": f"/contacts/{contact_id}"})
 
     # ── /contacts/sales (Sales Funnel page — registered before {contact_id} catch-all) ──
@@ -2054,10 +2052,7 @@ def setup_routes(app):
         try:
             resp = await api.download_contact_file(token, contact_id, file_id)
         except APIError as e:
-            if e.status == 401:
-                return RedirectResponse("/login", status_code=302)
-            from starlette.responses import Response as _R
-            return _R(str(e.detail), status_code=e.status)
+            return api.refusal_response(e)
         content_type = resp.headers.get("content-type", "application/octet-stream")
         from starlette.responses import Response as _R
         return _R(

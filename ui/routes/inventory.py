@@ -1488,10 +1488,7 @@ def setup_routes(app):
             params["cols"] = ",".join(await _export_columns(token, p))
             data = await api.export_items_csv(token, params)
         except APIError as e:
-            if e.status == 401:
-                return RedirectResponse("/login", status_code=302)
-            # A failed export is an error page, never a downloaded file that says "error".
-            return Response(content=str(e.detail), status_code=e.status, media_type="text/plain")
+            return api.refusal_response(e)
         return Response(
             content=data,
             media_type="text/csv",
@@ -1843,10 +1840,8 @@ def setup_routes(app):
             result = await api.create_item(token, {"name": "New Item", "quantity": 0, "sell_by": "piece"})
             item_id = result.get("id", result.get("entity_id", ""))
         except APIError as e:
-            if e.status == 401:
-                return Response("", status_code=401, headers={"HX-Redirect": "/login"})
             logger.warning("Blank-create item failed: %s", e.detail)
-            return Response("", status_code=500)
+            return api.refusal_response(e)
         return Response("", status_code=204, headers={"HX-Redirect": f"/inventory/{item_id}"})
 
     # /inventory/new: ?type=component creates a blank component item and opens it
@@ -3112,7 +3107,7 @@ function celerpPrintLabel(entityId, templateId) {
                 api.get_price_lists(token),
             )
         except APIError as e:
-            return Response(str(e.detail), status_code=500)
+            return api.refusal_response(e)
         # Build category options
         cat_names = sorted(cat_schemas.keys())
         schema = [
@@ -3152,7 +3147,7 @@ function celerpPrintLabel(entityId, templateId) {
         try:
             item, company = await asyncio.gather(api.get_item(token, entity_id), api.get_company(token))
         except APIError as e:
-            return Response(str(e.detail), status_code=500)
+            return api.refusal_response(e)
         # Fresh split preview in its own try/except so a non-splittable item (or any preview
         # error) degrades to the disabled card rather than blanking the fragment.
         try:
@@ -3185,7 +3180,7 @@ function celerpPrintLabel(entityId, templateId) {
                 "skus": item.get("sku", ""), "limit": 50,
                 **{k: p[k] for k in ("q", "status", "on_memo_to", "consigned_from") if p.get(k)}})
         except APIError as e:
-            return Response(str(e.detail), status_code=500)
+            return api.refusal_response(e)
         row = next((r for r in scoped.get("items", []) if r.get("id") == entity_id), None) \
             or _flatten_item_attrs(item)
         role = _get_role(request)
@@ -4879,10 +4874,7 @@ function celerpPrintLabel(entityId, templateId) {
         try:
             resp = await api.download_item_file(token, entity_id, file_id)
         except APIError as e:
-            if e.status == 401:
-                return RedirectResponse("/login", status_code=302)
-            from starlette.responses import Response as _R
-            return _R(str(e.detail), status_code=e.status)
+            return api.refusal_response(e)
         content_type = resp.headers.get("content-type", "application/octet-stream")
         from starlette.responses import Response as _R
         return _R(
@@ -4930,9 +4922,7 @@ function celerpPrintLabel(entityId, templateId) {
         try:
             resp = await api.get_item_thumbnail(token, entity_id, file_id)
         except APIError as e:
-            if e.status == 401:
-                return RedirectResponse("/login", status_code=302)
-            return Response(str(e.detail), status_code=e.status)
+            return api.refusal_response(e)
         return Response(
             content=resp.content,
             media_type=resp.headers.get("content-type", "image/jpeg"),

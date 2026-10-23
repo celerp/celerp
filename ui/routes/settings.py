@@ -326,8 +326,8 @@ def _register_tax_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str, r
                 taxes = await getattr(api, gname)(token)
                 taxes.append({"name": "New Tax", "rate": 0.0, "tax_type": "sales", "is_default": False, "description": ""})
                 await getattr(api, pname)(token, taxes)
-            except APIError:
-                return _R("", status_code=500)
+            except APIError as e:
+                return api.refusal_response(e)
             return _R("", status_code=204, headers={"HX-Redirect": redir})
         return create_tax
 
@@ -342,8 +342,8 @@ def _register_tax_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str, r
                 if 0 <= idx < len(taxes):
                     taxes.pop(idx)
                     await getattr(api, pname)(token, taxes)
-            except APIError:
-                return _R("", status_code=500)
+            except APIError as e:
+                return api.refusal_response(e)
             return _R("", status_code=204, headers={"HX-Redirect": redir})
         return delete_tax
 
@@ -418,8 +418,8 @@ def _register_terms_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str,
                 terms = await getattr(api, gname)(token)
                 terms.append({"name": "New Term", "days": 30, "description": ""})
                 await getattr(api, pname)(token, terms)
-            except APIError:
-                return _R("", status_code=500)
+            except APIError as e:
+                return api.refusal_response(e)
             return _R("", status_code=204, headers={"HX-Redirect": redir})
         return create_term
 
@@ -434,8 +434,8 @@ def _register_terms_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str,
                 if 0 <= idx < len(terms):
                     terms.pop(idx)
                     await getattr(api, pname)(token, terms)
-            except APIError:
-                return _R("", status_code=500)
+            except APIError as e:
+                return api.refusal_response(e)
             return _R("", status_code=204, headers={"HX-Redirect": redir})
         return delete_term
 
@@ -1649,9 +1649,7 @@ def setup_routes(app):
         try:
             await api.create_location(token, {"name": "New Location", "type": "warehouse", "address": None})
         except APIError as e:
-            if e.status == 401:
-                return _R("", status_code=401, headers={"HX-Redirect": "/login"})
-            return _R("", status_code=500)
+            return api.refusal_response(e)
         return _R("", status_code=204, headers={"HX-Redirect": "/settings/inventory?tab=locations"})
 
     @app.get("/settings/locations/{location_id}/{field}/edit")
@@ -1705,6 +1703,14 @@ def setup_routes(app):
             patch_val = value.strip().lower() in {"true", "1", "yes"}
         elif field == "address":
             patch_val = {"text": value} if value.strip() else {}
+        if field == "is_default":
+            # The default badge moves between rows, so the whole list is drawn again.
+            from starlette.responses import Response as _R
+            try:
+                await api.patch_location(token, location_id, {field: patch_val})
+            except APIError as e:
+                return api.refusal_response(e)
+            return _R("", status_code=204, headers={"HX-Redirect": "/settings/inventory?tab=locations"})
         try:
             await api.patch_location(token, location_id, {field: patch_val})
             locations = (await api.get_locations(token)).get("items", [])
@@ -1722,8 +1728,7 @@ def setup_routes(app):
         try:
             await api.delete_location(token, location_id)
         except APIError as e:
-            # Return error as plain text so HTMX can show it
-            return _R(str(e.detail), status_code=e.status)
+            return api.refusal_response(e)
         return _R("", status_code=204, headers={"HX-Redirect": "/settings/inventory?tab=locations"})
 
     @app.post("/settings/bulk-attach")
@@ -3485,8 +3490,7 @@ def _taxes_tab(taxes: list[dict], lang: str = "en", prefix: str = "taxes", impor
                 Button(t("btn.delete"), cls="btn btn--danger btn--xs",
                        hx_delete=f"/settings/{prefix}/{idx}",
                        hx_confirm=t("settings.confirm_delete_tax", name=tax.get("name", "")),
-                       hx_swap="none",
-                       hx_on__after_request=f"window.location.reload()"),
+                       hx_swap="none"),
                 cls="cell",
             ),
             cls="data-row",
@@ -3494,8 +3498,7 @@ def _taxes_tab(taxes: list[dict], lang: str = "en", prefix: str = "taxes", impor
 
     actions = [
         Button(t("btn.new_tax"), cls="btn btn--primary",
-               hx_post=f"/settings/{prefix}/new", hx_swap="none",
-               hx_on__after_request="window.location.reload()"),
+               hx_post=f"/settings/{prefix}/new", hx_swap="none"),
     ]
     if import_path:
         actions.append(A(import_icon(), t("btn.import_taxes_csv"), href=import_path, cls="btn btn--secondary ml-sm"))
@@ -3521,8 +3524,7 @@ def _terms_tab(terms: list[dict], lang: str = "en", prefix: str = "terms") -> FT
                 Button(t("btn.delete"), cls="btn btn--danger btn--xs",
                        hx_delete=f"/settings/{prefix}/{idx}",
                        hx_confirm=t("settings.confirm_delete_term", name=term.get("name", "")),
-                       hx_swap="none",
-                       hx_on__after_request="window.location.reload()"),
+                       hx_swap="none"),
                 cls="cell",
             ),
             cls="data-row",
@@ -3530,8 +3532,7 @@ def _terms_tab(terms: list[dict], lang: str = "en", prefix: str = "terms") -> FT
 
     actions = [
         Button(t("btn.new_term"), cls="btn btn--primary",
-               hx_post=f"/settings/{prefix}/new", hx_swap="none",
-               hx_on__after_request="window.location.reload()"),
+               hx_post=f"/settings/{prefix}/new", hx_swap="none"),
         A(import_icon(), t("btn.import_payment_terms_csv"), href="/settings/import/payment-terms",
           cls="btn btn--secondary ml-sm"),
     ]
@@ -3609,8 +3610,7 @@ def _terms_conditions_tab(templates: list[dict], prefix: str = "terms-conditions
                 Button(t("btn.delete"), cls="btn btn--danger btn--xs",
                        hx_delete=f"/settings/{prefix}/{global_idx}",
                        hx_confirm=t("settings.confirm_delete_tc", name=tpl.get("name", "")),
-                       hx_swap="none",
-                       hx_on__after_request="window.location.reload()"),
+                       hx_swap="none"),
                 cls="cell",
             ),
             cls="data-row",
@@ -3622,8 +3622,7 @@ def _terms_conditions_tab(templates: list[dict], prefix: str = "terms-conditions
           cls="settings-hint"),
         Div(
             Button(t("btn.new_template"), cls="btn btn--primary",
-                   hx_post=f"/settings/{prefix}/new", hx_swap="none",
-                   hx_on__after_request="window.location.reload()"),
+                   hx_post=f"/settings/{prefix}/new", hx_swap="none"),
             cls="page-actions mb-md",
         ),
         Div(
@@ -3705,7 +3704,6 @@ def _register_tc_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str, re
                         ),
                         hx_patch=f"/settings/{pfx}/{idx}/{field}",
                         hx_swap="none",
-                        hx_on__after_request="window.location.reload()",
                     ),
                     cls="cell cell--editing",
                 )
@@ -3762,7 +3760,11 @@ def _register_tc_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str, re
                 await getattr(api, pname)(token, templates)
                 templates = await getattr(api, gname)(token)
             except APIError as e:
-                return P(str(e.detail), cls="cell-error")
+                return api.refusal_response(e) if field == "default_for" else P(str(e.detail), cls="cell-error")
+            if field == "default_for":
+                # Other templates lose the types this one takes, so the whole list is drawn again.
+                from starlette.responses import Response as _R
+                return _R("", status_code=204, headers={"HX-Refresh": "true"})
             tmpl = templates[idx] if idx < len(templates) else {}
             return _tc_display_cell(idx, field, tmpl, prefix=pfx)
         return tc_field_patch
@@ -3777,8 +3779,8 @@ def _register_tc_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str, re
                 templates = await getattr(api, gname)(token)
                 templates.append({"name": "New Template", "text": "", "doc_types": [], "default_for": []})
                 await getattr(api, pname)(token, templates)
-            except APIError:
-                return _R("", status_code=500)
+            except APIError as e:
+                return api.refusal_response(e)
             return _R("", status_code=204, headers={"HX-Redirect": redir})
         return create_tc
 
@@ -3793,8 +3795,8 @@ def _register_tc_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str, re
                 if 0 <= idx < len(templates):
                     templates.pop(idx)
                     await getattr(api, pname)(token, templates)
-            except APIError:
-                return _R("", status_code=500)
+            except APIError as e:
+                return api.refusal_response(e)
             return _R("", status_code=204, headers={"HX-Redirect": redir})
         return delete_tc
 
@@ -3901,7 +3903,6 @@ def _locations_tab(locations: list[dict], lang: str = "en") -> FT:
                     hx_patch=f"/settings/locations/{lid}/is_default",
                     hx_vals='{"value": "true"}',
                     hx_swap="none",
-                    hx_on__after_request="window.location.href='/settings/inventory?tab=locations'",
                     disabled=is_default,
                 ),
                 cls="cell",
@@ -3910,8 +3911,7 @@ def _locations_tab(locations: list[dict], lang: str = "en") -> FT:
                 Button(t("btn.delete"), cls="btn btn--danger btn--xs",
                        hx_delete=f"/settings/locations/{lid}",
                        hx_confirm=t("settings.confirm_delete_location", name=loc.get("name", "")),
-                       hx_swap="none",
-                       hx_on__after_request="if(event.detail.successful) window.location.href='/settings/inventory?tab=locations'"),
+                       hx_swap="none"),
                 cls="cell",
             ),
             cls="data-row",
@@ -3920,8 +3920,7 @@ def _locations_tab(locations: list[dict], lang: str = "en") -> FT:
     return Div(
         Div(
             Button(t("btn.new_location"), cls="btn btn--primary",
-                   hx_post="/settings/locations/new", hx_swap="none",
-                   hx_on__after_request="window.location.href='/settings/inventory?tab=locations'"),
+                   hx_post="/settings/locations/new", hx_swap="none"),
             A(import_icon(), t("settings.import_locations_csv"), href="/settings/import/locations", cls="btn btn--secondary ml-sm"),
             cls="page-actions mb-md",
         ),
