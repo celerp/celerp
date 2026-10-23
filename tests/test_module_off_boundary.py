@@ -22,6 +22,9 @@ from pathlib import Path
 
 import pytest
 
+from test_channel_link_truth import (  # noqa: F401  (connect_session is a fixture)
+    _connect, _item, _set_state, _state, connect_session)
+from test_channel_link_truth import _register as _owner
 from test_helpers import REPO_ROOT, mark_running
 from test_payments_stripe import (  # noqa: F401  (payments_on is a fixture)
     BOOKS, PAID, _company_id, _doc_state, _h, _payable_invoice, _register, payments_on)
@@ -341,26 +344,285 @@ async def test_connecting_a_store_without_inventory_shows_the_refusal():
     assert _OFF.format("Inventory") in r.text and "API 403" not in r.text
 
 
-# ── Every connector method that reaches a module says so ────────────────────
+# ── Store links while Inventory has not started ─────────────────────────────
 
-_PACKAGES = {"celerp_docs": "celerp-docs", "celerp_inventory": "celerp-inventory",
-             "celerp_contacts": "celerp-contacts"}
+def _inventory_not_importable(monkeypatch) -> None:
+    """Nothing of Inventory importable, as in a process that never loaded it."""
+    for name in ("celerp_inventory", "celerp_inventory.services"):
+        monkeypatch.setitem(sys.modules, name, None)
+
+
+async def _linked_item(client, session, owner, sku: str) -> str:
+    """An item still linked to a WooCommerce product."""
+    headers, cid = owner
+    eid = await _item(client, headers, sku)
+    await _set_state(session, cid, eid, idempotency_key="woocommerce:88")
+    return eid
+
+
+async def _two_companies(client) -> tuple[tuple[dict, str], tuple[dict, str]]:
+    first = await _owner(client)
+    r = await client.post("/companies", json={"name": "Second Co"}, headers=first[0])
+    assert r.status_code == 200, r.text
+    tok = r.json()["access_token"]
+    return first, (_h(tok), _company_id(tok))
+
+
+async def _is_active(session, cid: str) -> bool:
+    import uuid
+    from celerp.models.company import Company
+    return (await session.get(Company, uuid.UUID(cid), populate_existing=True)).is_active
+
+
+@pytest.mark.asyncio
+async def test_deactivating_a_company_before_inventory_starts(client, session, monkeypatch):
+    """With no store link left there is nothing to detach, so the company is deactivated.
+    A company whose items still link to store products is refused, naming Inventory,
+    and keeps both its active state and its links."""
+    from unittest.mock import AsyncMock, patch
+    plain, linked = await _two_companies(client)
+    eid = await _linked_item(client, session, linked, "LINKED-1")
+    _inventory_not_importable(monkeypatch)
+
+    with patch("celerp.connectors.remote_state.revoke_connector_remote_state", AsyncMock()):
+        r = await client.delete("/companies/me", headers=plain[0])
+        assert r.status_code == 200, r.text
+        assert not await _is_active(session, plain[1])
+
+        r = await client.delete("/companies/me", headers=linked[0])
+    assert (r.status_code, _key(r)) == (403, "modules.starts_after_restart"), r.text
+    assert r.json()["detail"]["message"] == _STARTS.format("Inventory")
+    assert await _is_active(session, linked[1])
+    assert (await _state(session, linked[1], eid))["idempotency_key"] == "woocommerce:88"
+
+
+@pytest.mark.asyncio
+async def test_disconnecting_a_store_before_inventory_starts(client, session, monkeypatch, connect_session):
+    """Refused before the store is told anything while links are left to turn into
+    history; with none left the store is disconnected."""
+    import sqlalchemy as sa
+    from unittest.mock import AsyncMock, patch
+    from celerp.models.connector_config import ConnectorConfig
+    plain, linked = await _two_companies(client)
+    for _, cid in (plain, linked):
+        await _connect(session, cid, "woocommerce")
+    await _linked_item(client, session, linked, "LINKED-2")
+    _inventory_not_importable(monkeypatch)
+
+    revoke = AsyncMock()
+    with patch("celerp.connectors.remote_state.revoke_connector_remote_state", revoke):
+        r = await client.delete("/connectors/woocommerce/credentials", headers=linked[0])
+        assert (r.status_code, _key(r)) == (403, "modules.starts_after_restart"), r.text
+        assert revoke.await_count == 0
+        assert await session.scalar(sa.select(sa.func.count()).select_from(ConnectorConfig).where(
+            ConnectorConfig.company_id == linked[1])) == 1
+
+        r = await client.delete("/connectors/woocommerce/credentials", headers=plain[0])
+    assert r.status_code == 200 and r.json() == {"ok": True}, r.text
+
+
+@pytest.mark.asyncio
+async def test_connecting_a_store_or_choosing_items_to_sync_needs_inventory(client, session, connect_session):
+    """Both write links on Inventory's items, so both are refused, naming it, before
+    anything is stored."""
+    import sqlalchemy as sa
+    from celerp.models.connector_config import ConnectorConfig
+    owner = await _owner(client)
+    r = await client.post("/connectors/woocommerce/credentials", headers=owner[0], json={
+        "consumer_key": "ck_x", "consumer_secret": "cs_x", "store_url": "https://shop.test"})
+    assert (r.status_code, _key(r)) == (403, "modules.starts_after_restart"), r.text
+    assert await session.scalar(sa.select(sa.func.count()).select_from(ConnectorConfig).where(
+        ConnectorConfig.company_id == owner[1])) == 0
+
+    r = await client.post("/connector-items/woocommerce/sync", headers=owner[0],
+                          json={"entity_ids": ["any"], "enable": True})
+    assert (r.status_code, _key(r)) == (403, "modules.starts_after_restart"), r.text
+
+
+@pytest.mark.asyncio
+async def test_reconciling_a_store_order_needs_documents(client, connect_session):
+    """Marking an order change as reconciled writes on the order, so it is refused,
+    naming Documents, while the company cannot use it."""
+    headers, _ = await _owner(client)
+    r = await client.post("/connectors/woocommerce/orders/101/reconciled", headers=headers,
+                          json={"signature": "s"})
+    assert (r.status_code, _key(r)) == (403, "modules.starts_after_restart"), r.text
+    assert r.json()["detail"]["message"] == _STARTS.format("Documents")
+
+
+# ── Core code reaches a module only past its boundary ───────────────────────
+
+def _core_files():
+    """Code that runs whichever modules a company uses: celerp/, ui/ and the modules
+    folded into core."""
+    from celerp.modules.loader import CORE_FOLDED
+    roots = [REPO_ROOT / "celerp", REPO_ROOT / "ui",
+             *(REPO_ROOT / "default_modules" / name for name in sorted(CORE_FOLDED))]
+    for root in roots:
+        for path in sorted(root.rglob("*.py")):
+            rel = path.relative_to(REPO_ROOT)
+            if "tests" not in rel.parts and not path.name.startswith("test_"):
+                yield str(rel), ast.parse(path.read_text())
+
+
+def _packages() -> dict[str, str]:
+    """Import name to module name, for every module a company can turn off."""
+    from celerp.modules.loader import CORE_FOLDED
+    return {p.name.replace("-", "_"): p.name for p in sorted((REPO_ROOT / "default_modules").iterdir())
+            if p.name.startswith("celerp-") and p.is_dir() and p.name not in CORE_FOLDED}
+
+
+_PACKAGES = _packages()
 _CONNECTORS = REPO_ROOT / "celerp" / "connectors"
 
 
 def _module_imports(node: ast.AST) -> set[str]:
-    return {_PACKAGES[n.module.split(".")[0]] for n in ast.walk(node)
-            if isinstance(n, ast.ImportFrom) and n.module and n.module.split(".")[0] in _PACKAGES}
+    """Modules *node* imports, as ``import x`` or ``from x import y``."""
+    names = []
+    for n in ast.walk(node):
+        if isinstance(n, ast.Import):
+            names += [a.name for a in n.names]
+        elif isinstance(n, ast.ImportFrom) and n.module and not n.level:
+            names.append(n.module)
+    return {_PACKAGES[name.split(".")[0]] for name in names if name.split(".")[0] in _PACKAGES}
 
+
+def _units(tree: ast.Module):
+    """(name, node) of each function, each method, and the module's own statements."""
+    functions = (ast.FunctionDef, ast.AsyncFunctionDef)
+    yield "<module>", ast.Module(body=[n for n in tree.body if not isinstance(n, (*functions, ast.ClassDef))],
+                                 type_ignores=[])
+    for node in tree.body:
+        if isinstance(node, functions):
+            yield node.name, node
+        elif isinstance(node, ast.ClassDef):
+            yield from ((f"{node.name}.{f.name}", f) for f in node.body if isinstance(f, functions))
+
+
+def _file_names(tree: ast.Module) -> dict[str, set[str]]:
+    """Module-level names that stand for modules: a string constant, or a decorator
+    made by needs_modules."""
+    names = {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+            value = node.value
+            if isinstance(value, ast.Constant) and value.value in _PACKAGES.values():
+                names[node.targets[0].id] = {value.value}
+            elif isinstance(value, ast.Call) and getattr(value.func, "id", None) == "needs_modules":
+                names[node.targets[0].id] = _literals(value.args, {})
+    return names
+
+
+def _literals(args, names: dict[str, set[str]]) -> set[str]:
+    out = set()
+    for a in args:
+        if isinstance(a, ast.Constant) and isinstance(a.value, str):
+            out.add(a.value)
+        elif isinstance(a, ast.Name):
+            out |= names.get(a.id, set())
+    return out
+
+
+# Calls that refuse unless a module runs for the company: the modules named in their
+# arguments, or (a shared check) the module it always names.
+_CHECKS: dict[str, set[str] | None] = {
+    "require_on": None, "require_company_uses": None, "is_running": None,
+    "require_inventory_for": {"celerp-inventory"},
+}
+
+
+def _guarded(fn: ast.AST, names: dict[str, set[str]]) -> set[str]:
+    """Modules *fn* refuses without: marked needs_modules, or checked by the boundary
+    or the loader before it imports them."""
+    out = set()
+    for d in getattr(fn, "decorator_list", ()):
+        if isinstance(d, ast.Call) and getattr(d.func, "id", None) == "needs_modules":
+            out |= _literals(d.args, names)
+        elif isinstance(d, ast.Name):
+            out |= names.get(d.id, set())
+    for n in ast.walk(fn):
+        if isinstance(n, ast.Call):
+            called = getattr(n.func, "id", None) or getattr(n.func, "attr", None)
+            if called in _CHECKS:
+                out |= _CHECKS[called] or _literals(n.args, names)
+    return out
+
+
+_UPSERT = "a connector helper, called only from connector methods marked needs_modules (checked below)"
+_OWN_UI = ("a page or helper of the module's own screens, or of a module that depends on it, "
+           "mounted by that module, so it runs only while the module runs")
+_PEER = ("receives a connected company's records; each grant scope opens one route, of the "
+         "module the records belong to (peer_access.PEER_ROUTES)")
+_PAYMENT_STEP = "a step of a payment function marked needs_modules, or of a Documents route"
+_UPSERT_PY = "celerp/connectors/upsert.py"
+_DOCS_UI = "ui/routes/documents.py"
+
+# Each reviewed use of a module from core code that does not refuse at its own
+# boundary, with why it cannot run while that module has not started.
+_REVIEWED: dict[tuple[str, str], str] = {
+    **{(_UPSERT_PY, name): _UPSERT for name in (
+        "upsert_item", "upsert_order_from_shopify", "upsert_invoice_from_quickbooks",
+        "upsert_invoice_from_xero", "upsert_order_from_woocommerce",
+        "woocommerce_reconciliation_signature", "list_imported_woocommerce_order_ids",
+        "hold_missing_woocommerce_order", "upsert_contact_from_shopify",
+        "upsert_contact_from_quickbooks", "upsert_contact_from_xero",
+        "upsert_contact_from_woocommerce", "list_items_with_external_id",
+        "list_item_for_external_identity", "list_items_modified_since_last_sync",
+        "list_unsynced_invoices", "invoice_for_push", "mark_doc_pushed")},
+    ("celerp/migrations/env.py", "<module>"):
+        "registers each module's tables for schema migrations, skipping a module that is not there",
+    ("celerp/services/auto_je.py", "doc_lot_pool"):
+        "costs a document line from its lots: reached from Documents, which needs Inventory, and "
+        "from the boot COGS backfill, which fails without writing and retries at a later boot",
+    ("celerp/services/auto_je.py", "create_for_online_fees"): _PAYMENT_STEP,
+    ("celerp/services/payments.py", "_apply_refund"): _PAYMENT_STEP,
+    ("celerp/services/payments.py", "_apply_release"): _PAYMENT_STEP,
+    ("celerp/services/payments.py", "record_unmatched_payment"): _PAYMENT_STEP,
+    ("celerp/services/peer_documents.py", "receive_document"): _PEER,
+    ("celerp/services/peer_documents.py", "_replay_receipts"): _PEER,
+    ("celerp/services/peer_documents.py", "_replay_receipt"): _PEER,
+    ("celerp/services/peer_documents.py", "_replay_fulfilment"): _PEER,
+    ("celerp/services/peer_identity.py", "receive_contact"): _PEER,
+    ("celerp/services/peer_identity.py", "receive_product"): _PEER,
+    ("celerp/services/peer_inventory.py", "receive_stock_audit"): _PEER,
+    ("celerp/services/peer_payments.py", "validate_source_payments"): _PEER,
+    ("celerp/services/peer_payments.py", "apply_source_payments"): _PEER,
+    ("celerp/services/peer_refunds.py", "replay_source_refunds"): _PEER,
+    ("ui/routes/contacts.py", "setup_routes"): _OWN_UI,
+    **{(_DOCS_UI, name): _OWN_UI for name in (
+        "_hold_refusal", "_physical_lots", "_sales_options", "_doc_line_actions",
+        "_writeoff_account_choices", "_payment_section", "_doc_detail")},
+    ("ui/routes/inventory.py", "<module>"): _OWN_UI,
+    ("ui/routes/inventory.py", "_item_files_section"): _OWN_UI,
+}
+
+
+def test_core_code_reaches_a_module_only_past_its_boundary():
+    """Class closure: core code that imports a module package, in either form, is
+    marked needs_modules with it, checks it at the boundary or the loader first, or
+    is a reviewed use that only runs while the module runs. A reviewed use that no
+    longer imports the module leaves the list."""
+    missing, used = {}, set()
+    for rel, tree in _core_files():
+        names = _file_names(tree)
+        for name, unit in _units(tree):
+            needs = _module_imports(unit) - _guarded(unit, names)
+            if not needs:
+                continue
+            if (rel, name) in _REVIEWED:
+                used.add((rel, name))
+            else:
+                missing[f"{rel}:{name}"] = sorted(needs)
+    assert not missing, missing
+    assert set(_REVIEWED) == used, sorted(set(_REVIEWED) - used)
+    assert all(reason.strip() for reason in _REVIEWED.values())
+
+
+# ── Every connector method that reaches a module says so ────────────────────
 
 def _upsert_needs() -> dict[str, set[str]]:
     tree = ast.parse((_CONNECTORS / "upsert.py").read_text())
     return {f.name: _module_imports(f) for f in tree.body if isinstance(f, (ast.FunctionDef, ast.AsyncFunctionDef))}
-
-
-def _declared(fn: ast.AST) -> set[str]:
-    return {a.value for d in fn.decorator_list if isinstance(d, ast.Call)
-            and getattr(d.func, "id", None) == "needs_modules" for a in d.args}
 
 
 def test_every_connector_method_reaching_a_module_refuses_without_it():
@@ -382,6 +644,6 @@ def test_every_connector_method_reaching_a_module_refuses_without_it():
                 needs = _module_imports(fn) | {
                     pkg for n in ast.walk(fn) if isinstance(n, ast.Attribute)
                     and getattr(n.value, "id", None) == "_upsert" for pkg in helpers.get(n.attr, ())}
-                if needs - _declared(fn):
-                    missing[f"{path.name}:{cls.name}.{fn.name}"] = sorted(needs - _declared(fn))
+                if needs - _guarded(fn, {}):
+                    missing[f"{path.name}:{cls.name}.{fn.name}"] = sorted(needs - _guarded(fn, {}))
     assert not missing, missing

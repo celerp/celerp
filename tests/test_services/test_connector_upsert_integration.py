@@ -749,11 +749,8 @@ async def test_disabled_remote_relink_repairs_identity_without_overwriting_produ
     use_test_session,
 ):
     from celerp.models.projections import Projection
-    from celerp_inventory.services import (
-        external_link_for_state,
-        set_external_link_state,
-        upsert_external_product,
-    )
+    from celerp.connectors.product_links import external_link_for_state
+    from celerp_inventory.services import set_external_link_state, upsert_external_product
 
     session = use_test_session
     cid = await _seed_company(session, "WooDisabledRelink")
@@ -991,7 +988,8 @@ async def test_woocommerce_pending_defers_stock_binding_until_processing(use_tes
 async def test_woocommerce_refund_does_not_guess_restock_and_pauses_outbound_stock(use_test_session):
     from datetime import datetime, timezone
     from celerp.models.projections import Projection
-    from celerp_inventory.services import external_link_for_state, upsert_external_product
+    from celerp.connectors.product_links import external_link_for_state
+    from celerp_inventory.services import upsert_external_product
     session = use_test_session
     cid = await _seed_company(session, "WooRefund")
     _, root_id = await upsert_external_product(
@@ -1057,7 +1055,8 @@ async def test_woocommerce_stock_stays_paused_while_any_refund_on_the_product_is
     from datetime import datetime, timezone
     from celerp.models.projections import Projection
     from celerp_connectors.routes import _set_order_reconciled
-    from celerp_inventory.services import external_link_for_state, upsert_external_product
+    from celerp.connectors.product_links import external_link_for_state
+    from celerp_inventory.services import upsert_external_product
 
     session = use_test_session
     cid = await _seed_company(session, "WooSharedRefund")
@@ -1395,7 +1394,8 @@ async def test_woocommerce_balance_put_right_in_celerp_releases_the_order(use_te
     from celerp.models.projections import Projection
     from celerp_docs.doc_service import WooCommerceReconciliationRequired
     from celerp_docs.routes import VoidPaymentBody, apply_doc_payment, void_payment
-    from celerp_inventory.services import external_link_for_state, upsert_external_product
+    from celerp.connectors.product_links import external_link_for_state
+    from celerp_inventory.services import upsert_external_product
 
     session = use_test_session
     cid = await _seed_company(session, "WooBalanceFixed")
@@ -1932,7 +1932,7 @@ def _woo_stocked_order(order_id, product_id, sku, **fields):
 
 async def _woo_stock_paused(session, cid, root_id):
     from celerp.models.projections import Projection
-    from celerp_inventory.services import external_link_for_state
+    from celerp.connectors.product_links import external_link_for_state
 
     session.expire_all()
     root = await session.get(
@@ -2052,9 +2052,9 @@ async def test_shopify_import_relinks_a_product_after_disconnect(use_test_sessio
     from celerp.connectors.base import ConnectorContext
     from celerp.connectors.shopify import ShopifyConnector
     from celerp.models.projections import Projection
+    from celerp.connectors.product_links import external_link_for_state
     from celerp_inventory.services import (
         detach_external_links_for_platform,
-        external_link_for_state,
         upsert_external_product,
     )
 

@@ -241,6 +241,9 @@ async def store_credentials(
     except KeyError:
         raise HTTPException(status_code=404, detail=t("connectors.unknown_connector", platform=connector_name))
 
+    from celerp.connectors.product_links import require_inventory_for
+    await require_inventory_for(company_id, connector_name)
+
     if (err := _relay_https_error()) is not None:
         return err
 
@@ -371,10 +374,8 @@ async def store_credentials(
 
     try:
         if connector_name in PRODUCT_CHANNEL_PLATFORMS:
-            from celerp_inventory.services import detach_external_links_for_platform
-            await detach_external_links_for_platform(
-                session, company_id, connector_name
-            )
+            from celerp.connectors.product_links import detach_product_links
+            await detach_product_links(session, company_id, connector_name)
         await session.commit()
         config = await lock_connector_operation(
             session, company_id, connector_name, require_owner=True, exclusive=True
@@ -519,6 +520,11 @@ async def revoke_credentials(
         await session.rollback()
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
+    # Refused before the store forgets anything, while product links are left
+    # that only Inventory can turn into history.
+    from celerp.connectors.product_links import detach_product_links, refuse_while_links_cannot_detach
+    await refuse_while_links_cannot_detach(session, company_id, connector_name)
+
     # The accountant connection is this company's own: when the relay cannot be
     # reached to drop its copy of the key, it disconnects anyway.
     if failure := await _revoke_remote(
@@ -529,10 +535,7 @@ async def revoke_credentials(
 
     try:
         if connector_name in PRODUCT_CHANNEL_PLATFORMS:
-            from celerp_inventory.services import detach_external_links_for_platform
-            await detach_external_links_for_platform(
-                session, company_id, connector_name
-            )
+            await detach_product_links(session, company_id, connector_name)
         await release_connector_ownership(
             session, company_id, connector_name,
             status=RESET_STATUS_FORCED if force else RESET_STATUS_DISCONNECTED,
@@ -640,6 +643,8 @@ async def _set_order_reconciled(
     """Mark (signature) or unmark (None) one WooCommerce order on the attention
     list as reconciled by hand, on the list and on the order together."""
     from celerp.connectors.sync_runner import update_attention_entry
+    from celerp.modules.boundary import company_settings, require_on
+    require_on(await company_settings(company_id), "celerp-docs")
     from celerp_docs.doc_service import (
         WooCommerceReconciliationChanged,
         set_woocommerce_order_reconciled,
@@ -735,11 +740,9 @@ async def set_item_sync(
         lock_connector_operation,
     )
     from celerp.events.engine import emit_event
-    from celerp_inventory.services import (
-        external_link_for_state,
-        resolve_catalog_anchor_for_item,
-        set_external_link_state,
-    )
+    from celerp.connectors.product_links import external_link_for_state, require_inventory_for
+    await require_inventory_for(company_id, connector_name)
+    from celerp_inventory.services import resolve_catalog_anchor_for_item, set_external_link_state
     try:
         await lock_connector_operation(
             session, company_id, connector_name, require_owner=True

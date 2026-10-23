@@ -376,10 +376,8 @@ class WooCommerceConnector(ConnectorBase):
         from sqlalchemy import select
         from celerp.db import SessionLocal as AsyncSessionLocal
         from celerp.models.projections import Projection
-        from celerp_inventory.services import (
-            external_link_for_state,
-            set_external_link_state,
-        )
+        from celerp.connectors.product_links import external_link_for_state
+        from celerp_inventory.services import set_external_link_state
 
         changed = 0
         async with AsyncSessionLocal() as session:
@@ -468,9 +466,12 @@ class WooCommerceConnector(ConnectorBase):
         from celerp.db import SessionLocal as AsyncSessionLocal
         from celerp.models.connector_config import ConnectorConfig
         from sqlalchemy import select
+        from celerp.connectors.product_links import external_link_for_state
         from celerp_inventory.services import (
-            aggregate_sellable_quantity_for_anchor, external_link_for_state,
-            resolve_catalog_anchor_for_item, set_external_link, set_external_link_state,
+            aggregate_sellable_quantity_for_anchor,
+            resolve_catalog_anchor_for_item,
+            set_external_link,
+            set_external_link_state,
         )
         async with AsyncSessionLocal() as session:
             anchor = await resolve_catalog_anchor_for_item(session, ctx.company_id, entity_id)
@@ -931,10 +932,8 @@ class WooCommerceConnector(ConnectorBase):
 
         from celerp.db import SessionLocal as AsyncSessionLocal
         from celerp.models.projections import Projection
-        from celerp_inventory.services import (
-            external_link_for_state,
-            set_external_link_state,
-        )
+        from celerp.connectors.product_links import external_link_for_state
+        from celerp_inventory.services import set_external_link_state
 
         remote_id = payload.get("id")
         parent_id = payload.get("parent_id")

@@ -88,10 +88,13 @@ async def _doc(engine, cid, entity_id: str, **markers) -> None:
 
 
 @pytest_asyncio.fixture
-async def restored(real_engine, real_client, tmp_path, monkeypatch):
+async def restored(real_engine, real_client, tmp_path, monkeypatch, connector_modules_running):
     """A source company with channel-linked, Shopify-opted-in items and imported or pushed
     invoices, restored as a new company. Yields a namespace of both companies."""
     _local(monkeypatch, tmp_path)
+    # The installation loads and runs the modules these records live in, so the copy has them on.
+    monkeypatch.setenv("CELERP_CONFIG", str(tmp_path / "config.toml"))
+    monkeypatch.setenv("ENABLED_MODULES", "celerp-contacts,celerp-docs,celerp-inventory")
     user = await owner(real_engine)
     source = await company(real_engine, user, "Source Trading", "source-marker")
     tok = await token(real_engine, user, source)
@@ -332,7 +335,7 @@ class _Connect:
 async def _observe(engine, cid, eid: str) -> dict:
     """What another request sees right now: ownership and the item's link."""
     from celerp.connectors.ownership import connector_ownership_state
-    from celerp_inventory.services import external_link_for_state
+    from celerp.connectors.product_links import external_link_for_state
     async with maker(engine)() as s:
         state = await connector_ownership_state(s, cid, "woocommerce")
         item = (await s.execute(text("SELECT state FROM projections WHERE company_id = :c AND entity_id = :e"),

@@ -2485,6 +2485,7 @@ async def deactivate_company(
         lock_connector_maintenance,
         record_connector_reset,
     )
+    from celerp.connectors.product_links import detach_product_links
     from celerp.connectors.remote_state import (
         ConnectorRemoteCleanupError,
         revoke_connector_remote_state,
@@ -2506,12 +2507,12 @@ async def deactivate_company(
     )).all())
     # Product links become history before anything is revoked remotely, so a
     # failure here leaves the company and its connections untouched.
-    import celerp_inventory.services as inventory_services
     for platform in PRODUCT_CHANNEL_PLATFORMS:
         try:
-            await inventory_services.detach_external_links_for_platform(
-                session, company_id_str, platform
-            )
+            await detach_product_links(session, company_id_str, platform)
+        except HTTPException:
+            await session.rollback()
+            raise
         except Exception as exc:
             await session.rollback()
             raise HTTPException(

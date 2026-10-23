@@ -1271,11 +1271,9 @@ async def connector_authorize_url(
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=t("connectors.unknown_connector", platform=platform)) from exc
 
-    if platform in PRODUCT_CHANNEL_PLATFORMS:
-        # Connecting moves the store's product links in Inventory; refused before
-        # anything is claimed while the company cannot use it.
-        from celerp.modules.boundary import company_settings, require_on
-        require_on(await company_settings(company_id), "celerp-inventory")
+    # Refused before anything is claimed.
+    from celerp.connectors.product_links import require_inventory_for
+    await require_inventory_for(company_id, platform)
 
     category = getattr(connector.category, "value", connector.category)
     default_frequency = (
@@ -1317,8 +1315,8 @@ async def connector_authorize_url(
         # Old product links become history in the same commit that makes the
         # company the connector's owner.
         if platform in PRODUCT_CHANNEL_PLATFORMS:
-            from celerp_inventory.services import detach_external_links_for_platform
-            await detach_external_links_for_platform(session, company_id, platform)
+            from celerp.connectors.product_links import detach_product_links
+            await detach_product_links(session, company_id, platform)
         await session.commit()
         await lock_connector_operation(
             session, company_id, platform, require_owner=True, exclusive=True

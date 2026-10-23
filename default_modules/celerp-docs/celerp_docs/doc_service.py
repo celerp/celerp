@@ -335,7 +335,8 @@ async def _set_woocommerce_order_stock_paused(session, cid, doc, paused: bool) -
     (``paused``), or resume it for those no other open reconciliation still
     touches. Paused while a person reconciles a refund, so Celerp stock never
     overwrites a restock the merchant chose in WooCommerce."""
-    from celerp_inventory.services import external_link_for_state, set_external_link_state
+    from celerp.connectors.product_links import external_link_for_state
+    from celerp_inventory.services import set_external_link_state
     from celerp.models.projections import Projection
 
     anchors = await _woocommerce_order_anchor_ids(session, cid, doc)
@@ -558,9 +559,9 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
     from celerp.services.pick import consolidate_sales_lots, plan_lot_draws, resolve_pick_method
     from celerp.services.units import is_non_stock_line
     from celerp_inventory.projections import FREE_STOCK, OWN_RESERVED, demand_claim, is_item_available
+    from celerp.connectors.product_links import external_link_for_state
     from celerp_inventory.services import (
         external_identity_key,
-        external_link_for_state,
         load_catalog_family_rows,
         resolve_catalog_anchor_for_item,
         resolve_external_product,
