@@ -100,6 +100,21 @@ def test_damaged_tax_says_which_tax_and_where_to_fix_it(entries, named):
     assert exc.value.detail == t("documents.err_tax_unreadable", "en", tax=named)
 
 
+@pytest.mark.parametrize(("stored", "key"), [(None, "documents.err_tax_unreadable"),
+                                             ({"status": "draft"}, "documents.err_tax_unreadable"),
+                                             ({"status": "finalized"}, "documents.err_tax_unreadable_issued")])
+def test_damaged_tax_on_a_document_past_draft_names_the_way_back_to_draft(stored, key):
+    """The status of the document as stored decides the message: a draft's taxes can be edited,
+    any other's only after Revert to Draft."""
+    from celerp_docs.doc_money import document_money
+
+    line = {"quantity": 1, "unit_price": 100}
+    with pytest.raises(HTTPException) as exc:
+        document_money({"doc_taxes": ["bad"], "status": "draft"}, [line], "USD", keep_unrated_tax=True,
+                       stored=stored)
+    assert exc.value.detail == t(key, "en", tax="bad")
+
+
 def test_online_payment_pause_is_translated():
     from celerp.services import payments
 

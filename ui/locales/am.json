@@ -4478,6 +4478,8 @@
   "documents.err_peer_synced": "{company} ይህን ሰነድ ልኳል፣ ስለዚህ ሊቀይረው ወይም ሊሰርዘው የሚችለው {company} ብቻ ነው። እዚህ ለማስተካከል የሂሳብ መዝገብ (journal entry) ያስገቡ።",
   "documents.err_item_missing": "{where} ከእንግዲህ የሌለ ዕቃ ({ident}) ይጠቀማል። ያንን መስመር ያስወግዱ ወይም ሌላ ዕቃ ይምረጡ፣ ከዚያ እንደገና ያስቀምጡ።",
   "documents.err_tax_unreadable": "A tax on this document can't be read: {tax}. Its totals can't be recalculated until it is removed or chosen again. Remove it from the document's taxes, or pick the line's tax again from the list, then try again.",
+  "documents.err_tax_unreadable_issued": "A tax on this document can't be read: {tax}. Its totals can't be recalculated until the tax is fixed, and only a draft's taxes can be changed. If the document has payments or a credit note, void those first. Then use Revert to Draft, and remove the tax or pick it again from the list.",
+  "documents.err_tax_unreadable_shared": "A tax on the shared document can't be read: {tax}. Ask the sender to correct the tax and share the document again.",
   "documents.err_tax_purchase_only": "{tax} የግዢ ግብር ነው፤ ለምሳሌ ከአቅራቢ የሚቀነስ ግብር፤ ስለዚህ በሽያጭ ሰነድ ላይ መሆን አይችልም። ከዚህ ሰነድ ያስወግዱት።",
   "documents.err_tax_sales_only": "{tax} የሽያጭ ግብር ነው፤ ስለዚህ በግዢ ሰነድ ላይ መሆን አይችልም። ከዚህ ሰነድ ያስወግዱት።",
   "documents.err_contact_not_contact": "የመረጡት እውቂያ የእውቂያ መዝገብ አይደለም። እውቂያውን ከዝርዝሩ እንደገና ይምረጡ።",

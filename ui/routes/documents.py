@@ -3237,7 +3237,7 @@ celerpUpdateBulkAlloc();
     @app.post("/docs/{entity_id}/action/{action}")
     async def doc_action(request: Request, entity_id: str, action: str):
         from starlette.responses import Response as _R
-        from celerp_docs.doc_money import uncomputable_tax
+        from celerp_docs.doc_money import uncomputable_tax, unreadable_tax_refusal
         token = _token(request)
         if not token:
             return _R("", status_code=401, headers={"HX-Redirect": "/login"})
@@ -3297,7 +3297,7 @@ celerpUpdateBulkAlloc();
                 # and its taxes: one it cannot carry is refused by name, never left off the note.
                 source = await api.get_doc(token, entity_id)
                 if (named := uncomputable_tax(source)) is not None:
-                    return _action_error(t("documents.err_tax_unreadable", tax=named))
+                    return _action_error(unreadable_tax_refusal(named, source).detail)
                 line_items = [
                     {k: v for k, v in li.items() if k not in ("id", "line_total")}
                     for li in (source.get("line_items") or [])
@@ -3321,7 +3321,7 @@ celerpUpdateBulkAlloc();
                 # through Return items, so no lines are copied.
                 source = await api.get_doc(token, entity_id)
                 if (named := uncomputable_tax({"doc_taxes": source.get("doc_taxes")})) is not None:
-                    return _action_error(t("documents.err_tax_unreadable", tax=named))
+                    return _action_error(unreadable_tax_refusal(named, source).detail)
                 result = await api.create_doc(token, {
                     "doc_type": "debit_note",
                     "original_doc_id": entity_id,

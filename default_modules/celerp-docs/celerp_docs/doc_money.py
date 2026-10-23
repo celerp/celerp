@@ -20,8 +20,12 @@ class UnratedTaxError(ValueError):
     """The document holds a tax amount with no rate to recompute it from."""
 
 
-def _unreadable(tax: str) -> HTTPException:
-    return HTTPException(status_code=422, detail=t("documents.err_tax_unreadable", tax=tax))
+def unreadable_tax_refusal(tax: str, state: dict | None = None) -> HTTPException:
+    """The 422 refusing a tax it cannot read, named. Only a draft's taxes can be changed, so on a
+    document *state* past draft the message names the way back to one."""
+    issued = (state or {}).get("status") not in (None, "draft")
+    key = "documents.err_tax_unreadable_issued" if issued else "documents.err_tax_unreadable"
+    return HTTPException(status_code=422, detail=t(key, tax=tax))
 
 
 def _definition(entry) -> TaxApplication | None:
@@ -67,15 +71,15 @@ def uncomputable_tax(values: dict) -> str | None:
     return None
 
 
-def refuse_malformed_taxes(values: dict) -> None:
-    """Refuse (422, naming the entry) ``doc_taxes`` or a line's ``taxes`` in *values* holding
-    anything but a list of taxes a total can be computed from (uncomputable_tax). Every write of
-    a document's or a list's taxes checks it, and so does every recalculation of a document's
-    money (document_money), so a value an older version stored is never dropped from a total
-    or charged at another rate in silence."""
+def refuse_malformed_taxes(values: dict, state: dict | None = None) -> None:
+    """Refuse (422, naming the entry; unreadable_tax_refusal on the document *state*)
+    ``doc_taxes`` or a line's ``taxes`` in *values* holding anything but a list of taxes a total
+    can be computed from (uncomputable_tax). Every write of a document's or a list's taxes checks
+    it, and so does every recalculation of a document's money (document_money), so a value an
+    older version stored is never dropped from a total or charged at another rate in silence."""
     named = uncomputable_tax(values)
     if named is not None:
-        raise _unreadable(named)
+        raise unreadable_tax_refusal(named, state)
 
 
 def _line_amount(line: dict):
@@ -108,9 +112,11 @@ def document_money(state: dict, lines: list[dict], currency: str, *, keep_unrate
     refuse rather than change the amount. When *stored* (the document before this
     change) had a rate, its ``tax`` was computed from it, so an edit that removes the
     last rate leaves no tax rather than that amount. A tax entry it cannot read is
-    refused (refuse_malformed_taxes), never left out of the total.
+    refused (refuse_malformed_taxes, by the status of *stored* when given), never left out of
+    the total.
     """
-    refuse_malformed_taxes({"doc_taxes": state.get("doc_taxes"), "line_items": lines})
+    refuse_malformed_taxes({"doc_taxes": state.get("doc_taxes"), "line_items": lines},
+                           stored if stored is not None else state)
     subtotal = round_money(
         sum((_line_amount(line) for line in lines if isinstance(line, dict)), to_decimal(0)),
         currency,

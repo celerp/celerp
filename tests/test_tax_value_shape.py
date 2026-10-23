@@ -29,8 +29,8 @@ _BAD = [("x", "x"), ({"code": "VAT", "rate": 7}, "VAT"), (5, "5"), (["VAT"], "VA
 _TAX = [{"code": "VAT", "rate": 7.0, "amount": 0, "order": 0, "is_compound": False, "label": ""}]
 
 
-def _refused(r, named: str) -> bool:
-    return r.status_code == 422 and r.json().get("detail") == t("documents.err_tax_unreadable", tax=named)
+def _refused(r, named: str, key: str = "documents.err_tax_unreadable") -> bool:
+    return r.status_code == 422 and r.json().get("detail") == t(key, tax=named)
 
 
 async def _draft(client, auth) -> tuple[str, dict]:
@@ -195,7 +195,8 @@ async def test_removing_the_tax_it_cannot_read_lets_the_document_take_the_edit(c
 
 async def test_a_memo_holding_a_tax_it_cannot_read_is_not_converted(client, session):
     """Billing part of a memo line scales its taxes; the Levy it cannot read is not dropped on
-    the way, so the invoice is refused rather than made without it."""
+    the way, so the invoice is refused rather than made without it. The memo is past draft, so
+    the refusal says how to get back to a draft its taxes can be changed on."""
     auth = await _auth_company(session)
     sku = f"TX-{uuid.uuid4().hex[:6]}"
     r = await client.post("/items", headers=auth["headers"], json={
@@ -217,8 +218,43 @@ async def test_a_memo_holding_a_tax_it_cannot_read_is_not_converted(client, sess
     flag_modified(row, "state")
     await session.commit()
     r = await client.post(f"/docs/{memo}/convert", headers=auth["headers"])
-    assert _refused(r, _LEVY), r.text
+    assert _refused(r, _LEVY, "documents.err_tax_unreadable_issued"), r.text
     assert (await client.get(f"/docs/{memo}", headers=auth["headers"])).json()["status"] != "converted"
+
+
+@pytest.mark.parametrize(("status", "key"), [("draft", "documents.err_tax_unreadable"),
+                                           ("sent", "documents.err_tax_unreadable_issued"),
+                                           ("paid", "documents.err_tax_unreadable_issued")])
+@pytest.mark.parametrize(("doc_type", "action"), [("invoice", "create-credit-note"),
+                                                  ("bill", "create-supplier-credit-note")])
+async def test_a_credit_note_refusal_says_what_to_do_on_the_source_as_it_stands(ui_client, status, key,
+                                                                               doc_type, action):
+    """A credit note is made from an issued document, whose taxes only change on a draft, so the
+    refusal names the way back to one rather than an edit the page does not offer."""
+    import json
+
+    source = {**_STORED, "doc_type": doc_type, "status": status, "doc_taxes": [_VAT_7, _LEVY]}
+    created = AsyncMock(return_value={"id": "doc:CN-1"})
+    ui_client.cookies.update(_authed())
+    with patch("ui.api_client.get_doc", new=AsyncMock(return_value=source)), \
+         patch("ui.api_client.create_doc", new=created):
+        r = await ui_client.post(f"/docs/doc:INV-1/action/{action}")
+    toast = json.loads(r.headers.get("HX-Trigger") or "{}").get("celerpToast") or {}
+    assert toast.get("message") == t(key, tax=_LEVY), (r.status_code, r.headers)
+    created.assert_not_awaited()
+
+
+async def test_only_the_one_helper_and_the_share_import_choose_an_unreadable_tax_message():
+    """Every refusal of a tax it cannot read goes through doc_money.unreadable_tax_refusal, which
+    picks the message by the document's status, or names the sender on a shared import, so no
+    caller tells a user to edit taxes on a document past draft."""
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    users = sorted(str(p.relative_to(root)) for top in ("celerp", "default_modules", "ui")
+                   for p in (root / top).rglob("*.py") if '"documents.err_tax_unreadable' in p.read_text())
+    assert users == ["default_modules/celerp-docs/celerp_docs/doc_money.py",
+                     "default_modules/celerp-docs/celerp_docs/routes_share.py"], users
 
 
 async def test_a_received_document_takes_only_its_tax_objects_as_a_list_rate():

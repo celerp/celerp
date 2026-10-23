@@ -157,10 +157,11 @@ def _str(v, limit: int = _MAX_STR) -> str | None:
 
 def _sanitize_taxes(raw) -> list[TaxApplication]:
     """The bundle's taxes as tax definitions, amounts left to be recomputed. A tax entry that
-    cannot be read is refused by name, never dropped from the totals."""
+    cannot be read is refused by name, never dropped from the totals; only its sender can
+    correct it."""
     named = unreadable_tax(raw)
     if named is not None:
-        raise HTTPException(status_code=422, detail=t("documents.err_tax_unreadable", tax=named))
+        raise HTTPException(status_code=422, detail=t("documents.err_tax_unreadable_shared", tax=named))
     out: list[TaxApplication] = []
     for tax in (raw or [])[:20]:
         out.append(TaxApplication(

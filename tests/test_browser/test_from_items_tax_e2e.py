@@ -30,6 +30,8 @@ import httpx
 import psycopg2
 import pytest
 
+from ui.i18n import t
+
 from .conftest import _API_LIMITS
 from .test_demo_items_link import _seed_demo_items
 from .test_reserved_conflict_modal import _picker_add
@@ -587,7 +589,7 @@ def test_a_supplier_credit_note_keeps_the_tax_of_a_bill_taxed_as_a_whole(api_ser
 def test_a_credit_note_is_refused_naming_a_tax_it_cannot_read(api_server, ui_server, api, doc_type, action, levy):
     """An issued $100 document charging VAT 7% and a "Levy 5%" stored in a shape no write takes
     (tax 12, total 112): no credit note is made, and the refusal names the levy rather than leaving
-    it out."""
+    it out, and says how to get the issued document back to a draft its taxes can be changed on."""
     with _demo_company(api_server, ui_server, api, "TH") as (company, ui, _, _items):
         doc_id = _issued(company, doc_type, quantity=1)
         _store_doc_taxes(company.get("/companies/me").json()["id"], doc_id,
@@ -595,5 +597,6 @@ def test_a_credit_note_is_refused_naming_a_tax_it_cannot_read(api_server, ui_ser
         r = ui.post(f"/docs/{doc_id}/action/{action}")
         notes = company.get("/docs", params={"doc_type": "credit_note" if doc_type == "invoice" else "debit_note"})
     toast = json.loads(r.headers.get("HX-Trigger") or "{}").get("celerpToast") or {}
-    assert toast.get("type") == "error" and "Levy 5%" in toast.get("message", ""), (r.status_code, r.headers)
+    assert toast.get("type") == "error", (r.status_code, r.headers)
+    assert toast.get("message") == t("documents.err_tax_unreadable_issued", tax="Levy 5%"), toast
     assert notes.json()["items"] == [], notes.text
