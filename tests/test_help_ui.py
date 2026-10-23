@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from urllib.parse import urlencode
 
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 
@@ -22,7 +23,7 @@ from celerp.help import registry
 from celerp.help.schema import HelpPage
 from ui.api_client import APIError
 from ui.i18n import t
-from test_helpers import make_test_token, register_admin, ui_get
+from test_helpers import invite_user, make_test_token, register_admin, ui_get
 
 _GOOD = Path(__file__).parent / "fixtures" / "help" / "good"
 
@@ -156,6 +157,30 @@ async def test_help_for_page_lists_matching_pages(client, ui_client, pages):
     page = await ui_get(headers, "/help")
     assert 'hx-get="/help/for-page"' in page.text
     assert 'hx-vals="js:{path: location.pathname + location.search}"' in page.text
+
+
+@pytest.mark.asyncio
+async def test_help_for_page_long_list_address(client, pages):
+    """Help for this page on a list whose address is long (a split's sku list, a non-Latin
+    search) lists the list's pages; past the address bound the query is left out."""
+    headers = {"Authorization": f"Bearer {await register_admin(client)}"}
+    for address in ("/inventory?skus=" + "A" * 1000, "/inventory?q=" + "%E0%B8%81" * 2000):
+        r = await ui_get(headers, "/help/for-page?" + urlencode({"path": address}))
+        assert r.status_code == 200
+        assert t("help.load_failed") not in r.text
+        assert 'href="/help/inventory.add-item"' in r.text
+
+
+@pytest.mark.asyncio
+async def test_global_config_unknown_tab_shows_company_for_every_admin(client, session):
+    """An admin who is not the owner asking for a tab that does not exist sees the Company
+    tab, and the Help slot names that tab."""
+    owner = {"Authorization": f"Bearer {await register_admin(client)}"}
+    admin_token = await invite_user(client, session, owner, "adm@help.example", "admin")
+    for headers in (owner, {"Authorization": f"Bearer {admin_token}"}):
+        page = await ui_get(headers, "/settings/general?" + urlencode({"tab": "bogus&tab=users"}))
+        assert page.status_code == 200
+        assert 'hx-vals=\'{"path": "/settings/general?tab=company"}\'' in page.text
 
 
 @pytest.mark.asyncio

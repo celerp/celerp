@@ -130,6 +130,20 @@ async def test_help_for_route_matches_patterns(client, help_pages):
                              headers=headers)).status_code == 422
 
 
+async def test_help_for_route_long_list_address(client, help_pages):
+    """A list address carries its filters (a split's sku list, an encoded search), so only
+    the path part is held to the path bound; the whole address gets the address bound."""
+    headers = await _headers(client)
+    short = await client.get("/help/for-route", params={"path": "/inventory"}, headers=headers)
+    r = await client.get("/help/for-route", params={"path": "/inventory?skus=" + "A" * 1000},
+                         headers=headers)
+    assert r.status_code == 200
+    assert r.json()["pages"] == short.json()["pages"] != []
+    for path in ("/" + "a" * 300 + "?x=1", "/inventory?q=" + "a" * 4096):
+        assert (await client.get("/help/for-route", params={"path": path},
+                                 headers=headers)).status_code == 422
+
+
 async def test_help_routes_are_agent_tools():
     compiled = ai_tools.compile_agent_capabilities(real_agent_app(), {})
     assert compiled["help_search"]["path"] == "/help/search"

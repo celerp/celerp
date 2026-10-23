@@ -14,7 +14,7 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, RedirectResponse, Response
 
 import ui.api_client as api
-from celerp.help.registry import CORE, get_index
+from celerp.help.registry import CORE, MAX_ADDRESS_LEN, get_index
 from celerp.help.schema import HelpPage
 from celerp.modules.loader import module_label
 from ui.api_client import APIError
@@ -140,8 +140,11 @@ def setup_routes(app):
         if not token:
             return RedirectResponse(_LOGIN, status_code=302)
         lang = get_lang(request)
+        address = request.query_params.get("path", "/")
+        if len(address) > MAX_ADDRESS_LEN:  # a list's filters past the bound: its path still has pages
+            address = address.partition("?")[0]
         try:
-            pages = (await api.help_for_route(token, request.query_params.get("path", "/")))["pages"]
+            pages = (await api.help_for_route(token, address))["pages"]
             listing: FT = (Ul(*[_page_link(p) for p in pages], cls="help-list") if pages
                            else P(t("help.none_for_this_page", lang), cls="help-panel__none"))
         except APIError as e:

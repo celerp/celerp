@@ -477,7 +477,7 @@
     "query:year": "Year to review, as a four-digit year such as 2026."
   },
   "GET /help/for-route": {
-    "query:path": "Path of the screen to find help pages for, starting with a slash."
+    "query:path": "Address of the screen to find help pages for, starting with a slash, with its query if it has one. The path part is at most 300 characters and the whole address at most 4096."
   },
   "GET /help/page/{page_id}": {
     "path:page_id": "Identifier of the help page, as returned by help search."

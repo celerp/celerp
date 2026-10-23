@@ -20,6 +20,8 @@ log = logging.getLogger(__name__)
 
 CORE_HELP_DIR = Path(__file__).resolve().parent / "pages"
 CORE = "core"
+# The longest screen address (path and query) a "Help for this page" lookup takes.
+MAX_ADDRESS_LEN = 4096
 
 
 @dataclass(frozen=True)

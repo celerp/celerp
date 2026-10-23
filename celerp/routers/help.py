@@ -12,12 +12,14 @@ from __future__ import annotations
 
 import re
 from functools import lru_cache
+from typing import Annotated
 from urllib.parse import parse_qsl
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import AfterValidator
 
 from celerp.help import search as help_search_mod
-from celerp.help.registry import get_index
+from celerp.help.registry import MAX_ADDRESS_LEN, get_index
 from celerp.help.render import render_step
 from celerp.help.schema import HelpPage
 from celerp.services.auth import get_current_role, get_current_user
@@ -103,10 +105,19 @@ def _covers(route: str, path: str, query: set[tuple[str, str]]) -> bool:
             and set(parse_qsl(route_query)) <= query)
 
 
+def _short_path(address: str) -> str:
+    if len(address.partition("?")[0]) > _MAX_PATH_LEN:
+        raise ValueError(f"the path part is longer than {_MAX_PATH_LEN} characters")
+    return address
+
+
 @router.get("/help/for-route")
-async def help_for_route(path: str = Query(..., max_length=_MAX_PATH_LEN, pattern=r"^/")) -> dict:
+async def help_for_route(
+    path: Annotated[str, AfterValidator(_short_path), Query(max_length=MAX_ADDRESS_LEN, pattern=r"^/")],
+) -> dict:
     """The help pages that cover the screen at ``path`` (its query included), for the top
-    bar Help panel."""
+    bar Help panel. A list address carries its filters, so the query may run long; the
+    path part is held to a path's length."""
     path, _, query = path.partition("?")
     pairs = set(parse_qsl(query))
     pages = [p for p in get_index().pages.values() if any(_covers(r, path, pairs) for r in p.routes)]
