@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 import time
+import uuid
 
 import pytest
 
@@ -92,5 +93,26 @@ def test_stored_doc_tax_survives_a_line_edit_on_screen(page, ui_server, api):
     stored = _poll(api, doc["id"], lambda d: abs(float(d.get("subtotal") or 0) - 200.0) < 0.01)
     assert stored is not None, "the quantity edit was not saved"
     assert len(stored.get("doc_taxes") or []) == 2, stored.get("doc_taxes")
+    _shown_total_equals(page, float(stored["total"]))
+    _shown_amount_equals(page, "#doc-outstanding", float(stored["amount_outstanding"]))
+
+
+def test_stored_doc_tax_follows_a_scan_on_screen(page, ui_server, api):
+    # A scan reinstalls the stored rows; the tax, total and outstanding beside them are the stored ones too.
+    tag = uuid.uuid4().hex[:6]
+    r = api.post("/items", json={"status": "available", "sku": f"STX-{tag}", "name": "Scan Taxed", "sell_by": "piece",
+                                  "quantity": 10, "retail_price": 6.0})
+    assert r.status_code in {200, 201}, r.text
+    doc = _draft(api, [_PLAIN])
+    page.goto(f"{ui_server}/docs/{doc['id']}", wait_until="domcontentloaded")
+    page.wait_for_selector("#scan-bar-input", timeout=8000)
+    page.locator("#scan-bar-input").fill(f"STX-{tag}")
+    page.locator("#scan-bar-add").click()
+    stored = _poll(api, doc["id"], lambda d: len(d.get("line_items") or []) == 2)
+    assert stored is not None, "the scanned item was not added"
+    page.wait_for_selector(f'#line-body [data-name="sku"][value="STX-{tag}"]', timeout=8000)
+    tax = float(stored["doc_taxes"][0]["amount"])
+    assert abs(tax - 5.0) > 0.005, stored["doc_taxes"]
+    _shown_amount_equals(page, '#doc-stored-tax-rows [data-doc-tax-index="0"] .total-value', tax)
     _shown_total_equals(page, float(stored["total"]))
     _shown_amount_equals(page, "#doc-outstanding", float(stored["amount_outstanding"]))

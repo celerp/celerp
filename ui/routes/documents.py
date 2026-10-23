@@ -8947,7 +8947,8 @@ function celerpUpdateTotals() {{
     }}
 }}
 // Document-level taxes keep the amounts the server last computed (#doc-stored-tax-rows); the
-// page never recomputes them, and each line save swaps in the server's new rows.
+// page never recomputes them: each line save, and each install of the stored lines, swaps in the
+// server's rows (_celerpShowStoredMoney).
 function _celerpStoredTax() {{
     let sum = 0;
     document.querySelectorAll('#doc-stored-tax-rows [data-amount]').forEach(r => {{
@@ -9247,10 +9248,24 @@ function _celerpMarkScanned(scroll) {{
     }});
     if (scroll && first) first.scrollIntoView({{block: 'nearest'}});
 }}
+/* The document taxes, total and outstanding the server stored, put in place of the page's copy.
+   Every path that installs stored lines takes the stored money with them, so the figures beside
+   the lines always belong to them. */
+function _celerpShowStoredMoney(storedTaxRowsHtml, total, outstanding) {{
+    const storedEl = document.getElementById('doc-stored-tax-rows');
+    if (storedEl && storedTaxRowsHtml != null) storedEl.outerHTML = storedTaxRowsHtml;
+    const totEl = document.getElementById('doc-total');
+    if (totEl && total) totEl.textContent = total;
+    const owedEl = document.getElementById('doc-outstanding');
+    if (owedEl && outstanding) owedEl.textContent = outstanding;
+}}
 async function _celerpInstallLineBody(html, version) {{
+    let page = null;
+    const revision = window._celerpLineRevision;
     if (!html) {{
         const fresh = await _celerpFetchLineBody();
         html = fresh ? fresh.outerHTML : '';
+        page = fresh ? fresh.ownerDocument : null;
     }}
     const tbody = document.getElementById('{line_body_id}');
     if (!tbody || !html) return false;
@@ -9264,6 +9279,15 @@ async function _celerpInstallLineBody(html, version) {{
     // The installed rows are the stored window now, so the next save replaces exactly them.
     if (swapped.dataset.lineCount != null) _CELERP_ORIGINAL_COUNT = Number(swapped.dataset.lineCount);
     celerpUpdateTotals();
+    // An edit made while the page was fetched (a document tax removed) stays: its own save
+    // brings the server's figures.
+    if (page && revision === window._celerpLineRevision) {{
+        const stored = page.getElementById('doc-stored-tax-rows');
+        const total = page.getElementById('doc-total');
+        const owed = page.getElementById('doc-outstanding');
+        _celerpShowStoredMoney(stored ? stored.outerHTML : null, total && total.textContent,
+                               owed && owed.textContent);
+    }}
     _celerpMarkScanned(false);
     _celerpHadLines = true;
     if (version != null) _celerpEntityVersion = version;
@@ -9337,12 +9361,7 @@ async function _celerpRefreshHeldBadges() {{
             // The server's document taxes, total and outstanding for what was just saved, unless a newer
             // edit is already pending (its own save brings fresher figures).
             if (data && data.stored_tax_rows_html != null && revision === window._celerpLineRevision) {{
-                const storedEl = document.getElementById('doc-stored-tax-rows');
-                if (storedEl) storedEl.outerHTML = data.stored_tax_rows_html;
-                const totEl = document.getElementById('doc-total');
-                if (totEl && data.total) totEl.textContent = data.total;
-                const owedEl = document.getElementById('doc-outstanding');
-                if (owedEl && data.outstanding) owedEl.textContent = data.outstanding;
+                _celerpShowStoredMoney(data.stored_tax_rows_html, data.total, data.outstanding);
             }}
         }} catch (_e) {{}}
         // The rows just written become this page's stored window, so a follow-up save
