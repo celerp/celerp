@@ -4434,7 +4434,7 @@
   "documents.err_already_submitted": "This was already submitted with different details, possibly from another tab. Select Try again.",
   "documents.err_peer_synced": "{company} sent this document, so only {company} can change or void it. To correct it here, post a journal entry.",
   "documents.err_item_missing": "{where} uses an item that no longer exists ({ident}). Remove that line or choose another item, then save again.",
-  "documents.err_tax_invalid": "A tax on this document is set up incorrectly, so prices can't be recalculated. Open ⚙️ Sales Documents, Taxes, fix the tax rate used here, then try again.",
+  "documents.err_tax_unreadable": "A tax on this document can't be read: {tax}. Its totals can't be recalculated until it is removed or chosen again. Remove it from the document's taxes, or pick the line's tax again from the list, then try again.",
   "documents.err_tax_purchase_only": "{tax} is a purchase tax, such as tax withheld from a supplier, so it can't go on a sales document. Remove it from this document.",
   "documents.err_tax_sales_only": "{tax} is a sales tax, so it can't go on a purchase document. Remove it from this document.",
   "documents.err_contact_not_contact": "The contact you chose isn't a contact record. Choose the contact again from the list.",

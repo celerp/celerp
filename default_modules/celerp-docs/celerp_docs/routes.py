@@ -47,7 +47,7 @@ from celerp.services.lot_origin import in_stock, is_stock_type, rerun_after_plac
 from celerp.services.physical_codes import lock_item_code_namespace
 from celerp.services.peer_import import SourceRevision, peer_batch, receive_file
 from celerp.services.payments import recorded_unmatched, return_unmatched
-from celerp.tax_regimes import default_line_taxes, side_taxes, tax_entries
+from celerp.tax_regimes import default_line_taxes, side_taxes
 from celerp.services.business_time import business_date_at, business_date_of, company_today
 from celerp.services.landed_cost import compute_bill_landed_allocation
 from celerp.services.line_measures import (FULL, floor_to_unit, line_label, proposed_sell_qty, splitting_allowed,
@@ -7434,12 +7434,14 @@ async def convert_doc(entity_id: str, payload: DocConvertBody | None = None, com
                 if _line.get("line_total") is not None:
                     billed["line_total"] = to_stored_float(round_money(
                         to_decimal(_line["line_total"]) * _kept, _currency))
-                if tax_entries(_line.get("taxes")):
+                # An entry that is not a tax stays as it is, so the money below refuses it.
+                if isinstance(_line.get("taxes"), list):
                     billed["taxes"] = [
-                        {**tx, "amount": to_stored_float(round_money(
+                        ({**tx, "amount": to_stored_float(round_money(
                             to_decimal(tx.get("amount") or 0) * _kept, _currency))}
-                        if tx.get("amount") is not None else {**tx}
-                        for tx in tax_entries(_line["taxes"])
+                         if tx.get("amount") is not None else {**tx})
+                        if isinstance(tx, dict) else tx
+                        for tx in _line["taxes"]
                     ]
             billed_by_bound_eid[_lot_eid] = billed
 

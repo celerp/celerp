@@ -4434,7 +4434,7 @@
   "documents.err_already_submitted": "تم إرسال هذا من قبل بتفاصيل مختلفة، ربما من علامة تبويب أخرى. اختر إعادة المحاولة.",
   "documents.err_peer_synced": "أرسلت {company} هذا المستند، لذا لا يمكن تعديله أو إلغاؤه إلا من {company}. لتصحيحه هنا، سجّل قيد يومية (journal entry).",
   "documents.err_item_missing": "{where} يستخدم صنفًا لم يعد موجودًا ({ident}). احذف ذلك السطر أو اختر صنفًا آخر، ثم احفظ مرة أخرى.",
-  "documents.err_tax_invalid": "تم إعداد ضريبة في هذا المستند بشكل غير صحيح، لذا لا يمكن إعادة حساب الأسعار. افتح ⚙️ Sales Documents، ثم الضرائب، وصحّح نسبة الضريبة المستخدمة هنا، ثم حاول مرة أخرى.",
+  "documents.err_tax_unreadable": "A tax on this document can't be read: {tax}. Its totals can't be recalculated until it is removed or chosen again. Remove it from the document's taxes, or pick the line's tax again from the list, then try again.",
   "documents.err_tax_purchase_only": "{tax} ضريبة مشتريات، مثل الضريبة المقتطعة من مورد، لذا لا يمكن وضعها على مستند مبيعات. أزلها من هذا المستند.",
   "documents.err_tax_sales_only": "{tax} ضريبة مبيعات، لذا لا يمكن وضعها على مستند مشتريات. أزلها من هذا المستند.",
   "documents.err_contact_not_contact": "جهة الاتصال التي اخترتها ليست سجل جهة اتصال. اختر جهة الاتصال مرة أخرى من القائمة.",

@@ -11,7 +11,7 @@ from __future__ import annotations
 from fastapi import HTTPException
 
 from celerp.services.money import round_money, to_decimal, to_stored_float
-from celerp.tax_regimes import tax_entries, well_formed_taxes
+from celerp.tax_regimes import tax_entries, tax_text, unreadable_tax
 from celerp_docs.taxes import TaxApplication, compute_tax_amounts
 from ui.i18n import t
 
@@ -20,30 +20,36 @@ class UnratedTaxError(ValueError):
     """The document holds a tax amount with no rate to recompute it from."""
 
 
-def _recompute_tax_applications(entries: list[dict], base, currency: str):
-    """Recompute stored tax definitions (tax_entries) against a new base, never stale amounts."""
-    try:
-        definitions = [TaxApplication.model_validate({**value, "amount": 0.0}) for value in entries]
-    except Exception as exc:
-        raise HTTPException(
-            status_code=422,
-            detail=t("documents.err_tax_invalid"),
-        ) from exc
+def _unreadable(tax: str) -> HTTPException:
+    return HTTPException(status_code=422, detail=t("documents.err_tax_unreadable", tax=tax))
+
+
+def _recompute_tax_applications(entries: list, base, currency: str):
+    """Recompute stored tax definitions against a new base, never stale amounts. An entry that
+    is not a tax this can recompute is refused by name."""
+    definitions = []
+    for value in entries:
+        try:
+            definitions.append(TaxApplication.model_validate({**value, "amount": 0.0}))
+        except Exception as exc:
+            raise _unreadable(tax_text(value)) from exc
     resolved = compute_tax_amounts(definitions, to_stored_float(round_money(base, currency)), currency)
     return [item.model_dump() for item in resolved], sum(
         (to_decimal(item.amount) for item in resolved), to_decimal(0))
 
 
 def refuse_malformed_taxes(values: dict) -> None:
-    """Refuse (422) ``doc_taxes`` or a line's ``taxes`` in *values* given as anything but a
-    list of tax objects. Every write of a document's or a list's taxes checks it, so nothing
-    stored holds a tax value its totals and pages cannot read."""
+    """Refuse (422, naming the entry) ``doc_taxes`` or a line's ``taxes`` in *values* holding
+    anything but a list of tax objects. Every write of a document's or a list's taxes checks
+    it, and so does every recalculation of a document's money (document_money), so a value an
+    older version stored is never dropped from a total in silence."""
     lines = values.get("line_items")
     held = [values.get("doc_taxes")]
     if isinstance(lines, list):
         held += [line.get("taxes") for line in lines if isinstance(line, dict)]
-    if not all(well_formed_taxes(value) for value in held):
-        raise HTTPException(status_code=422, detail=t("documents.err_tax_invalid"))
+    named = next((tax for tax in map(unreadable_tax, held) if tax is not None), None)
+    if named is not None:
+        raise _unreadable(named)
 
 
 def _line_amount(line: dict):
@@ -75,8 +81,10 @@ def document_money(state: dict, lines: list[dict], currency: str, *, keep_unrate
     amount stands as it is, otherwise UnratedTaxError is raised so the caller can
     refuse rather than change the amount. When *stored* (the document before this
     change) had a rate, its ``tax`` was computed from it, so an edit that removes the
-    last rate leaves no tax rather than that amount.
+    last rate leaves no tax rather than that amount. A tax entry it cannot read is
+    refused (refuse_malformed_taxes), never left out of the total.
     """
+    refuse_malformed_taxes({"doc_taxes": state.get("doc_taxes"), "line_items": lines})
     subtotal = round_money(
         sum((_line_amount(line) for line in lines if isinstance(line, dict)), to_decimal(0)),
         currency,

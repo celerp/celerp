@@ -11,6 +11,7 @@ import pytest
 from httpx import AsyncClient
 
 from celerp_docs.doc_constants import SHAREABLE_DOC_TYPES
+from ui.i18n import t
 
 
 # ---------------------------------------------------------------------------
@@ -750,6 +751,35 @@ async def test_import_recomputes_total_and_drops_unknown_fields(client: AsyncCli
     assert doc["subtotal"] == 1000.0
     assert "amount_paid" not in doc
     assert "injected_field" not in doc
+
+
+_VAT_7 = {"code": "VAT", "rate": 7.0, "amount": 7.0, "order": 0, "is_compound": False, "label": ""}
+
+
+@pytest.mark.parametrize("where", ["doc_taxes", "taxes"])
+def test_a_shared_document_carries_a_tax_it_cannot_read_as_its_text(where):
+    """A Levy 5% an older version stored as plain text leaves in the bundle as that text, never
+    dropped, so the recipient is told about it instead of receiving totals without it."""
+    from celerp_docs.routes_share import _public_bundle_doc
+
+    line = {"description": "S", "quantity": 1, "unit_price": 100.0}
+    doc = {"doc_type": "invoice", "currency": "USD", "line_items": [line]}
+    (doc if where == "doc_taxes" else line)[where] = [_VAT_7, "Levy 5%"]
+    public = _public_bundle_doc(doc)
+    held = public["doc_taxes"] if where == "doc_taxes" else public["line_items"][0]["taxes"]
+    assert held == [_VAT_7, "Levy 5%"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("where", ["doc_taxes", "taxes"])
+async def test_import_refuses_a_tax_it_cannot_read_naming_it(client: AsyncClient, where):
+    tok = await _token(client)
+    line = {"description": "S", "quantity": 1, "unit_price": 100.0}
+    doc = {"doc_type": "invoice", "currency": "USD", "line_items": [line]}
+    (doc if where == "doc_taxes" else line)[where] = [_VAT_7, "Levy 5%"]
+    r = await _import(client, tok, doc)
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"] == t("documents.err_tax_unreadable", tax="Levy 5%")
 
 
 @pytest.mark.asyncio

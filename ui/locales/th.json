@@ -4434,7 +4434,7 @@
   "documents.err_already_submitted": "รายการนี้ถูกส่งไปแล้วด้วยรายละเอียดที่ต่างกัน อาจมาจากแท็บอื่น เลือก ลองอีกครั้ง",
   "documents.err_peer_synced": "{company} เป็นผู้ส่งเอกสารนี้ จึงมีเพียง {company} ที่แก้ไขหรือยกเลิกได้ หากต้องการแก้ไขที่นี่ ให้บันทึกรายการบัญชี (journal entry)",
   "documents.err_item_missing": "{where} ใช้สินค้าที่ไม่มีอยู่แล้ว ({ident}) ลบบรรทัดนั้นหรือเลือกสินค้าอื่น แล้วบันทึกอีกครั้ง",
-  "documents.err_tax_invalid": "ภาษีในเอกสารนี้ตั้งค่าไม่ถูกต้อง จึงคำนวณราคาใหม่ไม่ได้ เปิด ⚙️ Sales Documents แท็บ ภาษี แก้อัตราภาษีที่ใช้ที่นี่ แล้วลองอีกครั้ง",
+  "documents.err_tax_unreadable": "A tax on this document can't be read: {tax}. Its totals can't be recalculated until it is removed or chosen again. Remove it from the document's taxes, or pick the line's tax again from the list, then try again.",
   "documents.err_tax_purchase_only": "{tax} เป็นภาษีฝั่งซื้อ เช่น ภาษีหัก ณ ที่จ่ายของผู้ขาย จึงใช้กับเอกสารขายไม่ได้ ลบออกจากเอกสารนี้",
   "documents.err_tax_sales_only": "{tax} เป็นภาษีฝั่งขาย จึงใช้กับเอกสารซื้อไม่ได้ ลบออกจากเอกสารนี้",
   "documents.err_contact_not_contact": "รายชื่อที่คุณเลือกไม่ใช่ระเบียนผู้ติดต่อ เลือกผู้ติดต่อจากรายการอีกครั้ง",

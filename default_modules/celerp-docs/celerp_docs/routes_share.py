@@ -51,7 +51,7 @@ from celerp.output.doc_print import (
 )
 from celerp.output.share_render import _not_found_page
 from celerp.output.document_context import prepare_document_output
-from celerp.tax_regimes import tax_entries
+from celerp.tax_regimes import tax_text, unreadable_tax
 from celerp_docs import received
 from celerp_docs.doc_constants import SHAREABLE_DOC_TYPES, is_shareable, share_doc_type
 from celerp_docs.doc_money import UnratedTaxError, document_money
@@ -156,30 +156,39 @@ def _str(v, limit: int = _MAX_STR) -> str | None:
 
 
 def _sanitize_taxes(raw) -> list[TaxApplication]:
+    """The bundle's taxes as tax definitions, amounts left to be recomputed. A tax entry that
+    cannot be read is refused by name, never dropped from the totals."""
+    named = unreadable_tax(raw)
+    if named is not None:
+        raise HTTPException(status_code=422, detail=t("documents.err_tax_unreadable", tax=named))
     out: list[TaxApplication] = []
-    for t in tax_entries(raw)[:20]:
+    for tax in (raw or [])[:20]:
         out.append(TaxApplication(
-            code=str(t.get("code") or "")[:64],
-            rate=_num(t.get("rate")),
+            code=str(tax.get("code") or "")[:64],
+            rate=_num(tax.get("rate")),
             amount=0.0,  # recomputed below — never trust the sender's amount
-            order=int(_num(t.get("order"))),
-            is_compound=bool(t.get("is_compound")),
-            label=str(t.get("label") or "")[:64],
+            order=int(_num(tax.get("order"))),
+            is_compound=bool(tax.get("is_compound")),
+            label=str(tax.get("label") or "")[:64],
         ))
     return out
 
 
-def _public_taxes(raw) -> list[dict]:
+def _public_taxes(raw) -> list:
+    """The taxes a bundle carries. An entry that is not a tax object leaves as its text
+    (tax_text), so the recipient is told about it rather than given totals without it."""
+    if raw is None:
+        return []
     return [
         {
-            "code": str(t.get("code") or "")[:64],
-            "rate": _num(t.get("rate")),
-            "amount": _num(t.get("amount")),
-            "order": int(_num(t.get("order"))),
-            "is_compound": bool(t.get("is_compound")),
-            "label": str(t.get("label") or "")[:64],
-        }
-        for t in tax_entries(raw)[:20]
+            "code": str(tax.get("code") or "")[:64],
+            "rate": _num(tax.get("rate")),
+            "amount": _num(tax.get("amount")),
+            "order": int(_num(tax.get("order"))),
+            "is_compound": bool(tax.get("is_compound")),
+            "label": str(tax.get("label") or "")[:64],
+        } if isinstance(tax, dict) else tax_text(tax)
+        for tax in (raw if isinstance(raw, list) else [raw])[:20]
     ]
 
 

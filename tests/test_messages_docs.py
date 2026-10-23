@@ -90,12 +90,13 @@ def test_shipment_values_name_the_bad_value():
         _validate_shipment_values({"reason_for_export": "nap"})
 
 
-def test_damaged_tax_says_where_to_fix_it():
+@pytest.mark.parametrize(("entries", "named"), [(["bad"], "bad"), ([{"code": "VAT", "rate": "seven"}], "VAT")])
+def test_damaged_tax_says_which_tax_and_where_to_fix_it(entries, named):
     from celerp_docs.doc_money import _recompute_tax_applications
 
     with pytest.raises(HTTPException) as exc:
-        _recompute_tax_applications(["bad"], 100, "USD")
-    assert exc.value.detail == t("documents.err_tax_invalid", "en")
+        _recompute_tax_applications(entries, 100, "USD")
+    assert exc.value.detail == t("documents.err_tax_unreadable", "en", tax=named)
 
 
 def test_online_payment_pause_is_translated():

@@ -4434,7 +4434,7 @@
   "documents.err_already_submitted": "Isto já foi enviado com outros dados, talvez de outra aba. Selecione Tentar novamente.",
   "documents.err_peer_synced": "{company} enviou este documento, então só {company} pode alterá-lo ou anulá-lo. Para corrigi-lo aqui, registre um lançamento (journal entry).",
   "documents.err_item_missing": "{where} usa um item que não existe mais ({ident}). Remova essa linha ou escolha outro item e salve novamente.",
-  "documents.err_tax_invalid": "Um imposto deste documento está configurado incorretamente, então os preços não podem ser recalculados. Abra ⚙️ Sales Documents, Impostos, corrija a alíquota usada aqui e tente novamente.",
+  "documents.err_tax_unreadable": "A tax on this document can't be read: {tax}. Its totals can't be recalculated until it is removed or chosen again. Remove it from the document's taxes, or pick the line's tax again from the list, then try again.",
   "documents.err_tax_purchase_only": "{tax} é um imposto de compra, como uma retenção a um fornecedor, por isso não pode ir num documento de venda. Remova-o deste documento.",
   "documents.err_tax_sales_only": "{tax} é um imposto de venda, por isso não pode ir num documento de compra. Remova-o deste documento.",
   "documents.err_contact_not_contact": "O contato escolhido não é um registro de contato. Escolha o contato de novo na lista.",

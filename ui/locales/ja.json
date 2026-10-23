@@ -4434,7 +4434,7 @@
   "documents.err_already_submitted": "これは別の内容ですでに送信されています。別のタブから送信された可能性があります。「再試行」を選んでください。",
   "documents.err_peer_synced": "この書類は{company}から送られたため、変更や取り消しができるのは{company}だけです。ここで訂正するには仕訳（journal entry）を記帳してください。",
   "documents.err_item_missing": "{where} は存在しなくなった品目 ({ident}) を使っています。その行を削除するか別の品目を選んでから、もう一度保存してください。",
-  "documents.err_tax_invalid": "この書類の税の設定が正しくないため、価格を再計算できません。⚙️ Sales Documents の「税金」を開き、ここで使われている税率を直してから、もう一度お試しください。",
+  "documents.err_tax_unreadable": "A tax on this document can't be read: {tax}. Its totals can't be recalculated until it is removed or chosen again. Remove it from the document's taxes, or pick the line's tax again from the list, then try again.",
   "documents.err_tax_purchase_only": "{tax} は仕入側の税（仕入先からの源泉徴収税など）のため、販売書類には使えません。この書類から削除してください。",
   "documents.err_tax_sales_only": "{tax} は販売側の税のため、仕入書類には使えません。この書類から削除してください。",
   "documents.err_contact_not_contact": "選んだ連絡先は連絡先レコードではありません。一覧から連絡先を選び直してください。",

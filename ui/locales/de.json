@@ -4434,7 +4434,7 @@
   "documents.err_already_submitted": "Dies wurde bereits mit anderen Angaben gesendet, möglicherweise aus einem anderen Tab. Wählen Sie „Erneut versuchen“.",
   "documents.err_peer_synced": "{company} hat dieses Dokument gesendet, daher kann nur {company} es ändern oder stornieren. Um es hier zu korrigieren, buchen Sie einen Buchungssatz (journal entry).",
   "documents.err_item_missing": "{where} verwendet einen Artikel, den es nicht mehr gibt ({ident}). Entfernen Sie diese Zeile oder wählen Sie einen anderen Artikel und speichern Sie erneut.",
-  "documents.err_tax_invalid": "Eine Steuer in diesem Dokument ist falsch eingerichtet, daher können die Preise nicht neu berechnet werden. Öffnen Sie ⚙️ Sales Documents, Steuern, korrigieren Sie den hier verwendeten Steuersatz und versuchen Sie es erneut.",
+  "documents.err_tax_unreadable": "A tax on this document can't be read: {tax}. Its totals can't be recalculated until it is removed or chosen again. Remove it from the document's taxes, or pick the line's tax again from the list, then try again.",
   "documents.err_tax_purchase_only": "{tax} ist eine Einkaufssteuer, etwa eine bei einem Lieferanten einbehaltene Steuer, und kann daher nicht auf einem Verkaufsbeleg stehen. Entfernen Sie sie aus diesem Beleg.",
   "documents.err_tax_sales_only": "{tax} ist eine Verkaufssteuer und kann daher nicht auf einem Einkaufsbeleg stehen. Entfernen Sie sie aus diesem Beleg.",
   "documents.err_contact_not_contact": "Der gewählte Kontakt ist kein Kontaktdatensatz. Wählen Sie den Kontakt erneut aus der Liste.",

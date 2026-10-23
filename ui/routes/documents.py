@@ -34,7 +34,8 @@ from celerp.services.business_time import business_today
 from celerp.services.doc_balance import awaiting_status_param, is_awaiting_payment, is_owed, outstanding_balance
 from celerp.services.money import to_decimal, to_stored_float, round_money, currency_dp, rate_dp
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, line_price_list, resolve_price
-from celerp.tax_regimes import default_line_taxes, holds_tax, tax_entries, tax_key, taxes_for
+from celerp.tax_regimes import (default_line_taxes, holds_tax, tax_entries, tax_key, tax_text, taxes_for,
+                                unreadable_tax)
 from celerp.services.payment_terms import due_date_for_terms
 from celerp.services.permissions import missing_permission_text, role_has_permission
 from ui.components.import_access import can_import_documents
@@ -6584,6 +6585,19 @@ def _tax_label(tax: dict) -> str:
     return f"{name} ({float(tax.get('rate', 0) or 0)}%)"
 
 
+def _held_taxes(value) -> list:
+    """A stored ``doc_taxes`` or line ``taxes`` value as the list the editor shows and sends back
+    as it is: every entry, one it cannot read included, so a save never drops it."""
+    if value is None:
+        return []
+    return value if isinstance(value, list) else [value]
+
+
+def _held_tax_label(tax) -> str:
+    """An entry of _held_taxes as the editor names it: a tax as _tax_label, anything else as its text."""
+    return _tax_label(tax) if isinstance(tax, dict) else tax_text(tax)
+
+
 def _tax_option_value(tax: dict) -> str:
     """The tax choice's option value for a company tax (``name``) or an applied one (``code``)."""
     return f"{tax.get('code') or tax.get('name') or ''}|{float(tax.get('rate', 0) or 0)}"
@@ -6606,22 +6620,25 @@ def _line_account_picker(chart_accounts: list | None, value: str) -> FT:
 def _stored_doc_tax_rows(doc: dict, currency: str | None, can_edit: bool) -> FT:
     """The document-level taxes stored on a document, each with the amount the API computed for
     it. The page adds these amounts to its live total and never recomputes them. On an editable
-    draft each row can be removed, and the rows' state rides along with the next line save."""
-    doc_taxes = tax_entries(doc.get("doc_taxes"))
+    draft each row can be removed, and the rows' state rides along with the next line save. An
+    entry that is not a tax shows by its text with no amount ("--"), so it can be removed."""
+    doc_taxes = _held_taxes(doc.get("doc_taxes"))
     rows = []
     for i, dtax in enumerate(doc_taxes):
-        amount = float(dtax.get("amount") or 0)
+        readable = isinstance(dtax, dict)
+        amount = float(dtax.get("amount") or 0) if readable else 0.0
+        name = (dtax.get("code") or t("documents.tax")) if readable else tax_text(dtax)
         remove = (Button("×", type="button", cls="btn-disc-edit", title=t("btn.remove"),
                          aria_label=t("documents.remove_doc_tax"), onclick=f"celerpRemoveDocTax({i})")
                   if can_edit else "")
         rows.append(Div(
-            Span(remove, Span(f"{dtax.get('code') or t('documents.tax')}:", cls="total-label"),
-                 cls="total-final-left"),
-            Span(fmt_money(amount, currency), cls="total-value"),
+            Span(remove, Span(f"{name}:", cls="total-label"), cls="total-final-left"),
+            Span(fmt_money(amount, currency) if readable else "--", cls="total-value"),
             cls="total-row", data_amount=f"{amount}", data_doc_tax_index=str(i)))
     # data-keys (tax_key per row) let the editor leave a tax the document charges off a new line.
     state = (Input(type="hidden", id="doc-taxes-state", value=_json.dumps(doc_taxes),
-                   data_keys=_json.dumps([tax_key(dtax) for dtax in doc_taxes]))
+                   data_keys=_json.dumps([tax_key(dtax) if isinstance(dtax, dict) else None
+                                          for dtax in doc_taxes]))
              if can_edit and doc_taxes else "")
     return Div(*rows, state, id="doc-stored-tax-rows")
 
@@ -7404,10 +7421,14 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             only when it has none). Stored taxes also ride along in a hidden input, and the
             client sends them back unchanged while the tax choice is unchanged, so a save
             never rewrites taxes the user did not touch. Taxes no configured tax matches,
-            two or more on one line included, show as a single option naming them all.
+            two or more on one line included, show as a single option naming them all, as
+            does a line holding an entry that is not a tax (sent back as it is, so the save
+            is refused naming it until the line's tax is picked again).
             """
             li = li or {}
-            stored = tax_entries(li.get("taxes"))
+            held = _held_taxes(li.get("taxes"))
+            stored = tax_entries(held)
+            unreadable = len(stored) != len(held)
             current_rate = _line_tax_rate(li)
             if len(stored) == 1:
                 current_code = stored[0].get("code", "") or ""
@@ -7420,15 +7441,15 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             selected_val = "|0"
             is_custom = False
             stored_option = None
-            match = None if len(stored) > 1 else next((
+            match = None if len(stored) > 1 or unreadable else next((
                 tax for tax in _taxes_list
                 if float(tax.get("rate", 0)) == current_rate
                 and (tax.get("name", "") == current_code if current_code else current_rate != 0)), None)
             if match is not None:
                 selected_val = _tax_option_value(match)
-            elif stored:
+            elif held:
                 # Taxes no configured tax matches show as they are, named, never as Custom.
-                current_label = " + ".join(_tax_label(tx) for tx in stored)
+                current_label = " + ".join(_held_tax_label(tx) for tx in held)
                 selected_val = "|stored"
                 stored_option = Option(current_label, value=selected_val, selected=True,
                                        data_rate=str(current_rate))
@@ -7451,8 +7472,8 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 cls="cell-input cell-input--xs",
                 style=("display:inline-block;" if is_custom else "display:none;"),
             )
-            stored_input = (Input(type="hidden", value=_json.dumps(stored), data_name="taxes_json")
-                            if stored else "")
+            stored_input = (Input(type="hidden", value=_json.dumps(held), data_name="taxes_json")
+                            if held else "")
             return Div(
                 Select(*options, data_name="tax_select",
                        data_orig=selected_val, data_orig_rate=str(current_rate),
@@ -9257,7 +9278,7 @@ async function _celerpRefreshHeldBadges() {{
             original_count: _CELERP_ORIGINAL_COUNT,
             discount: hd.value, discount_type: hd.type,
             expected_version: _celerpEntityVersion}},
-            _docTaxesState ? {{doc_taxes: JSON.parse(_docTaxesState.value || '[]').filter(Boolean)}} : {{}}))
+            _docTaxesState ? {{doc_taxes: JSON.parse(_docTaxesState.value || '[]').filter(x => x !== null)}} : {{}}))
     }});
     if (resp.ok) {{
         // A newer edit may have happened while this request was in flight. Only
@@ -10155,7 +10176,9 @@ async function celerpCsvImport(input, entityId) {{
             _add_tax(code or f"custom_{rate}", label, item.get("amount"))
     stored_tax_rows = _stored_doc_tax_rows(doc, currency, can_edit_lines)
     stored_tax = sum(float(d.get("amount") or 0) for d in tax_entries(doc.get("doc_taxes")))
-    if abs(sum(v["amount"] for v in code_totals.values()) + stored_tax - tax_amount) > 0.005:
+    # A document tax that cannot be read keeps its rows, so it can be removed.
+    if (abs(sum(v["amount"] for v in code_totals.values()) + stored_tax - tax_amount) > 0.005
+            and unreadable_tax(doc.get("doc_taxes")) is None):
         # The stored breakdown does not account for the stored tax (a line or header rate with no
         # per-line amounts): show the stored tax as one row, labelled with its rate when single.
         rates = {float(li.get("tax_rate") or 0) for li in line_items if float(li.get("tax_rate") or 0)}

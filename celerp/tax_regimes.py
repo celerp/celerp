@@ -320,13 +320,28 @@ def tax_key(tax: dict) -> str | None:
 def tax_entries(value) -> list[dict]:
     """The taxes a stored ``doc_taxes`` or line ``taxes`` value holds: its tax objects when it
     is a list, else none. Every write refuses another shape, so one stored by an older version
-    reads as no taxes rather than failing the page or printout that shows it."""
+    shows as no taxes on a page or printout rather than failing it; every path that recalculates
+    or rewrites money refuses it instead (unreadable_tax)."""
     return [tax for tax in value if isinstance(tax, dict)] if isinstance(value, list) else []
 
 
-def well_formed_taxes(value) -> bool:
-    """Whether a ``doc_taxes`` or line ``taxes`` value is absent or a list of tax objects."""
-    return value is None or (isinstance(value, list) and len(tax_entries(value)) == len(value))
+def tax_text(entry) -> str:
+    """A stored tax entry as text that names it: a tax object's code or label, anything else
+    as it is written, at most 60 characters."""
+    if isinstance(entry, dict):
+        entry = entry.get("code") or entry.get("label") or entry
+    return str(entry)[:60]
+
+
+def unreadable_tax(value) -> str | None:
+    """The first entry of a ``doc_taxes`` or line ``taxes`` value that is not a tax object, as
+    tax_text, or the whole value when it is not a list; None when it is absent or a list of
+    tax objects."""
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        return tax_text(value)
+    return next((tax_text(entry) for entry in value if not isinstance(entry, dict)), None)
 
 
 def _tax_name_key(name) -> str:

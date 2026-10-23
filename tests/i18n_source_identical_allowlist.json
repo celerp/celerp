@@ -59,7 +59,8 @@
     "th.sku",
     "error.company_timezone_unknown",
     "documents.igst_note",
-    "company.err_location_name_taken"
+    "company.err_location_name_taken",
+    "documents.err_tax_unreadable"
   ],
   "ar": [
     "account.email_placeholder",
@@ -109,7 +110,8 @@
     "th.sku",
     "error.company_timezone_unknown",
     "documents.igst_note",
-    "company.err_location_name_taken"
+    "company.err_location_name_taken",
+    "documents.err_tax_unreadable"
   ],
   "de": [
     "acct.source_system",
@@ -230,7 +232,8 @@
     "th.version",
     "error.company_timezone_unknown",
     "documents.igst_note",
-    "company.err_location_name_taken"
+    "company.err_location_name_taken",
+    "documents.err_tax_unreadable"
   ],
   "es": [
     "account.plan",
@@ -324,7 +327,8 @@
     "th.total",
     "error.company_timezone_unknown",
     "documents.igst_note",
-    "company.err_location_name_taken"
+    "company.err_location_name_taken",
+    "documents.err_tax_unreadable"
   ],
   "fr": [
     "acct.tab_journal",
@@ -459,7 +463,8 @@
     "th.version",
     "error.company_timezone_unknown",
     "documents.igst_note",
-    "company.err_location_name_taken"
+    "company.err_location_name_taken",
+    "documents.err_tax_unreadable"
   ],
   "id": [
     "acct.source_manual",
@@ -578,7 +583,8 @@
     "th.total",
     "error.company_timezone_unknown",
     "documents.igst_note",
-    "company.err_location_name_taken"
+    "company.err_location_name_taken",
+    "documents.err_tax_unreadable"
   ],
   "it": [
     "attr.volume_l",
@@ -669,7 +675,8 @@
     "th.sku",
     "error.company_timezone_unknown",
     "documents.igst_note",
-    "company.err_location_name_taken"
+    "company.err_location_name_taken",
+    "documents.err_tax_unreadable"
   ],
   "ja": [
     "account.email_placeholder",
@@ -729,7 +736,8 @@
     "th.sku",
     "error.company_timezone_unknown",
     "documents.igst_note",
-    "company.err_location_name_taken"
+    "company.err_location_name_taken",
+    "documents.err_tax_unreadable"
   ],
   "pt": [
     "acct.source_manual",
@@ -834,7 +842,8 @@
     "th.total",
     "error.company_timezone_unknown",
     "documents.igst_note",
-    "company.err_location_name_taken"
+    "company.err_location_name_taken",
+    "documents.err_tax_unreadable"
   ],
   "th": [
     "account.email_placeholder",
@@ -892,7 +901,8 @@
     "th.sku",
     "error.company_timezone_unknown",
     "documents.igst_note",
-    "company.err_location_name_taken"
+    "company.err_location_name_taken",
+    "documents.err_tax_unreadable"
   ],
   "vi": [
     "btn.u00d7",
@@ -954,6 +964,7 @@
     "th.sku",
     "error.company_timezone_unknown",
     "documents.igst_note",
-    "company.err_location_name_taken"
+    "company.err_location_name_taken",
+    "documents.err_tax_unreadable"
   ]
 }

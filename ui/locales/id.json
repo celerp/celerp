@@ -4434,7 +4434,7 @@
   "documents.err_already_submitted": "Ini sudah dikirim dengan detail berbeda, mungkin dari tab lain. Pilih Coba lagi.",
   "documents.err_peer_synced": "{company} mengirim dokumen ini, jadi hanya {company} yang dapat mengubah atau membatalkannya. Untuk mengoreksinya di sini, posting entri jurnal (journal entry).",
   "documents.err_item_missing": "{where} memakai barang yang sudah tidak ada ({ident}). Hapus baris itu atau pilih barang lain, lalu simpan lagi.",
-  "documents.err_tax_invalid": "Pajak di dokumen ini salah diatur, jadi harga tidak bisa dihitung ulang. Buka ⚙️ Sales Documents, Pajak, perbaiki tarif pajak yang dipakai di sini, lalu coba lagi.",
+  "documents.err_tax_unreadable": "A tax on this document can't be read: {tax}. Its totals can't be recalculated until it is removed or chosen again. Remove it from the document's taxes, or pick the line's tax again from the list, then try again.",
   "documents.err_tax_purchase_only": "{tax} adalah pajak pembelian, seperti pajak yang dipotong dari pemasok, jadi tidak bisa dipakai di dokumen penjualan. Hapus dari dokumen ini.",
   "documents.err_tax_sales_only": "{tax} adalah pajak penjualan, jadi tidak bisa dipakai di dokumen pembelian. Hapus dari dokumen ini.",
   "documents.err_contact_not_contact": "Kontak yang Anda pilih bukan data kontak. Pilih lagi kontak dari daftar.",

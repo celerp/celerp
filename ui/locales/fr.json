@@ -4434,7 +4434,7 @@
   "documents.err_already_submitted": "Ceci a déjà été envoyé avec d'autres informations, peut-être depuis un autre onglet. Sélectionnez « Réessayer ».",
   "documents.err_peer_synced": "{company} a envoyé ce document, donc seule {company} peut le modifier ou l'annuler. Pour le corriger ici, passez une écriture (journal entry).",
   "documents.err_item_missing": "{where} utilise un article qui n'existe plus ({ident}). Supprimez cette ligne ou choisissez un autre article, puis enregistrez à nouveau.",
-  "documents.err_tax_invalid": "Une taxe de ce document est mal configurée, les prix ne peuvent donc pas être recalculés. Ouvrez ⚙️ Sales Documents, Impôts, corrigez le taux utilisé ici, puis réessayez.",
+  "documents.err_tax_unreadable": "A tax on this document can't be read: {tax}. Its totals can't be recalculated until it is removed or chosen again. Remove it from the document's taxes, or pick the line's tax again from the list, then try again.",
   "documents.err_tax_purchase_only": "{tax} est une taxe d'achat, comme une retenue à la source sur un fournisseur, elle ne peut donc pas figurer sur un document de vente. Retirez-la de ce document.",
   "documents.err_tax_sales_only": "{tax} est une taxe de vente, elle ne peut donc pas figurer sur un document d'achat. Retirez-la de ce document.",
   "documents.err_contact_not_contact": "Le contact choisi n'est pas une fiche contact. Choisissez à nouveau le contact dans la liste.",
