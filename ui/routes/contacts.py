@@ -183,6 +183,15 @@ def _files_section(contact: dict, contact_id: str, docs: list[dict] | None = Non
     return _shared_files_section("contact", contact_id, merged, **kwargs)
 
 
+async def _contact_docs(token: str, contact_id: str, company: dict | None = None) -> list[dict]:
+    """The contact's documents, or none while the company cannot open Documents: its own
+    files then list without the documents' attachments. A failed read raises APIError."""
+    if not can_open(company if company is not None else await api.get_company(token), "celerp-docs"):
+        return []
+    resp = await api.list_contact_docs(token, contact_id, {"limit": 999})
+    return resp.get("items", []) if isinstance(resp, dict) else resp
+
+
 def _contact_info_card(
     c: dict, *, oob: bool = False, hide_fields: tuple = (),
     company_name_help: str = "",
@@ -808,7 +817,9 @@ async def build_contact_detail(contact: dict, docs: list, vocab: list, company: 
     customer+vendor self-contact, and it has no financial-summary-against-itself) - one page layout, no
     fork. The only differences are the conditional sections gated by the flags. ``docs_error`` is the
     notice for a failed documents read: it replaces the Documents tab and the document-derived
-    financial cards, which would otherwise show figures computed from an empty list."""
+    financial cards, which would otherwise show figures computed from an empty list. While the
+    company cannot open Documents there is no Documents tab and no financial cards; the contact's
+    files get their own tab, open by default."""
     contact_name = contact.get("name", t("contacts.contact_name_fallback"))
     contact_type = contact.get("contact_type", "")
     if back is not None:
@@ -823,6 +834,7 @@ async def build_contact_detail(contact: dict, docs: list, vocab: list, company: 
     cid = contact.get("entity_id") or contact.get("id") or contact_id
     is_deleted = bool(contact.get("deleted"))
     page_title = title or contact_name
+    docs_on = can_open(company, "celerp-docs")
 
     autofocus_script = (
         Script("document.querySelector('.cell--clickable')?.click();")
@@ -867,7 +879,7 @@ async def build_contact_detail(contact: dict, docs: list, vocab: list, company: 
         delete_btn,
         *([_financial_summary(docs, contact_id=cid, company=company,
                               consigned_total=consigned_total, on_memo_total=on_memo_total)]
-          if show_financials and docs_error is None else []),
+          if show_financials and docs_on and docs_error is None else []),
         Div(
             Div(
                 _contact_info_card(contact),
@@ -883,9 +895,11 @@ async def build_contact_detail(contact: dict, docs: list, vocab: list, company: 
         ),
         *([_addresses_section(contact)] if show_contact_addresses else []),
         *(extra_sections or []),
-        _tab_bar(cid, reload_documents=docs_error is not None),
+        _tab_bar(cid, reload_documents=docs_error is not None) if docs_on else
+        _tab_bar(cid, active="files", lead_tabs=[("files", t("label.files"), None)], documents=False),
         Div(
-            docs_error if docs_error is not None else _documents_tab(docs, contact, cid),
+            (docs_error if docs_error is not None else _documents_tab(docs, contact, cid)) if docs_on else
+            _files_section(contact, cid),
             id="tab-content",
         ),
         title=f"{page_title} - Celerp",
@@ -1184,10 +1198,10 @@ def setup_routes(app):
                 files_error_block(body, e.status),
                 title=page_title("nav.customers"), nav_active="customers", request=request,
             )
+        company = await _get_company(token)
         docs_error = None
         try:
-            docs_resp = await api.list_contact_docs(token, contact_id, {"limit": 999})
-            docs = docs_resp.get("items", []) if isinstance(docs_resp, dict) else docs_resp
+            docs = await _contact_docs(token, contact_id, company)
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
@@ -1198,7 +1212,6 @@ def setup_routes(app):
             vocab = await api.get_contact_tags_vocabulary(token)
         except Exception:
             vocab = []
-        company = await _get_company(token)
 
         # Live holdings behind the On Memo / Consignment cards. limit=1 because only the
         # scope-wide value_total is needed here; the full list is the click-through.
@@ -1384,6 +1397,18 @@ def setup_routes(app):
         cid = contact.get("entity_id") or contact.get("id") or contact_id
         # The company self-contact has its own Files tab, so its Documents tab is docs-only (no dup files).
         return _documents_tab(docs, contact, cid, show_files=not contact.get("is_self"))
+
+    @app.get("/contacts/{contact_id}/tab/files")
+    async def contact_tab_files(request: Request, contact_id: str):
+        token = _token(request)
+        if not token:
+            return files_session_expired()
+        try:
+            contact = await api.get_contact(token, contact_id)
+            docs = await _contact_docs(token, contact_id)
+        except APIError as e:
+            return files_error(t("msg.files_load_failed", detail=str(e.detail)), e.status)
+        return _files_section(contact, contact_id, docs)
 
     @app.get("/contacts/{contact_id}/tab/notes")
     async def contact_tab_notes(request: Request, contact_id: str):
@@ -1723,7 +1748,7 @@ def setup_routes(app):
                 ),
                 Div(
                     Button(t("btn.save"), type="submit", cls="btn btn--primary btn--sm"),
-                    Button(t("btn.cancel"), type="button", cls="btn btn--secondary btn--sm", onclick=f"htmx.ajax('GET','/contacts/{contact_id}/tab/documents','#tab-content');location.reload()"),
+                    Button(t("btn.cancel"), type="button", cls="btn btn--secondary btn--sm", onclick="location.reload()"),
                     cls="form-row",
                 ),
                 hx_patch=f"/contacts/{contact_id}/people/{person_id}",
@@ -1988,10 +2013,10 @@ def setup_routes(app):
         try:
             await api.upload_contact_file(token, contact_id, content, filename, content_type, description, document_tag)
             contact = await api.get_contact(token, contact_id)
-            docs_resp = await api.list_contact_docs(token, contact_id, {"limit": 999})
+            docs = await _contact_docs(token, contact_id)
         except APIError as e:
             return files_error(str(e.detail), e.status)
-        return _files_section(contact, contact_id, docs_resp.get("items", []))
+        return _files_section(contact, contact_id, docs)
 
     @app.delete("/contacts/{contact_id}/files/{file_id}")
     async def contact_delete_file(request: Request, contact_id: str, file_id: str):
@@ -2001,10 +2026,10 @@ def setup_routes(app):
         try:
             await api.delete_contact_file(token, contact_id, file_id)
             contact = await api.get_contact(token, contact_id)
-            docs_resp = await api.list_contact_docs(token, contact_id, {"limit": 999})
+            docs = await _contact_docs(token, contact_id)
         except APIError as e:
             return files_error(str(e.detail), e.status)
-        return _files_section(contact, contact_id, docs_resp.get("items", []))
+        return _files_section(contact, contact_id, docs)
 
     @app.post("/contacts/{contact_id}/files/{file_id}/tag")
     async def contact_tag_file(request: Request, contact_id: str, file_id: str):
@@ -2016,10 +2041,10 @@ def setup_routes(app):
         try:
             await api.tag_contact_file(token, contact_id, file_id, document_tag)
             contact = await api.get_contact(token, contact_id)
-            docs_resp = await api.list_contact_docs(token, contact_id, {"limit": 999})
+            docs = await _contact_docs(token, contact_id)
         except APIError as e:
             return files_error(str(e.detail), e.status)
-        return _files_section(contact, contact_id, docs_resp.get("items", []))
+        return _files_section(contact, contact_id, docs)
 
     @app.post("/contacts/{contact_id}/files/{file_id}/description")
     async def contact_patch_file_description(request: Request, contact_id: str, file_id: str):
@@ -2031,10 +2056,10 @@ def setup_routes(app):
         try:
             await api.patch_contact_file_description(token, contact_id, file_id, description)
             contact = await api.get_contact(token, contact_id)
-            docs_resp = await api.list_contact_docs(token, contact_id, {"limit": 999})
+            docs = await _contact_docs(token, contact_id)
         except APIError as e:
             return files_error(str(e.detail), e.status)
-        return _files_section(contact, contact_id, docs_resp.get("items", []))
+        return _files_section(contact, contact_id, docs)
 
     @app.get("/contacts/{contact_id}/files/_section")
     async def contact_files_section(request: Request, contact_id: str):
@@ -2044,10 +2069,10 @@ def setup_routes(app):
         qp = request.query_params
         try:
             contact = await api.get_contact(token, contact_id)
-            docs_resp = await api.list_contact_docs(token, contact_id, {"limit": 999})
+            docs = await _contact_docs(token, contact_id)
         except APIError as e:
             return files_error(str(e.detail), e.status)
-        return _files_section(contact, contact_id, docs_resp.get("items", []),
+        return _files_section(contact, contact_id, docs,
             page=int(qp.get("page", "1") or "1"),
             sort_dir=qp.get("sort_dir", "desc"),
             tag_filter=qp.get("tag_filter", ""),

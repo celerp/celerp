@@ -1611,6 +1611,7 @@ class TestCRMPage:
         assert b"Alice" in r.content
 
     @pytest.mark.asyncio
+    @pytest.mark.usefixtures("docs_running")
     async def test_contact_detail_holdings_cards(self, ui_client):
         """On Memo / Consignment cards show the live holdings value and link to that
         exact filtered inventory list, so the number and the list cannot disagree."""
@@ -1639,6 +1640,7 @@ class TestCRMPage:
         assert b"/inventory?consigned_from=ct:1" in body
 
     @pytest.mark.asyncio
+    @pytest.mark.usefixtures("docs_running")
     async def test_contact_detail_holdings_unavailable_falls_back(self, ui_client):
         """When the holdings figure cannot be fetched the page still renders, and the
         Consignment card falls back to the document-derived total."""

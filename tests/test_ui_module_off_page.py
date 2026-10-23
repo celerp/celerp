@@ -116,3 +116,58 @@ async def test_company_details_with_documents_on_lists_document_files_and_its_ta
     page, _, reads = await _company_details(ui_client, {})
     assert "tab-documents" in page.text
     assert reads["list_docs"].await_count == 2
+
+
+# ── A contact without Documents ──────────────────────────────────────────────
+
+_CONTACT = {"entity_id": "contact:c1", "name": "Acme Trading", "contact_type": "customer",
+            "files": [{"file_id": "f1", "filename": "price-list.pdf", "content_type": "application/pdf",
+                       "size": 10, "uploaded_at": "2026-10-01T00:00:00Z"}]}
+
+
+async def _contact(ui_client, settings: dict, *paths: str, docs=None):
+    """The contact page (and any of its *paths*) with the reads behind it; unless *docs* are
+    given, a documents read answers as the API does for a module the company cannot open."""
+    from contextlib import ExitStack
+    from ui.api_client import APIError
+    company = {"settings": settings, "current_role": "owner", "name": "My Co", "currency": "USD"}
+    reads = {"get_company": AsyncMock(return_value=company), "get_contact": AsyncMock(return_value=_CONTACT),
+             "list_contact_docs": (AsyncMock(return_value={"items": docs}) if docs is not None else
+                                   AsyncMock(side_effect=APIError(404, "Celerp couldn't find this page."))),
+             "list_items": AsyncMock(return_value={"items": []}),
+             "get_contact_tags_vocabulary": AsyncMock(return_value=[])}
+    with ExitStack() as stack:
+        for name, mock in reads.items():
+            stack.enter_context(patch(f"ui.api_client.{name}", new=mock))
+        pages = [await ui_client.get(p) for p in ("/contacts/contact:c1", *paths)]
+    return pages, reads
+
+
+@pytest.mark.parametrize("running", [(), ("celerp-docs",)], ids=["not-started", "turned-off"])
+async def test_a_contact_without_documents_opens_on_its_files_with_no_documents_tab(ui_client, monkeypatch, running):
+    mark_running(monkeypatch, *running)
+    (page, files_tab, section), reads = await _contact(
+        ui_client, _DOCS_OFF if running else {}, "/contacts/contact:c1/tab/files",
+        "/contacts/contact:c1/files/_section")
+    assert page.status_code == 200, page.text
+    assert "tab-documents" not in page.text and "tab-notes" in page.text
+    before, after = page.text.split('id="tab-files"', 1)
+    files = before.rsplit("<a ", 1)[1] + after.split("</a>", 1)[0]
+    assert 'class="tab active"' in files and 'hx-get="/contacts/contact:c1/tab/files"' in files
+    content = page.text.split('id="tab-content"', 1)[1]
+    assert "file-drop-zone" in content and "price-list.pdf" in content
+    assert "find this page" not in page.text + files_tab.text + section.text
+    assert "financial-card" not in page.text
+    assert files_tab.status_code == 200 and "price-list.pdf" in files_tab.text
+    assert section.status_code == 200 and "price-list.pdf" in section.text
+    assert reads["list_contact_docs"].await_count == 0
+
+
+async def test_a_contact_with_documents_on_keeps_its_documents_tab_and_no_files_tab(ui_client, monkeypatch):
+    mark_running(monkeypatch, "celerp-docs")
+    (page,), reads = await _contact(ui_client, {}, docs=[])
+    assert page.status_code == 200
+    assert "tab-documents" in page.text and "tab-files" not in page.text
+    content = page.text.split('id="tab-content"', 1)[1]
+    assert "None yet" in content and "price-list.pdf" in content and "financial-card" in page.text
+    assert reads["list_contact_docs"].await_count == 1
