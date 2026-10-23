@@ -152,6 +152,28 @@ async def test_books_kept_in_a_withdrawn_currency_keep_it_and_none_move_to_one(c
     assert r.status_code == 200, r.text
 
 
+@pytest.mark.asyncio
+async def test_a_contact_kept_in_a_withdrawn_currency_keeps_it_and_none_moves_to_one(client, session):
+    from celerp.models.projections import Projection
+
+    h = _auth(await _register(client))
+    ids = []
+    for name in ("Old Supplier", "New Supplier"):
+        r = await client.post("/crm/contacts", headers=h, json={"name": name, "currency": "EUR"})
+        assert r.status_code == 200, r.text
+        ids.append(r.json()["id"])
+    old = (await session.execute(select(Projection).where(Projection.entity_id == ids[0]))).scalar_one()
+    old.state = {**old.state, "currency": "HRK"}
+    await session.commit()
+
+    async def change(cid: str, before: str) -> int:
+        return (await client.patch(f"/crm/contacts/{cid}", headers=h, json={
+            "fields_changed": {"currency": {"old": before, "new": "HRK"}}})).status_code
+
+    assert await change(ids[0], "HRK") == 200
+    assert await change(ids[1], "EUR") == 422
+
+
 # ── The pickers ──────────────────────────────────────────────────────────────
 
 @pytest_asyncio.fixture

@@ -62,8 +62,8 @@ CURRENCY_QUESTION = "currency"
 EMPLOYEE = "Employee"
 STOCK = "Stock item quantity on hand"
 UNASSIGNED_TAX = "Invoice with its sales tax on one line"
-# A distribution's Tax Type: 0 is a tax distribution. Which of the others are taxable is set in
-# each company's own item defaults, which Sage 50 does not export.
+# A distribution's Tax Type, and its Invoice/CM Distribution: 0 is a tax distribution. Which tax
+# types are taxable is set in each company's own item defaults, which Sage 50 does not export.
 TAX_DISTRIBUTION = "0"
 # Sage 50 accepts at most this many distribution lines on one transaction.
 MAX_DISTRIBUTIONS = 560
@@ -388,8 +388,11 @@ class _Reader:
                     description = tb.value(row, "description")
                     distributions.append(GLLine(account, posted, None, description))
                     kind = tb.value(row, "tax type")
-                    agency = tb.value(row, "sales tax agency") if sales else ""
-                    if agency or (sales and kind == TAX_DISTRIBUTION):
+                    agency = tb.value(row, "sales tax agency")
+                    # Tax Type 0 marks a tax distribution: a sold line names its tax agency too. A file
+                    # without tax types marks one as the agency's line outside the invoice's own lines.
+                    if sales and (kind == TAX_DISTRIBUTION or (not kind and agency and normalize(
+                            tb.value(row, "invoice/cm distribution")) == TAX_DISTRIBUTION)):
                         # A tax distribution names its agency; one that does not is the customer's tax code's.
                         agency = agency or tb.value(first, "sales tax id") or description or "--"
                         taxes[agency] += -sign * posted

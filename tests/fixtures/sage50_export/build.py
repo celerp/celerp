@@ -427,8 +427,9 @@ def documents(books: Books, sales: bool, four: bool = False, alternate: bool = F
             body = [len(x.lines), 0 if ln.agency else line_number, f"{ln.quantity:g}" if ln.item else "", ln.item,
                     ln.description, ln.account, _number(ln.unit) if ln.item else ""]
             if sales:
-                rows.append([*head, VAT if any(m.agency for m in x.lines) else "", *body, ln.kind,
-                             _number(ln.amount), ln.agency, "", n])
+                # Every distribution of an invoice that charges VAT names the agency; Tax Type 0 is its tax.
+                charged = VAT if any(m.agency for m in x.lines) else ""
+                rows.append([*head, charged, *body, ln.kind, _number(ln.amount), charged, "", n])
             else:
                 rows.append([*head, *body, _number(ln.amount), "", n])
     return _csv(header, rows)

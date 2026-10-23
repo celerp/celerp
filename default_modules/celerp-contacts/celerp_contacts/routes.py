@@ -195,14 +195,17 @@ async def get_contact(contact_id: str, company_id: str = Depends(get_current_com
 
 @router.patch("/contacts/{contact_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True})
 async def update_contact(contact_id: str, payload: ContactUpdate, company_id: str = Depends(get_current_company_id), user=Depends(get_current_user), _: None = require_permission("edit_contacts"), session: AsyncSession = Depends(get_session)) -> dict:
-    await _get_contact(session, company_id, contact_id)
+    row = await _get_contact(session, company_id, contact_id)
     if payload.idempotency_key:
         replay = await find_event_by_idempotency(session, company_id, payload.idempotency_key)
         if replay is not None:
             if replay.event_type != "crm.contact.updated" or replay.entity_id != contact_id:
                 raise HTTPException(status_code=409, detail=t("contacts.err_resubmitted"))
             return {"event_id": replay.id}
-    require_currency_code((payload.fields_changed.get("currency") or {}).get("new"))
+    currency = (payload.fields_changed.get("currency") or {}).get("new")
+    # A contact kept in a currency ISO 4217 has since withdrawn keeps it; none is moved to one.
+    if currency != row.state.get("currency"):
+        require_currency_code(currency)
     require_phone((payload.fields_changed.get("phone") or {}).get("new"))
     entry = await emit_event(
         session,

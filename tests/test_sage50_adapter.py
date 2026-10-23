@@ -234,12 +234,13 @@ PUBLISHED = {
         "Customer ID,Customer Name,Invoice/CM #,Apply to Invoice Number,Credit Memo,Date,Date Due,"
         "Accounts Receivable Account,Sales Tax ID,Number of Distributions,Invoice/CM Distribution,Quantity,"
         "Item ID,Description,G/L Account,Unit Price,Tax Type,Amount,Sales Tax Agency\r\n"
-        # Goods taxable, a service exempt: 100.00 + 100.00 and 10.00 tax on the goods alone.
-        "C1,First Customer,1001,,FALSE,01/10/25,02/09/25,1100,ST,3,1,1,,Goods,4000,100.00,1,-100.00,\r\n"
-        "C1,First Customer,1001,,FALSE,01/10/25,02/09/25,1100,ST,3,2,1,,Service,4100,100.00,2,-100.00,\r\n"
+        # Goods taxable, a service exempt: 100.00 + 100.00 and 10.00 tax on the goods alone. Every
+        # distribution names the invoice's tax agency; only Tax Type 0 is the tax.
+        "C1,First Customer,1001,,FALSE,01/10/25,02/09/25,1100,ST,3,1,1,,Goods,4000,100.00,1,-100.00,AGENCY\r\n"
+        "C1,First Customer,1001,,FALSE,01/10/25,02/09/25,1100,ST,3,2,1,,Service,4100,100.00,2,-100.00,AGENCY\r\n"
         "C1,First Customer,1001,,FALSE,01/10/25,02/09/25,1100,ST,3,0,,,Sales tax,2310,,0,-10.00,AGENCY\r\n"
         # Two goods lines of one tax type: the tax is theirs, in proportion.
-        "C1,First Customer,1002,,FALSE,01/12/25,02/11/25,1100,ST,3,1,1,,Goods,4000,300.00,1,-300.00,\r\n"
+        "C1,First Customer,1002,,FALSE,01/12/25,02/11/25,1100,ST,3,1,1,,Goods,4000,300.00,1,-300.00,AGENCY\r\n"
         "C1,First Customer,1002,,FALSE,01/12/25,02/11/25,1100,ST,3,2,1,,Goods,4000,100.00,1,-100.00,\r\n"
         "C1,First Customer,1002,,FALSE,01/12/25,02/11/25,1100,ST,3,0,,,Sales tax,2310,,0,-40.00,AGENCY\r\n"),
     "RECEIPTS.CSV": (
@@ -286,6 +287,12 @@ def test_the_documented_sales_tax_agency_heading_keeps_sales_tax():
     _, manifest, _ = _published()
     docs = {d.ref: d for d in manifest.bundle.documents}
     assert (docs["1001"].tax_total, docs["1002"].tax_total) == (Decimal("10.00"), Decimal("40.00"))
+    # A sold line naming the agency stays a sold line on its revenue account: only Tax Type 0 is tax,
+    # so Celerp books each invoice as Sage 50 did, with no fallback journal to make up a difference.
+    assert [(ln.account_external_id, ln.total_price) for ln in docs["1001"].line_items if ln.total_price] == [
+        ("4000", Decimal("100.00")), ("4100", Decimal("100.00"))]
+    assert docs["1001"].total == Decimal("210.00")
+    assert not [j for j in manifest.bundle.journals if j.fallback]
     assert [(tc.name, tc.account_external_id) for tc in manifest.bundle.tax_codes] == [("AGENCY", "2310")]
     assert {a.code: a.control for a in manifest.bundle.accounts}["2310"] == "tax"
 
@@ -365,12 +372,12 @@ def test_the_currency_the_reports_print_is_suggested_and_none_when_they_print_no
 
 # ── Hostile and damaged input ─────────────────────────────────────────────────
 
-AMOUNT = "-450.00,,,1"   # the first invoice line's amount, as SALES.CSV writes it
+AMOUNT = "-450.00,VAT15,,1"   # the first invoice line's amount, as SALES.CSV writes it
 
 
 @pytest.mark.parametrize("value", ["NaN", "Infinity", "-inf", "1e999999", "=1+1", "12..5"])
 def test_an_amount_that_is_not_a_number_refuses_the_set_by_name(tmp_path, value):
-    message = _refusal(tmp_path, _edited("SALES.CSV", AMOUNT, f'"{value}",,,1'))
+    message = _refusal(tmp_path, _edited("SALES.CSV", AMOUNT, f'"{value}",VAT15,,1'))
     assert message == t("migration.err_export_number", value=value, where="SALES.CSV ALEM01 10001 07/02/23")
 
 
@@ -381,7 +388,7 @@ def test_a_date_that_is_not_one_refuses_the_set_by_name(tmp_path, value):
 
 
 def test_a_transaction_that_does_not_balance_is_refused(tmp_path):
-    message = _refusal(tmp_path, _edited("SALES.CSV", AMOUNT, "-451.00,,,1"))
+    message = _refusal(tmp_path, _edited("SALES.CSV", AMOUNT, "-451.00,VAT15,,1"))
     assert message == t("migration.err_sage50_unbalanced", where="SALES.CSV ALEM01 10001 07/02/23",
                         difference="1.00", label="Sales Journal")
 
@@ -456,11 +463,11 @@ def test_any_value_the_reader_cannot_convert_ends_as_the_damaged_refusal(tmp_pat
 def _route_cases() -> dict[str, tuple[list[tuple[str, bytes]], str]]:
     where = "SALES.CSV ALEM01 10001 07/02/23"
     return {
-        "nan": (_edited("SALES.CSV", AMOUNT, '"NaN",,,1'), t("migration.err_export_number", value="NaN", where=where)),
-        "exponent": (_edited("SALES.CSV", AMOUNT, '"1e999999",,,1'),
+        "nan": (_edited("SALES.CSV", AMOUNT, '"NaN",VAT15,,1'), t("migration.err_export_number", value="NaN", where=where)),
+        "exponent": (_edited("SALES.CSV", AMOUNT, '"1e999999",VAT15,,1'),
                      t("migration.err_export_number", value="1e999999", where=where)),
         "date": (_edited("GENERAL.CSV", "07/31/23", "13/45/23", 2), '"13/45/23" is not a date'),
-        "unbalanced": (_edited("SALES.CSV", AMOUNT, "-451.00,,,1"),
+        "unbalanced": (_edited("SALES.CSV", AMOUNT, "-451.00,VAT15,,1"),
                        t("migration.err_sage50_unbalanced", where=where, difference="1.00", label="Sales Journal")),
         "account": (_edited("GENERAL.CSV", ",6300,Depreciation", ",6399,Depreciation"),
                     t("migration.err_export_account_missing", accounts="6399")),
