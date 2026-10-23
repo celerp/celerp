@@ -667,6 +667,23 @@
     "migration.sage50_unread_note": {
       "en": "These transactions fill a Sage 50 field Celerp does not read, so it cannot tell what they are. What each posted is imported as a journal entry, so every account ends at Sage 50's balance. A full history import cannot run: import from a cutover date after them.",
       "params": []
+    },
+    "migration.err_sage50_total_paid": {
+      "en": "{where}: the total paid on invoices, {total}, is not what its lines apply to invoices, {applied}. Export the {label} again.",
+      "params": [
+        "applied",
+        "label",
+        "total",
+        "where"
+      ]
+    },
+    "migration.sage50_prepayment_note": {
+      "en": "These advance payments are kept on the customer or vendor as credit, but Celerp holds no prepayment to apply to a later invoice. What each posted is imported as a journal entry, so every balance ends at Sage 50's. A full history import cannot run: import from a cutover date after they were applied.",
+      "params": []
+    },
+    "migration.sage50_unmatched_note": {
+      "en": "These receipts and payments are applied to a record the export does not hold as an invoice or purchase, such as a prepayment. Each is imported as a journal entry on its customer or vendor, so every balance ends at Sage 50's, but settles nothing. A full history import cannot run: import from a cutover date after them.",
+      "params": []
     }
   }
 }

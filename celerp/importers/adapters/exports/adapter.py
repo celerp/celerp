@@ -176,12 +176,15 @@ class Sage50Adapter(ExportSetAdapter):
                sage50.VOIDED: CoverageClass.UNSUPPORTED_FINANCIAL_BLOCKER,
                sage50.RETAINAGE: CoverageClass.UNSUPPORTED_FINANCIAL_BLOCKER,
                sage50.WAITING: CoverageClass.UNSUPPORTED_FINANCIAL_BLOCKER,
-               sage50.REFUND: CoverageClass.UNSUPPORTED_FINANCIAL_BLOCKER}
+               sage50.REFUND: CoverageClass.UNSUPPORTED_FINANCIAL_BLOCKER,
+               sage50.PREPAYMENT: CoverageClass.UNSUPPORTED_FINANCIAL_BLOCKER,
+               sage50.UNMATCHED: CoverageClass.UNSUPPORTED_FINANCIAL_BLOCKER}
     notes = {sage50.EMPLOYEE: "migration.sage50_employee_note", sage50.STOCK: "migration.sage50_stock_note",
              sage50.UNASSIGNED_TAX: "migration.sage50_tax_unassigned_note", sage50.QUOTE: "migration.sage50_quote_note",
              sage50.BEGINNING: "migration.sage50_beginning_note", sage50.VOIDED: "migration.sage50_voided_note",
              sage50.RETAINAGE: "migration.sage50_retainage_note", sage50.WAITING: "migration.sage50_waiting_note",
-             sage50.REFUND: "migration.sage50_refund_note"}
+             sage50.REFUND: "migration.sage50_refund_note", sage50.PREPAYMENT: "migration.sage50_prepayment_note",
+             sage50.UNMATCHED: "migration.sage50_unmatched_note"}
     matches = staticmethod(sage50.matches)
     check_files = staticmethod(sage50.check)
 

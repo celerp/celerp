@@ -248,8 +248,8 @@ PUBLISHED = {
         "C1,First Customer,1002,,FALSE,01/12/25,02/11/25,1100,ST,3,0,,,Sales tax,2310,,0,-40.00,AGENCY,FALSE,FALSE,\r\n"),
     "RECEIPTS.CSV": (
         "Customer ID,Customer Name,Reference,Receipt Number,Date,Cash Account,Cash Amount,Number of Distributions,"
-        "Invoice Paid,Description,G/L Account,Amount,Vendor Receipt\r\n"
-        "C1,First Customer,R1,R1,01/20/25,1020,210.00,1,1001,Payment,,-210.00,FALSE\r\n"),
+        "Invoice Paid,Description,G/L Account,Amount,Vendor Receipt,Prepayment,Total Paid on Invoice(s)\r\n"
+        "C1,First Customer,R1,R1,01/20/25,1020,210.00,1,1001,Payment,,-210.00,FALSE,FALSE,210.00\r\n"),
     "PURCHASE.CSV": (
         "Vendor ID,Vendor Name,Invoice #,Apply to Invoice #,Credit Memo,Date,Date Due,Accounts Payable Account,"
         "Number of Distributions,Invoice/CM Distribution,Quantity,Item ID,Description,G/L Account,Unit Price,Amount,"
@@ -257,8 +257,9 @@ PUBLISHED = {
         "V1,First Vendor,B-1,,FALSE,01/05/25,02/04/25,2000,1,1,,,January rent,6000,,500.00,FALSE,,FALSE\r\n"),
     "PAYMENTS.CSV": (
         "Vendor ID,Vendor Name,Check Number,Date,Cash Account,Cash Amount,Number of Distributions,Invoice Paid,"
-        "Description,G/L Account,Amount,Voided by Transaction,Customer Payment\r\n"
-        "V1,First Vendor,101,01/25/25,1020,-500.00,1,B-1,Rent,,500.00,,FALSE\r\n"),
+        "Description,G/L Account,Amount,Voided by Transaction,Customer Payment,Prepayment,Total Paid on Invoice(s),"
+        "Detailed Payment\r\n"
+        "V1,First Vendor,101,01/25/25,1020,-500.00,1,B-1,Rent,,500.00,,FALSE,FALSE,500.00,TRUE\r\n"),
     # A journal the business made no entry in, exported all the same: its headings alone.
     "GENERAL.CSV": "Date,Reference,Number of Distributions,G/L Account,Description,Amount\r\n",
     "TB.CSV": (
@@ -649,7 +650,8 @@ POSTED_1002 = [("1100", Decimal("440.00"), "First Customer"), ("2310", Decimal("
 VOIDED_1002 = _flagged("1002", voided="V1002")
 RETAINED_1002 = _column(PUBLISHED["SALES.CSV"], "Retain Percent", "", "", "", "10", "10", "10")
 # A later receipt applied to 1002 with its G/L Account left empty, as Sage 50 writes it.
-PAYS_1002 = PUBLISHED["RECEIPTS.CSV"] + "C1,First Customer,R2,R2,01/25/25,1020,440.00,1,1002,Payment,,-440.00,FALSE\r\n"
+PAYS_1002 = PUBLISHED["RECEIPTS.CSV"] + (
+    "C1,First Customer,R2,R2,01/25/25,1020,440.00,1,1002,Payment,,-440.00,FALSE,FALSE,440.00\r\n")
 
 
 @pytest.mark.parametrize("sales, label, note", [
@@ -774,8 +776,9 @@ def test_a_vendors_refund_received_is_on_the_vendor_and_a_refund_paid_to_a_custo
     CM-1 left. Applied to a credit memo, a refund keeps a full history import from running."""
     sales = PUBLISHED["SALES.CSV"] + ("C1,First Customer,CM-1,,TRUE,01/15/25,,1100,ST,1,1,1,,Returned,4000,100.00,1,"
                                       "100.00,,FALSE,FALSE,\r\n")
-    receipts = PUBLISHED["RECEIPTS.CSV"] + "V1,First Vendor,R3,R3,01/26/25,1020,80.00,1,,Refund,2000,-80.00,TRUE\r\n"
-    payments = PUBLISHED["PAYMENTS.CSV"] + "C1,First Customer,102,01/27/25,1020,-100.00,1,CM-1,Refund,,100.00,,TRUE\r\n"
+    receipts = PUBLISHED["RECEIPTS.CSV"] + "V1,First Vendor,R3,R3,01/26/25,1020,80.00,1,,Refund,2000,-80.00,TRUE,FALSE,0.00\r\n"
+    payments = PUBLISHED["PAYMENTS.CSV"] + ("C1,First Customer,102,01/27/25,1020,-100.00,1,CM-1,Refund,,100.00,,TRUE,"
+                                            "FALSE,100.00,TRUE\r\n")
     manifest = _built(tmp_path, {"SALES.CSV": sales, "RECEIPTS.CSV": receipts, "PAYMENTS.CSV": payments}, decisions)
     journals = {j.source_ref: j for j in manifest.bundle.journals if j.source_type in ("Receipt", "Payment")}
     lines = {ref: sorted((ln.account_external_id, ln.debit - ln.credit, ln.contact_external_id)
@@ -807,6 +810,51 @@ def test_a_transaction_filling_a_column_the_import_does_not_read_is_its_journal_
     # Blank, FALSE or zero tells nothing apart: such a column changes nothing.
     sales = _column(PUBLISHED["SALES.CSV"], "Progress Billing Invoice", "FALSE", "", "0", "0.00", "FALSE", "")
     assert not [r for r in _built(tmp_path, {"SALES.CSV": sales}).coverage if r.coverage_class == BLOCKER]
+
+
+def test_an_ordinary_payment_with_every_payment_field_filled_settles_its_invoice(tmp_path):
+    """Check 101 pays bill B-1's 500.00 in full, as the Payments window writes it: Total Paid on
+    Invoice(s) 500.00 and Detailed Payment TRUE. It settles B-1, and nothing keeps a full history
+    import from running; receipt R1, 210.00 on invoice 1001, likewise."""
+    manifest = _built(tmp_path, {})
+    settled = {(s.settlement_type, s.source_ref): [(a.document_external_id, a.amount) for a in s.allocations]
+               for s in manifest.bundle.settlements}
+    assert settled == {("payment", "101"): [("P:B-1", Decimal("500.00"))],
+                       ("receipt", "R1"): [("S:1001", Decimal("210.00"))]}
+    assert not [r for r in manifest.coverage if r.coverage_class == BLOCKER]
+
+
+@pytest.mark.parametrize("name, old, new, where, total, applied", [
+    ("PAYMENTS.CSV", ",FALSE,FALSE,500.00,TRUE", ",FALSE,FALSE,450.00,TRUE", "PAYMENTS.CSV V1 101 01/25/25", "450.00",
+     "500.00"),
+    ("RECEIPTS.CSV", ",FALSE,FALSE,210.00", ",FALSE,FALSE,0.00", "RECEIPTS.CSV C1 R1 01/20/25", "0.00", "210.00"),
+])
+def test_a_total_paid_on_invoices_its_lines_do_not_apply_is_refused(tmp_path, name, old, new, where, total, applied):
+    label = {"PAYMENTS.CSV": "Cash Disbursements Journal", "RECEIPTS.CSV": "Cash Receipts Journal"}[name]
+    assert _refusal(tmp_path, _documented({name: PUBLISHED[name].replace(old, new)})) == t(
+        "migration.err_sage50_total_paid", where=where, total=total, applied=applied, label=label)
+
+
+@pytest.mark.parametrize("decisions", [ETB, CUTOVER_JAN])
+def test_a_prepayment_and_a_receipt_applied_to_a_record_not_in_the_export_settle_nothing_and_are_listed(
+        tmp_path, decisions):
+    """R4 is a 150.00 advance marked Prepayment: it stays on First Customer as credit, with nothing to
+    apply it to later. R5 applies 100.00 to 1009, which the export holds no invoice for. Each is the
+    journal it posted on the customer, settles nothing, and keeps a full history import from running."""
+    receipts = PUBLISHED["RECEIPTS.CSV"] + (
+        "C1,First Customer,R4,R4,01/21/25,1020,150.00,1,,Advance,1100,-150.00,FALSE,TRUE,0.00\r\n"
+        "C1,First Customer,R5,R5,01/22/25,1020,100.00,1,1009,Payment,1100,-100.00,FALSE,FALSE,100.00\r\n")
+    manifest = _built(tmp_path, {"RECEIPTS.CSV": receipts}, decisions)
+    journals = {j.source_ref: sorted((ln.account_external_id, ln.debit - ln.credit, ln.contact_external_id)
+                                     for ln in j.lines) for j in manifest.bundle.journals if j.source_type == "Receipt"}
+    assert journals["R4"] == [("1020", Decimal("150.00"), None), ("1100", Decimal("-150.00"), "First Customer")]
+    assert journals["R5"] == [("1020", Decimal("100.00"), None), ("1100", Decimal("-100.00"), "First Customer")]
+    assert {s.source_ref for s in manifest.bundle.settlements} <= {"R1", "101"}
+    rows = {r.source_type: r for r in manifest.coverage}
+    assert (rows["Prepayment"].count, rows["Prepayment"].coverage_class, rows["Prepayment"].note) == (
+        1, BLOCKER, t("migration.sage50_prepayment_note"))
+    unmatched = rows["Receipt or payment applied to a record not in the export"]
+    assert (unmatched.count, unmatched.coverage_class, unmatched.note) == (1, BLOCKER, t("migration.sage50_unmatched_note"))
 
 
 def test_the_rows_of_one_transaction_must_agree_on_what_it_is(tmp_path):

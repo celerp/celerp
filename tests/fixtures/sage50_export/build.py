@@ -17,7 +17,8 @@ lines that balance, and the files are written in the layouts its templates and r
   Voided by Transaction on the Sales and Payments Journals alone), regular transactions all,
   the Purchases Journal's Row Type, blank on every line as no purchase withholds retainage,
   and Waiting on Bill, and the Cash Receipts and Payments Journals' Vendor Receipt and Customer
-  Payment, the refund direction, FALSE on every receipt and payment;
+  Payment, the refund direction, and Prepayment, FALSE on every receipt and payment, with each
+  one's Total Paid on Invoice(s) and every payment a Detailed Payment;
   the Purchases Journal's Invoice #
   and Apply to Invoice #; a receipt or payment line applied to an invoice with its G/L
   Account empty, as Sage 50 leaves it; dates as MM/DD/YY, True and False as TRUE and FALSE,
@@ -449,25 +450,30 @@ def cash(books: Books, sales: bool, four: bool = False, alternate: bool = False)
         header = ["Deposit Ticket ID", "Customer ID", "Customer Name", "Reference", "Receipt Number", "Date",
                   "Payment Method", "Cash Account", "Cash Amount", "Discount Account", "Number of Distributions",
                   "Invoice Paid", "Discount Amount", "Quantity", "Item ID", "Description", "G/L Account", "Unit Price",
-                  "Amount", "Transaction Period", "Transaction Number", "Vendor Receipt"]
+                  "Amount", "Transaction Period", "Transaction Number", "Vendor Receipt", "Prepayment",
+                  "Total Paid on Invoice(s)"]
     else:
         header = ["Vendor ID", "Vendor Name", check, "Date", "Memo", "Cash Account", "Cash Amount", "Discount Account",
                   "Number of Distributions", "Invoice Paid", "Discount Amount", "Quantity", "Item ID", "Description",
                   "G/L Account", "Unit Price", "Amount", "Transaction Period", "Transaction Number",
-                  "Voided by Transaction", "Customer Payment"]
+                  "Voided by Transaction", "Customer Payment", "Prepayment", "Total Paid on Invoice(s)",
+                  "Detailed Payment"]
     names = dict((i, n) for i, n, *_ in CUSTOMERS) if sales else dict(VENDORS)
     rows = []
     for n, x in enumerate(books.documents("receipts" if sales else "payments"), 1):
+        # The cash the transaction paid on invoices: each applied line less the discount taken on it.
+        paid = _number(sum((abs(ln.amount) - ln.discount for ln in x.lines if ln.paid), ZERO))
         for ln in x.lines:
             body = [len(x.lines), ln.paid, _number(ln.discount) if ln.discount else "", "", "", ln.description,
                     "" if ln.paid and not alternate else ln.account, "", _number(ln.amount), "", n]
             if sales:
                 rows.append([_short(x.on, four), x.party, names.get(x.party, ""), x.reference, x.reference,
                              _short(x.on, four), "Check", x.head, _number(x.head_amount), x.discount_account, *body,
-                             "FALSE"])
+                             "FALSE", "FALSE", paid])
             else:
                 rows.append([x.party, names.get(x.party, "Commercial Bank"), x.reference, _short(x.on, four), "",
-                             x.head, _number(x.head_amount), x.discount_account, *body, "", "FALSE"])
+                             x.head, _number(x.head_amount), x.discount_account, *body, "", "FALSE", "FALSE", paid,
+                             "TRUE"])
     return _csv(header, rows)
 
 
