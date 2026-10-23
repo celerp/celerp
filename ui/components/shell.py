@@ -281,10 +281,35 @@ function showGlobalUiError(message) {
   box.style.display = 'block';
 }
 
+/* A click-to-edit cell is kept as it was shown just before its editor replaces it, so
+   Escape can put it back in any editor, including those with no restore route of their
+   own. The editor that consumed Escape itself (preventDefault) keeps its own restore.
+   The editor is removed, so its pending blur save never fires. */
+var _cellBeforeEdit = null;
+document.addEventListener('htmx:beforeSwap', function(e) {
+  var t = e.detail.target;
+  _cellBeforeEdit = (t && t.matches && t.matches('td.cell:not(.cell--editing)')) ? t.outerHTML : null;
+});
+document.addEventListener('htmx:afterSettle', function() {
+  if (_cellBeforeEdit === null) return;
+  document.querySelectorAll('.cell--editing').forEach(function(c) {
+    if (c._restoreHtml === undefined) c._restoreHtml = _cellBeforeEdit;
+  });
+  _cellBeforeEdit = null;
+});
 document.addEventListener('keydown', function(e) {
   if (e.key === 'Escape') {
-    /* If any edit cell is open, let per-cell onkeydown handle the restore */
-    if (document.querySelector('.cell--editing')) {
+    var editing = document.querySelector('.cell--editing');
+    if (editing) {
+      var cell = e.target.closest && e.target.closest('.cell--editing');
+      if (!e.defaultPrevented && cell && cell._restoreHtml !== undefined) {
+        e.preventDefault();
+        var tpl = document.createElement('template');
+        tpl.innerHTML = cell._restoreHtml.trim();
+        var shown = tpl.content.firstElementChild;
+        cell.replaceWith(shown);
+        htmx.process(shown);
+      }
       return;
     }
     document.querySelectorAll('.row-menu-dropdown.open').forEach(function(m) { m.classList.remove('open'); });
