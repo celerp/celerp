@@ -100,6 +100,16 @@ class _RunTally:
         return AgentResult(credits=self.credits, help_pages=self.help_pages, **fields)
 
 
+class AgentRefusal(HTTPException):
+    """A relay refusal raised from an agent run, carrying the credits the run was
+    charged before it (a free question's first turn is charged, and the relay can
+    refuse a continuation), so the caller records them before passing the refusal on."""
+
+    def __init__(self, refusal: HTTPException, credits: int):
+        super().__init__(status_code=refusal.status_code, detail=refusal.detail, headers=refusal.headers)
+        self.credits = credits
+
+
 # -- Error mapping ----------------------------------------------------------
 
 _RELAY_ERROR_KEY = {
@@ -326,7 +336,7 @@ async def run_agent(
     history: list[dict],
     read_only: bool = False,
 ) -> AgentResult:
-    """Run the tool-calling agent loop. Returns AgentResult - raises only the relay refusals llm.complete raises."""
+    """Run the tool-calling agent loop. Returns AgentResult - raises AgentRefusal for the relay refusals llm.complete raises."""
     t0 = time.monotonic()
     tally = _RunTally()
     try:
@@ -341,8 +351,8 @@ async def run_agent(
         )
         _log_query(company_id, user_id, result.model_used, result.tools_called, len(file_ids or []), t0, result.error)
         return result
-    except HTTPException:
-        raise
+    except HTTPException as exc:
+        raise AgentRefusal(exc, tally.credits) from exc
     except Exception as exc:
         if not isinstance(exc, (asyncio.TimeoutError, _SessionExpired)):
             log.error("AI agent run failed: %s", exc)

@@ -663,7 +663,7 @@ async def query_in_conversation(
         tool_names,
     )
     from celerp.ai.memory import get_memory
-    from celerp.ai.service import AgentResult, run_agent
+    from celerp.ai.service import AgentRefusal, AgentResult, run_agent
     conv = await get_conversation(session, conversation_id, company_id, user.id)
     if conv is None:
         raise HTTPException(status_code=404, detail=t("ai.err_conversation_not_found"))
@@ -702,18 +702,23 @@ async def query_in_conversation(
     user_msg = await add_message(session, conversation_id, "user", body.query, file_ids=body.file_ids)
     await session.commit()
 
-    result: AgentResult = await run_agent(
-        app=request.app,
-        authorization=request.headers.get("authorization", ""),
-        query=body.query,
-        company_id=company_id,
-        company_settings=company_settings,
-        user_id=user.id,
-        role=role,
-        memory=memory,
-        file_ids=body.file_ids,
-        history=history,
-    )
+    try:
+        result: AgentResult = await run_agent(
+            app=request.app,
+            authorization=request.headers.get("authorization", ""),
+            query=body.query,
+            company_id=company_id,
+            company_settings=company_settings,
+            user_id=user.id,
+            role=role,
+            memory=memory,
+            file_ids=body.file_ids,
+            history=history,
+        )
+    except AgentRefusal as refusal:
+        await record_credits(session, user_msg.id, refusal.credits)
+        await session.commit()
+        raise
 
     await record_credits(session, user_msg.id, result.credits)
     if result.error:

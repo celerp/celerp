@@ -100,6 +100,37 @@ async def test_credits_kept_when_a_later_turn_fails(client, session, owner, monk
     assert [(r["query_count"], r["credits_used"]) for r in rows] == [(1, 1)]
 
 
+async def test_credits_kept_when_the_relay_refuses_a_later_turn(client, session, owner, monkeypatch):
+    """The relay charges a free question's first turn, then refuses the continuation
+    (413 free_text_too_large once tool results have grown the history). The refusal still
+    reaches the user, and the charged question stays in the usage table."""
+    from fastapi import HTTPException
+    from celerp.gateway.state import set_session_token
+
+    token, company_id, user_id = owner
+    set_session_token("s" * 64)
+    turns = [ModelResult(
+        message={"role": "assistant", "content": "", "tool_calls": [
+            {"id": "c1", "type": "function", "function": {"name": "no_such_tool", "arguments": "{}"}}]},
+        model_used="test-model", usage={"credits": 1}, reservation_id="r", remaining=10,
+    )]
+
+    async def _complete(messages, *, tools=None, reservation_id=None, **_kw):
+        if turns:
+            return turns.pop(0)
+        raise HTTPException(status_code=413, detail={"code": "free_text_too_large", "message": "too long"})
+
+    monkeypatch.setattr(service, "complete", _complete)
+    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None: {})
+    headers = {"Authorization": f"Bearer {token}"}
+    conv = (await client.post("/ai/conversations", headers=headers, json={"title": None})).json()["id"]
+    r = await client.post(f"/ai/conversations/{conv}/query", headers=headers, json={"query": "supplier?"})
+    assert r.status_code == 413, r.text
+    assert r.json()["detail"]["code"] == "free_text_too_large"
+    rows = (await _usage(client, token)).json()["users"]
+    assert [(r["query_count"], r["credits_used"]) for r in rows] == [(1, 1)]
+
+
 async def test_usage_newest_first(client, session, owner):
     token, company_id, user_id = owner
     other_token = await invite_user(client, session, {"Authorization": f"Bearer {token}"}, "staff@perm.example", "manager")

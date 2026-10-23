@@ -201,3 +201,30 @@ def test_refreshing_expired_proposals_keeps_citation_record():
     assert refreshed[1]["id"] != "p1"
     assert refreshed[2] == citation
     assert help_pages(refreshed) == ["inventory.add-item"]
+
+
+async def test_relay_refusal_after_a_charged_turn_carries_the_credits(monkeypatch):
+    """A refusal on a continuation still raises, and carries what the run was charged."""
+    from fastapi import HTTPException
+    from celerp.ai.service import AgentRefusal
+
+    _script(monkeypatch, [_turn("", [("help_search", {"query": {"q": "x"}}, "c1")])])
+    calls = {"n": 0}
+    scripted = service.complete
+
+    async def _complete(messages, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return await scripted(messages, **kw)
+        raise HTTPException(status_code=413, detail={"code": "free_text_too_large", "message": "too long"})
+
+    async def _exec(*a, **k):
+        return {"ok": True, "status": 200, "data": {"hits": []}}
+
+    monkeypatch.setattr(service, "complete", _complete)
+    monkeypatch.setattr(service, "execute_agent_capability", _exec)
+    with pytest.raises(AgentRefusal) as refused:
+        await _run()
+    assert refused.value.status_code == 413
+    assert refused.value.detail["code"] == "free_text_too_large"
+    assert refused.value.credits == 1

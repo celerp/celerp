@@ -3480,17 +3480,18 @@ async def marketplace_install(token: str, ref: str) -> dict:
                                    json={"ref": ref})).json()
 
 
-async def installation_owner(token: str) -> bool:
+async def installation_owner(token: str) -> bool | None:
     """GET /system/installation-owner - whether this login owns the installation.
 
-    Any error reads as not the owner, so installation-wide controls are offered
-    only on a confirmed answer."""
+    None when the check fails. Callers test truthiness, so a failure still reads
+    as not the owner and installation-wide controls are offered only on a
+    confirmed answer; a page that states "you are not the owner" acts only on False."""
     try:
         async with _api_client(token) as c:
             r = _raise(await c.get("/system/installation-owner"))
         return r.json().get("installation_owner") is True
     except Exception:
-        return False
+        return None
 
 
 async def restart_system(token: str) -> dict:

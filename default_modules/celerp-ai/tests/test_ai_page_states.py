@@ -129,6 +129,24 @@ async def test_no_account_non_owner_sees_button_and_owner_note(ui_client):
     html = await _page(ui_client, {"local": True}, owner=None, role="manager")
     assert "next=ai" in html and t("ai.free_ask_owner") not in html
 
+
+@pytest.mark.asyncio
+async def test_owner_check_failure_reads_as_unknown(ui_client, monkeypatch):
+    """The client itself turns a failed owner check into None, so the page leaves the note out."""
+    import contextlib
+    import ui.api_client as api
+
+    @contextlib.asynccontextmanager
+    async def _down(token, **_kw):
+        raise api.APIError(503, "down")
+        yield
+
+    monkeypatch.setattr(api, "_api_client", _down)
+    owner = await api.installation_owner("tok")
+    assert owner is None
+    html = await _page(ui_client, {"local": True}, owner=owner, role="manager")
+    assert "next=ai" in html and t("ai.free_ask_owner") not in html
+
     # The free count is unknown: the count line is left out, the card stays.
     html = await _page(ui_client, {"local": True}, offer={"paid_ai": False, "free_ai_questions": None,
                                                          "plan_ai_questions": None})
