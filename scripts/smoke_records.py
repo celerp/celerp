@@ -27,6 +27,15 @@ any release.
   python scripts/smoke_records.py restored http://127.0.0.1:PORT FOLDER
       After that restart: the records and the attachment, bytes and name, must be
       exactly those saved before the backup.
+  python scripts/smoke_records.py first-run PORT_FILE PRESETS
+      On a new install, before anything else has run, every business type the
+      setup page offers (each preset in the PRESETS folder that is not hidden)
+      must set up a company as the setup page does it: the owner registers and
+      sets up their company with the first type, and a new company is set up
+      with each other one, its currency and timezone and then its type, all
+      while only the modules a new install starts are running. Then restarts
+      Celerp, as the setup page does when a type needs modules, follows it onto
+      the port PORT_FILE names, and every company must keep its type.
   python scripts/smoke_records.py demo PORT_FILE FOLDER SAMPLE TEXT
       Moves the SAMPLE company in as Settings > Import does (as the first owner on
       fresh data, or the owner already there), following Celerp through the restart
@@ -122,12 +131,17 @@ def login(api: str) -> str:
     return body["access_token"]
 
 
-def seed(api: str) -> None:
+def register(api: str) -> str:
+    """Registers the owner on fresh data; returns their token."""
     status, body = http("POST", api + "/auth/register", body={
         "company_name": "Smoke Trading", "email": EMAIL, "name": "Owner", "password": PASSWORD})
     if status != 200:
         fail(f"register: {status} {body}")
-    token = body["access_token"]
+    return body["access_token"]
+
+
+def seed(api: str) -> None:
+    token = register(api)
     status, body = http("POST", api + "/companies/me/locations", token, {"name": "Smoke Warehouse", "type": "warehouse"})
     if status != 200:
         fail(f"POST /companies/me/locations: {status} {body}")
@@ -339,6 +353,49 @@ def _sample(port_file: str, sample: str) -> tuple[str, str, str]:
     return api, done["company_id"], switched["access_token"]
 
 
+def first_run(port_file: str, presets: str) -> None:
+    offered = (json.loads(p.read_text("utf-8")) for p in Path(presets).glob("*.json"))
+    types = sorted(p["name"] for p in offered if not p.get("hidden"))
+    if not types:
+        fail(f"no business types in {presets}")
+    api = _serving(port_file)
+    owner = register(api)
+    companies = {}
+    for n, vertical in enumerate(types):
+        if n:
+            token = _ok(*http("POST", api + "/companies", owner, {"name": f"Smoke {vertical}"}),
+                        f"POST /companies for {vertical}")["access_token"]
+        else:
+            token = owner
+        _ok(*http("PATCH", api + "/companies/me", token, {"currency": "USD", "timezone": "UTC"}),
+            f"currency and timezone for {vertical}")
+        chosen = _ok(*http("POST", api + "/companies/me/business-type", token, {"vertical": vertical}),
+                     f"business type {vertical}")
+        companies[_ok(*http("GET", api + "/companies/me", token), "GET /companies/me")["id"]] = vertical
+        print(f"{vertical}: set up" + (", needs a restart" if chosen.get("restart_required") else ""))
+    boot = _ok(*http("GET", api + "/health"), "GET /health")["boot"]
+    _ok(*http("POST", api + "/system/restart", owner), "POST /system/restart")
+    deadline = time.monotonic() + 240
+    while True:
+        api = _serving(port_file)
+        try:
+            status, body = http("GET", api + "/health", timeout=5)
+            if status == 200 and body.get("boot") != boot and http("GET", api + "/health/ready", timeout=5)[0] == 200:
+                break
+        except OSError:
+            pass
+        if time.monotonic() > deadline:
+            fail("Celerp did not come back within 240 s of the restart")
+        time.sleep(1)
+    for company_id, vertical in companies.items():
+        token = _ok(*http("POST", f"{api}/auth/switch-company/{company_id}", login(api)),
+                    f"switch to the {vertical} company")["access_token"]
+        kept = _ok(*http("GET", api + "/companies/me", token), "GET /companies/me after the restart").get("settings", {}).get("vertical")
+        if kept != vertical:
+            fail(f"after the restart the {vertical} company has business type {kept!r}")
+    print(f"{len(types)} business types set up on a new install and kept through the restart")
+
+
 def demo(port_file: str, folder: str, sample: str, text: str) -> None:
     out = Path(folder)
     out.mkdir(parents=True, exist_ok=True)
@@ -428,6 +485,8 @@ if __name__ == "__main__":
         carried(sys.argv[2], sys.argv[3])
     elif len(sys.argv) == 3 and sys.argv[1] in ("seed", "snapshot"):
         {"seed": seed, "snapshot": snapshot}[sys.argv[1]](sys.argv[2].rstrip("/"))
+    elif len(sys.argv) == 4 and sys.argv[1] == "first-run":
+        first_run(sys.argv[2], sys.argv[3])
     elif len(sys.argv) == 6 and sys.argv[1] == "demo":
         demo(*sys.argv[2:])
     elif len(sys.argv) == 4 and sys.argv[1] in ("backup-restore", "restored"):

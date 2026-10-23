@@ -1,5 +1,7 @@
 # Install and boot the packaged Windows app as a separate local account, then require
-# a real db:ok from /health/ready and a clean force-quit.
+# a real db:ok from /health/ready and a clean force-quit. Without -Previous or -Demo, the
+# first launch is a new install that must set up a company with every business type and
+# keep them through the restart that loads their modules (smoke_records.py first-run).
 #
 #   -Account standard  a freshly created standard (non-admin) user: how most people run it.
 #   -Account admin     the built-in Administrator. Its token is the full administrator
@@ -230,19 +232,21 @@ function TreeMatches([string]$dir, [string]$what) {
   if ($LASTEXITCODE -ne 0) { Fail "after $what the install folder differs from the build" }
 }
 
-# Every module in the lock is enabled; a bundled module that is missing or fails to load
-# stops startup, so readiness also proves they all load.
+# Every module in the lock is enabled, except on a new install's first launch; a bundled
+# module that is missing or fails to load stops startup, so readiness also proves they all load.
 $enabled = ((Get-Content "..\default_modules\first_party.lock.json" -Raw | ConvertFrom-Json).PSObject.Properties.Name | Sort-Object) -join ","
 Write-Host "smoke: enabling $enabled"
 
 # Launches the installed app exactly as a user would (default data directory, no
-# --user-data-dir) and waits for db:ok; returns the API port.
-function Launch([string]$exe, [string]$what, [switch]$MustFail) {
+# --user-data-dir) and waits for db:ok; returns the API port. -NewInstall names no
+# modules, so only the ones a new install starts are running.
+function Launch([string]$exe, [string]$what, [switch]$MustFail, [switch]$NewInstall) {
   Get-ChildItem -Path $udd -Recurse -Filter "api-port" -EA SilentlyContinue | Remove-Item -Force
   $boot = Join-Path $pub "celerp-boot.out"
   $run  = Join-Path $pub "celerp-run.cmd"
   Remove-Item $boot -EA SilentlyContinue
-  Wrapper $run "set ELECTRON_ENABLE_LOGGING=1`r`nset ENABLED_MODULES=$enabled`r`n`"$exe`" > `"$boot`" 2>&1"
+  $modules = if ($NewInstall) { "" } else { "set ENABLED_MODULES=$enabled`r`n" }
+  Wrapper $run "set ELECTRON_ENABLE_LOGGING=1`r`n$modules`"$exe`" > `"$boot`" 2>&1"
   Write-Host "smoke: $what, launching $exe as $u (default data dir $udd, output $boot)"
   $watch = [Diagnostics.Stopwatch]::StartNew()
   Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "`"$run`"" -Credential $cred -LoadUserProfile -WorkingDirectory $pub
@@ -342,6 +346,19 @@ if ($Account -eq "admin") {
   if ($child -ne "standard") { Fail "restricted launcher child token state '$child' (want standard)" }
 }
 Write-Host "token states OK for $Account"
+
+# A new install as a user meets it: every business type must set up a company, and keep
+# it through the restart that loads its modules (smoke_records.py first-run).
+if (-not $Previous -and -not $Demo) {
+  $port = Launch $exe "new install" -NewInstall
+  $pf = Get-ChildItem -Path $udd -Recurse -Filter "api-port" -EA SilentlyContinue | Select-Object -First 1
+  $firstRun = Join-Path $pub "celerp-first-run.out"
+  python ..\scripts\smoke_records.py first-run $pf.FullName ..\default_modules\celerp-verticals\celerp_verticals\presets > $firstRun
+  $firstRunCode = $LASTEXITCODE
+  Get-Content $firstRun -EA SilentlyContinue | Write-Host
+  if ($firstRunCode -ne 0) { Fail "setting up a new install: smoke_records.py first-run exited $firstRunCode" }
+  ForceQuit $installDir (Get-Content $pf.FullName -Raw).Trim() "new install"
+}
 
 $port = Launch $exe "first launch"
 Write-Host "boot smoke OK on Windows ($smoke, account $u, port $port)"

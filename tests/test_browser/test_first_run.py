@@ -15,6 +15,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -95,8 +96,9 @@ class _FreshInstall:
         cfg = self.tmp / "config"
         shutil.rmtree(cfg, ignore_errors=True)
         cfg.mkdir()
-        env = _install_env()
-        env.update({
+        self.restart_requested = cfg / ".restart_requested"
+        self.env = _install_env()
+        self.env.update({
             "DATA_DIR": str(self.tmp / "data"),
             "JWT_SECRET": secrets.token_urlsafe(32),
             "DATABASE_URL": self.db_url,
@@ -106,14 +108,36 @@ class _FreshInstall:
             "API_URL": self.api,
             "CELERP_API_URL": self.api,
         })
-        api = self._spawn("celerp.main:app", _API_PORT, env)
-        self.procs.append(api)
+        self._launch()
+        self._stopping = threading.Event()
+        self._supervisor = threading.Thread(target=self._supervise, daemon=True)
+        self._supervisor.start()
+
+    def _launch(self) -> None:
+        api = self._spawn("celerp.main:app", _API_PORT, self.env)
+        self.procs = [api]
         _wait_http(f"{self.api}/health", api)
-        ui = self._spawn("ui.app:app", _UI_PORT, env)
+        ui = self._spawn("ui.app:app", _UI_PORT, self.env)
         self.procs.append(ui)
         _wait_http(f"{self.ui}/health", ui)
 
+    def _supervise(self) -> None:
+        """Start both servers again when the API stops after asking for a restart, as the
+        desktop app does: choosing a business type on a new install restarts Celerp to load
+        the type's modules."""
+        while not self._stopping.wait(0.2):
+            if self.procs[0].poll() is None:
+                continue
+            if not self.restart_requested.exists():
+                return
+            self.restart_requested.unlink()
+            self.procs[1].terminate()
+            self.procs[1].wait(timeout=10)
+            self._launch()
+
     def stop(self) -> None:
+        self._stopping.set()
+        self._supervisor.join()
         for p in self.procs:
             p.terminate()
         for p in self.procs:
@@ -588,3 +612,15 @@ def test_setup_options_side_by_side_small_and_flush_left(playwright, fresh, widt
         assert max(sizes["text"]) < min(sizes["label"]), sizes
     finally:
         browser.close()
+
+
+def test_every_business_type_sets_up_on_a_new_install(fresh, tmp_path):
+    """Every business type the setup page offers sets up a company while only the modules a
+    new install starts are running, and the company keeps it through the restart that loads
+    the type's modules. The packaged builds take the same walk."""
+    from migration_support import smoke_records
+
+    port_file = tmp_path / "api-port"
+    port_file.write_text(str(_API_PORT))
+    smoke_records().first_run(str(port_file), str(_REPO / "default_modules" / "celerp-verticals"
+                                                  / "celerp_verticals" / "presets"))
