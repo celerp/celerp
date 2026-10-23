@@ -36,7 +36,7 @@ from test_system_recovery_exact import _migration_history  # noqa: F401
 from celerp.services.payments import reconcile_payments
 from ui.i18n import t
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [pytest.mark.asyncio, pytest.mark.usefixtures("docs_running")]
 
 RESET = "/companies/me/reset"
 CLOSURE = "/billing/connect/companies/retire/"

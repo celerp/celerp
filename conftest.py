@@ -972,3 +972,10 @@ def docs_running(monkeypatch):
     """Record Documents as loaded, as it is in an installation that takes online payments."""
     from test_helpers import mark_running
     mark_running(monkeypatch, "celerp-docs")
+
+
+@pytest.fixture
+def connector_modules_running(monkeypatch):
+    """Record the modules connectors write into as loaded: Inventory, Documents and Contacts."""
+    from test_helpers import mark_running
+    mark_running(monkeypatch, "celerp-inventory", "celerp-docs", "celerp-contacts")

@@ -32,7 +32,7 @@ from test_company_reset_payments import (_PAYMENT, BOOKS, _Cloud, _harbor, _invo
 from test_system_recovery_exact import _migration_history  # noqa: F401
 from ui.i18n import t
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [pytest.mark.asyncio, pytest.mark.usefixtures("docs_running")]
 
 _REFUND = ("company_id", "entity_id", "reference", "refund_id", "cycle", "transition", "amount_minor",
            "currency", "occurred_at", "context", "delivery_id")

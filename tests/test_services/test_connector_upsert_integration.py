@@ -27,6 +27,8 @@ import celerp.connectors.upsert as u
 
 from test_helpers import provision_company_books
 
+pytestmark = pytest.mark.usefixtures("connector_modules_running")
+
 
 async def _seed_company(session, name: str) -> uuid.UUID:
     cid = uuid.uuid4()
