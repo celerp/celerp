@@ -42,7 +42,6 @@ from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.models.share import DocShareToken, is_active as share_is_active
 from celerp.services.auth import get_current_company_id, get_current_user
-from celerp.services.list_behavior import DRAFT
 from celerp.services.money import round_money, to_decimal, to_stored_float
 from celerp.services.permissions import require_permission
 from celerp.services.outbound_url import validate_public_base_url
@@ -560,7 +559,7 @@ async def _enrich_share_lines(session: AsyncSession, company_id, state: dict) ->
     from celerp.models.company import Company
     from celerp.services.line_measures import (
         LINE_IDENTIFIER_MODES, identifier_backfill, item_measure_meta, resolve_line_measures)
-    from celerp.services.shipping import SHIPPING_LIST_TYPE, customs_backfill, line_gross_weight
+    from celerp.services.shipping import SHIPPING_LIST_TYPE, customs_backfill, line_gross_weight, reads_item_customs
     from celerp.services.units import DEFAULT_UNITS, build_unit_map
     company = await session.get(Company, company_id)
     settings = (company.settings or {}) if company else {}
@@ -573,9 +572,7 @@ async def _enrich_share_lines(session: AsyncSession, company_id, state: dict) ->
     units = settings.get("units") or DEFAULT_UNITS
     umap = build_unit_map(units)
     is_shipping = state.get("list_type") == SHIPPING_LIST_TYPE
-    # Issue saves the customs codes on the lines; a draft, or an issued list not saved yet, reads
-    # them from the item.
-    read_item_codes = state.get("status") == DRAFT or not state.get("customs_saved")
+    read_item_codes = reads_item_customs(state)
     for li in state.get("line_items") or []:
         eid = li.get("entity_id") or li.get("item_id")
         if not eid:

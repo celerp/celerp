@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import copy
 import uuid
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -307,3 +308,21 @@ async def test_startup_saves_the_flag_on_an_issued_list_whose_lines_already_hold
     r = await client.get(f"/lists/{ship}", headers=auth["headers"])
     assert r.json()["customs_saved"] is True
     assert r.json()["line_items"][0]["hs_code"] == "5555"
+
+
+@pytest.mark.parametrize("state, reads", [
+    ({"status": "draft"}, True),
+    ({"status": "draft", "customs_saved": True}, True),
+    ({"status": "finalized"}, True),
+    ({"status": "finalized", "customs_saved": True}, False),
+])
+async def test_one_rule_says_when_a_printout_reads_the_items_codes(state, reads):
+    """The share page and the print view both ask reads_item_customs, and nothing else in the
+    app reads ``customs_saved`` to decide it."""
+    from celerp.services.shipping import reads_item_customs
+
+    assert reads_item_customs(state) is reads
+    root = Path(__file__).resolve().parent.parent
+    readers = sorted(str(path.relative_to(root)) for top in ("celerp", "default_modules", "ui")
+                     for path in (root / top).rglob("*.py") if 'get("customs_saved")' in path.read_text())
+    assert readers == ["celerp/services/shipping.py", "default_modules/celerp-docs/celerp_docs/customs_freeze.py"]

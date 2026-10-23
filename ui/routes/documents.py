@@ -2102,11 +2102,9 @@ def setup_routes(app):
             return
         import asyncio as _aio
         from celerp.services.line_measures import resolve_line_measures
-        from celerp.services.shipping import SHIPPING_LIST_TYPE, customs_backfill, line_gross_weight
+        from celerp.services.shipping import SHIPPING_LIST_TYPE, customs_backfill, line_gross_weight, reads_item_customs
         _is_shipping = doc.get("list_type") == SHIPPING_LIST_TYPE
-        # Issue saves the customs codes on the lines; a draft, or an issued list not saved yet,
-        # reads them from the item.
-        _read_item_codes = doc.get("status") == "draft" or not doc.get("customs_saved")
+        _read_item_codes = reads_item_customs(doc)
         try:
             _umap = build_unit_map(await api.get_units(token))
         except Exception:

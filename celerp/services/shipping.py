@@ -10,6 +10,8 @@ declared here so no surface can drift.
 """
 from __future__ import annotations
 
+from celerp.services.list_behavior import DRAFT
+
 SHIPPING_LIST_TYPE = "shipping_doc"
 
 # The 11 Incoterms 2020 codes - the full, closed set. Any-country shipments pick
@@ -57,6 +59,13 @@ def line_gross_weight(line: dict, item_state: dict, qty_is_weight: bool) -> tupl
         return (float(per_unit) * qty) or None, str(item_state.get("gross_weight_unit") or "")
     except (TypeError, ValueError):
         return None, ""
+
+
+def reads_item_customs(state: dict) -> bool:
+    """Whether a document's printout and share view read customs codes from its items
+    (customs_backfill): a draft does, and so does an issued one whose codes were never saved
+    on its lines (``customs_saved``)."""
+    return state.get("status") == DRAFT or not state.get("customs_saved")
 
 
 def customs_backfill(line: dict, item_state: dict) -> None:
