@@ -21,6 +21,7 @@ import httpx
 import psycopg2
 import pytest
 
+from boot_support import wait_until_started
 from test_helpers import DATABASE_URL
 
 REPO = Path(__file__).resolve().parents[1]
@@ -80,6 +81,7 @@ def _booted(tmp_path, without: set[str]):
                     time.sleep(0.5)
                 else:
                     pytest.fail(f"{k} did not start: " + (tmp_path / f"{k}.log").read_text()[-3000:])
+            wait_until_started(f"http://127.0.0.1:{api_port}")
             r = httpx.post(f"http://127.0.0.1:{api_port}/auth/register", json={
                 "company_name": "Shop", "email": "owner@shop.example", "name": "Owner", "password": "password123"})
             assert r.status_code == 200, r.text

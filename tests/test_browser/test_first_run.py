@@ -22,6 +22,8 @@ import httpx
 import pytest
 from playwright.sync_api import Page, expect
 
+from boot_support import Supervised, wait_until_started
+
 pytestmark = pytest.mark.browser
 
 _REPO = Path(__file__).resolve().parents[2]
@@ -66,7 +68,7 @@ class _FreshInstall:
         self.api = f"http://127.0.0.1:{_API_PORT}"
         self.ui = f"http://127.0.0.1:{_UI_PORT}"
         self.tmp = Path(tempfile.mkdtemp(prefix="celerp-first-run-"))
-        self.procs: list[subprocess.Popen] = []
+        self.servers: Supervised | None = None
 
     def _spawn(self, app: str, port: int, env: dict) -> subprocess.Popen:
         with open(self.tmp / f"{port}.log", "ab") as log:
@@ -93,22 +95,26 @@ class _FreshInstall:
             "API_URL": self.api,
             "CELERP_API_URL": self.api,
         })
-        api = self._spawn("celerp.main:app", _API_PORT, env)
-        self.procs.append(api)
-        _wait_http(f"{self.api}/health", api)
-        ui = self._spawn("ui.app:app", _UI_PORT, env)
-        self.procs.append(ui)
-        _wait_http(f"{self.ui}/health", ui)
+
+        def spawn() -> tuple[subprocess.Popen, subprocess.Popen]:
+            procs = [self._spawn("celerp.main:app", _API_PORT, env)]
+            try:
+                _wait_http(f"{self.api}/health", procs[0])
+                procs.append(self._spawn("ui.app:app", _UI_PORT, env))
+                _wait_http(f"{self.ui}/health", procs[1])
+            except Exception:
+                for proc in procs:
+                    proc.kill()
+                raise
+            return procs[0], procs[1]
+
+        self.servers = Supervised(spawn, cfg / ".restart_requested")
+        wait_until_started(self.api)
 
     def stop(self) -> None:
-        for p in self.procs:
-            p.terminate()
-        for p in self.procs:
-            try:
-                p.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                p.kill()
-        self.procs = []
+        if self.servers:
+            self.servers.stop()
+            self.servers = None
 
     def reset(self) -> None:
         """Back to a new install: no owner, no company, a fresh config."""
