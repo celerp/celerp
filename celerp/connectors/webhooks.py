@@ -13,7 +13,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
-from celerp.connectors.base import ConnectorContext, SyncDirection, entity_allowed
+from celerp.connectors.base import ConnectorContext, SyncDirection
 from celerp.connectors.sync_runner import run_sync
 import celerp.connectors as connector_registry
 
@@ -48,7 +48,6 @@ def topic_to_entity(topic: str) -> str | None:
 async def handle_webhook(
     event: WebhookEvent,
     ctx: ConnectorContext,
-    direction: SyncDirection = SyncDirection.BOTH,
     *,
     expected_config_id=None,
     expected_store_handle: str | None = None,
@@ -90,8 +89,8 @@ async def handle_webhook(
                     and config.webhook_secret != expected_webhook_secret
                 ):
                     return
-                current_direction = SyncDirection(config.direction)
-                if not entity_allowed(entity, current_direction):
+                # A deletion matters to every linked product, whichever way products sync.
+                if (config.entity_directions or {}).get("products", SyncDirection.OFF.value) == SyncDirection.OFF.value:
                     return
                 current_ctx = await fetch_context(
                     ctx.company_id,
@@ -121,7 +120,6 @@ async def handle_webhook(
         connector,
         ctx,
         entity,
-        direction=direction,
         # WooCommerce names only the deleted order; the reconciliation pass
         # finds every imported order the store no longer returns.
         reconcile=event.platform == "woocommerce" and normalized_topic == "order.deleted",
@@ -160,7 +158,6 @@ async def dispatch_woocommerce_webhook(
             sa.select(
                 ConnectorConfig.company_id,
                 ConnectorConfig.webhook_secret,
-                ConnectorConfig.direction,
             ).where(ConnectorConfig.connector == "woocommerce")
         )
         candidates = [
@@ -177,7 +174,6 @@ async def dispatch_woocommerce_webhook(
                 sa.select(
                     ConnectorConfig.company_id,
                     ConnectorConfig.webhook_secret,
-                    ConnectorConfig.direction,
                 )
                 .where(
                     ConnectorConfig.connector == "woocommerce",
@@ -205,7 +201,6 @@ async def dispatch_woocommerce_webhook(
             ctx = await fetch_context(company_id, "woocommerce")
             if ctx is None:
                 continue
-            direction = SyncDirection(current[2] or "both")
             expected_store_handle = ctx.store_handle
 
         try:
@@ -216,7 +211,6 @@ async def dispatch_woocommerce_webhook(
         await handle_webhook(
             event,
             ctx,
-            direction,
             expected_store_handle=expected_store_handle,
             expected_webhook_secret=secret,
         )

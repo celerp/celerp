@@ -32,6 +32,7 @@ from celerp.connectors.base import (
     ConnectorBase,
     ConnectorCategory,
     ConnectorContext,
+    EntityFlow,
     SyncDirection,
     SyncEntity,
     SyncResult,
@@ -148,9 +149,12 @@ class XeroConnector(ConnectorBase):
     name = "xero"
     display_name = "Xero"
     store_scoped_ids = False  # Xero ids are unique across all organisations
-    supported_entities = [SyncEntity.PRODUCTS, SyncEntity.ORDERS, SyncEntity.CONTACTS]
+    entity_flows = {
+        "products": EntityFlow(inbound=("products",)),
+        "invoices": EntityFlow(inbound=("orders",), outbound=("invoices_out",)),
+        "contacts": EntityFlow(inbound=("contacts",)),
+    }
     category = ConnectorCategory.ACCOUNTING
-    direction = SyncDirection.BOTH
     conflict_strategy = {
         SyncEntity.PRODUCTS: "newest",
         SyncEntity.ORDERS: "platform",

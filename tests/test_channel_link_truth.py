@@ -8,6 +8,8 @@ state and merge protection all read the same definition."""
 
 from __future__ import annotations
 
+import json
+
 import ast
 import asyncio
 import importlib.util
@@ -314,7 +316,8 @@ async def test_historical_identity_authorizes_no_outbound(client, session):
     r = await client.patch(f"/items/{a}", headers=h, json={"fields_changed": {"quantity": {"old": 5.0, "new": 4.0}}})
     assert r.status_code == 200, r.text
     assert await queued() == 0
-    await _connect(session, cid, "woocommerce", direction="both")
+    await _connect(session, cid, "woocommerce", entity_directions={
+        "products": "both", "stock": "outbound", "orders": "inbound", "customers": "off"})
     r = await client.patch(f"/items/{a}", headers=h, json={"fields_changed": {"quantity": {"old": 4.0, "new": 3.0}}})
     assert r.status_code == 200, r.text
     assert await queued() == 0
@@ -513,11 +516,16 @@ async def _real_links(engine, cid, eid: str, links: dict) -> None:
             {"s": json.dumps({**state, "external_links": links}), "c": cid, "e": eid})
 
 
+SHOPIFY_BOTH = json.dumps({"products": "both", "stock": "outbound", "orders": "inbound",
+                           "customers": "inbound"})
+
+
 async def _set_shopify_owner(engine, owner_id: str | None) -> None:
     await _sql(engine, "DELETE FROM connector_configs WHERE connector = 'shopify'")
     if owner_id is not None:
-        await _sql(engine, "INSERT INTO connector_configs (company_id, connector, direction, sync_frequency, "
-                           "daily_sync_hour) VALUES (:c, 'shopify', 'both', 'realtime', 2)", c=owner_id)
+        await _sql(engine, "INSERT INTO connector_configs (company_id, connector, entity_directions, "
+                           "sync_frequency, daily_sync_hour) VALUES (:c, 'shopify', CAST(:d AS json), "
+                           "'realtime', 2)", c=owner_id, d=SHOPIFY_BOTH)
 
 
 async def test_connector_state_and_catalog_state_agree(real_engine, real_client):
@@ -657,8 +665,9 @@ async def test_merge_racing_connect_rechecks_ownership(real_engine, real_client)
         try:
             await _await_advisory_waiter(real_engine, task)
             await holder.execute(text(
-                "INSERT INTO connector_configs (company_id, connector, direction, sync_frequency, daily_sync_hour) "
-                "VALUES (:c, 'shopify', 'both', 'realtime', 2)"), {"c": str(cid)})
+                "INSERT INTO connector_configs (company_id, connector, entity_directions, sync_frequency, "
+                "daily_sync_hour) VALUES (:c, 'shopify', CAST(:d AS json), 'realtime', 2)"),
+                {"c": str(cid), "d": SHOPIFY_BOTH})
             state = (await holder.execute(text(
                 "SELECT state FROM projections WHERE company_id = :c AND entity_id = :e"),
                 {"c": cid, "e": a})).scalar_one()

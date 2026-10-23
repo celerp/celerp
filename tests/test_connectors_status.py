@@ -241,7 +241,7 @@ async def test_connector_in_use_elsewhere_is_refused(_db_engine):
             ConnectorConfig(
                 company_id=first_company,
                 connector=connector,
-                direction="both",
+                entity_directions={},
             ),
         ])
         await session.flush()
@@ -280,12 +280,12 @@ async def test_connector_ownership_merges_legacy_operational_state(_db_engine):
             ConnectorConfig(
                 company_id=company_id, connector=connector,
                 webhook_ids_json=json.dumps(["11"]), webhook_secret=None,
-                direction="inbound",
+                entity_directions={},
             ),
             ConnectorConfig(
                 company_id=legacy_id, connector=connector,
                 webhook_ids_json=json.dumps(["12"]), webhook_secret="legacy-secret",
-                direction="both",
+                entity_directions={},
             ),
         ])
         await session.flush()
@@ -323,7 +323,7 @@ def test_pending_oauth_connector_exposes_disconnect():
         None,
         "https://relay.example",
         "company-1",
-        config=SimpleNamespace(direction="both", sync_frequency="manual"),
+        config=SimpleNamespace(entity_directions={}, sync_frequency="manual"),
     )
     html = to_xml(card)
     assert '/settings/connectors/quickbooks/oauth-redirect' in html
@@ -347,7 +347,7 @@ def test_pending_apikey_connector_exposes_disconnect():
         None,
         "https://relay.example",
         "company-1",
-        config=SimpleNamespace(direction="both", sync_frequency="realtime"),
+        config=SimpleNamespace(entity_directions={}, sync_frequency="realtime"),
     )
     html = to_xml(card)
     assert '/settings/connectors/woocommerce/connect-apikey' in html
@@ -363,7 +363,7 @@ async def test_needs_plan_keeps_owned_connector_disconnect_visible():
 
     config = SimpleNamespace(
         connector="quickbooks",
-        direction="both",
+        entity_directions={},
         sync_frequency="manual",
     )
     with patch(
@@ -511,7 +511,7 @@ async def test_orders_from_a_different_store_do_not_mix_with_imported_ones(_db_e
 
     import sqlalchemy as sa
 
-    from celerp.connectors.base import ConnectorContext, SyncDirection, SyncEntity, SyncResult
+    from celerp.connectors.base import ConnectorContext, EntityFlow, SyncEntity, SyncResult
     from celerp.connectors.sync_runner import run_sync
     from celerp.db import get_session_ctx
     from celerp.models.company import Company
@@ -522,7 +522,8 @@ async def test_orders_from_a_different_store_do_not_mix_with_imported_ones(_db_e
     class _Store:
         name = "woocommerce"
         display_name = "WooCommerce"
-        direction = SyncDirection.BOTH
+        entity_flows = {"orders": EntityFlow(inbound=("orders",))}
+        default_directions = {"orders": "inbound"}
         store_scoped_ids = True
         calls = 0
 

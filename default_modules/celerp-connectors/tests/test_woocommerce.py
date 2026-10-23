@@ -42,12 +42,6 @@ def mock_upsert_order():
         yield m
 
 
-@pytest.fixture
-def mock_upsert_contact():
-    with patch("celerp.connectors.upsert.upsert_contact_from_woocommerce", new_callable=AsyncMock, return_value="created") as m:
-        yield m
-
-
 # -- Auth helpers --
 
 def test_auth_parses_key_secret(ctx):
@@ -523,30 +517,6 @@ async def test_sync_orders_incremental(woo, ctx, mock_upsert_order):
 
 # -- sync_contacts --
 
-@pytest.mark.asyncio
-async def test_sync_contacts_creates(woo, ctx, mock_upsert_contact):
-    with respx.mock:
-        respx.get("https://store.example.com/wp-json/wc/v3/customers").mock(
-            return_value=httpx.Response(200, json=[
-                {"id": 5, "email": "test@example.com", "first_name": "Alice", "last_name": "Smith"}
-            ])
-        )
-        result = await woo.sync_contacts(ctx)
-    assert result.created == 1
-    assert result.entity == SyncEntity.CONTACTS
-
-
-@pytest.mark.asyncio
-async def test_sync_contacts_incremental(woo, ctx, mock_upsert_contact):
-    since = datetime(2026, 3, 1, tzinfo=timezone.utc)
-    with respx.mock:
-        route = respx.get("https://store.example.com/wp-json/wc/v3/customers").mock(
-            return_value=httpx.Response(200, json=[])
-        )
-        await woo.sync_contacts(ctx, since=since)
-    assert "modified_after" in str(route.calls[0].request.url)
-
-
 
 # -- sync_inventory_out --
 
@@ -760,3 +730,98 @@ async def test_incremental_product_sync_does_not_infer_remote_deletions(woo, ctx
         await woo.sync_products(ctx, since=datetime.now(timezone.utc))
 
     reconcile.assert_not_awaited()
+
+
+# -- Per-record directions --
+
+from connector_test_support import add_item, connect, connector_session, seed_company  # noqa: E402,F401
+
+_WIDEST = {"products": "both", "stock": "outbound", "orders": "inbound", "customers": "off"}
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_publish_refused_when_products_inbound_only(woo, connector_session):
+    session = connector_session
+    cid = await seed_company(session, "InboundOnly")
+    await add_item(session, cid, "item:pub", "PUB-1")
+    await connect(session, cid, "woocommerce", {**_WIDEST, "products": "inbound"})
+    ctx = ConnectorContext(company_id=str(cid), access_token="ck:cs",
+                           store_handle="https://store.example.com")
+    respx.get("https://store.example.com/wp-json/wc/v3/products").mock(
+        return_value=httpx.Response(200, json=[]))
+    create = respx.post("https://store.example.com/wp-json/wc/v3/products")
+
+    with pytest.raises(ValueError, match="Products are set to WooCommerce to Celerp"):
+        await woo.ensure_product_link(ctx, "item:pub")
+    assert not create.called
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_publish_allowed_when_products_go_out(woo, connector_session):
+    session = connector_session
+    cid = await seed_company(session, "OutboundPublish")
+    await add_item(session, cid, "item:pub", "PUB-2")
+    await connect(session, cid, "woocommerce", {**_WIDEST, "products": "outbound"})
+    ctx = ConnectorContext(company_id=str(cid), access_token="ck:cs",
+                           store_handle="https://store.example.com")
+    respx.get("https://store.example.com/wp-json/wc/v3/products").mock(
+        return_value=httpx.Response(200, json=[]))
+    respx.post("https://store.example.com/wp-json/wc/v3/products").mock(
+        return_value=httpx.Response(201, json={"id": 501, "type": "simple", "manage_stock": True}))
+
+    assert await woo.ensure_product_link(ctx, "item:pub") == "item:pub"
+
+
+def test_customers_not_bulk_imported(woo):
+    from celerp.connectors.sync_runner import implements, sync_plan
+
+    assert not implements(woo, "contacts")
+    assert [d.value for d in woo.entity_flows["customers"].allowed()] == ["off"]
+    assert "contacts" not in sync_plan(woo, _WIDEST)
+    assert not [t for t in woo.webhook_topics(_WIDEST) if t.startswith("customer.")]
+
+
+# -- Store errors --
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_error_keeps_response_message(woo, ctx):
+    long_message = "Error getting remote image https://example.invalid/a.jpg. " + "x" * 400
+    respx.put("https://store.example.com/wp-json/wc/v3/products/7").mock(return_value=httpx.Response(
+        400, json={"code": "woocommerce_product_invalid_sku", "message": long_message}))
+    items = [{"woocommerce_product_id": "7", "sku": "S-7", "name": "Seven", "files": []}]
+    with patch("celerp.connectors.upsert.list_items_modified_since_last_sync",
+               new=AsyncMock(return_value=items)):
+        result = await woo.sync_products_out(ctx)
+    error = result.errors[0]
+    assert "woocommerce_product_invalid_sku" in error and "Error getting remote image" in error
+    assert "400" in error
+    assert len(error) < 400
+    assert "ck_testkey" not in error and "cs_testsecret" not in error
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_list_error_keeps_response_message(woo, ctx):
+    respx.get("https://store.example.com/wp-json/wc/v3/products").mock(return_value=httpx.Response(
+        401, json={"code": "woocommerce_rest_cannot_view", "message": "Sorry, you cannot list resources."}))
+    result = await woo.sync_products(ctx)
+    assert "woocommerce_rest_cannot_view" in result.errors[0]
+    assert "Sorry, you cannot list resources." in result.errors[0]
+
+
+# -- First sync --
+
+@pytest.mark.asyncio
+async def test_first_sync_orders_respect_start_date(woo, ctx, mock_upsert_order):
+    start = datetime(2026, 9, 1, tzinfo=timezone.utc)
+    with respx.mock:
+        route = respx.get("https://store.example.com/wp-json/wc/v3/orders").mock(
+            return_value=httpx.Response(200, json=[]))
+        await woo.sync_orders(ctx, orders_from=start)
+        await woo.sync_orders(ctx, since=datetime(2026, 10, 1, tzinfo=timezone.utc),
+                              orders_from=start)
+    for call in route.calls:
+        assert call.request.url.params["after"] == start.isoformat()

@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 import pytest
 import sqlalchemy as sa
 
-from celerp.connectors.base import ConnectorContext, SyncDirection, SyncEntity, SyncResult
+from celerp.connectors.base import ConnectorContext, EntityFlow, SyncEntity, SyncResult
 from celerp.connectors.sync_runner import run_sync
 from celerp.db import get_session_ctx
 from celerp.models.sync_run import SyncRun
@@ -41,7 +41,8 @@ def _active_company_guard(monkeypatch):
 class _Stub:
     name = "stub_lifecycle"
     store_scoped_ids = False
-    direction = SyncDirection.BOTH
+    entity_flows = {"orders": EntityFlow(inbound=("orders",))}
+    default_directions = {"orders": "inbound"}
 
     def __init__(self, on_run=None, boom=False):
         self._on_run = on_run
@@ -118,7 +119,8 @@ class _AttentionStub:
     """A connector whose sync takes carried attention and returns a new list."""
     name = "stub_attention"
     store_scoped_ids = False
-    direction = SyncDirection.BOTH
+    entity_flows = {"orders": EntityFlow(inbound=("orders",))}
+    default_directions = {"orders": "inbound"}
 
     def __init__(self, returns):
         self._returns = list(returns)

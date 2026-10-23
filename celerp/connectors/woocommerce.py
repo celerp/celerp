@@ -26,12 +26,16 @@ from celerp.connectors.base import (
     ConnectorBase,
     ConnectorCategory,
     ConnectorContext,
+    EntityFlow,
     SyncDirection,
     SyncEntity,
     SyncResult,
     contact_matches,
+    direction_label,
+    entity_allowed,
     store_holds_records,
 )
+from ui.i18n import t
 import celerp.connectors.upsert as _upsert
 
 log = logging.getLogger(__name__)
@@ -66,6 +70,29 @@ def webhook_delivery_url() -> str:
     return f"{relay_http_url().rstrip('/')}/webhooks/woocommerce/events"
 
 
+# Longest store error text kept with a failed record.
+_ERROR_TEXT_LIMIT = 300
+
+
+def _raise_for_status(resp: httpx.Response) -> None:
+    """Raise for a failed store reply, keeping WooCommerce's own error code and message
+    (trimmed) so the person sees why it refused. Credentials travel only in the
+    Basic auth header and never appear here."""
+    if resp.is_success:
+        return
+    try:
+        body = resp.json()
+    except ValueError:
+        body = None
+    reason = resp.reason_phrase or "error"
+    if isinstance(body, dict) and (body.get("code") or body.get("message")):
+        reason = ": ".join(str(part) for part in (body.get("code"), body.get("message")) if part)
+    text = f"HTTP {resp.status_code} {reason}"
+    if len(text) > _ERROR_TEXT_LIMIT:
+        text = text[:_ERROR_TEXT_LIMIT - 1] + "…"
+    raise httpx.HTTPStatusError(text, request=resp.request, response=resp)
+
+
 def _http_client(*, max_retries: int = 3) -> RateLimitedClient:
     return RateLimitedClient(
         max_retries=max_retries,
@@ -80,15 +107,6 @@ def _auth(ctx: ConnectorContext) -> tuple[str, str]:
         raise ValueError("ConnectorContext.access_token must be 'consumer_key:consumer_secret'")
     key, secret = ctx.access_token.split(":", 1)
     return (key, secret)
-
-def _direction_allows_remote_product_create(direction) -> bool:
-    """Only outbound-capable connector modes may publish a new remote product."""
-    try:
-        resolved = direction if isinstance(direction, SyncDirection) else SyncDirection(direction)
-    except (TypeError, ValueError):
-        return False
-    return resolved in (SyncDirection.OUTBOUND, SyncDirection.BOTH)
-
 
 def _link_needs_rediscovery(link: dict) -> bool:
     """A remotely deleted identity may be safely replaced by an exact-SKU match."""
@@ -116,12 +134,21 @@ class WooCommerceConnector(ConnectorBase):
     name = "woocommerce"
     display_name = "WooCommerce"
     category = ConnectorCategory.WEBSITE
-    direction = SyncDirection.BOTH
-    supported_entities = [SyncEntity.PRODUCTS, SyncEntity.ORDERS, SyncEntity.CONTACTS]
+    # The store's customer list is never imported: a customer is created only as the
+    # customer of an imported order.
+    entity_flows = {
+        "products": EntityFlow(inbound=("products",), outbound=("products_out",)),
+        "stock": EntityFlow(outbound=("inventory_out",)),
+        "orders": EntityFlow(inbound=("orders",)),
+        "customers": EntityFlow(),
+    }
+    # A new connection publishes Celerp's catalog and stock and takes in new orders.
+    default_directions = {
+        "products": "outbound", "stock": "outbound", "orders": "inbound", "customers": "off",
+    }
     conflict_strategy = {
         "products": "external_wins",
         "orders": "external_wins",
-        "contacts": "external_wins",
     }
 
     async def same_store(self, ctx: ConnectorContext, records: list[dict]) -> bool:
@@ -210,7 +237,7 @@ class WooCommerceConnector(ConnectorBase):
                     auth=auth,
                     params=page_params,
                 )
-                resp.raise_for_status()
+                _raise_for_status(resp)
                 data = resp.json()
                 results.extend(data)
                 if not data:
@@ -485,8 +512,12 @@ class WooCommerceConnector(ConnectorBase):
                     ConnectorConfig.connector == "woocommerce",
                 ).limit(1)
             )
-            allow_create = _direction_allows_remote_product_create(
-                config.direction if config is not None else None
+            # Only a connection that sends products out may publish a new one.
+            allow_create = config is not None and entity_allowed(
+                self, "products_out", config.entity_directions
+            )
+            products_direction = SyncDirection(
+                (config.entity_directions if config is not None else {}).get("products", "off")
             )
         base_url, auth = _base_url(ctx), _auth(ctx)
         remote: dict | None = None
@@ -512,7 +543,7 @@ class WooCommerceConnector(ConnectorBase):
                     await session.commit()
                 rediscover = True
             else:
-                resp.raise_for_status()
+                _raise_for_status(resp)
                 remote = resp.json()
         if remote is None:
             if _deleted_variation_requires_import(link):
@@ -522,7 +553,7 @@ class WooCommerceConnector(ConnectorBase):
                 )
             async with _http_client() as client:
                 resp = await client.get(f"{base_url}/products", auth=auth, params={"sku": sku, "per_page": 100})
-                resp.raise_for_status()
+                _raise_for_status(resp)
                 exact = [p for p in resp.json() if str(p.get("sku") or "").strip().casefold() == sku.casefold()]
                 if len(exact) > 1:
                     raise ValueError(f"WooCommerce has multiple products with SKU {sku!r}")
@@ -532,10 +563,10 @@ class WooCommerceConnector(ConnectorBase):
                         raise ValueError("This SKU belongs to a variable WooCommerce product; import the exact variation first")
                 else:
                     if not allow_create:
-                        raise ValueError(
-                            f"No WooCommerce product with SKU {sku!r} exists; "
-                            "this connector direction does not allow publishing new products"
-                        )
+                        raise ValueError(t(
+                            "connectors.err_publish_needs_outbound", sku=sku,
+                            direction=direction_label(self, products_direction),
+                        ))
                     stocked = str(state.get("inventory_type") or "stocked") == "stocked"
                     q = Decimal(str(qty))
                     if stocked and q != q.to_integral_value():
@@ -547,7 +578,7 @@ class WooCommerceConnector(ConnectorBase):
                     if price is not None: payload["regular_price"] = str(price)
                     if stocked: payload["stock_quantity"] = int(q)
                     create = await client.post(f"{base_url}/products", auth=auth, json=payload)
-                    create.raise_for_status()
+                    _raise_for_status(create)
                     remote = create.json()
         if not remote or remote.get("id") in (None, ""):
             raise ValueError("WooCommerce did not return a product identity")
@@ -604,8 +635,10 @@ class WooCommerceConnector(ConnectorBase):
         since: datetime | None = None,
         attention: list[dict] | None = None,
         reconcile: bool = False,
+        orders_from: datetime | None = None,
     ) -> SyncResult:
-        """Pull WooCommerce orders -> Celerp documents.
+        """Pull WooCommerce orders -> Celerp documents. Orders placed before
+        ``orders_from``, the connection's earliest order date, are not fetched.
 
         An order the import cannot complete (unmapped product, no stock to
         draw, a refund to reconcile) is not a sync failure: it goes on the
@@ -679,7 +712,10 @@ class WooCommerceConnector(ConnectorBase):
         params: dict = {}
         if since:
             params["modified_after"] = since.isoformat()
-            params["dates_are_gmt"] = "true"  # our watermark is UTC; make Woo interpret it as UTC
+        if orders_from:
+            params["after"] = orders_from.isoformat()
+        if params:
+            params["dates_are_gmt"] = "true"  # our dates are UTC; make Woo interpret them as UTC
 
         try:
             orders = await self._paginate(ctx, "/orders", params=params or None)
@@ -717,38 +753,6 @@ class WooCommerceConnector(ConnectorBase):
             ctx.company_id, result.created, result.skipped,
         )
         return result
-
-    # -- Contacts --------------------------------------------------------------
-
-    async def sync_contacts(self, ctx: ConnectorContext, since: datetime | None = None) -> SyncResult:
-        """Pull WooCommerce customers -> Celerp contacts."""
-        result = SyncResult(entity=SyncEntity.CONTACTS)
-        errors: list[str] = []
-
-        params: dict = {}
-        if since:
-            params["modified_after"] = since.isoformat()
-            params["dates_are_gmt"] = "true"  # our watermark is UTC; make Woo interpret it as UTC
-
-        try:
-            customers = await self._paginate(ctx, "/customers", params=params or None)
-        except (httpx.HTTPStatusError, ValueError) as exc:
-            result.errors = [f"WooCommerce API error: {exc}"]
-            return result
-
-        for customer in customers:
-            try:
-                result.record(await _upsert.upsert_contact_from_woocommerce(ctx.company_id, customer))
-            except Exception as exc:
-                errors.append(f"Customer {customer.get('id')}: {exc}")
-
-        result.errors = errors or None
-        log.info(
-            "woocommerce.sync_contacts company=%s created=%d skipped=%d",
-            ctx.company_id, result.created, result.skipped,
-        )
-        return result
-
 
     async def sync_products_out(self, ctx: ConnectorContext) -> SyncResult:
         """Push enabled Celerp catalog product fields to WooCommerce."""
@@ -804,7 +808,7 @@ class WooCommerceConnector(ConnectorBase):
                     resp = await client.put(
                         f"{base_url}{self._product_path(item)}", auth=auth, json=patch
                     )
-                    resp.raise_for_status()
+                    _raise_for_status(resp)
                     result.updated += 1
                 except Exception as exc:
                     errors.append(f"WooCommerce product {product_id}: {exc}")
@@ -861,7 +865,7 @@ class WooCommerceConnector(ConnectorBase):
                         auth=auth,
                         json={"stock_quantity": int(qty)},
                     )
-                    resp.raise_for_status()
+                    _raise_for_status(resp)
                     result.updated += 1
                 except Exception as exc:
                     errors.append(f"WooCommerce product {product_id}: {exc}")
@@ -909,11 +913,17 @@ class WooCommerceConnector(ConnectorBase):
 
     # -- Webhook lifecycle -----------------------------------------------------
 
-    _WEBHOOK_TOPICS = [
-        "product.created", "product.updated", "product.deleted",
-        "order.created", "order.updated", "order.deleted",
-        "customer.created", "customer.updated",
-    ]
+    def webhook_topics(self, directions: dict) -> list[str]:
+        """The topics this connection listens to: orders when they come in, product
+        changes when products come in, and deletions whenever products are linked."""
+        topics: list[str] = []
+        if entity_allowed(self, "orders", directions):
+            topics += ["order.created", "order.updated", "order.deleted"]
+        if entity_allowed(self, "products", directions):
+            topics += ["product.created", "product.updated"]
+        if directions.get("products", SyncDirection.OFF.value) != SyncDirection.OFF.value:
+            topics.append("product.deleted")
+        return topics
 
     async def handle_product_deleted(self, ctx: ConnectorContext, payload: dict) -> None:
         """Mark an exact deleted variation or every linked variation under a deleted parent."""
@@ -970,26 +980,27 @@ class WooCommerceConnector(ConnectorBase):
 
 
     async def register_webhooks(
-        self, ctx: ConnectorContext, webhook_url: str, secret: str | None = None
+        self, ctx: ConnectorContext, webhook_url: str, secret: str | None = None,
+        *, topics: list[str], status: str = "active",
     ) -> list[str]:
-        """Register the full WooCommerce webhook set. A failure part way leaves
-        hooks behind; callers remove them with `deregister_webhooks`, which finds
-        them by delivery address even when their ids were never returned."""
+        """Register one WooCommerce webhook per topic, in ``status``. A failure part
+        way leaves hooks behind; callers remove them with `deregister_webhooks`, which
+        finds them by delivery address even when their ids were never returned."""
         base_url = _base_url(ctx)
         auth = _auth(ctx)
         ids: list[str] = []
         async with _http_client() as client:
-            for topic in self._WEBHOOK_TOPICS:
+            for topic in topics:
                 body = {
                     "name": f"{_WEBHOOK_NAME_PREFIX}{topic}",
                     "topic": topic,
                     "delivery_url": webhook_url,
-                    "status": "active",
+                    "status": status,
                 }
                 if secret:
                     body["secret"] = secret
                 resp = await client.post(f"{base_url}/webhooks", auth=auth, json=body)
-                resp.raise_for_status()
+                _raise_for_status(resp)
                 webhook_id = str(resp.json().get("id") or "")
                 if not webhook_id:
                     raise RuntimeError(f"WooCommerce did not return a webhook id for {topic}")
@@ -1013,7 +1024,7 @@ class WooCommerceConnector(ConnectorBase):
                     f"{base_url}/webhooks", auth=auth,
                     params={"per_page": 100, "page": page},
                 )
-                resp.raise_for_status()
+                _raise_for_status(resp)
                 hooks = resp.json()
                 if not isinstance(hooks, list):
                     raise RuntimeError("WooCommerce returned an invalid webhook list")

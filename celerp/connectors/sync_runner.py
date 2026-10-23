@@ -28,63 +28,64 @@ _SYNC_METHODS = {entity: f"sync_{entity}" for entity in (*INBOUND_ENTITIES, *OUT
 CONNECTOR_RESET_ENTITY = "__connector_reset__"
 
 
-def supported_outbound(connector: ConnectorBase) -> list[str]:
-    """Outbound entities implemented by this connector, in stable dispatch order."""
+def implements(connector: ConnectorBase, entity: str) -> bool:
+    """Whether the connector overrides the sync method for ``entity``."""
+    method = _SYNC_METHODS.get(entity)
+    if method is None:
+        return False
+    own = getattr(type(connector), method, None)
+    return own is not None and own is not getattr(ConnectorBase, method, None)
+
+
+def entity_direction(entity: str) -> SyncDirection:
+    """The way one sync carries records: pulls are inbound, pushes outbound."""
+    return SyncDirection.OUTBOUND if entity in OUTBOUND_ENTITIES else SyncDirection.INBOUND
+
+
+def sync_plan(connector: ConnectorBase, directions: dict | None) -> list[str]:
+    """The syncs these per-record directions run, shared by the first sync, manual,
+    webhook and reconciliation paths: every pull first, then every push, each in
+    the stable order of INBOUND_ENTITIES and OUTBOUND_ENTITIES."""
     return [
-        entity for entity in OUTBOUND_ENTITIES
-        if getattr(type(connector), _SYNC_METHODS[entity], None)
-        is not getattr(ConnectorBase, _SYNC_METHODS[entity], None)
+        entity for entity in (*INBOUND_ENTITIES, *OUTBOUND_ENTITIES)
+        if entity_allowed(connector, entity, directions)
     ]
-
-
-def sync_plan(connector: ConnectorBase, direction: SyncDirection) -> list[str]:
-    """One direction-aware plan shared by connect, manual, and reconciliation paths."""
-    direction = direction if isinstance(direction, SyncDirection) else SyncDirection(direction)
-    plan: list[str] = []
-    if direction in (SyncDirection.INBOUND, SyncDirection.BOTH):
-        plan.extend(e.value for e in connector.supported_entities)
-    if direction in (SyncDirection.OUTBOUND, SyncDirection.BOTH):
-        plan.extend(supported_outbound(connector))
-    return plan
 
 
 async def run_connector_sync(
     connector: ConnectorBase,
     ctx: ConnectorContext,
-    direction: SyncDirection,
     *,
     reconcile: bool = False,
 ) -> list[SyncResult]:
     """Execute one stable connector generation through the audited per-entity
-    runner. ``reconcile`` marks the daily reconciliation pass."""
+    runner, in the directions the connection is set to. ``reconcile`` marks the
+    daily reconciliation pass."""
     from celerp.connectors.ownership import lock_connector_operation
     from celerp.db import get_session_ctx
 
-    resolved_direction = (
-        direction if isinstance(direction, SyncDirection) else SyncDirection(direction)
-    )
     async with get_session_ctx() as guard_session:
         config = await lock_connector_operation(
             guard_session, ctx.company_id, connector.name
         )
-        if config is not None:
-            resolved_direction = SyncDirection(config.direction)
+        directions = dict(config.entity_directions) if config is not None else connector.default_directions
         expected_config_id = config.id if config is not None else None
-        expected_direction = resolved_direction if config is not None else None
+        expected_directions = directions if config is not None else None
         await guard_session.commit()
 
-    if resolved_direction != SyncDirection.INBOUND:
+    plan = sync_plan(connector, directions)
+    if any(entity in OUTBOUND_ENTITIES for entity in plan):
         await connector.before_outbound(ctx)
     results: list[SyncResult] = []
     completed: dict[str, bool] = {}
     dependencies = getattr(connector, "outbound_dependencies", {})
-    for entity in sync_plan(connector, resolved_direction):
+    for entity in plan:
         if any(completed.get(dep) is not True for dep in dependencies.get(entity, ())):
             break
         result = await run_sync(
-            connector, ctx, entity, direction=resolved_direction,
+            connector, ctx, entity,
             reconcile=reconcile, expected_config_id=expected_config_id,
-            expected_direction=expected_direction,
+            expected_directions=expected_directions,
             expected_store_handle=ctx.store_handle,
         )
         completed[entity] = result.ok
@@ -300,11 +301,10 @@ async def run_sync(
     ctx: ConnectorContext,
     entity: str,
     since: datetime | None = None,
-    direction: SyncDirection | None = None,
     use_watermark: bool = True,
     reconcile: bool = False,
     expected_config_id=None,
-    expected_direction: SyncDirection | None = None,
+    expected_directions: dict | None = None,
     expected_store_handle: str | None = None,
     expected_webhook_secret: str | None = None,
 ) -> SyncResult:
@@ -319,13 +319,7 @@ async def run_sync(
     if sync_method is None:
         raise ValueError(f"{connector.name} has no method {method_name}")
 
-    effective_direction = (
-        direction
-        if isinstance(direction, SyncDirection)
-        else SyncDirection(direction)
-        if direction is not None
-        else connector.direction
-    )
+    effective_direction = entity_direction(entity)
     started_at = datetime.now(timezone.utc)
     run_id = await _begin_run(
         ctx.company_id,
@@ -342,7 +336,7 @@ async def run_sync(
         )
 
     try:
-        from celerp.connectors.ownership import bind_connector_store, lock_connector_operation
+        from celerp.connectors.ownership import ensure_store_bound, lock_connector_operation
         from celerp.connectors.relay_token import fetch_context
         from celerp.db import get_session_ctx
 
@@ -350,8 +344,10 @@ async def run_sync(
             config = await lock_connector_operation(
                 guard_session, ctx.company_id, connector.name
             )
-            if config is not None:
-                effective_direction = SyncDirection(config.direction)
+            directions = (
+                dict(config.entity_directions) if config is not None
+                else connector.default_directions
+            )
 
             connection_changed = (
                 (
@@ -359,8 +355,8 @@ async def run_sync(
                     and (config is None or config.id != expected_config_id)
                 )
                 or (
-                    expected_direction is not None
-                    and effective_direction != expected_direction
+                    expected_directions is not None
+                    and directions != expected_directions
                 )
                 or (
                     expected_webhook_secret is not None
@@ -376,7 +372,7 @@ async def run_sync(
                     direction=effective_direction,
                     errors=["connector connection changed while sync plan was running"],
                 )
-            elif not entity_allowed(entity, effective_direction):
+            elif not entity_allowed(connector, entity, directions):
                 try:
                     entity_enum = SyncEntity(entity)
                 except ValueError:
@@ -384,9 +380,7 @@ async def run_sync(
                 result = SyncResult(
                     entity=entity_enum,
                     direction=effective_direction,
-                    errors=[
-                        f"{entity} sync blocked by direction={effective_direction.value}"
-                    ],
+                    errors=[f"{entity} sync blocked by direction setting"],
                 )
             else:
                 if (
@@ -420,9 +414,9 @@ async def run_sync(
                         errors=["connector connection changed while sync plan was running"],
                     )
                 else:
-                    await bind_connector_store(
-                        guard_session, ctx.company_id, connector, current_ctx
-                    )
+                    # Its own short transaction: the sync below runs holding
+                    # no lock on the company.
+                    await ensure_store_bound(ctx.company_id, connector, current_ctx)
                     if entity in OUTBOUND_ENTITIES:
                         result = await sync_method(current_ctx)
                     else:
@@ -434,6 +428,8 @@ async def run_sync(
                             )
                         if reconcile and "reconcile" in accepts:
                             options["reconcile"] = True
+                        if "orders_from" in accepts and config is not None:
+                            options["orders_from"] = config.orders_from
                         result = await sync_method(current_ctx, since=since, **options)
                 await guard_session.commit()
     except (ConnectorStoreChangedError, ConnectorUpgradeRequired) as exc:

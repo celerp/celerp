@@ -11,7 +11,7 @@ from sqlalchemy import select
 
 from celerp.connectors.base import (
     ConnectorBase, ConnectorCategory, ConnectorContext,
-    SyncDirection, SyncEntity, SyncResult,
+    EntityFlow, SyncDirection, SyncEntity, SyncResult,
 )
 from celerp.connectors.http import RateLimitedClient
 from celerp.models.projections import Projection
@@ -383,11 +383,17 @@ def _refusal(errors: list) -> str:
 class CelerpConnector(ConnectorBase):
     name = "celerp"
     display_name = "Accountant Sync"
-    direction = SyncDirection.BOTH
     category = ConnectorCategory.ACCOUNTING
     # Fetched from the accountant before anything is sent: its journals, then its lock
     # date, so a journal it posted before locking is not declined by its own lock.
-    supported_entities = [SyncEntity.JOURNALS, SyncEntity.PERIOD_LOCK]
+    # Every kind is sent to the firm; the firm's journals also come back.
+    entity_flows = {
+        **{kind: EntityFlow(inbound=(spec.entity.value,) if kind == "journals" else (),
+                            outbound=(f"{kind}_out",))
+           for kind, spec in _KINDS.items()},
+        "attachments": EntityFlow(outbound=("attachments_out",)),
+        "period_lock": EntityFlow(inbound=("period_lock",)),
+    }
     store_scoped_ids = False
     conflict_strategy = {SyncEntity.CONTACTS: "source"}
     outbound_dependencies = {

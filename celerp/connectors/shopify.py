@@ -28,6 +28,7 @@ from celerp.connectors.base import (
     ConnectorBase,
     ConnectorCategory,
     ConnectorContext,
+    EntityFlow,
     SyncDirection,
     SyncEntity,
     SyncResult,
@@ -58,9 +59,13 @@ class ShopifyConnector(ConnectorBase):
     name = "shopify"
     display_name = "Shopify"
     store_scoped_ids = False  # Shopify ids are unique across all stores
-    supported_entities = [SyncEntity.PRODUCTS, SyncEntity.ORDERS, SyncEntity.CONTACTS]
+    entity_flows = {
+        "products": EntityFlow(inbound=("products",), outbound=("products_out",)),
+        "stock": EntityFlow(outbound=("inventory_out",)),
+        "orders": EntityFlow(inbound=("orders",)),
+        "customers": EntityFlow(inbound=("contacts",)),
+    }
     category = ConnectorCategory.WEBSITE
-    direction = SyncDirection.BOTH
     conflict_strategy = {
         SyncEntity.PRODUCTS: "newest",
         SyncEntity.ORDERS: "platform",

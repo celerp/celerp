@@ -16,7 +16,7 @@ from typing import Awaitable, Callable
 
 import sqlalchemy as sa
 
-from celerp.connectors.base import SyncDirection
+from celerp.connectors.base import SyncFrequency
 from celerp.models.connector_config import ConnectorConfig
 
 log = logging.getLogger(__name__)
@@ -62,13 +62,16 @@ async def check_and_run_daily_syncs(
     synced: list[str] = []
 
     async with get_session_ctx() as session:
-        # Reconcile EVERY enabled connector once a day — including realtime
-        # (webhook) ones — so a daily incremental pass backstops any webhooks
-        # missed while the instance/tunnel was offline (idempotency keys make
-        # webhook + reconcile converge to a single write).
+        # Reconcile every connection once a day, including realtime (webhook) ones,
+        # so a daily pass backstops any webhooks missed while the instance or tunnel
+        # was offline (idempotency keys make webhook + reconcile converge to a single
+        # write). A connection whose first sync a person has not started yet, or that
+        # is set to sync by hand, is left alone.
         rows = await session.execute(
             sa.select(ConnectorConfig).where(
                 ConnectorConfig.company_id == company_id,
+                ConnectorConfig.first_sync_at.is_not(None),
+                ConnectorConfig.sync_frequency != SyncFrequency.MANUAL.value,
             )
         )
         configs = [row[0] for row in rows]
@@ -104,14 +107,8 @@ async def check_and_run_daily_syncs(
             log.warning("daily_scheduler: token fetch failed for %s: %s", config.connector, exc)
             continue
 
-        direction = SyncDirection(config.direction)
         try:
-            entity_results = await run_connector_sync(
-                connector,
-                ctx,
-                direction=direction,
-                reconcile=True,
-            )
+            entity_results = await run_connector_sync(connector, ctx, reconcile=True)
         except Exception as exc:
             log.error("daily_scheduler: sync error %s: %s", config.connector, exc)
             entity_results = []

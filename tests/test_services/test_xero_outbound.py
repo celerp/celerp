@@ -45,7 +45,7 @@ async def company(_db_engine):
         seed.add(Company(
             id=company_id, name="Xero Push", slug=f"xero-push-{company_id.hex[:8]}", settings={},
         ))
-        seed.add(ConnectorConfig(company_id=str(company_id), connector="xero", direction="both"))
+        seed.add(ConnectorConfig(company_id=str(company_id), connector="xero"))
         seed.add(Projection(
             company_id=company_id,
             entity_id=DOC_ID,
@@ -402,7 +402,7 @@ async def _disconnect(company_id) -> None:
 async def _reconnect(company_id) -> None:
     from celerp.db import get_session_ctx
     async with get_session_ctx() as session:
-        session.add(ConnectorConfig(company_id=str(company_id), connector="xero", direction="both"))
+        session.add(ConnectorConfig(company_id=str(company_id), connector="xero"))
         await session.commit()
 
 

@@ -3923,6 +3923,15 @@ async def set_woocommerce_order_reconciled(
         return _raise(await c.post(path, json={"signature": signature})).json()
 
 
+async def set_connector_direction(token: str, platform: str, entity: str, direction: str) -> dict:
+    """Set the direction one kind of record syncs in; the API refuses one the connector
+    cannot sync it in (422) and returns the connection's directions."""
+    async with _api_client(token) as c:
+        return _raise(await c.post(
+            f"/connectors/{platform}/directions", json={"entity": entity, "direction": direction},
+        )).json()
+
+
 async def start_connector_sync(token: str, platform: str) -> dict:
     """Start the connector's canonical sync plan in the API process."""
     async with _api_client(token) as c:

@@ -268,59 +268,6 @@ def test_connector_detail_controls_swap_into_the_detail_page():
     assert 'hx-post="/settings/connectors/celerp/frequency?detail=1"' in html
 
 
-@pytest.mark.asyncio
-async def test_direction_set_on_the_detail_page_returns_its_toggle(monkeypatch):
-    from contextlib import asynccontextmanager
-    from types import SimpleNamespace
-
-    from fasthtml.common import to_xml
-    from fastapi import FastAPI
-    from starlette.requests import Request
-
-    import celerp.connectors.ownership as ownership
-    import celerp.db as db
-    from ui.routes import settings_connectors as routes
-
-    config = SimpleNamespace(direction="both")
-
-    class Session:
-        async def commit(self):
-            pass
-
-    @asynccontextmanager
-    async def session_ctx():
-        yield Session()
-
-    async def lock(session, company_id, platform, require_owner=False):
-        return config
-
-    async def allowed(request, permission):
-        return None
-
-    monkeypatch.setattr(db, "get_session_ctx", session_ctx)
-    monkeypatch.setattr(ownership, "lock_connector_operation", lock)
-    monkeypatch.setattr(routes, "_token", lambda request: "jwt")
-    monkeypatch.setattr(routes, "_check_permission", allowed)
-    monkeypatch.setattr(routes, "_request_company_id", lambda request: "company-1")
-    app = FastAPI()
-    routes.setup_routes(app)
-    endpoint = next(r.endpoint for r in app.routes
-                    if getattr(r, "path", "") == "/settings/connectors/{platform}/direction")
-
-    async def receive():
-        return {"type": "http.request", "body": b"direction=outbound", "more_body": False}
-
-    request = Request({
-        "type": "http", "method": "POST", "path": "/settings/connectors/celerp/direction",
-        "query_string": b"detail=1", "headers": [(b"content-type", b"application/x-www-form-urlencoded")],
-    }, receive)
-    html = to_xml(await endpoint(request, "celerp"))
-    assert config.direction == "outbound"
-    assert 'class="connector-direction-toggle"' in html and "connector-card" not in html
-    outbound = html.split(">Outbound<")[0].rsplit("<button", 1)[1]
-    assert "btn--primary" in outbound
-
-
 def _ui_owner_patches():
     return patch(
         "ui.api_client.get_company",
@@ -732,22 +679,26 @@ async def test_mark_reconciled_route_is_woocommerce_only(reconcile_ui):
 
 @pytest.mark.asyncio
 async def test_a_refused_direction_keeps_the_buttons_and_says_why():
-    import json
+    from types import SimpleNamespace
+
     from httpx import ASGITransport, AsyncClient
-    from celerp.connectors.ownership import ConnectorOwnershipError
     from test_helpers import make_test_token
+    from ui.api_client import APIError
     from ui.app import app as ui_app
 
     token = make_test_token(role="owner")
-    refused = AsyncMock(side_effect=ConnectorOwnershipError("Another company holds this connection."))
-    with _ui_owner_patches(), patch("celerp.connectors.ownership.lock_connector_operation", refused):
+    refused = AsyncMock(side_effect=APIError(409, "Another company holds this connection."))
+    with _ui_owner_patches(), patch("ui.api_client.set_connector_direction", refused), \
+            patch("ui.routes.settings_connectors._get_connector_config",
+                  AsyncMock(return_value=SimpleNamespace(entity_directions={"journals": "both"}))):
         async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as client:
             client.cookies.update({"celerp_token": token})
             r = await client.post("/settings/connectors/celerp/direction?detail=1",
-                                  data={"direction": "outbound"})
+                                  data={"entity": "journals", "direction": "outbound"})
 
-    # Nothing is swapped, so the toggle stays where it was, and the reason is a toast.
-    assert r.headers.get("HX-Reswap") == "none"
-    toast = json.loads(r.headers["HX-Trigger"])["celerpToast"]
-    assert toast["message"] == "Another company holds this connection."
-    assert toast["type"] == "error"
+    # The rows come back as they were, with the reason under them.
+    assert r.status_code == 200
+    assert 'id="connector-directions-celerp"' in r.text
+    assert "Another company holds this connection." in r.text
+    journals = r.text.split('id="connector-flow-celerp-journals"')[1].split("</div>")[0]
+    assert "btn--primary" in journals.split(">Both ways<")[0].rsplit("<button", 1)[1]

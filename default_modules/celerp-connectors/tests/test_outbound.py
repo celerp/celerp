@@ -23,8 +23,7 @@ async def test_base_sync_products_out_raises():
     class Minimal(ConnectorBase):
         name = "minimal"
         display_name = "Minimal"
-        supported_entities = []
-        direction = SyncDirection.INBOUND
+        entity_flows = {}
         category = None
         conflict_strategy = {}
         async def sync_products(self, ctx, since=None): ...
@@ -40,8 +39,7 @@ async def test_base_sync_invoices_out_raises():
     class Minimal(ConnectorBase):
         name = "minimal"
         display_name = "Minimal"
-        supported_entities = []
-        direction = SyncDirection.INBOUND
+        entity_flows = {}
         category = None
         conflict_strategy = {}
         async def sync_products(self, ctx, since=None): ...

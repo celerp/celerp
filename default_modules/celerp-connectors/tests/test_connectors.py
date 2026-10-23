@@ -16,6 +16,7 @@ os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 import pytest
 import respx
 import httpx
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch, MagicMock
 
@@ -84,9 +85,7 @@ def test_all_connectors_returns_list():
 def test_shopify_metadata(shopify):
     assert shopify.name == "shopify"
     assert shopify.display_name == "Shopify"
-    assert SyncEntity.PRODUCTS in shopify.supported_entities
-    assert SyncEntity.ORDERS in shopify.supported_entities
-    assert SyncEntity.CONTACTS in shopify.supported_entities
+    assert set(shopify.entity_flows) == {"products", "stock", "orders", "customers"}
     assert shopify.category == ConnectorCategory.WEBSITE
 
 
@@ -305,10 +304,9 @@ async def test_handle_webhook_unknown_platform():
 
 @pytest.mark.asyncio
 async def test_woocommerce_delete_webhook_rechecks_current_direction():
+    """A deletion is applied only while products sync at all; with Products Off it is ignored."""
     import contextlib
     from types import SimpleNamespace
-
-    from celerp.connectors.base import SyncDirection
 
     event = WebhookEvent(
         platform="woocommerce",
@@ -331,12 +329,14 @@ async def test_woocommerce_delete_webhook_rechecks_current_direction():
         "celerp.db.get_session_ctx", _guard,
     ), patch(
         "celerp.connectors.ownership.lock_connector_operation",
-        new=AsyncMock(return_value=SimpleNamespace(direction="outbound")),
+        new=AsyncMock(return_value=SimpleNamespace(
+            entity_directions={"products": "off", "orders": "inbound"},
+            first_sync_at=object())),
     ), patch(
         "celerp.connectors.relay_token.fetch_context",
         new=AsyncMock(),
     ) as fetch:
-        await handle_webhook(event, ctx, SyncDirection.BOTH)
+        await handle_webhook(event, ctx)
 
     connector.handle_product_deleted.assert_not_awaited()
     fetch.assert_not_awaited()
@@ -438,7 +438,8 @@ async def test_sync_asks_for_an_update_when_the_relay_requires_one(client, sessi
     headers = {"Authorization": f"Bearer {await register_admin(client)}",
                "X-Session-Token": _FAKE_SESSION_TOKEN}
     company_id = (await client.get("/companies/me", headers=headers)).json()["id"]
-    session.add(ConnectorConfig(company_id=str(company_id), connector="xero", direction="both"))
+    session.add(ConnectorConfig(company_id=str(company_id), connector="xero",
+                                first_sync_at=datetime.now(timezone.utc)))
     await session.commit()
     with patch("celerp.connectors.relay_token.fetch_context", new=AsyncMock(
             side_effect=ConnectorUpgradeRequired("Update Celerp to continue syncing Xero."))):
@@ -713,20 +714,6 @@ async def test_woocommerce_sync_orders(wc, wc_ctx):
     )
     with patch("celerp.connectors.upsert.upsert_order_from_woocommerce", new=AsyncMock(return_value="created")):
         result = await wc.sync_orders(wc_ctx)
-    assert result.ok
-    assert result.created == 1
-
-
-@pytest.mark.asyncio
-@respx.mock
-async def test_woocommerce_sync_contacts(wc, wc_ctx):
-    respx.get("https://mystore.example.com/wp-json/wc/v3/customers").mock(
-        return_value=httpx.Response(200, json=[
-            {"id": 50, "email": "customer@example.com", "first_name": "Bob", "last_name": "Jones"},
-        ], headers={"X-WP-TotalPages": "1"})
-    )
-    with patch("celerp.connectors.upsert.upsert_contact_from_woocommerce", new=AsyncMock(return_value="created")):
-        result = await wc.sync_contacts(wc_ctx)
     assert result.ok
     assert result.created == 1
 

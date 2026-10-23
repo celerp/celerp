@@ -1,0 +1,91 @@
+# Copyright (c) 2026 Noah Severs
+# SPDX-License-Identifier: LicenseRef-Proprietary
+"""The daily reconciliation runs only connections whose first sync is done and that
+are not set to sync by hand, with each kind of record in its own direction."""
+from __future__ import annotations
+
+import uuid
+from datetime import datetime, timezone
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
+from celerp.connectors.base import ConnectorContext, SyncEntity, SyncResult
+from celerp.connectors.daily_scheduler import check_and_run_daily_syncs
+from celerp.db import get_session_ctx
+from celerp.models.connector_config import ConnectorConfig
+
+pytestmark = pytest.mark.asyncio
+
+_WOO = {"products": "outbound", "stock": "outbound", "orders": "inbound", "customers": "off"}
+
+
+@pytest.fixture(autouse=True)
+def _active_company_guard(monkeypatch):
+    monkeypatch.setattr(
+        "celerp.connectors.ownership._lock_active_company", AsyncMock(return_value=None)
+    )
+
+
+@pytest.fixture
+def run(monkeypatch):
+    mock = AsyncMock(return_value=[SyncResult(entity=SyncEntity.ORDERS, created=1)])
+    monkeypatch.setattr("celerp.connectors.sync_runner.run_connector_sync", mock)
+    return mock
+
+
+@pytest.fixture
+async def _config(_db_engine):
+    """Add one company's connection, the only one for its connector while the test runs."""
+    import sqlalchemy as sa
+
+    made: list[str] = []
+
+    async def add(connector: str, **fields) -> str:
+        company_id = str(uuid.uuid4())
+        async with get_session_ctx() as session:
+            await session.execute(sa.delete(ConnectorConfig).where(ConnectorConfig.connector == connector))
+            session.add(ConnectorConfig(company_id=company_id, connector=connector, **fields))
+            await session.commit()
+        made.append(company_id)
+        return company_id
+
+    yield add
+    async with get_session_ctx() as session:
+        await session.execute(sa.delete(ConnectorConfig).where(ConnectorConfig.company_id.in_(made)))
+        await session.commit()
+
+
+async def test_no_reconcile_before_first_sync(_config, run):
+    company_id = await _config("woocommerce", entity_directions=_WOO, first_sync_at=None)
+    synced = await check_and_run_daily_syncs(company_id, token_fetcher=AsyncMock(return_value=MagicMock()))
+    assert synced == []
+    run.assert_not_awaited()
+
+
+async def test_manual_frequency_not_reconciled(_config, run):
+    company_id = await _config(
+        "quickbooks", sync_frequency="manual", first_sync_at=datetime.now(timezone.utc),
+        entity_directions={"products": "inbound", "invoices": "both", "contacts": "inbound"},
+    )
+    synced = await check_and_run_daily_syncs(company_id, token_fetcher=AsyncMock(return_value=MagicMock()))
+    assert synced == []
+    run.assert_not_awaited()
+
+
+async def test_reconcile_uses_entity_directions(_config, monkeypatch):
+    ran: list[str] = []
+
+    async def run_sync(connector, ctx, entity, **kwargs):
+        ran.append(entity)
+        assert kwargs["reconcile"] is True
+        return SyncResult(entity=entity, created=1)
+
+    monkeypatch.setattr("celerp.connectors.sync_runner.run_sync", run_sync)
+    company_id = await _config(
+        "woocommerce", entity_directions=_WOO, first_sync_at=datetime.now(timezone.utc),
+    )
+    ctx = ConnectorContext(company_id=company_id, access_token="k:s", store_handle="https://shop.example.com")
+    synced = await check_and_run_daily_syncs(company_id, token_fetcher=AsyncMock(return_value=ctx))
+    assert synced == ["woocommerce"]
+    assert ran == ["orders", "products_out", "inventory_out"]

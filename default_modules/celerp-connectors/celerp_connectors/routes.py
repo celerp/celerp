@@ -6,12 +6,14 @@ from __future__ import annotations
 import logging
 from typing import Annotated
 
+import httpx
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.accounting_roles import refusal
-from celerp.connectors.base import SyncDirection, SyncEntity
+from celerp.connectors.base import SyncEntity
 from celerp.connectors.ownership import PRODUCT_CHANNEL_PLATFORMS
 from celerp.db import get_session
 from celerp.services.auth import (
@@ -56,8 +58,9 @@ class SyncRequest(BaseModel):
 class ConnectorInfo(BaseModel):
     name: str
     display_name: str
-    supported_entities: list[SyncEntity]
-    direction: str
+    # Each kind of record the connector carries, with the directions it can be set to.
+    entity_flows: dict[str, list[str]]
+    default_directions: dict[str, str]
 
 
 class SyncResponse(BaseModel):
@@ -80,6 +83,25 @@ async def _connector_context(company_id: str, connector_name: str, **kwargs):
         raise HTTPException(status_code=426, detail=str(exc)) from exc
 
 
+async def _ready_config(session: AsyncSession, company_id, connector):
+    """The company's connection, refused while it is not connected or its first sync
+    has not been started: the first sync is always started from its preview."""
+    from celerp.models.connector_config import ConnectorConfig
+    from sqlalchemy import select
+
+    config = await session.scalar(
+        select(ConnectorConfig).where(
+            ConnectorConfig.company_id == str(company_id),
+            ConnectorConfig.connector == connector.name,
+        )
+    )
+    if config is None:
+        raise HTTPException(status_code=409, detail=t("error.connector_not_connected", service=connector.display_name))
+    if config.first_sync_at is None:
+        raise HTTPException(status_code=409, detail=t("connectors.err_first_sync_needed", service=connector.display_name))
+    return config
+
+
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 @router.get("/", response_model=list[ConnectorInfo])
@@ -91,8 +113,10 @@ async def list_connectors(
         ConnectorInfo(
             name=c.name,
             display_name=c.display_name,
-            supported_entities=c.supported_entities,
-            direction=c.direction.value,
+            entity_flows={
+                key: [d.value for d in flow.allowed()] for key, flow in c.entity_flows.items()
+            },
+            default_directions=c.default_directions,
         )
         for c in connectors.all_connectors()
     ]
@@ -112,23 +136,14 @@ async def trigger_sync(
     except KeyError:
         raise HTTPException(status_code=404, detail=t("connectors.unknown_connector", platform=connector_name))
 
-    if payload.entity not in connector.supported_entities:
+    from celerp.connectors.sync_runner import implements
+    if not implements(connector, payload.entity.value):
         raise HTTPException(
             status_code=400,
             detail=f"{connector.display_name} does not support entity '{payload.entity}'",
         )
 
-    from celerp.models.connector_config import ConnectorConfig
-    from sqlalchemy import select
-    config = await session.scalar(
-        select(ConnectorConfig).where(
-            ConnectorConfig.company_id == str(company_id),
-            ConnectorConfig.connector == connector_name,
-        )
-    )
-    if config is None:
-        raise HTTPException(status_code=409, detail=t("error.connector_not_connected", service=connector.display_name))
-    direction = SyncDirection(config.direction)
+    await _ready_config(session, company_id, connector)
 
     ctx = await _connector_context(str(company_id), connector_name)
     if ctx is None:
@@ -138,9 +153,7 @@ async def trigger_sync(
     # guard, and incremental watermark as the scheduled/webhook paths.
     from celerp.connectors.sync_runner import run_sync
     try:
-        result = await run_sync(
-            connector, ctx, payload.entity.value, direction=direction
-        )
+        result = await run_sync(connector, ctx, payload.entity.value)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
@@ -172,17 +185,7 @@ async def trigger_sync_plan(
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=t("connectors.unknown_connector", platform=connector_name)) from exc
 
-    from celerp.models.connector_config import ConnectorConfig
-    from sqlalchemy import select
-    config = await session.scalar(
-        select(ConnectorConfig).where(
-            ConnectorConfig.company_id == str(company_id),
-            ConnectorConfig.connector == connector_name,
-        )
-    )
-    if config is None:
-        raise HTTPException(status_code=409, detail=t("error.connector_not_connected", service=connector.display_name))
-    direction = SyncDirection(config.direction)
+    await _ready_config(session, company_id, connector)
 
     ctx = await _connector_context(str(company_id), connector_name)
     if ctx is None:
@@ -193,12 +196,80 @@ async def trigger_sync_plan(
 
     async def _run() -> None:
         try:
-            await run_connector_sync(connector, ctx, direction=direction)
+            await run_connector_sync(connector, ctx)
         except Exception:
             log.exception("connector sync plan failed: %s", connector_name)
 
     spawn_background(_run())
     return {"ok": True}
+
+
+class DirectionRequest(BaseModel):
+    entity: str
+    direction: str
+
+
+async def resync_webhook_topics(connector, config, ctx) -> None:
+    """Replace the store's webhooks with the topics the connection's directions call
+    for. Before the first sync they stay paused; after it they deliver."""
+    from celerp.connectors.woocommerce import webhook_delivery_url
+
+    delivery_url = webhook_delivery_url()
+    await connector.deregister_webhooks(ctx, delivery_url, list(config.webhook_ids))
+    config.webhook_ids = []
+    config.webhook_ids = await connector.register_webhooks(
+        ctx, delivery_url, secret=config.webhook_secret,
+        topics=connector.webhook_topics(config.entity_directions),
+        status="active" if config.first_sync_at is not None else "paused",
+    )
+
+
+@open_router.post("/{connector_name}/directions")
+async def set_connector_direction(
+    connector_name: str,
+    payload: DirectionRequest,
+    company_id: Annotated[str, Depends(get_current_company_id)],
+    _: None = require_permission("manage_integrations"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Set the direction one kind of record syncs in. A direction the connector cannot
+    sync that record in is refused, naming both. A store whose webhooks follow the
+    directions has them replaced to match."""
+    from celerp import connectors
+    from celerp.connectors.base import DirectionError, validate_directions
+    from celerp.connectors.ownership import ConnectorOwnershipError, lock_connector_operation
+
+    try:
+        connector = connectors.get(connector_name)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=t("connectors.unknown_connector", platform=connector_name)) from exc
+    try:
+        config = await lock_connector_operation(session, company_id, connector_name, require_owner=True)
+    except ConnectorOwnershipError as exc:
+        await session.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    try:
+        directions = validate_directions(
+            connector, {**(config.entity_directions or {}), payload.entity: payload.direction}
+        )
+    except DirectionError as exc:
+        await session.rollback()
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    changed = directions != config.entity_directions
+    config.entity_directions = directions
+    if changed and config.webhook_secret:
+        ctx = await _connector_context(str(company_id), connector_name, ownership_session=session)
+        if ctx is None:
+            await session.rollback()
+            raise HTTPException(status_code=409, detail=t("error.connector_not_connected", service=connector.display_name))
+        try:
+            await resync_webhook_topics(connector, config, ctx)
+        except Exception as exc:
+            await session.rollback()
+            raise HTTPException(status_code=502, detail=t(
+                "connectors.err_webhook_resync", service=connector.display_name, detail=exc)) from exc
+    await session.commit()
+    return {"entity_directions": directions}
 
 
 # ── Credential management (API-key platforms) ────────────────────────────────
@@ -454,10 +525,23 @@ async def store_credentials(
         secret = secrets.token_hex(32)
         delivery_url = webhook_delivery_url()
         try:
-            # Hooks left by an earlier connection carry an old secret.
+            # Hooks left by an earlier connection carry an old secret. The new ones
+            # are created paused, which also proves the key can write, and deliver
+            # once the first sync starts.
             await connector.deregister_webhooks(store_ctx, delivery_url, [])
             webhook_ids = await connector.register_webhooks(
-                store_ctx, delivery_url, secret=secret
+                store_ctx, delivery_url, secret=secret,
+                topics=connector.webhook_topics(config.entity_directions), status="paused",
+            )
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code in (401, 403):
+                return await _failure(
+                    "read_only_key", t("connectors.err_read_only_key"), webhook_ids=webhook_ids,
+                )
+            return await _failure(
+                "store_unreachable",
+                f"Webhook setup failed: {exc}",
+                webhook_ids=webhook_ids,
             )
         except Exception as exc:
             return await _failure(

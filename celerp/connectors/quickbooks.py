@@ -29,6 +29,7 @@ from celerp.connectors.base import (
     ConnectorBase,
     ConnectorCategory,
     ConnectorContext,
+    EntityFlow,
     SyncDirection,
     SyncEntity,
     SyncResult,
@@ -102,9 +103,12 @@ async def _query(ctx: ConnectorContext, sql: str) -> list[dict[str, Any]]:
 class QuickBooksConnector(ConnectorBase):
     name = "quickbooks"
     display_name = "QuickBooks"
-    supported_entities = [SyncEntity.PRODUCTS, SyncEntity.ORDERS, SyncEntity.CONTACTS]
+    entity_flows = {
+        "products": EntityFlow(inbound=("products",)),
+        "invoices": EntityFlow(inbound=("orders",), outbound=("invoices_out",)),
+        "contacts": EntityFlow(inbound=("contacts",)),
+    }
     category = ConnectorCategory.ACCOUNTING
-    direction = SyncDirection.BOTH
     conflict_strategy = {
         SyncEntity.PRODUCTS: "newest",
         SyncEntity.ORDERS: "platform",

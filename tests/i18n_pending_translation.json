@@ -692,6 +692,118 @@
         "paid",
         "where"
       ]
+    },
+    "connectors.flow_products": {
+      "en": "Products",
+      "params": []
+    },
+    "connectors.flow_stock": {
+      "en": "Stock",
+      "params": []
+    },
+    "connectors.flow_orders": {
+      "en": "Orders",
+      "params": []
+    },
+    "connectors.flow_customers": {
+      "en": "Customers",
+      "params": []
+    },
+    "connectors.flow_invoices": {
+      "en": "Invoices",
+      "params": []
+    },
+    "connectors.flow_contacts": {
+      "en": "Contacts",
+      "params": []
+    },
+    "connectors.flow_journals": {
+      "en": "Journals",
+      "params": []
+    },
+    "connectors.flow_period_lock": {
+      "en": "Lock date",
+      "params": []
+    },
+    "connectors.flow_documents": {
+      "en": "Documents",
+      "params": []
+    },
+    "connectors.flow_attachments": {
+      "en": "Attachments",
+      "params": []
+    },
+    "connectors.flow_dir_inbound": {
+      "en": "{service} to Celerp",
+      "params": [
+        "service"
+      ]
+    },
+    "connectors.flow_dir_outbound": {
+      "en": "Celerp to {service}",
+      "params": [
+        "service"
+      ]
+    },
+    "connectors.flow_dir_both": {
+      "en": "Both ways",
+      "params": []
+    },
+    "connectors.flow_dir_off": {
+      "en": "Off",
+      "params": []
+    },
+    "connectors.err_flow_direction": {
+      "en": "{entity} cannot sync {direction}. Choose one of the directions shown for {entity}.",
+      "params": [
+        "direction",
+        "entity"
+      ]
+    },
+    "connectors.err_unknown_flow": {
+      "en": "{service} does not sync {entity}.",
+      "params": [
+        "entity",
+        "service"
+      ]
+    },
+    "connectors.err_publish_needs_outbound": {
+      "en": "WooCommerce has no product with SKU {sku}, and Products are set to {direction}, so Celerp does not publish new products. Set Products to Celerp to WooCommerce or Both ways in the connector settings to publish it.",
+      "params": [
+        "direction",
+        "sku"
+      ]
+    },
+    "connectors.err_webhook_resync": {
+      "en": "{service} did not accept the updated notifications for these settings, so nothing was changed: {detail}",
+      "params": [
+        "detail",
+        "service"
+      ]
+    },
+    "connectors.err_first_sync_needed": {
+      "en": "Review and start the first sync of {service} before syncing it.",
+      "params": [
+        "service"
+      ]
+    },
+    "connectors.products_rule": {
+      "en": "Celerp is the source for the name, description, price and images of linked products. Changes made in {service} are replaced at the next sync.",
+      "params": [
+        "service"
+      ]
+    },
+    "connectors.flow_inventory": {
+      "en": "Stock counts",
+      "params": []
+    },
+    "connectors.review_first_sync": {
+      "en": "Review first sync",
+      "params": []
+    },
+    "connectors.err_read_only_key": {
+      "en": "This API key is read-only. In WooCommerce, create a key with Read/Write permission and connect again.",
+      "params": []
     }
   }
 }
