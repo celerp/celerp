@@ -878,6 +878,8 @@ async def client(session: AsyncSession):
     # holding uncommitted - and hangs until the per-test timeout. Route middleware
     # to the same shared session (the patch point middleware.py imports for this
     # purpose) so it joins the one transaction instead of deadlocking against it.
+    # The module boundary reads a company's settings the same way, so it sees the
+    # companies a test registered.
     from contextlib import asynccontextmanager
 
     @asynccontextmanager
@@ -900,6 +902,7 @@ async def client(session: AsyncSession):
     with patch("celerp.gateway.client._client", MagicMock()), \
          patch("celerp.gateway.state.get_session_token", return_value="test-session-token"), \
          patch("celerp.middleware.get_session_ctx", _shared_session_ctx), \
+         patch("celerp.modules.boundary.get_session_ctx", _shared_session_ctx), \
          patch("celerp.db.LifecycleSessionLocal", lifecycle_factory):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             yield c

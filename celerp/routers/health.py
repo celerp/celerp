@@ -1273,9 +1273,9 @@ async def connector_authorize_url(
 
     if platform in PRODUCT_CHANNEL_PLATFORMS:
         # Connecting moves the store's product links in Inventory; refused before
-        # anything is claimed while it is not running.
-        from celerp.modules.boundary import require_running
-        require_running("celerp-inventory")
+        # anything is claimed while the company cannot use it.
+        from celerp.modules.boundary import company_settings, require_on
+        require_on(await company_settings(company_id), "celerp-inventory")
 
     category = getattr(connector.category, "value", connector.category)
     default_frequency = (

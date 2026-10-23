@@ -7,10 +7,11 @@ Session on the merchant's connected account. Payment surfaces are gated on a
 "payments enabled" flag; Celerp Cloud delivers each confirmed payment, which records
 through the same path as a manual payment.
 
-A delivery (payment, fees, refund, release) is recorded on invoices, so while Documents
-is not running it is refused before anything is written (``needs_modules``). It is not
-acknowledged, so Celerp Cloud keeps it and delivers it again; once Documents runs it is
-recorded as any other, and recording it twice changes nothing.
+A delivery (payment, fees, refund, release) is recorded on invoices, so while its
+company cannot use Documents (turned off, or not started yet) it is refused before
+anything is written (``needs_modules``). It is not acknowledged, so Celerp Cloud keeps it
+and delivers it again; once Documents is on it is recorded as any other, and recording
+it twice changes nothing.
 """
 from __future__ import annotations
 
@@ -27,6 +28,11 @@ from celerp.services.money import round_money, to_decimal
 from ui.i18n import t
 
 log = logging.getLogger(__name__)
+
+# A delivery waits, unacknowledged, while its company has Documents turned off, as it
+# does while Documents has not started. To record it on the invoice anyway, judge the
+# process alone: company=lambda payload: None.
+_on_invoices = needs_modules("celerp-docs", company=lambda payload: payload.get("company_id"))
 
 # GL account online payments clear to, per channel and for online payments generally.
 # With neither chosen, payments land on the company's default deposit account.
@@ -225,7 +231,7 @@ def _reached(answer: tuple[int, dict] | None, closure: PaymentClosure, states: t
         for state in states]
 
 
-@needs_modules("celerp-docs")
+@_on_invoices
 async def receive_payment(payload: dict) -> bool:
     """Record an online payment delivered by Celerp Cloud: on its invoice, on the
     books its payment page opened with and the day it was paid (``managed``: Stripe
@@ -301,7 +307,7 @@ async def receive_payment(payload: dict) -> bool:
     return True
 
 
-@needs_modules("celerp-docs")
+@_on_invoices
 async def receive_fees(payload: dict) -> bool:
     """Record actual online-fee transactions on the books holding their gross receipt.
 
@@ -577,7 +583,7 @@ async def _apply_parked_refunds(session, cid, entity_id: str, reference: str, *,
             "context": p.context}, recorded=recorded)
 
 
-@needs_modules("celerp-docs")
+@_on_invoices
 async def receive_refund(payload: dict) -> bool:
     """Apply a change to a refund of an online payment delivered by Celerp Cloud
     (``record_stripe_refund``), or keep it with the unmatched payments, whole, when it
@@ -647,7 +653,7 @@ async def _apply_release(session, cid, entity_id: str, reference: str, released_
     return True
 
 
-@needs_modules("celerp-docs")
+@_on_invoices
 async def receive_release(payload: dict) -> bool:
     """Record that an online payment delivered by Celerp Cloud is no longer linked to
     Stripe (Stripe was disconnected): on its invoice (``record_stripe_release``), or on

@@ -392,11 +392,8 @@ async def _check_books_change(session: AsyncSession, company_id, current: dict, 
     # A deposit account: empty is the default account.
     if value is None or (isinstance(value, str) and value == ""):
         return value
-    from celerp.modules.loader import is_running
-    if not is_running("celerp-docs"):
-        raise HTTPException(status_code=422, detail=refusal(
-            "company.deposit_account_needs_docs",
-            "Turn on Documents on the Modules page before choosing a deposit account."))
+    from celerp.modules.boundary import require_on
+    require_on(current, "celerp-docs")
     if not isinstance(value, str):
         raise HTTPException(status_code=422, detail=refusal(
             "company.deposit_account_not_code",

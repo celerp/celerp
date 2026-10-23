@@ -131,7 +131,10 @@ async def test_company_that_turned_a_module_off_is_refused_while_another_keeps_i
     assert (await client.get(f"/{inner}/ping", headers=b)).status_code == 200
     refused = await client.get(f"/{inner}/ping", headers=a)
     assert refused.status_code == 403
-    assert refused.json()["detail"] == "This module is turned off for your company."
+    from celerp.modules.loader import module_label
+    assert refused.json()["detail"] == {
+        "message": f"The {module_label(name)} module is turned off for your company.",
+        "message_key": "modules.off_for_company", "params": {"module": module_label(name)}}
 
 
 @pytest.mark.asyncio

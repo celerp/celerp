@@ -692,6 +692,12 @@
         "paid",
         "where"
       ]
+    },
+    "modules.starts_after_restart": {
+      "en": "The {module} module starts after Celerp restarts.",
+      "params": [
+        "module"
+      ]
     }
   }
 }
