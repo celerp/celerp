@@ -211,3 +211,45 @@ def test_posting_choices_keep_stock_accounts_for_stock_roles():
     assert _smoke.posting_choices(readiness) == {
         "roles": {"landed_freight": "1010", "cash": "1000"},
         "add_accounts": [{"code": "9sal", "role": "sales"}]}
+
+
+@pytest.mark.parametrize("first", [None, "", "  \n", "starting", "0", "70000"])
+def test_serving_waits_for_a_port_file_that_is_missing_or_not_a_port_yet(monkeypatch, tmp_path, first):
+    """Celerp rewrites its api-port file as it restarts: until the file names a port
+    the API is not taken from it, and the wait ends as soon as it does."""
+    port_file = tmp_path / "api-port"
+    if first is not None:
+        port_file.write_text(first)
+    now = [0.0]
+
+    def sleep(seconds):
+        now[0] += seconds
+        if now[0] >= 3:
+            port_file.write_text("8123\n")
+
+    monkeypatch.setattr(time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(time, "sleep", sleep)
+
+    assert _smoke._serving(str(port_file), deadline=60) == "http://127.0.0.1:8123"
+    assert 3 <= now[0] < 4
+
+
+@pytest.mark.parametrize("value", [None, "", "8080x"])
+def test_serving_fails_at_the_callers_deadline_without_making_up_a_port(clock, tmp_path, capsys, value):
+    port_file = tmp_path / "api-port"
+    if value is not None:
+        port_file.write_text(value)
+
+    with pytest.raises(SystemExit) as exc:
+        _smoke._serving(str(port_file), deadline=20)
+
+    assert exc.value.code == 1
+    assert 20 <= clock[0] < 21
+    assert f"no API port in {port_file}" in capsys.readouterr().err
+
+
+def test_serving_waits_a_bounded_time_when_the_caller_has_no_deadline(clock, tmp_path):
+    with pytest.raises(SystemExit):
+        _smoke._serving(str(tmp_path / "api-port"))
+
+    assert 0 < clock[0] <= 61

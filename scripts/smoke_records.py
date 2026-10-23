@@ -290,12 +290,23 @@ def posting_choices(readiness: list[dict]) -> dict:
     return {"roles": roles, "add_accounts": add_accounts}
 
 
-def _serving(port_file: str) -> str:
-    """The API the running copy publishes in its api-port file."""
-    try:
-        return "http://127.0.0.1:" + Path(port_file).read_text().strip()
-    except OSError as exc:
-        fail(f"no API port in {port_file}: {exc}")
+def _serving(port_file: str, deadline: float | None = None) -> str:
+    """The API the running copy publishes in its api-port file. Celerp rewrites the
+    file as it restarts, so a missing file or one that does not name a port yet is
+    read again until ``deadline`` (the caller's, or 60 s from now); then the run fails."""
+    deadline = time.monotonic() + 60 if deadline is None else deadline
+    while True:
+        try:
+            value = Path(port_file).read_text().strip()
+        except OSError as exc:
+            value, why = "", str(exc)
+        else:
+            why = f"it holds {value!r}"
+        if value.isdigit() and 0 < int(value) < 65536:
+            return "http://127.0.0.1:" + value
+        if time.monotonic() >= deadline:
+            fail(f"no API port in {port_file}: {why}")
+        time.sleep(0.2)
 
 
 def _sample(port_file: str, sample: str) -> tuple[str, str, str]:
@@ -330,7 +341,7 @@ def _sample(port_file: str, sample: str) -> tuple[str, str, str]:
     run = started["run_id"]
     deadline = time.monotonic() + 900
     while True:
-        api = _serving(port_file)
+        api = _serving(port_file, deadline)
         try:
             status, view = http("GET", f"{api}/migrations/{run}", session)
         except OSError:
@@ -377,7 +388,7 @@ def first_run(port_file: str, presets: str) -> None:
     _ok(*http("POST", api + "/system/restart", owner), "POST /system/restart")
     deadline = time.monotonic() + 240
     while True:
-        api = _serving(port_file)
+        api = _serving(port_file, deadline)
         try:
             status, body = http("GET", api + "/health", timeout=5)
             if status == 200 and body.get("boot") != boot and http("GET", api + "/health/ready", timeout=5)[0] == 200:
