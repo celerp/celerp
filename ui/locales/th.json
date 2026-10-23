@@ -6491,5 +6491,21 @@
   "connectors.products_rule": "Celerp is the source for the name, description, price and images of linked products. Changes made in {service} are replaced at the next sync.",
   "connectors.flow_inventory": "Stock counts",
   "connectors.review_first_sync": "Review first sync",
-  "connectors.err_read_only_key": "This API key is read-only. In WooCommerce, create a key with Read/Write permission and connect again."
+  "connectors.err_read_only_key": "This API key is read-only. In WooCommerce, create a key with Read/Write permission and connect again.",
+  "connectors.attention_no_sku": "This product has no SKU, so it was not imported. Add a SKU in {service} to import it.",
+  "connectors.attention_conflict": "Changed in both Celerp and {service}: {fields}. Celerp kept its values until you choose.",
+  "connectors.conflict_field_sku": "SKU",
+  "connectors.conflict_field_name": "Name",
+  "connectors.conflict_field_description": "Description",
+  "connectors.conflict_field_sale_price": "Price",
+  "connectors.conflict_values": "Celerp has {celerp}, {service} has {remote}",
+  "connectors.conflict_keep_store": "Use {service} values",
+  "connectors.conflict_keep_celerp": "Keep Celerp values",
+  "connectors.conflict_kept_store": "Now uses the {service} values. Edit the item to change them back.",
+  "connectors.conflict_kept_celerp": "Keeps the Celerp values. They are sent to {service} at the next sync when products go out.",
+  "connectors.err_conflict_choice": "Choose to keep the store's values or Celerp's.",
+  "connectors.err_conflict_gone": "This product is no longer waiting on a choice. Refresh the page to see the current list.",
+  "connectors.err_first_sync_done": "First sync already done.",
+  "connectors.first_sync_batch": "{service} first sync",
+  "connectors.err_no_links_to_undo": "There are no first sync links left to undo."
 }

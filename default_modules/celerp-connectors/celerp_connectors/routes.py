@@ -4,7 +4,8 @@
 from __future__ import annotations
 
 import logging
-from typing import Annotated
+from datetime import date
+from typing import Annotated, Literal
 
 import httpx
 
@@ -787,6 +788,206 @@ async def unmark_order_reconciled(
 ) -> dict:
     """Undo a mark: the order needs reconciliation again."""
     return await _set_order_reconciled(session, company_id, order_id, None, user.id)
+
+
+class FirstSyncRequest(BaseModel):
+    """The choices a person made on the first sync's preview."""
+    directions: dict[str, str]
+    match: Literal["keep", "take"]
+    # The earliest order date to import; none starts at the first sync itself.
+    orders_from: date | None = None
+
+
+@router.post("/{connector_name}/first-sync")
+async def start_first_sync(
+    connector_name: str,
+    payload: FirstSyncRequest,
+    company_id: Annotated[str, Depends(get_current_company_id)],
+    _: None = require_permission("manage_integrations"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Start a connection's first sync with the choices reviewed on its preview: the
+    directions, the earliest order date and how SKU matches link. It runs once; the
+    store's webhooks start delivering with it. When the store refuses to turn them on,
+    nothing starts and the store's reason is returned."""
+    import uuid
+    from datetime import datetime, time, timezone
+
+    from celerp import connectors
+    from celerp.connectors.base import DirectionError, entity_allowed, validate_directions
+    from celerp.connectors.ownership import ConnectorOwnershipError, lock_connector_operation
+    from celerp.connectors.sync_runner import run_first_sync
+    from celerp.models.import_batch import ImportBatch
+    from celerp.services.background import spawn_background
+
+    try:
+        connector = connectors.get(connector_name)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=t("connectors.unknown_connector", platform=connector_name)) from exc
+    try:
+        config = await lock_connector_operation(
+            session, company_id, connector_name, require_owner=True, exclusive=True)
+    except ConnectorOwnershipError as exc:
+        await session.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if config.first_sync_at is not None:
+        await session.rollback()
+        raise HTTPException(status_code=409, detail=t("connectors.err_first_sync_done"))
+    try:
+        directions = validate_directions(connector, payload.directions)
+    except DirectionError as exc:
+        await session.rollback()
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    ctx = await _connector_context(str(company_id), connector_name, ownership_session=session)
+    if ctx is None:
+        await session.rollback()
+        raise HTTPException(status_code=409, detail=t("error.connector_not_connected", service=connector.display_name))
+
+    now = datetime.now(timezone.utc)
+    config.entity_directions = directions
+    config.first_sync_at = now
+    config.orders_from = (datetime.combine(payload.orders_from, time(), tzinfo=timezone.utc)
+                          if payload.orders_from is not None else now)
+    batch_id = None
+    if entity_allowed(connector, "products", directions):
+        batch = ImportBatch(
+            company_id=uuid.UUID(str(company_id)), entity_type="item",
+            filename=t("connectors.first_sync_batch", service=connector.display_name),
+            row_count=0, entity_ids=[], idempotency_keys=[], reversible=True,
+        )
+        session.add(batch)
+        await session.flush()
+        batch_id = str(batch.id)
+    config.first_sync_undo = {"batch_id": batch_id, "match": payload.match, "links": []}
+    if config.webhook_secret:
+        try:
+            await resync_webhook_topics(connector, config, ctx)
+        except Exception as exc:
+            await session.rollback()
+            raise HTTPException(status_code=502, detail=t(
+                "connectors.err_webhook_resync", service=connector.display_name, detail=exc)) from exc
+    await session.commit()
+
+    async def _run() -> None:
+        try:
+            await run_first_sync(connector, ctx)
+        except Exception:
+            log.exception("first sync failed: %s", connector_name)
+
+    spawn_background(_run())
+    return {"ok": True}
+
+
+@router.post("/{connector_name}/first-sync/undo-links")
+async def undo_first_sync_links(
+    connector_name: str,
+    company_id: Annotated[str, Depends(get_current_company_id)],
+    user=Depends(get_current_user),
+    _: None = require_permission("manage_integrations"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Undo the links the first sync made to items Celerp already had: each link is
+    detached and, where the first sync took the store's values, the item's own values
+    come back. The items the first sync created are undone in Import History."""
+    from celerp.connectors.ownership import ConnectorOwnershipError, lock_connector_operation
+    from celerp.events.engine import emit_event
+    from celerp.models.projections import Projection
+    from celerp_inventory.services import detach_external_link
+
+    try:
+        config = await lock_connector_operation(
+            session, company_id, connector_name, require_owner=True, exclusive=True)
+    except ConnectorOwnershipError as exc:
+        await session.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    undo = dict(config.first_sync_undo or {})
+    if undo.get("links_undone_at") or not undo.get("links"):
+        await session.rollback()
+        raise HTTPException(status_code=409, detail=t("connectors.err_no_links_to_undo"))
+    undone = 0
+    for link in undo["links"]:
+        entity_id = link["entity_id"]
+        if not await detach_external_link(
+            session, company_id, entity_id, connector_name, actor_id=user.id, source="connector_ui"
+        ):
+            continue
+        undone += 1
+        if link.get("restore"):
+            row = await session.get(Projection, {"company_id": __import__("uuid").UUID(str(company_id)),
+                                                 "entity_id": entity_id})
+            state = (row.state or {}) if row is not None else {}
+            await emit_event(
+                session, company_id=company_id, entity_id=entity_id, entity_type="item",
+                event_type="item.updated",
+                data={"fields_changed": {key: {"old": state.get(key), "new": value}
+                                         for key, value in link["restore"].items()}},
+                actor_id=user.id, location_id=None, source="connector_ui",
+                idempotency_key=f"first-sync-restore:{connector_name}:{entity_id}:v{row.version}",
+                metadata_={},
+            )
+    from datetime import datetime, timezone
+    config.first_sync_undo = {**undo, "links_undone_at": datetime.now(timezone.utc).isoformat()}
+    await session.commit()
+    return {"undone": undone}
+
+
+class ConflictChoice(BaseModel):
+    keep: str  # "store": take the store's values; "celerp": keep Celerp's
+
+
+@router.post("/{connector_name}/products/{record_id}/resolve")
+async def resolve_product_conflict(
+    connector_name: str,
+    record_id: str,
+    payload: ConflictChoice,
+    company_id: Annotated[str, Depends(get_current_company_id)],
+    user=Depends(get_current_user),
+    _: None = require_permission("manage_integrations"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """A person chose between the two values of a product field changed in both
+    systems. Either way the link now agrees on the store's value, so a later pull
+    leaves the field alone; keeping Celerp's value sends it out at the next sync when
+    products go out. Taking the store's is an ordinary item edit, undone by editing
+    the item back."""
+    from celerp.connectors.sync_runner import remove_attention_entry
+    from celerp.events.engine import emit_event
+    from celerp.services.field_fingerprints import LINK_KEY, fingerprint
+    from celerp_inventory.services import external_link_for_state, set_external_link_state
+
+    if connector_name not in PRODUCT_CHANNEL_PLATFORMS or payload.keep not in ("store", "celerp"):
+        raise HTTPException(status_code=422, detail=t("connectors.err_conflict_choice"))
+    entry = await remove_attention_entry(
+        session, str(company_id), connector_name, SyncEntity.PRODUCTS.value, record_id)
+    if entry is None or entry.get("kind") != "conflict":
+        await session.rollback()
+        raise HTTPException(status_code=404, detail=t("connectors.err_conflict_gone"))
+    entity_id, fields = entry["entity_id"], entry["fields"]
+    from celerp_inventory.services import resolve_catalog_anchor_for_item
+    anchor = await resolve_catalog_anchor_for_item(session, company_id, entity_id)
+    link = external_link_for_state(anchor.state or {}, connector_name)
+    if not link:
+        await session.rollback()
+        raise HTTPException(status_code=404, detail=t("connectors.err_conflict_gone"))
+    if payload.keep == "store":
+        state = anchor.state or {}
+        changed = {key: {"old": state.get(key), "new": both["remote"]} for key, both in fields.items()}
+        if "sale_price" in fields:
+            changed["retail_price"] = {"old": state.get("retail_price"), "new": fields["sale_price"]["remote"]}
+        await emit_event(
+            session, company_id=company_id, entity_id=entity_id, entity_type="item",
+            event_type="item.updated", data={"fields_changed": changed}, actor_id=user.id,
+            location_id=None, source="connector_ui",
+            idempotency_key=f"conflict:{connector_name}:{entity_id}:v{anchor.version}", metadata_={},
+        )
+    agreed = {**(link.get(LINK_KEY) or {}),
+              **{key: fingerprint(both["remote"]) for key, both in fields.items()}}
+    await set_external_link_state(
+        session, company_id, entity_id, connector_name, link_updates={LINK_KEY: agreed},
+        actor_id=user.id, source="connector_ui",
+    )
+    await session.commit()
+    return {"entry": entry, "kept": payload.keep}
 
 
 _ITEM_SYNC_LIMIT = 200

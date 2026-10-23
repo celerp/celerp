@@ -30,6 +30,7 @@ from celerp.connectors.base import (
     ConnectorCategory,
     ConnectorContext,
     EntityFlow,
+    FirstSync,
     SyncDirection,
     SyncEntity,
     SyncResult,
@@ -168,7 +169,10 @@ class QuickBooksConnector(ConnectorBase):
 
     # -- Products (Items in QB) ------------------------------------------------
 
-    async def sync_products(self, ctx: ConnectorContext, since: datetime | None = None) -> SyncResult:
+    async def sync_products(
+        self, ctx: ConnectorContext, since: datetime | None = None,
+        first_sync: FirstSync | None = None,
+    ) -> SyncResult:
         """
         Pull QuickBooks Items -> Celerp items.
 
@@ -215,7 +219,7 @@ class QuickBooksConnector(ConnectorBase):
                     cost_price=money(qb_item.get("PurchaseCost")),
                     idempotency_key=idempotency_key,
                 )
-                result.record(await _upsert.upsert_item(ctx.company_id, item))
+                result.record(await _upsert.upsert_item(ctx.company_id, item, first_sync))
             except Exception as exc:
                 errors.append(f"SKU {sku}: {exc}")
 

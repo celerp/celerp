@@ -804,6 +804,87 @@
     "connectors.err_read_only_key": {
       "en": "This API key is read-only. In WooCommerce, create a key with Read/Write permission and connect again.",
       "params": []
+    },
+    "connectors.attention_no_sku": {
+      "en": "This product has no SKU, so it was not imported. Add a SKU in {service} to import it.",
+      "params": [
+        "service"
+      ]
+    },
+    "connectors.attention_conflict": {
+      "en": "Changed in both Celerp and {service}: {fields}. Celerp kept its values until you choose.",
+      "params": [
+        "fields",
+        "service"
+      ]
+    },
+    "connectors.conflict_field_sku": {
+      "en": "SKU",
+      "params": []
+    },
+    "connectors.conflict_field_name": {
+      "en": "Name",
+      "params": []
+    },
+    "connectors.conflict_field_description": {
+      "en": "Description",
+      "params": []
+    },
+    "connectors.conflict_field_sale_price": {
+      "en": "Price",
+      "params": []
+    },
+    "connectors.conflict_values": {
+      "en": "Celerp has {celerp}, {service} has {remote}",
+      "params": [
+        "celerp",
+        "remote",
+        "service"
+      ]
+    },
+    "connectors.conflict_keep_store": {
+      "en": "Use {service} values",
+      "params": [
+        "service"
+      ]
+    },
+    "connectors.conflict_keep_celerp": {
+      "en": "Keep Celerp values",
+      "params": []
+    },
+    "connectors.conflict_kept_store": {
+      "en": "Now uses the {service} values. Edit the item to change them back.",
+      "params": [
+        "service"
+      ]
+    },
+    "connectors.conflict_kept_celerp": {
+      "en": "Keeps the Celerp values. They are sent to {service} at the next sync when products go out.",
+      "params": [
+        "service"
+      ]
+    },
+    "connectors.err_conflict_choice": {
+      "en": "Choose to keep the store's values or Celerp's.",
+      "params": []
+    },
+    "connectors.err_conflict_gone": {
+      "en": "This product is no longer waiting on a choice. Refresh the page to see the current list.",
+      "params": []
+    },
+    "connectors.err_first_sync_done": {
+      "en": "First sync already done.",
+      "params": []
+    },
+    "connectors.first_sync_batch": {
+      "en": "{service} first sync",
+      "params": [
+        "service"
+      ]
+    },
+    "connectors.err_no_links_to_undo": {
+      "en": "There are no first sync links left to undo.",
+      "params": []
     }
   }
 }

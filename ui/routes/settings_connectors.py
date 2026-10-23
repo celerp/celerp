@@ -26,6 +26,7 @@ from celerp.connectors.base import (
     INBOUND_ENTITIES, OUTBOUND_ENTITIES, ConnectorCategory, SyncFrequency,
 )
 from celerp.connectors.ownership import PRODUCT_CHANNEL_PLATFORMS
+from celerp.connectors.registry import get as get_connector
 from celerp.connectors.sync_runner import CONNECTOR_RESET_ENTITY
 
 log = logging.getLogger(__name__)
@@ -210,7 +211,6 @@ def _entity_direction_rows(cid: str, directions: dict, lang: str = "en", detail:
     swap themselves; on the connectors list, the connector's card. ``error`` says why
     the last change was refused, under the rows."""
     from celerp.connectors.base import SyncDirection, direction_label, entity_flow_label
-    from celerp.connectors.registry import get as get_connector
 
     connector = get_connector(cid)
     rows = []
@@ -374,8 +374,6 @@ async def _get_connector_config(company_id: str, connector: str):
 
 def _local_connector_entry(platform: str) -> dict:
     """Build display metadata for a locally known connector."""
-    from celerp.connectors.registry import get as get_connector
-
     connector = get_connector(platform)
     category = getattr(connector.category, "value", connector.category)
     return {
@@ -577,6 +575,11 @@ def _entity_status_table(runs: dict, lang: str = "en", attention: dict[str, int]
     )
 
 
+def _cell(value) -> str:
+    """A value as a table cell shows it: ``--`` when there is none."""
+    return "--" if value in (None, "") else str(value)
+
+
 def _attention_item(platform: str, entry: dict, lang: str = "en", error: str | None = None) -> FT:
     """One record waiting on a person. A change only a person can reconcile
     (it carries a signature) offers Mark reconciled, and Undo once marked; one the lock
@@ -599,6 +602,23 @@ def _attention_item(platform: str, entry: dict, lang: str = "en", error: str | N
                 cls="btn btn--xs btn--outline", hx_post=url,
                 hx_vals=hx_vals({"signature": entry["signature"]}), **common,
             ))
+    if entry.get("kind") == "conflict":
+        url = f"/settings/connectors/{platform}/attention/{record_id}/resolve"
+        common = {"hx_target": f"#{item_id}", "hx_swap": "outerHTML"}
+        service = get_connector(platform).display_name
+        action = Span(
+            Ul(*[Li(t(f"connectors.conflict_field_{key}", lang), ": ",
+                    t("connectors.conflict_values", lang, service=service,
+                      celerp=_cell(both.get("celerp")), remote=_cell(both.get("remote"))))
+                 for key, both in (entry.get("fields") or {}).items()]),
+            Button(t("connectors.conflict_keep_store", lang, service=service),
+                   cls="btn btn--xs btn--outline", hx_post=url,
+                   hx_vals=hx_vals({"keep": "store"}), **common),
+            " ",
+            Button(t("connectors.conflict_keep_celerp", lang),
+                   cls="btn btn--xs btn--outline", hx_post=url,
+                   hx_vals=hx_vals({"keep": "celerp"}), **common),
+        )
     from ui.components.shell import flash
     locked = Span(" ", t("connectors.attention_locked", lang), " ",
                   A(t("page.period_lock", lang), href=PERIOD_LOCK_PATH)) if entry.get("locked") else Span()
@@ -1899,6 +1919,34 @@ def setup_routes(app):
             entry = next((e for e in entries if str(e.get("id")) == record_id), {"id": record_id})
             return _attention_item(platform, entry, lang, error=str(exc.detail))
         return _attention_item(platform, result["entry"], lang)
+
+    @app.post("/settings/connectors/{platform}/attention/{record_id}/resolve")
+    async def connector_resolve_conflict(request: Request, platform: str, record_id: str):
+        """HTMX: keep the store's or Celerp's values of a product changed in both, then
+        show what was kept in the entry's place."""
+        token = _token(request)
+        if not token:
+            return Span(t("error.session_expired"), cls="flash flash--warning")
+        if (r := await _check_permission(request, "manage_integrations")):
+            return r
+        if (err := _validate_platform(platform)):
+            return err
+        from ui.api_client import APIError, resolve_product_conflict
+
+        lang = get_lang(request)
+        keep = str((await request.form()).get("keep", ""))
+        try:
+            result = await resolve_product_conflict(token, platform, record_id, keep)
+        except APIError as exc:
+            entries = await _attention(_request_company_id(request), platform)
+            entry = next((e for e in entries if str(e.get("id")) == record_id), {"id": record_id})
+            return _attention_item(platform, entry, lang, error=refusal_text(exc.detail) or str(exc.detail))
+        entry = result["entry"]
+        kept = t("connectors.conflict_kept_store" if result["kept"] == "store"
+                 else "connectors.conflict_kept_celerp", lang,
+                 service=get_connector(platform).display_name)
+        return Li(Strong(str(entry.get("label", record_id))), ": ", kept,
+                  id=f"connector-attention-{platform}-{record_id}")
 
     @app.post("/settings/connectors/{platform}/attention/{record_id}/reconciled")
     async def connector_mark_reconciled(request: Request, platform: str, record_id: str):

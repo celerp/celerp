@@ -175,6 +175,21 @@ class ConnectorContext:
 
 
 @dataclass
+class FirstSync:
+    """A first sync's choices for its product pass, and what that pass did.
+
+    ``match``: "keep" links products that match by SKU keeping Celerp's values,
+    "take" replaces them with the platform's. ``create``: whether products new to
+    Celerp are created (only when products come in). ``batch_id``: the import batch
+    the items it creates join, so its undo removes them with their opening stock.
+    ``record``: the celerp_inventory ExternalImportRecord the pass fills in."""
+    match: str
+    create: bool
+    batch_id: str | None
+    record: Any
+
+
+@dataclass
 class SyncResult:
     entity: SyncEntity
     direction: SyncDirection = SyncDirection.INBOUND

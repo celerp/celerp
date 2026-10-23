@@ -3932,6 +3932,14 @@ async def set_connector_direction(token: str, platform: str, entity: str, direct
         )).json()
 
 
+async def resolve_product_conflict(token: str, platform: str, record_id: str, keep: str) -> dict:
+    """Keep the store's ("store") or Celerp's ("celerp") values of a product changed in both."""
+    async with _api_client(token) as c:
+        return _raise(await c.post(
+            f"/connectors/{platform}/products/{record_id}/resolve", json={"keep": keep},
+        )).json()
+
+
 async def start_connector_sync(token: str, platform: str) -> dict:
     """Start the connector's canonical sync plan in the API process."""
     async with _api_client(token) as c:

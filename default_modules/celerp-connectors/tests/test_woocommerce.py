@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, patch
 
 from celerp.connectors.woocommerce import WooCommerceConnector, _base_url, _auth
 from celerp.connectors.base import ConnectorContext, SyncEntity
+from ui.i18n import t
 
 
 @pytest.fixture
@@ -174,17 +175,30 @@ async def test_virtual_product_is_service_only_when_woo_does_not_manage_stock(
 
 
 @pytest.mark.asyncio
-async def test_sync_products_fallback_sku(woo, ctx, mock_upsert_item):
-    """When sku is blank, fall back to WC-{id}."""
+async def test_product_without_sku_not_imported(woo, ctx, mock_upsert_item):
+    """A store product with no SKU is not imported under a made-up one; it waits on a
+    person to give it a SKU in WooCommerce."""
     with respx.mock:
         respx.get("https://store.example.com/wp-json/wc/v3/products").mock(
             return_value=httpx.Response(200, json=[
-                {"id": 42, "name": "No SKU Product", "sku": "", "regular_price": "5.00"}
+                {"id": 42, "name": "No SKU Product", "sku": "", "regular_price": "5.00"},
+                {"id": 43, "name": "Shirt", "type": "variable", "sku": ""},
+                {"id": 44, "name": "Has SKU", "sku": "HAS-1", "regular_price": "1.00"},
+            ])
+        )
+        respx.get("https://store.example.com/wp-json/wc/v3/products/43/variations").mock(
+            return_value=httpx.Response(200, json=[
+                {"id": 7, "sku": " ", "attributes": [{"option": "Red"}]},
             ])
         )
         result = await woo.sync_products(ctx)
+    assert [c.kwargs["sku"] for c in mock_upsert_item.call_args_list] == ["HAS-1"]
     assert result.created == 1
-    assert mock_upsert_item.call_args.kwargs["sku"] == "WC-42"
+    no_sku = {e["id"]: e for e in result.attention}
+    assert set(no_sku) == {"42", "43:7"}
+    assert no_sku["42"]["label"] == "No SKU Product"
+    assert no_sku["42"]["reason"] == t("connectors.attention_no_sku", service="WooCommerce")
+    assert no_sku["43:7"]["label"] == "Shirt - Red"
 
 
 @pytest.mark.asyncio

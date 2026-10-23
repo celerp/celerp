@@ -15,6 +15,7 @@ teardown) and seed a real company so the ledger FK is satisfied.
 from __future__ import annotations
 
 import contextlib
+import json
 import uuid
 
 import pytest
@@ -45,6 +46,11 @@ async def _seed_company(session, name: str) -> uuid.UUID:
     ))
     await provision_company_books(session, cid)
     return cid
+
+
+@contextlib.asynccontextmanager
+async def _same(session):
+    yield session
 
 
 @pytest.fixture
@@ -2301,3 +2307,114 @@ async def test_reconcile_does_not_revert_unpushed_celerp_edit(use_test_session):
     state = await item_state(session, cid, entity_id)
     assert state["description"] == "New store words" and state["name"] == "Celerp v2"
     assert record.conflicts and set(record.conflicts[0]["fields"]) == {"name"}
+
+
+@pytest.mark.parametrize("keep,name", [("store", "Store v3"), ("celerp", "Celerp v2")])
+@pytest.mark.asyncio
+async def test_conflict_choice_settles_the_field(use_test_session, monkeypatch, keep, name):
+    """Either choice settles the field: the next pull of the same store value leaves it."""
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+
+    from celerp.models.sync_run import SyncRun
+    from celerp_connectors.routes import ConflictChoice, resolve_product_conflict
+    from celerp_inventory.services import ExternalImportRecord, upsert_external_product
+    from connector_test_support import item_state
+
+    session = use_test_session
+    monkeypatch.setattr("celerp.db.get_session_ctx", lambda: _same(session))
+    cid = await _seed_company(session, f"Settle{keep}")
+
+    async def pull(name):
+        record = ExternalImportRecord()
+        _, entity_id = await upsert_external_product(
+            str(cid), platform="woocommerce", product_id="960", variation_id=None, sku="ST-1",
+            name=name, record=record)
+        return entity_id, record
+
+    entity_id, _ = await pull("Store v1")
+    await _edit(session, cid, entity_id, name="Celerp v2")
+    _, record = await pull("Store v3")
+    entry = {"id": "960", "label": "Store v3", "kind": "conflict", "reason": "both",
+             "entity_id": entity_id, "fields": record.conflicts[0]["fields"]}
+    now = datetime.now(timezone.utc)
+    session.add(SyncRun(company_id=str(cid), connector="woocommerce", entity="products",
+                        direction="inbound", started_at=now, finished_at=now, status="success",
+                        attention_json=json.dumps([entry])))
+    await session.flush()
+
+    out = await resolve_product_conflict("woocommerce", "960", ConflictChoice(keep=keep), str(cid),
+                                         SimpleNamespace(id=None), None, session)
+
+    assert out["kept"] == keep
+    assert (await item_state(session, cid, entity_id))["name"] == name
+    _, record = await pull("Store v3")
+    assert record.conflicts == []
+    assert (await item_state(session, cid, entity_id))["name"] == name
+
+
+@pytest.mark.asyncio
+async def test_first_sync_import_is_undoable(use_test_session, monkeypatch):
+    """A first sync records the items it creates as an import batch that Import History
+    undoes with their opening stock, and its links can be undone, restoring the values
+    it took from the store."""
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    import httpx
+    import respx
+
+    from celerp.connectors.base import ConnectorContext
+    from celerp.connectors.sync_runner import run_first_sync
+    from celerp.connectors.woocommerce import WooCommerceConnector
+    from celerp.models.accounting import UserCompany
+    from celerp.models.import_batch import ImportBatch
+    from celerp_connectors.routes import undo_first_sync_links
+    from celerp_inventory.routes import undo_import_batch
+    from celerp_inventory.services import external_link_for_state
+    from connector_test_support import add_item, connect, item_state
+
+    session = use_test_session
+    monkeypatch.setattr("celerp.db.get_session_ctx", lambda: _same(session))
+    monkeypatch.setattr("celerp.connectors.woocommerce.validate_public_base_url",
+                        AsyncMock(side_effect=lambda value, **_kw: value.rstrip("/")))
+    cid = await _seed_company(session, "FirstUndo")
+    user_id = await session.scalar(select(UserCompany.user_id).where(UserCompany.company_id == cid))
+    await add_item(session, cid, "item:match", "MATCH-1", name="Celerp name", sale_price=10.0)
+    batch = ImportBatch(company_id=cid, entity_type="item", filename="WooCommerce first sync",
+                        row_count=0, entity_ids=[], idempotency_keys=[], reversible=True)
+    session.add(batch)
+    await session.flush()
+    await connect(session, cid, "woocommerce",
+                  {"products": "inbound", "stock": "off", "orders": "off", "customers": "off"},
+                  first_sync_at=datetime.now(timezone.utc),
+                  first_sync_undo={"batch_id": str(batch.id), "match": "take", "links": []})
+    ctx = ConnectorContext(company_id=str(cid), access_token="ck:cs", store_handle="https://store.example.com")
+    monkeypatch.setattr("celerp.connectors.relay_token.fetch_context", AsyncMock(return_value=ctx))
+
+    with respx.mock:
+        respx.get("https://store.example.com/wp-json/wc/v3/products").mock(return_value=httpx.Response(
+            200, json=[
+                {"id": 1, "sku": "MATCH-1", "name": "Store name", "regular_price": "99.00"},
+                {"id": 2, "sku": "NEW-1", "name": "New in store", "regular_price": "5.00",
+                 "manage_stock": True, "stock_quantity": 3},
+            ]))
+        results = await run_first_sync(WooCommerceConnector(), ctx)
+
+    assert [r.entity for r in results] and all(r.ok for r in results), results
+    await session.refresh(batch)
+    created = [e for e in batch.entity_ids]
+    assert len(created) == 1 and (await item_state(session, cid, created[0]))["sku"] == "NEW-1"
+    assert (await item_state(session, cid, "item:match"))["name"] == "Store name"
+
+    owner = SimpleNamespace(id=user_id)
+    out = await undo_import_batch(str(batch.id), cid, owner, None, None, session)
+    assert out == {"ok": True, "removed": 1}
+    assert await item_state(session, cid, created[0]) == {}
+
+    out = await undo_first_sync_links("woocommerce", str(cid), owner, None, session)
+    assert out["undone"] == 1
+    state = await item_state(session, cid, "item:match")
+    assert not external_link_for_state(state, "woocommerce")
+    assert (state["name"], state["sale_price"]) == ("Celerp name", 10.0)

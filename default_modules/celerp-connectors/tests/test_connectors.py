@@ -700,7 +700,9 @@ async def test_woocommerce_sync_products(wc, wc_ctx):
     ):
         result = await wc.sync_products(wc_ctx)
     assert result.ok
-    assert result.created == 2  # both get SKUs (second gets WC-2 fallback)
+    # The product with no SKU is not imported; it waits on a person.
+    assert result.created == 1
+    assert [e["id"] for e in result.attention] == ["2"]
     reconcile.assert_awaited_once()
 
 

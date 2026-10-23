@@ -27,6 +27,7 @@ from celerp.connectors.base import (
     ConnectorCategory,
     ConnectorContext,
     EntityFlow,
+    FirstSync,
     SyncDirection,
     SyncEntity,
     SyncResult,
@@ -266,16 +267,28 @@ class WooCommerceConnector(ConnectorBase):
         return f"/products/{product_id}"
 
     async def sync_products(
-        self, ctx: ConnectorContext, since: datetime | None = None, reconcile: bool = False
+        self,
+        ctx: ConnectorContext,
+        since: datetime | None = None,
+        reconcile: bool = False,
+        attention: list[dict] | None = None,
+        first_sync: FirstSync | None = None,
     ) -> SyncResult:
         """Pull WooCommerce products into Celerp catalog product anchors. The
         daily ``reconcile`` pass pulls every product, so ones deleted in the
-        store are found."""
-        from celerp_inventory.services import upsert_external_product
+        store are found.
 
+        A product with no SKU is not imported; it waits on a person to give it one
+        in WooCommerce. A linked product changed in both systems keeps Celerp's
+        values and waits on a person with both. Entries for products this run did
+        not read are carried. ``first_sync`` carries the first sync's choices: whether
+        new products are created, whether SKU matches keep Celerp's values, and the
+        import batch created items join; what it did is recorded on it."""
         result = SyncResult(entity=SyncEntity.PRODUCTS)
         errors: list[str] = []
-        if reconcile:
+        pending: dict[str, dict] = {}
+        processed: set[str] = set()
+        if reconcile or first_sync is not None:
             since = None
         full_scan = since is None
         seen_identities: set[tuple[str, str | None]] = set()
@@ -291,35 +304,30 @@ class WooCommerceConnector(ConnectorBase):
             result.errors = [f"WooCommerce API error: {exc}"]
             return result
 
-        async def _import_one(*, sku, name, description, price, product_id,
+        async def _import_one(*, key, label, sku, name, description, price, product_id,
                               variation_id=None, manage_stock=None, stock_quantity=None,
                               virtual=False):
-            try:
-                non_stock_virtual = bool(virtual) and manage_stock is False
-                outcome, entity_id = await upsert_external_product(
-                    ctx.company_id,
-                    platform="woocommerce",
-                    product_id=str(product_id),
-                    variation_id=str(variation_id) if variation_id is not None else None,
-                    sku=sku,
-                    name=name,
-                    description=description,
-                    sale_price=price,
-                    quantity=float(stock_quantity) if stock_quantity is not None else None,
-                    seed_quantity=(manage_stock is True),
-                    link_fields={"manage_stock": manage_stock},
-                    inventory_type="service" if non_stock_virtual else None,
-                    sell_by="service" if non_stock_virtual else None,
-                )
-                result.record(outcome)
-                return None if outcome == "disabled" else entity_id
-            except Exception as exc:
-                errors.append(f"SKU {sku}: {exc}")
-                return None
+            processed.add(key)
+            non_stock_virtual = bool(virtual) and manage_stock is False
+            return await _upsert.import_store_product(
+                ctx, self, key=key, label=label, result=result, pending=pending,
+                first_sync=first_sync, errors=errors,
+                product_id=str(product_id),
+                variation_id=str(variation_id) if variation_id is not None else None,
+                sku=sku,
+                name=name or sku,
+                description=description,
+                sale_price=price,
+                quantity=float(stock_quantity) if stock_quantity is not None else None,
+                seed_quantity=(manage_stock is True),
+                link_fields={"manage_stock": manage_stock},
+                inventory_type="service" if non_stock_virtual else None,
+                sell_by="service" if non_stock_virtual else None,
+            )
 
         for product in products:
             pid = product.get("id")
-            name = product.get("name") or f"WC-{pid}"
+            name = product.get("name") or ""
             description = product.get("description") or ""
             if product.get("type") == "variable":
                 try:
@@ -331,7 +339,6 @@ class WooCommerceConnector(ConnectorBase):
                 for var in variations:
                     vid = var.get("id")
                     seen_identities.add((str(pid), str(vid)))
-                    var_sku = (var.get("sku") or "").strip() or f"WC-{pid}-{vid}"
                     opts = " / ".join(
                         str(a.get("option", "")) for a in (var.get("attributes") or [])
                         if a.get("option")
@@ -339,9 +346,12 @@ class WooCommerceConnector(ConnectorBase):
                     var_price = money(var.get("regular_price"))
                     if var_price is None:
                         var_price = money(var.get("price"))
+                    var_name = f"{name} - {opts}" if opts else name
                     entity_id = await _import_one(
-                        sku=var_sku,
-                        name=f"{name} - {opts}" if opts else name,
+                        key=f"{pid}:{vid}",
+                        label=var_name,
+                        sku=(var.get("sku") or "").strip(),
+                        name=var_name,
                         description=var.get("description") or description,
                         price=var_price,
                         product_id=pid,
@@ -364,12 +374,12 @@ class WooCommerceConnector(ConnectorBase):
                 continue
 
             seen_identities.add((str(pid), None))
-            sku = (product.get("sku") or "").strip() or f"WC-{pid}"
             sell_price = money(product.get("regular_price"))
             if sell_price is None:
                 sell_price = money(product.get("price"))
             entity_id = await _import_one(
-                sku=sku, name=name, description=description, price=sell_price,
+                key=str(pid), label=name, sku=(product.get("sku") or "").strip(), name=name,
+                description=description, price=sell_price,
                 product_id=pid, manage_stock=product.get("manage_stock"),
                 stock_quantity=product.get("stock_quantity"),
                 virtual=bool(product.get("virtual", False)),
@@ -389,6 +399,7 @@ class WooCommerceConnector(ConnectorBase):
                 errors.append(f"Product reconciliation: {exc}")
 
         result.errors = errors or None
+        result.attention = _upsert.carried_attention(attention, pending, processed)
         return result
 
     async def _reconcile_missing_product_links(

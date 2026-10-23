@@ -13,6 +13,7 @@ from celerp.connectors.base import (
     OUTBOUND_ENTITIES,
     ConnectorBase,
     ConnectorContext,
+    FirstSync,
     SyncDirection,
     SyncEntity,
     SyncResult,
@@ -52,15 +53,28 @@ def sync_plan(connector: ConnectorBase, directions: dict | None) -> list[str]:
     ]
 
 
+def _links_products(connector: ConnectorBase, entity: str, directions: dict,
+                    first_sync: FirstSync | None) -> bool:
+    """A first sync reads the platform's products to link the ones Celerp already has
+    whenever products sync at all, even when they only go out."""
+    return (
+        first_sync is not None and entity == "products"
+        and (directions or {}).get("products", SyncDirection.OFF.value) != SyncDirection.OFF.value
+        and "first_sync" in inspect.signature(getattr(connector, _SYNC_METHODS[entity])).parameters
+    )
+
+
 async def run_connector_sync(
     connector: ConnectorBase,
     ctx: ConnectorContext,
     *,
     reconcile: bool = False,
+    first_sync: FirstSync | None = None,
 ) -> list[SyncResult]:
     """Execute one stable connector generation through the audited per-entity
     runner, in the directions the connection is set to. ``reconcile`` marks the
-    daily reconciliation pass."""
+    daily reconciliation pass; ``first_sync`` the first sync, whose product pass
+    also runs when products only go out."""
     from celerp.connectors.ownership import lock_connector_operation
     from celerp.db import get_session_ctx
 
@@ -74,6 +88,8 @@ async def run_connector_sync(
         await guard_session.commit()
 
     plan = sync_plan(connector, directions)
+    if "products" not in plan and _links_products(connector, "products", directions, first_sync):
+        plan.insert(0, "products")
     if any(entity in OUTBOUND_ENTITIES for entity in plan):
         await connector.before_outbound(ctx)
     results: list[SyncResult] = []
@@ -84,12 +100,62 @@ async def run_connector_sync(
             break
         result = await run_sync(
             connector, ctx, entity,
-            reconcile=reconcile, expected_config_id=expected_config_id,
+            reconcile=reconcile, first_sync=first_sync, expected_config_id=expected_config_id,
             expected_directions=expected_directions,
             expected_store_handle=ctx.store_handle,
         )
         completed[entity] = result.ok
         results.append(result)
+    return results
+
+
+async def run_first_sync(connector: ConnectorBase, ctx: ConnectorContext) -> list[SyncResult]:
+    """Run a connection's first sync, once a person started it from its preview, with the
+    choices saved then (ConnectorConfig.first_sync_undo). The items it creates join its
+    import batch and the items it links are recorded, so both can be undone; an import
+    batch that ends up empty is removed."""
+    import uuid
+
+    from celerp.db import get_session_ctx
+    from celerp.models.connector_config import ConnectorConfig
+    from celerp.models.import_batch import ImportBatch
+    from celerp_inventory.services import ExternalImportRecord
+    import sqlalchemy as sa
+
+    async with get_session_ctx() as session:
+        config = await session.scalar(sa.select(ConnectorConfig).where(
+            ConnectorConfig.company_id == str(ctx.company_id),
+            ConnectorConfig.connector == connector.name,
+        ))
+        if config is None or config.first_sync_at is None:
+            raise ValueError(f"The first sync of {connector.display_name} has not been started")
+        choices = dict(config.first_sync_undo or {})
+        create = entity_allowed(connector, "products", config.entity_directions)
+    first_sync = FirstSync(match=choices.get("match", "keep"), create=create,
+                           batch_id=choices.get("batch_id"), record=ExternalImportRecord())
+    results = await run_connector_sync(connector, ctx, first_sync=first_sync)
+
+    record = first_sync.record
+    async with get_session_ctx() as session:
+        config = await session.scalar(sa.select(ConnectorConfig).where(
+            ConnectorConfig.company_id == str(ctx.company_id),
+            ConnectorConfig.connector == connector.name,
+        ).with_for_update())
+        if config is not None:
+            undo = dict(config.first_sync_undo or {})
+            undo["links"] = [*undo.get("links", []), *record.linked]
+            config.first_sync_undo = undo
+        if first_sync.batch_id is not None:
+            batch = await session.get(ImportBatch, uuid.UUID(first_sync.batch_id), with_for_update=True)
+            if batch is not None and not record.created and not batch.entity_ids:
+                await session.delete(batch)
+                if config is not None:
+                    config.first_sync_undo = {**config.first_sync_undo, "batch_id": None}
+            elif batch is not None:
+                batch.entity_ids = [*batch.entity_ids, *(eid for eid, _ in record.created)]
+                batch.idempotency_keys = [*batch.idempotency_keys, *(key for _, key in record.created)]
+                batch.row_count = len(batch.entity_ids)
+        await session.commit()
     return results
 
 
@@ -210,6 +276,22 @@ async def update_attention_entry(
     return entry
 
 
+async def remove_attention_entry(
+    session, company_id: str, connector: str, entity: str, record_id: str
+) -> dict | None:
+    """Take one entry off the current attention list in the caller's transaction and
+    return it, or None when the record is not on the list."""
+    run = await _attention_run(session, company_id, connector, entity, for_update=True)
+    if run is None:
+        return None
+    entries = run.attention
+    entry = next((e for e in entries if str(e.get("id")) == str(record_id)), None)
+    if entry is None:
+        return None
+    run.attention_json = json.dumps([e for e in entries if e is not entry])
+    return entry
+
+
 # Concurrency guard: a still-unfinished run older than this is treated as dead (the
 # process likely crashed mid-sync), so a new run is allowed to supersede it.
 _STALE_AFTER = timedelta(minutes=15)
@@ -303,6 +385,7 @@ async def run_sync(
     since: datetime | None = None,
     use_watermark: bool = True,
     reconcile: bool = False,
+    first_sync: FirstSync | None = None,
     expected_config_id=None,
     expected_directions: dict | None = None,
     expected_store_handle: str | None = None,
@@ -372,7 +455,8 @@ async def run_sync(
                     direction=effective_direction,
                     errors=["connector connection changed while sync plan was running"],
                 )
-            elif not entity_allowed(connector, entity, directions):
+            elif not (entity_allowed(connector, entity, directions)
+                      or _links_products(connector, entity, directions, first_sync)):
                 try:
                     entity_enum = SyncEntity(entity)
                 except ValueError:
@@ -430,6 +514,8 @@ async def run_sync(
                             options["reconcile"] = True
                         if "orders_from" in accepts and config is not None:
                             options["orders_from"] = config.orders_from
+                        if first_sync is not None and "first_sync" in accepts:
+                            options["first_sync"] = first_sync
                         result = await sync_method(current_ctx, since=since, **options)
                 await guard_session.commit()
     except (ConnectorStoreChangedError, ConnectorUpgradeRequired) as exc:

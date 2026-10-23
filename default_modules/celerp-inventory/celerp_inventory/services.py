@@ -2102,7 +2102,10 @@ def _reported_quantity(item) -> float | None:
     return item.quantity
 
 
-async def upsert_from_connector(company_id: str, item) -> str:
+async def upsert_from_connector(
+    company_id: str, item, *, record: ExternalImportRecord | None = None,
+    opening_operation: str | None = None,
+) -> str:
     """
     Create or update an item from a connector payload. Returns the write outcome:
     "created", "updated", or "noop" (this exact content was already applied, or the user
@@ -2112,7 +2115,9 @@ async def upsert_from_connector(company_id: str, item) -> str:
     Optional: sale_price, quantity, cost_price, description.
 
     Uses a fresh DB session so the connector does not need to manage
-    session lifecycle. Idempotency is enforced at the ledger level.
+    session lifecycle. Idempotency is enforced at the ledger level. A created item is
+    added to ``record``, its opening stock booked under ``opening_operation`` when given
+    (a first sync's import batch).
     """
     from celerp.db import SessionLocal as AsyncSessionLocal
     from celerp.events.engine import connector_upsert
@@ -2157,9 +2162,16 @@ async def upsert_from_connector(company_id: str, item) -> str:
             on_create={"status": "draft" if has_cost else "available"},
             update=functools.partial(update_item_from_connector, company_id=company_id),
         )
+        entity_id = f"item:{idem_key}"
         if outcome == "created" and not has_cost:
-            await recognize_opening_lots(session, uuid.UUID(str(company_id)), [f"item:{idem_key}"], None,
-                                         f"connector:{idem_key}")
+            await recognize_opening_lots(session, uuid.UUID(str(company_id)), [entity_id], None,
+                                         opening_operation or f"connector:{idem_key}")
+        if outcome == "created" and record is not None:
+            from celerp.models.ledger import LedgerEntry
+            created_key = await session.scalar(select(LedgerEntry.idempotency_key).where(
+                LedgerEntry.company_id == uuid.UUID(str(company_id)),
+                LedgerEntry.entity_id == entity_id, LedgerEntry.event_type == "item.created"))
+            record.created.append((entity_id, created_key))
         await session.commit()
         return outcome
 

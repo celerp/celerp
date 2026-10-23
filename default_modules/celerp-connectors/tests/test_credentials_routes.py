@@ -14,6 +14,7 @@ import pytest
 import respx
 from fastapi import HTTPException
 
+from connector_test_support import connector_session  # noqa: F401
 from celerp_connectors.routes import (
     ApiKeyCredentials,
     ItemSyncRequest,
@@ -737,3 +738,82 @@ async def test_first_view_starts_no_sync():
     assert spawned == []
     start.assert_not_awaited()
     assert t("connectors.review_first_sync") in html
+
+
+# ── starting the first sync ──────────────────────────────────────────────────
+
+def test_first_sync_requires_preview_inputs():
+    from pydantic import ValidationError
+
+    from celerp_connectors.routes import FirstSyncRequest
+
+    with pytest.raises(ValidationError):
+        FirstSyncRequest(match="keep")
+    with pytest.raises(ValidationError):
+        FirstSyncRequest(directions=WOO_DEFAULTS)
+    with pytest.raises(ValidationError):
+        FirstSyncRequest(directions=WOO_DEFAULTS, match="merge")
+    assert FirstSyncRequest(directions=WOO_DEFAULTS, match="keep").orders_from is None
+
+
+@pytest.mark.asyncio
+async def test_first_sync_runs_once(connector_session):
+    """Starting the first sync saves its choices, activates the store's webhooks and runs
+    it; a second start is refused."""
+    from datetime import date, datetime, timezone
+
+    from celerp.connectors.base import ConnectorContext
+    from celerp.models.import_batch import ImportBatch
+    from celerp_connectors.routes import FirstSyncRequest, start_first_sync
+    from connector_test_support import connect, seed_company
+
+    session = connector_session
+    cid = await seed_company(session, "FirstOnce")
+    config = await connect(session, cid, "woocommerce", dict(WOO_DEFAULTS), webhook_secret="s1")
+    ctx = ConnectorContext(company_id=str(cid), access_token="k:s", store_handle=STORE)
+    resync, spawned = AsyncMock(), []
+    request = FirstSyncRequest(directions={**WOO_DEFAULTS, "products": "both"}, match="take",
+                               orders_from=date(2026, 9, 1))
+    with patch("celerp.connectors.ownership.lock_connector_operation", new=AsyncMock(return_value=config)), \
+            patch("celerp.connectors.relay_token.fetch_context", new=AsyncMock(return_value=ctx)), \
+            patch("celerp_connectors.routes.resync_webhook_topics", resync), \
+            patch("celerp.services.background.spawn_background", spawned.append):
+        out = await start_first_sync("woocommerce", request, str(cid), None, session)
+        assert out == {"ok": True}
+        with pytest.raises(HTTPException) as again:
+            await start_first_sync("woocommerce", request, str(cid), None, session)
+
+    for coro in spawned:
+        coro.close()
+    assert len(spawned) == 1
+    assert again.value.status_code == 409 and again.value.detail == t("connectors.err_first_sync_done")
+    assert config.entity_directions["products"] == "both"
+    assert config.orders_from == datetime(2026, 9, 1, tzinfo=timezone.utc)
+    assert config.first_sync_at is not None
+    resync.assert_awaited_once()
+    batch = await session.get(ImportBatch, __import__("uuid").UUID(config.first_sync_undo["batch_id"]))
+    assert batch.reversible and batch.entity_ids == []
+    assert config.first_sync_undo["match"] == "take"
+
+
+@pytest.mark.asyncio
+async def test_first_sync_without_products_in_records_no_batch(connector_session):
+    from celerp.connectors.base import ConnectorContext
+    from celerp_connectors.routes import FirstSyncRequest, start_first_sync
+    from connector_test_support import connect, seed_company
+
+    session = connector_session
+    cid = await seed_company(session, "FirstNoBatch")
+    config = await connect(session, cid, "woocommerce", dict(WOO_DEFAULTS))
+    ctx = ConnectorContext(company_id=str(cid), access_token="k:s", store_handle=STORE)
+    spawned = []
+    with patch("celerp.connectors.ownership.lock_connector_operation", new=AsyncMock(return_value=config)), \
+            patch("celerp.connectors.relay_token.fetch_context", new=AsyncMock(return_value=ctx)), \
+            patch("celerp.services.background.spawn_background", spawned.append):
+        await start_first_sync("woocommerce", FirstSyncRequest(directions=WOO_DEFAULTS, match="keep"),
+                               str(cid), None, session)
+    for coro in spawned:
+        coro.close()
+    assert config.first_sync_undo["batch_id"] is None
+    # Orders start at the first sync by default: past orders are normally in the books already.
+    assert abs((config.orders_from - config.first_sync_at).total_seconds()) < 1

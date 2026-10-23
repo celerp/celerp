@@ -33,6 +33,7 @@ from celerp.connectors.base import (
     ConnectorCategory,
     ConnectorContext,
     EntityFlow,
+    FirstSync,
     SyncDirection,
     SyncEntity,
     SyncResult,
@@ -194,7 +195,10 @@ class XeroConnector(ConnectorBase):
 
     # -- Products (Items in Xero) ----------------------------------------------
 
-    async def sync_products(self, ctx: ConnectorContext, since: datetime | None = None) -> SyncResult:
+    async def sync_products(
+        self, ctx: ConnectorContext, since: datetime | None = None,
+        first_sync: FirstSync | None = None,
+    ) -> SyncResult:
         """
         Pull Xero Items -> Celerp items.
 
@@ -234,7 +238,7 @@ class XeroConnector(ConnectorBase):
                     cost_price=money((xero_item.get("PurchaseDetails") or {}).get("UnitPrice")),
                     idempotency_key=idempotency_key,
                 )
-                result.record(await _upsert.upsert_item(ctx.company_id, item))
+                result.record(await _upsert.upsert_item(ctx.company_id, item, first_sync))
             except Exception as exc:
                 errors.append(f"SKU {sku}: {exc}")
 

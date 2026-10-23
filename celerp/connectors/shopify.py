@@ -29,6 +29,7 @@ from celerp.connectors.base import (
     ConnectorCategory,
     ConnectorContext,
     EntityFlow,
+    FirstSync,
     SyncDirection,
     SyncEntity,
     SyncResult,
@@ -92,21 +93,31 @@ class ShopifyConnector(ConnectorBase):
 
     # -- Products --------------------------------------------------------------
 
-    async def sync_products(self, ctx: ConnectorContext, since: datetime | None = None) -> SyncResult:
+    async def sync_products(
+        self,
+        ctx: ConnectorContext,
+        since: datetime | None = None,
+        attention: list[dict] | None = None,
+        first_sync: FirstSync | None = None,
+    ) -> SyncResult:
         """
         Pull Shopify products into Celerp catalog product anchors (one per variant).
 
         Mapping:
           product.title + variant.title -> item.name
-          variant.sku                   -> item.sku  (skipped if blank)
+          variant.sku                   -> item.sku  (a variant without one waits on a person)
           variant.price                 -> item.sale_price
           variant.inventory_quantity    -> item.quantity (seeded once, for tracked variants)
           product.id + variant.id       -> the item's Shopify link
-        """
-        from celerp_inventory.services import upsert_external_product
 
+        A first sync (``first_sync``) reads every product and follows its choices.
+        """
         result = SyncResult(entity=SyncEntity.PRODUCTS)
         errors: list[str] = []
+        pending: dict[str, dict] = {}
+        processed: set[str] = set()
+        if first_sync is not None:
+            since = None
 
         try:
             products = await self._paginate(ctx, "/products.json", "products", params={"updated_at_min": since.isoformat()} if since else None)
@@ -116,42 +127,34 @@ class ShopifyConnector(ConnectorBase):
 
         for product in products:
             for variant in product.get("variants", []):
-                sku = (variant.get("sku") or "").strip()
-                if not sku:
-                    result.skipped += 1
-                    continue
-
                 variant_title = variant.get("title", "")
                 name = product["title"]
                 if variant_title and variant_title.lower() != "default title":
                     name = f"{name} - {variant_title}"
-
-                try:
-                    outcome, entity_id = await upsert_external_product(
-                        ctx.company_id,
-                        platform="shopify",
-                        product_id=str(product["id"]),
-                        variation_id=str(variant["id"]),
-                        sku=sku,
-                        name=name,
-                        sale_price=money(variant.get("price")),
-                        quantity=float(variant.get("inventory_quantity") or 0),
-                        seed_quantity=variant.get("inventory_management") == "shopify",
-                        sell_by="piece",
-                    )
-                except Exception as exc:
-                    errors.append(f"SKU {sku}: {exc}")
-                    continue
-                result.record(outcome)
-                if outcome == "disabled":
+                key = f"{product['id']}:{variant['id']}"
+                processed.add(key)
+                entity_id = await _upsert.import_store_product(
+                    ctx, self, key=key, label=name, result=result, pending=pending,
+                    first_sync=first_sync, errors=errors,
+                    product_id=str(product["id"]),
+                    variation_id=str(variant["id"]),
+                    sku=(variant.get("sku") or "").strip(),
+                    name=name,
+                    sale_price=money(variant.get("price")),
+                    quantity=float(variant.get("inventory_quantity") or 0),
+                    seed_quantity=variant.get("inventory_management") == "shopify",
+                    sell_by="piece",
+                )
+                if entity_id is None:
                     continue
                 # Pull product images after upsert (idempotent, best-effort)
                 try:
                     await self._pull_product_images(ctx, product, entity_id)
                 except Exception as img_exc:
-                    log.warning("shopify image pull failed for SKU %s: %s", sku, img_exc)
+                    log.warning("shopify image pull failed for %s: %s", key, img_exc)
 
         result.errors = errors or None
+        result.attention = _upsert.carried_attention(attention, pending, processed)
         log.info(
             "shopify.sync_products company=%s created=%d skipped=%d errors=%d",
             ctx.company_id, result.created, result.skipped, len(errors),
