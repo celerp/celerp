@@ -295,6 +295,33 @@ async def test_a_delivery_for_a_payment_recorded_in_another_company_follows_that
     assert (after["status"], after["amount_paid"]) == ("partial", 1060.0)
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("named", [None, ""])
+async def test_work_for_no_company_is_refused_even_while_the_module_runs(monkeypatch, named):
+    """The boundary judges the company the work is for. With none to read it refuses,
+    never falling back to whether the module runs in this process; a company that is
+    named goes ahead while it may use the module."""
+    from celerp.modules.boundary import ModuleOff, needs_modules
+    mark_running(monkeypatch, "celerp-docs")
+    ran = []
+
+    @needs_modules("celerp-docs", company=lambda company: company)
+    async def work(company):
+        ran.append(company)
+
+    with pytest.raises(ModuleOff) as refused:
+        await work(named)
+    assert refused.value.module == "celerp-docs" and ran == []
+
+    monkeypatch.setattr("celerp.modules.boundary.company_settings", _no_settings)
+    await work("a-company")
+    assert ran == ["a-company"]
+
+
+async def _no_settings(company_id):
+    return {}
+
+
 # ── Connector syncs: the run records the refusal, whatever calls it ──────────
 
 async def _orders_run(monkeypatch, company_id: str, orders):
@@ -654,8 +681,10 @@ def _literals(args, names: dict[str, set[str]]) -> set[str]:
 
 # Calls that refuse unless a module runs for the company: the modules named in their
 # arguments, or (a shared check) the module it always names.
+# Only checks that judge a company count: whether a module runs in this process says
+# nothing about whether the company the work is for may use it.
 _CHECKS: dict[str, set[str] | None] = {
-    "require_on": None, "require_company_uses": None, "is_running": None,
+    "require_on": None, "require_company_uses": None,
     "require_inventory_for": {"celerp-inventory"},
 }
 
@@ -698,6 +727,9 @@ _REVIEWED: dict[tuple[str, str], str] = {
         "upsert_contact_from_woocommerce", "list_items_with_external_id",
         "list_item_for_external_identity", "list_items_modified_since_last_sync",
         "list_unsynced_invoices", "invoice_for_push", "mark_doc_pushed")},
+    ("celerp/connectors/product_links.py", "detach_product_links"):
+        "imports Inventory only while it runs in this process, after "
+        "refuse_while_links_cannot_detach has judged the company",
     ("celerp/migrations/env.py", "<module>"):
         "registers each module's tables for schema migrations, skipping a module that is not there",
     ("celerp/services/auto_je.py", "doc_lot_pool"):

@@ -84,13 +84,15 @@ def context_company(*args: Any, **kwargs: Any) -> str | None:
 def needs_modules(*pkg_names: str, company: Callable[..., Any] = context_company):
     """Mark an async function as work inside *pkg_names* for the company *company*
     reads from its arguments: it refuses with ModuleOff, before doing anything, while
-    that company cannot use any of them (``require_on``)."""
+    that company cannot use any of them (``require_on``), and when it names no company,
+    since whether a module runs in this process says nothing about who may use it."""
     def wrap(fn):
         @functools.wraps(fn)
         async def guarded(*args, **kwargs):
             company_id = company(*args, **kwargs)
-            settings = await company_settings(company_id) if company_id else None
-            require_on(settings, *pkg_names)
+            if not company_id:
+                raise ModuleOff(pkg_names[0])
+            require_on(await company_settings(company_id), *pkg_names)
             return await fn(*args, **kwargs)
         guarded.needs_modules = pkg_names
         return guarded
