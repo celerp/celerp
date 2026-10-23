@@ -5,10 +5,6 @@ Documents turned off the page opens on the contact's own Files tab, so its files
 reachable, and turning Documents back on brings the Documents tab back."""
 from __future__ import annotations
 
-import json
-import os
-from urllib.parse import urlsplit
-
 import pytest
 from playwright.sync_api import Page, expect
 
@@ -20,40 +16,31 @@ def _ok(r):
     return r.json()
 
 
-def _company_modules(company_id: str, names: list[str] | None) -> None:
-    """Give the company its own module list (*names*), or None to go back to the installation's.
-    Written in place: the installation here lists Connectors, which is part of Celerp and
-    always on, and the Modules page refuses to turn Documents off under it."""
-    import psycopg2
-    parts = urlsplit(os.environ["DATABASE_URL"].replace("+asyncpg", ""))
-    conn = psycopg2.connect(host=parts.hostname, port=parts.port, user=parts.username,
-                            password=parts.password, dbname=parts.path.lstrip("/"))
-    conn.autocommit = True
-    try:
-        with conn.cursor() as cur:
-            if names is None:
-                cur.execute("UPDATE companies SET settings = (settings::jsonb - 'enabled_modules')::json "
-                            "WHERE id = %s", (company_id,))
-            else:
-                cur.execute("UPDATE companies SET settings = (settings::jsonb || %s::jsonb)::json WHERE id = %s",
-                            (json.dumps({"enabled_modules": names}), company_id))
-    finally:
-        conn.close()
+def _turn_off_documents(api) -> list[str]:
+    """Turn Documents off for the company through the Modules API, after each module that
+    needs it. Returns the modules turned off, in that order. The new company has no list of
+    its own, so it uses the installation's, the same one the API server reads."""
+    from celerp.modules.registry import dependents
 
+    needed_by = dependents(None)
+    turned_off: list[str] = []
 
-def _without_documents() -> list[str]:
-    """The installation's modules less Documents and every module that needs it."""
-    from celerp.config import installation_modules
-    from celerp.modules.registry import dependency_closure
-    return [n for n in installation_modules() if "celerp-docs" not in dependency_closure([n])]
+    def off(name: str) -> None:
+        for user in needed_by.get(name, []):
+            off(user)
+        if name not in turned_off:
+            _ok(api.post(f"/companies/me/modules/{name}/disable"))
+            turned_off.append(name)
+
+    off("celerp-docs")
+    return turned_off
 
 
 def test_a_contact_page_follows_whether_the_company_can_open_documents(page: Page, fresh_company, ui_server):
     contact = _ok(fresh_company.post("/crm/contacts", json={"name": "Files Customer", "contact_type": "customer"}))
     _ok(fresh_company.post(f"/crm/contacts/{contact['id']}/files",
                            files={"file": ("price-list.txt", b"prices", "text/plain")}))
-    company_id = _ok(fresh_company.get("/companies/me"))["id"]
-    _company_modules(company_id, _without_documents())
+    turned_off = _turn_off_documents(fresh_company)
     try:
         page.goto(f"{ui_server}/contacts/{contact['id']}", wait_until="domcontentloaded")
         expect(page.locator("#tab-files")).to_have_class("tab active")
@@ -70,7 +57,8 @@ def test_a_contact_page_follows_whether_the_company_can_open_documents(page: Pag
         page.locator("#tab-files").click()
         expect(content).to_contain_text("price-list.txt")
     finally:
-        _company_modules(company_id, None)
+        for name in reversed(turned_off):
+            _ok(fresh_company.post(f"/companies/me/modules/{name}/enable"))
 
     page.goto(f"{ui_server}/contacts/{contact['id']}", wait_until="domcontentloaded")
     expect(page.locator("#tab-documents")).to_have_class("tab active")

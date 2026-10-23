@@ -10215,7 +10215,7 @@ class TestModulesUI:
         interpolation path)."""
         deps = [
             {"name": "base-mod", "label": "Base", "version": "1.0", "author": "Celerp",
-             "enabled": True, "running": True},
+             "enabled": True, "running": True, "needed_by": ["child-mod"]},
             {"name": "child-mod", "label": "Child", "version": "1.0", "author": "Celerp",
              "enabled": True, "running": True, "depends_on": ["base-mod"]},
         ]
@@ -10229,6 +10229,9 @@ class TestModulesUI:
             r = await ui_client.get("/modules")
         assert r.status_code == 200
         assert b"Other modules need this one" in r.content and b"Child" in r.content  # tooltip rendered
+        # The API's needed_by decides, so a module it does not list keeps its Turn off.
+        assert r.content.count(b"Other modules need this one") == 1
+        assert b'hx-post="/modules/child-mod/disable"' in r.content
 
     @pytest.mark.asyncio
     async def test_paid_module_license_failure_shows_connect_upsell(self, ui_client):

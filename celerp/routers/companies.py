@@ -1791,11 +1791,12 @@ async def list_modules(
         loaded_modules, read_manifest_metadata,
     )
     from celerp.modules.meta import read_meta
-    from celerp.modules.registry import company_modules
+    from celerp.modules.registry import company_modules, dependents
 
     company = await session.get(Company, company_id)
     settings_dict: dict = company.settings or {} if company else {}
     enabled_names = company_modules(settings_dict)
+    needed_by = dependents(settings_dict)
     loaded_by_name: dict[str, dict] = {m["name"]: m for m in loaded_modules()}
     load_errs = load_errors()
     module_dir_raw = os.environ.get("MODULE_DIR", "")
@@ -1856,6 +1857,8 @@ async def list_modules(
                     "table_prefix": manifest_source.get("table_prefix") or None,
                     # A module built into Celerp is on for every company.
                     "enabled": pkg_name in enabled_names or is_core_folded(pkg_name),
+                    # The modules this company uses that need it: Turn off waits for them.
+                    "needed_by": needed_by.get(pkg_name, []),
                     # Core-folded modules (ai/backup/connectors) are wired at app
                     # construction, never in loaded_by_name - is_running() counts them.
                     "running": is_running(pkg_name),

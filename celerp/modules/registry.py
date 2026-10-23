@@ -151,11 +151,26 @@ def enable_for_company(company_settings: dict[str, Any] | None, module_name: str
     return set_enabled(dict(company_settings or {}), current | closure), added
 
 
+def dependents(company_settings: dict[str, Any] | None) -> dict[str, list[str]]:
+    """For each module, the modules the company uses that need it, so it cannot be turned
+    off before them. A module built into Celerp is always on and refuses its own work
+    while a module it needs is off, so it never holds one on."""
+    from celerp.modules.loader import is_core_folded
+    out: dict[str, list[str]] = {}
+    for user in sorted(company_modules(company_settings)):
+        if is_core_folded(user):
+            continue
+        for needed in dependency_closure([user]):
+            if needed != user:
+                out.setdefault(needed, []).append(user)
+    return out
+
+
 def disable_for_company(company_settings: dict[str, Any] | None, module_name: str) -> dict[str, Any]:
     """Settings with *module_name* off. Refused while another module the company
-    uses depends on it."""
+    uses depends on it (``dependents``)."""
     current = company_modules(company_settings) - {module_name}
-    needed_by = sorted(n for n in current if module_name in dependency_closure([n]))
+    needed_by = dependents(company_settings).get(module_name, [])
     if needed_by:
         raise ModuleStillNeeded(module_name, needed_by)
     return set_enabled(dict(company_settings or {}), current)
