@@ -7,9 +7,9 @@ Session on the merchant's connected account. Payment surfaces are gated on a
 "payments enabled" flag; Celerp Cloud delivers each confirmed payment, which records
 through the same path as a manual payment.
 
-A delivery (payment, fees, refund, release) is recorded on invoices, so while its
-company cannot use Documents (turned off, or not started yet) it is refused before
-anything is written (``needs_modules``). It is not acknowledged, so Celerp Cloud keeps it
+A delivery (payment, fees, refund, release) is recorded on invoices, so while the
+company it is written to cannot use Documents (turned off, or not started yet) it is
+refused before anything is written (``needs_modules``). It is not acknowledged, so Celerp Cloud keeps it
 and delivers it again; once Documents is on it is recorded as any other, and recording
 it twice changes nothing.
 """
@@ -23,16 +23,25 @@ from decimal import Decimal
 from sqlalchemy import delete, func, select
 
 from celerp.models.payment_closure import PaymentClosure, PaymentRecovery, UnmatchedPayment, UnmatchedRefund
-from celerp.modules.boundary import needs_modules
+from celerp.modules.boundary import needs_modules, require_company_uses
 from celerp.services.money import round_money, to_decimal
 from ui.i18n import t
 
 log = logging.getLogger(__name__)
 
 # A delivery waits, unacknowledged, while its company has Documents turned off, as it
-# does while Documents has not started. To record it on the invoice anyway, judge the
-# process alone: company=lambda payload: None.
+# does while Documents has not started. A payment recorded on another company's
+# invoice is judged by that company once it is known (_home_uses_documents).
 _on_invoices = needs_modules("celerp-docs", company=lambda payload: payload.get("company_id"))
+
+
+async def _home_uses_documents(session, home: tuple[uuid.UUID, str]) -> None:
+    """A payment a person recorded on another company's invoice is written there, not
+    to the company its deliveries name: refused the same way, before anything is
+    written, while that company has Documents turned off."""
+    from celerp.models.company import Company
+    company = await session.get(Company, home[0])
+    require_company_uses(company.settings if company is not None else None, "celerp-docs")
 
 # GL account online payments clear to, per channel and for online payments generally.
 # With neither chosen, payments land on the company's default deposit account.
@@ -272,6 +281,7 @@ async def receive_payment(payload: dict) -> bool:
     async with _own_session() as session:
         home = await _recorded_on(session, reference)
         if home is not None:
+            await _home_uses_documents(session, home)
             await _deliver_to_recorded(session, home, reference, origin=(company_id, entity_id))
             await session.commit()
             return True
@@ -353,6 +363,8 @@ async def receive_fees(payload: dict) -> bool:
     home = None
     async with _own_session() as session:
         home = await _recorded_on(session, reference)
+        if home is not None:
+            await _home_uses_documents(session, home)
         cid, target_doc = home if home is not None else (_company(origin), doc_id)
         if not await hold_company(session, cid):
             return True
@@ -609,6 +621,7 @@ async def receive_refund(payload: dict) -> bool:
         home = await _recorded_on(session, reference)
         if home is not None:
             # A person recorded the payment on another invoice: the refund goes there.
+            await _home_uses_documents(session, home)
             if (await _hold_recorded(session, reference, home) is not None
                     and await _apply_refund(session, home[0], home[1], refund, recorded=True)):
                 await _apply_parked_refunds(session, home[0], home[1], reference, origin=(company_id, entity_id))
@@ -671,6 +684,8 @@ async def receive_release(payload: dict) -> bool:
     cid = _company(company_id)
     async with _own_session() as session:
         home = await _recorded_on(session, reference)
+        if home is not None:
+            await _home_uses_documents(session, home)
         held = bool(await hold_company(session, home[0]) if home else cid and await hold_company(session, cid))
         # The unmatched payment first, in the same order as the payment intake.
         kept = (await session.execute(update(UnmatchedPayment).where(UnmatchedPayment.reference == reference)

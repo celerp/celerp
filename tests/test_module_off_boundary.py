@@ -228,6 +228,73 @@ async def test_a_payment_for_a_company_with_documents_on_is_recorded(client, pay
     assert len(await _paid_with(client, tok, eid)) == 1
 
 
+async def _recorded_elsewhere(client, tok: str, eid: str) -> dict:
+    """A payment whose company is gone, recorded by a person on the invoice *eid*: the
+    deliveries for it that follow still name the gone company. Returns them."""
+    import uuid
+    from celerp.services.payments import receive_payment
+    gone = str(uuid.uuid4())
+    names = {"company_id": gone, "entity_id": "invoice-gone", "reference": "pi_moved"}
+    assert await receive_payment({**names, "amount_minor": 107000, "currency": "usd", "paid_at": PAID.isoformat(),
+                                  "context": BOOKS, "managed": True})
+    r = await client.post("/payments/unmatched/record", headers=_h(tok),
+                          json={"reference": "pi_moved", "entity_id": eid})
+    assert r.status_code == 200, r.text
+    return {
+        "receive_payment": {**names, "amount_minor": 107000, "currency": "usd", "paid_at": PAID.isoformat(),
+                            "context": BOOKS, "managed": True},
+        "receive_refund": {**names, "refund_id": "re_moved", "transition": "applied", "cycle": 1,
+                           "amount_minor": 1000, "currency": "usd", "occurred_at": PAID.isoformat()},
+        "receive_fees": {**names, "occurred_at": PAID.isoformat(), "fees": {
+            "version": 1, "currency": "usd", "transaction_id": "txn_moved", "total_minor": 520,
+            "processor_minor": 270, "platform_minor": 250, "other_minor": 0}},
+        "receive_release": {**names, "released_at": PAID.isoformat()},
+    }
+
+
+async def _kept(session, reference: str):
+    from sqlalchemy import select
+    from celerp.models.payment_closure import UnmatchedPayment
+    session.expire_all()
+    return await session.scalar(select(UnmatchedPayment).where(UnmatchedPayment.reference == reference))
+
+
+@pytest.mark.asyncio
+async def test_a_delivery_for_a_payment_recorded_in_another_company_follows_that_companys_documents(
+        client, session, payments_on, monkeypatch):
+    """The deliveries for a payment a person recorded on another company's invoice name
+    the company the payment came from, which is gone; they write to the company it was
+    recorded in, so that company's Documents decides. Turned off there: every delivery
+    is refused naming Documents and changes nothing, the other company still works.
+    Back on: the refund is recorded once."""
+    from celerp.modules.boundary import ModuleOff
+    from celerp.services import payments
+    mark_running(monkeypatch, "celerp-docs")
+    tok = await _register(client)
+    eid, _ = await _payable_invoice(client, tok)
+    deliveries = await _recorded_elsewhere(client, tok, eid)
+    other = await _second_company(client, tok)
+    other_eid, _ = await _payable_invoice(client, other)
+    before = await _doc_state(client, tok, eid)
+    assert (before["status"], before["amount_paid"]) == ("paid", 1070.0)
+
+    await _documents(client, tok, "disable")
+    for name, payload in deliveries.items():
+        with pytest.raises(ModuleOff) as refused:
+            await getattr(payments, name)(dict(payload))
+        assert str(refused.value) == _OFF.format("Documents"), name
+    assert (await _kept(session, "pi_moved")).released_at is None
+    assert await _acked(_delivery(other, other_eid)) is True
+    assert len(await _paid_with(client, other, other_eid)) == 1
+
+    await _documents(client, tok, "enable")
+    assert await _doc_state(client, tok, eid) == before
+    assert await payments.receive_refund(dict(deliveries["receive_refund"])) is True
+    assert await payments.receive_refund(dict(deliveries["receive_refund"])) is True
+    after = await _doc_state(client, tok, eid)
+    assert (after["status"], after["amount_paid"]) == ("partial", 1060.0)
+
+
 # ── Connector syncs: the run records the refusal, whatever calls it ──────────
 
 async def _orders_run(monkeypatch, company_id: str, orders):
