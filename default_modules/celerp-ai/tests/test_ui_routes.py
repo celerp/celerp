@@ -264,7 +264,9 @@ async def test_chat_renders_action_card(ui_client):
 
 @pytest.mark.asyncio
 async def test_chat_quota_exceeded_renders_upgrade_card(ui_client):
-    err = APIError(402, {"base_limit": 200, "tier": "ai"})
+    from ui.api_client import _api_error
+    err = _api_error(402, {"detail": {"code": "quota_exceeded", "message": "AI credit limit reached.",
+                                      "tier": "ai", "base_limit": 200}}, "")
     ui_client.cookies.update(_authed())
     with patch("celerp_ai.ui_routes.api.ai_conversation_query", AsyncMock(side_effect=err)):
         r = await ui_client.post("/ai/chat",
@@ -841,3 +843,91 @@ def test_chat_view_has_no_gif_and_an_upload_error_slot():
     assert "image/gif" not in html
     assert 'id="ai-upload-error"' in html
     assert t("ai.upload_failed", "en") in html
+
+
+# ── AI settings: per-user usage ─────────────────────────────────────────────
+
+_USAGE = {
+    "period": {"kind": "month", "start": "2026-10-01"},
+    "users": [
+        {"user_id": "u2", "user_name": "Staff", "query_count": 1, "credits_used": 2,
+         "last_query_at": "2026-10-20T09:00:00+00:00"},
+        {"user_id": "u1", "user_name": "Owner", "query_count": 3, "credits_used": 4, "last_query_at": None},
+    ],
+}
+
+
+async def _settings_content(ui_client, *, role="owner", status=None, usage=None, company=None):
+    status_mock = (status if isinstance(status, AsyncMock)
+                   else AsyncMock(return_value=_CLOUD_STATUS if status is None else status))
+    usage_mock = usage if isinstance(usage, AsyncMock) else AsyncMock(return_value=usage or _USAGE)
+    patches = _patch_page(
+        ai_quota_status=status_mock, ai_usage_stats=usage_mock,
+        get_company=AsyncMock(return_value=company or {"settings": {}}),
+    )
+    _apply(patches)
+    ui_client.cookies.update(_authed(role))
+    try:
+        r = await ui_client.get("/ai/settings-content")
+    finally:
+        _stop(patches)
+    return r, status_mock, usage_mock
+
+
+@pytest.mark.asyncio
+async def test_usage_table_states_period_and_right_aligns_numbers(ui_client):
+    r, status_mock, usage_mock = await _settings_content(ui_client)
+    assert r.status_code == 200
+    html = r.text
+    assert usage_mock.await_args.kwargs.get("period") == "month"
+    assert status_mock.await_count == 1
+    assert t("page.this_months_usage", "en") in html
+    assert t("ai.usage_period_month", "en", date="2026-10-01") in html
+    assert t("ai.usage_scope_note", "en") in html
+    assert 'class="data-table' in html
+    for cls in ("td-right", "td-left", "th-center"):
+        assert cls not in html
+    assert html.count("cell--number") == 6  # two headers, two figures per row
+    assert ">--<" in html  # missing last question
+    assert html.index("Staff") < html.index("Owner")
+
+
+@pytest.mark.asyncio
+async def test_usage_table_free_all_time(ui_client):
+    usage = {"period": {"kind": "all", "start": None}, "users": _USAGE["users"]}
+    r, _, usage_mock = await _settings_content(
+        ui_client, status={**_CLOUD_STATUS, "tier": "free", "base_limit": 30}, usage=usage)
+    assert usage_mock.await_args.kwargs.get("period") == "all"
+    assert t("ai.usage_all_time", "en") in r.text
+    assert t("ai.usage_period_all", "en") in r.text
+    assert t("ai.usage_scope_note", "en") in r.text
+    assert t("page.this_months_usage", "en") not in r.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [
+    AsyncMock(side_effect=APIError(502, "down")),
+    AsyncMock(return_value={"unknown": True}),
+    AsyncMock(return_value={"disconnected": True}),
+])
+async def test_usage_period_falls_back_to_month_when_status_unknown(ui_client, status):
+    r, _, usage_mock = await _settings_content(ui_client, status=status)
+    assert r.status_code == 200
+    assert usage_mock.await_args.kwargs.get("period") == "month"
+    assert t("page.this_months_usage", "en") in r.text
+
+
+@pytest.mark.asyncio
+async def test_usage_table_load_error_shows_message(ui_client):
+    r, _, _ = await _settings_content(ui_client, usage=AsyncMock(side_effect=APIError(500, "boom")))
+    assert r.status_code == 200
+    assert t("msg.could_not_load_usage_data", "en") in r.text
+    assert t("page.quota", "en") in r.text
+
+
+@pytest.mark.asyncio
+async def test_usage_table_hidden_without_manage_users(ui_client):
+    r, _, usage_mock = await _settings_content(ui_client, role="viewer")
+    assert r.status_code == 200
+    assert usage_mock.await_count == 0
+    assert t("page.this_months_usage", "en") not in r.text

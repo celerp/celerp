@@ -1,0 +1,30 @@
+{
+  "id": "ai.ask-questions",
+  "title": "Ask Celerp AI a question",
+  "summary": "Celerp AI answers questions about your business data in your own language, from a Cloud Relay or AI plan.",
+  "keywords": ["ai", "assistant", "chat", "ask", "question", "natural language"],
+  "routes": ["/ai"],
+  "permission": "use_ai_assistant",
+  "order": 1,
+  "steps": [
+    {
+      "text": "Open {ai} from the sidebar. Without an active Cloud Relay or AI plan it shows example conversations, so you can see what it does before you subscribe.",
+      "labels": {"ai": "nav.ai_assistant"},
+      "image": null,
+      "capture": {"route": "/ai", "selector": "main", "actions": []}
+    },
+    {
+      "text": "Once a plan is active, type a question in your own language in the box at the bottom and send it; you can also drop a receipt, PDF or spreadsheet onto the box for the assistant to read.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/ai", "selector": "main", "actions": []}
+    },
+    {
+      "text": "The {plan} card on this page lists what a paid plan adds over the free showcase: more monthly questions, batch invoice processing, and letting the assistant create records for you.",
+      "labels": {"plan": "msg.get_the_ai_plan"},
+      "image": null,
+      "capture": {"route": "/ai", "selector": "main", "actions": []}
+    }
+  ],
+  "related": ["ai.review-proposals", "ai.usage-settings"]
+}

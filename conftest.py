@@ -3,12 +3,20 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import shutil
 from pathlib import Path
 
 from conftest_support import (
     is_own_test_config, provision_worker_db, resolve_worker_config, resolve_worker_data_dir)
+
+# No event loop is current until a test makes one. Otherwise the first async test's
+# runner asks for the current loop and asyncio makes one on the spot; the runner puts
+# it back as current afterwards, and the next sync test that calls asyncio.run()
+# replaces it without closing it, so its sockets are reported as unclosed in whichever
+# later test the garbage collector happens to run in.
+asyncio.set_event_loop(None)
 
 # Must be set before celerp.config is imported (JWT guard fires at module load).
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
@@ -143,7 +151,7 @@ from ui.app import app as _ui_app
 import sys as _sys, os as _os
 from pathlib import Path
 
-from test_helpers import REPO_ROOT, DATABASE_URL, make_test_token, authed_cookies, _crm_available, company_auth  # noqa: F401
+from test_helpers import REPO_ROOT, DATABASE_URL, make_test_token, authed_cookies, _crm_available, company_auth, settle_background  # noqa: F401
 
 # Register inventory module routes onto the test app.
 _inv_src = _os.path.join(_os.path.dirname(__file__), "default_modules", "celerp-inventory")
@@ -450,16 +458,22 @@ def _ensure_slots() -> None:
 
 @pytest.fixture(autouse=True)
 def _reset_hot_path_caches():
-    """Bust the in-process drain cache before each test.
+    """Bust the in-process drain cache and relay methods cache before each test.
 
-    The module-level cache is correct at runtime (single process, explicit bust
-    on mutation).  In tests, each test rolls back its database changes, so the
-    cache must be cleared to avoid leaking state between tests.
+    The module-level caches are correct at runtime (single process, explicit
+    bust on mutation, or a time-limited relay answer). In tests, each test rolls
+    back its database changes and mocks its own relay, so the caches must be
+    cleared to avoid leaking state between tests.
     """
+    import asyncio
+    from celerp.routers import health
     from celerp.services.runtime_state import _drain_cache_bust
     _drain_cache_bust()
+    health._relay_methods.clear()
+    health._relay_methods_lock = asyncio.Lock()
     yield
     _drain_cache_bust()
+    health._relay_methods.clear()
 
 
 @pytest.fixture(autouse=True)
@@ -794,6 +808,22 @@ async def committed_engine():
                 cur.execute(f'DROP DATABASE IF EXISTS "{race_db}"')
         finally:
             admin.close()
+
+
+@pytest_asyncio.fixture
+async def _background_work_finishes():
+    """Background work a test's requests started finishes on the test's own event
+    loop. Left running, it would be cut off when the loop closes, and a database
+    connection it held would only be reported unclosed in some later test."""
+    yield
+    await settle_background()
+
+
+def pytest_collection_modifyitems(items):
+    # Every async test, and only those: a sync test has no loop of its own to settle.
+    for item in items:
+        if pytest_asyncio.is_async_test(item) and "_background_work_finishes" not in item.fixturenames:
+            item.fixturenames.append("_background_work_finishes")
 
 
 @pytest_asyncio.fixture

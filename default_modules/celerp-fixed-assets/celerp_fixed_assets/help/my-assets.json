@@ -1,0 +1,18 @@
+{
+  "id": "fixed-assets.my-assets",
+  "title": "Assets you are the custodian of",
+  "summary": "See the assets held in your name and confirm you still have them.",
+  "keywords": ["my assets", "custodian", "confirm", "held"],
+  "routes": ["/fixed-assets/mine"],
+  "permission": null,
+  "order": 4,
+  "steps": [
+    {
+      "text": "Open {mine} from the sidebar; it only appears when an asset is held in your name.",
+      "labels": {"mine": "nav.my_assets"},
+      "image": null,
+      "capture": {"route": "/fixed-assets/mine", "selector": "main", "actions": []}
+    }
+  ],
+  "related": ["fixed-assets.register"]
+}

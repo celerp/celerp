@@ -144,14 +144,14 @@ async def test_subscription_dates_count_from_the_company_day(co, client):
 async def test_ai_usage_month_starts_at_the_company_month(co, client, session):
     from zoneinfo import ZoneInfo
 
-    from celerp.models.ai import AIConversation, AIMessage
+    import uuid
+
+    from celerp.models.ai import AIUsage
 
     month_start = datetime(co.day.year, co.day.month, 1, tzinfo=ZoneInfo(co.tz)).astimezone(timezone.utc)
-    conversation = AIConversation(company_id=co.id, user_id=co.user_id)
-    session.add(conversation)
-    await session.flush()
     for when in (month_start - timedelta(hours=1), month_start + timedelta(hours=1)):
-        session.add(AIMessage(conversation_id=conversation.id, role="user", content="q", created_at=when))
+        session.add(AIUsage(company_id=co.id, user_id=co.user_id, operation_id=uuid.uuid4(),
+                            credits=1, created_at=when))
     await session.commit()
     users = (await client.get("/ai/usage-stats", headers=co.headers)).json()["users"]
     assert [u["query_count"] for u in users] == [1]

@@ -1,0 +1,18 @@
+{
+  "id": "core.web-access",
+  "title": "Signing in to a Celerp account",
+  "summary": "Web Access links this installation to a Celerp account, the sign-in Connect, backups, the module marketplace and Celerp AI's free questions all use.",
+  "keywords": ["web access", "celerp account", "sign in", "create account", "celerp connect", "login"],
+  "routes": ["/settings/cloud"],
+  "permission": "manage_integrations",
+  "order": 2,
+  "steps": [
+    {
+      "text": "Open {access} from Settings. If you already subscribed on the Celerp website, use {connect} to link that account to this installation; the same account unlocks Celerp Connect, cloud backups, the module marketplace and Celerp AI's free questions.",
+      "labels": {"access": "settings_cloud.web_access", "connect": "btn.connect_automatically"},
+      "image": null,
+      "capture": {"route": "/settings/cloud", "selector": "main", "actions": []}
+    }
+  ],
+  "related": ["connectors.connect-store", "backup.cloud-backup"]
+}

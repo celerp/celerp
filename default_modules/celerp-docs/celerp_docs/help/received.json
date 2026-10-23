@@ -1,0 +1,24 @@
+{
+  "id": "docs.received",
+  "title": "Working with received documents",
+  "summary": "Documents a vendor shared that are waiting to be booked into the system.",
+  "keywords": ["received", "shared", "import", "vendor"],
+  "routes": ["/docs/received"],
+  "permission": "view_documents",
+  "order": 4,
+  "steps": [
+    {
+      "text": "Open {recv} from the sidebar. {hint}",
+      "labels": {"recv": "nav.received_documents", "hint": "received.hint"},
+      "image": null,
+      "capture": {"route": "/docs/received", "selector": "main", "actions": []}
+    },
+    {
+      "text": "Use {imp} to bring in a document a vendor shared with you, then book it once it is reviewed.",
+      "labels": {"imp": "received.import_shared"},
+      "image": null,
+      "capture": {"route": "/docs/received", "selector": "main", "actions": []}
+    }
+  ],
+  "related": ["docs.purchasing-documents"]
+}

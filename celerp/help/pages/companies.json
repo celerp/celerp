@@ -1,0 +1,24 @@
+{
+  "id": "core.companies",
+  "title": "Working with more than one company",
+  "summary": "Switch between the companies you have access to, or create a new one, from Global Config.",
+  "keywords": ["companies", "switch company", "new company", "multi company", "client companies"],
+  "routes": ["/settings/general?tab=company"],
+  "permission": "manage_company_settings",
+  "order": 3,
+  "steps": [
+    {
+      "text": "On {title} in Global Config, pick a company from the list to switch to it, or use {new} to start another one from scratch.",
+      "labels": {"title": "settings.your_companies", "new": "btn.new_company"},
+      "image": null,
+      "capture": {"route": "/settings/general?tab=company", "selector": "main", "actions": []}
+    },
+    {
+      "text": "{clients} opens a separate list for an accountant or bookkeeper working across several companies, showing what needs attention in each one.",
+      "labels": {"clients": "firm_view.title"},
+      "image": null,
+      "capture": {"route": "/settings/general?tab=company", "selector": "main", "actions": []}
+    }
+  ],
+  "related": ["core.users", "core.settings"]
+}

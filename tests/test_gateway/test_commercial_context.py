@@ -391,14 +391,12 @@ def test_commercial_context_persist_preserves_0600(gateway_client, tmp_path, mon
     assert persisted["external_db_url"] == "postgresql://x"
 
 
-def test_feature_flags_persist_survives_midwrite_failure(gateway_client, tmp_path, monkeypatch):
+async def test_feature_flags_persist_survives_midwrite_failure(gateway_client, tmp_path, monkeypatch):
     """A failure mid-write must leave the prior config intact and valid JSON.
 
     The prior file (with its secrets) must survive an interrupted write rather
     than being truncated to an empty or corrupt state.
     """
-    import asyncio
-
     monkeypatch.setenv("CELERP_DATA_DIR", str(tmp_path))
     config_path = tmp_path / "celerp-config.json"
     prior = {"external_db_url": "postgresql://x", "feature_flags": {"external_db": False}}
@@ -412,7 +410,7 @@ def test_feature_flags_persist_survives_midwrite_failure(gateway_client, tmp_pat
     # The new content is written, then swapping it in fails.
     monkeypatch.setattr(store.os, "replace", _boom)
     # Persist must swallow the write error (best-effort) and never raise.
-    asyncio.run(gateway_client._persist_feature_flags({"external_db": True}))
+    await gateway_client._persist_feature_flags({"external_db": True})
 
     # The prior config is untouched and still parseable, with nothing left behind.
     reread = json.loads(config_path.read_text())

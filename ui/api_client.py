@@ -1319,6 +1319,41 @@ async def global_search(token: str, q: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Help pages
+# ---------------------------------------------------------------------------
+
+async def help_search(token: str, q: str, module: str | None = None) -> dict:
+    """Help pages matching *q*, best first, each flagged for this company and role."""
+    params = {"q": q, **({"module": module} if module else {})}
+    async with _api_client(token) as c:
+        return _raise(await c.get("/help/search", params=params)).json()
+
+
+async def help_read(token: str, page_id: str) -> dict:
+    """One help page with its steps in the reader's language."""
+    async with _api_client(token) as c:
+        return _raise(await c.get(f"/help/page/{quote(page_id, safe='')}")).json()
+
+
+async def help_browse(token: str, module: str | None = None) -> dict:
+    """Every help page by module, or one module's pages."""
+    async with _api_client(token) as c:
+        return _raise(await c.get("/help/browse", params={"module": module} if module else {})).json()
+
+
+async def help_image(token: str, page_id: str, step: str) -> bytes:
+    """The WebP screenshot of one step of a help page."""
+    async with _api_client(token) as c:
+        return _raise(await c.get(f"/help/img/{quote(page_id, safe='')}/{quote(step, safe='')}")).content
+
+
+async def help_for_route(token: str, path: str) -> dict:
+    """The help pages that cover the screen at *path*."""
+    async with _api_client(token) as c:
+        return _raise(await c.get("/help/for-route", params={"path": path})).json()
+
+
+# ---------------------------------------------------------------------------
 # Items
 # ---------------------------------------------------------------------------
 
@@ -3192,19 +3227,23 @@ async def ai_conversation_get(token: str, session_token: str, conversation_id: s
 
 async def ai_conversation_query(token: str, session_token: str, conversation_id: str,
                                 query: str, file_ids: list[str] | None = None,
-                                document_mode: str = "chat") -> dict:
+                                document_mode: str = "chat", operation_id: str = "") -> dict:
     """POST /ai/conversations/{id}/query - run the agent in a conversation.
 
-    Returns {"answer", "model_used", "tools_called", "pending_actions"}; each
-    pending action carries its own message_id and tool_call_id for confirmation.
-    Receipts and invoices are read as a job instead: the reply is then
-    {"job_id", "message_id"} and the thread polls the job.
+    ``operation_id`` is the question's id; the same id with the same question
+    asks it again. Returns {"answer", "model_used", "tools_called",
+    "pending_actions", "message_id", "asked_again", "error", "error_code",
+    "retryable"}; each pending action carries its own message_id and tool_call_id
+    for confirmation. Receipts and invoices are read as a job instead: the reply
+    is then {"job_id", "message_id", "asked_again"} and the thread polls the job.
     """
     payload: dict = {"query": query}
     if file_ids:
         payload["file_ids"] = file_ids
     if document_mode != "chat":
         payload["document_mode"] = document_mode
+    if operation_id:
+        payload["operation_id"] = operation_id
     async with _ai_api_client(token, session_token, timeout=AI_QUERY_TIMEOUT_S) as c:
         return _raise(await c.post(f"/ai/conversations/{conversation_id}/query", json=payload)).json()
 
@@ -3307,13 +3346,14 @@ async def ai_upload(token: str, session_token: str, files: list[tuple[str, bytes
         return _raise(await c.post("/ai/upload", files=multipart)).json()
 
 
-async def ai_usage_stats(token: str, session_token: str = "") -> dict:
-    """GET /ai/usage-stats - per-user query/credit usage for current month."""
+async def ai_usage_stats(token: str, session_token: str = "", *, period: str = "month") -> dict:
+    """GET /ai/usage-stats - per-user questions and credits, ``period`` month or all."""
+    params = {"period": period}
     if session_token:
         async with _ai_api_client(token, session_token) as c:
-            return _raise(await c.get("/ai/usage-stats")).json()
+            return _raise(await c.get("/ai/usage-stats", params=params)).json()
     async with _api_client(token) as c:
-        return _raise(await c.get("/ai/usage-stats")).json()
+        return _raise(await c.get("/ai/usage-stats", params=params)).json()
 
 
 async def ai_quota_status(token: str, session_token: str = "") -> dict:
@@ -3456,17 +3496,18 @@ async def marketplace_install(token: str, ref: str) -> dict:
                                    json={"ref": ref})).json()
 
 
-async def installation_owner(token: str) -> bool:
+async def installation_owner(token: str) -> bool | None:
     """GET /system/installation-owner - whether this login owns the installation.
 
-    Any error reads as not the owner, so installation-wide controls are offered
-    only on a confirmed answer."""
+    None when the check fails. Callers test truthiness, so a failure still reads
+    as not the owner and installation-wide controls are offered only on a
+    confirmed answer; a page that states "you are not the owner" acts only on False."""
     try:
         async with _api_client(token) as c:
             r = _raise(await c.get("/system/installation-owner"))
         return r.json().get("installation_owner") is True
     except Exception:
-        return False
+        return None
 
 
 async def restart_system(token: str) -> dict:
@@ -3808,6 +3849,15 @@ async def account_methods(token: str) -> dict:
             return _raise(await c.get("/settings/account-methods")).json()
 
     return await _with_total_timeout(_request(), ACCOUNT_METHODS_TIMEOUT)
+
+
+async def ai_offer(token: str) -> dict:
+    """GET /settings/ai-offer - paid AI plan flag and the included AI question counts.
+
+    The API bounds its relay read to 2 seconds; the short client timeout keeps a
+    slow answer from holding up the page that asked."""
+    async with _api_client(token, timeout=5.0) as c:
+        return _raise(await c.get("/settings/ai-offer")).json()
 
 
 ACCOUNT_SIGNUP_TIMEOUT = 15.0

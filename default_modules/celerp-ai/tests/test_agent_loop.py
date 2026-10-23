@@ -29,7 +29,7 @@ from celerp.ai.service import (
     MAX_MODEL_TURNS,
     MAX_TOOL_CALLS_PER_RUN,
     MAX_TOOL_CALLS_PER_TURN,
-    MAX_TOTAL_RESULT_BYTES,
+    REQUEST_TEXT_BUDGET,
     AgentResult,
     _EMPTY_ANSWER,
     run_agent,
@@ -76,8 +76,12 @@ class FakeComplete:
             "messages": [dict(m) for m in messages],
             "tools": tools,
             "reservation_id": reservation_id,
+            "operation_id": kw.get("operation_id"),
         })
-        return self._results.pop(0)
+        result = self._results.pop(0)
+        if isinstance(result, BaseException):
+            raise result
+        return result
 
 
 def _install(monkeypatch, results, execute=None):
@@ -101,6 +105,7 @@ async def _run(**over):
         app=object(), authorization="Bearer tok", query="a question",
         company_id=uuid.uuid4(), company_settings={}, user_id=uuid.uuid4(),
         role="owner", memory={"notes": [], "kv": {}}, file_ids=None, history=[],
+        operation_id=uuid.uuid4(),
     )
     kwargs.update(over)
     return await run_agent(**kwargs)
@@ -428,18 +433,135 @@ async def test_mutation_overflow_noted_in_answer(monkeypatch):
 @pytest.mark.asyncio
 async def test_total_result_bytes_cap(monkeypatch):
     big = {"ok": True, "status": 200, "data": {"blob": "x" * 130000}}
-    _install(
+    fake = _install(
         monkeypatch,
         [
-            tool_result(calls=[tool_call("list_items", {"query": {"q": "a"}}, "b1")]),
+            tool_result(calls=[tool_call("list_items", {"query": {"q": "a"}}, "b1")],
+                        usage={"credits": 1}),
             tool_result(calls=[tool_call("list_items", {"query": {"q": "b"}}, "b2")]),
         ],
         execute=_execute_returning(big),
     )
-    assert 130000 < MAX_TOTAL_RESULT_BYTES < 260000
+    # The budget keeps every model call under the AI service's 256 KB text limit.
+    assert 130000 < REQUEST_TEXT_BUDGET < 256 * 1024
     result = await _run()
-    assert result.error is not None
-    assert "Too much data" in result.error
+    assert result.error is not None and "Too much data" in result.error
+    assert result.error_code == "too_much_data"
+    # The second read would have outgrown a model call, so it was never sent; the
+    # charged first turn stays counted.
+    assert len(fake.calls) == 2 and result.credits == 1
+
+
+@pytest.mark.asyncio
+async def test_continuation_refused_as_too_large_keeps_the_charge(monkeypatch):
+    from fastapi import HTTPException
+    fake = _install(
+        monkeypatch,
+        [
+            tool_result(calls=[tool_call("list_items", {"query": {"q": "a"}}, "t1")], usage={"credits": 1}),
+            HTTPException(status_code=413, detail={"code": "free_text_too_large", "message": "x"}),
+        ],
+        execute=_execute_returning({"ok": True, "status": 200, "data": {}}),
+    )
+    result = await _run()
+    assert result.error_code == "too_much_data" and result.credits == 1
+    assert result.pending_actions == [] and len(fake.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_first_turn_too_large_is_a_refusal(monkeypatch):
+    from fastapi import HTTPException
+    _install(monkeypatch, [HTTPException(status_code=413, detail={"code": "free_text_too_large"})])
+    with pytest.raises(HTTPException) as ei:
+        await _run()
+    assert ei.value.status_code == 413
+
+
+@pytest.mark.asyncio
+async def test_history_trimmed_oldest_first_to_fit_one_model_call(monkeypatch):
+    fake = _install(monkeypatch, [tool_result(content="ok")])
+    turn = "ก" * 20000  # Thai text is three bytes a character
+    history = [{"role": "user", "content": f"old {n} {turn}"} for n in range(6)]
+    result = await _run(history=history)
+    assert result.answer == "ok"
+    sent = fake.calls[0]["messages"]
+    kept = [m["content"] for m in sent if m["role"] == "user" and m["content"].startswith("old ")]
+    # The newest turns stay, in order; the oldest went until the call fit.
+    assert kept and kept == [h["content"] for h in history[-len(kept):]] and len(kept) < len(history)
+    assert service._request_text_bytes(sent, fake.calls[0]["tools"]) <= REQUEST_TEXT_BUDGET
+    assert sent[-1]["role"] == "user" and "a question" in sent[-1]["content"]
+
+
+def test_request_size_with_every_real_tool_fits_a_model_call():
+    """The real tool list, the system prompt and the largest tool result a turn may
+    carry fit inside the budget, so an ordinary question is never refused as too large."""
+    from celerp.ai.tools import AGENT_RESULT_MAX_BYTES, agent_tool_specs, compile_agent_capabilities
+    from celerp.ai.service import agent_system_prompt
+    from test_helpers import real_agent_app
+    tools = agent_tool_specs(compile_agent_capabilities(real_agent_app(), {}, "owner"))
+    assert len(tools) > 20
+    messages = [
+        {"role": "system", "content": agent_system_prompt("th")},
+        {"role": "user", "content": "<user_query>\n" + "ก" * 2000 + "\n</user_query>"},
+        {"role": "tool", "tool_call_id": "x", "content": "x" * AGENT_RESULT_MAX_BYTES},
+    ]
+    assert service._request_text_bytes(messages, tools) <= REQUEST_TEXT_BUDGET
+    # File parts are sent beside the text and do not count against it.
+    with_file = [*messages[:1], {"role": "user", "content": [
+        {"type": "text", "text": "q"}, {"type": "image_url", "image_url": {"url": "data:" + "A" * 300000}}]}]
+    assert service._request_text_bytes(with_file, tools) < REQUEST_TEXT_BUDGET
+
+
+@pytest.mark.asyncio
+async def test_operation_id_sent_on_the_first_turn_only(monkeypatch):
+    fake = _install(
+        monkeypatch,
+        [
+            tool_result(calls=[tool_call("list_items", {"query": {"q": "x"}}, "o1")], reservation_id="R1"),
+            tool_result(content="done", reservation_id="R1"),
+        ],
+        execute=_execute_returning({"ok": True, "status": 200, "data": {}}),
+    )
+    question = uuid.uuid4()
+    await _run(operation_id=question)
+    assert fake.calls[0]["operation_id"] == question and fake.calls[0]["reservation_id"] is None
+    assert fake.calls[1]["operation_id"] is None and fake.calls[1]["reservation_id"] == "R1"
+
+
+@pytest.mark.asyncio
+async def test_question_still_running_is_waited_for_then_asked_again(monkeypatch):
+    sleeps: list[float] = []
+
+    async def _sleep(seconds):
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(service.asyncio, "sleep", _sleep)
+    fake = _install(monkeypatch, [
+        RelayError("operation_in_progress", "x", status=409, retry_after=2.0),
+        RelayError("operation_in_progress", "x", status=409, retry_after=600.0),
+        tool_result(content="answer", usage={"credits": 0}),
+    ])
+    question = uuid.uuid4()
+    result = await _run(operation_id=question)
+    assert result.answer == "answer" and result.error is None
+    assert [c["operation_id"] for c in fake.calls] == [question] * 3
+    assert sleeps == [2.0, service.MAX_IN_PROGRESS_WAIT_S]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("code, credits, retryable", [
+    ("outcome_unknown", 1, True), ("service_unavailable", 0, True), ("operation_expired", 0, False),
+    ("operation_mismatch", 0, False),
+])
+async def test_relay_failure_codes_reach_the_result(monkeypatch, code, credits, retryable):
+    _install(monkeypatch, [RelayError(code, "Lost.", status=503, credits=credits)])
+    result = await _run()
+    assert result.error_code == code and result.credits == credits
+    assert (code in service.RETRYABLE_ERRORS) is retryable
+    if code == "outcome_unknown":
+        assert result.error == t("ai.err_outcome_unknown")
+    if code == "operation_expired":
+        assert result.error == t("ai.err_question_expired")
 
 
 @pytest.mark.asyncio

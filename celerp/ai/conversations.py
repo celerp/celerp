@@ -21,6 +21,7 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.models.ai import AIBatchJob, AIConversation, AIMessage
+from celerp.ai.usage import record_usage
 from ui.i18n import t
 
 log = logging.getLogger(__name__)
@@ -229,14 +230,18 @@ async def add_message(
     tools_called: list | None = None,
     file_ids: list[str] | None = None,
     credits_used: int = 0,
+    message_id: uuid.UUID | None = None,
 ) -> AIMessage:
     """Add a message to a conversation. Prunes oldest if limit exceeded.
+
+    ``message_id`` is the question id of a user message, chosen by the caller.
 
     ``tools_called`` is stored verbatim: a mix of executed read operation-id
     strings and pending-action records (dicts). Also sets the conversation title
     from the first user message if not already set, and bumps ``updated_at``.
     """
     msg = AIMessage(
+        **({"id": message_id} if message_id is not None else {}),
         conversation_id=conversation_id,
         role=role,
         content=content,
@@ -315,11 +320,24 @@ async def get_message(
     return msg
 
 
-async def record_credits(session: AsyncSession, message_id: uuid.UUID, credits: int) -> None:
-    """Store the credits a run consumed on the user message that started it."""
+async def record_credits(
+    session: AsyncSession,
+    message: AIMessage,
+    credits: int,
+    *,
+    company_id: uuid.UUID,
+    user_id: uuid.UUID,
+) -> None:
+    """Add the credits a run was charged to the user message that asked the question,
+    and to the usage record, under the message's id. A run of the same question asked
+    again adds what that run was charged, which is 0 once the question was charged."""
+    if credits <= 0:
+        return
     await session.execute(
-        update(AIMessage).where(AIMessage.id == message_id).values(credits_used=credits)
+        update(AIMessage).where(AIMessage.id == message.id)
+        .values(credits_used=AIMessage.credits_used + credits)
     )
+    record_usage(session, company_id=company_id, user_id=user_id, operation_id=message.id, credits=credits)
 
 
 # -- Tool-call record helpers ------------------------------------------------
@@ -331,19 +349,88 @@ async def record_credits(session: AsyncSession, message_id: uuid.UUID, credits: 
 # with no explicit status is therefore still pending.
 
 
-ERROR_MARKER = {"error": True}
+def failure_record(code: str | None, *, status: int | None = None, refusal: dict | None = None) -> dict:
+    """The record that marks a stored assistant message as a failed run: why it
+    failed and, for a question the AI service refused, the refusal it sent with
+    its status, so a reloaded thread explains it the same way.
+
+    The record has no ``name`` and no ``expires_at``, so ``tool_names`` and
+    ``pending_actions`` both ignore it.
+    """
+    record: dict = {"error": True, "code": code}
+    if refusal is not None:
+        record.update(status=status, refusal=refusal)
+    return record
+
+
+def message_failure(tools_called: list | None) -> dict | None:
+    """The failure record of a stored assistant message; None when the run answered."""
+    for item in tools_called or []:
+        if isinstance(item, dict) and item.get("error") is True and "name" not in item:
+            return item
+    return None
 
 
 def message_error(tools_called: list | None) -> bool:
-    """True when a stored assistant message records a failed agent run.
+    """True when a stored assistant message records a failed agent run."""
+    return message_failure(tools_called) is not None
 
-    The marker has no ``name`` and no ``expires_at``, so ``tool_names`` and
-    ``pending_actions`` both ignore it.
+
+# After these failures the question id cannot be used again, so sending the
+# same question once more asks it as a new question.
+_NEW_QUESTION_AFTER = frozenset({"operation_expired", "operation_mismatch"})
+
+
+async def find_question(
+    session: AsyncSession,
+    conversation_id: uuid.UUID,
+    question_id: uuid.UUID,
+    query: str,
+    file_ids: list[str] | None,
+) -> tuple[AIMessage | None, AIMessage | None]:
+    """The user message a question is being asked again as, and the answer it already has.
+
+    The question is asked again when ``question_id`` is the conversation's latest
+    user message and it holds the same text and files. Its answer is the first
+    reply after it that is not a failure; None while every reply failed. (None,
+    None) means a new question.
     """
-    return any(
-        isinstance(item, dict) and item.get("error") is True and "name" not in item
-        for item in (tools_called or [])
-    )
+    asked = await session.get(AIMessage, question_id)
+    if (
+        asked is None or asked.conversation_id != conversation_id or asked.role != "user"
+        or asked.content != query or (asked.file_ids or None) != (file_ids or None)
+    ):
+        return None, None
+    later = (await session.execute(
+        select(AIMessage)
+        .where(AIMessage.conversation_id == conversation_id, AIMessage.created_at > asked.created_at)
+        .order_by(AIMessage.created_at)
+    )).scalars().all()
+    if any(m.role == "user" for m in later):
+        return None, None
+    for reply in later:
+        if not message_error(reply.tools_called):
+            return asked, reply
+    if later and (message_failure(later[-1].tools_called) or {}).get("code") in _NEW_QUESTION_AFTER:
+        return None, None
+    return asked, None
+
+
+def help_record(pages: list[str] | None) -> list[dict]:
+    """The citation record for an answer's help pages; nothing when help was not searched.
+
+    The record has no ``name``, ``expires_at`` or ``error``, so ``tool_names``,
+    ``pending_actions`` and ``message_failure`` all ignore it.
+    """
+    return [] if pages is None else [{"help_pages": list(pages)}]
+
+
+def help_pages(tools_called: list | None) -> list[str] | None:
+    """The help pages a stored answer cites; None when the answer did not search help."""
+    for item in tools_called or []:
+        if isinstance(item, dict) and isinstance(item.get("help_pages"), list):
+            return item["help_pages"]
+    return None
 
 
 def tool_names(tools_called: list | None) -> list[str]:

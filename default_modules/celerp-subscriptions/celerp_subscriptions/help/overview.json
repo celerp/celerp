@@ -1,0 +1,30 @@
+{
+  "id": "subscriptions.overview",
+  "title": "Recurring sales and purchasing subscriptions",
+  "summary": "Generate invoices or purchase orders automatically on a schedule.",
+  "keywords": ["subscription", "recurring", "generate now", "invoice schedule"],
+  "routes": ["/subscriptions"],
+  "permission": "view_subscriptions",
+  "order": 1,
+  "steps": [
+    {
+      "text": "Open {sales} or {purch} from the sidebar to see sales and purchasing subscriptions separately.",
+      "labels": {"sales": "nav.subscriptions_sales", "purch": "nav.subscriptions_purchasing"},
+      "image": null,
+      "capture": {"route": "/subscriptions", "selector": "main", "actions": []}
+    },
+    {
+      "text": "Choose {new} to create a subscription, or {imp} to bring in many at once from a file.",
+      "labels": {"new": "page.new_subscription", "imp": "btn.import"},
+      "image": null,
+      "capture": {"route": "/subscriptions", "selector": "main", "actions": []}
+    },
+    {
+      "text": "The status cards above the list, including {all}, let you filter by stage with one click.",
+      "labels": {"all": "status.all_issued"},
+      "image": null,
+      "capture": {"route": "/subscriptions", "selector": "main", "actions": []}
+    }
+  ],
+  "related": ["subscriptions.import"]
+}

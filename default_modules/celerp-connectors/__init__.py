@@ -61,4 +61,5 @@ PLUGIN_MANIFEST = {
              "action_type": "htmx", "permission": "adjust_inventory", "requires_connector": "shopify"},
         ],
     },
+    "help": {"dir": "celerp_connectors/help"},
 }

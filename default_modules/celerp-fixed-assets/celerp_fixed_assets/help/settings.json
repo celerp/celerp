@@ -1,0 +1,18 @@
+{
+  "id": "fixed-assets.settings",
+  "title": "Asset classes, the depreciation run schedule and tax books",
+  "summary": "Set the depreciation run schedule and convention, and manage asset classes.",
+  "keywords": ["asset class", "settings", "depreciation convention", "run schedule", "tax book"],
+  "routes": ["/settings/fixed-assets"],
+  "permission": "manage_module_settings",
+  "order": 3,
+  "steps": [
+    {
+      "text": "On {title}, set the run schedule and convention, and add or archive asset classes.",
+      "labels": {"title": "fixed_assets.settings_title"},
+      "image": null,
+      "capture": {"route": "/settings/fixed-assets", "selector": "main", "actions": []}
+    }
+  ],
+  "related": ["fixed-assets.register", "fixed-assets.depreciation-and-disposals"]
+}

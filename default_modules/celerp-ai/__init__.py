@@ -19,4 +19,5 @@ PLUGIN_MANIFEST = {
         "nav": {"group": "AI", "key": "ai", "href": "/ai", "label": "AI Assistant", "label_key": "nav.ai_assistant", "order": 90, "settings_href": "/ai/settings", "permission": "use_ai_assistant"},
     },
     "migrations": None,
+    "help": {"dir": "celerp_ai/help"},
 }

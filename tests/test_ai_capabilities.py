@@ -22,6 +22,8 @@ _bearer = HTTPBearer()
 # forces this test - and therefore review - as the spec requires.
 _EXPECTED_AGENT_ROUTES = {
     ("GET", "/search"),
+    ("GET", "/help/search"),
+    ("GET", "/help/page/{page_id}"),
     ("POST", "/crm/contacts"),
     ("GET", "/crm/contacts"),
     ("GET", "/crm/contacts/{contact_id}"),

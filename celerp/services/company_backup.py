@@ -106,6 +106,7 @@ EXCLUDED_TABLES = {
     "notifications": "per-user notices",
     "ai_conversations": "per-user assistant history",
     "ai_batch_jobs": "assistant job state",
+    "ai_usage": "per-user assistant usage",
     "import_batches": "import job state",
     "migration_runs": "migration run state",
     "migration_cleanup_tasks": "migration cleanup state",

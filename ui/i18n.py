@@ -431,6 +431,24 @@ def current_lang() -> str:
     return _current_lang.get()
 
 
+# Native display name per language code, for the language switcher and the AI prompt.
+# Which languages exist is decided by available_langs() (disk catalogs plus any a module
+# contributes); this map only supplies the human-readable name.
+_LANG_NATIVE_LABELS: dict[str, str] = {
+    "en": "English", "am": "አማርኛ", "th": "ไทย", "zh": "中文", "ja": "日本語",
+    "ko": "한국어", "es": "Español", "fr": "Français", "de": "Deutsch",
+    "pt": "Português", "it": "Italiano", "nl": "Nederlands", "ru": "Русский",
+    "ar": "العربية", "hi": "हिन्दी", "vi": "Tiếng Việt", "id": "Bahasa Indonesia",
+    "ms": "Bahasa Melayu", "tr": "Türkçe", "pl": "Polski", "sv": "Svenska",
+}
+
+
+def lang_label(code: str) -> str:
+    """The language's name in itself, or the uppercased code for a language with no entry
+    here (e.g. one contributed by a module)."""
+    return _LANG_NATIVE_LABELS.get(code, code.upper())
+
+
 class I18nMiddleware:
     """Pure ASGI middleware: sets the context language for each request, so t()
     reads in the language the request asks for (the celerp_lang cookie, else

@@ -283,8 +283,9 @@ $private = Join-Path $env:ProgramData "Celerp-$sid"
 function Ours([string]$dir) { @(Get-Process Celerp, postgres, python -EA SilentlyContinue | Where-Object { $_.Path -like "$dir\*" -or $_.Path -like "$private\*" }) }
 
 # The app is open: its window, API and database processes run from the install folder (or
-# the private folder) and the API answers with db:ok. Returns those processes, so a later check can tell that
-# exactly these ended.
+# the private folder) and the API answers with db:ok. Returns the id, name, start time and path of those
+# processes as read now, so a later check can tell that exactly these ended. A Process object re-reads its
+# start time and path through its id, so once Windows reuses the id it would describe the new process.
 function RunningApp([string]$dir, [string]$port, [string]$what) {
   $procs = @(Ours $dir)
   foreach ($name in "Celerp", "python", "postgres") {
@@ -293,7 +294,7 @@ function RunningApp([string]$dir, [string]$port, [string]$what) {
   $ready = try { (Invoke-WebRequest -UseBasicParsing -TimeoutSec 5 -Uri "http://127.0.0.1:$port/health/ready").Content } catch { "" }
   if ($ready -notmatch '"db"\s*:\s*"ok"') { Fail "$what`: the API on port $port does not answer db:ok" }
   Write-Host "smoke: $what, app running: $(($procs | ForEach-Object { "$($_.Name) $($_.Id)" }) -join ', ')"
-  $procs
+  $procs | Select-Object Id, Name, StartTime, Path
 }
 
 # Force-quits the app: no API or database may stay running (the app's job object ends them).

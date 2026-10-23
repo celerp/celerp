@@ -8,7 +8,7 @@ the finished job offers one card per proposed vendor and bill; Confirm all
 writes them. Statements: a CSV runs the agent inline, and each step of the
 reconciliation (start, import, auto-match, post a missing entry, complete) is
 a card the user confirms. The model is scripted the same way as
-`test_ai_chat_journey.py`; only the reading job's `call_llm` is faked here,
+`test_ai_chat_journey.py`; only the reading job's `ask_unattended` is faked here,
 every write still lands through the real routes.
 """
 from __future__ import annotations
@@ -67,8 +67,9 @@ _BULK_RECEIPTS = {
 }
 
 
-async def _fake_read(model, system, prompt, *, files=None, **_kw) -> ModelResult:
+async def _fake_read(system, prompt, *, files=None, tally, **_kw) -> ModelResult:
     """The reading model: answers with the receipt JSON for the attached file."""
+    tally.credits += 1
     extraction = {**_RECEIPTS, **_BULK_RECEIPTS}[files[0]["filename"]]
     return ModelResult(
         message={"role": "assistant", "content": f"```json\n{json.dumps(extraction)}\n```"},
@@ -120,7 +121,7 @@ def _call(cap: dict, path: dict | None = None, body: dict | None = None, content
 # ── Receipts to bills ─────────────────────────────────────────────────────────
 
 def test_receipts_to_bills_journey(page: Page, ui_server, api):
-    with patch("celerp.ai.batch.call_llm", _fake_read):
+    with patch("celerp.ai.batch.ask_unattended", _fake_read):
         _open_chat(page, ui_server)
         _attach(page, [
             {"name": name, "mimeType": "image/png", "buffer": _PNG} for name in _RECEIPTS
@@ -162,7 +163,7 @@ def test_receipts_bulk_table_journey(page: Page, ui_server, api):
     """Past five proposals the thread shows the review table: the flagged bill
     starts unticked, Confirm selected from the bulk toolbar applies the rest,
     and the tally links to exactly the drafts this batch created."""
-    with patch("celerp.ai.batch.call_llm", _fake_read):
+    with patch("celerp.ai.batch.ask_unattended", _fake_read):
         _open_chat(page, ui_server)
         _attach(page, [
             {"name": name, "mimeType": "image/png", "buffer": _PNG} for name in _BULK_RECEIPTS

@@ -9,7 +9,6 @@ import sys
 import threading
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import httpx
@@ -253,7 +252,9 @@ def test_read_resource_has_no_write_counterpart():
 
 @pytest.fixture
 def run_query(monkeypatch):
-    mock = AsyncMock(return_value=SimpleNamespace(answer="ok", model_used="m", tools_called=[]))
+    from celerp.ai.service import AIResponse
+
+    mock = AsyncMock(return_value=AIResponse(answer="ok", model_used="m", tools_called=[]))
     monkeypatch.setattr("celerp.ai.service.run_query", mock)
     monkeypatch.setattr("celerp.session_gate.get_session_token", lambda: "session-1")
     return mock

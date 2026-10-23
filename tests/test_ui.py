@@ -38,7 +38,7 @@ from ui.routes.csv_import import MAPPING_ATTRIBUTE, MAPPING_SKIP
 from ui.routes.inventory import _IMPORT_SPEC
 from ui.i18n import t
 from celerp.services.permissions import missing_permission_text
-from test_helpers import assert_not_permitted_redirect, make_test_token, authed_cookies
+from test_helpers import assert_not_permitted_redirect, make_test_token, authed_cookies, settle_background
 from ui.config import API_BASE as _API_BASE
 
 
@@ -15022,29 +15022,13 @@ class TestDocumentsOverhaul:
 
     # ── Send-by-email offer when no relay is connected ───────────────────────
 
-    @staticmethod
-    def _reset_send_quota_cache():
-        from ui.routes import documents
-        documents._free_send_quota_cache.update(
-            {"value": 0, "fetched_at": None, "pending": False, "task": None})
-
-    @staticmethod
-    async def _settle_quota_refresh():
-        # The priming GET starts the refresh as a background task; await it
-        # directly so the second GET reads the fetched value regardless of
-        # event-loop scheduling.
-        from ui.routes import documents
-        task = documents._free_send_quota_cache.get("task")
-        if task is not None:
-            await task
-
     @pytest.mark.asyncio
     async def test_send_offer_button_shows_on_first_open_before_quota_fetched(self, ui_client):
         """Disconnected relay + sendable doc, cache never fetched: the offer
         shows on the FIRST document opened, not only after a reload primes the
         quota cache. A never-fetched cache is unknown, not an advertised zero,
         so hiding it would be the "reload to appear" bug."""
-        self._reset_send_quota_cache()
+        _reset_free_send_quota_cache_full()
         ui_client.cookies.update(_authed())
         try:
             doc = dict(_BLANK_DOC, contact_email="c@acme.example", status="sent")
@@ -15062,12 +15046,12 @@ class TestDocumentsOverhaul:
             assert 'hx-target="#account-gate-host"' in content
             assert "next=doc-send" in content
         finally:
-            self._reset_send_quota_cache()
+            _reset_free_send_quota_cache_full()
 
     @pytest.mark.asyncio
     async def test_send_offer_absent_when_quota_zero(self, ui_client):
         """No free quota advertised → the offer never renders (no dead end)."""
-        self._reset_send_quota_cache()
+        _reset_free_send_quota_cache_full()
         ui_client.cookies.update(_authed())
         try:
             doc = dict(_BLANK_DOC, contact_email="c@acme.example", status="sent")
@@ -15077,13 +15061,13 @@ class TestDocumentsOverhaul:
                  patch("ui.api_client.get_relay_status", new=_no_relay), \
                  patch("ui.api_client.account_methods", new=_methods):
                 await ui_client.get("/docs/doc:INV-2026-0001")
-                await self._settle_quota_refresh()
+                await settle_background()
                 r = await ui_client.get("/docs/doc:INV-2026-0001")
             content = r.content.decode()
             assert "Send by email" not in content
             assert "next=doc-send" not in content
         finally:
-            self._reset_send_quota_cache()
+            _reset_free_send_quota_cache_full()
 
     @pytest.mark.asyncio
     async def test_send_offer_admin_click_opens_signup_panel_with_doc_send_next(self, ui_client):
@@ -20344,18 +20328,7 @@ class TestToastHeader:
 def _reset_free_send_quota_cache_full():
     from ui.routes import documents
     documents._free_send_quota_cache.clear()
-    documents._free_send_quota_cache.update(
-        {"value": 0, "fetched_at": None, "pending": False, "task": None})
-
-
-async def _drain_quota_task():
-    import asyncio
-    from ui.routes import documents
-    task = documents._free_send_quota_cache.get("task")
-    if task is not None:
-        await task
-    else:
-        await asyncio.sleep(0.05)
+    documents._free_send_quota_cache.update({"value": 0, "fetched_at": None, "pending": False})
 
 
 @pytest.mark.asyncio
@@ -20379,11 +20352,11 @@ async def test_free_send_quota_refetches_after_ttl(monkeypatch):
     monkeypatch.setattr("ui.api_client.account_methods", _methods)
     try:
         documents._free_send_quota("tok")
-        await _drain_quota_task()
+        await settle_background()
         assert documents._free_send_quota_cache["value"] == 7
         now["t"] += getattr(documents, "_FREE_SEND_QUOTA_TTL", 300.0) + 1.0
         documents._free_send_quota("tok")
-        await _drain_quota_task()
+        await settle_background()
         assert len(calls) == 2
         assert documents._free_send_quota_cache["value"] == 7
     finally:
@@ -20413,11 +20386,11 @@ async def test_free_send_quota_retries_after_failed_fetch(monkeypatch):
     monkeypatch.setattr("ui.api_client.account_methods", _methods)
     try:
         assert documents._free_send_quota("tok") == 0
-        await _drain_quota_task()
+        await settle_background()
         assert documents._free_send_quota_cache["value"] == 0
         now["t"] += getattr(documents, "_FREE_SEND_QUOTA_TTL", 300.0) + 1.0
         documents._free_send_quota("tok")
-        await _drain_quota_task()
+        await settle_background()
         assert calls["n"] == 2
         assert documents._free_send_quota_cache["value"] == 9
     finally:
@@ -20445,7 +20418,7 @@ async def test_free_send_quota_fetches_on_fresh_boot(monkeypatch):
     monkeypatch.setattr("ui.api_client.account_methods", _methods)
     try:
         documents._free_send_quota("tok")
-        await _drain_quota_task()
+        await settle_background()
         assert len(calls) == 1
         assert documents._free_send_quota_cache["value"] == 5
     finally:
@@ -20469,7 +20442,7 @@ async def test_free_send_offer_shows_on_unknown_hides_on_known_zero(monkeypatch)
     try:
         # Never fetched yet: unknown -> show.
         assert documents._free_send_offer("tok") is True
-        await _drain_quota_task()
+        await settle_background()
         # Fetch landed with a real zero: advertised zero -> hide.
         assert documents._free_send_quota_cache["fetched_at"] is not None
         assert documents._free_send_offer("tok") is False

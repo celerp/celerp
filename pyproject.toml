@@ -146,6 +146,7 @@ include = ["celerp", "celerp.*", "ui", "ui.*", "default_modules"]
     "openapi_parameter_descriptions.json",
     "importers/sample/*.manager",
     "output/fonts/*",
+    "help/**/*",
 ]
 "ui" = [
     "static/**/*",
@@ -161,7 +162,7 @@ include = ["celerp", "celerp.*", "ui", "ui.*", "default_modules"]
     "celerp-contacts/**/*",
     "celerp-dashboard/**/*",
     "celerp-docs/**/*",
-    "celerp-fulfillment/**/*",
+    "celerp-fixed-assets/**/*",
     "celerp-inventory/**/*",
     "celerp-labels/**/*",
     "celerp-manufacturing/**/*",

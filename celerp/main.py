@@ -52,6 +52,7 @@ from celerp.routers import stars as stars_router_mod
 from celerp.importers.sinks import register_sink
 from celerp.services.migration_core_sink import SINK as CORE_SINK
 from celerp.routers import search as search_router_mod
+from celerp.routers import help as help_router_mod
 
 import celerp.models  # noqa: F401 - ensures kernel models (UserCompany, ImportBatch, DocShareToken) are registered
 
@@ -831,6 +832,7 @@ app.include_router(stars_router_mod.router, prefix="/stars", tags=["stars"])
 app.include_router(notifications.router)
 app.include_router(events_router_mod.router)
 app.include_router(search_router_mod.router, tags=["search"])
+app.include_router(help_router_mod.router, tags=["help"])
 app.include_router(migrations.router)
 app.include_router(company_backup.router)
 app.include_router(company_peers.router)

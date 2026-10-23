@@ -64,4 +64,5 @@ PLUGIN_MANIFEST = {
         "th": {"file": "celerp_labels/locales/th.json"},
         "vi": {"file": "celerp_labels/locales/vi.json"},
     },
+    "help": {"dir": "celerp_labels/help"},
 }

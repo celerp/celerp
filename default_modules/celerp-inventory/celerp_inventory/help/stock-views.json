@@ -1,0 +1,24 @@
+{
+  "id": "inventory.stock-views",
+  "title": "Sold, archived and disposed inventory",
+  "summary": "Find items that have left the active list, and run stock audits.",
+  "keywords": ["sold", "archived", "disposed", "audit", "stock count"],
+  "routes": ["/inventory", "/lists"],
+  "permission": "view_inventory",
+  "order": 3,
+  "steps": [
+    {
+      "text": "The sidebar also lists {sold}, {arch} and {disp}: the same inventory screen filtered to that status.",
+      "labels": {"sold": "nav.sold_inventory", "arch": "nav.archived_inventory", "disp": "nav.disposed_inventory"},
+      "image": null,
+      "capture": {"route": "/inventory", "selector": "main", "actions": []}
+    },
+    {
+      "text": "Open {audits} to count stock on hand and compare it against the system quantities.",
+      "labels": {"audits": "nav.audits"},
+      "image": null,
+      "capture": {"route": "/lists", "selector": "main", "actions": []}
+    }
+  ],
+  "related": ["inventory.add-item", "inventory.settings"]
+}

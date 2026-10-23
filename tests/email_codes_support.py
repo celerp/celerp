@@ -6,7 +6,6 @@ relay's is, refuses a send or verify without a well-formed secret as the relay d
 every call, and can be switched to each way the relay fails."""
 from __future__ import annotations
 
-import asyncio
 import json
 import re
 from contextlib import contextmanager
@@ -109,9 +108,3 @@ def short_floor(monkeypatch):
     import celerp.routers.auth as auth_router
     monkeypatch.setattr(auth_router, "RECOVERY_FLOOR_S", 0.2, raising=False)
     return 0.2
-
-
-async def settle() -> None:
-    """Let the background sends the app started finish."""
-    from celerp.services import background
-    await asyncio.gather(*list(background._BG_TASKS), return_exceptions=True)

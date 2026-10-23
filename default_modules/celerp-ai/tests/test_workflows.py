@@ -78,7 +78,7 @@ class ScriptedModel:
         self._i = 0
         self.seen: list[list[dict]] = []
 
-    async def __call__(self, messages, *, tools=None, reservation_id=None):
+    async def __call__(self, messages, *, tools=None, reservation_id=None, operation_id=None):
         self.seen.append([dict(m) for m in messages])
         step = self._steps[self._i]
         self._i += 1
@@ -150,7 +150,7 @@ def xlsx_upload():
 @pytest.fixture
 def ai_session(client):
     """Seat a live gateway session token so the cloud-gated ``/ai/*`` routes pass
-    ``require_session_token``, which reads the in-process gateway state directly.
+    ``require_ai_access``, which reads the in-process gateway state directly.
     The ``client`` fixture restores the prior token at teardown."""
     from celerp.gateway.state import set_session_token
     set_session_token(secrets.token_hex(32))

@@ -17,8 +17,8 @@ from sqlalchemy import select
 
 from celerp.main import app as api_app
 from celerp.models.company import User
-from email_codes_support import CODE, relay, settle, short_floor  # noqa: F401 - fixtures
-from test_helpers import invite_user
+from email_codes_support import CODE, relay, short_floor  # noqa: F401 - fixtures
+from test_helpers import invite_user, settle_background
 from ui.i18n import t
 
 pytestmark = pytest.mark.asyncio
@@ -190,7 +190,7 @@ async def test_recovery_code_page_names_the_email_and_offers_change(client, rela
     and Change goes back to the first form to type it again."""
     async with _ui() as ui:
         r = await ui.post("/forgot-password", data={"email": "typo@example.com"})
-        await settle()
+        await settle_background()
     assert r.status_code == 200
     assert t("recovery.code_sent", email="typo@example.com") in r.text
     assert re.search(rf'<a\b[^>]*href="/forgot-password"[^>]*>{t("auth.change")}</a>', r.text)
@@ -205,7 +205,7 @@ async def test_recovery_refusal_shows_terminal_command(client, session, relay, s
     before = await _hash(session, OWNER)
     async with _ui() as ui:
         sent = await _code_page(ui)
-        await settle()
+        await settle_background()
         for email, code in ((OWNER, "00000000"), ("nobody@example.com", CODE)):
             r = await _reset(ui, sent, code=code, email=email)
             assert r.status_code == 200, r.text
@@ -548,7 +548,7 @@ async def test_setup_goes_straight_to_the_form_and_never_calls_the_relay(client,
         assert (await ui.get("/setup/email")).status_code == 404
         r = await ui.post("/setup", data=_SETUP)
         assert r.status_code in (302, 303), r.text
-    await settle()
+    await settle_background()
     assert await _bootstrapped(client)
     assert await _can_sign_in(client, OWNER, NEW_PW)
     assert relay.calls == []
@@ -566,7 +566,7 @@ async def test_migrate_bootstrap_never_calls_the_relay(client, relay):
             r = await ui.post("/setup/migrate/start", data=form)
     start.assert_awaited_once()
     assert r.headers.get("location") == "/migrations/run-1"
-    await settle()
+    await settle_background()
     assert relay.calls == []
 
 

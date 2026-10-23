@@ -14,4 +14,5 @@ PLUGIN_MANIFEST = {
     "slots": {
         "nav": {"group": "Finance", "key": "reports", "href": "/reports", "label": "Reports", "label_key": "nav.reports", "order": 51, "permission": "view_financial_reports"},
     },
+    "help": {"dir": "celerp_reports/help"},
 }
