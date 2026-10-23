@@ -216,3 +216,74 @@ async def test_save_doc_lines_reread_failure_reports_the_error(ui_client):
                           get_doc=AsyncMock(side_effect=APIError(503, "The document could not be read.")))
     assert r.status_code == 200, r.text
     assert r.json() == {"ok": True, "version": 5, "error": "The document could not be read."}
+
+
+_LEVY_WHOLE = [{"code": "Levy 5%", "rate": 5.0, "amount": 0, "order": 0, "is_compound": False, "label": ""}]
+_LINES_DIFFER = {"doc_type": "invoice", "doc_taxes": _LEVY_WHOLE,
+                 "line_items": [{"description": "Old", "quantity": 1, "unit_price": 100,
+                                 "taxes": _line_tax("VAT 7%", 7.0)},
+                                {"description": "Older", "quantity": 1, "unit_price": 100, "taxes": []}]}
+
+
+@pytest.mark.parametrize("url, body", [
+    ("/docs/from-items/add", b"selected=item%3Ap1&target_id=doc%3AINV-1"),
+    ("/api/items/send-to", b"selected=item%3Ap1&send_to_doc_type=invoice&send_to_target=doc%3AINV-1"),
+])
+async def test_appending_where_the_lines_differ_leaves_the_tax_to_the_user(ui_client, url, body):
+    """A draft taxed as a whole whose lines carry different taxes: the appended line is stored with
+    its tax still to be set (None), so the editor shows "--" for it after a reload."""
+    patch_doc = AsyncMock(return_value={"event_id": "e1"})
+    r = await _post(ui_client, url, body, taxes=_taxes(), doc=_LINES_DIFFER, patch_doc=patch_doc)
+    assert r.status_code == 204, r.text
+    added = patch_doc.call_args[0][2]["line_items"][2]
+    assert "taxes" in added and added["taxes"] is None
+
+
+async def _import_csv(ui_client, csv: str, *, doc: dict, patch_doc: AsyncMock, taxes: AsyncMock | None = None):
+    ui_client.cookies.update(_authed())
+    with (
+        patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [_ITEM]})),
+        patch("ui.api_client.get_document_taxes", new=taxes or _taxes()),
+        patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)),
+        patch("ui.api_client.patch_doc", new=patch_doc),
+    ):
+        return await ui_client.post("/docs/doc:INV-1/items/csv", files={"file": ("lines.csv", csv.encode())})
+
+
+@pytest.mark.parametrize("doc, expected", [
+    ({"doc_type": "invoice", "line_items": []}, _line_tax("VAT 7%", 7.0)),
+    ({"doc_type": "invoice", "doc_taxes": _LEVY_WHOLE,
+      "line_items": [{"description": "Old", "quantity": 1, "unit_price": 100, "taxes": _line_tax("VAT 7%", 7.0)}]},
+     _line_tax("VAT 7%", 7.0)),
+    (_LINES_DIFFER, None),
+], ids=["new-line-default", "levy-keeps-vat", "lines-differ"])
+async def test_a_line_imported_from_csv_takes_the_tax_a_new_line_takes(ui_client, doc, expected):
+    """A CSV row with no tax of its own is a new line like any other: the company default on a plain
+    draft ($107 for $100), the taxes the lines carry on a draft taxed as a whole ($224 with the levy),
+    or left for the user to set where those lines differ. The client sends no money of its own."""
+    patch_doc = AsyncMock(return_value={"event_id": "e1"})
+    r = await _import_csv(ui_client, "sku,quantity\nJWL-002,1\n", doc=doc, patch_doc=patch_doc)
+    assert r.status_code == 200, r.text
+    patched = patch_doc.call_args[0][2]
+    added = patched["line_items"][-1]
+    assert "taxes" in added and added["taxes"] == expected
+    assert "tax_rate" not in added and "tax_code" not in added
+    assert "subtotal" not in patched and "total" not in patched
+
+
+async def test_a_csv_row_with_its_own_tax_keeps_it(ui_client):
+    """A row that names its tax rate keeps it, a zero rate included: the file decided it."""
+    patch_doc = AsyncMock(return_value={"event_id": "e1"})
+    r = await _import_csv(ui_client, "sku,quantity,tax_rate\nJWL-002,1,0\n",
+                          doc={"doc_type": "invoice", "line_items": []}, patch_doc=patch_doc)
+    assert r.status_code == 200, r.text
+    added = patch_doc.call_args[0][2]["line_items"][-1]
+    assert added["tax_rate"] == 0 and "taxes" not in added
+
+
+async def test_a_failed_tax_read_imports_no_csv_line(ui_client):
+    patch_doc = AsyncMock(return_value={"event_id": "e1"})
+    r = await _import_csv(ui_client, "sku,quantity\nJWL-002,1\n", doc={"doc_type": "invoice", "line_items": []},
+                          patch_doc=patch_doc, taxes=AsyncMock(side_effect=APIError(503, "The tax list could not be read.")))
+    assert r.status_code == 503 and r.json()["error"] == "The tax list could not be read."
+    patch_doc.assert_not_awaited()

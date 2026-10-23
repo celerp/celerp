@@ -298,16 +298,33 @@ def default_line_taxes(taxes: list[dict], doc_type: str | None, *, doc: dict | N
     each as line_tax builds it. On a draft that already charges a tax as a whole, its taxation
     stands: a new line takes the taxes its lines all carry (as line_tax_key), copied whole, never
     a company default. When they differ or there are none, None: the line carries no tax of its
-    own until the user sets one (the editor shows "--"). Nothing is matched by name, so a tax
-    renamed or changed in settings since is never charged next to the one the document holds.
-    The editor mirrors this live (_celerpApplyDefaultTaxes in ui/routes/documents.py)."""
+    own until the user sets one (the editor shows "--"); so does a line whose tax is itself still
+    to be set. Nothing is matched by name, so a tax renamed or changed in settings since is never
+    charged next to the one the document holds. The editor mirrors this live
+    (_celerpApplyDefaultTaxes in ui/routes/documents.py)."""
     if doc and tax_entries(doc.get("doc_taxes")):
         lines = [line for line in doc.get("line_items") or [] if isinstance(line, dict)]
-        if len({line_tax_key(line.get("taxes")) for line in lines}) != 1:
+        keys = {None if line_tax_unset(line) else line_tax_key(line.get("taxes")) for line in lines}
+        if len(keys) != 1 or None in keys:
             return None
         return [{**tax, "amount": 0} for tax in tax_entries(lines[0].get("taxes"))]
     return [line_tax(tax) for tax in taxes_for(taxes, doc_type)
             if tax.get("is_default") and float(tax.get("rate") or 0)]
+
+
+def set_new_line_taxes(line: dict, taxes: list[dict] | None) -> None:
+    """Give a new line the taxes default_line_taxes chose: each its own copy, or None (stored as
+    it is) when the user sets the line's tax. A line with no taxes to start with is left as built."""
+    if taxes is None:
+        line["taxes"] = None
+    elif taxes:
+        line["taxes"] = [dict(tax) for tax in taxes]
+
+
+def line_tax_unset(line: dict) -> bool:
+    """Whether a line's tax is still for the user to set: its ``taxes`` is stored as None
+    (set_new_line_taxes). It charges nothing until then, and the editor shows it as "--"."""
+    return "taxes" in line and line["taxes"] is None
 
 
 def line_tax(tax: dict) -> dict:

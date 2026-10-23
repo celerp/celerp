@@ -34,8 +34,8 @@ from celerp.services.business_time import business_today
 from celerp.services.doc_balance import awaiting_status_param, is_awaiting_payment, is_owed, outstanding_balance
 from celerp.services.money import to_decimal, to_stored_float, round_money, currency_dp, rate_dp
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, line_price_list, resolve_price
-from celerp.tax_regimes import (default_line_taxes, holds_tax, line_tax, tax_entries, tax_text, taxes_for,
-                                unreadable_tax)
+from celerp.tax_regimes import (default_line_taxes, holds_tax, line_tax, line_tax_unset, set_new_line_taxes,
+                                tax_entries, tax_text, taxes_for, unreadable_tax)
 from celerp.services.payment_terms import due_date_for_terms
 from celerp.services.permissions import missing_permission_text, role_has_permission
 from ui.components.import_access import can_import_documents
@@ -1256,13 +1256,13 @@ def _form_version(form) -> int | None:
     return int(raw) if raw.isdigit() else None
 
 
-async def _new_line_taxes(token: str, doc_type: str | None, doc: dict | None) -> list[dict]:
+async def _new_line_taxes(token: str, doc_type: str | None, doc: dict | None) -> list[dict] | None:
     """The taxes a new line on a document of this type starts with (see default_line_taxes; `doc` is
-    the target document when appending, None for a new one; none where the user sets them); none for
-    a list (no doc_type). A failed read raises, so no line is added without its tax."""
-    if not doc_type:
+    the target document when appending, None for a new one; None where the user sets them); none for
+    a list. A failed read raises, so no line is added without its tax."""
+    if not doc_type or doc_type == "list":
         return []
-    return default_line_taxes(await api.get_document_taxes(token, doc_type), doc_type, doc=doc) or []
+    return default_line_taxes(await api.get_document_taxes(token, doc_type), doc_type, doc=doc)
 
 
 async def _line_items_from_inventory(token: str, entity_ids: list[str], price_list: str = DEFAULT_PRICE_LIST_NAME,
@@ -1283,7 +1283,7 @@ async def _line_items_from_inventory(token: str, entity_ids: list[str], price_li
         qty = float(item.get("quantity", 1)) if float(item.get("quantity", 1)) > 0 else 1
         desc = f"{sku} - {name}" if sku else name
 
-        line_items.append({
+        line = {
             "description": desc,
             "quantity": qty,
             "unit_price": unit_price,
@@ -1295,8 +1295,9 @@ async def _line_items_from_inventory(token: str, entity_ids: list[str], price_li
             "entity_id": eid,
             "allow_splitting": splitting_allowed(item),
             "item_quantity": item.get("quantity"),
-            **({"taxes": [dict(x) for x in line_taxes]} if line_taxes else {}),
-        })
+        }
+        set_new_line_taxes(line, line_taxes)
+        line_items.append(line)
     return line_items
 
 
@@ -1386,8 +1387,7 @@ async def _reorder_lines_from_inventory(token: str, entity_ids: list[str], doc_t
         pu = item.get("purchase_unit") or item.get("sell_by") or "piece"
         decimals = (unit_map.get(pu) or {}).get("decimals")
         line = _reorder_po_line(item, unit_decimals=decimals)
-        if line_taxes:
-            line["taxes"] = [dict(x) for x in line_taxes]
+        set_new_line_taxes(line, line_taxes)
         lines.append(line)
     return lines
 
@@ -1981,6 +1981,13 @@ def setup_routes(app):
         if "sku" not in col_map.values() and "description" not in col_map.values():
             return _J({"error": t("doc.csv_missing_sku_or_description")}, status_code=400)
 
+        # A row with no tax of its own is a new line like any other (_new_line_taxes).
+        try:
+            doc = await api.get_doc(token, entity_id)
+            new_taxes = await _new_line_taxes(token, doc.get("doc_type"), doc)
+        except APIError as e:
+            return _J({"error": error_message(e)}, status_code=e.status)
+
         # Parse rows
         new_lines: list[dict] = []
         price_list = form.get("price_list") or DEFAULT_PRICE_LIST_NAME
@@ -2048,8 +2055,6 @@ def setup_routes(app):
                 "unit": unit or catalog_item.get("sell_by") or "",
                 "unit_price": unit_price if unit_price is not None else resolve_price(catalog_item, price_list) if catalog_item else 0,
                 "discount_pct": discount_pct,
-                "tax_code": tax_code,
-                "tax_rate": tax_rate,
                 "hs_code": hs_code or catalog_item.get("hs_code") or "",
                 "account_code": account_code,
                 "entity_id": catalog_item.get("entity_id") or "",
@@ -2057,25 +2062,18 @@ def setup_routes(app):
                 "item_quantity": catalog_item.get("quantity"),
                 "ambiguous": row_ambiguous,
             }
+            if mapped_row.get("tax_code") or mapped_row.get("tax_rate"):
+                line.update(tax_code=tax_code, tax_rate=tax_rate)
+            else:
+                set_new_line_taxes(line, new_taxes)
             new_lines.append(line)
 
         if not new_lines:
             return _J({"error": t("doc.csv_no_valid_rows")}, status_code=400)
 
-        # Append to existing line items
+        # Appended to the lines as they stand; the server recalculates the money.
         try:
-            doc = await api.get_doc(token, entity_id)
-            existing = doc.get("line_items") or []
-            combined = existing + new_lines
-            subtotal = sum(
-                float(l.get("quantity", 0)) * float(l.get("unit_price", 0)) * (1 - float(l.get("discount_pct", 0)) / 100)
-                for l in combined
-            )
-            await api.patch_doc(token, entity_id, {
-                "line_items": combined,
-                "subtotal": subtotal,
-                "total": subtotal,
-            })
+            await api.patch_doc(token, entity_id, {"line_items": (doc.get("line_items") or []) + new_lines})
         except APIError as e:
             return _J({"error": error_message(e)}, status_code=e.status)
 
@@ -7410,7 +7408,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
 
         _taxes_list = taxes_for(company_taxes or [], doc_type)
 
-        def _tax_select(li: dict | None = None, unset: bool = False) -> FT:
+        def _tax_select(li: dict | None = None) -> FT:
             """Build tax <select> + hidden custom-rate input + hidden label for a line item.
 
             The line's stored ``taxes`` decide what it shows (its ``tax_rate``/``tax_code``
@@ -7422,10 +7420,11 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             is refused naming it until the line's tax is picked again).
 
             Each configured tax's option carries the tax as a line holds it (line_tax), so a
-            pick saves its calculation order and compounding. A new line's "--" choice (hidden
-            until chosen) is for a line whose tax the user sets (`unset`, default_line_taxes).
+            pick saves its calculation order and compounding. The "--" choice (hidden otherwise)
+            shows a line whose tax the user sets (line_tax_unset, default_line_taxes).
             """
             li = li or {}
+            unset = line_tax_unset(li)
             held = _held_taxes(li.get("taxes"))
             stored = tax_entries(held)
             unreadable = len(stored) != len(held)
@@ -7786,7 +7785,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 Td(Input(type="number", value="0", step="0.01", data_name="discount_pct",
                          oninput="celerpFieldEdited(this)", onblur="celerpAutoSave()",
                          cls="cell-input cell-input--xs"), cls="col-disc"),
-                Td(_tax_select({"taxes": _new_taxes or []}, unset=_new_taxes is None), cls="col-tax"),
+                Td(_tax_select({"taxes": _new_taxes}), cls="col-tax"),
             ])
             if doc_type in ("purchase_order", "bill"):
                 cells.append(Td(_line_account_picker(chart_accounts, ""), cls="col-account"))
@@ -8733,8 +8732,10 @@ function _celerpTaxCode(row) {{
     return sel.value.split('|')[0];
 }}
 function _celerpLineTaxes(row) {{
-    // The taxes a line row saves: its stored taxes while its tax choice is unchanged, else the
-    // picked company tax as the company saved it (its option's data-tax), else a custom rate.
+    // The taxes a line row saves: null while its tax is still for the user to set ("--"), its
+    // stored taxes while its tax choice is unchanged, else the picked company tax as the company
+    // saved it (its option's data-tax), else a custom rate.
+    if (row.querySelector('[data-name="tax_select"]')?.value === '|unset') return null;
     const rate = _celerpTaxRate(row);
     const picked = row.querySelector('[data-name="tax_select"]')?.selectedOptions[0]?.dataset.tax;
     const label = row.querySelector('[data-name="tax_label"]')?.value || '';
@@ -8951,15 +8952,17 @@ function _celerpDocTaxed() {{
     return !!st && JSON.parse(st.value || '[]').some(tax => tax != null);
 }}
 function _celerpLineTaxesKey(row) {{
-    // What a row's taxes charge, as line_tax_key (celerp/tax_regimes.py) compares them.
-    return JSON.stringify(_celerpLineTaxes(row).map(x => [x.code ?? null, +x.rate || 0, +x.order || 0,
-                                                         !!x.is_compound, x.label || '']));
+    // What a row's taxes charge, as line_tax_key (celerp/tax_regimes.py) compares them; 'null'
+    // for a line whose tax is still to be set.
+    const taxes = _celerpLineTaxes(row);
+    return taxes === null ? 'null' : JSON.stringify(taxes.map(x => [x.code ?? null, +x.rate || 0, +x.order || 0,
+                                                                   !!x.is_compound, x.label || '']));
 }}
 function _celerpApplyDefaultTaxes(cell) {{
     // A new line's taxes, by default_line_taxes' rule (celerp/tax_regimes.py) on the page as it
     // stands: the cell comes with the company defaults; while the draft charges a tax as a whole,
     // the line takes instead the taxes the other lines all carry, copied whole, or "--" for the
-    // user to set when they differ or there are none.
+    // user to set when they differ, are themselves still to be set, or there are none.
     const sel = cell.querySelector('[data-name="tax_select"]');
     if (!sel) return;
     if (_celerpDocTaxed()) {{
@@ -8973,7 +8976,8 @@ function _celerpApplyDefaultTaxes(cell) {{
             json.dataset.name = 'taxes_json';
             sel.parentElement.appendChild(json);
         }}
-        if (new Set(lines.map(_celerpLineTaxesKey)).size !== 1) {{
+        const keys = new Set(lines.map(_celerpLineTaxesKey));
+        if (keys.size !== 1 || keys.has('null')) {{
             const unset = sel.querySelector('option[value="|unset"]');
             unset.hidden = false;
             sel.value = '|unset';

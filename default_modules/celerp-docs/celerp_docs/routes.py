@@ -47,7 +47,7 @@ from celerp.services.lot_origin import in_stock, is_stock_type, rerun_after_plac
 from celerp.services.physical_codes import lock_item_code_namespace
 from celerp.services.peer_import import SourceRevision, peer_batch, receive_file
 from celerp.services.payments import recorded_unmatched, return_unmatched
-from celerp.tax_regimes import default_line_taxes, side_taxes
+from celerp.tax_regimes import default_line_taxes, set_new_line_taxes, side_taxes
 from celerp.services.business_time import business_date_at, business_date_of, company_today
 from celerp.services.landed_cost import compute_bill_landed_allocation
 from celerp.services.line_measures import (FULL, floor_to_unit, line_label, proposed_sell_qty, splitting_allowed,
@@ -115,7 +115,8 @@ class LineItem(BaseModel):
     unit: str | None = None
     unit_price: FiniteFloat = 0
     tax_rate: FiniteFloat | None = None  # deprecated: kept for backward compat; prefer taxes list
-    taxes: list[TaxApplication] = Field(default_factory=list)
+    # None: the line's tax is still for the user to set (set_new_line_taxes); it charges nothing.
+    taxes: list[TaxApplication] | None = Field(default_factory=list)
     sell_by: str | None = None
     line_total: FiniteFloat | None = None
     # Purchasing: whether the line's goods are received into stock, as an expense or as an asset.
@@ -1766,6 +1767,10 @@ async def create_doc(
         raise HTTPException(status_code=409, detail=t("documents.err_doc_number_taken", number=ref_id))
 
     data = payload.model_dump(exclude_none=True)
+    # A line whose tax is still for the user to set keeps that None, which the dump above drops.
+    for line, item in zip(data.get("line_items") or [], payload.line_items):
+        if item.taxes is None:
+            line["taxes"] = None
     chosen = _chosen_terms(data)
     if inv is not None:
         # A credit note refunds its invoice's amounts, which the contact's prices do not change.
@@ -12682,16 +12687,15 @@ def _scan_lot(code: str, res, sb: ScanBehavior, settings: dict, state: dict,
 
 
 def _scan_doc_line(lot: Projection, quantity, priced: bool, price_list: str, currency: str | None,
-                   price_config: tuple[list[dict], str, str], line_taxes: list[dict]) -> dict:
+                   price_config: tuple[list[dict], str, str], line_taxes: list[dict] | None) -> dict:
     """A new document line for a scanned lot: the scan line, how a purchase receives it, the item's
-    customs fields and the document type's default line taxes."""
+    customs fields and the taxes a new line takes (default_line_taxes; None leaves them to the user)."""
     st = lot.state or {}
     line = _scan_line(lot, quantity, priced=priced, price_list=price_list, currency=currency,
                       price_config=price_config)
     line["receive_as"] = default_receive_as(st.get("inventory_type"), st.get("sell_by"))
     line.update({k: st[k] for k in ("hs_code", "country_of_origin", "category") if st.get(k)})
-    if line_taxes:
-        line["taxes"] = [dict(t) for t in line_taxes]
+    set_new_line_taxes(line, line_taxes)
     return line
 
 
@@ -12725,7 +12729,7 @@ async def scan_doc(
     price_list = line_price_list(doc_type, payload.price_list)
     priced = sb.priced and (not is_cost_list_name(price_list) or role_has_permission(settings, role, "view_inventory_costs"))
     currency = state.get("currency")
-    line_taxes = default_line_taxes(side_taxes(settings, doc_type), doc_type, doc=state) or []
+    line_taxes = default_line_taxes(side_taxes(settings, doc_type), doc_type, doc=state)
     existing = [dict(l) for l in (state.get("line_items") or [])]
     known = line_id_counts(existing)
 

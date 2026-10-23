@@ -153,6 +153,15 @@ def test_a_document_taxed_as_a_whole_keeps_its_taxation_on_a_new_line():
         default_line_taxes(th, "invoice")
 
 
+def test_a_line_left_for_the_user_leaves_the_next_line_to_the_user():
+    """A line stored with its tax still to be set (None) has decided nothing: on a draft taxed as a
+    whole, a new line next to it is left for the user too, never given no tax as if decided."""
+    th = TAX_REGIMES["TH"]["taxes"]
+    assert default_line_taxes(th, "invoice", doc=_draft([_LEVY], None)) is None
+    assert default_line_taxes(th, "invoice", doc=_draft([_LEVY], None, None)) is None
+    assert default_line_taxes(th, "invoice", doc=_draft([_LEVY], None, [])) is None
+
+
 def test_a_document_wide_levy_leaves_vat_on_a_line_added_next_to_it():
     """A draft with a $100 line taxed VAT 7% and a document-wide 5% levy: a $100 line added to it
     still takes VAT 7%, so VAT is $14, the levy $10 and the total $224 (not $217)."""

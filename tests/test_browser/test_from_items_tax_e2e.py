@@ -185,7 +185,8 @@ _COMPOUND_AFTER_VAT = [
 
 def _add_line(path: str, page, ui_server, company, ui, token: str, doc_id: str, item: dict) -> None:
     """Add `item` to the draft by `path`: from items, send to (a purchase order's reorder line for
-    "reorder"), scan, the editor's line picker, or the editor's empty new line ("add_line", $100)."""
+    "reorder"), scan, a CSV import on the document page, the editor's line picker, or the editor's
+    empty new line ("add_line", $100)."""
     if path == "from_items":
         r = ui.post("/docs/from-items/add", data={"selected": [item["id"]], "target_id": doc_id})
         assert r.status_code == 204, r.text
@@ -201,6 +202,9 @@ def _add_line(path: str, page, ui_server, company, ui, token: str, doc_id: str, 
     elif path == "scan":
         r = company.post(f"/docs/{doc_id}/scan", json={"barcode": item["sku"]})
         assert r.status_code == 200 and r.json()["scanned"] == 1, r.text
+    elif path == "csv":
+        r = ui.post(f"/docs/{doc_id}/items/csv", files={"file": ("lines.csv", f"sku,quantity\n{item['sku']},1\n")})
+        assert r.status_code == 200 and r.json()["imported"] == 1, r.text
     else:
         lines = len(company.get(f"/docs/{doc_id}").json().get("line_items") or [])
         ctx = page.context.browser.new_context(base_url=ui_server)
@@ -232,7 +236,7 @@ def _each_line_at_100(company, doc_id: str) -> dict:
     return company.get(f"/docs/{doc_id}").json()
 
 
-@pytest.mark.parametrize("path", ["from_items", "send_to", "scan", "picker"])
+@pytest.mark.parametrize("path", ["from_items", "send_to", "scan", "csv", "picker"])
 def test_a_document_wide_levy_leaves_vat_on_a_line_added_next_to_it(page, api_server, ui_server, api, path):
     """A draft with a $100 line taxed VAT 7% and a document-wide 5% levy: a $100 item added to it
     still takes VAT 7%, so VAT is $14, the levy $10 and the total $224 (not $217)."""
@@ -293,17 +297,43 @@ def _mixed_draft(company, items: list[dict]) -> str:
     return r.json()["id"]
 
 
-@pytest.mark.parametrize("path", ["from_items", "send_to", "scan", "picker", "add_line"])
+_EVERY_PATH = ["from_items", "send_to", "scan", "csv", "picker", "add_line"]
+
+
+@pytest.mark.parametrize("path", _EVERY_PATH)
 def test_a_line_added_where_the_lines_differ_takes_no_tax_of_its_own(page, api_server, ui_server, api, path):
     """A draft charging a 5% levy as a whole, one $100 line taxed VAT 7% and one with no tax: a
     $100 line added to it takes no tax of its own, never the company default, so VAT is $7, the
-    levy $15 and the total $322."""
+    levy $15 and the total $322. Its tax stays for the user to set, also through a save."""
     with _demo_company(api_server, ui_server, api, "TH") as (company, ui, token, items):
         doc_id = _mixed_draft(company, items)
         _add_line(path, page, ui_server, company, ui, token, doc_id, items[2])
         doc = _each_line_at_100(company, doc_id)
     assert [_codes(line) for line in doc["line_items"]] == [["VAT 7%"], [], []]
+    assert doc["line_items"][2]["taxes"] is None
     assert (float(doc["subtotal"]), float(doc["total"])) == (300.0, 322.0)
+
+
+@pytest.mark.parametrize("path", _EVERY_PATH)
+def test_a_line_left_for_the_user_shows_its_tax_is_to_be_chosen_after_a_reload(page, api_server, ui_server, api,
+                                                                               path):
+    """However a line was added where the lines of a draft taxed as a whole differ, the editor
+    opened afresh shows "--" for its tax with the hint to choose it, never "No Tax"; a line added
+    next to it is left for the user too."""
+    with _demo_company(api_server, ui_server, api, "TH") as (company, ui, token, items):
+        doc_id = _mixed_draft(company, items)
+        _add_line(path, page, ui_server, company, ui, token, doc_id, items[2])
+        ctx, tab = _editor(page, ui_server, token, doc_id)
+        try:
+            rows = tab.locator("table.doc-lines tbody tr")
+            shown = rows.nth(2).locator('[data-name="tax_select"]').evaluate(
+                "s => [s.selectedOptions[0].text, s.title]")
+            tab.evaluate("celerpAddLine()")
+            after = rows.last.locator('[data-name="tax_select"]').evaluate("s => s.selectedOptions[0].text")
+        finally:
+            ctx.close()
+    assert shown == ["--", "Choose this line's tax: the document is taxed as a whole, so no default tax was added"]
+    assert after == "--"
 
 
 def _editor(page, ui_server, token: str, doc_id: str):
@@ -330,6 +360,34 @@ def test_the_editor_asks_for_the_tax_of_a_line_added_where_the_lines_differ(page
         finally:
             ctx.close()
     assert shown == ["--", "Choose this line's tax: the document is taxed as a whole, so no default tax was added"]
+
+
+def test_the_editor_leaves_a_line_added_next_to_a_line_still_to_set_to_the_user(page, api_server, ui_server, api):
+    """A draft taxed as a whole whose only line has its tax still to be set: a line added in the
+    editor shows "--" too, never "No Tax" copied from it, and a save keeps both to be set."""
+    with _demo_company(api_server, ui_server, api, "TH") as (company, _, token, items):
+        r = company.post("/docs", json={
+            "doc_type": "invoice", "status": "draft", "doc_taxes": [_LEVY],
+            "line_items": [{"description": items[0]["name"], "entity_id": items[0]["id"], "quantity": 1,
+                            "unit_price": 100.0, "taxes": None}]})
+        assert r.status_code in (200, 201), r.text
+        doc_id = r.json()["id"]
+        ctx, tab = _editor(page, ui_server, token, doc_id)
+        try:
+            tab.evaluate("celerpAddLine()")
+            row = tab.locator("table.doc-lines tbody tr").last
+            shown = row.locator('[data-name="tax_select"]').evaluate("s => s.selectedOptions[0].text")
+            price = row.locator('[data-name="unit_price"]')
+            price.fill("100")
+            price.dispatch_event("input")
+            price.dispatch_event("blur")
+            _saved(company, doc_id, 2)
+        finally:
+            ctx.close()
+        doc = company.get(f"/docs/{doc_id}").json()
+    assert shown == "--"
+    assert [line["taxes"] for line in doc["line_items"]] == [None, None]
+    assert (float(doc["subtotal"]), float(doc["total"])) == (200.0, 210.0)
 
 
 _LEVY_COMPOUND = {"code": "Levy 10%", "rate": 10.0, "amount": 0, "order": 1, "is_compound": True, "label": ""}
