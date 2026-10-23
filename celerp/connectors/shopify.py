@@ -15,7 +15,6 @@ API version: 2024-01 (stable)
 """
 from __future__ import annotations
 
-import json
 import logging
 from datetime import datetime
 from typing import Any
@@ -37,6 +36,7 @@ from celerp.connectors.base import (
     SyncResult,
 )
 import celerp.connectors.upsert as _upsert
+from ui.i18n import t
 
 log = logging.getLogger(__name__)
 
@@ -344,11 +344,15 @@ class ShopifyConnector(ConnectorBase):
     # -- Outbound: Products push -----------------------------------------------
 
     async def sync_products_out(self, ctx: ConnectorContext) -> SyncResult:
-        """Push Celerp item updates -> Shopify products (fields, images, certificates)."""
-        from celerp.connectors.images import build_platform_image_payload, build_platform_cert_payload
+        """Push Celerp item updates -> Shopify products (fields and images). An image
+        goes by Shopify's own id when Shopify holds it, by a short-lived public link
+        otherwise; when one cannot be shared the images are left as they are and the
+        product waits on a person."""
+        from celerp.connectors.images import store_images
 
         result = SyncResult(entity=SyncEntity.PRODUCTS, direction=SyncDirection.OUTBOUND)
         errors: list[str] = []
+        attention: list[dict] = []
 
         try:
             items = await _upsert.list_items_modified_since_last_sync(ctx.company_id, platform="shopify")
@@ -371,13 +375,14 @@ class ShopifyConnector(ConnectorBase):
                     if item.get("sale_price") is not None:
                         payload["product"]["variants"] = [{"price": str(item["sale_price"])}]
 
-                    # Push images
-                    files: list[dict] = item.get("files") or []
-                    image_payload = build_platform_image_payload(files)
-                    if image_payload["hero_url"]:
-                        payload["product"]["images"] = [{"src": image_payload["hero_url"]}] + [
-                            {"src": u} for u in image_payload["additional_urls"]
-                        ]
+                    images, unshared = await store_images(
+                        ctx, self.name, item.get("files") or [], item.get("external_link") or {})
+                    if unshared:
+                        attention.append({"id": str(product_id), "label": item.get("name") or item.get("sku"),
+                                          "kind": "image", "reason": t("connectors.attention_image_unshared",
+                                                                       service=self.display_name)})
+                    elif images:
+                        payload["product"]["images"] = images
 
                     resp = await client.put(
                         f"{_base_url(ctx)}/products/{product_id}.json",
@@ -385,30 +390,12 @@ class ShopifyConnector(ConnectorBase):
                         json=payload,
                     )
                     resp.raise_for_status()
-
-                    # Push certificate metafields (separate calls per metafield)
-                    cert_payload = build_platform_cert_payload(files)
-                    for tag_key, certs in cert_payload.items():
-                        try:
-                            mf_resp = await client.post(
-                                f"{_base_url(ctx)}/products/{product_id}/metafields.json",
-                                headers=_headers(ctx),
-                                json={"metafield": {
-                                    "namespace": "custom",
-                                    "key": tag_key,
-                                    "value": json.dumps(certs),
-                                    "type": "json",
-                                }},
-                            )
-                            mf_resp.raise_for_status()
-                        except Exception as mf_exc:
-                            log.warning("shopify: metafield push failed product=%s tag=%s: %s", product_id, tag_key, mf_exc)
-
                     result.updated += 1
                 except Exception as exc:
                     errors.append(f"Product {product_id}: {exc}")
 
         result.errors = errors or None
+        result.attention = attention
         log.info(
             "shopify.sync_products_out company=%s updated=%d skipped=%d errors=%d",
             ctx.company_id, result.updated, result.skipped, len(errors),

@@ -6559,5 +6559,10 @@
   "connectors.first_sync_links_undone": "The {n} links it made to {service} were undone.",
   "connectors.first_sync_undo_links": "Undo links",
   "connectors.first_sync_undo_links_confirm": "Detach the {n} products the first sync linked to {service}, and bring back any values it took from {service}?",
-  "connectors.first_sync_invoices": "It imported {n} invoices. To reverse one, open it and void it; voiding keeps its history in your books."
+  "connectors.first_sync_invoices": "It imported {n} invoices. To reverse one, open it and void it; voiding keeps its history in your books.",
+  "connectors.link_confirm": "{service} already has {name} with this SKU. Link it? Celerp will replace its name, description, price and images at the next sync.",
+  "connectors.err_link_save_failed": "Created {name} in {service} but could not save the link: {reason}. Publish again to link it.",
+  "connectors.err_not_published": "This item is not published to {service}.",
+  "connectors.attention_image_unshared": "Its images were not sent: Celerp could not create a link {service} can fetch them from. Check that Celerp Connect is active, then sync again.",
+  "connectors.attention_image_refused": "{service} did not take its images, so they were not changed; the other changes were sent. {detail}"
 }

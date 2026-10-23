@@ -1156,6 +1156,40 @@
       "params": [
         "n"
       ]
+    },
+    "connectors.link_confirm": {
+      "en": "{service} already has {name} with this SKU. Link it? Celerp will replace its name, description, price and images at the next sync.",
+      "params": [
+        "name",
+        "service"
+      ]
+    },
+    "connectors.err_link_save_failed": {
+      "en": "Created {name} in {service} but could not save the link: {reason}. Publish again to link it.",
+      "params": [
+        "name",
+        "reason",
+        "service"
+      ]
+    },
+    "connectors.err_not_published": {
+      "en": "This item is not published to {service}.",
+      "params": [
+        "service"
+      ]
+    },
+    "connectors.attention_image_unshared": {
+      "en": "Its images were not sent: Celerp could not create a link {service} can fetch them from. Check that Celerp Connect is active, then sync again.",
+      "params": [
+        "service"
+      ]
+    },
+    "connectors.attention_image_refused": {
+      "en": "{service} did not take its images, so they were not changed; the other changes were sent. {detail}",
+      "params": [
+        "detail",
+        "service"
+      ]
     }
   }
 }

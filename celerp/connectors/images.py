@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: BUSL-1.1
 """Shared image and file helpers for connectors.
 
-Used by WooCommerce and Shopify connectors to push/pull product images
-and certificate metafields in a DRY, platform-agnostic way.
+Used by WooCommerce and Shopify connectors to pull product images and certificate
+metafields, and to send product images, in a DRY, platform-agnostic way.
 """
 from __future__ import annotations
 
@@ -34,41 +34,44 @@ def _already_pulled(files: list[dict], platform: str, remote: dict) -> bool:
     )
 
 
-def build_platform_image_payload(files: list[dict]) -> dict:
-    """Return hero_url and additional_urls from an item's files list.
-
-    Returns:
-        {"hero_url": str | None, "additional_urls": list[str]}
-    """
-    hero = next((f for f in files if f.get("is_hero") and _is_image_mime(f.get("mime", ""))), None)
-    additional = [
-        f["url"] for f in files
-        if f.get("document_tag") == _PRODUCT_IMAGE_TAG
-        and not f.get("is_hero")
-        and _is_image_mime(f.get("mime", ""))
-        and f.get("url")
-    ]
-    return {
-        "hero_url": hero["url"] if hero and hero.get("url") else None,
-        "additional_urls": additional,
-    }
+def product_image_files(files: list[dict]) -> list[dict]:
+    """An item's product images in the order a store shows them: the hero first, then
+    the other product images."""
+    images = [f for f in files if _is_image_mime(f.get("mime", "")) and f.get("id")]
+    hero = [f for f in images if f.get("is_hero")][:1]
+    rest = [f for f in images if not f.get("is_hero") and f.get("document_tag") == _PRODUCT_IMAGE_TAG]
+    return hero + rest
 
 
-def build_platform_cert_payload(files: list[dict]) -> dict:
-    """Return {tag_slug: [{"name": filename, "url": url}]} for each cert-like tag.
+def store_media_id(file: dict, platform: str, link: dict, store: str | None) -> str | None:
+    """The store's own id for an image it already holds: the one it gave when the image
+    was pulled from this store, or the one it returned when Celerp sent it."""
+    remote = (file.get("remote") or {}).get(platform) or {}
+    if remote.get("id") and remote.get("store") == store:
+        return str(remote["id"])
+    known = (link.get("media_ids") or {}).get(file["id"])
+    return str(known) if known else None
 
-    Only includes tags that have at least one file.
-    """
-    result: dict[str, list[dict]] = {}
-    for tag in _CERT_TAGS:
-        entries = [
-            {"name": f.get("filename", ""), "url": f["url"]}
-            for f in files
-            if f.get("document_tag") == tag and f.get("url")
-        ]
-        if entries:
-            result[tag] = entries
-    return result
+
+async def store_images(ctx, platform: str, files: list[dict], link: dict) -> tuple[list[dict], list[dict]]:
+    """The image list to send a store for an item's product images, and the images that
+    could not be shared. An image the store holds goes by its id; any other by a
+    short-lived public link (relay_share.mint_media_url); never by a Celerp address the
+    store cannot reach."""
+    from celerp.services import relay_share
+
+    images, unshared = [], []
+    for file in product_image_files(files):
+        media_id = store_media_id(file, platform, link, ctx.store_handle)
+        if media_id is not None:
+            images.append({"id": int(media_id) if media_id.isdigit() else media_id})
+            continue
+        url = await relay_share.mint_media_url(ctx.company_id, file)
+        if url is None:
+            unshared.append(file)
+        else:
+            images.append({"src": url})
+    return images, unshared
 
 
 async def download_and_emit_file(

@@ -84,7 +84,7 @@ def test_product_channel_platforms_match_registry():
     from celerp.connectors.ownership import PRODUCT_CHANNEL_PLATFORMS
     writers = {
         c.name for c in registry.all_connectors()
-        if "upsert_external_product" in Path(inspect.getsourcefile(type(c))).read_text()
+        if "import_store_product" in Path(inspect.getsourcefile(type(c))).read_text()
     }
     assert set(PRODUCT_CHANNEL_PLATFORMS) == writers
     assert set(PRODUCT_CHANNEL_PLATFORMS) == _catalog_channel_ids()
@@ -116,6 +116,12 @@ EXTERNAL_LINK_CALLERS: dict[tuple[str, str], tuple[str, str]] = {
     ("celerp/connectors/woocommerce.py", "_reconcile_missing_product_links"): ("SYNC", _SYNC),
     ("celerp/connectors/woocommerce.py", "ensure_product_link"): ("SYNC", _SYNC),
     ("celerp/connectors/woocommerce.py", "handle_product_deleted"): ("SYNC", _SYNC),
+    ("celerp/connectors/woocommerce.py", "set_product_status"): ("SYNC", _SYNC),
+    ("celerp/connectors/first_sync.py", "build_preview"):
+        ("SYNC", "reads links for the first sync's preview of an owned connector"),
+    ("celerp/connectors/webhooks.py", "_own_push"): ("SYNC", _SYNC),
+    ("default_modules/celerp-connectors/celerp_connectors/routes.py", "resolve_product_conflict"):
+        ("SYNC", "acts only on an entry of the owned connector's attention list"),
     ("celerp/connectors/outbound_queue.py", "enqueue_item_change"):
         ("SYNC", "queues Woo pushes only while an outbound WooCommerce config is held by the company"),
     ("default_modules/celerp-connectors/celerp_connectors/routes.py", "set_item_sync"):
@@ -706,16 +712,16 @@ async def test_item_sync_route_toggles_the_shopify_sync_flag_through_the_ledger(
         return list(rows.scalars())
 
     r = await client.post("/connector-items/shopify/sync", headers=h,
-                          json={"entity_ids": [a], "enable": True})
+                          json={"entity_ids": [a], "action": "publish"})
     assert r.status_code == 200, r.text
-    assert r.json() == {"updated": 1, "enabled": True, "errors": []}
+    assert r.json() == {"updated": 1, "action": "publish", "errors": [], "needs_confirmation": []}
     assert await _flag() is True
     again = await client.post("/connector-items/shopify/sync", headers=h,
-                              json={"entity_ids": [a], "enable": True})
+                              json={"entity_ids": [a], "action": "publish"})
     assert again.json()["updated"] == 0
 
     r = await client.post("/connector-items/shopify/sync", headers=h,
-                          json={"entity_ids": [a], "enable": False})
+                          json={"entity_ids": [a], "action": "stop"})
     assert r.status_code == 200, r.text
     assert r.json()["updated"] == 1
     assert await _flag() is False

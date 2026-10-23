@@ -192,3 +192,73 @@ async def test_direction_change_resyncs_topics(connector_session):
                                             "product.created", "product.updated", "product.deleted"}
     assert {b["status"] for b in bodies} == {"active"} and {b["secret"] for b in bodies} == {"s3"}
     assert config.webhook_ids == [str(10 + i) for i in range(6)]
+
+
+@pytest.mark.asyncio
+async def test_webhooks_registered_paused():
+    """Before the first sync the store's webhooks are paused; once it starts they deliver."""
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+
+    from celerp_connectors.routes import resync_webhook_topics
+
+    woo = WooCommerceConnector()
+    woo_register = AsyncMock(return_value=["1"])
+    config = SimpleNamespace(webhook_ids=[], webhook_secret="s", entity_directions=_WOO, first_sync_at=None)
+    ctx = ConnectorContext(company_id="co", access_token="k:s", store_handle="https://shop.test")
+    with patch.object(WooCommerceConnector, "register_webhooks", woo_register), \
+            patch.object(WooCommerceConnector, "deregister_webhooks", AsyncMock()), \
+            patch("celerp.connectors.woocommerce.webhook_delivery_url", return_value="https://relay.test/wh"):
+        await resync_webhook_topics(woo, config, ctx)
+        config.first_sync_at = datetime.now(timezone.utc)
+        await resync_webhook_topics(woo, config, ctx)
+    assert [c.kwargs["status"] for c in woo_register.await_args_list] == ["paused", "active"]
+
+
+def _signed_delivery(secret: str, payload: dict) -> tuple[bytes, str]:
+    import json
+
+    body = json.dumps(payload).encode()
+    return body, _sign(body, secret)
+
+
+@pytest.mark.asyncio
+async def test_delivery_before_first_sync_ignored(connector_session):
+    from celerp.connectors.webhooks import dispatch_woocommerce_webhook
+
+    session = connector_session
+    cid = await seed_company(session, "EarlyDelivery")
+    await connect(session, cid, "woocommerce", _WOO, webhook_secret="early")
+    ctx = ConnectorContext(company_id=str(cid), access_token="k:s", store_handle="https://shop.test")
+    body, signature = _signed_delivery("early", {"id": 42})
+    run = AsyncMock()
+    with patch("celerp.connectors.relay_token.fetch_context", new=AsyncMock(return_value=ctx)), \
+            patch("celerp.connectors.webhooks.run_sync", new=run):
+        assert await dispatch_woocommerce_webhook(body, signature, "order.created") is True
+    run.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_own_push_does_not_trigger_inbound_run(connector_session):
+    from datetime import datetime, timezone
+
+    from celerp.connectors.webhooks import WebhookEvent, handle_webhook
+    from connector_test_support import add_item
+
+    session = connector_session
+    cid = await seed_company(session, "OwnEcho")
+    await connect(session, cid, "woocommerce", {**_WOO, "products": "both"},
+                  first_sync_at=datetime.now(timezone.utc))
+    await add_item(session, cid, "item:echo", "ECHO-1", external_links={"woocommerce": {
+        "product_id": "7", "sync_enabled": True, "remote_deleted": False,
+        "last_pushed_modified": "2026-09-01T10:00:00"}})
+    ctx = ConnectorContext(company_id=str(cid), access_token="k:s", store_handle="https://shop.test")
+    run = AsyncMock()
+    with patch("celerp.connectors.webhooks.run_sync", new=run):
+        await handle_webhook(WebhookEvent(platform="woocommerce", topic="product.updated",
+                                          payload={"id": 7, "date_modified_gmt": "2026-09-01T10:00:00"}), ctx)
+        run.assert_not_awaited()
+        # A change made in the store after the push does run.
+        await handle_webhook(WebhookEvent(platform="woocommerce", topic="product.updated",
+                                          payload={"id": 7, "date_modified_gmt": "2026-09-02T08:00:00"}), ctx)
+    run.assert_awaited_once()

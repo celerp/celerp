@@ -39,6 +39,52 @@ class WebhookEvent:
     payload: dict[str, Any] | None = None
 
 
+async def _first_sync_started(company_id: str, platform: str) -> bool:
+    """Whether the company's connection to ``platform`` started its first sync; a
+    connection with no configuration is left to the sync's own checks."""
+    import sqlalchemy as sa
+
+    from celerp.db import get_session_ctx
+    from celerp.models.connector_config import ConnectorConfig
+
+    async with get_session_ctx() as session:
+        config = await session.scalar(sa.select(ConnectorConfig).where(
+            ConnectorConfig.company_id == str(company_id), ConnectorConfig.connector == platform))
+    return config is None or config.first_sync_at is not None
+
+
+async def _own_push(company_id: str, payload: dict) -> bool:
+    """Whether a WooCommerce product update is the store echoing Celerp's own push:
+    its modified time is the one the store returned for that push."""
+    import uuid
+
+    import sqlalchemy as sa
+
+    from celerp.db import get_session_ctx
+    from celerp.models.projections import Projection
+    from celerp_inventory.services import external_link_for_state
+
+    remote_id, parent_id = payload.get("id"), payload.get("parent_id")
+    modified = payload.get("date_modified_gmt")
+    if remote_id in (None, "") or not modified:
+        return False
+    is_variation = parent_id not in (None, "", 0, "0")
+    product_id = str(parent_id) if is_variation else str(remote_id)
+    async with get_session_ctx() as session:
+        rows = (await session.execute(sa.select(Projection.state).where(
+            Projection.company_id == uuid.UUID(str(company_id)),
+            Projection.entity_type == "item",
+            Projection.state["external_links"]["woocommerce"]["product_id"].as_string() == product_id,
+        ))).scalars().all()
+    for state in rows:
+        link = external_link_for_state(state or {}, "woocommerce")
+        if is_variation and str(link.get("variation_id") or "") != str(remote_id):
+            continue
+        if link.get("last_pushed_modified") == modified:
+            return True
+    return False
+
+
 def topic_to_entity(topic: str) -> str | None:
     """Map a webhook topic (e.g. 'products/update') to a sync entity name."""
     prefix = topic.split("/")[0].split(".")[0]
@@ -66,6 +112,14 @@ async def handle_webhook(
         return
 
     normalized_topic = event.topic.replace("/", ".").lower()
+    if not await _first_sync_started(ctx.company_id, event.platform):
+        # Accepted and left alone: nothing syncs before a person starts the first sync.
+        log.info("webhook: %s/%s before the first sync, ignored", event.platform, event.topic)
+        return
+    if (event.platform == "woocommerce" and normalized_topic == "product.updated"
+            and await _own_push(ctx.company_id, event.payload or {})):
+        log.info("webhook: WooCommerce echo of Celerp's own product update, ignored")
+        return
     if event.platform == "woocommerce" and normalized_topic == "product.deleted":
         from celerp.connectors.ownership import (
             ConnectorOwnershipError,

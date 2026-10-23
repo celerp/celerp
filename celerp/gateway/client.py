@@ -56,6 +56,7 @@ _PUBLIC_API_PREFIXES = (
     "/share",
     "/pay",
     "/company-peers/verify",
+    "/connector-media",
 )
 
 

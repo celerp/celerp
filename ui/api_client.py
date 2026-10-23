@@ -2760,12 +2760,15 @@ async def bulk_shopify_sync(token: str, entity_ids: list[str], enable: bool) -> 
 
 
 async def set_connector_item_sync(
-    token: str, platform: str, entity_ids: list[str], enable: bool
+    token: str, platform: str, entity_ids: list[str], action: str,
+    confirm_link: list[str] | None = None,
 ) -> dict:
-    async with _api_client(token) as c:
+    """Publish, unpublish, stop or resume items on a store; ``confirm_link`` names the
+    items whose existing store product a person agreed to link."""
+    async with _api_client(token, timeout=60.0) as c:
         return _raise(await c.post(
             f"/connector-items/{platform}/sync",
-            json={"entity_ids": entity_ids, "enable": enable},
+            json={"entity_ids": entity_ids, "action": action, "confirm_link": confirm_link or []},
         )).json()
 
 

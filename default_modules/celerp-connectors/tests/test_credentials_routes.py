@@ -330,7 +330,7 @@ async def test_item_sync_serializes_with_connector_operations():
     ):
         result = await set_item_sync(
             "woocommerce",
-            ItemSyncRequest(entity_ids=["item:1"], enable=False),
+            ItemSyncRequest(entity_ids=["item:1"], action="stop"),
             "company-test",
             SimpleNamespace(id="user-1"),
             None,
@@ -354,7 +354,7 @@ async def test_item_sync_rejects_unbounded_batch_before_locking():
                 "woocommerce",
                 ItemSyncRequest(
                     entity_ids=[f"item:{i}" for i in range(201)],
-                    enable=False,
+                    action="stop",
                 ),
                 "company-test",
                 SimpleNamespace(id="user-1"),

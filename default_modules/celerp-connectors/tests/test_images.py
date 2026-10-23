@@ -14,8 +14,6 @@ import respx
 
 from celerp.connectors.images import (
     _is_image_mime,
-    build_platform_cert_payload,
-    build_platform_image_payload,
     download_and_emit_file,
 )
 
@@ -25,26 +23,6 @@ from celerp.connectors.images import (
 def test_is_image_mime():
     assert _is_image_mime("image/png")
     assert not _is_image_mime("application/pdf")
-
-
-def test_build_image_payload_hero_and_additional():
-    files = [
-        {"url": "h", "is_hero": True, "mime": "image/png", "document_tag": "product_images"},
-        {"url": "a", "is_hero": False, "mime": "image/jpeg", "document_tag": "product_images"},
-        {"url": "doc", "is_hero": False, "mime": "application/pdf", "document_tag": "product_images"},
-    ]
-    p = build_platform_image_payload(files)
-    assert p["hero_url"] == "h"
-    assert p["additional_urls"] == ["a"]  # pdf excluded (not image)
-
-
-def test_build_cert_payload():
-    files = [
-        {"url": "c", "filename": "cert.pdf", "document_tag": "certificates"},
-        {"url": "i", "filename": "x.jpg", "document_tag": "product_images"},
-    ]
-    p = build_platform_cert_payload(files)
-    assert p == {"certificates": [{"name": "cert.pdf", "url": "c"}]}
 
 
 # ── download_and_emit_file ───────────────────────────────────────────────────
@@ -182,3 +160,100 @@ async def test_inbound_image_pull_is_idempotent(connector_session):
     files = (await item_state(session, cid, "item:img"))["files"]
     assert len(files) == 2
     assert [f["remote"]["woocommerce"]["id"] for f in files] == ["11", "12"]
+
+
+@pytest.mark.asyncio
+async def test_outbound_never_sends_relative_image_src(connector_session, monkeypatch):
+    """A Celerp image goes to the store through a short-lived public link; once the
+    store returns its own id for it, later pushes send that id. Without a link nothing
+    relative is ever sent: the image waits on a person."""
+    import json
+
+    from celerp.connectors.base import ConnectorContext
+    from celerp.connectors.woocommerce import WooCommerceConnector
+    from celerp.services.field_fingerprints import fingerprint
+    from celerp_inventory.services import external_link_for_state
+    from connector_test_support import connect
+
+    session = connector_session
+    cid = await seed_company(session, "MintedImage")
+    files = [{"id": "f9", "filename": "hero.png", "mime": "image/png", "is_hero": True,
+              "document_tag": "product_images", "url": f"/static/attachments/{cid}/f9.png"}]
+    values = {"sku": "M-1", "name": "Mint", "description": "", "sale_price": 1.0}
+    await add_item(session, cid, "item:m", "M-1", name="Mint", description="", sale_price=1.0, files=files,
+                   external_links={"woocommerce": {
+                       "product_id": "605", "sync_enabled": True, "remote_deleted": False,
+                       "field_fingerprints": {k: fingerprint(v) for k, v in values.items()}}})
+    await connect(session, cid, "woocommerce", {"products": "outbound", "stock": "off", "orders": "off",
+                                                "customers": "off"})
+    ctx = ConnectorContext(company_id=str(cid), access_token="ck:cs", store_handle="https://store.example.com")
+
+    with respx.mock:
+        put = respx.put("https://store.example.com/wp-json/wc/v3/products/605").mock(
+            return_value=httpx.Response(200, json={"id": 605, "images": [{"id": 777}]}))
+        with patch("celerp.services.relay_share.mint_media_url", new=AsyncMock(return_value=None)):
+            unshared = await WooCommerceConnector().sync_products_out(ctx)
+        assert not put.called
+        assert [e["kind"] for e in unshared.attention] == ["image"]
+
+        with patch("celerp.services.relay_share.mint_media_url",
+                   new=AsyncMock(return_value="https://share.example.com/m/tok/f9.png")):
+            await WooCommerceConnector().sync_products_out(ctx)
+        sent = json.loads(put.calls.last.request.content)
+        assert sent == {"images": [{"src": "https://share.example.com/m/tok/f9.png"}]}
+        link = external_link_for_state(await item_state(session, cid, "item:m"), "woocommerce")
+        assert link["media_ids"] == {"f9": "777"}
+    for call in put.calls:
+        for image in json.loads(call.request.content).get("images", []):
+            assert not str(image.get("src", "")).startswith("/")
+
+
+# ── short-lived image links for a store to fetch ──────────────────────────────
+
+def test_media_tokens_name_one_image_and_expire():
+    from datetime import datetime, timedelta, timezone
+
+    from celerp.services.connector_media import MEDIA_TTL, media_claims, media_token
+
+    image = {"id": "f1", "mime": "image/png", "url": "/static/attachments/c1/f1.png"}
+    now = datetime(2026, 9, 1, tzinfo=timezone.utc)
+    token = media_token("c1", image, now=now)
+    assert media_claims(token, now=now + timedelta(minutes=5))["u"] == image["url"]
+    assert media_claims(token, now=now + MEDIA_TTL + timedelta(seconds=1)) is None
+    body, _, signature = token.partition(".")
+    assert media_claims(f"{body}x.{signature}", now=now) is None
+    # Never a document: certificates and other files get no link.
+    assert media_token("c1", {"id": "d1", "mime": "application/pdf", "url": "/static/d1.pdf"}) is None
+
+
+@pytest.mark.asyncio
+async def test_media_route_serves_only_a_valid_token(client):
+    from celerp.services.connector_media import media_token
+
+    image = {"id": "f1", "mime": "image/png", "url": "/static/attachments/c1/f1.png"}
+    with patch("celerp.services.attachments.read_company_file", new=AsyncMock(return_value=b"png-bytes")) as read:
+        ok = await client.get(f"/connector-media/{media_token('c1', image)}")
+        forged = await client.get("/connector-media/not-a-token")
+    assert ok.status_code == 200 and ok.content == b"png-bytes"
+    assert ok.headers["content-type"] == "image/png"
+    read.assert_awaited_once_with("c1", image["url"], __import__("celerp.services.attachments",
+                                                                 fromlist=["MAX_FILE_BYTES"]).MAX_FILE_BYTES)
+    assert forged.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_mint_media_url_asks_the_relay_with_the_image_name():
+    from celerp.services.relay_share import mint_media_url
+
+    image = {"id": "f1", "mime": "image/jpeg", "url": "/static/attachments/c1/f1.jpg"}
+    with patch("celerp.gateway.state.relay_http_url", return_value="https://relay.test"), \
+            patch("celerp.gateway.state.relay_session_headers", return_value={"X-Session-Token": "s"}), \
+            respx.mock:
+        mint = respx.post("https://relay.test/media/mint").mock(
+            return_value=httpx.Response(200, json={"url": "https://share.example.com/m/e/f1.jpg"}))
+        assert await mint_media_url("c1", image) == "https://share.example.com/m/e/f1.jpg"
+        sent = __import__("json").loads(mint.calls[0].request.content)
+        assert sent["filename"] == "f1.jpg" and sent["media_token"]
+        mint.mock(return_value=httpx.Response(402))
+        assert await mint_media_url("c1", image) is None
+    assert await mint_media_url("c1", {"id": "d", "mime": "application/pdf", "url": "/x.pdf"}) is None

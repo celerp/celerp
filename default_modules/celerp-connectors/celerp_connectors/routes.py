@@ -48,6 +48,24 @@ local_router = APIRouter(
     prefix="/connector-items", tags=["connectors"],
     dependencies=[Depends(get_current_user)],
 )
+# A store fetches the product images Celerp sends it here, through the relay's
+# short-lived share address; the signed token is the only access (connector_media).
+media_router = APIRouter(prefix="/connector-media", tags=["connectors"])
+
+
+@media_router.get("/{token}")
+async def connector_media(token: str):
+    """One product image a sync sent a store, while its token is valid."""
+    from fastapi.responses import Response
+
+    from celerp.services.attachments import MAX_FILE_BYTES, read_company_file
+    from celerp.services.connector_media import media_claims
+
+    claims = media_claims(token)
+    content = await read_company_file(claims["c"], claims["u"], MAX_FILE_BYTES) if claims else None
+    if content is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    return Response(content=content, media_type=claims["m"], headers={"Cache-Control": "no-store"})
 
 
 # ── Request / Response schemas ────────────────────────────────────────────────
@@ -1097,7 +1115,11 @@ _ITEM_SYNC_LIMIT = 200
 
 class ItemSyncRequest(BaseModel):
     entity_ids: list[str]
-    enable: bool = True
+    # publish: link or create the product, published; unpublish: set it to draft in the
+    # store, keeping the link; stop / resume: stop or resume syncing it, in Celerp only.
+    action: Literal["publish", "unpublish", "stop", "resume"]
+    # Items whose existing store product (same SKU) a person agreed to link.
+    confirm_link: list[str] = []
 
 
 @local_router.post("/{connector_name}/sync")
@@ -1107,7 +1129,12 @@ async def set_item_sync(
     user=Depends(get_current_user), _: None = require_permission("adjust_inventory"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Enable or disable catalog product synchronization for one connected channel."""
+    """Publish, unpublish, stop or resume catalog products on one connected channel.
+
+    Publishing an item whose SKU the store already has asks first: the item is listed
+    under ``needs_confirmation`` with the store product's name, and is linked when sent
+    again in ``confirm_link``. Unpublish sets the store product to draft and keeps the
+    link, so Publish undoes it; nothing is ever deleted in the store."""
     if connector_name not in PRODUCT_CHANNEL_PLATFORMS:
         raise HTTPException(status_code=404, detail="Unsupported catalog connector")
     if not payload.entity_ids:
@@ -1143,14 +1170,18 @@ async def set_item_sync(
         except ValueError as exc:
             errors.append(f"{entity_id}: {exc}")
     updated = 0
+    needs_confirmation: list[dict] = []
+    action = payload.action
     if connector_name == "shopify":
+        if action == "unpublish":
+            raise HTTPException(status_code=422, detail=t("connectors.err_unpublish_shopify"))
+        desired = action in ("publish", "resume")
         for anchor_id, anchor in anchors.items():
             state = anchor.state or {}
             linked = external_link_for_state(state, "shopify")
-            if payload.enable and not linked:
+            if desired and not linked:
                 errors.append(f"{state.get('sku') or anchor_id}: not linked to a Shopify product; import it from Shopify first")
                 continue
-            desired = bool(payload.enable)
             if bool(anchor.is_sync_to_shopify) == desired: continue
             await emit_event(session, company_id=company_id, entity_id=anchor_id, entity_type="item",
                 event_type="shop.sync.enabled" if desired else "shop.sync.disabled", data={},
@@ -1158,29 +1189,42 @@ async def set_item_sync(
                 idempotency_key=str(__import__("uuid").uuid4()), metadata_={})
             updated += 1
         await session.commit()
-    elif not payload.enable:
+    elif action in ("stop", "resume"):
         for anchor_id, anchor in anchors.items():
             link = external_link_for_state(anchor.state or {}, "woocommerce")
-            if not link or link.get("sync_enabled") is False: continue
+            if not link or link.get("sync_enabled") is (action == "resume"):
+                continue
             await set_external_link_state(session, company_id, anchor_id, "woocommerce",
-                sync_enabled=False, actor_id=user.id, source="connector_ui")
+                sync_enabled=action == "resume", actor_id=user.id, source="connector_ui")
             updated += 1
         await session.commit()
     else:
-        from celerp.connectors.woocommerce import WooCommerceConnector
+        from celerp.connectors.woocommerce import LinkNeedsConfirmation, WooCommerceConnector
         ctx = await _connector_context(
             str(company_id), "woocommerce", ownership_session=session
         )
         if ctx is None:
             raise HTTPException(status_code=409, detail=t("error.woocommerce_credentials"))
+        woo = WooCommerceConnector()
         for anchor_id, anchor in anchors.items():
+            sku = (anchor.state or {}).get("sku") or anchor_id
             try:
-                await WooCommerceConnector().ensure_product_link(ctx, anchor_id, actor_id=user.id)
+                if action == "unpublish":
+                    await woo.set_product_status(ctx, anchor_id, "draft", actor_id=user.id)
+                else:
+                    await woo.ensure_product_link(
+                        ctx, anchor_id, actor_id=user.id,
+                        confirm_link=anchor_id in payload.confirm_link,
+                    )
                 updated += 1
+            except LinkNeedsConfirmation as ask:
+                needs_confirmation.append({"entity_id": anchor_id, "sku": sku,
+                                           "remote_name": ask.remote_name, "message": str(ask)})
             except Exception as exc:
-                errors.append(f"{(anchor.state or {}).get('sku') or anchor_id}: {exc}")
+                errors.append(f"{sku}: {exc}")
         await session.commit()
-    return {"updated": updated, "enabled": payload.enable, "errors": errors}
+    return {"updated": updated, "action": action, "errors": errors,
+            "needs_confirmation": needs_confirmation}
 
 
 # ── Module entry point ────────────────────────────────────────────────────────
@@ -1190,3 +1234,4 @@ def setup_api_routes(app) -> None:
     app.include_router(router)
     app.include_router(open_router)
     app.include_router(local_router)
+    app.include_router(media_router)

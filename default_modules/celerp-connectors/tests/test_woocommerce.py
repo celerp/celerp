@@ -584,6 +584,7 @@ async def test_sync_inventory_out_refuses_parent_managed_variation(woo, ctx):
 @pytest.mark.asyncio
 async def test_sync_products_out_uses_nested_variation_endpoint(woo, ctx):
     item = {
+        "entity_id": "item:shirt-red",
         "sku": "SHIRT-RED", "name": "Shirt - Red", "description": "Red shirt",
         "sale_price": 19.99, "files": [],
         "woocommerce_product_id": "20", "woocommerce_variation_id": "201",
@@ -594,8 +595,10 @@ async def test_sync_products_out_uses_nested_variation_endpoint(woo, ctx):
             route = respx.put(
                 "https://store.example.com/wp-json/wc/v3/products/20/variations/201"
             ).mock(return_value=httpx.Response(200, json={}))
-            result = await woo.sync_products_out(ctx)
+            with patch.object(woo, "_save_push", new=AsyncMock()) as saved:
+                result = await woo.sync_products_out(ctx)
     assert result.updated == 1
+    saved.assert_awaited_once()
     payload = __import__("json").loads(route.calls[0].request.content)
     assert payload["sku"] == "SHIRT-RED"
     assert payload["regular_price"] == "19.99"
@@ -606,6 +609,7 @@ async def test_sync_products_out_uses_nested_variation_endpoint(woo, ctx):
 @pytest.mark.asyncio
 async def test_sync_products_out_simple_product_includes_core_fields(woo, ctx):
     item = {
+        "entity_id": "item:w-1",
         "sku": "W-1", "name": "Widget", "description": "Useful",
         "sale_price": 12.5, "files": [], "woocommerce_product_id": "10",
         "external_link": {"product_id": "10", "manage_stock": True},
@@ -615,8 +619,10 @@ async def test_sync_products_out_simple_product_includes_core_fields(woo, ctx):
             route = respx.put(
                 "https://store.example.com/wp-json/wc/v3/products/10"
             ).mock(return_value=httpx.Response(200, json={}))
-            result = await woo.sync_products_out(ctx)
+            with patch.object(woo, "_save_push", new=AsyncMock()):
+                result = await woo.sync_products_out(ctx)
     assert result.updated == 1
+    assert len(route.calls) == 1  # no images of its own: the store's are left alone
     payload = __import__("json").loads(route.calls[0].request.content)
     assert payload == {
         "sku": "W-1", "description": "Useful",
@@ -919,3 +925,88 @@ async def test_preview_counts_orders_and_accounting_effect(woo, connector_sessio
     assert preview.order_effect == t("connectors.preview_orders_post", n=2, service="WooCommerce")
     # Newest first.
     assert [o["number"] for o in preview.orders] == ["1012", "1011", "1010", "1013"]
+
+
+# -- Publishing --
+
+_OUT = {**_WIDEST, "products": "outbound"}
+_STORE = "https://store.example.com/wp-json/wc/v3"
+
+
+async def _publishing(session, company: str, sku: str, **item):
+    cid = await seed_company(session, company)
+    await add_item(session, cid, f"item:{sku.lower()}", sku, **item)
+    await connect(session, cid, "woocommerce", _OUT)
+    return cid, ConnectorContext(company_id=str(cid), access_token="ck:cs",
+                                 store_handle="https://store.example.com")
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_sku_match_needs_confirmation(woo, connector_session):
+    from celerp.connectors.woocommerce import LinkNeedsConfirmation
+    from celerp_inventory.services import external_link_for_state
+    from connector_test_support import item_state
+
+    session = connector_session
+    cid, ctx = await _publishing(session, "SkuConsent", "SM-1")
+    respx.get(f"{_STORE}/products").mock(return_value=httpx.Response(
+        200, json=[{"id": 88, "sku": "SM-1", "name": "Store mug", "type": "simple", "status": "publish"}]))
+    create = respx.post(f"{_STORE}/products")
+
+    with pytest.raises(LinkNeedsConfirmation) as asked:
+        await woo.ensure_product_link(ctx, "item:sm-1")
+    assert asked.value.remote_name == "Store mug"
+    assert str(asked.value) == t("connectors.link_confirm", name="Store mug", service="WooCommerce")
+    assert not external_link_for_state(await item_state(session, cid, "item:sm-1"), "woocommerce")
+
+    await woo.ensure_product_link(ctx, "item:sm-1", confirm_link=True)
+    assert external_link_for_state(await item_state(session, cid, "item:sm-1"), "woocommerce")["product_id"] == "88"
+    assert not create.called
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_unpublish_sets_draft_keeps_link(woo, connector_session):
+    import json as _json
+
+    from celerp_inventory.services import external_link_for_state
+    from connector_test_support import item_state
+
+    session = connector_session
+    cid, ctx = await _publishing(session, "Unpublish", "UP-1")
+    respx.get(f"{_STORE}/products").mock(return_value=httpx.Response(200, json=[]))
+    respx.post(f"{_STORE}/products").mock(return_value=httpx.Response(
+        201, json={"id": 501, "type": "simple", "status": "publish", "manage_stock": True}))
+    await woo.ensure_product_link(ctx, "item:up-1")
+
+    put = respx.put(f"{_STORE}/products/501").mock(side_effect=lambda request: httpx.Response(
+        200, json={"id": 501, "type": "simple", "status": _json.loads(request.content)["status"]}))
+    await woo.set_product_status(ctx, "item:up-1", "draft")
+    link = external_link_for_state(await item_state(session, cid, "item:up-1"), "woocommerce")
+    assert _json.loads(put.calls.last.request.content) == {"status": "draft"}
+    assert link["product_id"] == "501" and link["remote_status"] == "draft" and link["sync_enabled"]
+
+    respx.get(f"{_STORE}/products/501").mock(return_value=httpx.Response(
+        200, json={"id": 501, "type": "simple", "status": "draft", "manage_stock": True}))
+    await woo.ensure_product_link(ctx, "item:up-1")
+    assert _json.loads(put.calls.last.request.content) == {"status": "publish"}
+    link = external_link_for_state(await item_state(session, cid, "item:up-1"), "woocommerce")
+    assert link["remote_status"] == "publish"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_link_save_failure_names_created_product(woo, connector_session, monkeypatch):
+    session = connector_session
+    cid, ctx = await _publishing(session, "LinkSave", "LS-1", name="Blue lamp")
+    respx.get(f"{_STORE}/products").mock(return_value=httpx.Response(200, json=[]))
+    respx.post(f"{_STORE}/products").mock(return_value=httpx.Response(
+        201, json={"id": 77, "name": "Blue lamp", "type": "simple", "status": "publish"}))
+    monkeypatch.setattr("celerp_inventory.services.set_external_link",
+                        AsyncMock(side_effect=RuntimeError("database busy")))
+
+    with pytest.raises(ValueError) as failed:
+        await woo.ensure_product_link(ctx, "item:ls-1")
+    assert str(failed.value) == t("connectors.err_link_save_failed", name="Blue lamp",
+                                  service="WooCommerce", reason="database busy")

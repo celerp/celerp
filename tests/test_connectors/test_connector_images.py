@@ -1,16 +1,16 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
 
-"""Phase 4 tests: connector image + certificate sync helpers."""
+"""Connector image helpers: which files go to a store, and which a pull already holds."""
 
 from __future__ import annotations
 
 import pytest
 
 from celerp.connectors.images import (
-    build_platform_image_payload,
-    build_platform_cert_payload,
     _already_pulled,
+    product_image_files,
+    store_media_id,
 )
 
 
@@ -24,71 +24,35 @@ def _doc(fid: str, tag: str = "certificates") -> dict:
             "url": f"/static/{fid}.pdf", "document_tag": tag, "is_hero": False, "size": 200}
 
 
-class TestBuildPlatformImagePayload:
-    def test_hero_and_additional(self):
-        files = [_img("hero", is_hero=True), _img("extra1"), _img("extra2")]
-        result = build_platform_image_payload(files)
-        assert result["hero_url"] == "/static/hero.jpg"
-        assert "/static/extra1.jpg" in result["additional_urls"]
-        assert "/static/extra2.jpg" in result["additional_urls"]
-        assert "/static/hero.jpg" not in result["additional_urls"]
-
-    def test_no_hero_returns_none(self):
-        files = [_img("extra1")]
-        result = build_platform_image_payload(files)
-        assert result["hero_url"] is None
-        assert "/static/extra1.jpg" in result["additional_urls"]
+class TestProductImageFiles:
+    def test_hero_first_then_other_product_images(self):
+        files = [_img("extra1"), _img("hero", is_hero=True), _img("extra2")]
+        assert [f["id"] for f in product_image_files(files)] == ["hero", "extra1", "extra2"]
 
     def test_empty_files(self):
-        result = build_platform_image_payload([])
-        assert result["hero_url"] is None
-        assert result["additional_urls"] == []
+        assert product_image_files([]) == []
 
-    def test_non_image_hero_excluded(self):
-        """PDF set as is_hero (should not happen via API but guard it) → excluded from hero."""
-        files = [_doc("cert1")]
-        files[0]["is_hero"] = True  # impossible normally but test the guard
-        result = build_platform_image_payload(files)
-        assert result["hero_url"] is None
-
-    def test_docs_not_in_additional_urls(self):
-        """Only product_images tagged image files appear in additional_urls."""
-        files = [_img("img1"), _doc("cert1"), _doc("spec1", tag="spec_sheets")]
-        result = build_platform_image_payload(files)
-        assert len(result["additional_urls"]) == 1
-        assert result["additional_urls"][0] == "/static/img1.jpg"
+    def test_documents_are_never_images(self):
+        """A certificate or spec sheet never goes to a store as an image, even marked hero."""
+        cert = _doc("cert1")
+        cert["is_hero"] = True
+        files = [_img("img1"), cert, _doc("spec1", tag="spec_sheets")]
+        assert [f["id"] for f in product_image_files(files)] == ["img1"]
 
 
-class TestBuildPlatformCertPayload:
-    def test_certificates_and_spec_sheets(self):
-        files = [
-            _doc("cert1", tag="certificates"),
-            _doc("cert2", tag="certificates"),
-            _doc("spec1", tag="spec_sheets"),
-            _img("img1"),  # should not appear
-        ]
-        result = build_platform_cert_payload(files)
-        assert "certificates" in result
-        assert len(result["certificates"]) == 2
-        assert "spec_sheets" in result
-        assert len(result["spec_sheets"]) == 1
-        assert "product_images" not in result
+class TestStoreMediaId:
+    STORE = "https://shop.example.com"
 
-    def test_empty_files(self):
-        assert build_platform_cert_payload([]) == {}
+    def test_pulled_from_this_store(self):
+        f = {**_img("a"), "remote": {"woocommerce": {"id": "11", "store": self.STORE}}}
+        assert store_media_id(f, "woocommerce", {}, self.STORE) == "11"
 
-    def test_safety_docs(self):
-        files = [_doc("msds1", tag="safety_docs")]
-        result = build_platform_cert_payload(files)
-        assert "safety_docs" in result
-        assert result["safety_docs"][0]["name"] == "msds1.pdf"
+    def test_pulled_from_another_store_is_unknown(self):
+        f = {**_img("a"), "remote": {"woocommerce": {"id": "11", "store": "https://other.example.com"}}}
+        assert store_media_id(f, "woocommerce", {}, self.STORE) is None
 
-    def test_cert_entry_has_name_and_url(self):
-        files = [_doc("mygrs", tag="certificates")]
-        result = build_platform_cert_payload(files)
-        entry = result["certificates"][0]
-        assert "name" in entry
-        assert "url" in entry
+    def test_returned_for_an_earlier_push(self):
+        assert store_media_id(_img("a"), "woocommerce", {"media_ids": {"a": "77"}}, self.STORE) == "77"
 
 
 class TestAlreadyPulled:
