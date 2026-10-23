@@ -905,7 +905,8 @@ async def client(session: AsyncSession):
         # test's loop: cut off by the loop closing, it would leave its connection open.
         await asyncio.gather(*list(background._BG_TASKS), return_exceptions=True)
     app.dependency_overrides.clear()
-    app.state.data_current = True  # a test that started on held-back records leaves none behind
+    # A test that started on held-back records leaves neither the flag nor its cause behind.
+    app.state.data_current, app.state.held_back = True, None
     await _clear_tracker(session)
     _set_session_token(_saved_token or "")
 
