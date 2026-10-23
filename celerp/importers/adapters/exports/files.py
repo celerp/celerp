@@ -48,6 +48,7 @@ class Layout:
     range_key: str = ""                        # the dates to choose when exporting it; a list has none
     joined: bool = False                       # exported a period at a time: the periods must join
     optional: bool = False                     # carried when present, never required
+    absent: frozenset[str] = frozenset()       # columns another layout carries and this one never does
 
 
 @dataclass
@@ -131,7 +132,7 @@ def _match(lines: list[list[str]], layouts: tuple[Layout, ...],
         cells = {heading(c, aliases) for c in line if c.strip()}
         titles = {normalize(c) for above in lines[:index] for c in above if c.strip()}
         for layout in layouts:
-            if not layout.columns <= cells:
+            if not layout.columns <= cells or layout.absent & cells:
                 continue
             if layout.title and normalize(layout.title) not in titles:
                 continue

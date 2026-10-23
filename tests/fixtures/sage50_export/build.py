@@ -12,7 +12,9 @@ lines that balance, and the files are written in the layouts its templates and r
   Journal and Payments / Cash Disbursements Journal), under the names they give each
   field: one row per distribution, each row repeating its transaction's header fields,
   Number of Distributions on every row; the sales tax as a distribution with Invoice/CM
-  Distribution 0, Tax Type 0 and its Sales Tax Agency; the Purchases Journal's Invoice #
+  Distribution 0, Tax Type 0 and its Sales Tax Agency; every field that says what a
+  transaction is (Credit Memo, Quote, Beginning Balance Transaction, Voided by Transaction),
+  regular transactions all; the Purchases Journal's Invoice #
   and Apply to Invoice #; a receipt or payment line applied to an invoice with its G/L
   Account empty, as Sage 50 leaves it; dates as MM/DD/YY, True and False as TRUE and FALSE,
   ANSI (Windows-1252) text, and each amount signed as it posts, debit positive. Goods are
@@ -409,13 +411,15 @@ def documents(books: Books, sales: bool, four: bool = False, alternate: bool = F
                   "Date Due", "Accounts Receivable Account", "Accounts Receivable Amount", "Sales Tax ID",
                   "Number of Distributions", "Invoice/CM Distribution", "Quantity", "Item ID", "Description",
                   "G/L Account", "Unit Price", "Tax Type", "Amount",
-                  "Sales Tax Agency ID" if alternate else "Sales Tax Agency", "Transaction Period", "Transaction Number"]
+                  "Sales Tax Agency ID" if alternate else "Sales Tax Agency", "Transaction Period", "Transaction Number",
+                  "Quote", "Beginning Balance Transaction", "Voided by Transaction"]
     else:
         invoice, apply = ("Invoice/CM #", "Apply to Invoice Number") if alternate else ("Invoice #", "Apply to Invoice #")
         header = ["Vendor ID", "Vendor Name", invoice, apply, "Credit Memo", "Date", "Date Due",
                   "Accounts Payable Account", "Accounts Payable Amount", "Number of Distributions",
                   "Invoice/CM Distribution", "Quantity", "Item ID", "Description", "G/L Account", "Unit Price",
-                  "Amount", "Transaction Period", "Transaction Number"]
+                  "Amount", "Transaction Period", "Transaction Number", "Beginning Balance Transaction",
+                  "Voided by Transaction"]
     names = dict((i, n) for i, n, *_ in CUSTOMERS) if sales else dict(VENDORS)
     rows = []
     for n, x in enumerate(books.documents("sales" if sales else "purchases"), 1):
@@ -429,9 +433,9 @@ def documents(books: Books, sales: bool, four: bool = False, alternate: bool = F
             if sales:
                 # Every distribution of an invoice that charges VAT names the agency; Tax Type 0 is its tax.
                 charged = VAT if any(m.agency for m in x.lines) else ""
-                rows.append([*head, charged, *body, ln.kind, _number(ln.amount), charged, "", n])
+                rows.append([*head, charged, *body, ln.kind, _number(ln.amount), charged, "", n, "FALSE", "FALSE", ""])
             else:
-                rows.append([*head, *body, _number(ln.amount), "", n])
+                rows.append([*head, *body, _number(ln.amount), "", n, "FALSE", ""])
     return _csv(header, rows)
 
 
@@ -441,17 +445,18 @@ def cash(books: Books, sales: bool, four: bool = False, alternate: bool = False)
         header = ["Deposit Ticket ID", "Customer ID", "Customer Name", "Reference", "Receipt Number", "Date",
                   "Payment Method", "Cash Account", "Cash Amount", "Discount Account", "Number of Distributions",
                   "Invoice Paid", "Discount Amount", "Quantity", "Item ID", "Description", "G/L Account", "Unit Price",
-                  "Amount", "Transaction Period", "Transaction Number"]
+                  "Amount", "Transaction Period", "Transaction Number", "Voided by Transaction"]
     else:
         header = ["Vendor ID", "Vendor Name", check, "Date", "Memo", "Cash Account", "Cash Amount", "Discount Account",
                   "Number of Distributions", "Invoice Paid", "Discount Amount", "Quantity", "Item ID", "Description",
-                  "G/L Account", "Unit Price", "Amount", "Transaction Period", "Transaction Number"]
+                  "G/L Account", "Unit Price", "Amount", "Transaction Period", "Transaction Number",
+                  "Voided by Transaction"]
     names = dict((i, n) for i, n, *_ in CUSTOMERS) if sales else dict(VENDORS)
     rows = []
     for n, x in enumerate(books.documents("receipts" if sales else "payments"), 1):
         for ln in x.lines:
             body = [len(x.lines), ln.paid, _number(ln.discount) if ln.discount else "", "", "", ln.description,
-                    "" if ln.paid and not alternate else ln.account, "", _number(ln.amount), "", n]
+                    "" if ln.paid and not alternate else ln.account, "", _number(ln.amount), "", n, ""]
             if sales:
                 rows.append([_short(x.on, four), x.party, names.get(x.party, ""), x.reference, x.reference,
                              _short(x.on, four), "Check", x.head, _number(x.head_amount), x.discount_account, *body])

@@ -28,7 +28,8 @@ Sage 50 differs from the other export sets in four ways, each read here:
 - The exports state no currency. The user chooses it from the currencies Celerp keeps books
   in (CURRENCY_QUESTION); the one a sign the reports print names, such as $ or Br, is suggested.
 
-A transaction's own flags decide what it is, never a guess: a quote posts nothing and is
+A transaction's own fields decide what it is, never a guess, so a template that leaves one
+out is refused, and the rows of one transaction must agree on them: a quote posts nothing and is
 not imported; a customer's or vendor's beginning balance is kept outside the general ledger,
 whose beginning balances the trial balance carries, so it posts nothing here either; a
 transaction voided, or holding back retainage, is imported as the journal it posted, not as
@@ -78,9 +79,11 @@ VOIDED = "Voided transaction"
 RETAINAGE = "Invoice or purchase with retainage"
 # The journal one of those is carried as, as the coverage lists it.
 CARRIED = "{} (journal)"
-# A distribution's Tax Type, 0 to 27: 0 is a tax distribution. Which of the others are taxable is
-# set in each company's own item defaults, which Sage 50 does not export.
+# A distribution's Tax Type, 0 to 27: 0 is a tax distribution, and 27 freight or retainage, as its
+# Retain Percent says. Which of the others are taxable is set in each company's own item defaults,
+# which Sage 50 does not export.
 TAX_DISTRIBUTION = 0
+FREIGHT_OR_RETAINAGE = 27
 TAX_TYPES = range(28)
 # How the templates write True and False.
 FLAGS = {"true": True, "yes": True, "1": True, "false": False, "no": False, "0": False, "": False}
@@ -96,10 +99,11 @@ def _report(area: str, title: str) -> str:
     return f"Reports & Forms > {area} > {title} > Excel"
 
 
-def _journal(kind: str, label: str, columns: set[str], area: str) -> Layout:
+def _journal(kind: str, label: str, columns: set[str], area: str, absent: frozenset[str] = frozenset()) -> Layout:
     """A journal template: every transaction, in one file."""
     return Layout(kind, label, frozenset(columns | {"date", "number of distributions", "g/l account", "amount"}),
-                  menu=_template(area, label), range_key="migration.export_range_ledger", optional=True)
+                  menu=_template(area, label), range_key="migration.export_range_ledger", optional=True,
+                  absent=absent)
 
 
 CHART = Layout("chart", "Chart of Accounts List", frozenset({"account id", "account description", "account type"}),
@@ -113,18 +117,38 @@ ITEMS = Layout("items", "Inventory Item List", frozenset({"item id", "item descr
                menu=_template("Inventory", "Item List"), optional=True)
 EMPLOYEES = Layout("employees", "Employee List", frozenset({"employee id", "employee name"}),
                    menu=_template("Payroll", "Employee List"), optional=True)
-GENERAL = _journal("general", "General Journal", {"reference"}, "General Ledger")
-# The Sales Journal needs its Tax Type: it alone tells a tax distribution from freight, both of
-# which Sage 50 writes as Invoice/CM Distribution 0. Both document journals need the Date Due
-# Sage 50 requires of every invoice and purchase.
+# A general journal entry names no customer or vendor, so another journal short of a column is
+# never read as the General Journal.
+GENERAL = _journal("general", "General Journal", {"reference"}, "General Ledger",
+                   absent=frozenset({"customer id", "vendor id"}))
+# Every field that says what a transaction is must be exported: Sage 50 reads a transaction whose
+# template leaves one out as a regular one, and so would the import. The Sales Journal needs its
+# Tax Type too: it alone tells a tax distribution from freight, both of which Sage 50 writes as
+# Invoice/CM Distribution 0. Both document journals need the Date Due Sage 50 requires of every
+# invoice and purchase.
 SALES = _journal("sales", "Sales Journal", {"customer id", "invoice/cm #", "accounts receivable account", "tax type",
-                                            "date due"}, "Accounts Receivable")
-RECEIPTS = _journal("receipts", "Cash Receipts Journal", {"customer id", "reference", "cash account", "cash amount"},
-                    "Accounts Receivable")
+                                            "date due", "credit memo", "quote", "beginning balance transaction",
+                                            "voided by transaction"}, "Accounts Receivable")
+RECEIPTS = _journal("receipts", "Cash Receipts Journal", {"customer id", "reference", "cash account", "cash amount",
+                                                          "voided by transaction"}, "Accounts Receivable")
 PURCHASES = _journal("purchases", "Purchase Journal", {"vendor id", "invoice/cm #", "accounts payable account",
-                                                       "date due"}, "Accounts Payable")
+                                                       "date due", "credit memo", "beginning balance transaction",
+                                                       "voided by transaction"}, "Accounts Payable")
 PAYMENTS = _journal("payments", "Cash Disbursements Journal", {"vendor id", "check number", "cash account",
-                                                               "cash amount"}, "Accounts Payable")
+                                                               "cash amount", "voided by transaction"},
+                    "Accounts Payable")
+# The fields every distribution row of a transaction repeats, which must agree: a row Sage 50
+# leaves one of them blank on takes the transaction's value.
+SHARED = {
+    SALES.kind: ("credit memo", "quote", "beginning balance transaction", "voided by transaction", "date due",
+                 "apply to invoice number", "accounts receivable account", "accounts receivable amount",
+                 "sales tax id"),
+    PURCHASES.kind: ("credit memo", "beginning balance transaction", "voided by transaction", "date due",
+                     "apply to invoice number", "accounts payable account", "accounts payable amount"),
+    RECEIPTS.kind: ("voided by transaction", "cash account", "cash amount", "discount account"),
+    PAYMENTS.kind: ("voided by transaction", "cash account", "cash amount", "discount account"),
+    GENERAL.kind: (),
+}
 TRIAL_BALANCE = Layout("trial_balance", "General Ledger Trial Balance",
                        frozenset({"account id", "account description", "debit amt", "credit amt"}),
                        title="General Ledger Trial Balance", many=True,
@@ -183,8 +207,7 @@ class SageBook(Book):
 
 
 def _flag(tb: Table, row: dict[str, str], column: str, where: str) -> bool:
-    """A True or False field; any other value refuses the set by name. A template exported
-    without the field states False."""
+    """A True or False field, blank for False; any other value refuses the set by name."""
     value = tb.value(row, column)
     if normalize(value) not in FLAGS:
         raise ScanError(t("migration.err_sage50_flag", where=where, value=value, column=column))
@@ -233,7 +256,8 @@ def _required(tables: list[Table]) -> list[Layout]:
 
 def _transactions(tb: Table, keys: tuple[str, ...]) -> Iterator[tuple[str, list[dict[str, str]]]]:
     """Each transaction of a journal: as many consecutive rows as its Number of Distributions
-    says, sharing its header fields `keys`. Rows that do not are a damaged file."""
+    says, sharing its header fields `keys`. Rows that do not are a damaged file. The fields each
+    row repeats (SHARED) must agree where filled; the first row carries the transaction's value."""
     rows, i = tb.rows, 0
     while i < len(rows):
         first = rows[i]
@@ -247,7 +271,14 @@ def _transactions(tb: Table, keys: tuple[str, ...]) -> Iterator[tuple[str, list[
         if len(group) < count or any(tuple(tb.value(r, k) for k in keys) != head for r in group):
             raise ScanError(t("migration.err_sage50_distributions", where=where, count=int(count),
                               label=tb.layout.label))
-        yield where, group
+        agreed = {}
+        for column in SHARED[tb.layout.kind]:
+            values = {tb.value(r, column) for r in group} - {""}
+            if len({normalize(v) for v in values}) > 1:
+                raise ScanError(t("migration.err_sage50_inconsistent", where=where, column=column,
+                                  label=tb.layout.label))
+            agreed[column] = next(iter(values), "")
+        yield where, [{**group[0], **agreed}, *group[1:]]
         i += int(count)
 
 
@@ -312,8 +343,9 @@ class _Reader:
         self.missing_accounts: set[str] = set()
         self.missing_contacts: dict[tuple[str, str], set[str]] = defaultdict(set)
         self.party_accounts: dict[str, str] = {}       # document key -> its receivable or payable account
-        # (sales, number, contact) of a beginning balance -> its receivable or payable account
-        self.beginning: dict[tuple[bool, str, str], str] = {}
+        # (sales, number, contact) of a transaction not imported as a document (a beginning balance, or
+        # one carried as its journal) -> its receivable or payable account, for what pays it
+        self.carried: dict[tuple[bool, str, str], str] = {}
         self.numbers: dict[tuple[str, str], list[str]] = defaultdict(list)   # (S or P, number) -> contacts
         self.sequence = 0
 
@@ -426,6 +458,8 @@ class _Reader:
             for where, rows in _transactions(tb, (party, "invoice/cm #", "date")):
                 first = rows[0]
                 kinds = [_tax_type(tb, row, where) if sales else None for row in rows]
+                if FREIGHT_OR_RETAINAGE in kinds and "retain percent" not in tb.header:
+                    raise ScanError(t("migration.err_sage50_retain_column", where=where, label=layout.label))
                 if sales and _flag(tb, first, "quote", where):
                     self.book.skipped[QUOTE] += 1
                     continue
@@ -447,11 +481,12 @@ class _Reader:
                 if _flag(tb, first, "beginning balance transaction", where):
                     # Kept outside the general ledger: the trial balance's beginning balances carry it.
                     self.book.skipped[BEGINNING] += 1
-                    self.beginning[(sales, number, contact)] = party_account
+                    self.carried[(sales, number, contact)] = party_account
                     continue
                 posted = [GLLine(party_account, party_line, None, number, contact=contact), *distributions]
                 unsupported = self.unsupported(tb, rows, where, VOIDED, RETAINAGE)
                 if unsupported:
+                    self.carried[(sales, number, contact)] = party_account
                     self.journal(letter, on, CARRIED.format(unsupported), "general journal", number, contact, posted)
                     continue
                 lines: list[DocLine] = []
@@ -494,12 +529,11 @@ class _Reader:
 
     def unsupported(self, tb: Table, rows: list[dict[str, str]], where: str, *labels: str) -> str:
         """The coverage label of a transaction Celerp carries only as the journal it posted: one a
-        later transaction voided, or one holding back retainage. Counted; "" for any other."""
-        first = rows[0]
-        if VOIDED in labels and tb.value(first, "voided by transaction"):
+        later transaction voided, or one holding back retainage (a Retain Percent on any line; a
+        Tax Type 27 line without one is freight). Counted; "" for any other."""
+        if VOIDED in labels and tb.value(rows[0], "voided by transaction"):
             label = VOIDED
-        elif RETAINAGE in labels and any(amount(tb.value(row, c), where) for row in rows
-                                         for c in ("retainage percent", "retainage amount")):
+        elif RETAINAGE in labels and any(amount(tb.value(row, "retain percent"), where) for row in rows):
             label = RETAINAGE
         else:
             return ""
@@ -573,7 +607,7 @@ class _Reader:
                     paid = tb.value(row, "invoice paid")
                     doc = find_document(self.book, sales, paid, contact) if paid and contact else None
                     account = tb.value(row, "g/l account") or (
-                        self.party_accounts[doc.key] if doc is not None else self.beginning.get((sales, paid, contact), ""))
+                        self.party_accounts[doc.key] if doc is not None else self.carried.get((sales, paid, contact), ""))
                     lines.append(GLLine(self.account(account), posted, None, tb.value(row, "description")))
                     discount = money(tb.value(row, "discount amount"), where)
                     if discount:
