@@ -6,18 +6,21 @@ from __future__ import annotations
 
 from fasthtml.common import *
 
-from celerp.services.currencies import CURRENCIES, CURRENCY_CODES
+from celerp.services.currencies import CURRENCIES, KNOWN_CURRENCY_CODES
 from ui.i18n import t
 
 
 def currency_label(code: str) -> str:
-    """"USD – US Dollar" in the user's language, or the code itself if unknown."""
-    return f"{code} – {t(f'currency.name.{code}')}" if code in CURRENCY_CODES else code
+    """"USD – US Dollar" in the user's language, a withdrawn code with its name too, or the
+    code itself if unknown."""
+    return f"{code} – {t(f'currency.name.{code}')}" if code in KNOWN_CURRENCY_CODES else code
 
 
-def currency_options() -> list[tuple[str, str]]:
-    """(code, label) for every supported currency, in display order."""
-    return [(code, currency_label(code)) for code in CURRENCIES]
+def currency_options(current: str = "") -> list[tuple[str, str]]:
+    """(code, label) for every supported currency, in display order, and the record's own
+    `current` currency first when ISO 4217 has since withdrawn it, so editing keeps it."""
+    kept = [current] if current in KNOWN_CURRENCY_CODES and current not in CURRENCIES else []
+    return [(code, currency_label(code)) for code in (*kept, *CURRENCIES)]
 
 
 def currency_combobox_td(
@@ -54,7 +57,7 @@ def currency_combobox_td(
                     cls="combobox-option",
                     data_value=code,
                     data_search=f"{code} {lbl}".lower(),
-                ) for code, lbl in currency_options()],
+                ) for code, lbl in currency_options(value)],
                 cls="combobox-list",
             ),
             cls="combobox-wrap",

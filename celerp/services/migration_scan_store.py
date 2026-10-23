@@ -450,7 +450,10 @@ async def _inspect(adapter: SourceAdapter, artifacts: ArtifactSet, check_only: b
             return await asyncio.to_thread(adapter.inspect, artifacts)
         except (ScanError, SourceRevisionError) as exc:
             raise ScanStoreError(422, str(exc)) from exc
-    checked = await asyncio.to_thread(check, artifacts)
+    try:
+        checked = await asyncio.to_thread(check, artifacts)
+    except SourceRevisionError as exc:
+        raise ScanStoreError(422, str(exc)) from exc
     error = ""
     if checked.complete and not check_only:
         try:

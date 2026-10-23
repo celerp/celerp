@@ -175,6 +175,7 @@ _SPREADERS = {
     (_INV, "kept"): "carve_cost's share of one amount",
     ("default_modules/celerp-docs/celerp_docs/consignment_buy.py", "_lot_costs"): "a consignment bill line's cost over the lots it buys",
     ("celerp/importers/adapters/odoo/book.py", "read_stock"): "an Odoo stock move's value over its move lines, and a valuation layer over the lots and locations holding the product",
+    ("celerp/importers/adapters/exports/sage50.py", "_spread_taxes"): "a Sage 50 tax agency's line over the invoice lines it was charged on",
 }
 
 # Functions that put a rounding unit on one part, and why that is not a spread over parts.

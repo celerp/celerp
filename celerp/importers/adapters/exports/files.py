@@ -7,13 +7,15 @@ archive of them. Every file is matched to one of the source's layouts by its
 header row and, for a report, the title printed above it; never by its name. The
 set is checked against the source's checklist: each file is received, missing,
 optional, not needed, or pending until the ledger shows whether it is needed. A set
-that is missing a required file, holds a file no layout matches or a file twice, or
-holds a report exported a period at a time whose periods overlap or leave a gap, is
+that is missing a required file, holds a file no layout matches or a file twice, a file
+whose values cannot each be told by their heading (a column headed twice, a value under
+none), or a report exported a period at a time whose periods overlap or leave a gap, is
 refused with a message naming each file and what to export instead.
 """
 
 from __future__ import annotations
 
+import csv
 import re
 import zipfile
 from dataclasses import dataclass, field
@@ -22,7 +24,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from celerp.importers import tabular
-from celerp.importers.adapters.base import ArtifactSet, ScanError
+from celerp.importers.adapters.base import CONVERSION_ERRORS, ArtifactSet, ScanError
 from ui.i18n import t
 
 # A ledger export runs to several hundred thousand rows; the set as a whole is bounded
@@ -46,6 +48,7 @@ class Layout:
     range_key: str = ""                        # the dates to choose when exporting it; a list has none
     joined: bool = False                       # exported a period at a time: the periods must join
     optional: bool = False                     # carried when present, never required
+    absent: frozenset[str] = frozenset()       # columns another layout carries and this one never does
 
 
 @dataclass
@@ -82,6 +85,10 @@ def _lines(name: str, data: bytes) -> list[list[str]]:
         return tabular.delimited_lines(text, "\t" if first.count("\t") > first.count(",") else ",", LIMITS)
     except tabular.TabularError as exc:
         raise ScanError(t("migration.err_export_unreadable_because", name=name, reason=str(exc))) from exc
+    except (csv.Error, SyntaxError, *CONVERSION_ERRORS) as exc:
+        # A cell past the parser's size limit, a workbook part that is not well-formed XML
+        # (ElementTree's ParseError is a SyntaxError), or a value its parser cannot hold.
+        raise ScanError(t("migration.err_export_unreadable", name=name)) from exc
 
 
 def _is_workbook(archive: zipfile.ZipFile) -> bool:
@@ -109,15 +116,23 @@ def _members(name: str, path: Path) -> list[tuple[str, bytes]]:
             raise ScanError(t("migration.err_export_unreadable", name=name)) from exc
 
 
-def _match(lines: list[list[str]], layouts: tuple[Layout, ...]) -> tuple[Layout, int] | None:
+def heading(cell: str, aliases: dict[str, str]) -> str:
+    """A header cell as the layouts name it: normalized, under its alias where another version
+    of the source heads it differently. Only header cells are read so; data never is."""
+    name = normalize(cell)
+    return aliases.get(name, name)
+
+
+def _match(lines: list[list[str]], layouts: tuple[Layout, ...],
+           aliases: dict[str, str]) -> tuple[Layout, int] | None:
     """The layout a file's lines carry and the index of its header line. A report layout
     whose title is printed above its header wins over one matched on columns alone."""
     found: list[tuple[int, int, Layout, int]] = []
     for index, line in enumerate(lines[:HEADER_SEARCH]):
-        cells = {normalize(c) for c in line if c.strip()}
+        cells = {heading(c, aliases) for c in line if c.strip()}
         titles = {normalize(c) for above in lines[:index] for c in above if c.strip()}
         for layout in layouts:
-            if not layout.columns <= cells:
+            if not layout.columns <= cells or layout.absent & cells:
                 continue
             if layout.title and normalize(layout.title) not in titles:
                 continue
@@ -134,10 +149,14 @@ class Stranger:
     name: str
     lines: list[list[str]]
     reason: str = ""
+    aliases: dict[str, str] = field(default_factory=dict)   # the source's other names for its columns
 
 
-def read_set(artifacts: ArtifactSet, layouts: tuple[Layout, ...]) -> tuple[list[Table], list[Stranger]]:
-    """Every file of the set matched to its layout, and the files no layout matches."""
+def read_set(artifacts: ArtifactSet, layouts: tuple[Layout, ...],
+             aliases: dict[str, str] | None = None) -> tuple[list[Table], list[Stranger]]:
+    """Every file of the set matched to its layout, and the files no layout matches. `aliases`
+    names a column by the name its layouts use where another version of the source heads it
+    differently (normalized names)."""
     tables: list[Table] = []
     strangers: list[Stranger] = []
     for artifact in artifacts:
@@ -154,20 +173,38 @@ def read_set(artifacts: ArtifactSet, layouts: tuple[Layout, ...]) -> tuple[list[
             except ScanError as exc:
                 strangers.append(Stranger(name, [], str(exc)))
                 continue
-            matched = _match(lines, layouts)
+            matched = _match(lines, layouts, aliases or {})
             if matched is None:
-                strangers.append(Stranger(name, lines[:HEADER_SEARCH]))
+                strangers.append(Stranger(name, lines[:HEADER_SEARCH], aliases=aliases or {}))
                 continue
             layout, index = matched
-            header = [normalize(c) for c in lines[index]]
-            table = Table(name, layout, lines[:index], header)
-            for line in lines[index + 1:]:
-                if any(c.strip() for c in line):
-                    # A report's first column may have no heading; it is read under "".
-                    table.rows.append({h: (line[i] if i < len(line) else "") for i, h in enumerate(header)
-                                       if h or i == 0})
-            tables.append(table)
+            header = [heading(c, aliases or {}) for c in lines[index]]
+            try:
+                tables.append(_table(name, layout, lines, index, header))
+            except ScanError as exc:
+                strangers.append(Stranger(name, [], str(exc)))
     return tables, strangers
+
+
+def _table(name: str, layout: Layout, lines: list[list[str]], index: int, header: list[str]) -> Table:
+    """The file's rows keyed by its header. Every value must sit under a heading of its own, so
+    none is lost or read as another: a column headed twice, or a value under no heading, refuses
+    the file. A report's first column may have no heading; it is read under ""."""
+    seen: set[str] = set()
+    for column, h in enumerate(header):
+        if h and h in seen:
+            raise ScanError(t("migration.err_export_column_twice", name=name, column=lines[index][column].strip()))
+        seen.add(h)
+    table = Table(name, layout, lines[:index], header)
+    for line in lines[index + 1:]:
+        if not any(c.strip() for c in line):
+            continue
+        stray = next((c.strip() for column, c in enumerate(line)
+                      if column and c.strip() and (column >= len(header) or not header[column])), "")
+        if stray:
+            raise ScanError(t("migration.err_export_value_unheaded", name=name, value=stray))
+        table.rows.append({h: (line[i] if i < len(line) else "") for i, h in enumerate(header) if h or i == 0})
+    return table
 
 
 def of(tables: list[Table], layout: Layout) -> list[Table]:
@@ -261,7 +298,7 @@ def _stranger_problem(stranger: Stranger, layouts: tuple[Layout, ...], source: s
         return stranger.reason
     best: tuple[int, Layout, frozenset[str]] | None = None
     for index, line in enumerate(stranger.lines):
-        cells = {normalize(c) for c in line if c.strip()}
+        cells = {heading(c, stranger.aliases) for c in line if c.strip()}
         titles = {normalize(c) for above in stranger.lines[:index] for c in above if c.strip()}
         for layout in layouts:
             if layout.title and normalize(layout.title) not in titles:
@@ -367,37 +404,74 @@ def period(tb: Table) -> tuple[date, date]:
 # ── Cell values ───────────────────────────────────────────────────────────────
 
 _ISO = re.compile(r"^(\d{4})-(\d{2})-(\d{2})(?:[ T].*)?$")
-_SLASHED = re.compile(r"^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})$")
+_SLASHED = re.compile(r"^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4}|\d{2})$")
+# A plain number, as a file prints it once its sign, brackets, separators and currency are
+# taken off; a workbook writes a tiny fraction with an exponent.
+_NUMBER = re.compile(r"^[-+]?(\d+\.?\d*|\.\d+)(e[-+]?\d+)?$", re.IGNORECASE)
+# The currency signs and codes a source prints beside an amount.
+CURRENCY_SIGNS = ("$", "£", "€", "¥", "ETB", "Br", "ብር")
+# The largest amount read, in digits before the point: no book holds a quadrillion, and a
+# longer one is a damaged value that would overflow the money arithmetic.
+MAX_DIGITS = 15
+# The places past which a printed amount is a workbook's binary fraction, not the source's figure.
+NOISE = 9
 _PERIOD = re.compile(r"^(\d{1,2} \w+ \d{4}|\w+ \d{1,2}, \d{4}) ?[-\u2013] ?(\d{1,2} \w+ \d{4}|\w+ \d{1,2}, \d{4})$")
 
 
+def _unsigned(text: str) -> str:
+    """`text` without a currency sign or code printed before or after it."""
+    for sign in CURRENCY_SIGNS:
+        if text.startswith(sign):
+            return text[len(sign):].strip()
+        if text.endswith(sign):
+            return text[:-len(sign)].strip()
+    return text
+
+
 def amount(value: str, where: str = "") -> Decimal:
-    """A number as the source prints it: thousands separators, a leading currency sign and
-    a negative in brackets are accepted; an empty cell is zero."""
+    """A number as the source prints it: thousands separators, a currency sign or code before
+    or after it and a negative in brackets are accepted; an empty cell is zero. Anything else,
+    or a number of more than MAX_DIGITS digits, is refused by name."""
     text = value.strip().replace(",", "")
     if not text:
         return ZERO
     negative = text.startswith("(") and text.endswith(")")
-    text = text.strip("()").lstrip("$£€¥").strip()
+    text = text.strip("()").strip()
+    sign = text[0] if text[:1] in "-+" else ""
+    text = sign + _unsigned(text[len(sign):].strip())
+    if not _NUMBER.match(text):
+        raise ScanError(t("migration.err_export_number", value=value, where=where))
     try:
         number = Decimal(text)
     except InvalidOperation as exc:
         raise ScanError(t("migration.err_export_number", value=value, where=where)) from exc
-    if not number.is_finite():
+    if number and number.adjusted() >= MAX_DIGITS:
         raise ScanError(t("migration.err_export_number", value=value, where=where))
     return -number if negative else number
 
 
 def money(value: str, where: str = "") -> Decimal:
-    """An amount at cents: a workbook stores money as a binary fraction."""
-    return amount(value, where).quantize(Decimal("0.01"))
+    """An amount exactly as the file prints it, never rounded to a currency: whether it fits its
+    currency's minor units is checked once the currency is known (steps.check_precision). A
+    workbook stores money as a binary fraction, 0.1 + 0.2 written 0.30000000000000004; no currency
+    keeps more than four places, so a value printed past NOISE places is read at NOISE places."""
+    number = amount(value, where)
+    if number.as_tuple().exponent < -NOISE:
+        number = number.quantize(Decimal(1).scaleb(-NOISE)).normalize()
+    # Written as places, never as an exponent: 1e3 is 1000.
+    return number.quantize(Decimal(1)) if number.as_tuple().exponent > 0 else number
 
 
 class DateReader:
     """Reads the set's slashed dates in one order, day first or month first, decided from
-    every date the set prints: a part above 12 can only be a day."""
+    every date the set prints: a part above 12 can only be a day. A source that always writes
+    one order states it as `day_first`. A two-digit year is read as Python reads one: 69 to 99
+    in the 1900s, 00 to 68 in the 2000s."""
 
-    def __init__(self, samples: list[str]) -> None:
+    def __init__(self, samples: list[str], day_first: bool | None = None) -> None:
+        if day_first is not None:
+            self.day_first = day_first
+            return
         day_first = month_first = False
         for text in samples:
             m = _SLASHED.match(text.strip())
@@ -421,6 +495,8 @@ class DateReader:
             m = _SLASHED.match(text)
             if m:
                 a, b, year = int(m.group(1)), int(m.group(2)), int(m.group(3))
+                if len(m.group(3)) == 2:
+                    year += 1900 if year >= 69 else 2000
                 return date(year, b, a) if self.day_first else date(year, a, b)
             return report_date(text)
         except (ValueError, ScanError) as exc:

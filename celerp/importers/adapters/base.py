@@ -54,6 +54,14 @@ class SourceRevisionError(Exception):
     treat the file as unrecognised. The message is shown to the user as written."""
 
 
+# What converting a damaged source value raises, in any reader: a number that is not one
+# (decimal's ArithmeticError), a date, text or structure that does not parse, a value of another
+# shape than the source writes, a reference to a record that is not there, an empty value where
+# the source requires one, or a value nested past the parser's depth. A reader that meets one
+# refuses the source as damaged, and nothing read from it is kept.
+CONVERSION_ERRORS = (ArithmeticError, ValueError, TypeError, KeyError, AttributeError, RecursionError)
+
+
 @dataclass(frozen=True)
 class DetectionResult:
     matched: bool
