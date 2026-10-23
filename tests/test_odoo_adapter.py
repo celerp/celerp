@@ -7,6 +7,7 @@ lay their tables out (tests/fixtures/odoo_backup/build.py)."""
 
 from __future__ import annotations
 
+import ast
 import gc
 import gzip
 import hashlib
@@ -22,6 +23,7 @@ from collections import defaultdict
 from datetime import date
 from decimal import Decimal
 from functools import cache
+from pathlib import Path
 
 import pytest
 from sqlalchemy import text
@@ -253,6 +255,10 @@ _SWOLLEN_JSON = {
     "names": "{" + ",".join(f'"{i:x}": ""' for i in range(500_000)) + "}",
     "lists": '{"en_US": "x", "k": [' + ",".join(["[]"] * 1_000_000) + "]}",
     "objects": '{"en_US": "x", "k": [' + ",".join(["{}"] * 1_000_000) + "]}",
+    # ASCII text whose one escape decodes the whole string to four or two bytes a character
+    "an emoji escaped": '{"en_US": "\\ud83d\\ude00' + "a" * 2_000_000 + '"}',
+    "a Thai letter escaped": '{"en_US": "\\u0e01' + "a" * 2_000_000 + '"}',
+    "a key with an emoji escaped": '{"\\ud83d\\ude00' + "a" * 2_000_000 + '": 100}',
 }
 
 
@@ -268,6 +274,53 @@ def test_what_decoding_json_holds_is_never_more_than_its_measure(shape):
         finally:
             tracemalloc.stop()
         assert peak <= json_size(value), f"{peak / json_size(value):.2f}x"
+
+
+def _parameters_no_caller_passes() -> list[str]:
+    """Every parameter with a default, of a function in the Odoo adapter, that no call in the app
+    passes a value for. Passing on a parameter of one's own counts only once that one is passed."""
+    import celerp
+
+    root = Path(celerp.__file__).parent
+    trees = {path: ast.parse(path.read_text(encoding="utf-8")) for path in root.rglob("*.py")}
+    calls = []   # (the call, the parameters of the function it is made in)
+    for tree in trees.values():
+        for fn in ast.walk(tree):
+            if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                own = {(fn.name, a.arg) for a in fn.args.posonlyargs + fn.args.args + fn.args.kwonlyargs}
+                calls += [(c, own) for c in ast.walk(fn) if isinstance(c, ast.Call)]
+    unpassed = {}   # (function, parameter) -> where it is declared, with its position past self
+    for path in sorted((root / "importers/adapters/odoo").glob("*.py")):
+        for fn in ast.walk(trees[path]):
+            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            positional = fn.args.posonlyargs + fn.args.args
+            skip = 1 if positional and positional[0].arg in {"self", "cls"} else 0
+            first = len(positional) - len(fn.args.defaults)
+            where = f"{path.relative_to(root)}:{fn.lineno}"
+            unpassed |= {(fn.name, a.arg): (where, i - skip) for i, a in enumerate(positional) if i >= first}
+            unpassed |= {(fn.name, a.arg): (where, None) for a, d in zip(fn.args.kwonlyargs, fn.args.kw_defaults) if d}
+
+    def passes(call, own, name, parameter, at) -> bool:
+        if (getattr(call.func, "attr", None) or getattr(call.func, "id", None)) != name:
+            return False
+        values = [k.value for k in call.keywords if k.arg in {parameter, None}]
+        if at is not None and (len(call.args) > at or any(isinstance(a, ast.Starred) for a in call.args)):
+            values.append(call.args[min(at, len(call.args) - 1)])
+        return any(not (isinstance(v, ast.Name) and any(p == v.id and (f, p) in unpassed for f, p in own))
+                   for v in values)
+
+    while passed := [key for key, (_, at) in unpassed.items()
+                     if any(passes(call, own, *key, at) for call, own in calls)]:
+        for key in passed:
+            del unpassed[key]
+    return sorted(f"{where} {name}({parameter})" for (name, parameter), (where, _) in unpassed.items())
+
+
+def test_every_optional_parameter_of_the_adapter_is_passed_by_some_caller():
+    """A parameter no caller passes never varies (e.g. a width every caller left at one): it is
+    removed, not kept at its default."""
+    assert _parameters_no_caller_passes() == []
 
 
 @pytest.mark.parametrize("table, column", [("product_template", "name"), ("account_move_line", "analytic_distribution")])
