@@ -9232,7 +9232,6 @@
 "tests/test_messages_contacts.py::test_merge_with_no_sources_says_choose_one": 0.099,
 "tests/test_messages_contacts.py::test_missing_contact_says_it_no_longer_exists_and_to_choose_again": 0.113,
 "tests/test_messages_contacts.py::test_prefix_keys_are_gone": 0.004,
-"tests/test_messages_docs.py::test_damaged_tax_says_where_to_fix_it": 0.001,
 "tests/test_messages_docs.py::test_deposit_refusal_names_the_option_as_the_user_sees_it[am]": 0.002,
 "tests/test_messages_docs.py::test_deposit_refusal_names_the_option_as_the_user_sees_it[ar]": 0.003,
 "tests/test_messages_docs.py::test_deposit_refusal_names_the_option_as_the_user_sees_it[de]": 0.002,
