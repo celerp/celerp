@@ -84,6 +84,8 @@ CARRIED = "{} (journal)"
 # which Sage 50 does not export.
 TAX_DISTRIBUTION = 0
 FREIGHT_OR_RETAINAGE = 27
+# The Purchase Journal's Row Type of a distribution that withholds retainage.
+RETAINAGE_ROW = "11"
 TAX_TYPES = range(28)
 # How the templates write True and False.
 FLAGS = {"true": True, "yes": True, "1": True, "false": False, "no": False, "0": False, "": False}
@@ -121,32 +123,34 @@ EMPLOYEES = Layout("employees", "Employee List", frozenset({"employee id", "empl
 # never read as the General Journal.
 GENERAL = _journal("general", "General Journal", {"reference"}, "General Ledger",
                    absent=frozenset({"customer id", "vendor id"}))
-# Every field that says what a transaction is must be exported: Sage 50 reads a transaction whose
-# template leaves one out as a regular one, and so would the import. The Sales Journal needs its
+# Each journal must carry every field its own template exports to say what a transaction is:
+# Sage 50 reads a transaction whose template leaves one out as a regular one, and so would the
+# import. A field a journal's template does not have is never asked of it: only the Sales and
+# Cash Disbursements Journals state that a transaction was voided. The Sales Journal needs its
 # Tax Type too: it alone tells a tax distribution from freight, both of which Sage 50 writes as
 # Invoice/CM Distribution 0. Both document journals need the Date Due Sage 50 requires of every
 # invoice and purchase.
+VOIDED_BY = "voided by transaction"
 SALES = _journal("sales", "Sales Journal", {"customer id", "invoice/cm #", "accounts receivable account", "tax type",
                                             "date due", "credit memo", "quote", "beginning balance transaction",
-                                            "voided by transaction"}, "Accounts Receivable")
-RECEIPTS = _journal("receipts", "Cash Receipts Journal", {"customer id", "reference", "cash account", "cash amount",
-                                                          "voided by transaction"}, "Accounts Receivable")
+                                            VOIDED_BY}, "Accounts Receivable")
+RECEIPTS = _journal("receipts", "Cash Receipts Journal", {"customer id", "reference", "cash account", "cash amount"},
+                    "Accounts Receivable")
 PURCHASES = _journal("purchases", "Purchase Journal", {"vendor id", "invoice/cm #", "accounts payable account",
-                                                       "date due", "credit memo", "beginning balance transaction",
-                                                       "voided by transaction"}, "Accounts Payable")
+                                                       "date due", "credit memo", "beginning balance transaction"},
+                     "Accounts Payable")
 PAYMENTS = _journal("payments", "Cash Disbursements Journal", {"vendor id", "check number", "cash account",
-                                                               "cash amount", "voided by transaction"},
-                    "Accounts Payable")
+                                                               "cash amount", VOIDED_BY}, "Accounts Payable")
 # The fields every distribution row of a transaction repeats, which must agree: a row Sage 50
 # leaves one of them blank on takes the transaction's value.
 SHARED = {
-    SALES.kind: ("credit memo", "quote", "beginning balance transaction", "voided by transaction", "date due",
+    SALES.kind: ("credit memo", "quote", "beginning balance transaction", VOIDED_BY, "date due",
                  "apply to invoice number", "accounts receivable account", "accounts receivable amount",
                  "sales tax id"),
-    PURCHASES.kind: ("credit memo", "beginning balance transaction", "voided by transaction", "date due",
-                     "apply to invoice number", "accounts payable account", "accounts payable amount"),
-    RECEIPTS.kind: ("voided by transaction", "cash account", "cash amount", "discount account"),
-    PAYMENTS.kind: ("voided by transaction", "cash account", "cash amount", "discount account"),
+    PURCHASES.kind: ("credit memo", "beginning balance transaction", "date due", "apply to invoice number",
+                     "accounts payable account", "accounts payable amount"),
+    RECEIPTS.kind: ("cash account", "cash amount", "discount account"),
+    PAYMENTS.kind: (VOIDED_BY, "cash account", "cash amount", "discount account"),
     GENERAL.kind: (),
 }
 TRIAL_BALANCE = Layout("trial_balance", "General Ledger Trial Balance",
@@ -484,7 +488,7 @@ class _Reader:
                     self.carried[(sales, number, contact)] = party_account
                     continue
                 posted = [GLLine(party_account, party_line, None, number, contact=contact), *distributions]
-                unsupported = self.unsupported(tb, rows, where, VOIDED, RETAINAGE)
+                unsupported = self.unsupported(tb, rows, where)
                 if unsupported:
                     self.carried[(sales, number, contact)] = party_account
                     self.journal(letter, on, CARRIED.format(unsupported), "general journal", number, contact, posted)
@@ -527,13 +531,17 @@ class _Reader:
                 self.journal(letter, on, source, f"{side} {'credit note' if credit else 'invoice'}",
                              number, contact, posted, invoice=number, document=key)
 
-    def unsupported(self, tb: Table, rows: list[dict[str, str]], where: str, *labels: str) -> str:
+    def unsupported(self, tb: Table, rows: list[dict[str, str]], where: str) -> str:
         """The coverage label of a transaction Celerp carries only as the journal it posted: one a
-        later transaction voided, or one holding back retainage (a Retain Percent on any line; a
-        Tax Type 27 line without one is freight). Counted; "" for any other."""
-        if VOIDED in labels and tb.value(rows[0], "voided by transaction"):
+        later transaction voided, where its journal states that; or one holding back retainage,
+        as each journal states it: a Sales Journal line with a Retain Percent (a Tax Type 27 line
+        without one is freight), a Purchase Journal line of Row Type 11 withholding an amount.
+        Counted; "" for any other."""
+        if VOIDED_BY in tb.layout.columns and tb.value(rows[0], VOIDED_BY):
             label = VOIDED
-        elif RETAINAGE in labels and any(amount(tb.value(row, "retain percent"), where) for row in rows):
+        elif any(amount(tb.value(row, "retain percent"), where) or (
+                tb.value(row, "row type") == RETAINAGE_ROW and amount(tb.value(row, "amount"), where))
+                for row in rows):
             label = RETAINAGE
         else:
             return ""
@@ -616,7 +624,7 @@ class _Reader:
                     if doc is not None:
                         settles[doc.key] += -discount_sign * posted
                 _balanced(where, layout.label, lines)
-                if self.unsupported(tb, rows, where, VOIDED):
+                if self.unsupported(tb, rows, where):
                     settles.clear()
                 settles = {k: v for k, v in settles.items() if v}
                 kind = ("receivable payment" if sales else "payable payment") if settles else \

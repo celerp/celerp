@@ -248,13 +248,13 @@ PUBLISHED = {
         "C1,First Customer,1002,,FALSE,01/12/25,02/11/25,1100,ST,3,0,,,Sales tax,2310,,0,-40.00,AGENCY,FALSE,FALSE,\r\n"),
     "RECEIPTS.CSV": (
         "Customer ID,Customer Name,Reference,Receipt Number,Date,Cash Account,Cash Amount,Number of Distributions,"
-        "Invoice Paid,Description,G/L Account,Amount,Voided by Transaction\r\n"
-        "C1,First Customer,R1,R1,01/20/25,1020,210.00,1,1001,Payment,,-210.00,\r\n"),
+        "Invoice Paid,Description,G/L Account,Amount\r\n"
+        "C1,First Customer,R1,R1,01/20/25,1020,210.00,1,1001,Payment,,-210.00\r\n"),
     "PURCHASE.CSV": (
         "Vendor ID,Vendor Name,Invoice #,Apply to Invoice #,Credit Memo,Date,Date Due,Accounts Payable Account,"
         "Number of Distributions,Invoice/CM Distribution,Quantity,Item ID,Description,G/L Account,Unit Price,Amount,"
-        "Beginning Balance Transaction,Voided by Transaction\r\n"
-        "V1,First Vendor,B-1,,FALSE,01/05/25,02/04/25,2000,1,1,,,January rent,6000,,500.00,FALSE,\r\n"),
+        "Beginning Balance Transaction\r\n"
+        "V1,First Vendor,B-1,,FALSE,01/05/25,02/04/25,2000,1,1,,,January rent,6000,,500.00,FALSE\r\n"),
     "PAYMENTS.CSV": (
         "Vendor ID,Vendor Name,Check Number,Date,Cash Account,Cash Amount,Number of Distributions,Invoice Paid,"
         "Description,G/L Account,Amount,Voided by Transaction\r\n"
@@ -649,7 +649,7 @@ POSTED_1002 = [("1100", Decimal("440.00"), "First Customer"), ("2310", Decimal("
 VOIDED_1002 = _flagged("1002", voided="V1002")
 RETAINED_1002 = _column(PUBLISHED["SALES.CSV"], "Retain Percent", "", "", "", "10", "10", "10")
 # A later receipt applied to 1002 with its G/L Account left empty, as Sage 50 writes it.
-PAYS_1002 = PUBLISHED["RECEIPTS.CSV"] + "C1,First Customer,R2,R2,01/25/25,1020,440.00,1,1002,Payment,,-440.00,\r\n"
+PAYS_1002 = PUBLISHED["RECEIPTS.CSV"] + "C1,First Customer,R2,R2,01/25/25,1020,440.00,1,1002,Payment,,-440.00\r\n"
 
 
 @pytest.mark.parametrize("sales, label, note", [
@@ -693,14 +693,39 @@ def test_a_tax_type_27_line_is_freight_unless_it_retains_and_needs_its_retain_pe
 @pytest.mark.parametrize("name, heading", [
     ("SALES.CSV", "Credit Memo"), ("SALES.CSV", "Quote"), ("SALES.CSV", "Beginning Balance Transaction"),
     ("SALES.CSV", "Voided by Transaction"), ("PURCHASE.CSV", "Credit Memo"),
-    ("PURCHASE.CSV", "Beginning Balance Transaction"), ("PURCHASE.CSV", "Voided by Transaction"),
-    ("RECEIPTS.CSV", "Voided by Transaction"), ("PAYMENTS.CSV", "Voided by Transaction"),
+    ("PURCHASE.CSV", "Beginning Balance Transaction"), ("PAYMENTS.CSV", "Voided by Transaction"),
 ])
 def test_a_template_without_a_field_saying_what_a_transaction_is_is_refused(tmp_path, name, heading):
     """Sage 50 reads a transaction whose template leaves such a field out as a regular one; the
     import refuses the template instead of reading a quote, credit memo or voided transaction so."""
     assert f"lacks the column {heading.lower()}" in _refusal(tmp_path, _documented({name: _dropped(PUBLISHED[name],
                                                                                                     heading)}))
+
+
+def test_each_journal_is_read_from_the_fields_its_own_template_exports(tmp_path):
+    """The Purchase and Cash Receipts Journals have no Voided by Transaction field, so none is asked
+    of them: the documented set, each journal exactly as its template writes it, reads whole."""
+    assert "voided by transaction" not in PUBLISHED["PURCHASE.CSV"].lower()
+    assert "voided by transaction" not in PUBLISHED["RECEIPTS.CSV"].lower()
+    manifest = _built(tmp_path, {})
+    assert sorted((d.doc_type, d.ref) for d in manifest.bundle.documents) == [
+        ("bill", "B-1"), ("invoice", "1001"), ("invoice", "1002")]
+    assert sorted(s.settlement_type for s in manifest.bundle.settlements) == ["payment", "receipt"]
+
+
+def test_a_purchase_withholding_retainage_on_a_row_type_11_line_is_the_journal_it_posted(tmp_path):
+    """The Purchase Journal marks retainage withheld by a line of Row Type 11: B-2 holds back 50.00
+    of a 500.00 bill. It is never an ordinary bill: what it posted is carried as a journal."""
+    purchases = _column(PUBLISHED["PURCHASE.CSV"], "Row Type", "") + (
+        "V1,First Vendor,B-2,,FALSE,01/06/25,02/05/25,2000,2,1,,,Work,6000,,500.00,FALSE,\r\n"
+        "V1,First Vendor,B-2,,FALSE,01/06/25,02/05/25,2000,2,2,,,Retainage withheld,2000,,-50.00,FALSE,11\r\n")
+    manifest = _built(tmp_path, {"PURCHASE.CSV": purchases})
+    assert [d.ref for d in manifest.bundle.documents if d.doc_type == "bill"] == ["B-1"]
+    assert _carried(manifest, "Invoice or purchase with retainage (journal)") == [
+        ("2000", Decimal("-450.00"), "First Vendor"), ("2000", Decimal("-50.00"), "First Vendor"),
+        ("6000", Decimal("500.00"), None)]
+    row = {r.source_type: r for r in manifest.coverage}["Invoice or purchase with retainage"]
+    assert (row.count, row.coverage_class) == (1, BLOCKER)
 
 
 def test_the_rows_of_one_transaction_must_agree_on_what_it_is(tmp_path):
@@ -800,9 +825,9 @@ def test_an_empty_journal_export_is_a_journal_and_one_not_uploaded_stops_a_full_
 EMPTY = {"SALES.CSV": "Customer ID,Invoice/CM #,Credit Memo,Quote,Beginning Balance Transaction,Voided by Transaction,"
                       "Date,Date Due,Accounts Receivable Account,Number of Distributions,G/L Account,Tax Type,Amount\r\n",
          "RECEIPTS.CSV": "Customer ID,Reference,Date,Cash Account,Cash Amount,Number of Distributions,G/L Account,"
-                         "Amount,Voided by Transaction\r\n",
-         "PURCHASE.CSV": "Vendor ID,Invoice #,Credit Memo,Beginning Balance Transaction,Voided by Transaction,Date,"
-                         "Date Due,Accounts Payable Account,Number of Distributions,G/L Account,Amount\r\n",
+                         "Amount\r\n",
+         "PURCHASE.CSV": "Vendor ID,Invoice #,Credit Memo,Beginning Balance Transaction,Date,Date Due,"
+                         "Accounts Payable Account,Number of Distributions,G/L Account,Amount\r\n",
          "PAYMENTS.CSV": "Vendor ID,Check Number,Date,Cash Account,Cash Amount,Number of Distributions,G/L Account,"
                          "Amount,Voided by Transaction\r\n"}
 
