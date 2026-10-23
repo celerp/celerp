@@ -34,7 +34,7 @@ from celerp.services.business_time import business_today
 from celerp.services.doc_balance import awaiting_status_param, is_awaiting_payment, is_owed, outstanding_balance
 from celerp.services.money import to_decimal, to_stored_float, round_money, currency_dp, rate_dp
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, line_price_list, resolve_price
-from celerp.tax_regimes import default_line_taxes, holds_tax, tax_entries, taxes_for
+from celerp.tax_regimes import default_line_taxes, holds_tax, tax_entries, tax_key, taxes_for
 from celerp.services.payment_terms import due_date_for_terms
 from celerp.services.permissions import missing_permission_text, role_has_permission
 from ui.components.import_access import can_import_documents
@@ -6578,6 +6578,17 @@ def _line_tax_rate(li: dict) -> float:
     return float(li.get("tax_rate", 0) or 0)
 
 
+def _tax_label(tax: dict) -> str:
+    """A tax as the line's tax choice names it: its code (a company tax's name), rate in brackets."""
+    name = tax.get("code") or tax.get("name") or tax.get("label") or t("documents.tax")
+    return f"{name} ({float(tax.get('rate', 0) or 0)}%)"
+
+
+def _tax_option_value(tax: dict) -> str:
+    """The tax choice's option value for a company tax (``name``) or an applied one (``code``)."""
+    return f"{tax.get('code') or tax.get('name') or ''}|{float(tax.get('rate', 0) or 0)}"
+
+
 def _line_account_picker(chart_accounts: list | None, value: str) -> FT:
     """A purchase line's account, saved as soon as one is picked. Blank posts the line to
     the company's account for its kind (stock or expense)."""
@@ -6608,7 +6619,10 @@ def _stored_doc_tax_rows(doc: dict, currency: str | None, can_edit: bool) -> FT:
                  cls="total-final-left"),
             Span(fmt_money(amount, currency), cls="total-value"),
             cls="total-row", data_amount=f"{amount}", data_doc_tax_index=str(i)))
-    state = Input(type="hidden", id="doc-taxes-state", value=_json.dumps(doc_taxes)) if can_edit and doc_taxes else ""
+    # data-keys (tax_key per row) let the editor leave a tax the document charges off a new line.
+    state = (Input(type="hidden", id="doc-taxes-state", value=_json.dumps(doc_taxes),
+                   data_keys=_json.dumps([tax_key(dtax) for dtax in doc_taxes]))
+             if can_edit and doc_taxes else "")
     return Div(*rows, state, id="doc-stored-tax-rows")
 
 
@@ -7411,12 +7425,10 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 if float(tax.get("rate", 0)) == current_rate
                 and (tax.get("name", "") == current_code if current_code else current_rate != 0)), None)
             if match is not None:
-                selected_val = f"{match.get('name', '')}|{float(match.get('rate', 0))}"
+                selected_val = _tax_option_value(match)
             elif stored:
                 # Taxes no configured tax matches show as they are, named, never as Custom.
-                current_label = " + ".join(
-                    f"{tx.get('code') or tx.get('label') or t('documents.tax')} ({float(tx.get('rate', 0) or 0)}%)"
-                    for tx in stored)
+                current_label = " + ".join(_tax_label(tx) for tx in stored)
                 selected_val = "|stored"
                 stored_option = Option(current_label, value=selected_val, selected=True,
                                        data_rate=str(current_rate))
@@ -7428,10 +7440,9 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             if stored_option is not None:
                 options.append(stored_option)
             for tax in _taxes_list:
-                tcode = tax.get("name", "")
-                trate = float(tax.get("rate", 0))
-                val = f"{tcode}|{trate}"
-                options.append(Option(f"{tcode} ({trate}%)", value=val, selected=(selected_val == val)))
+                val = _tax_option_value(tax)
+                options.append(Option(_tax_label(tax), value=val, selected=(selected_val == val),
+                                      data_key=tax_key(tax)))
             options.append(Option(t("doc.custom"), value="|custom", selected=is_custom))
 
             custom_input = Input(
@@ -7749,8 +7760,11 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 Td(Input(type="number", value="0", step="0.01", data_name="discount_pct",
                          oninput="celerpFieldEdited(this)", onblur="celerpAutoSave()",
                          cls="cell-input cell-input--xs"), cls="col-disc"),
+                # data-defaults: every default with its tax_key, for _celerpApplyDefaultTaxes.
                 Td(_tax_select({"taxes": default_line_taxes(_taxes_list, doc_type, doc_taxes=doc_taxes)}),
-                   cls="col-tax"),
+                   cls="col-tax", data_defaults=_json.dumps([
+                       {"key": tax_key(tx), "option": _tax_option_value(tx), "label": _tax_label(tx), "tax": tx}
+                       for tx in default_line_taxes(_taxes_list, doc_type, doc_taxes=None)])),
             ])
             if doc_type in ("purchase_order", "bill"):
                 cells.append(Td(_line_account_picker(chart_accounts, ""), cls="col-account"))
@@ -7883,8 +7897,9 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         lines_section = Div(
             *_ai_dropzone,
             _csv_import_el,
-            # The added-row template carries the company defaults; celerpAddLine clears them while
-            # the page holds a document tax (_celerpDocTaxMode), which a removal can change live.
+            # The added-row template carries the company defaults; celerpAddLine leaves off any the
+            # page's document taxes already charge (_celerpApplyDefaultTaxes), which a removal can
+            # change live.
             Template(_li_empty_row(None), id="line-row-tpl"),
             Div(
                 Span("📷", cls="scan-bar-icon"),
@@ -8428,13 +8443,10 @@ function celerpFillRow(row, data) {{
             linkEl.onclick = (e) => e.preventDefault();
         }}
     }}
-    // Set tax dropdown: none while the document is taxed as a whole, else the item's
-    // tax_code/tax_rate, else the company defaults the added-row template carries.
+    // Set tax dropdown: the item's tax_code/tax_rate, else the company defaults the added-row
+    // template carries; a tax the document already charges as a whole is left off either way.
     const taxSel = row.querySelector('[data-name="tax_select"]');
-    if (taxSel && _celerpDocTaxMode()) {{
-        taxSel.value = '|0';
-        celerpTaxChange(taxSel);
-    }} else if (taxSel) {{
+    if (taxSel) {{
         let matched = false;
         if (data.tax_code) {{
             for (const opt of taxSel.options) {{
@@ -8449,11 +8461,12 @@ function celerpFillRow(row, data) {{
             }}
         }}
         if (matched) {{
+            if (_celerpHeldTaxKeys().has(taxSel.selectedOptions[0].dataset.key)) taxSel.value = '|0';
             celerpTaxChange(taxSel);
         }} else {{
-            const tplTax = document.getElementById('line-row-tpl').content.querySelector('.col-tax');
-            taxSel.closest('.col-tax').replaceChildren(...tplTax.cloneNode(true).childNodes);
-            celerpUpdateTotals();
+            const cell = document.getElementById('line-row-tpl').content.querySelector('.col-tax').cloneNode(true);
+            taxSel.closest('.col-tax').replaceWith(cell);
+            _celerpApplyDefaultTaxes(cell);
         }}
     }}
 """ + ("""    // Item status column (status-column pages only): populate with the rest of the
@@ -8744,8 +8757,8 @@ function celerpAddLine() {{
     _celerpHadLines = true;  // once a line exists, emptying the table later must persist
     const tpl = document.getElementById('line-row-tpl').content.cloneNode(true);
     const row = tpl.querySelector('tr') || tpl.children[0];
-    const taxSel = row && row.querySelector('[data-name="tax_select"]');
-    if (taxSel && _celerpDocTaxMode()) taxSel.value = '|0';
+    const taxCell = row && row.querySelector('.col-tax');
+    if (taxCell) _celerpApplyDefaultTaxes(taxCell);
     const tbody = document.getElementById('{line_body_id}');
     tbody.appendChild(tpl);
     // Re-init comboboxes in the newly-added row (cloneNode bypasses htmx:afterSettle)
@@ -8902,11 +8915,35 @@ function _celerpStoredTax() {{
     }});
     return sum;
 }}
-function _celerpDocTaxMode() {{
-    // The document is taxed as a whole while it holds a document tax not removed on this page;
-    // a line added meanwhile takes no tax of its own, so the tax is never charged twice.
+function _celerpHeldTaxKeys() {{
+    // The tax_key of every document tax not removed on this page (the server renders the keys).
     const st = document.getElementById('doc-taxes-state');
-    return !!st && JSON.parse(st.value || '[]').some(Boolean);
+    if (!st) return new Set();
+    const slots = JSON.parse(st.value || '[]');
+    return new Set(JSON.parse(st.dataset.keys || '[]').filter((k, i) => k && slots[i] != null));
+}}
+function _celerpApplyDefaultTaxes(cell) {{
+    // A new line's tax cell starts with every company default (data-defaults); one the document
+    // already charges as a whole is left off, so no tax is charged twice and no other is dropped.
+    const sel = cell.querySelector('[data-name="tax_select"]');
+    const defaults = JSON.parse(cell.dataset.defaults || '[]');
+    const held = _celerpHeldTaxKeys();
+    const kept = defaults.filter(d => !held.has(d.key));
+    if (!sel || kept.length === defaults.length) {{ if (sel) celerpTaxChange(sel); return; }}
+    if (!kept.length) {{
+        sel.value = '|0';
+    }} else if (kept.length === 1) {{
+        sel.value = kept[0].option;
+    }} else {{
+        const opt = sel.querySelector('option[value="|stored"]');
+        const rate = kept.reduce((sum, d) => sum + d.tax.rate, 0);
+        opt.textContent = kept.map(d => d.label).join(' + ');
+        opt.dataset.rate = String(rate);
+        sel.dataset.origRate = String(rate);
+        cell.querySelector('[data-name="taxes_json"]').value = JSON.stringify(kept.map(d => d.tax));
+        sel.value = '|stored';
+    }}
+    celerpTaxChange(sel);
 }}
 function celerpRemoveDocTax(i) {{
     const st = document.getElementById('doc-taxes-state');

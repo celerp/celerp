@@ -132,6 +132,49 @@ def test_a_document_taxed_as_a_whole_gives_a_new_line_no_tax():
         default_line_taxes(th, "invoice")
 
 
+_LEVY = {"code": "Levy 5%", "rate": 5.0, "amount": 0, "order": 0, "is_compound": False, "label": ""}
+
+
+def _money(doc_taxes: list[dict], lines: list[dict]) -> tuple[float, float]:
+    from celerp_docs.doc_money import document_money
+
+    money = document_money({"doc_taxes": doc_taxes}, lines, "USD", keep_unrated_tax=True)
+    return money["tax"], money["total"]
+
+
+def test_a_document_wide_levy_leaves_an_unrelated_default_on_a_new_line():
+    """A draft with a $100 line taxed VAT 7% and a document-wide 5% levy: a $100 line added to it
+    still takes VAT 7%, so VAT is $14, the levy $10 and the total $224 (not $217). Only the same
+    tax (name, rate and basis) already on the document is left off a new line; a document tax
+    with no name is never taken for a default."""
+    th = TAX_REGIMES["TH"]["taxes"]
+    vat = default_line_taxes(th, "invoice", doc_taxes=None)
+    added = default_line_taxes(th, "invoice", doc_taxes=[_LEVY])
+    assert [t["code"] for t in added] == ["VAT 7%"]
+    lines = [{"quantity": 1, "unit_price": 100.0, "taxes": vat}, {"quantity": 1, "unit_price": 100.0, "taxes": added}]
+    assert _money([_LEVY], lines) == (24.0, 224.0)
+    assert default_line_taxes(th, "invoice", doc_taxes=[{**_LEVY, "code": " vat 7% ", "rate": 7.0}]) == []
+    assert [t["code"] for t in default_line_taxes(th, "invoice", doc_taxes=[{**_LEVY, "code": "VAT 7%"}])] == ["VAT 7%"]
+    assert [t["code"] for t in default_line_taxes(
+        th, "invoice", doc_taxes=[{**_LEVY, "code": "VAT 7%", "rate": 7.0, "is_compound": True}])] == ["VAT 7%"]
+    assert [t["code"] for t in default_line_taxes(th, "invoice", doc_taxes=[{**_LEVY, "code": "", "rate": 7.0}])] == [
+        "VAT 7%"]
+
+
+def test_a_new_line_takes_the_companys_calculation_order():
+    """VAT 5% (order 0) and a compound 10% levy (order 1) listed levy first: a $100 line is taxed
+    VAT $5 then levy $10.50, total $115.50 (not $115), whatever order the list is in."""
+    taxes = [
+        {"name": "Levy 10%", "rate": 10.0, "tax_type": "both", "is_default": True, "is_compound": True,
+         "default_order": 1},
+        {"name": "VAT 5%", "rate": 5.0, "tax_type": "both", "is_default": True, "is_compound": False,
+         "default_order": 0},
+    ]
+    line_taxes = default_line_taxes(taxes, "invoice", doc_taxes=None)
+    assert [(t["code"], t["order"]) for t in line_taxes] == [("Levy 10%", 1), ("VAT 5%", 0)]
+    assert _money([], [{"quantity": 1, "unit_price": 100.0, "taxes": line_taxes}]) == (15.5, 115.5)
+
+
 def _settings(sales: list[dict] | None = None, purchasing: list[dict] | None = None) -> dict:
     settings: dict = {}
     if sales is not None:

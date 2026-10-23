@@ -292,14 +292,29 @@ def taxes_for(taxes: list[dict], doc_type: str | None) -> list[dict]:
 def default_line_taxes(taxes: list[dict], doc_type: str | None, *, doc_taxes) -> list[dict]:
     """The taxes list a new line starts with, whichever way it is added (scan, from items, append,
     reorder, the editor): every company default for the document's side with a rate that is not
-    zero, in list order (a company may hold two, such as CGST 9% and SGST 9%). None while the
-    document is taxed as a whole (`doc_taxes`, the target document's stored value, holds a tax),
-    so its tax is never charged twice; a new document passes None."""
-    if tax_entries(doc_taxes):
-        return []
-    return [{"code": tax.get("name"), "rate": float(tax["rate"]), "amount": 0, "order": 0,
-             "is_compound": bool(tax.get("is_compound")), "label": ""}
-            for tax in taxes_for(taxes, doc_type) if tax.get("is_default") and float(tax.get("rate") or 0)]
+    zero, in list order (a company may hold two, such as CGST 9% and SGST 9%), each in its saved
+    calculation order. A default the document already charges as a whole (the same tax_key in
+    `doc_taxes`, the target document's stored value) is left off, so no tax is charged twice; a
+    document tax that is another tax, or one whose identity cannot be read, leaves the defaults as
+    they are. A new document passes None."""
+    held = {tax_key(tax) for tax in tax_entries(doc_taxes)} - {None}
+    return [{"code": tax.get("name"), "rate": float(tax["rate"]), "amount": 0,
+             "order": int(tax.get("default_order") or 0), "is_compound": bool(tax.get("is_compound")),
+             "label": ""}
+            for tax in taxes_for(taxes, doc_type)
+            if tax.get("is_default") and float(tax.get("rate") or 0) and tax_key(tax) not in held]
+
+
+def tax_key(tax: dict) -> str | None:
+    """A tax's identity, alike for a company tax (``name``) and an applied one (``code``): its
+    name as _tax_name_key, its rate and whether it is compound. None when it has no name or its
+    rate is not a number, so it is never taken for another tax."""
+    name = _tax_name_key(tax.get("code") or tax.get("name"))
+    try:
+        rate = float(tax.get("rate"))
+    except (TypeError, ValueError):
+        return None
+    return f"{name}|{rate}|{bool(tax.get('is_compound'))}" if name else None
 
 
 def tax_entries(value) -> list[dict]:
