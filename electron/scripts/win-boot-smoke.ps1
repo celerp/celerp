@@ -238,6 +238,17 @@ function TreeMatches([string]$dir, [string]$what) {
 $enabled = ((Get-Content "..\default_modules\first_party.lock.json" -Raw | ConvertFrom-Json).PSObject.Properties.Name | Sort-Object) -join ","
 Write-Host "smoke: enabling $enabled"
 
+# What the app printed ($boot, its stdout and stderr) and every log in the account's data
+# folder, the server logs from before a restart (*.log.prev) and the database state among them.
+function AppOutput([string]$boot) {
+  Write-Host "===== Electron stdout/stderr ($boot) ====="
+  if (Test-Path $boot) { Get-Content $boot -Tail 200 } else { Write-Host "(no captured output)" }
+  Write-Host "===== boot-relevant files (logs / postgres state) ====="
+  Get-ChildItem -Path $udd -Recurse -EA SilentlyContinue |
+    Where-Object { -not $_.PSIsContainer -and $_.Name -match '(?i)\.log(\.prev)?$|logfile|PG_VERSION|postmaster|\.pid$|migrat|deelevate' } |
+    ForEach-Object { Write-Host "== $($_.FullName) =="; Get-Content $_.FullName -Tail 80 -EA SilentlyContinue }
+}
+
 # Launches the installed app exactly as a user would (default data directory, no
 # --user-data-dir) and waits for db:ok; returns the API port. -NewInstall names no
 # modules, so only the ones a new install starts are running.
@@ -273,12 +284,7 @@ function Launch([string]$exe, [string]$what, [switch]$MustFail, [switch]$NewInst
     if (Test-Path $boot) { Get-Content $boot -Tail 40 }
     return
   }
-  Write-Host "===== Electron stdout/stderr ($boot) ====="
-  if (Test-Path $boot) { Get-Content $boot -Tail 200 } else { Write-Host "(no captured output)" }
-  Write-Host "===== boot-relevant files (logs / postgres state) ====="
-  Get-ChildItem -Path $udd -Recurse -EA SilentlyContinue |
-    Where-Object { -not $_.PSIsContainer -and $_.Name -match '(?i)\.log$|logfile|PG_VERSION|postmaster|\.pid$|migrat|deelevate' } |
-    ForEach-Object { Write-Host "== $($_.FullName) =="; Get-Content $_.FullName -Tail 80 -EA SilentlyContinue }
+  AppOutput $boot
   Fail "$what`: db:ok not reached (port=$port)"
 }
 
@@ -357,7 +363,7 @@ if (-not $Previous -and -not $Demo) {
   python ..\scripts\smoke_records.py first-run $pf.FullName ..\default_modules\celerp-verticals\celerp_verticals\presets > $firstRun
   $firstRunCode = $LASTEXITCODE
   Get-Content $firstRun -EA SilentlyContinue | Write-Host
-  if ($firstRunCode -ne 0) { Fail "setting up a new install: smoke_records.py first-run exited $firstRunCode" }
+  if ($firstRunCode -ne 0) { AppOutput (Join-Path $pub "celerp-boot.out"); Fail "setting up a new install: smoke_records.py first-run exited $firstRunCode" }
   ForceQuit $installDir (Get-Content $pf.FullName -Raw).Trim() "new install"
 }
 

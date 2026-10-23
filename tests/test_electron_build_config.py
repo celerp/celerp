@@ -545,8 +545,15 @@ def test_windows_boot_smoke_runs_as_an_administrator_with_uac_off():
     assert 'if ($state -ne $Account)' in smoke and '$child -ne "standard"' in smoke
     assert smoke.index("--token-state") < smoke.index('$port = Launch $exe "first launch"')
     assert "/health/ready" in smoke and '"db"\\s*:\\s*"ok"' in smoke
+    # A launch that never gets ready, and a new install that cannot be set up, show the
+    # app's output and every log in the account's data folder (the one before a restart too).
+    output = smoke.split("function AppOutput(", 1)[1].split("\n}\n", 1)[0]
+    assert "Electron stdout/stderr" in output and "Get-Content $boot -Tail 200" in output
+    assert "\\.log(\\.prev)?$" in output
     launch = smoke.split("function Launch(", 1)[1].split("\n}\n", 1)[0]
-    assert launch.index("Electron stdout/stderr") < launch.index('Fail "$what`: db:ok not reached')
+    assert launch.index("AppOutput $boot") < launch.index('Fail "$what`: db:ok not reached')
+    new_install = smoke.split('$port = Launch $exe "new install" -NewInstall', 1)[1].split("ForceQuit", 1)[0]
+    assert new_install.index("AppOutput") < new_install.index('Fail "setting up a new install')
 
 
 def test_checks_that_run_the_packaged_python_leave_the_build_unchanged():
