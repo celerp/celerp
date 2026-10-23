@@ -169,12 +169,17 @@ def _attachment_kinds(file_ids: list[str] | None, company_id, user_id) -> set[st
 _ANSWERING: set[uuid.UUID] = set()
 
 
+def _refuse_if_answering(question_id: uuid.UUID | None) -> None:
+    """Refuse as ``question_in_progress`` while ``question_id`` is being answered."""
+    if question_id in _ANSWERING:
+        raise _conflict("question_in_progress", t("ai.err_question_in_progress"))
+
+
 @contextmanager
 def _answering(question_id: uuid.UUID):
     """Hold ``question_id`` as being answered for the duration of the block; a
     second hold while the first is held is refused as ``question_in_progress``."""
-    if question_id in _ANSWERING:
-        raise _conflict("question_in_progress", t("ai.err_question_in_progress"))
+    _refuse_if_answering(question_id)
     _ANSWERING.add(question_id)
     try:
         yield
@@ -767,6 +772,9 @@ async def query_in_conversation(
         question_id = uuid.uuid4() if taken else body.operation_id
     else:
         question_id = asked.id
+    # A send holds its question before it stores it and releases it after the answer is
+    # stored, so a repeat that read the question too early to see it is refused here.
+    _refuse_if_answering(body.operation_id)
 
     if body.document_mode == "receipts":
         # A reading job takes its question's id, so sending the question again
@@ -798,6 +806,13 @@ async def query_in_conversation(
         return _answer_response(answered, question_id=question_id, asked_again=True)
 
     with _answering(question_id):
+        if asked is not None:
+            # The first send may have stored its answer since the read above.
+            answered = (await find_question(
+                session, conversation_id, body.operation_id, body.query, body.file_ids,
+            ))[1]
+            if answered is not None:
+                return _answer_response(answered, question_id=question_id, asked_again=True)
         # Assemble the read-only context, then commit so the session is quiescent
         # for the duration of the agent loop (which reaches the app over its own
         # request sessions). The history is what came before the question.

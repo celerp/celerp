@@ -271,7 +271,7 @@ def test_batch_load_file_wrong_company(tmp_path):
 @pytest.mark.asyncio
 async def test_ask_unattended_with_history():
     """History messages are injected between system and user."""
-    from celerp.ai.service import _RunTally, ask_unattended
+    from celerp.ai.service import RunTally, ask_unattended
 
     captured = {}
 
@@ -286,7 +286,7 @@ async def test_ask_unattended_with_history():
         with patch("celerp.ai.llm.relay_http_url", return_value="https://relay"):
             with patch("httpx.AsyncClient.post", side_effect=mock_post):
                 result = await ask_unattended(
-                    "system prompt", "user question", operation_id=uuid.uuid4(), tally=_RunTally(),
+                    "system prompt", "user question", operation_id=uuid.uuid4(), tally=RunTally(),
                     history=[{"role": "user", "content": "prior"}, {"role": "assistant", "content": "reply"}],
                 )
 

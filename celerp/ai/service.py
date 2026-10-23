@@ -95,7 +95,7 @@ class AgentResult:
 
 
 @dataclass
-class _RunTally:
+class RunTally:
     """What one agent run has used so far, kept outside the loop so a run that
     fails after a charged turn still reports the credits it was charged."""
     credits: int = 0
@@ -301,7 +301,7 @@ async def run_query(
     memory = await get_memory(session, company_id)
     user_message = f"<user_query>\n{query}\n</user_query>"
 
-    tally = _RunTally()
+    tally = RunTally()
     try:
         files = _load_files(file_ids, company_id, user_id)
         reply = await asyncio.wait_for(
@@ -390,7 +390,7 @@ async def run_agent(
     same id after a failure is charged at most once.
     """
     t0 = time.monotonic()
-    tally = _RunTally()
+    tally = RunTally()
     try:
         result = await asyncio.wait_for(
             _agent_loop(
@@ -430,7 +430,7 @@ async def _agent_loop(
     history: list[dict],
     operation_id: uuid.UUID,
     read_only: bool = False,
-    tally: _RunTally,
+    tally: RunTally,
 ) -> AgentResult:
     capabilities = compile_agent_capabilities(app, company_settings, role)
     if read_only:
@@ -585,7 +585,7 @@ async def _model_turn(
     *,
     reservation_id: str | None,
     operation_id: uuid.UUID | None,
-    tally: _RunTally,
+    tally: RunTally,
     **request,
 ):
     """One model call; ``request`` carries any further fields of the call. Every
@@ -616,7 +616,7 @@ async def ask_unattended(
     user_text: str,
     *,
     operation_id: uuid.UUID,
-    tally: _RunTally,
+    tally: RunTally,
     files: list[dict] | None = None,
     history: list[dict[str, str]] | None = None,
 ) -> ModelResult:
@@ -638,7 +638,7 @@ async def ask_unattended(
         return await _model_turn(messages, None, **turn)
 
 
-def _cite(tally: _RunTally, name: str, arguments: dict, tool_result: dict) -> None:
+def _cite(tally: RunTally, name: str, arguments: dict, tool_result: dict) -> None:
     """Record the help pages behind the answer: a help search starts an empty
     list, and each help page read successfully is added to it."""
     if name not in ("help_search", "help_read"):

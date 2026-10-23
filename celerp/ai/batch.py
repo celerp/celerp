@@ -33,7 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.ai.files import load_file_for_llm
 from celerp.ai.llm import RelayError
-from celerp.ai.service import _RunTally, ask_unattended
+from celerp.ai.service import RunTally, ask_unattended
 from celerp.ai.usage import record_usage
 from celerp.models.ai import AIBatchJob
 from ui.i18n import t
@@ -150,7 +150,7 @@ async def _process_single_file(
         files = [file]
         prompt = f"{query}\n\nRead the attached document." if query else "Read the attached document."
 
-        tally = _RunTally()
+        tally = RunTally()
         try:
             result = await ask_unattended(
                 _BATCH_SYSTEM_PROMPT, prompt, files=files,

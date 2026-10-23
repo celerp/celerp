@@ -24,7 +24,7 @@ from fastapi import HTTPException
 from celerp.ai import llm as llm_mod
 from celerp.ai.files import XLSX_CONTENT_TYPE
 from celerp.ai.llm import ModelResult, RelayError, _build_user_content, complete
-from celerp.ai.service import _RunTally, ask_unattended
+from celerp.ai.service import RunTally, ask_unattended
 
 from _fixtures import synthetic_response
 
@@ -361,7 +361,7 @@ async def test_ask_unattended_returns_content(relay):
     route = respx.post(f"{_RELAY}/ai/complete").mock(
         return_value=httpx.Response(200, json=synthetic_response("text_completion")))
     operation = uuid.uuid4()
-    result = await ask_unattended("system", "how many items", operation_id=operation, tally=_RunTally())
+    result = await ask_unattended("system", "how many items", operation_id=operation, tally=RunTally())
     assert result.message["content"].startswith("You currently have 42 items")
     assert result.usage
     body = json.loads(route.calls.last.request.content)
@@ -377,7 +377,7 @@ async def test_ask_unattended_quota_exceeded_raises_402(relay):
     respx.post(f"{_RELAY}/ai/complete").mock(
         return_value=httpx.Response(402, json=synthetic_response("error_402")))
     with pytest.raises(HTTPException) as ei:
-        await ask_unattended("s", "u", operation_id=uuid.uuid4(), tally=_RunTally())
+        await ask_unattended("s", "u", operation_id=uuid.uuid4(), tally=RunTally())
     assert ei.value.status_code == 402
 
 
@@ -387,7 +387,7 @@ async def test_ask_unattended_no_session(monkeypatch):
     monkeypatch.setattr(llm_mod, "relay_session_headers", lambda: {"X-Session-Token": ""})
     monkeypatch.setattr(settings, "cloud_disconnected", True)
     with pytest.raises(RelayError) as ei:
-        await ask_unattended("s", "u", operation_id=uuid.uuid4(), tally=_RunTally())
+        await ask_unattended("s", "u", operation_id=uuid.uuid4(), tally=RunTally())
     assert ei.value.code == "no_session"
 
 

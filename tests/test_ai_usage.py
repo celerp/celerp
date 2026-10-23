@@ -371,6 +371,63 @@ async def test_question_sent_again_while_it_is_answered_runs_once(client, owner,
     assert len(await _messages(client, token, conv)) == 2
 
 
+@pytest.mark.parametrize("window", ["not_yet_stored", "already_answered"])
+async def test_repeat_send_in_a_read_window_runs_once(client, owner, monkeypatch, window):
+    """A repeat that reads the question just as the first send moves on is still one model
+    run and one charge. Both windows are forced with events, not sleeps: the repeat's
+    read of the question is held while the first send reaches the model, and in the
+    second window the first send also finishes before the repeat acts on that read."""
+    from celerp.ai import conversations
+
+    token, _, _ = owner
+    sent: list = []
+    in_model, release = asyncio.Event(), asyncio.Event()
+
+    async def _blocked(messages, *, tools=None, reservation_id=None, operation_id=None, **_kw):
+        sent.append(operation_id)
+        if len(sent) == 1:
+            in_model.set()
+            await release.wait()
+        return _answer()
+
+    set_session_token("s" * 64)
+    monkeypatch.setattr(service, "complete", _blocked)
+    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None: {})
+    conv = await _conversation(client, token)
+    question = uuid.uuid4()
+    real_find = conversations.find_question
+    first_send: list[asyncio.Task] = []
+
+    async def _read_while_first_send_moves_on(*args, **kw):
+        if first_send:
+            return await real_find(*args, **kw)
+        first_send.append(asyncio.ensure_future(_ask(client, token, conv, question)))
+        if window == "not_yet_stored":
+            read = await real_find(*args, **kw)  # nothing stored yet: a new question
+            await in_model.wait()
+            return read
+        await in_model.wait()
+        read = await real_find(*args, **kw)  # stored, not yet answered
+        release.set()
+        await first_send[0]
+        return read
+
+    monkeypatch.setattr(conversations, "find_question", _read_while_first_send_moves_on)
+    repeat = await _ask(client, token, conv, question)
+    release.set()
+    first = await first_send[0]
+    assert first.status_code == 200, first.text
+    if window == "not_yet_stored":
+        assert repeat.status_code == 409, repeat.text
+        assert repeat.json()["detail"]["code"] == "question_in_progress"
+    else:
+        assert (repeat.status_code, repeat.json()["asked_again"], repeat.json()["answer"]) == (
+            200, True, first.json()["answer"])
+    assert sent == [question]
+    assert [m["role"] for m in await _messages(client, token, conv)] == ["user", "assistant"]
+    assert _counts((await _usage(client, token)).json()["users"]) == [(1, 1)]
+
+
 async def test_one_off_query_is_counted_and_cites_help(client, owner, monkeypatch):
     token, _, user_id = owner
     calls: list = []
