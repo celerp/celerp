@@ -4201,6 +4201,7 @@
   "migration.err_sage50_retain_column": "{where}: a line of Tax Type 27, freight or retainage in Sage 50, cannot be told apart without the Retain Percent column. Export the {label} again with every column.",
   "migration.err_sage50_row_type": "{where}: \"{value}\" is not a Sage 50 Row Type, a whole number. Export the Purchase Journal again.",
   "migration.err_sage50_total_paid": "{where}: the total paid on invoices, {total}, is not what its lines apply to invoices, {applied}. Export the {label} again.",
+  "migration.err_sage50_unmatched_account": "{where} is applied to {paid}, which the export holds no invoice or purchase for, and leaves its G/L Account empty, so the account it posts to is not stated. Upload the journal that holds {paid} with every transaction included, or export the {label} again with that line's G/L Account.",
   "migration.sage50_currency_question": "Currency these books are kept in",
   "migration.sage50_currency_source": "Company",
   "migration.sage50_employee_note": "Celerp does not keep employee records. Payroll checks are not in Sage 50's exports; the import check shows where they leave the trial balance.",

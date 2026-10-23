@@ -684,6 +684,14 @@
     "migration.sage50_unmatched_note": {
       "en": "These receipts and payments are applied to a record the export does not hold as an invoice or purchase, such as a prepayment. Each is imported as a journal entry on its customer or vendor, so every balance ends at Sage 50's, but settles nothing. A full history import cannot run: import from a cutover date after them.",
       "params": []
+    },
+    "migration.err_sage50_unmatched_account": {
+      "en": "{where} is applied to {paid}, which the export holds no invoice or purchase for, and leaves its G/L Account empty, so the account it posts to is not stated. Upload the journal that holds {paid} with every transaction included, or export the {label} again with that line's G/L Account.",
+      "params": [
+        "label",
+        "paid",
+        "where"
+      ]
     }
   }
 }

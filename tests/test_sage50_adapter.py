@@ -698,7 +698,8 @@ def test_a_tax_type_27_line_is_freight_unless_it_retains_and_needs_its_retain_pe
     ("PURCHASE.CSV", "Credit Memo"), ("PURCHASE.CSV", "Beginning Balance Transaction"),
     ("PURCHASE.CSV", "Apply to Invoice #"), ("PURCHASE.CSV", "Row Type"),
     ("PURCHASE.CSV", "Waiting on Bill"), ("RECEIPTS.CSV", "Invoice Paid"), ("RECEIPTS.CSV", "Vendor Receipt"),
-    ("PAYMENTS.CSV", "Voided by Transaction"), ("PAYMENTS.CSV", "Invoice Paid"), ("PAYMENTS.CSV", "Customer Payment"),
+    ("RECEIPTS.CSV", "Prepayment"), ("PAYMENTS.CSV", "Voided by Transaction"), ("PAYMENTS.CSV", "Invoice Paid"),
+    ("PAYMENTS.CSV", "Customer Payment"), ("PAYMENTS.CSV", "Prepayment"),
 ])
 def test_a_template_without_a_field_deciding_what_a_transaction_means_is_refused(tmp_path, name, heading):
     """Left out, such a field would read every transaction as the ordinary kind: a quote as an
@@ -857,6 +858,24 @@ def test_a_prepayment_and_a_receipt_applied_to_a_record_not_in_the_export_settle
     assert (unmatched.count, unmatched.coverage_class, unmatched.note) == (1, BLOCKER, t("migration.sage50_unmatched_note"))
 
 
+def test_an_advance_cannot_pass_as_a_plain_receipt_without_its_prepayment_field(tmp_path):
+    """R4, the 150.00 advance above, exported without the Prepayment column: refused by name, never
+    imported as an ordinary receipt that lets a full history import run."""
+    receipts = _dropped(PUBLISHED["RECEIPTS.CSV"] + (
+        "C1,First Customer,R4,R4,01/21/25,1020,150.00,1,,Advance,1100,-150.00,FALSE,TRUE,0.00\r\n"), "Prepayment")
+    assert "lacks the column prepayment" in _refusal(tmp_path, _documented({"RECEIPTS.CSV": receipts}))
+
+
+def test_a_receipt_applied_to_a_record_not_in_the_export_with_no_g_l_account_is_refused_by_name(tmp_path):
+    """Sage 50 leaves the G/L Account of a line applied to an invoice empty: it posts to that invoice's
+    receivable account. With 1009 not in the export, no account is stated, so none is guessed."""
+    receipts = PUBLISHED["RECEIPTS.CSV"] + (
+        "C1,First Customer,R5,R5,01/22/25,1020,100.00,1,1009,Payment,,-100.00,FALSE,FALSE,100.00\r\n")
+    assert _refusal(tmp_path, _documented({"RECEIPTS.CSV": receipts})) == t(
+        "migration.err_sage50_unmatched_account", where="RECEIPTS.CSV C1 R5 01/22/25", paid="1009",
+        label="Cash Receipts Journal")
+
+
 def test_the_rows_of_one_transaction_must_agree_on_what_it_is(tmp_path):
     rows = PUBLISHED["SALES.CSV"].split("\r\n")
     rows[2] = rows[2].replace(",1001,,FALSE,", ",1001,,TRUE,")            # 1001's second row: a credit memo
@@ -955,12 +974,12 @@ EMPTY = {"SALES.CSV": "Customer ID,Invoice/CM #,Apply to Invoice Number,Credit M
                       "Voided by Transaction,Date,Date Due,Accounts Receivable Account,Number of Distributions,"
                       "G/L Account,Tax Type,Amount\r\n",
          "RECEIPTS.CSV": "Customer ID,Reference,Date,Cash Account,Cash Amount,Number of Distributions,Invoice Paid,"
-                         "G/L Account,Amount,Vendor Receipt\r\n",
+                         "G/L Account,Amount,Vendor Receipt,Prepayment\r\n",
          "PURCHASE.CSV": "Vendor ID,Invoice #,Apply to Invoice #,Credit Memo,Beginning Balance Transaction,"
                          "Waiting on Bill,Date,Date Due,Accounts Payable Account,Number of Distributions,G/L Account,"
                          "Row Type,Amount\r\n",
          "PAYMENTS.CSV": "Vendor ID,Check Number,Date,Cash Account,Cash Amount,Number of Distributions,Invoice Paid,"
-                         "G/L Account,Amount,Voided by Transaction,Customer Payment\r\n"}
+                         "G/L Account,Amount,Voided by Transaction,Customer Payment,Prepayment\r\n"}
 
 
 def _rent(rent: str) -> list[tuple[str, bytes]]:

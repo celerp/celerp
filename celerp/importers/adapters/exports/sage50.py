@@ -140,28 +140,30 @@ GENERAL = _journal("general", "General Journal", {"reference"}, "General Ledger"
 # templates export it), what it applies to or pays (Apply to Invoice Number, Invoice Paid), and
 # whether a purchase still waits on its vendor's bill (Waiting on Bill), whose money a receipt or
 # payment is (a Cash Receipts Journal's Vendor Receipt is a vendor's refund, a Cash Disbursements
-# Journal's Customer Payment a refund paid to a customer), what each line is (the Sales Journal's
+# Journal's Customer Payment a refund paid to a customer), whether it is an advance (Prepayment),
+# what each line is (the Sales Journal's
 # Tax Type, which alone tells a tax distribution from
 # freight, both written as Invoice/CM Distribution 0; the Purchase Journal's Row Type, which marks
 # retainage withheld). The Sales Journal's Retain Percent is asked for only when a Tax Type 27
 # line is there, the one kind of line Sage 50 lets withhold retainage. A field a journal's
 # template does not have is never asked of it. Both document journals also need the Date Due
 # Sage 50 requires of every invoice and purchase.
-VOIDED_BY = "voided by transaction"
 PREPAYMENT_FIELD = "prepayment"
+VOIDED_BY = "voided by transaction"
 TOTAL_PAID = "total paid on invoice(s)"
 SALES = _journal("sales", "Sales Journal", {"customer id", "invoice/cm #", "accounts receivable account", "tax type",
                                             "date due", "credit memo", "quote", "beginning balance transaction",
                                             VOIDED_BY, "apply to invoice number"}, "Accounts Receivable")
 RECEIPTS = _journal("receipts", "Cash Receipts Journal", {"customer id", "reference", "cash account", "cash amount",
-                                                          "invoice paid", "vendor receipt"}, "Accounts Receivable")
+                                                          "invoice paid", "vendor receipt", PREPAYMENT_FIELD},
+                    "Accounts Receivable")
 PURCHASES = _journal("purchases", "Purchase Journal", {"vendor id", "invoice/cm #", "accounts payable account",
                                                        "date due", "credit memo", "beginning balance transaction",
                                                        "apply to invoice number", "row type", "waiting on bill"},
                      "Accounts Payable")
 PAYMENTS = _journal("payments", "Cash Disbursements Journal", {"vendor id", "check number", "cash account",
                                                                "cash amount", VOIDED_BY, "invoice paid",
-                                                               "customer payment"}, "Accounts Payable")
+                                                               "customer payment", PREPAYMENT_FIELD}, "Accounts Payable")
 # The fields every distribution row of a transaction repeats, which must agree: a row Sage 50
 # leaves one of them blank on takes the transaction's value.
 SHARED = {
@@ -170,9 +172,9 @@ SHARED = {
                  "sales tax id"),
     PURCHASES.kind: ("credit memo", "beginning balance transaction", "waiting on bill", "date due",
                      "apply to invoice number", "accounts payable account", "accounts payable amount"),
-    RECEIPTS.kind: ("vendor receipt", "prepayment", "total paid on invoice(s)", "cash account", "cash amount",
+    RECEIPTS.kind: ("vendor receipt", PREPAYMENT_FIELD, TOTAL_PAID, "cash account", "cash amount",
                     "discount account"),
-    PAYMENTS.kind: (VOIDED_BY, "customer payment", "prepayment", "total paid on invoice(s)", "cash account",
+    PAYMENTS.kind: (VOIDED_BY, "customer payment", PREPAYMENT_FIELD, TOTAL_PAID, "cash account",
                     "cash amount", "discount account"),
     GENERAL.kind: (),
 }
@@ -722,6 +724,11 @@ class _Reader:
                         applied += abs(posted)
                         discounts += money(tb.value(row, "discount amount"), where)
                     account = tb.value(row, "g/l account") or (self.party_accounts[doc.key] if doc is not None else carried)
+                    if paid and not account:
+                        # Applied to a record the export does not hold, with its G/L Account empty: the account
+                        # it posts to is that record's, which nothing here states, so none is guessed.
+                        raise ScanError(t("migration.err_sage50_unmatched_account", where=where, paid=paid,
+                                          label=layout.label))
                     lines.append(GLLine(self.account(account), posted, None, tb.value(row, "description")))
                     discount = money(tb.value(row, "discount amount"), where)
                     if discount:
