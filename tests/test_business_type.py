@@ -496,7 +496,6 @@ async def test_retry_after_failed_db_step_still_requires_restart(client, monkeyp
     assert (await _settings(client, h))["vertical"] == "gemstones"
 
 
-
 _DOCS_AND_MANUFACTURING = ("celerp_docs", "celerp_docs.doc_constants",
                            "celerp_manufacturing", "celerp_manufacturing.movements")
 
