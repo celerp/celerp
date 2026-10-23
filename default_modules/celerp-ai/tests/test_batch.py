@@ -464,3 +464,37 @@ async def test_batch_notification_failure_handled(session, db_factory, company, 
     async with db_factory() as s:
         updated = await s.get(AIBatchJob, job.id)
         assert updated.status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_batch_records_every_charged_file_under_the_job(session, db_factory, company, user):
+    """A file whose answer was lost is charged like an answered one; a file the
+    service never read is not. The usage record names every charge by the job."""
+    from sqlalchemy import select
+    from celerp.models.ai import AIUsage
+
+    file_ids = _create_test_files(company.id, user.id, 3)
+    replies = {
+        "receipt_0.jpg": _model_result("Extracted", credits=1),
+        "receipt_1.jpg": RelayError("outcome_unknown", "lost", status=503, credits=1),
+        "receipt_2.jpg": RelayError("service_unavailable", "down", status=503),
+    }
+
+    async def _mock_llm(model, system, prompt, *, files):
+        reply = replies[files[0]["filename"]]
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+    job = await create_batch_job(session, company.id, user.id, "analyze", file_ids)
+    await session.commit()
+    with patch("celerp.ai.batch.call_llm", side_effect=_mock_llm):
+        with patch("celerp.notifications.service.deliver"):
+            await run_batch(job.id, company.id, user.id, "analyze", file_ids, db_factory)
+
+    async with db_factory() as s:
+        updated = await s.get(AIBatchJob, job.id)
+        assert (updated.completed_files, updated.failed_files, updated.credits_consumed) == (1, 2, 2)
+        usage = (await s.execute(select(AIUsage))).scalars().all()
+    assert sorted(u.credits for u in usage) == [1, 1]
+    assert {(u.operation_id, u.company_id, u.user_id) for u in usage} == {(job.id, company.id, user.id)}

@@ -111,9 +111,9 @@ async def test_help_page_labels_in_user_language_with_note(client, pages):
 
 
 @pytest.mark.asyncio
-async def test_help_img_unknown_step_404(ui_client, pages):
-    _signed_in(ui_client)
-    good = await ui_client.get("/help/img/contacts.add-supplier/1")
+async def test_help_img_unknown_step_404(client, pages):
+    headers = {"Authorization": f"Bearer {await register_admin(client)}"}
+    good = await ui_get(headers, "/help/img/contacts.add-supplier/1")
     assert good.status_code == 200
     assert good.headers["content-type"] == "image/webp"
     assert good.headers["x-content-type-options"] == "nosniff"
@@ -121,7 +121,39 @@ async def test_help_img_unknown_step_404(ui_client, pages):
     for path in ("/help/img/contacts.add-supplier/2", "/help/img/contacts.add-supplier/0",
                  "/help/img/contacts.add-supplier/x", "/help/img/inventory.add-item/1",
                  "/help/img/contacts.nothing/1"):
-        assert (await ui_client.get(path)).status_code == 404, path
+        assert (await ui_get(headers, path)).status_code == 404, path
+
+
+async def _refused_to_every_bad_session(paths, tokens, ok):
+    for name, token in tokens.items():
+        for path in paths:
+            r = await ui_get({"Authorization": f"Bearer {token}"}, path)
+            assert r.status_code in (302, 303), (name, path)
+            assert r.headers["location"].startswith("/login"), (name, path)
+            assert "Add a supplier" not in r.text and r.content != ok[path], (name, path)
+
+
+@pytest.mark.asyncio
+async def test_help_browse_and_images_need_a_valid_session(client, session, pages):
+    from jose import jwt
+    from celerp.config import settings
+    from celerp.services.session_tracker import invalidate_sessions
+    paths = ("/help", "/help?module=celerp-contacts", "/help/img/contacts.add-supplier/1")
+    token = await register_admin(client)
+    ok = {}
+    for path in paths:
+        r = await ui_get({"Authorization": f"Bearer {token}"}, path)
+        assert r.status_code == 200, path
+        ok[path] = r.content
+    claims = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
+    expired = jwt.encode({**claims, "exp": 1}, settings.jwt_secret, algorithm=settings.jwt_algorithm)
+    forged = jwt.encode(claims, "not-the-key", algorithm=settings.jwt_algorithm)
+    await _refused_to_every_bad_session(paths, {
+        "unsigned": make_test_token(), "malformed": "not-a-token", "expired": expired, "forged": forged,
+    }, ok)
+    # A session ended on the server (signed out everywhere, or a newer sign-in) opens nothing.
+    await invalidate_sessions(session, claims["sub"])
+    await _refused_to_every_bad_session(paths, {"ended": token}, ok)
 
 
 @pytest.mark.asyncio
@@ -199,10 +231,11 @@ async def test_help_ended_session_goes_to_login(ui_client, pages, monkeypatch):
     async def _ended(*_a, **_k):
         raise APIError(401, "Session expired")
 
-    for name in ("help_read", "help_search", "help_for_route"):
+    for name in ("help_read", "help_search", "help_for_route", "help_browse", "help_image"):
         monkeypatch.setattr(help_route.api, name, _ended)
     _signed_in(ui_client)
-    for path in ("/help/contacts.add-supplier", "/help?q=supplier", "/help/for-page?path=/contacts"):
+    for path in ("/help/contacts.add-supplier", "/help?q=supplier", "/help/for-page?path=/contacts",
+                 "/help", "/help/img/contacts.add-supplier/1"):
         r = await ui_client.get(path)
         assert r.status_code in (302, 303), path
         assert r.headers["location"].startswith("/login"), path

@@ -15,10 +15,12 @@ import httpx
 import pytest
 
 from test_helpers import authed_cookies
+from ui.i18n import t
 from ui.routes.account import _next_from, _resume_parts
 
 _METHODS = {"google": False, "free_email_quota": 10, "free_ai_questions": 20}
-_AI_BENEFIT = "Ask Celerp AI 20 questions free"
+_AI_BENEFIT = t("ai.free_questions_included", n=20)
+_AI_TERMS = t("ai.free_terms")
 
 
 @pytest.fixture()
@@ -41,14 +43,16 @@ async def test_ai_gate_benefit_shows_free_count(ui):
         r = await ui.get("/account/panel?intent=signup&panel=account-gate-panel&next=ai&modal=1")
     html = r.text
     assert 'value="ai"' in html
-    assert _AI_BENEFIT in html
+    assert _AI_BENEFIT in html and _AI_TERMS in html
+    assert "verified email address" in _AI_BENEFIT and "previously on a paid plan" in _AI_BENEFIT
+    assert "one file" in _AI_TERMS and "monthly free-usage budget" in _AI_TERMS
     assert "account-panel__benefit" in html
 
     # Unknown count: the generic hint, never "0 questions" or a guessed number.
     no_count = dict(_METHODS, free_ai_questions=None)
     with patch("ui.api_client.account_methods", new=AsyncMock(return_value=no_count)):
         r = await ui.get("/account/panel?intent=signup&panel=account-gate-panel&next=ai&modal=1")
-    assert "questions" not in r.text
+    assert "questions" not in r.text and _AI_TERMS not in r.text
     assert "account-panel__lead" in r.text
 
 
@@ -63,7 +67,7 @@ async def test_ai_gate_error_path_keeps_kind_count(ui):
                           data={"email": "o@shop.example", "next": "ai"})
     html = r.text
     assert "That email address cannot be used." in html
-    assert _AI_BENEFIT in html
+    assert _AI_BENEFIT in html and _AI_TERMS in html
     assert "10 documents" not in html
 
 

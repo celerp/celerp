@@ -7,7 +7,9 @@ whether a bad page is a test failure (first-party) or a logged skip (runtime).
 from __future__ import annotations
 
 import json
+import os
 import re
+import stat
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -22,6 +24,7 @@ MAX_TITLE = 120
 MAX_STEP_TEXT = 500
 MAX_STEPS = 20
 MAX_FILE_BYTES = 64 * 1024
+MAX_IMAGE_BYTES = 60 * 1024
 
 _ID = re.compile(r"^[a-z0-9-]+\.[a-z0-9-]+$")
 PLACEHOLDER = re.compile(r"\{([a-z0-9_]+)\}")
@@ -168,3 +171,37 @@ def load_file(path: Path, help_dir: Path, prefix: str) -> tuple[HelpPage | None,
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         return None, [f"not readable as JSON ({exc})"]
     return validate(data, help_dir, prefix)
+
+
+def _is_webp(data: bytes) -> bool:
+    """A whole WebP file: the RIFF header names WEBP and its size covers exactly the bytes."""
+    return (len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP"
+            and int.from_bytes(data[4:8], "little") + 8 == len(data))
+
+
+def read_image(page: HelpPage, step: int) -> bytes | None:
+    """The screenshot of ``page``'s step number ``step`` (from 1), or None when the step has
+    none or its file is not a WebP image of at most MAX_IMAGE_BYTES stored as a regular
+    file in the page's own img folder. Links are never followed, so a page can only show
+    a file that is really inside its help folder."""
+    if not 1 <= step <= len(page.steps):
+        return None
+    image = page.steps[step - 1]["image"]
+    if not (isinstance(image, str) and _IMAGE.match(image)):
+        return None
+    path = page.help_dir / image
+    flags = (os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+             | getattr(os, "O_BINARY", 0))
+    try:
+        if path.parent.is_symlink() or not stat.S_ISREG(path.lstat().st_mode):
+            return None
+        if path.resolve(strict=True).parent != page.help_dir.resolve(strict=True) / "img":
+            return None
+        with os.fdopen(os.open(path, flags), "rb") as f:
+            info = os.fstat(f.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_IMAGE_BYTES:
+                return None
+            data = f.read(MAX_IMAGE_BYTES + 1)
+    except OSError:
+        return None
+    return data if len(data) <= MAX_IMAGE_BYTES and _is_webp(data) else None

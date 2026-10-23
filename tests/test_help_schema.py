@@ -84,3 +84,69 @@ def test_image_must_be_webp_inside_dir(tmp_path):
         assert page is None and errors, image
     page, errors = validate(_page(steps=[_step(image="img/a.webp")]), tmp_path, "inventory")
     assert errors == []
+
+
+# -- Screenshots: read only a real WebP file inside the page's own img folder ---------------
+
+def _webp(size: int = 116) -> bytes:
+    """A WebP container of ``size`` bytes whose RIFF header covers exactly those bytes."""
+    body = b"WEBPVP8X" + b"\0" * (size - 16)
+    return b"RIFF" + (size - 8).to_bytes(4, "little") + body
+
+
+def _image_page(help_dir, image="img/shot.webp"):
+    from pathlib import Path
+    page, errors = validate(_page(steps=[_step(image=image)]), Path(help_dir), "inventory")
+    assert errors == []
+    return page
+
+
+def test_read_image_serves_a_webp_inside_the_help_folder(tmp_path):
+    from celerp.help.schema import read_image
+    (tmp_path / "img").mkdir()
+    (tmp_path / "img" / "shot.webp").write_bytes(_webp())
+    page = _image_page(tmp_path)
+    assert read_image(page, 1) == _webp()
+    # Steps are numbered from 1; a step past the last, or one without an image, has none.
+    assert read_image(page, 0) is None and read_image(page, 2) is None
+    assert read_image(_image_page(tmp_path, image=None), 1) is None
+
+
+def test_read_image_never_follows_a_link(tmp_path):
+    from celerp.help.schema import read_image
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "shot.webp").write_bytes(_webp())
+    linked_file = tmp_path / "file-link"
+    (linked_file / "img").mkdir(parents=True)
+    (linked_file / "img" / "shot.webp").symlink_to(outside / "shot.webp")
+    assert read_image(_image_page(linked_file), 1) is None
+    linked_dir = tmp_path / "dir-link"
+    linked_dir.mkdir()
+    (linked_dir / "img").symlink_to(outside, target_is_directory=True)
+    assert read_image(_image_page(linked_dir), 1) is None
+
+
+def test_read_image_refuses_what_is_not_a_bounded_webp_file(tmp_path):
+    import os
+    from celerp.help.schema import MAX_IMAGE_BYTES, read_image
+    img = tmp_path / "img"
+    img.mkdir()
+    page = _image_page(tmp_path)
+    shot = img / "shot.webp"
+    for data in (b"\x89PNG\r\n\x1a\n" + b"\0" * 100,         # another format under a .webp name
+                 _webp()[:-4],                               # header longer than the file
+                 _webp(MAX_IMAGE_BYTES + 16),                # over the size bound
+                 b""):
+        shot.write_bytes(data)
+        assert read_image(page, 1) is None, data[:12]
+    shot.write_bytes(_webp(MAX_IMAGE_BYTES))
+    assert read_image(page, 1) == _webp(MAX_IMAGE_BYTES)
+    shot.unlink()
+    assert read_image(page, 1) is None
+    shot.mkdir()
+    assert read_image(page, 1) is None
+    shot.rmdir()
+    if hasattr(os, "mkfifo"):  # a pipe would block a reader that waited for data
+        os.mkfifo(shot)
+        assert read_image(page, 1) is None

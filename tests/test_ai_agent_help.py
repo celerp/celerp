@@ -81,6 +81,7 @@ async def _run(**over) -> AgentResult:
         app=object(), authorization="Bearer tok", query="how do I add a supplier?",
         company_id=uuid.uuid4(), company_settings={}, user_id=uuid.uuid4(),
         role="owner", memory={"notes": [], "kv": {}}, file_ids=None, history=[],
+        operation_id=uuid.uuid4(),
     )
     kwargs.update(over)
     return await run_agent(**kwargs)
@@ -216,7 +217,7 @@ async def test_relay_refusal_after_a_charged_turn_carries_the_credits(monkeypatc
         calls["n"] += 1
         if calls["n"] == 1:
             return await scripted(messages, **kw)
-        raise HTTPException(status_code=413, detail={"code": "free_text_too_large", "message": "too long"})
+        raise HTTPException(status_code=503, detail={"code": "free_paused", "message": "paused"})
 
     async def _exec(*a, **k):
         return {"ok": True, "status": 200, "data": {"hits": []}}
@@ -225,6 +226,6 @@ async def test_relay_refusal_after_a_charged_turn_carries_the_credits(monkeypatc
     monkeypatch.setattr(service, "execute_agent_capability", _exec)
     with pytest.raises(AgentRefusal) as refused:
         await _run()
-    assert refused.value.status_code == 413
-    assert refused.value.detail["code"] == "free_text_too_large"
+    assert refused.value.status_code == 503
+    assert refused.value.detail["code"] == "free_paused"
     assert refused.value.credits == 1

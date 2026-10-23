@@ -78,7 +78,7 @@ class ScriptedModel:
         self._i = 0
         self.seen: list[list[dict]] = []
 
-    async def __call__(self, messages, *, tools=None, reservation_id=None):
+    async def __call__(self, messages, *, tools=None, reservation_id=None, operation_id=None):
         self.seen.append([dict(m) for m in messages])
         step = self._steps[self._i]
         self._i += 1

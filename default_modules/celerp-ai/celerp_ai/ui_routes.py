@@ -12,7 +12,7 @@ from starlette.responses import RedirectResponse
 
 from celerp.gateway.state import PAID_TIERS
 import ui.api_client as api
-from ui.api_client import APIError, error_message
+from ui.api_client import APIError
 from ui.components.activity import QTY_FIELD_KEYS, fmt_price, fmt_qty, is_money_field
 from ui.components.cloud_gate import (
     subscribe_url,
@@ -22,7 +22,7 @@ from ui.components.cloud_gate import (
 )
 from ui.components.shell import base_shell, load_error
 from ui.config import get_token as _token, get_role
-from ui.i18n import t, get_lang
+from ui.i18n import refusal_text, t, get_lang
 from ui.security import not_permitted_redirect
 
 # A proposal set larger than this renders as the review table instead of cards.
@@ -88,6 +88,10 @@ def _get_example_queries(lang: str = "en") -> list[dict]:
 # Quota-exceeded upgrade / top-up card
 # ---------------------------------------------------------------------------
 
+def _credits_exhausted_text(detail: dict, lang: str) -> str:
+    return t("ai.credits_exhausted", lang, limit=int(detail.get("base_limit", detail.get("limit", 0)) or 0))
+
+
 def _quota_exceeded_card(detail: dict, user_bubble: FT, lang: str = "en") -> tuple[FT, FT, FT]:
     """The card shown when an AI query is refused for hitting the quota.
 
@@ -98,12 +102,11 @@ def _quota_exceeded_card(detail: dict, user_bubble: FT, lang: str = "en") -> tup
     direct Celerp checkout. The upgrade label's direct price is suppressed under
     partner_managed.
     """
-    limit = int(detail.get("base_limit", detail.get("limit", 0)) or 0)
     is_ai_tier = detail.get("tier") in PAID_TIERS
     if is_ai_tier:
         return (
             user_bubble,
-            _msg_bubble("ai", t("ai.credits_exhausted", lang, limit=limit)),
+            _msg_bubble("ai", _credits_exhausted_text(detail, lang)),
             Div(
                 P(t("msg.need_more_topup_credits_never_expire", lang), cls="ai-upgrade-label"),
                 A(t("msg.buy_more_credits", lang),
@@ -115,7 +118,7 @@ def _quota_exceeded_card(detail: dict, user_bubble: FT, lang: str = "en") -> tup
     upgrade_label = t("msg.get_the_ai_plan", lang)
     return (
         user_bubble,
-        _msg_bubble("ai", t("ai.credits_exhausted", lang, limit=limit)),
+        _msg_bubble("ai", _credits_exhausted_text(detail, lang)),
         Div(
             P(t("msg.upgrade_to_keep_your_ai_operator_working", lang), cls="ai-upgrade-label"),
             A(upgrade_label,
@@ -126,32 +129,45 @@ def _quota_exceeded_card(detail: dict, user_bubble: FT, lang: str = "en") -> tup
     )
 
 
-async def _refusal_reply(token: str, e: APIError, user_bubble: FT, query: str,
-                         lang: str) -> tuple[tuple, bool]:
-    """The reply to a question the AI service refused, and whether the composer keeps
-    the question. The relay's refusal code decides: a free account out of questions
-    or paused gets help pages that may answer it, a refusal of the question itself
-    (too long, too many files) keeps it for editing, a used-up paid plan gets top-up."""
+def _refusal_text(status: int | None, data: dict, lang: str) -> tuple[str, bool] | None:
+    """(text, is_error) for a question the AI service refused, read from its refusal
+    code; None when the refusal is not one of the AI service's own. Shared by the live
+    reply and a reloaded thread, so both explain a refusal the same way."""
+    code = data.get("code")
+    if status == 402 and code == "quota_exceeded" and data.get("tier") == "free":
+        return t("ai.free_used_up", lang, limit=int(data.get("base_limit") or 0)), False
+    if status == 402 and code == "not_available":
+        return t("ai.free_not_eligible", lang), True
+    if status == 402 and code == "plan_limit":
+        return refusal_text(data) or t("error.unexpected_error_body", lang), True
+    if status == 402:
+        return _credits_exhausted_text(data, lang), False
+    if status == 503 and code == "free_paused":
+        return t("ai.free_paused", lang, date=str(data.get("resets_at") or "")[:10]), False
+    if status == 413 and code == "free_text_too_large":
+        return t("ai.free_text_too_large", lang), True
+    return None
+
+
+async def _refusal_reply(token: str, e: APIError, user_bubble: FT, query: str, lang: str) -> tuple:
+    """The reply to a question the AI service refused. The refusal code decides: a free
+    account out of questions or paused gets help pages that may answer it, a used-up
+    paid plan gets top-up, a free account the upgrade offer."""
     data = e.data if isinstance(e.data, dict) else {}
-    code = _api_error_code(e)
+    explained = _refusal_text(e.status, data, lang)
+    if explained is None:
+        return _failed_reply(user_bubble, e, lang)
+    text, is_error = explained
+    bubble = _msg_bubble("ai", text, error=is_error)
+    code = data.get("code")
     if e.status == 402 and code == "quota_exceeded" and data.get("tier") == "free":
-        limit = int(data.get("base_limit") or 0)
         cards = _plan_cards(await _plan_counts(token), lang)
-        return (user_bubble, _msg_bubble("ai", t("ai.free_used_up", lang, limit=limit)),
-                *await _help_hits(token, query, lang), cards), False
-    if e.status == 402 and code == "not_available":
-        return (user_bubble, _msg_bubble("ai", t("ai.free_not_eligible", lang), error=True)), False
-    if e.status == 402 and code == "plan_limit":
-        return (user_bubble, _msg_bubble("ai", error_message(e), error=True)), True
-    if e.status == 402:
-        return _quota_exceeded_card(data, user_bubble, lang), False
+        return (user_bubble, bubble, *await _help_hits(token, query, lang), cards)
+    if e.status == 402 and code not in ("not_available", "plan_limit"):
+        return _quota_exceeded_card(data, user_bubble, lang)
     if e.status == 503 and code == "free_paused":
-        date = str(data.get("resets_at") or "")[:10]
-        return (user_bubble, _msg_bubble("ai", t("ai.free_paused", lang, date=date)),
-                *await _help_hits(token, query, lang)), False
-    if e.status == 413 and code == "free_text_too_large":
-        return (user_bubble, _msg_bubble("ai", t("ai.free_text_too_large", lang), error=True)), True
-    return _failed_reply(user_bubble, e, lang), False
+        return (user_bubble, bubble, *await _help_hits(token, query, lang))
+    return (user_bubble, bubble)
 
 
 async def _help_hits(token: str, query: str, lang: str) -> list[FT]:
@@ -235,7 +251,8 @@ def _free_card(free_questions, owner: bool | None, lang: str) -> FT:
         P(t("ai.free_no_account_title", lang), cls="ai-showcase__cta-name"),
         P(t("ai.free_no_account_body", lang), cls="ai-showcase__cta-desc"),
         *([P(t("ai.free_questions_included", lang, n=free_questions),
-             cls="ai-showcase__cta-feature ai-showcase__cta-feature--highlight")]
+             cls="ai-showcase__cta-feature ai-showcase__cta-feature--highlight"),
+           P(t("ai.free_terms", lang), cls="ai-showcase__cta-fine")]
           if isinstance(free_questions, int) and free_questions > 0 else []),
         Div(
             Button(t("ai.free_create_account", lang), type="button",
@@ -292,7 +309,9 @@ def setup_ui_routes(app) -> None:
         from celerp.services.permissions import role_has_permission
         try:
             settings = (await api.get_company(token)).get("settings") or {}
-        except APIError:
+        except APIError as exc:
+            if exc.status == 401:
+                raise
             return await base_shell(
                 Div(load_error(t("ai.service_unavailable", lang), lang, href="/ai"), cls="ai-page"),
                 title="AI Assistant - Celerp", nav_active="ai", request=request,
@@ -330,6 +349,8 @@ def setup_ui_routes(app) -> None:
                 messages = conv.get("messages") or []
                 jobs = conv.get("jobs") or []
             except APIError as exc:
+                if exc.status == 401:
+                    raise
                 if exc.status == 404:
                     return RedirectResponse("/ai", status_code=302)
                 failed = load_error(
@@ -413,6 +434,7 @@ def setup_ui_routes(app) -> None:
         file_ids_str = (form.get("file_ids") or "").strip()
         file_ids = [fid.strip() for fid in file_ids_str.split(",")] if file_ids_str else None
         document_mode = "receipts" if form.get("document_mode") == "receipts" else "chat"
+        operation_id = (form.get("operation_id") or "").strip()
 
         if not query and not file_ids:
             return _msg_bubble("ai", t("ai.chat_prompt_empty", lang))
@@ -424,11 +446,28 @@ def setup_ui_routes(app) -> None:
         from celerp.gateway.state import get_session_token
         session_token = get_session_token()
 
+        # The composer keeps the question on every outcome but a confirmed answer
+        # or a started reading job, and holds the question's id, so sending it
+        # again asks the same question instead of a new one.
+        def _reply(parts: tuple, *, done: bool, question_id: str, asked_again: bool = False) -> HTMLResponse:
+            if asked_again:
+                parts = tuple(p for p in parts if p is not user_bubble)
+            headers = {"HX-Push-Url": f"/ai?conversation={conversation_id}"}
+            if done:
+                headers["X-AI-Clear-Composer"] = "1"
+            oob = (
+                _operation_input(str(uuid.uuid4()) if done else question_id, oob=True),
+                Input(type="hidden", name="conversation_id", id="ai-conversation-id",
+                      value=conversation_id, hx_swap_oob="true"),
+                Div(id="ai-history", hx_swap_oob="true",
+                    hx_get="/ai/conversations-list", hx_trigger="load", hx_swap="innerHTML"),
+            )
+            return HTMLResponse(to_xml((*parts, *oob)), headers=headers)
+
         # An empty conversation id means this is the thread's first message: start
         # the conversation, then run the query inside it. Once created, retain that
-        # id even if the query fails so Retry cannot orphan this thread.
-        created_conversation = not conversation_id
-        if created_conversation:
+        # id even if the query fails so asking again cannot orphan this thread.
+        if not conversation_id:
             try:
                 title = query[:200] or (
                     t("ai.query_receipts_title", lang)
@@ -438,40 +477,25 @@ def setup_ui_routes(app) -> None:
                     await api.ai_conversation_create(token, session_token, title=title)
                 )["id"]
             except APIError as e:
-                return _failed_reply(user_bubble, e, lang)
+                if e.status == 401:
+                    raise
+                return HTMLResponse(to_xml(_failed_reply(user_bubble, e, lang)))
 
         try:
             result = await api.ai_conversation_query(
                 token, session_token, conversation_id, query, file_ids=file_ids,
-                document_mode=document_mode,
+                document_mode=document_mode, operation_id=operation_id,
             )
         except APIError as e:
-            failure, keep_composer = await _refusal_reply(token, e, user_bubble, query, lang)
-            # A question refused for its own size or files keeps the composer
-            # filled so it can be shortened and sent again.
-            headers = {"X-AI-Keep-Composer": "1"} if keep_composer else {}
-            if created_conversation:
-                failure = (
-                    *failure,
-                    Input(type="hidden", name="conversation_id", id="ai-conversation-id",
-                          value=conversation_id, hx_swap_oob="true"),
-                    Div(id="ai-history", hx_swap_oob="true",
-                        hx_get="/ai/conversations-list", hx_trigger="load", hx_swap="innerHTML"),
-                )
-                headers["HX-Push-Url"] = f"/ai?conversation={conversation_id}"
-            return HTMLResponse(to_xml(failure), headers=headers)
+            if e.status == 401:
+                raise
+            data = e.data if isinstance(e.data, dict) else {}
+            failure = await _refusal_reply(token, e, user_bubble, query, lang)
+            return _reply(failure, done=False, question_id=str(data.get("message_id") or operation_id),
+                          asked_again=bool(data.get("asked_again")))
 
-        # Out-of-band swaps keep the hidden id and the sidebar list in step with
-        # the (possibly newly created) conversation; HX-Push-Url puts the thread
-        # in the address bar so a reload reopens it.
-        oob_id = Input(type="hidden", name="conversation_id", id="ai-conversation-id",
-                       value=conversation_id, hx_swap_oob="true")
-        oob_history = Div(
-            id="ai-history", hx_swap_oob="true",
-            hx_get="/ai/conversations-list", hx_trigger="load", hx_swap="innerHTML",
-        )
-        headers = {"HX-Push-Url": f"/ai?conversation={conversation_id}"}
-
+        question_id = str(result.get("message_id") or operation_id)
+        asked_again = bool(result.get("asked_again"))
         if result.get("job_id"):
             # Receipts and invoices are read in the background: the thread shows
             # the job's progress and fetches the bill proposals when it finishes.
@@ -479,22 +503,24 @@ def setup_ui_routes(app) -> None:
                 "id": result["job_id"], "status": "pending",
                 "total_files": len(file_ids or []), "completed_files": 0, "failed_files": 0,
             }
-            reply = (user_bubble, _job_bubble(job, conversation_id, lang), oob_id, oob_history)
-            return HTMLResponse(to_xml(reply), headers=headers)
+            return _reply((user_bubble, _job_bubble(job, conversation_id, lang)),
+                          done=True, question_id=question_id, asked_again=asked_again)
+
+        error = result.get("error")
+        if error:
+            again = _ask_again(conversation_id, question_id, query, file_ids, lang) if result.get("retryable") else None
+            parts = (user_bubble, _msg_bubble("ai", error, error=True, extra=again))
+            return _reply(parts, done=False, question_id=question_id, asked_again=asked_again)
 
         actions = result.get("pending_actions") or []
         message_id = str(actions[0].get("message_id", "")) if actions else ""
         groups = [_action_group(conversation_id, message_id, actions, lang)] if actions else []
-        error = result.get("error")
-        reply = (
+        parts = (
             user_bubble,
-            _msg_bubble("ai", error or result.get("answer", ""), error=bool(error),
-                        help_pages=None if error else result.get("help_pages"), lang=lang),
+            _msg_bubble("ai", result.get("answer", ""), help_pages=result.get("help_pages"), lang=lang),
             *groups,
-            oob_id,
-            oob_history,
         )
-        return HTMLResponse(to_xml(reply), headers=headers)
+        return _reply(parts, done=True, question_id=question_id, asked_again=asked_again)
 
     @app.get("/ai/proposals-ui")
     async def ai_proposals_ui(request: Request):
@@ -668,7 +694,9 @@ def setup_ui_routes(app) -> None:
             from celerp.gateway.state import get_session_token
             session_token = get_session_token()
             result = await api.ai_conversations_list(token, session_token)
-        except Exception:
+        except Exception as exc:
+            if isinstance(exc, APIError) and exc.status == 401:
+                raise
             return load_error(
                 t("ai.conversations_load_failed", get_lang(request)), get_lang(request),
                 hx_get="/ai/conversations-list", target="#ai-history",
@@ -946,11 +974,32 @@ async def _usage_table(token: str, session_token: str, status: dict | None) -> F
 # ---------------------------------------------------------------------------
 
 def _msg_bubble(role: str, text: str, *, error: bool = False, help_pages: list[str] | None = None,
-                lang: str = "en") -> FT:
+                lang: str = "en", extra: FT | None = None) -> FT:
     cls = "ai-msg ai-msg--user" if role == "user" else "ai-msg ai-msg--ai"
     if error:
         cls += " ai-msg--error"
-    return Div(text, *_help_sources(help_pages, lang), cls=cls)
+    return Div(text, *_help_sources(help_pages, lang), *([extra] if extra is not None else []), cls=cls)
+
+
+def _operation_input(question_id: str, *, oob: bool = False) -> FT:
+    """The composer's question id: sending the same question again with it asks the
+    AI service the same question rather than a new one."""
+    return Input(type="hidden", name="operation_id", id="ai-operation-id", value=question_id,
+                 **({"hx_swap_oob": "true"} if oob else {}))
+
+
+def _ask_again(conversation_id: str, question_id: str, query: str, file_ids: list[str] | None,
+               lang: str) -> FT:
+    """Ask a question that failed once more, as the same question."""
+    return Button(
+        t("ai.ask_again", lang), type="button", cls="btn btn--secondary btn--sm ai-msg__again",
+        hx_post="/ai/chat", hx_target="#ai-messages", hx_swap="beforeend",
+        hx_vals=json.dumps({
+            "query": query, "file_ids": ",".join(file_ids or []),
+            "conversation_id": conversation_id, "operation_id": question_id,
+        }),
+        hx_on__after_request="celerpAiAfterRequest(event); this.remove();",
+    )
 
 
 def _help_sources(page_ids: list[str] | None, lang: str) -> list[FT]:
@@ -1661,14 +1710,29 @@ def _thread(messages: list[dict], jobs: list[dict], conversation_id: str, lang: 
     entries = [("message", m) for m in messages] + [("job", j) for j in jobs]
     entries.sort(key=lambda entry: str(entry[1].get("created_at") or ""))
     out: list[FT] = []
+    # Only the thread's last reply, when it is a failure worth retrying, offers to ask
+    # the question before it again.
+    last = messages[-1] if messages else None
+    asked: dict | None = None
     for kind, entry in entries:
         if kind == "job":
             out.append(_job_bubble(entry, conversation_id, lang))
             continue
         role = entry.get("role")
         text = entry.get("content") or (t("ai.attached_files", lang) if entry.get("file_ids") else "")
-        out.append(_msg_bubble("user" if role == "user" else "ai", text, error=bool(entry.get("error")),
-                               help_pages=entry.get("help_pages"), lang=lang))
+        error = bool(entry.get("error"))
+        if entry.get("refusal") is not None:
+            explained = _refusal_text(entry.get("refusal_status"), entry["refusal"], lang)
+            if explained is not None:
+                text, error = explained
+        again = None
+        if entry is last and error and entry.get("retryable") and asked is not None:
+            again = _ask_again(conversation_id, str(asked.get("id", "")), asked.get("content") or "",
+                               asked.get("file_ids"), lang)
+        out.append(_msg_bubble("user" if role == "user" else "ai", text, error=error,
+                               help_pages=entry.get("help_pages"), lang=lang, extra=again))
+        if role == "user":
+            asked = entry
         actions = entry.get("pending_actions") or []
         if actions:
             out.append(_action_group(conversation_id, str(entry.get("id", "")), actions, lang))
@@ -1778,6 +1842,7 @@ def _chat_view(
                     id="ai-conversation-id",
                     value=conversation_id,
                 ),
+                _operation_input(str(uuid.uuid4())),
                 # Text input row
                 Div(
                     Input(
@@ -1975,8 +2040,7 @@ function celerpAiAfterRequest(event) {
     if (typing) typing.remove();
     CELERP_AI_REQUESTING = false;
     var xhr = event && event.detail && event.detail.xhr;
-    var keep = xhr && xhr.getResponseHeader('X-AI-Keep-Composer') === '1';
-    if (event && event.detail && event.detail.successful && !keep) celerpAiResetForm();
+    if (xhr && xhr.getResponseHeader('X-AI-Clear-Composer') === '1') celerpAiResetForm();
     celerpAiRefreshComposer();
     var m = document.getElementById('ai-messages');
     if (m) m.scrollTop = m.scrollHeight;

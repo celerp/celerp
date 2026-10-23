@@ -34,6 +34,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.ai.files import load_file_for_llm
 from celerp.ai.llm import RelayError, call_llm
 from celerp.ai.models import BULK_EXTRACTION
+from celerp.ai.usage import record_usage
 from celerp.models.ai import AIBatchJob
 from ui.i18n import t
 
@@ -155,6 +156,8 @@ async def _process_single_file(
                 "filename": filename,
                 "status": "error",
                 "error": _file_error(exc),
+                # A file whose answer was lost is still charged.
+                "credits": exc.credits if isinstance(exc, RelayError) else 0,
             }
 
     answer = result.message.get("content") or ""
@@ -175,8 +178,11 @@ async def create_batch_job(
     query: str,
     file_ids: list[str],
     conversation_id: uuid.UUID | None = None,
+    job_id: uuid.UUID | None = None,
 ) -> AIBatchJob:
-    """Create a pending batch job record. Credits accrue per file as it runs."""
+    """Create a pending batch job record. Credits accrue per file as it runs.
+
+    ``job_id`` is the id of the question that asked for the job, when there is one."""
     file_ids = list(dict.fromkeys(file_ids))
     if not file_ids:
         raise ValueError("Attach at least one file")
@@ -184,6 +190,7 @@ async def create_batch_job(
         raise ValueError(t("error.batch_too_many", max=MAX_BATCH_FILES))
 
     job = AIBatchJob(
+        **({"id": job_id} if job_id is not None else {}),
         company_id=company_id,
         user_id=user_id,
         conversation_id=conversation_id,
@@ -258,6 +265,8 @@ async def run_batch(
                 job.failed_files = failed
                 job.credits_consumed = credits
                 session.add(job)
+                record_usage(session, company_id=company_id, user_id=user_id, operation_id=job_id,
+                             credits=result.get("credits", 0))
                 await session.commit()
 
         if on_progress:

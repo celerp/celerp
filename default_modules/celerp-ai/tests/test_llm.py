@@ -115,6 +115,86 @@ async def test_complete_sends_tools_and_reservation_only_when_set(relay):
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_complete_names_the_question_on_its_first_turn_only(relay):
+    import uuid
+
+    route = respx.post(f"{_RELAY}/ai/complete").mock(
+        return_value=httpx.Response(200, json=synthetic_response("text_completion")))
+    question = uuid.uuid4()
+    await complete([{"role": "user", "content": "hi"}], operation_id=question)
+    body = json.loads(route.calls.last.request.content)
+    assert body["operation_id"] == str(question)
+    assert "reservation_id" not in body
+
+    await complete([{"role": "user", "content": "hi"}], reservation_id="resv-1")
+    body = json.loads(route.calls.last.request.content)
+    assert "operation_id" not in body and body["reservation_id"] == "resv-1"
+
+    calls = len(route.calls)
+    with pytest.raises(ValueError):
+        await complete([{"role": "user", "content": "hi"}], reservation_id="resv-1", operation_id=question)
+    assert len(route.calls) == calls
+
+
+@pytest.mark.parametrize("status,detail,code", [
+    (503, {"code": "service_unavailable", "message": "m"}, "service_unavailable"),
+    (503, {"code": "busy", "message": "m"}, "busy"),
+    (429, {"code": "rate_limited", "message": "m"}, "busy"),
+    (429, {"code": "too_many_concurrent", "message": "m"}, "busy"),
+    (409, {"code": "continuation_expired", "message": "m"}, "continuation_expired"),
+    (409, {"code": "operation_expired", "message": "m"}, "operation_expired"),
+    (422, {"code": "operation_mismatch", "message": "m"}, "operation_mismatch"),
+    (409, "no code", "continuation_expired"),
+    (429, "no code", "busy"),
+])
+@pytest.mark.asyncio
+@respx.mock
+async def test_complete_maps_typed_failures(relay, status, detail, code):
+    respx.post(f"{_RELAY}/ai/complete").mock(return_value=httpx.Response(status, json={"detail": detail}))
+    with pytest.raises(RelayError) as ei:
+        await complete([{"role": "user", "content": "x"}])
+    assert (ei.value.code, ei.value.status, ei.value.credits, ei.value.retry_after) == (code, status, 0, None)
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_lost_answer_carries_its_charge(relay):
+    respx.post(f"{_RELAY}/ai/complete").mock(return_value=httpx.Response(
+        503, json={"detail": {"code": "outcome_unknown", "message": "lost", "credits": 2}}))
+    with pytest.raises(RelayError) as ei:
+        await complete([{"role": "user", "content": "x"}])
+    assert (ei.value.code, ei.value.status, ei.value.credits) == ("outcome_unknown", 503, 2)
+
+
+@pytest.mark.parametrize("detail,headers,wait", [
+    ({"code": "operation_in_progress", "message": "m", "retry_after": 3}, {"Retry-After": "7"}, 3.0),
+    ({"code": "operation_in_progress", "message": "m"}, {"Retry-After": "7"}, 7.0),
+    ({"code": "operation_in_progress", "message": "m"}, {}, 1.0),
+    ({"code": "operation_in_progress", "message": "m", "retry_after": "soon"}, {"Retry-After": "-1"}, 1.0),
+])
+@pytest.mark.asyncio
+@respx.mock
+async def test_question_in_progress_says_when_to_ask_again(relay, detail, headers, wait):
+    respx.post(f"{_RELAY}/ai/complete").mock(
+        return_value=httpx.Response(409, json={"detail": detail}, headers=headers))
+    with pytest.raises(RelayError) as ei:
+        await complete([{"role": "user", "content": "x"}])
+    assert (ei.value.code, ei.value.retry_after, ei.value.credits) == ("operation_in_progress", wait, 0)
+
+
+@pytest.mark.parametrize("code", ["not_available", "plan_limit", "quota_exceeded"])
+@pytest.mark.asyncio
+@respx.mock
+async def test_typed_402_passes_through(relay, code):
+    detail = {"code": code, "message": "m"}
+    respx.post(f"{_RELAY}/ai/complete").mock(return_value=httpx.Response(402, json={"detail": detail}))
+    with pytest.raises(HTTPException) as ei:
+        await complete([{"role": "user", "content": "x"}])
+    assert (ei.value.status_code, ei.value.detail) == (402, detail)
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_complete_parses_message_model_usage(relay):
     respx.post(f"{_RELAY}/ai/complete").mock(
         return_value=httpx.Response(200, json=synthetic_response("text_completion")))

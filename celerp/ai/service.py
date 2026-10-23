@@ -48,7 +48,10 @@ MAX_TOOL_CALLS_PER_TURN = 5
 MAX_TOOL_CALLS_PER_RUN = 12
 MAX_ARGUMENT_BYTES = 16 * 1024  # per tool call, serialized arguments
 MAX_RESULT_BYTES = AGENT_RESULT_MAX_BYTES  # per tool call result
-MAX_TOTAL_RESULT_BYTES = 192 * 1024
+# Text one model call may carry: messages without their file parts, plus the
+# tool definitions, as JSON. Kept under the AI service's request size limit.
+REQUEST_TEXT_BUDGET = 240 * 1024
+MAX_IN_PROGRESS_WAIT_S = 10.0   # longest single wait for a first attempt still running
 AGENT_RUN_TIMEOUT_S = 120.0     # whole run; wider than one model call
 PENDING_ACTION_TTL_S = 15 * 60  # interactive proposals
 PROPOSAL_TTL_S = 24 * 60 * 60   # proposals built from an extraction job
@@ -66,6 +69,7 @@ class AIResponse:
     model_used: str
     tools_called: list[str]
     error: str | None = None
+    credits: int = 0             # relay credits the question was charged
 
 
 @dataclass
@@ -87,6 +91,7 @@ class AgentResult:
     error: str | None = None
     credits: int = 0             # relay credits consumed across all model turns
     help_pages: list[str] | None = None  # help pages read for the answer; None when help was not searched
+    error_code: str | None = None  # why the run failed; see RETRYABLE_ERRORS
 
 
 @dataclass
@@ -118,29 +123,50 @@ _RELAY_ERROR_KEY = {
     "unexpected_reply": "ai.err_bad_reply",
     "continuation_expired": "ai.err_step_expired",
     "gateway_error": "ai.err_unavailable",
+    "outcome_unknown": "ai.err_outcome_unknown",
+    "operation_expired": "ai.err_question_expired",
 }
 _BUSY_TEXT = "The AI service is temporarily busy. Please try again in a moment."
+_UNEXPECTED_TEXT = "An unexpected error occurred. Please try again."
+_TOO_MUCH_DATA_TEXT = "Too much data was returned; ask a narrower question."
+
+# Failures after which the same question can be asked again under the same
+# question id: no answer came back, and asking again is charged at most once.
+RETRYABLE_ERRORS = frozenset({
+    "outcome_unknown", "service_unavailable", "busy", "operation_in_progress",
+    "continuation_expired", "unexpected_reply", "gateway_error", "timeout",
+})
 
 
 class _SessionExpired(Exception):
     """A capability answered 401 mid-run: the user's token is no longer valid."""
 
 
+def _error_code(exc: BaseException) -> str:
+    """Name a failure by type, never by message substring."""
+    if isinstance(exc, (asyncio.TimeoutError, httpx.TimeoutException)):
+        return "timeout"
+    if isinstance(exc, RelayError):
+        return exc.code
+    if isinstance(exc, _SessionExpired):
+        return "session_expired"
+    return "unexpected"
+
+
 def _user_error(exc: BaseException) -> str:
     """Map an exception to user-safe text by type, never by message substring."""
-    if isinstance(exc, asyncio.TimeoutError):
+    code = _error_code(exc)
+    if code == "timeout":
         return t("ai.err_timeout")
-    if isinstance(exc, RelayError):
-        if exc.code == "service_unavailable":
-            return str(exc)
-        if exc.code == "busy":
-            return _BUSY_TEXT
-        return t(_RELAY_ERROR_KEY[exc.code])
-    if isinstance(exc, httpx.TimeoutException):
-        return t("ai.err_timeout")
-    if isinstance(exc, _SessionExpired):
+    if code == "session_expired":
         return t("error.session_expired")
-    return "An unexpected error occurred. Please try again."
+    if code == "service_unavailable":
+        return str(exc)
+    if code in ("busy", "operation_in_progress"):
+        return _BUSY_TEXT
+    if code in _RELAY_ERROR_KEY:
+        return t(_RELAY_ERROR_KEY[code])
+    return _UNEXPECTED_TEXT
 
 
 # -- Prompts ----------------------------------------------------------------
@@ -197,6 +223,17 @@ def agent_system_prompt(lang: str) -> str:
 
 
 # -- Shared helpers ---------------------------------------------------------
+
+def _request_text_bytes(messages: list[dict], tools: list[dict] | None) -> int:
+    """Size of the text one model call carries: the messages without their file
+    parts, and the tool definitions, as UTF-8 JSON."""
+    text = [
+        {**m, "content": [p for p in m["content"] if p.get("type") == "text"]}
+        if isinstance(m.get("content"), list) else m
+        for m in messages
+    ]
+    return len(json.dumps([text, tools or []], ensure_ascii=False, default=str).encode("utf-8"))
+
 
 def _memory_block(memory: dict) -> str:
     """Render shared company memory as explicitly untrusted reference data."""
@@ -259,22 +296,26 @@ async def run_query(
     model = select_model(query, file_count=file_count, is_batch=file_count > 1)
 
     memory = await get_memory(session, company_id)
-    user_message = f"<user_query>\n{query}\n</user_query>" + _memory_block(memory)
+    user_message = f"<user_query>\n{query}\n</user_query>"
 
     try:
         files = _load_files(file_ids, company_id, user_id)
-
-        async def _llm_call() -> str:
-            result = await call_llm(model, _SYSTEM_PROMPT, user_message, files=files, history=history)
-            return result.message.get("content") or ""
-
-        answer = await asyncio.wait_for(_llm_call(), timeout=AGENT_RUN_TIMEOUT_S)
-        result = AIResponse(answer=answer, model_used=model, tools_called=[])
+        reply = await asyncio.wait_for(
+            call_llm(model, _SYSTEM_PROMPT + _memory_block(memory), user_message, files=files, history=history),
+            timeout=AGENT_RUN_TIMEOUT_S,
+        )
+        result = AIResponse(
+            answer=reply.message.get("content") or "", model_used=model, tools_called=[],
+            credits=int((reply.usage or {}).get("credits") or 0),
+        )
     except HTTPException:
         raise
     except Exception as exc:
         log.error("AI query failed: %s", exc)
-        result = AIResponse(answer="", model_used=model, tools_called=[], error=_user_error(exc))
+        result = AIResponse(
+            answer="", model_used=model, tools_called=[], error=_user_error(exc),
+            credits=exc.credits if isinstance(exc, RelayError) else 0,
+        )
     _log_query(company_id, user_id, model, [], file_count, t0, result.error)
     return result
 
@@ -334,9 +375,14 @@ async def run_agent(
     memory: dict,
     file_ids: list[str] | None,
     history: list[dict],
+    operation_id: uuid.UUID,
     read_only: bool = False,
 ) -> AgentResult:
-    """Run the tool-calling agent loop. Returns AgentResult - raises AgentRefusal for the relay refusals llm.complete raises."""
+    """Run the tool-calling agent loop. Returns AgentResult - raises AgentRefusal for the relay refusals llm.complete raises.
+
+    ``operation_id`` names the question: asking the same question again under the
+    same id after a failure is charged at most once.
+    """
     t0 = time.monotonic()
     tally = _RunTally()
     try:
@@ -345,7 +391,7 @@ async def run_agent(
                 app=app, authorization=authorization, query=query,
                 company_id=company_id, company_settings=company_settings, role=role,
                 user_id=user_id, memory=memory, file_ids=file_ids, history=history,
-                read_only=read_only, tally=tally,
+                operation_id=operation_id, read_only=read_only, tally=tally,
             ),
             timeout=AGENT_RUN_TIMEOUT_S,
         )
@@ -356,9 +402,9 @@ async def run_agent(
     except Exception as exc:
         if not isinstance(exc, (asyncio.TimeoutError, _SessionExpired)):
             log.error("AI agent run failed: %s", exc)
-        result = AgentResult(
-            answer="", model_used="", tools_called=[], pending_actions=[], error=_user_error(exc),
-            credits=tally.credits,
+        result = tally.result(
+            answer="", model_used="", tools_called=[], pending_actions=[],
+            error=_user_error(exc), error_code=_error_code(exc),
         )
         _log_query(company_id, user_id, "", [], len(file_ids or []), t0, result.error)
         return result
@@ -376,6 +422,7 @@ async def _agent_loop(
     memory: dict,
     file_ids: list[str] | None,
     history: list[dict],
+    operation_id: uuid.UUID,
     read_only: bool = False,
     tally: _RunTally,
 ) -> AgentResult:
@@ -387,25 +434,47 @@ async def _agent_loop(
         }
     tools = agent_tool_specs(capabilities)
 
-    system = agent_system_prompt(current_lang())
+    # Company memory rides in the system message, so the user message (which
+    # names the question when it is asked again) depends on the question alone.
+    system = agent_system_prompt(current_lang()) + _memory_block(memory)
     files = _load_files(file_ids, company_id, user_id)
-    user_text = f"<user_query>\n{query}\n</user_query>" + _memory_block(memory)
+    user_text = f"<user_query>\n{query}\n</user_query>"
     user_content = _build_user_content(user_text, files)
 
-    messages: list[dict] = [{"role": "system", "content": system}]
-    messages.extend(history or [])
-    messages.append({"role": "user", "content": user_content})
+    # The oldest history goes first when the question would not fit in one model call.
+    history = list(history or [])
+    while True:
+        messages: list[dict] = [{"role": "system", "content": system}, *history,
+                                {"role": "user", "content": user_content}]
+        if not history or _request_text_bytes(messages, tools) <= REQUEST_TEXT_BUDGET:
+            break
+        history.pop(0)
 
     reservation_id: str | None = None
     model_used = ""
     tools_called: list[str] = []
     tool_calls_total = 0
-    total_result_bytes = 0
 
-    for _turn in range(MAX_MODEL_TURNS):
-        result = await complete(messages, tools=tools, reservation_id=reservation_id)
+    for turn in range(MAX_MODEL_TURNS):
+        if _request_text_bytes(messages, tools) > REQUEST_TEXT_BUDGET:
+            return tally.result(
+                answer="", model_used=model_used, tools_called=tools_called,
+                pending_actions=[], error=_TOO_MUCH_DATA_TEXT, error_code="too_much_data",
+            )
+        try:
+            result = await _model_turn(
+                messages, tools, reservation_id=reservation_id,
+                operation_id=operation_id if turn == 0 else None, tally=tally,
+            )
+        except HTTPException as exc:
+            if turn and exc.status_code == 413:
+                # The question itself was accepted; the data read for it outgrew a model call.
+                return tally.result(
+                    answer="", model_used=model_used, tools_called=tools_called,
+                    pending_actions=[], error=_TOO_MUCH_DATA_TEXT, error_code="too_much_data",
+                )
+            raise
         reservation_id = result.reservation_id
-        tally.credits += int((result.usage or {}).get("credits") or 0)
         model_used = result.model_used or model_used
         message = result.message
         content = message.get("content") or ""
@@ -485,13 +554,6 @@ async def _agent_loop(
                     tool_result = {**tool_result, "expected_sections": _allowed_sections(capability)}
 
             encoded = json.dumps(tool_result, ensure_ascii=False, default=str)
-            total_result_bytes += len(encoded.encode("utf-8"))
-            if total_result_bytes > MAX_TOTAL_RESULT_BYTES:
-                return tally.result(
-                    answer="", model_used=model_used, tools_called=tools_called,
-                    pending_actions=[],
-                    error="Too much data was returned; ask a narrower question.",
-                )
             messages.append({"role": "tool", "tool_call_id": call_id, "content": encoded})
         for call in dropped:
             dropped_result = _agent_error(
@@ -507,7 +569,35 @@ async def _agent_loop(
     return tally.result(
         answer="", model_used=model_used, tools_called=tools_called,
         pending_actions=[], error="The assistant could not finish within the allowed steps.",
+        error_code="step_limit",
     )
+
+
+async def _model_turn(
+    messages: list[dict],
+    tools: list[dict],
+    *,
+    reservation_id: str | None,
+    operation_id: uuid.UUID | None,
+    tally: _RunTally,
+):
+    """One model call. Every charge it reports is added to ``tally`` before
+    anything else happens, including the charge of a call whose answer was lost.
+    A first attempt that is still running is waited for and asked again under the
+    same id; the run's own time limit bounds the waiting."""
+    while True:
+        try:
+            result = await complete(
+                messages, tools=tools, reservation_id=reservation_id, operation_id=operation_id,
+            )
+        except RelayError as exc:
+            tally.credits += exc.credits
+            if exc.code != "operation_in_progress":
+                raise
+            await asyncio.sleep(min(exc.retry_after or 1.0, MAX_IN_PROGRESS_WAIT_S))
+            continue
+        tally.credits += int((result.usage or {}).get("credits") or 0)
+        return result
 
 
 def _cite(tally: _RunTally, name: str, arguments: dict, tool_result: dict) -> None:

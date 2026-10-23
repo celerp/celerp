@@ -6493,8 +6493,7 @@
   "ai.usage_none_all_time": "No questions yet.",
   "ai.usage_scope_note": "The account total above also counts questions from other companies on this install, from deleted conversations, and from the API.",
   "dashboard.getting_started_ai": "Questions as you set up? Ask Celerp AI.",
-  "ai.free_questions_included": "A free account includes {n} questions.",
-  "account.gate_benefit_ai": "Ask Celerp AI {n} questions free with a Celerp account.",
+  "ai.free_questions_included": "Eligible free accounts with a verified email address receive {n} AI questions in total. Accounts previously on a paid plan are not eligible.",
   "ai.free_no_account_title": "Try Celerp AI free",
   "ai.free_no_account_body": "Create a free Celerp account to ask Celerp AI how to set up and use Celerp.",
   "ai.free_create_account": "Create a free account",
@@ -6507,5 +6506,10 @@
   "ai.help_hits": "These help pages may answer it:",
   "ai.plan_lifetime_credits": "{n} lifetime AI credits included",
   "ai.plan_monthly_credits": "{n} AI credits every month",
-  "help.core_section": "Celerp basics"
+  "help.core_section": "Celerp basics",
+  "ai.err_outcome_unknown": "Celerp AI's answer didn't arrive. Ask again to get it: the question is counted once.",
+  "ai.err_question_expired": "This question can no longer be continued. Send it again to ask it as a new question.",
+  "ai.err_question_in_progress": "Celerp AI is still answering this question. Wait a moment, then ask again.",
+  "ai.ask_again": "Ask again",
+  "ai.free_terms": "Each free question can include one file. Free AI may pause until the next month when the monthly free-usage budget is reached."
 }

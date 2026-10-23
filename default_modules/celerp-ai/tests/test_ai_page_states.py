@@ -113,7 +113,7 @@ async def _page(ui_client, status, *, offer=None, owner=True, role="owner"):
 async def test_no_account_owner_sees_create_account_button(ui_client):
     html = await _page(ui_client, {"local": True})
     assert t("ai.free_no_account_title") in html
-    assert t("ai.free_questions_included", n=30) in html
+    assert t("ai.free_questions_included", n=30) in html and t("ai.free_terms") in html
     assert "next=ai" in html and 'hx-target="#account-gate-host"' in html
     assert t("ai.free_create_account") in html
     assert t("ai.free_ask_owner") not in html
@@ -151,6 +151,7 @@ async def test_owner_check_failure_reads_as_unknown(ui_client, monkeypatch):
     html = await _page(ui_client, {"local": True}, offer={"paid_ai": False, "free_ai_questions": None,
                                                          "plan_ai_questions": None})
     assert "next=ai" in html and t("ai.free_questions_included", n=30) not in html
+    assert t("ai.free_terms") not in html
 
 
 @pytest.mark.asyncio
@@ -284,17 +285,17 @@ async def test_free_text_too_large_message(ui_client):
                        "question. Shorten it, or choose Connect or Connect + AI for longer questions."}
     r, _ = await _chat(ui_client, _refusal(413, body))
     assert t("ai.free_text_too_large") in r.text
-    assert r.headers.get("X-AI-Keep-Composer") == "1"
+    assert "X-AI-Clear-Composer" not in r.headers
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("detail, shows, keeps", [
-    ({"code": "not_available", "message": "AI is not available on this plan"}, "not_eligible", False),
+@pytest.mark.parametrize("detail, shows", [
+    ({"code": "not_available", "message": "AI is not available on this plan"}, "not_eligible"),
     ({"code": "plan_limit", "message": "This plan allows 1 file per question. Remove the extra files, "
-                                       "or choose Connect + AI to attach more."}, "relay_text", True),
-    ({**_FREE_USED_UP, "tier": "ai", "base_limit": 200, "used": 200}, "paid_card", False),
+                                       "or choose Connect + AI to attach more."}, "relay_text"),
+    ({**_FREE_USED_UP, "tier": "ai", "base_limit": 200, "used": 200}, "paid_card"),
 ])
-async def test_conversation_inline_402_codes(ui_client, detail, shows, keeps):
+async def test_conversation_inline_402_codes(ui_client, detail, shows):
     r, _ = await _chat(ui_client, _refusal(402, detail), hits=_HITS)
     paid_card = t("msg.need_more_topup_credits_never_expire")
     subscribe_card = t("msg.upgrade_to_keep_your_ai_operator_working")
@@ -307,4 +308,127 @@ async def test_conversation_inline_402_codes(ui_client, detail, shows, keeps):
     if shows != "paid_card":
         assert paid_card not in r.text
     assert subscribe_card not in r.text
-    assert (r.headers.get("X-AI-Keep-Composer") == "1") is keeps
+    # A refused question stays in the composer, whatever the refusal.
+    assert "X-AI-Clear-Composer" not in r.headers
+
+
+# ── The composer's question id ───────────────────────────────────────────────
+
+_QUESTION = "2b0f4c1e-8d0a-4f43-9a55-3c1f6d2e9b10"
+
+
+def _operation_value(html: str) -> str:
+    import re
+    found = re.findall(r'<input[^>]*id="ai-operation-id"[^>]*>', html)
+    assert len(found) == 1, found
+    return re.search(r'value="([^"]*)"', found[0]).group(1)
+
+
+async def _send(ui_client, *, result=None, error=None, data=None):
+    ui_client.cookies.update({"celerp_token": make_test_token()})
+    query = AsyncMock(return_value=result) if error is None else AsyncMock(side_effect=error)
+    with patch("celerp_ai.ui_routes.api.ai_conversation_query", query), \
+            patch("celerp_ai.ui_routes.api.help_search", AsyncMock(return_value=_HITS)), \
+            patch("celerp_ai.ui_routes.api.ai_offer", AsyncMock(return_value=_OFFER)):
+        r = await ui_client.post("/ai/chat", headers={"HX-Request": "true"}, data={
+            "query": "How do I add a supplier?", "conversation_id": "conv-1", "operation_id": _QUESTION,
+            **(data or {}),
+        })
+    return r, query
+
+
+@pytest.mark.asyncio
+async def test_answer_clears_the_composer_and_starts_a_new_question(ui_client):
+    r, query = await _send(ui_client, result={
+        "answer": "Open Contacts.", "pending_actions": [], "message_id": _QUESTION, "asked_again": False})
+    assert r.headers["X-AI-Clear-Composer"] == "1"
+    assert query.await_args.kwargs["operation_id"] == _QUESTION
+    fresh = _operation_value(r.text)
+    assert fresh != _QUESTION and len(fresh) == 36
+    assert "ai-msg--user" in r.text and "ai-msg__again" not in r.text
+
+
+@pytest.mark.asyncio
+async def test_lost_answer_keeps_the_question_and_offers_to_ask_again(ui_client):
+    import html as _html
+    import json as _json
+    r, _ = await _send(ui_client, result={
+        "answer": "", "error": t("ai.err_outcome_unknown"), "error_code": "outcome_unknown",
+        "retryable": True, "message_id": _QUESTION, "asked_again": False})
+    assert "X-AI-Clear-Composer" not in r.headers
+    assert _operation_value(r.text) == _QUESTION
+    assert t("ai.err_outcome_unknown") in _html.unescape(r.text)
+    vals = _json.loads(_html.unescape(r.text.split("hx-vals='", 1)[1].split("'", 1)[0]))
+    assert vals == {"query": "How do I add a supplier?", "file_ids": "", "conversation_id": "conv-1",
+                    "operation_id": _QUESTION}
+
+
+@pytest.mark.asyncio
+async def test_failure_that_cannot_be_retried_offers_no_ask_again(ui_client):
+    r, _ = await _send(ui_client, result={
+        "answer": "", "error": t("ai.err_question_expired"), "error_code": "operation_expired",
+        "retryable": False, "message_id": _QUESTION, "asked_again": False})
+    assert "X-AI-Clear-Composer" not in r.headers
+    assert "ai-msg__again" not in r.text
+
+
+@pytest.mark.asyncio
+async def test_question_asked_again_adds_no_second_question_bubble(ui_client):
+    r, _ = await _send(ui_client, result={
+        "answer": "Open Contacts.", "pending_actions": [], "message_id": _QUESTION, "asked_again": True})
+    assert "ai-msg--user" not in r.text
+    assert "Open Contacts." in r.text and r.headers["X-AI-Clear-Composer"] == "1"
+
+
+@pytest.mark.asyncio
+async def test_refused_question_keeps_its_id(ui_client):
+    r, _ = await _send(ui_client, error=_refusal(402, {**_FREE_USED_UP, "message_id": _QUESTION,
+                                                       "asked_again": False}))
+    assert "X-AI-Clear-Composer" not in r.headers
+    assert _operation_value(r.text) == _QUESTION
+
+
+@pytest.mark.asyncio
+async def test_ended_session_on_the_ai_page_goes_to_sign_in(ui_client):
+    from ui.api_client import APIError
+    ended = APIError(401, "Not authenticated")
+    r, _ = await _send(ui_client, error=ended)
+    assert r.headers["HX-Redirect"].startswith("/login")
+
+    for name, path in (("get_company", "/ai"), ("ai_conversations_list", "/ai/conversations-list")):
+        with patch(f"celerp_ai.ui_routes.api.{name}", AsyncMock(side_effect=ended)):
+            r = await ui_client.get(path, headers={"HX-Request": "true"})
+        assert r.headers.get("HX-Redirect", "").startswith("/login"), (path, r.status_code)
+
+    with patch("celerp_ai.ui_routes.api.get_company", AsyncMock(return_value={"settings": {}})), \
+            patch("celerp_ai.ui_routes.api.ai_quota_status", AsyncMock(return_value={"tier": "ai", "remaining": 5})), \
+            patch("celerp_ai.ui_routes.api.ai_conversation_get", AsyncMock(side_effect=ended)):
+        r = await ui_client.get(f"/ai?conversation={_QUESTION}")
+    assert r.status_code == 302 and r.headers["location"].startswith("/login")
+
+
+def test_reloaded_thread_explains_refusals_and_offers_ask_again_last_only():
+    from celerp_ai.ui_routes import _thread
+
+    def _user(i):
+        return {"id": f"u{i}", "role": "user", "content": f"question {i}", "created_at": f"2026-10-23T00:0{i}:00"}
+
+    def _failed(i, **kw):
+        return {"id": f"a{i}", "role": "assistant", "error": True, "created_at": f"2026-10-23T00:0{i}:30", **kw}
+
+    paused = {"code": "free_paused", "message": "paused", "resets_at": "2026-11-01T00:00:00+00:00"}
+    lost = dict(content=t("ai.err_outcome_unknown"), error_code="outcome_unknown", retryable=True)
+    messages = [
+        _user(1), _failed(1, content="paused", error_code="free_paused", refusal=paused, refusal_status=503),
+        _user(2), _failed(2, **lost),
+        _user(3), _failed(3, **lost),
+    ]
+    html = "".join(to_xml(ft) for ft in _thread(messages, [], "conv-1", "en"))
+    assert t("ai.free_paused", date="2026-11-01") in html
+    assert html.count("ai-msg__again") == 1
+    assert '"operation_id": "u3"' in html and "question 3" in html
+
+    # A last reply that cannot be retried offers nothing.
+    expired = _failed(3, content=t("ai.err_question_expired"), error_code="operation_expired", retryable=False)
+    html = "".join(to_xml(ft) for ft in _thread([*messages[:-1], expired], [], "conv-1", "en"))
+    assert "ai-msg__again" not in html

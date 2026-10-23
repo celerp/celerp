@@ -60,7 +60,7 @@ async def test_install_owner_can_transfer_and_old_owner_loses_authority(client, 
 async def test_module_ai_api_keeps_explicit_session_contract(session, monkeypatch):
     monkeypatch.setattr("celerp.session_gate.get_session_token", lambda: "session-1")
     run_query = AsyncMock(return_value=SimpleNamespace(
-        answer="ok", model_used="test", tools_called=[]))
+        answer="ok", model_used="test", tools_called=[], credits=0))
     monkeypatch.setattr("celerp.ai.service.run_query", run_query)
     company_id, user_id = await seed_member(session)
 

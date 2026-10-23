@@ -1335,6 +1335,18 @@ async def help_read(token: str, page_id: str) -> dict:
         return _raise(await c.get(f"/help/page/{quote(page_id, safe='')}")).json()
 
 
+async def help_browse(token: str, module: str | None = None) -> dict:
+    """Every help page by module, or one module's pages."""
+    async with _api_client(token) as c:
+        return _raise(await c.get("/help/browse", params={"module": module} if module else {})).json()
+
+
+async def help_image(token: str, page_id: str, step: str) -> bytes:
+    """The WebP screenshot of one step of a help page."""
+    async with _api_client(token) as c:
+        return _raise(await c.get(f"/help/img/{quote(page_id, safe='')}/{quote(step, safe='')}")).content
+
+
 async def help_for_route(token: str, path: str) -> dict:
     """The help pages that cover the screen at *path*."""
     async with _api_client(token) as c:
@@ -3215,19 +3227,23 @@ async def ai_conversation_get(token: str, session_token: str, conversation_id: s
 
 async def ai_conversation_query(token: str, session_token: str, conversation_id: str,
                                 query: str, file_ids: list[str] | None = None,
-                                document_mode: str = "chat") -> dict:
+                                document_mode: str = "chat", operation_id: str = "") -> dict:
     """POST /ai/conversations/{id}/query - run the agent in a conversation.
 
-    Returns {"answer", "model_used", "tools_called", "pending_actions"}; each
-    pending action carries its own message_id and tool_call_id for confirmation.
-    Receipts and invoices are read as a job instead: the reply is then
-    {"job_id", "message_id"} and the thread polls the job.
+    ``operation_id`` is the question's id; the same id with the same question
+    asks it again. Returns {"answer", "model_used", "tools_called",
+    "pending_actions", "message_id", "asked_again", "error", "error_code",
+    "retryable"}; each pending action carries its own message_id and tool_call_id
+    for confirmation. Receipts and invoices are read as a job instead: the reply
+    is then {"job_id", "message_id", "asked_again"} and the thread polls the job.
     """
     payload: dict = {"query": query}
     if file_ids:
         payload["file_ids"] = file_ids
     if document_mode != "chat":
         payload["document_mode"] = document_mode
+    if operation_id:
+        payload["operation_id"] = operation_id
     async with _ai_api_client(token, session_token, timeout=AI_QUERY_TIMEOUT_S) as c:
         return _raise(await c.post(f"/ai/conversations/{conversation_id}/query", json=payload)).json()
 

@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import uuid
 from dataclasses import dataclass
 
 import httpx
@@ -39,15 +40,27 @@ class RelayError(RuntimeError):
     Codes: ``no_session`` (signed out of Celerp Connect), ``no_account`` (no
     Celerp account key on this install), ``unexpected_reply`` (a
     200 without a structured assistant message), ``continuation_expired``
-    (the relay dropped the reservation), ``service_unavailable`` (a Celerp-owned
-    upstream/service failure), ``busy`` (429 or an unstructured 503), and
+    (the relay dropped the reservation), ``service_unavailable`` (the model
+    surely did not run; ask again with the same question id),
+    ``outcome_unknown`` (the model may have run but no answer came back; the
+    question is charged ``credits`` and asking again with the same question id
+    costs nothing more), ``operation_in_progress`` (the first attempt of this
+    question is still running; ask again after ``retry_after`` seconds),
+    ``operation_expired`` (the question id can no longer be used; ask as a new
+    question), ``operation_mismatch`` (the question id names a different
+    question), ``busy`` (rate limited, or the service is overloaded), and
     ``gateway_error`` (any other non-2xx status, carried in ``status``).
     """
 
-    def __init__(self, code: str, message: str, *, status: int | None = None) -> None:
+    def __init__(
+        self, code: str, message: str, *, status: int | None = None,
+        credits: int = 0, retry_after: float | None = None,
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.status = status
+        self.credits = credits
+        self.retry_after = retry_after
 
 
 @dataclass
@@ -59,11 +72,37 @@ class ModelResult:
     remaining: int | None
 
 
-# Relay refusals the caller shows as their own states, raised like a 402 with
-# the relay's detail: 402 codes ``quota_exceeded``, ``not_available`` and
-# ``plan_limit``, plus these free-account refusals.
-_NOT_AVAILABLE = "AI is not available on this plan"
+# Refusals the caller shows as their own states, raised as an HTTPException
+# carrying the service's detail: every 402 (``quota_exceeded``, ``not_available``,
+# ``plan_limit``) plus these free-account refusals.
 _FREE_REFUSALS = {(413, "free_text_too_large"), (503, "free_paused")}
+# An older service sends some 402s without a code; this is its text for a plan
+# without AI. Any other untyped 402 is a plan limit.
+_NOT_AVAILABLE = "AI is not available on this plan"
+# Typed failures that are not refusals, by status and code.
+_RELAY_CODES = {
+    (503, "service_unavailable"): "service_unavailable",
+    (503, "outcome_unknown"): "outcome_unknown",
+    (503, "busy"): "busy",
+    (429, "rate_limited"): "busy",
+    (429, "too_many_concurrent"): "busy",
+    (409, "continuation_expired"): "continuation_expired",
+    (409, "operation_in_progress"): "operation_in_progress",
+    (409, "operation_expired"): "operation_expired",
+    (422, "operation_mismatch"): "operation_mismatch",
+}
+
+
+def _retry_after(resp: httpx.Response, detail: dict) -> float:
+    """Seconds to wait before asking again, from the detail or the header; 1 when neither says."""
+    for value in (detail.get("retry_after"), resp.headers.get("Retry-After")):
+        try:
+            seconds = float(value)
+        except (TypeError, ValueError):
+            continue
+        if seconds >= 0:
+            return seconds
+    return 1.0
 
 
 def _error_detail(resp: httpx.Response) -> dict:
@@ -135,6 +174,7 @@ async def complete(
     tools: list[dict] | None = None,
     tool_choice: str | dict | None = None,
     reservation_id: str | None = None,
+    operation_id: uuid.UUID | None = None,
     hints: dict | None = None,
     max_tokens: int = 2048,
     timeout: float = MODEL_CALL_TIMEOUT_S,
@@ -143,7 +183,11 @@ async def complete(
 
     Posts to {relay}/ai/complete with the session headers, or with the
     install's account key when there is no Connect session. tools,
-    tool_choice and reservation_id are sent only when not None.
+    tool_choice, reservation_id and operation_id are sent only when not None.
+
+    ``operation_id`` names a question on its first turn, so that asking it again
+    after a lost answer is not charged twice; it is never sent with a
+    ``reservation_id``, which names the later turns of the same question.
 
     Raises HTTPException carrying the relay's detail when the relay refuses
     the question (402, and the free-account 413 and 503, see _FREE_REFUSALS)
@@ -158,8 +202,12 @@ async def complete(
         body["tools"] = tools
     if tool_choice is not None:
         body["tool_choice"] = tool_choice
+    if reservation_id is not None and operation_id is not None:
+        raise ValueError("A first turn has an operation_id; a later turn has a reservation_id, never both.")
     if reservation_id is not None:
         body["reservation_id"] = reservation_id
+    if operation_id is not None:
+        body["operation_id"] = str(operation_id)
 
     headers = relay_session_headers()
     if headers.get("X-Session-Token"):
@@ -200,21 +248,23 @@ async def complete(
             detail = {"code": code, **detail}
         raise HTTPException(status_code=402, detail=detail)
 
-    if (resp.status_code, detail.get("code")) in _FREE_REFUSALS:
+    code = detail.get("code")
+    if (resp.status_code, code) in _FREE_REFUSALS:
         raise HTTPException(status_code=resp.status_code, detail=detail)
 
-    if resp.status_code == 503 and detail.get("code") == "service_unavailable":
+    known = _RELAY_CODES.get((resp.status_code, code))
+    if known is None:
+        # Any other 409 is an expired continuation (an older service sends it
+        # without a code), and any other 429 or 503 is a busy service.
+        known = {409: "continuation_expired", 429: "busy", 503: "busy"}.get(resp.status_code)
+    if known is not None:
         raise RelayError(
-            "service_unavailable",
-            detail.get("message") or "Celerp AI is temporarily unavailable.",
-            status=503,
+            known,
+            detail.get("message") or "The AI service could not answer.",
+            status=resp.status_code,
+            credits=int(detail.get("credits") or 0) if known == "outcome_unknown" else 0,
+            retry_after=_retry_after(resp, detail) if known == "operation_in_progress" else None,
         )
-
-    if resp.status_code == 409:
-        raise RelayError("continuation_expired", "continuation_expired", status=409)
-
-    if resp.status_code in (429, 503):
-        raise RelayError("busy", "The AI service is temporarily busy.", status=resp.status_code)
 
     raise RelayError(
         "gateway_error", f"LLM gateway error {resp.status_code}", status=resp.status_code,

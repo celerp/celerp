@@ -3,9 +3,10 @@
 """The help viewer: search and browse at /help, one page at /help/{page_id}, its
 screenshots, and the "Help for this page" panel the top bar loads on every page.
 
-Search and page reads go through the API, so the viewer and Celerp AI see the same
-results and flags. Browsing, related-page titles and screenshots read the help index
-in this process, which loads the same modules as the API.
+Search, browsing, page reads and screenshots go through the API, so every one of them
+needs a valid session and the viewer and Celerp AI see the same results and flags.
+Related-page titles, shown under a page the API returned, read the help index in this
+process, which loads the same modules as the API.
 """
 from __future__ import annotations
 
@@ -14,8 +15,7 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, RedirectResponse, Response
 
 import ui.api_client as api
-from celerp.help.registry import CORE, MAX_ADDRESS_LEN, get_index
-from celerp.help.schema import HelpPage
+from celerp.help.registry import MAX_ADDRESS_LEN, get_index
 from celerp.modules.loader import module_label
 from ui.api_client import APIError
 from ui.components.shell import base_shell, load_error, page_header
@@ -69,17 +69,13 @@ def _flags(hit: dict, role: str, lang: str) -> list[FT]:
     return notes
 
 
-def _browse(module: str, lang: str) -> FT:
-    by_module: dict[str, list[HelpPage]] = {}
-    for page in get_index().pages.values():
-        if not module or page.module == module:
-            by_module.setdefault(page.module, []).append(page)
+async def _browse(token: str, module: str, lang: str) -> FT:
+    found = await api.help_browse(token, module or None)
     sections = [
-        Section(H3(t("help.core_section", lang) if name == CORE else pages[0].module_display),
-                Ul(*[_page_link({"id": p.id, "title": p.title, "summary": p.summary})
-                     for p in sorted(pages, key=lambda p: (p.order, p.id))], cls="help-list"),
+        Section(H3(t("help.core_section", lang) if group["core"] else group["display"]),
+                Ul(*[_page_link(p) for p in group["pages"]], cls="help-list"),
                 cls="help-module")
-        for name, pages in by_module.items()
+        for group in found["modules"]
     ]
     return Div(H2(t("help.browse", lang)), *sections, cls="help-browse")
 
@@ -117,16 +113,14 @@ def setup_routes(app):
         lang = get_lang(request)
         q = request.query_params.get("q", "").strip()
         module = request.query_params.get("module", "").strip()
-        if q:
-            try:
-                body = await _results(token, q, module, get_role(request), lang)
-            except APIError as e:
-                if e.status == 401:  # an ended session goes to sign-in through the app's handler
-                    raise
-                here = request.url.path + (f"?{request.url.query}" if request.url.query else "")
-                body = load_error(t("help.load_failed", lang), lang, href=here)
-        else:
-            body = _browse(module, lang)
+        try:
+            body = (await _results(token, q, module, get_role(request), lang) if q
+                    else await _browse(token, module, lang))
+        except APIError as e:
+            if e.status == 401:  # an ended session goes to sign-in through the app's handler
+                raise
+            here = request.url.path + (f"?{request.url.query}" if request.url.query else "")
+            body = load_error(t("help.load_failed", lang), lang, href=here)
         page = await base_shell(
             page_header(t("help.title", lang), _ask_ai(lang)),
             Div(_search_form(q, module, lang), body, cls="help-page"),
@@ -166,17 +160,16 @@ def setup_routes(app):
 
     @app.get("/help/img/{page_id}/{step}")
     async def help_image(request: Request, page_id: str, step: str):
-        if not _token(request):
+        token = _token(request)
+        if not token:
             return RedirectResponse(_LOGIN, status_code=302)
-        page = get_index().pages.get(page_id)
-        n = int(step) if step.isdigit() else 0
-        if page is None or not 1 <= n <= len(page.steps) or not page.steps[n - 1]["image"]:
-            return Response(status_code=404)
-        path = page.help_dir / page.steps[n - 1]["image"]
-        if not path.is_file():
-            return Response(status_code=404)
-        return Response(path.read_bytes(), media_type="image/webp",
-                        headers={"X-Content-Type-Options": "nosniff"})
+        try:
+            data = await api.help_image(token, page_id, step)
+        except APIError as e:
+            if e.status == 401:
+                raise
+            return Response(status_code=404 if e.status == 404 else 502)
+        return Response(data, media_type="image/webp", headers={"X-Content-Type-Options": "nosniff"})
 
     @app.get("/help/{page_id}")
     async def help_page(request: Request, page_id: str):

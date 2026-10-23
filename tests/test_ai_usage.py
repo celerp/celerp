@@ -1,11 +1,11 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
 """Per-user AI question usage (GET /ai/usage-stats): a question counts once, when the
-relay charged it; the newest asker comes first; the period is this month or all time.
+AI service charged it; the newest asker comes first; the period is this month or all time.
 
-Questions are stored as the app stores them: a user ``AIMessage`` in the asker's
-``AIConversation`` with the charged credits in ``credits_used``, and a receipts batch as an
-``AIBatchJob`` carrying its credits.
+Every path that asks a question records its charges in the usage record under the
+question's id: conversation questions, one-off queries and module queries here, and
+receipt reading jobs in the module's batch tests.
 """
 from __future__ import annotations
 
@@ -17,14 +17,18 @@ os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 
 import pytest
 
+from fastapi import HTTPException
+from sqlalchemy import select
+
 from celerp.ai import service
 from celerp.ai.conversations import record_credits
 from celerp.ai.llm import ModelResult, RelayError
-from celerp.ai.service import run_agent
-from celerp.models.ai import AIBatchJob, AIConversation, AIMessage
+from celerp.ai.service import AgentResult, run_agent
+from celerp.gateway.state import set_session_token
+from celerp.models.ai import AIConversation, AIMessage, AIUsage
 from celerp.services.auth import decode_access_token
 from celerp.services.business_time import business_today
-from test_helpers import invite_user, register_admin
+from test_helpers import invite_user, register_admin, signed_request
 
 
 def _claims(token: str) -> tuple[uuid.UUID, uuid.UUID]:
@@ -33,14 +37,65 @@ def _claims(token: str) -> tuple[uuid.UUID, uuid.UUID]:
 
 
 async def _question(session, company_id, user_id, *, credits: int, when: datetime | None = None) -> AIMessage:
+    """A conversation question charged ``credits``, stored as the app stores it."""
     conversation = AIConversation(company_id=company_id, user_id=user_id)
     session.add(conversation)
     await session.flush()
     message = AIMessage(conversation_id=conversation.id, role="user", content="q",
-                        credits_used=credits, created_at=when or datetime.now(timezone.utc))
+                        created_at=when or datetime.now(timezone.utc))
     session.add(message)
     await session.flush()
+    await record_credits(session, message, credits, company_id=company_id, user_id=user_id)
+    if when is not None:
+        await session.flush()
+        for row in (await session.execute(select(AIUsage).where(AIUsage.operation_id == message.id))).scalars():
+            row.created_at = when
+    await session.flush()
     return message
+
+
+def _answer(content: str = "Open Contacts and choose New.", credits: int = 1) -> ModelResult:
+    return ModelResult(message={"role": "assistant", "content": content}, model_used="test-model",
+                       usage={"credits": credits}, reservation_id=None, remaining=10)
+
+
+def _relay(monkeypatch, replies: list) -> list:
+    """Answer model calls from ``replies`` in order (a reply, or an exception to raise);
+    returns the operation id each call sent."""
+    sent: list = []
+
+    async def _complete(messages, *, tools=None, reservation_id=None, operation_id=None, **_kw):
+        sent.append(operation_id)
+        reply = replies.pop(0)
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+    set_session_token("s" * 64)
+    monkeypatch.setattr(service, "complete", _complete)
+    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None: {})
+    return sent
+
+
+async def _ask(client, token: str, conversation_id: str, operation_id: uuid.UUID, query: str = "supplier?"):
+    return await client.post(
+        f"/ai/conversations/{conversation_id}/query", headers={"Authorization": f"Bearer {token}"},
+        json={"query": query, "operation_id": str(operation_id)},
+    )
+
+
+async def _conversation(client, token: str) -> str:
+    r = await client.post("/ai/conversations", headers={"Authorization": f"Bearer {token}"}, json={"title": None})
+    return r.json()["id"]
+
+
+async def _messages(client, token: str, conversation_id: str) -> list[dict]:
+    r = await client.get(f"/ai/conversations/{conversation_id}", headers={"Authorization": f"Bearer {token}"})
+    return r.json()["messages"]
+
+
+def _counts(rows: list[dict]) -> list[tuple[int, int]]:
+    return [(r["query_count"], r["credits_used"]) for r in rows]
 
 
 async def _usage(client, token: str, **params):
@@ -60,15 +115,14 @@ async def test_usage_counts_only_charged_questions(client, session, owner):
     await _question(session, company_id, user_id, credits=1)
     await session.commit()
     rows = (await _usage(client, token)).json()["users"]
-    assert [(r["query_count"], r["credits_used"]) for r in rows] == [(1, 1)]
+    assert _counts(rows) == [(1, 1)]
 
-    # A receipts batch stores its credits on the job; its own message carries none.
-    job_message = await _question(session, company_id, user_id, credits=0)
-    session.add(AIBatchJob(company_id=company_id, user_id=user_id, conversation_id=job_message.conversation_id,
-                           total_files=1, query="read these receipts", file_ids=["f"], credits_consumed=3))
+    # A question charged in several parts counts once.
+    second = await _question(session, company_id, user_id, credits=2)
+    await record_credits(session, second, 1, company_id=company_id, user_id=user_id)
     await session.commit()
     rows = (await _usage(client, token)).json()["users"]
-    assert [(r["query_count"], r["credits_used"]) for r in rows] == [(2, 4)]
+    assert _counts(rows) == [(2, 4)]
 
 
 async def test_credits_kept_when_a_later_turn_fails(client, session, owner, monkeypatch):
@@ -89,24 +143,20 @@ async def test_credits_kept_when_a_later_turn_fails(client, session, owner, monk
     result = await run_agent(
         app=object(), authorization="Bearer tok", query="how do I add a supplier?",
         company_id=company_id, company_settings={}, user_id=user_id, role="owner",
-        memory={"notes": [], "kv": {}}, file_ids=None, history=[],
+        memory={"notes": [], "kv": {}}, file_ids=None, history=[], operation_id=uuid.uuid4(),
     )
     assert result.error and result.credits == 1
 
-    message = await _question(session, company_id, user_id, credits=0)
-    await record_credits(session, message.id, result.credits)
+    await _question(session, company_id, user_id, credits=result.credits)
     await session.commit()
     rows = (await _usage(client, token)).json()["users"]
     assert [(r["query_count"], r["credits_used"]) for r in rows] == [(1, 1)]
 
 
 async def test_credits_kept_when_the_relay_refuses_a_later_turn(client, session, owner, monkeypatch):
-    """The relay charges a free question's first turn, then refuses the continuation
-    (413 free_text_too_large once tool results have grown the history). The refusal still
-    reaches the user, and the charged question stays in the usage table."""
-    from fastapi import HTTPException
-    from celerp.gateway.state import set_session_token
-
+    """The service charges a free question's first turn, then refuses the continuation
+    as too large once tool results have grown the history. The question ends with a
+    too-much-data answer, and the charged question stays in the usage table."""
     token, company_id, user_id = owner
     set_session_token("s" * 64)
     turns = [ModelResult(
@@ -125,8 +175,8 @@ async def test_credits_kept_when_the_relay_refuses_a_later_turn(client, session,
     headers = {"Authorization": f"Bearer {token}"}
     conv = (await client.post("/ai/conversations", headers=headers, json={"title": None})).json()["id"]
     r = await client.post(f"/ai/conversations/{conv}/query", headers=headers, json={"query": "supplier?"})
-    assert r.status_code == 413, r.text
-    assert r.json()["detail"]["code"] == "free_text_too_large"
+    assert r.status_code == 200, r.text
+    assert r.json()["error_code"] == "too_much_data"
     rows = (await _usage(client, token)).json()["users"]
     assert [(r["query_count"], r["credits_used"]) for r in rows] == [(1, 1)]
 
@@ -172,3 +222,157 @@ async def test_usage_refused_without_manage_users(client, session, owner):
     viewer = await invite_user(client, session, {"Authorization": f"Bearer {token}"}, "viewer@perm.example", "viewer")
     r = await _usage(client, viewer)
     assert r.status_code == 403, r.text
+
+
+async def test_lost_answer_counts_once_and_asking_again_gets_it(client, owner, monkeypatch):
+    """A question whose answer was lost is charged; asking it again under the same
+    question id costs nothing more and does not add a second question."""
+    token, _, _ = owner
+    sent = _relay(monkeypatch, [
+        RelayError("outcome_unknown", "lost", status=503, credits=1),
+        _answer(credits=0),
+    ])
+    conv = await _conversation(client, token)
+    question = uuid.uuid4()
+
+    first = await _ask(client, token, conv, question)
+    assert first.status_code == 200, first.text
+    body = first.json()
+    assert (body["error_code"], body["retryable"], body["message_id"], body["asked_again"]) == (
+        "outcome_unknown", True, str(question), False)
+    assert _counts((await _usage(client, token)).json()["users"]) == [(1, 1)]
+
+    again = (await _ask(client, token, conv, question)).json()
+    assert (again["answer"], again["message_id"], again["asked_again"]) == (
+        "Open Contacts and choose New.", str(question), True)
+    assert sent == [question, question]
+    assert _counts((await _usage(client, token)).json()["users"]) == [(1, 1)]
+    thread = await _messages(client, token, conv)
+    assert [m["role"] for m in thread] == ["user", "assistant", "assistant"]
+    assert thread[0]["id"] == str(question) and thread[0]["credits_used"] == 1
+
+
+async def test_answered_question_returns_its_answer_without_asking(client, owner, monkeypatch):
+    token, _, _ = owner
+    sent = _relay(monkeypatch, [_answer()])
+    conv = await _conversation(client, token)
+    question = uuid.uuid4()
+    first = (await _ask(client, token, conv, question)).json()
+    again = (await _ask(client, token, conv, question)).json()
+    assert sent == [question]
+    assert again["answer"] == first["answer"] and again["asked_again"] is True
+    assert len(await _messages(client, token, conv)) == 2
+    assert _counts((await _usage(client, token)).json()["users"]) == [(1, 1)]
+
+    # The same id with different text is a new question under a new id.
+    _relay(monkeypatch, [_answer()])
+    other = (await _ask(client, token, conv, question, query="customer?")).json()
+    assert other["message_id"] != str(question) and other["asked_again"] is False
+    assert _counts((await _usage(client, token)).json()["users"]) == [(2, 2)]
+
+
+async def test_expired_question_is_asked_as_a_new_question(client, owner, monkeypatch):
+    token, _, _ = owner
+    sent = _relay(monkeypatch, [
+        RelayError("operation_expired", "expired", status=409),
+        _answer(),
+    ])
+    conv = await _conversation(client, token)
+    question = uuid.uuid4()
+    first = (await _ask(client, token, conv, question)).json()
+    assert (first["error_code"], first["retryable"]) == ("operation_expired", False)
+
+    again = (await _ask(client, token, conv, question)).json()
+    assert again["asked_again"] is False and again["message_id"] != str(question)
+    assert sent == [question, uuid.UUID(again["message_id"])]
+    assert [m["role"] for m in await _messages(client, token, conv)] == ["user", "assistant", "user", "assistant"]
+
+
+async def test_refusal_is_kept_in_the_thread(client, owner, monkeypatch):
+    """A refused question stays in the thread with the refusal, so a reloaded page
+    explains it; nothing is counted when nothing was charged."""
+    token, _, _ = owner
+    refusal = {"code": "quota_exceeded", "message": "No questions left this month."}
+    _relay(monkeypatch, [HTTPException(status_code=402, detail=refusal)])
+    conv = await _conversation(client, token)
+    question = uuid.uuid4()
+    r = await _ask(client, token, conv, question)
+    assert r.status_code == 402, r.text
+    assert r.json()["detail"] == {**refusal, "message_id": str(question), "asked_again": False}
+
+    user_msg, reply = await _messages(client, token, conv)
+    assert user_msg["id"] == str(question) and user_msg["content"] == "supplier?"
+    assert (reply["error"], reply["error_code"], reply["refusal_status"], reply["refusal"]) == (
+        True, "quota_exceeded", 402, refusal)
+    assert reply["content"] == refusal["message"]
+    assert (await _usage(client, token)).json()["users"] == []
+
+
+async def test_question_sent_twice_at_once_is_refused_once(client, session, owner, monkeypatch):
+    """Two sends of one new question race to store it under its id: the second is told
+    the question is already being answered, and nothing is stored twice."""
+    from celerp.ai import conversations
+
+    token, _, _ = owner
+    _relay(monkeypatch, [])
+    conv = await _conversation(client, token)
+    question = uuid.uuid4()
+    real_add = conversations.add_message
+
+    async def _add_after_the_other_send(sess, conversation_id, role, content, **kw):
+        # The other send stores the question between this send's check and its save.
+        await sess.execute(AIMessage.__table__.insert().values(
+            id=question, conversation_id=uuid.UUID(conv), role="user", content="supplier?",
+            credits_used=0, created_at=datetime.now(timezone.utc)))
+        return await real_add(sess, conversation_id, role, content, **kw)
+
+    monkeypatch.setattr(conversations, "add_message", _add_after_the_other_send)
+    r = await _ask(client, token, conv, question)
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"]["code"] == "question_in_progress"
+
+
+async def test_one_off_query_is_counted_and_cites_help(client, owner, monkeypatch):
+    token, _, user_id = owner
+    calls: list = []
+
+    async def _run_agent(**kw):
+        calls.append(kw["operation_id"])
+        return AgentResult(answer="See the help page.", model_used="test-model", tools_called=[],
+                           pending_actions=[], credits=1, help_pages=["contacts.add"])
+
+    set_session_token("s" * 64)
+    monkeypatch.setattr(service, "run_agent", _run_agent)
+    headers = {"Authorization": f"Bearer {token}"}
+    operation = uuid.uuid4()
+    r = await client.post("/ai/query", headers=headers, json={"query": "supplier?", "operation_id": str(operation)})
+    assert r.status_code == 200, r.text
+    assert (r.json()["answer"], r.json()["help_pages"]) == ("See the help page.", ["contacts.add"])
+    assert calls == [operation]
+    assert _counts((await _usage(client, token)).json()["users"]) == [(1, 1)]
+
+    async def _lost(**kw):
+        return AgentResult(answer="", model_used="test-model", tools_called=[], pending_actions=[],
+                           credits=1, error="lost", error_code="outcome_unknown")
+
+    monkeypatch.setattr(service, "run_agent", _lost)
+    r = await client.post("/ai/query", headers=headers, json={"query": "customer?"})
+    assert r.status_code == 502, r.text
+    assert _counts((await _usage(client, token)).json()["users"]) == [(2, 2)]
+
+
+async def test_module_query_is_counted(session, monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from celerp.modules.api import ai_query
+    from test_helpers import seed_member
+
+    monkeypatch.setattr("celerp.session_gate.get_session_token", lambda: "session-1")
+    monkeypatch.setattr("celerp.ai.service.run_query", AsyncMock(return_value=SimpleNamespace(
+        answer="ok", model_used="test", tools_called=[], credits=1)))
+    company_id, user_id = await seed_member(session)
+    async with signed_request(session, company_id, user_id):
+        await ai_query(query="hello", company_id=str(company_id), session_token="session-1", db_session=session)
+    rows = (await session.execute(select(AIUsage).where(AIUsage.company_id == company_id))).scalars().all()
+    assert [(r.user_id, r.credits) for r in rows] == [(user_id, 1)]

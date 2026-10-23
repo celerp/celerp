@@ -45,7 +45,6 @@ from slowapi import Limiter
 from slowapi.util import get_remote_address
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.ai.conversations import ERROR_MARKER
 from celerp.ai.files import AGENT_UPLOAD_TYPES, XLSX_CONTENT_TYPE
 from celerp.ai.service import PROPOSAL_TTL_S
 from celerp.config import settings
@@ -79,9 +78,16 @@ settings_router = APIRouter(
 
 # ── Request / Response schemas ────────────────────────────────────────────────
 
+_OPERATION_ID_DESCRIPTION = (
+    "The question's id, chosen by the caller (a UUID). Send the same id with the same "
+    "question to ask it again after a failure: a question is charged at most once."
+)
+
+
 class QueryRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=2000, description="Natural language question")
     file_ids: list[str] | None = Field(default=None, description="List of file IDs returned from /ai/upload")
+    operation_id: uuid.UUID | None = Field(default=None, description=_OPERATION_ID_DESCRIPTION)
 
 
 class QueryResponse(BaseModel):
@@ -90,7 +96,11 @@ class QueryResponse(BaseModel):
     tools_called: list[str]
     pending_actions: list[dict] = []
     error: str | None = None
+    error_code: str | None = None
+    retryable: bool = False
     help_pages: list[str] | None = None
+    message_id: str | None = None   # the question's id in its conversation
+    asked_again: bool = False       # the question was already in the conversation
 
 
 class EstimateRequest(BaseModel):
@@ -171,26 +181,40 @@ async def ai_query(
 ) -> QueryResponse:
     """Run a one-off read-only agent query against live canonical ERP APIs."""
     from celerp.ai.memory import get_memory
-    from celerp.ai.service import AgentResult, run_agent
+    from celerp.ai.service import AgentRefusal, AgentResult, run_agent
+    from celerp.ai.usage import record_usage
     memory = await get_memory(session, company_id)
-    result: AgentResult = await run_agent(
-        app=request.app,
-        authorization=request.headers.get("authorization", ""),
-        query=body.query,
-        company_id=company_id,
-        company_settings=company_settings,
-        role=role,
-        user_id=user.id,
-        memory=memory,
-        file_ids=body.file_ids,
-        history=[],
-        read_only=True,
-    )
+    operation_id = body.operation_id or uuid.uuid4()
+    await session.commit()
+    try:
+        result: AgentResult = await run_agent(
+            app=request.app,
+            authorization=request.headers.get("authorization", ""),
+            query=body.query,
+            company_id=company_id,
+            company_settings=company_settings,
+            role=role,
+            user_id=user.id,
+            memory=memory,
+            file_ids=body.file_ids,
+            history=[],
+            operation_id=operation_id,
+            read_only=True,
+        )
+    except AgentRefusal as refusal:
+        record_usage(session, company_id=company_id, user_id=user.id, operation_id=operation_id,
+                     credits=refusal.credits)
+        await session.commit()
+        raise
+    record_usage(session, company_id=company_id, user_id=user.id, operation_id=operation_id,
+                 credits=result.credits)
+    await session.commit()
     if result.error:
         raise HTTPException(status_code=502, detail=result.error)
     return QueryResponse(
         answer=result.answer, model_used=result.model_used,
         tools_called=result.tools_called, pending_actions=[],
+        help_pages=result.help_pages,
     )
 
 
@@ -379,6 +403,7 @@ class ConversationQueryRequest(BaseModel):
     query: str = Field("", max_length=2000)
     file_ids: list[str] | None = None
     document_mode: Literal["chat", "receipts"] = "chat"
+    operation_id: uuid.UUID | None = Field(default=None, description=_OPERATION_ID_DESCRIPTION)
 
     @model_validator(mode="after")
     def _require_query_or_files(self) -> "ConversationQueryRequest":
@@ -412,6 +437,10 @@ class MessageOut(BaseModel):
     file_ids: list[str] | None = None
     credits_used: int = 0
     error: bool = False
+    error_code: str | None = None
+    retryable: bool = False
+    refusal: dict | None = None         # the AI service's refusal, for a refused question
+    refusal_status: int | None = None
     help_pages: list[str] | None = None
     created_at: str
 
@@ -451,15 +480,40 @@ class ConversationDetail(ConversationOut):
 
 
 def _message_out(m) -> MessageOut:
-    from celerp.ai.conversations import help_pages, message_error, pending_actions, tool_names
+    from celerp.ai.conversations import help_pages, message_failure, pending_actions, tool_names
+    from celerp.ai.service import RETRYABLE_ERRORS
+    failure = message_failure(m.tools_called) or {}
     return MessageOut(
         id=m.id, role=m.role, content=m.content,
         model_used=m.model_used, tools_called=tool_names(m.tools_called),
         pending_actions=[{**r, "message_id": str(m.id)} for r in pending_actions(m.tools_called)],
         file_ids=m.file_ids, credits_used=m.credits_used,
-        error=message_error(m.tools_called),
+        error=bool(failure), error_code=failure.get("code"),
+        retryable=failure.get("code") in RETRYABLE_ERRORS,
+        refusal=failure.get("refusal"), refusal_status=failure.get("status"),
         help_pages=help_pages(m.tools_called),
         created_at=m.created_at.isoformat(),
+    )
+
+
+def _answer_response(msg, *, question_id: uuid.UUID, asked_again: bool) -> QueryResponse:
+    """The response for a stored assistant message: an answer, or the failure it records."""
+    from celerp.ai.conversations import help_pages, message_failure, pending_actions, tool_names
+    from celerp.ai.service import RETRYABLE_ERRORS
+    failure = message_failure(msg.tools_called)
+    common = dict(
+        model_used=msg.model_used or "", tools_called=tool_names(msg.tools_called),
+        message_id=str(question_id), asked_again=asked_again,
+    )
+    if failure is not None:
+        return QueryResponse(
+            answer="", error=msg.content, error_code=failure.get("code"),
+            retryable=failure.get("code") in RETRYABLE_ERRORS, **common,
+        )
+    return QueryResponse(
+        answer=msg.content,
+        pending_actions=[{**p, "message_id": str(msg.id)} for p in pending_actions(msg.tools_called)],
+        help_pages=help_pages(msg.tools_called), **common,
     )
 
 
@@ -649,58 +703,95 @@ async def query_in_conversation(
     Normal messages, including images and PDFs, run the agent inline. Receipt
     extraction is an explicit ``document_mode=receipts`` workflow that creates
     a background reading job. Reads execute against the app the user sees and
-    changes come back as pending actions to confirm. A failed run is stored as
-    an assistant message so the thread keeps its history.
+    changes come back as pending actions to confirm. A failed or refused run is
+    stored as an assistant message so the thread keeps its history.
+
+    ``operation_id`` names the question and becomes the id of its user message.
+    Sent again with the same text and files while it is the conversation's
+    latest question, it asks that question again instead of adding a new one:
+    a question that already has an answer returns it, and one whose run failed
+    runs again, charged at most once in all.
     """
+    from sqlalchemy.exc import IntegrityError
+
     from celerp.ai.batch import create_batch_job
     from celerp.ai.conversations import (
         add_message,
         build_history_context,
+        failure_record,
+        find_question,
         get_conversation,
         get_messages,
         help_record,
         record_credits,
-        tool_names,
     )
     from celerp.ai.memory import get_memory
     from celerp.ai.service import AgentRefusal, AgentResult, run_agent
+    from celerp.models.ai import AIMessage
     conv = await get_conversation(session, conversation_id, company_id, user.id)
     if conv is None:
         raise HTTPException(status_code=404, detail=t("ai.err_conversation_not_found"))
 
     kinds = _attachment_kinds(body.file_ids, company_id, user.id)
-    if body.document_mode == "receipts":
-        if not body.file_ids or kinds != {"document"}:
-            raise HTTPException(
-                status_code=400,
-                detail=t("ai.err_receipt_type"),
-            )
-        user_msg = await add_message(
-            session, conversation_id, "user", body.query, file_ids=body.file_ids,
+    if body.document_mode == "receipts" and (not body.file_ids or kinds != {"document"}):
+        raise HTTPException(status_code=400, detail=t("ai.err_receipt_type"))
+
+    asked, answered = (None, None)
+    if body.operation_id is not None:
+        asked, answered = await find_question(
+            session, conversation_id, body.operation_id, body.query, body.file_ids,
         )
-        try:
-            job = await create_batch_job(
-                session, company_id, user.id, body.query, body.file_ids or [],
-                conversation_id=conversation_id,
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
-        await session.commit()
-        await session.refresh(job)
-        _launch_batch(background_tasks, job, company_id, user.id, body.query, list(job.file_ids or []))
+    if asked is None:
+        taken = body.operation_id is None or await session.get(AIMessage, body.operation_id) is not None
+        question_id = uuid.uuid4() if taken else body.operation_id
+    else:
+        question_id = asked.id
+
+    if body.document_mode == "receipts":
+        # A reading job takes its question's id, so sending the question again
+        # returns the job already started for it.
+        job = await session.get(AIBatchJob, question_id) if asked is not None else None
+        if job is None:
+            try:
+                if asked is None:
+                    await add_message(session, conversation_id, "user", body.query,
+                                      file_ids=body.file_ids, message_id=question_id)
+                job = await create_batch_job(
+                    session, company_id, user.id, body.query, body.file_ids or [],
+                    conversation_id=conversation_id, job_id=question_id,
+                )
+                await session.commit()
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
+            except IntegrityError:
+                await session.rollback()
+                raise _conflict("question_in_progress", t("ai.err_question_in_progress"))
+            await session.refresh(job)
+            _launch_batch(background_tasks, job, company_id, user.id, body.query, list(job.file_ids or []))
         return JSONResponse(
             status_code=202,
-            content={"job_id": str(job.id), "message_id": str(user_msg.id)},
+            content={"job_id": str(job.id), "message_id": str(question_id), "asked_again": asked is not None},
         )
+
+    if answered is not None:
+        return _answer_response(answered, question_id=question_id, asked_again=True)
 
     # Assemble the read-only context, then commit so the session is quiescent
     # for the duration of the agent loop (which reaches the app over its own
-    # request sessions).
+    # request sessions). The history is what came before the question.
     prior_msgs = await get_messages(session, conversation_id)
+    if asked is not None:
+        prior_msgs = [m for m in prior_msgs if m.created_at < asked.created_at]
     history = build_history_context(prior_msgs)
     memory = await get_memory(session, company_id)
-    user_msg = await add_message(session, conversation_id, "user", body.query, file_ids=body.file_ids)
-    await session.commit()
+    try:
+        user_msg = asked or await add_message(
+            session, conversation_id, "user", body.query, file_ids=body.file_ids, message_id=question_id,
+        )
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        raise _conflict("question_in_progress", t("ai.err_question_in_progress"))
 
     try:
         result: AgentResult = await run_agent(
@@ -714,39 +805,35 @@ async def query_in_conversation(
             memory=memory,
             file_ids=body.file_ids,
             history=history,
+            operation_id=question_id,
         )
     except AgentRefusal as refusal:
-        await record_credits(session, user_msg.id, refusal.credits)
+        # The refusal is stored with the credits charged before it, so a reloaded
+        # thread explains it; the question's id lets it be sent again.
+        detail = refusal.detail if isinstance(refusal.detail, dict) else {"message": str(refusal.detail)}
+        await record_credits(session, user_msg, refusal.credits, company_id=company_id, user_id=user.id)
+        await add_message(
+            session, conversation_id, "assistant", str(detail.get("message") or ""),
+            tools_called=[failure_record(detail.get("code"), status=refusal.status_code, refusal=detail)],
+        )
         await session.commit()
-        raise
+        raise HTTPException(
+            status_code=refusal.status_code, headers=refusal.headers,
+            detail={**detail, "message_id": str(question_id), "asked_again": asked is not None},
+        ) from refusal
 
-    await record_credits(session, user_msg.id, result.credits)
+    await record_credits(session, user_msg, result.credits, company_id=company_id, user_id=user.id)
     if result.error:
-        msg = await add_message(
-            session, conversation_id, "assistant", result.error,
-            model_used=result.model_used, tools_called=[*result.tools_called, ERROR_MARKER],
-        )
-        await session.commit()
-        return QueryResponse(
-            answer="", model_used=result.model_used,
-            tools_called=tool_names(msg.tools_called), error=result.error,
-        )
-
+        tools_called = [*result.tools_called, failure_record(result.error_code)]
+    else:
+        tools_called = [*result.tools_called, *[asdict(p) for p in result.pending_actions],
+                        *help_record(result.help_pages)]
     msg = await add_message(
-        session, conversation_id, "assistant", result.answer,
-        model_used=result.model_used,
-        tools_called=[*result.tools_called, *[asdict(p) for p in result.pending_actions],
-                      *help_record(result.help_pages)],
+        session, conversation_id, "assistant", result.error or result.answer,
+        model_used=result.model_used, tools_called=tools_called,
     )
     await session.commit()
-
-    return QueryResponse(
-        answer=result.answer,
-        model_used=result.model_used,
-        tools_called=tool_names(msg.tools_called),
-        pending_actions=[{**asdict(p), "message_id": str(msg.id)} for p in result.pending_actions],
-        help_pages=result.help_pages,
-    )
+    return _answer_response(msg, question_id=question_id, asked_again=asked is not None)
 
 
 def _resolve_action_arguments(records: list, record: dict) -> tuple[dict | None, str | None]:
@@ -1521,14 +1608,15 @@ async def usage_stats(
 ) -> dict:
     """Per-user AI questions in the period: the company's current calendar month, or all time.
 
-    A question counts once, when the relay charged it: a user message with credits, or a
-    receipts batch job with credits. Returns ``period`` {kind, start} (start is the ISO
-    month start, null for all time) and ``users``, a list of {user_id, user_name,
-    query_count, credits_used, last_query_at} with the latest question first.
+    Read from the usage record, which holds every charge the AI service reported:
+    a question counts once however many charges it took. Returns ``period``
+    {kind, start} (start is the ISO month start, null for all time) and ``users``,
+    a list of {user_id, user_name, query_count, credits_used, last_query_at} with
+    the latest question first.
     """
     from datetime import datetime
     from sqlalchemy import func, select
-    from celerp.models.ai import AIBatchJob, AIConversation, AIMessage
+    from celerp.models.ai import AIUsage
     from celerp.models.company import User
     from celerp.services.business_time import business_timezone, business_today
 
@@ -1537,51 +1625,24 @@ async def usage_stats(
     month_start = datetime(today.year, today.month, 1, tzinfo=business_timezone(tz))
     since = month_start if period == "month" else None
 
-    message_rows = (await session.execute(
+    rows = (await session.execute(
         select(
-            AIConversation.user_id,
-            func.count(AIMessage.id).label("query_count"),
-            func.sum(AIMessage.credits_used).label("credits_used"),
-            func.max(AIMessage.created_at).label("last_query_at"),
+            AIUsage.user_id,
+            func.count(func.distinct(AIUsage.operation_id)).label("query_count"),
+            func.sum(AIUsage.credits).label("credits_used"),
+            func.max(AIUsage.created_at).label("last_query_at"),
         )
-        .join(AIConversation, AIMessage.conversation_id == AIConversation.id)
-        .where(
-            AIConversation.company_id == company_id,
-            AIMessage.role == "user",
-            AIMessage.credits_used > 0,
-            *([AIMessage.created_at >= since] if since else []),
-        )
-        .group_by(AIConversation.user_id)
+        .where(AIUsage.company_id == company_id, *([AIUsage.created_at >= since] if since else []))
+        .group_by(AIUsage.user_id)
     )).all()
-    batch_rows = (await session.execute(
-        select(
-            AIBatchJob.user_id,
-            func.count(AIBatchJob.id).label("query_count"),
-            func.sum(AIBatchJob.credits_consumed).label("credits_used"),
-            func.max(AIBatchJob.created_at).label("last_query_at"),
-        )
-        .where(
-            AIBatchJob.company_id == company_id,
-            AIBatchJob.credits_consumed > 0,
-            *([AIBatchJob.created_at >= since] if since else []),
-        )
-        .group_by(AIBatchJob.user_id)
-    )).all()
-
     metrics: dict = {
         r.user_id: {
             "query_count": int(r.query_count or 0),
             "credits_used": int(r.credits_used or 0),
             "last_query_at": r.last_query_at,
         }
-        for r in message_rows
+        for r in rows
     }
-    for r in batch_rows:
-        row = metrics.setdefault(r.user_id, {"query_count": 0, "credits_used": 0, "last_query_at": None})
-        row["query_count"] += int(r.query_count or 0)
-        row["credits_used"] += int(r.credits_used or 0)
-        if r.last_query_at and (row["last_query_at"] is None or r.last_query_at > row["last_query_at"]):
-            row["last_query_at"] = r.last_query_at
 
     user_ids = list(metrics)
     users = {}

@@ -18,7 +18,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from celerp.help.registry import CORE, CORE_HELP_DIR, page_files
-from celerp.help.schema import load_file, module_prefix
+from celerp.help.schema import MAX_IMAGE_BYTES, load_file, module_prefix
 from celerp.modules.loader import (
     first_party_names, installed_help_dirs, module_search_path, read_manifest,
     resolve_module_path,
@@ -28,7 +28,6 @@ from celerp.services.permissions import is_permission_key
 # EXIF ImageDescription written by the capture test into every screenshot it saves.
 CAPTURE_MARKER = "celerp help capture"
 _EXIF_DESCRIPTION = 0x010E
-MAX_IMAGE_BYTES = 60 * 1024
 MAX_TOTAL_IMAGE_BYTES = 25 * 1024 * 1024
 
 _UI_CATALOG = Path(__file__).resolve().parent.parent.parent / "ui" / "locales" / "en.json"

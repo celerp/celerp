@@ -1,6 +1,7 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: BUSL-1.1
-"""Help API: search and read the help pages, and list the pages for one screen.
+"""Help API: search, browse and read the help pages, serve their screenshots, and list
+the pages for one screen.
 
 ``help_search`` and ``help_read`` are agent tools (the ``x-celerp-agent`` marker),
 so Celerp AI answers how-to questions from the same pages the viewer shows. Help
@@ -16,12 +17,13 @@ from typing import Annotated
 from urllib.parse import parse_qsl
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import Response
 from pydantic import AfterValidator
 
 from celerp.help import search as help_search_mod
-from celerp.help.registry import MAX_ADDRESS_LEN, get_index
+from celerp.help.registry import CORE, MAX_ADDRESS_LEN, get_index
 from celerp.help.render import render_step
-from celerp.help.schema import HelpPage
+from celerp.help.schema import HelpPage, read_image
 from celerp.services.auth import get_current_role, get_current_user
 from celerp.services.permissions import get_current_company_settings, missing_permission_text
 from ui.i18n import current_lang, t
@@ -88,6 +90,32 @@ async def help_read(
                   for n, step in enumerate(page.steps, start=1)],
         "related": page.related,
     }
+
+
+@router.get("/help/browse", include_in_schema=False)
+async def help_browse(module: str | None = None) -> dict:
+    """Every help page by module (core first, then each module as the index orders them),
+    or one module's pages."""
+    by_module: dict[str, dict] = {}
+    for page in get_index().pages.values():
+        if not module or page.module == module:
+            group = by_module.setdefault(page.module, {
+                "module": page.module, "core": page.module == CORE,
+                "display": page.module_display, "pages": []})
+            group["pages"].append(page)
+    for group in by_module.values():
+        group["pages"] = [_summary(p) for p in sorted(group["pages"], key=lambda p: (p.order, p.id))]
+    return {"modules": list(by_module.values())}
+
+
+@router.get("/help/img/{page_id}/{step}", include_in_schema=False)
+async def help_image(page_id: str, step: str) -> Response:
+    """The screenshot of one step of a help page."""
+    page = get_index().pages.get(page_id)
+    data = read_image(page, int(step)) if page is not None and step.isdigit() else None
+    if data is None:
+        raise HTTPException(status_code=404, detail=t("error.not_found_title"))
+    return Response(data, media_type="image/webp", headers={"X-Content-Type-Options": "nosniff"})
 
 
 @lru_cache(maxsize=512)
