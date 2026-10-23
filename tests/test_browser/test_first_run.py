@@ -615,9 +615,10 @@ def test_setup_options_side_by_side_small_and_flush_left(playwright, fresh, widt
 
 
 def test_every_business_type_sets_up_on_a_new_install(fresh, tmp_path):
-    """Every business type the setup page offers sets up a company while only the modules a
-    new install starts are running, and the company keeps it through the restart that loads
-    the type's modules. The packaged builds take the same walk."""
+    """Every business type the setup page offers sets up a company on one new install, one
+    after another: Celerp restarts exactly when a type needs modules that are not running,
+    every module each type needs runs afterwards, and every company keeps its type. The
+    packaged builds take the same walk."""
     from migration_support import smoke_records
 
     port_file = tmp_path / "api-port"

@@ -28,14 +28,15 @@ any release.
       After that restart: the records and the attachment, bytes and name, must be
       exactly those saved before the backup.
   python scripts/smoke_records.py first-run PORT_FILE PRESETS
-      On a new install, before anything else has run, every business type the
-      setup page offers (each preset in the PRESETS folder that is not hidden)
-      must set up a company as the setup page does it: the owner registers and
-      sets up their company with the first type, and a new company is set up
-      with each other one, its currency and timezone and then its type, all
-      while only the modules a new install starts are running. Then restarts
-      Celerp, as the setup page does when a type needs modules, follows it onto
-      the port PORT_FILE names, and every company must keep its type.
+      On a new install, every business type the setup page offers (each preset
+      in the PRESETS folder that is not hidden) must set up a company as the
+      setup page does it: the owner registers and sets up their company with the
+      first type, and a new company is set up with each other one, its currency
+      and timezone and then its type. The server must say a restart is needed
+      exactly when a module the type turns on (with the modules it needs) is
+      not running; Celerp then restarts, as the setup page does, and is followed
+      onto the port PORT_FILE names. After each type every module the company
+      uses must be running, and at the end every company must keep its type.
   python scripts/smoke_records.py demo PORT_FILE FOLDER SAMPLE TEXT
       Moves the SAMPLE company in as Settings > Import does (as the first owner on
       fresh data, or the owner already there), following Celerp through the restart
@@ -364,26 +365,26 @@ def _sample(port_file: str, sample: str) -> tuple[str, str, str]:
     return api, done["company_id"], switched["access_token"]
 
 
-def first_run(port_file: str, presets: str) -> None:
-    offered = (json.loads(p.read_text("utf-8")) for p in Path(presets).glob("*.json"))
-    types = sorted(p["name"] for p in offered if not p.get("hidden"))
-    if not types:
-        fail(f"no business types in {presets}")
-    api = _serving(port_file)
-    owner = register(api)
-    companies = {}
-    for n, vertical in enumerate(types):
-        if n:
-            token = _ok(*http("POST", api + "/companies", owner, {"name": f"Smoke {vertical}"}),
-                        f"POST /companies for {vertical}")["access_token"]
-        else:
-            token = owner
-        _ok(*http("PATCH", api + "/companies/me", token, {"currency": "USD", "timezone": "UTC"}),
-            f"currency and timezone for {vertical}")
-        chosen = _ok(*http("POST", api + "/companies/me/business-type", token, {"vertical": vertical}),
-                     f"business type {vertical}")
-        companies[_ok(*http("GET", api + "/companies/me", token), "GET /companies/me")["id"]] = vertical
-        print(f"{vertical}: set up" + (", needs a restart" if chosen.get("restart_required") else ""))
+def _modules(api: str, token: str, what: str) -> dict[str, dict]:
+    """The installed modules as the Modules page lists them for the company, by name."""
+    return {m["name"]: m for m in _ok(*http("GET", api + "/companies/me/modules", token), f"GET /companies/me/modules {what}")}
+
+
+def _turned_on(preset: list[str], modules: dict[str, dict]) -> set[str]:
+    """The company's modules once it chooses a type, as the server adds them: those
+    it already uses, and the type's installed modules with every module they need."""
+    wanted = [n for n in preset if n in modules]
+    need: set[str] = set()
+    while wanted:
+        name = wanted.pop()
+        if name not in need:
+            need.add(name)
+            wanted += [d for d in modules[name]["depends_on"] if d in modules]
+    return need | {n for n, m in modules.items() if m["enabled"]}
+
+
+def _restarted(port_file: str, api: str, owner: str) -> str:
+    """Restart Celerp as the setup page does and follow it onto its new port."""
     boot = _ok(*http("GET", api + "/health"), "GET /health")["boot"]
     _ok(*http("POST", api + "/system/restart", owner), "POST /system/restart")
     deadline = time.monotonic() + 240
@@ -392,19 +393,61 @@ def first_run(port_file: str, presets: str) -> None:
         try:
             status, body = http("GET", api + "/health", timeout=5)
             if status == 200 and body.get("boot") != boot and http("GET", api + "/health/ready", timeout=5)[0] == 200:
-                break
+                return api
         except OSError:
             pass
         if time.monotonic() > deadline:
             fail("Celerp did not come back within 240 s of the restart")
         time.sleep(1)
+
+
+def first_run(port_file: str, presets: str) -> None:
+    offered = (json.loads(p.read_text("utf-8")) for p in Path(presets).glob("*.json"))
+    types = {p["name"]: p.get("modules", []) for p in offered if not p.get("hidden")}
+    if not types:
+        fail(f"no business types in {presets}")
+    api = _serving(port_file)
+    owner = register(api)
+    companies = {}
+    for n, vertical in enumerate(sorted(types)):
+        if n:
+            token = _ok(*http("POST", api + "/companies", owner, {"name": f"Smoke {vertical}"}),
+                        f"POST /companies for {vertical}")["access_token"]
+        else:
+            token = owner
+        _ok(*http("PATCH", api + "/companies/me", token, {"currency": "USD", "timezone": "UTC"}),
+            f"currency and timezone for {vertical}")
+        before = _modules(api, token, f"before choosing {vertical}")
+        need = _turned_on(types[vertical], before)
+        stopped = sorted(m for m in need if not before[m]["running"])
+        chosen = _ok(*http("POST", api + "/companies/me/business-type", token, {"vertical": vertical}),
+                     f"business type {vertical}")
+        if bool(chosen.get("restart_required")) != bool(stopped):
+            fail(f"{vertical}: the server says " + ("a restart is needed, but every module it uses is running"
+                                                   if chosen.get("restart_required") else
+                                                   f"no restart is needed, but {', '.join(stopped)} are not running"))
+        company_id = _ok(*http("GET", api + "/companies/me", token), "GET /companies/me")["id"]
+        companies[company_id] = vertical
+        if stopped:
+            # The setup page restarts here; without a restart it goes straight to the dashboard.
+            api = _restarted(port_file, api, owner)
+            owner = login(api)
+            token = _ok(*http("POST", f"{api}/auth/switch-company/{company_id}", owner),
+                        f"switch to the {vertical} company")["access_token"]
+        after = _modules(api, token, f"after choosing {vertical}")
+        for name in sorted(need):
+            if not after.get(name, {}).get("enabled") or not after[name]["running"]:
+                fail(f"{vertical}: {'after the restart ' if stopped else ''}{name} is not running: "
+                     f"{str(after.get(name))[:300]}")
+        print(f"{vertical}: set up, " + ("restarted and its modules are running" if stopped
+                                         else "its modules were already running"))
     for company_id, vertical in companies.items():
         token = _ok(*http("POST", f"{api}/auth/switch-company/{company_id}", login(api)),
                     f"switch to the {vertical} company")["access_token"]
-        kept = _ok(*http("GET", api + "/companies/me", token), "GET /companies/me after the restart").get("settings", {}).get("vertical")
+        kept = _ok(*http("GET", api + "/companies/me", token), "GET /companies/me at the end").get("settings", {}).get("vertical")
         if kept != vertical:
-            fail(f"after the restart the {vertical} company has business type {kept!r}")
-    print(f"{len(types)} business types set up on a new install and kept through the restart")
+            fail(f"at the end the {vertical} company has business type {kept!r}")
+    print(f"{len(types)} business types set up on a new install, each with its modules running")
 
 
 def demo(port_file: str, folder: str, sample: str, text: str) -> None:

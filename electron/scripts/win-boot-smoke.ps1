@@ -1,7 +1,8 @@
 # Install and boot the packaged Windows app as a separate local account, then require
 # a real db:ok from /health/ready and a clean force-quit. Without -Previous or -Demo, the
-# first launch is a new install that must set up a company with every business type and
-# keep them through the restart that loads their modules (smoke_records.py first-run).
+# first launch is a new install that must set up a company with every business type, restart
+# exactly when a type needs modules that are not running, and run every module each type
+# needs (smoke_records.py first-run).
 #
 #   -Account standard  a freshly created standard (non-admin) user: how most people run it.
 #   -Account admin     the built-in Administrator. Its token is the full administrator
@@ -347,8 +348,8 @@ if ($Account -eq "admin") {
 }
 Write-Host "token states OK for $Account"
 
-# A new install as a user meets it: every business type must set up a company, and keep
-# it through the restart that loads its modules (smoke_records.py first-run).
+# A new install as a user meets it: every business type must set up a company, restart
+# exactly when it needs modules that are not running, and run them (smoke_records.py first-run).
 if (-not $Previous -and -not $Demo) {
   $port = Launch $exe "new install" -NewInstall
   $pf = Get-ChildItem -Path $udd -Recurse -Filter "api-port" -EA SilentlyContinue | Select-Object -First 1
