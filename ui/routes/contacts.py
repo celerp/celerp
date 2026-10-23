@@ -16,6 +16,7 @@ from starlette.responses import RedirectResponse
 
 import ui.api_client as api
 from ui.components.icons import import_icon
+from ui.components.module_off import can_open
 from ui.api_client import APIError
 from ui.components.attrs import hx_vals
 from ui.components.shell import base_shell, info_tip, page_header, page_title
@@ -439,12 +440,15 @@ def _people_section(contact: dict) -> FT:
     )
 
 
-def _tab_bar(cid: str, active: str = "documents", lead_tabs: list | None = None, reload_documents: bool = False) -> FT:
+def _tab_bar(cid: str, active: str = "documents", lead_tabs: list | None = None, reload_documents: bool = False,
+             documents: bool = True) -> FT:
     """HTMX-driven tab bar for Documents / Notes / Activity. lead_tabs prepends extra (key, label, href)
     tabs (e.g. the company's Files tab, which loads a different route than /contacts/{cid}/tab/{key}).
     reload_documents turns the Documents tab into a plain link to the contact page: after a failed
-    documents read only a full page load restores the cards, files and documents together."""
-    tabs = list(lead_tabs or []) + [("documents", t("page.documents"), None), ("notes", t("label.notes"), None), ("activity", t("contacts.tab_activity"), None)]
+    documents read only a full page load restores the cards, files and documents together.
+    documents=False leaves the Documents tab out, for a company that cannot open Documents."""
+    tabs = [*(lead_tabs or []), *([("documents", t("page.documents"), None)] if documents else []),
+            ("notes", t("label.notes"), None), ("activity", t("contacts.tab_activity"), None)]
     return Div(
         *[A(label, href=f"/contacts/{cid}", cls="tab active", id=f"tab-{key}")
           if reload_documents and key == "documents" else A(
@@ -1289,7 +1293,8 @@ def setup_routes(app):
             ),
             _addresses_section(contact),
             _tab_bar(sid, active="company-files",
-                     lead_tabs=[("company-files", t("label.files"), "/finance/company-files/_section")]),
+                     lead_tabs=[("company-files", t("label.files"), "/finance/company-files/_section")],
+                     documents=can_open(company, "celerp-docs")),
             Div(files_html, id="tab-content"),
             title=page_title("settings.company_details"), nav_active="company-details",
             extra_head=_phone_head_items(), request=request,
@@ -1298,11 +1303,15 @@ def setup_routes(app):
     async def _company_files_section(token: str, **section_kwargs) -> FT:
         """Aggregate + render the read-only company-wide files section (company docs + item images +
         doc attachments). Shared by the page and its sort/pagination _section route. A failed read
-        raises APIError: only a company that really has no self-contact, items or documents is empty."""
+        raises APIError: only a company that really has no self-contact, items or documents is empty.
+        Item and document files are listed while the company can open Inventory and Documents."""
+        company = await api.get_company(token)
         sid = await _resolve_self_contact_id(token)
         self_contact = (await api.get_contact(token, sid) or {}) if sid else {}
-        items = (await api.list_items(token, {"limit": 9999})).get("items", [])
-        docs = (await api.list_docs(token, {"limit": 9999})).get("items", [])
+        items = ((await api.list_items(token, {"limit": 9999})).get("items", [])
+                 if can_open(company, "celerp-inventory") else [])
+        docs = ((await api.list_docs(token, {"limit": 9999})).get("items", [])
+                if can_open(company, "celerp-docs") else [])
         files = _collect_company_files(self_contact, items, docs)
         # can_upload=True: the dropzone POSTs to base_url (/finance/company-files), which routes the file
         # onto the self-contact so it shows here AND in the company's customer/vendor entries. Item and

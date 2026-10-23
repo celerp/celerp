@@ -69,3 +69,50 @@ async def test_payments_page_with_documents_off_for_a_viewer_asks_to_turn_it_on(
     r = await _payments(ui_client, _DOCS_OFF, role="viewer")
     assert r.status_code == 403
     assert "Ask an administrator to turn it on in Modules." in r.text
+
+
+# ── Company Details without Documents ────────────────────────────────────────
+
+async def _company_details(ui_client, settings: dict):
+    """Company Details and the reads behind it; a read of a module the company cannot
+    open answers as the API does for a route that is not there."""
+    from contextlib import ExitStack
+    from ui.api_client import APIError
+    me = {"id": "contact:self", "entity_id": "contact:self", "name": "My Co", "is_self": True}
+    company = {"settings": {"self_contact_id": "contact:self", **settings}, "current_role": "owner",
+               "name": "My Co", "currency": "USD"}
+    missing = AsyncMock(side_effect=APIError(404, "Celerp couldn't find this page."))
+    reads = {"get_company": AsyncMock(return_value=company), "get_contact": AsyncMock(return_value=me),
+             "list_contacts": AsyncMock(return_value={"items": [me]}),
+             "list_items": AsyncMock(return_value={"items": []}), "list_docs": missing}
+    with ExitStack() as stack:
+        for name, mock in reads.items():
+            stack.enter_context(patch(f"ui.api_client.{name}", new=mock))
+        page = await ui_client.get("/finance/company-details")
+        section = await ui_client.get("/finance/company-files/_section")
+    return page, section, reads
+
+
+async def test_company_details_before_documents_starts_has_no_documents_tab_and_no_error(ui_client, monkeypatch):
+    mark_running(monkeypatch, "celerp-inventory")
+    page, section, reads = await _company_details(ui_client, {})
+    assert page.status_code == 200 and section.status_code == 200, page.text
+    assert "tab-company-files" in page.text and "tab-notes" in page.text
+    assert "tab-documents" not in page.text
+    assert "could not be loaded" not in page.text and "find this page" not in page.text + section.text
+    assert reads["list_docs"].await_count == 0
+    assert reads["list_items"].await_count == 2  # page and section still list item files
+
+
+async def test_company_details_with_documents_off_has_no_documents_tab(ui_client, monkeypatch):
+    mark_running(monkeypatch, "celerp-inventory", "celerp-docs")
+    page, section, reads = await _company_details(ui_client, _DOCS_OFF)
+    assert page.status_code == 200 and section.status_code == 200
+    assert "tab-documents" not in page.text and reads["list_docs"].await_count == 0
+
+
+async def test_company_details_with_documents_on_lists_document_files_and_its_tab(ui_client, monkeypatch):
+    mark_running(monkeypatch, "celerp-inventory", "celerp-docs")
+    page, _, reads = await _company_details(ui_client, {})
+    assert "tab-documents" in page.text
+    assert reads["list_docs"].await_count == 2

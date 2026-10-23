@@ -6511,6 +6511,7 @@ class TestFilesSectionErrorReplies:
         assert r.status_code == 400 and "files-section-" not in r.text
 
 
+@pytest.mark.usefixtures("connector_modules_running")
 class TestCompanyFilesAggregation:
     """The company-wide Files section reads the self-contact, items and documents; a failed read is
     an error reply, never an empty or partial list that would replace the real one."""
@@ -11711,6 +11712,7 @@ class TestAuditColumnAlignment:
         assert 'onclick="celerpAddLine()"' not in counting.text
 
 
+@pytest.mark.usefixtures("connector_modules_running")
 class TestCompanyDetailsPage:
     """The Finance > Company Details page is organized like a customer/vendor page: a Contact Info card
     (the company's identity, incl. its email) + a Settings card (currency/timezone/fiscal), the
@@ -11955,18 +11957,13 @@ class TestWebAccessPlansAd:
         assert "cloud-plans" in r.text                    # upgrade ad below
 
 
+@pytest.mark.usefixtures("docs_running")
 class TestPaymentsSettingsPage:
     """The payments page must actually be registered (regression: it was
     imported in ui/app.py but missing from the kernel route tuple, so it
     404ed), lives under Web Access, and renders three distinct states:
     no relay = Web Access upsell; relay without Stripe = a single-CTA sales
     pitch with no admin controls; connected = deposit selector + disconnect."""
-
-    @pytest.fixture(autouse=True)
-    def _documents_running(self, monkeypatch):
-        """Online payments are recorded on invoices: the page opens while Documents runs."""
-        from test_helpers import mark_running
-        mark_running(monkeypatch, "celerp-docs")
 
     def _mocks(self, relay=True, enabled=False, banks=None, deposit="", state=None, unmatched=None, refunds=None):
         from contextlib import ExitStack
@@ -12159,6 +12156,7 @@ class TestPaymentsSettingsPage:
         assert "/settings/payments/disconnect" in r.text
 
 
+@pytest.mark.usefixtures("connector_modules_running")
 class TestCompanyAllFilesView:
     """The unified Finance > All Files view aggregates company documents, item images and doc
     attachments into one read-only table, each row linking back to its owning entity."""
