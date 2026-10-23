@@ -4199,6 +4199,7 @@
   "migration.err_sage50_due": "{where} gives no Date Due. Sage 50 requires one on every invoice and purchase: export the {label} again.",
   "migration.err_sage50_inconsistent": "{where}: the lines of this transaction give different values for {column}. Export the {label} again.",
   "migration.err_sage50_retain_column": "{where}: a line of Tax Type 27, freight or retainage in Sage 50, cannot be told apart without the Retain Percent column. Export the {label} again with every column.",
+  "migration.err_sage50_row_type": "{where}: \"{value}\" is not a Sage 50 Row Type, a whole number. Export the Purchase Journal again.",
   "migration.sage50_currency_question": "Currency these books are kept in",
   "migration.sage50_currency_source": "Company",
   "migration.sage50_employee_note": "Celerp does not keep employee records. Payroll checks are not in Sage 50's exports; the import check shows where they leave the trial balance.",

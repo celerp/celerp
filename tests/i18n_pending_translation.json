@@ -648,6 +648,13 @@
         "label",
         "where"
       ]
+    },
+    "migration.err_sage50_row_type": {
+      "en": "{where}: \"{value}\" is not a Sage 50 Row Type, a whole number. Export the Purchase Journal again.",
+      "params": [
+        "value",
+        "where"
+      ]
     }
   }
 }

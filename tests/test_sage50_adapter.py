@@ -253,8 +253,8 @@ PUBLISHED = {
     "PURCHASE.CSV": (
         "Vendor ID,Vendor Name,Invoice #,Apply to Invoice #,Credit Memo,Date,Date Due,Accounts Payable Account,"
         "Number of Distributions,Invoice/CM Distribution,Quantity,Item ID,Description,G/L Account,Unit Price,Amount,"
-        "Beginning Balance Transaction\r\n"
-        "V1,First Vendor,B-1,,FALSE,01/05/25,02/04/25,2000,1,1,,,January rent,6000,,500.00,FALSE\r\n"),
+        "Beginning Balance Transaction,Row Type\r\n"
+        "V1,First Vendor,B-1,,FALSE,01/05/25,02/04/25,2000,1,1,,,January rent,6000,,500.00,FALSE,\r\n"),
     "PAYMENTS.CSV": (
         "Vendor ID,Vendor Name,Check Number,Date,Cash Account,Cash Amount,Number of Distributions,Invoice Paid,"
         "Description,G/L Account,Amount,Voided by Transaction\r\n"
@@ -309,12 +309,12 @@ def test_a_sales_journal_without_tax_types_is_refused_rather_than_guessing_tax_f
     from celerp.importers.adapters.exports import sage50
 
     sales = (
-        "Customer ID,Customer Name,Invoice/CM #,Credit Memo,Quote,Beginning Balance Transaction,"
-        "Voided by Transaction,Date,Date Due,Accounts Receivable Account,Number of Distributions,"
-        "Invoice/CM Distribution,Description,G/L Account,Amount,Sales Tax Agency\r\n"
-        "C1,First Customer,1001,FALSE,FALSE,FALSE,,01/10/25,02/09/25,1100,3,1,Goods,4000,-100.00,AGENCY\r\n"
-        "C1,First Customer,1001,FALSE,FALSE,FALSE,,01/10/25,02/09/25,1100,3,0,Freight,4100,-15.00,AGENCY\r\n"
-        "C1,First Customer,1001,FALSE,FALSE,FALSE,,01/10/25,02/09/25,1100,3,0,Sales tax,2310,-10.00,AGENCY\r\n")
+        "Customer ID,Customer Name,Invoice/CM #,Apply to Invoice Number,Credit Memo,Quote,"
+        "Beginning Balance Transaction,Voided by Transaction,Date,Date Due,Accounts Receivable Account,"
+        "Number of Distributions,Invoice/CM Distribution,Description,G/L Account,Amount,Sales Tax Agency\r\n"
+        "C1,First Customer,1001,,FALSE,FALSE,FALSE,,01/10/25,02/09/25,1100,3,1,Goods,4000,-100.00,AGENCY\r\n"
+        "C1,First Customer,1001,,FALSE,FALSE,FALSE,,01/10/25,02/09/25,1100,3,0,Freight,4100,-15.00,AGENCY\r\n"
+        "C1,First Customer,1001,,FALSE,FALSE,FALSE,,01/10/25,02/09/25,1100,3,0,Sales tax,2310,-10.00,AGENCY\r\n")
     files = [(n, (sales if n == "SALES.CSV" else d).encode("cp1252")) for n, d in PUBLISHED.items()]
     message = _refusal(tmp_path, files)
     assert t("migration.err_export_lacks_column", name="SALES.CSV", label="Sales Journal", columns="tax type",
@@ -692,14 +692,31 @@ def test_a_tax_type_27_line_is_freight_unless_it_retains_and_needs_its_retain_pe
 
 @pytest.mark.parametrize("name, heading", [
     ("SALES.CSV", "Credit Memo"), ("SALES.CSV", "Quote"), ("SALES.CSV", "Beginning Balance Transaction"),
-    ("SALES.CSV", "Voided by Transaction"), ("PURCHASE.CSV", "Credit Memo"),
-    ("PURCHASE.CSV", "Beginning Balance Transaction"), ("PAYMENTS.CSV", "Voided by Transaction"),
+    ("SALES.CSV", "Voided by Transaction"), ("SALES.CSV", "Apply to Invoice Number"), ("SALES.CSV", "Tax Type"),
+    ("PURCHASE.CSV", "Credit Memo"), ("PURCHASE.CSV", "Beginning Balance Transaction"),
+    ("PURCHASE.CSV", "Apply to Invoice #"), ("PURCHASE.CSV", "Row Type"),
+    ("RECEIPTS.CSV", "Invoice Paid"), ("PAYMENTS.CSV", "Voided by Transaction"), ("PAYMENTS.CSV", "Invoice Paid"),
 ])
-def test_a_template_without_a_field_saying_what_a_transaction_is_is_refused(tmp_path, name, heading):
-    """Sage 50 reads a transaction whose template leaves such a field out as a regular one; the
-    import refuses the template instead of reading a quote, credit memo or voided transaction so."""
-    assert f"lacks the column {heading.lower()}" in _refusal(tmp_path, _documented({name: _dropped(PUBLISHED[name],
-                                                                                                    heading)}))
+def test_a_template_without_a_field_deciding_what_a_transaction_means_is_refused(tmp_path, name, heading):
+    """Left out, such a field would read every transaction as the ordinary kind: a quote as an
+    invoice, a credit memo as a sale, a retainage purchase as a bill, a payment as settling
+    nothing. The template is refused, naming the field, rather than read on a default."""
+    column = {"Apply to Invoice #": "apply to invoice number"}.get(heading, heading.lower())
+    assert f"lacks the column {column}" in _refusal(tmp_path, _documented({name: _dropped(PUBLISHED[name], heading)}))
+
+
+def test_a_purchase_withholding_retainage_cannot_pass_as_a_bill_without_its_row_type(tmp_path):
+    """The same purchase as below, B-2 withholding 50.00 of 500.00, exported without Row Type: it is
+    refused by name, never imported as an ordinary 450.00 bill."""
+    purchases = _dropped(RETAINED_B2, "Row Type")
+    assert "lacks the column row type" in _refusal(tmp_path, _documented({"PURCHASE.CSV": purchases}))
+
+
+@pytest.mark.parametrize("value", ["11.0", "x", "-11"])
+def test_a_row_type_that_is_not_a_whole_number_is_refused(tmp_path, value):
+    purchases = RETAINED_B2.replace("-50.00,FALSE,11\r\n", f"-50.00,FALSE,{value}\r\n")
+    assert _refusal(tmp_path, _documented({"PURCHASE.CSV": purchases})) == t(
+        "migration.err_sage50_row_type", where="PURCHASE.CSV V1 B-2 01/06/25", value=value)
 
 
 def test_each_journal_is_read_from_the_fields_its_own_template_exports(tmp_path):
@@ -713,13 +730,15 @@ def test_each_journal_is_read_from_the_fields_its_own_template_exports(tmp_path)
     assert sorted(s.settlement_type for s in manifest.bundle.settlements) == ["payment", "receipt"]
 
 
+RETAINED_B2 = PUBLISHED["PURCHASE.CSV"] + (
+    "V1,First Vendor,B-2,,FALSE,01/06/25,02/05/25,2000,2,1,,,Work,6000,,500.00,FALSE,\r\n"
+    "V1,First Vendor,B-2,,FALSE,01/06/25,02/05/25,2000,2,2,,,Retainage withheld,2000,,-50.00,FALSE,11\r\n")
+
+
 def test_a_purchase_withholding_retainage_on_a_row_type_11_line_is_the_journal_it_posted(tmp_path):
     """The Purchase Journal marks retainage withheld by a line of Row Type 11: B-2 holds back 50.00
     of a 500.00 bill. It is never an ordinary bill: what it posted is carried as a journal."""
-    purchases = _column(PUBLISHED["PURCHASE.CSV"], "Row Type", "") + (
-        "V1,First Vendor,B-2,,FALSE,01/06/25,02/05/25,2000,2,1,,,Work,6000,,500.00,FALSE,\r\n"
-        "V1,First Vendor,B-2,,FALSE,01/06/25,02/05/25,2000,2,2,,,Retainage withheld,2000,,-50.00,FALSE,11\r\n")
-    manifest = _built(tmp_path, {"PURCHASE.CSV": purchases})
+    manifest = _built(tmp_path, {"PURCHASE.CSV": RETAINED_B2})
     assert [d.ref for d in manifest.bundle.documents if d.doc_type == "bill"] == ["B-1"]
     assert _carried(manifest, "Invoice or purchase with retainage (journal)") == [
         ("2000", Decimal("-450.00"), "First Vendor"), ("2000", Decimal("-50.00"), "First Vendor"),
@@ -822,14 +841,15 @@ def test_an_empty_journal_export_is_a_journal_and_one_not_uploaded_stops_a_full_
 
 
 # Books whose one transaction is a month's rent, kept in currencies of 0, 2 and 3 decimal places.
-EMPTY = {"SALES.CSV": "Customer ID,Invoice/CM #,Credit Memo,Quote,Beginning Balance Transaction,Voided by Transaction,"
-                      "Date,Date Due,Accounts Receivable Account,Number of Distributions,G/L Account,Tax Type,Amount\r\n",
-         "RECEIPTS.CSV": "Customer ID,Reference,Date,Cash Account,Cash Amount,Number of Distributions,G/L Account,"
-                         "Amount\r\n",
-         "PURCHASE.CSV": "Vendor ID,Invoice #,Credit Memo,Beginning Balance Transaction,Date,Date Due,"
-                         "Accounts Payable Account,Number of Distributions,G/L Account,Amount\r\n",
-         "PAYMENTS.CSV": "Vendor ID,Check Number,Date,Cash Account,Cash Amount,Number of Distributions,G/L Account,"
-                         "Amount,Voided by Transaction\r\n"}
+EMPTY = {"SALES.CSV": "Customer ID,Invoice/CM #,Apply to Invoice Number,Credit Memo,Quote,Beginning Balance Transaction,"
+                      "Voided by Transaction,Date,Date Due,Accounts Receivable Account,Number of Distributions,"
+                      "G/L Account,Tax Type,Amount\r\n",
+         "RECEIPTS.CSV": "Customer ID,Reference,Date,Cash Account,Cash Amount,Number of Distributions,Invoice Paid,"
+                         "G/L Account,Amount\r\n",
+         "PURCHASE.CSV": "Vendor ID,Invoice #,Apply to Invoice #,Credit Memo,Beginning Balance Transaction,Date,"
+                         "Date Due,Accounts Payable Account,Number of Distributions,G/L Account,Row Type,Amount\r\n",
+         "PAYMENTS.CSV": "Vendor ID,Check Number,Date,Cash Account,Cash Amount,Number of Distributions,Invoice Paid,"
+                         "G/L Account,Amount,Voided by Transaction\r\n"}
 
 
 def _rent(rent: str) -> list[tuple[str, bytes]]:

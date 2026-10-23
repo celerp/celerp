@@ -123,24 +123,29 @@ EMPLOYEES = Layout("employees", "Employee List", frozenset({"employee id", "empl
 # never read as the General Journal.
 GENERAL = _journal("general", "General Journal", {"reference"}, "General Ledger",
                    absent=frozenset({"customer id", "vendor id"}))
-# Each journal must carry every field its own template exports to say what a transaction is:
-# Sage 50 reads a transaction whose template leaves one out as a regular one, and so would the
-# import. A field a journal's template does not have is never asked of it: only the Sales and
-# Cash Disbursements Journals state that a transaction was voided. The Sales Journal needs its
-# Tax Type too: it alone tells a tax distribution from freight, both of which Sage 50 writes as
-# Invoice/CM Distribution 0. Both document journals need the Date Due Sage 50 requires of every
-# invoice and purchase.
+# Each journal must carry every field its own template exports that decides what a transaction
+# means: a field left out would read every transaction as the ordinary kind, so a template
+# without one is refused, never read on a default. That is what each transaction is (Credit Memo,
+# Quote, Beginning Balance Transaction, and Voided by Transaction on the two journals whose
+# templates export it), what it applies to or pays (Apply to Invoice Number, Invoice Paid), and
+# what each line is (the Sales Journal's Tax Type, which alone tells a tax distribution from
+# freight, both written as Invoice/CM Distribution 0; the Purchase Journal's Row Type, which marks
+# retainage withheld). The Sales Journal's Retain Percent is asked for only when a Tax Type 27
+# line is there, the one kind of line Sage 50 lets withhold retainage. A field a journal's
+# template does not have is never asked of it. Both document journals also need the Date Due
+# Sage 50 requires of every invoice and purchase.
 VOIDED_BY = "voided by transaction"
 SALES = _journal("sales", "Sales Journal", {"customer id", "invoice/cm #", "accounts receivable account", "tax type",
                                             "date due", "credit memo", "quote", "beginning balance transaction",
-                                            VOIDED_BY}, "Accounts Receivable")
-RECEIPTS = _journal("receipts", "Cash Receipts Journal", {"customer id", "reference", "cash account", "cash amount"},
-                    "Accounts Receivable")
+                                            VOIDED_BY, "apply to invoice number"}, "Accounts Receivable")
+RECEIPTS = _journal("receipts", "Cash Receipts Journal", {"customer id", "reference", "cash account", "cash amount",
+                                                          "invoice paid"}, "Accounts Receivable")
 PURCHASES = _journal("purchases", "Purchase Journal", {"vendor id", "invoice/cm #", "accounts payable account",
-                                                       "date due", "credit memo", "beginning balance transaction"},
-                     "Accounts Payable")
+                                                       "date due", "credit memo", "beginning balance transaction",
+                                                       "apply to invoice number", "row type"}, "Accounts Payable")
 PAYMENTS = _journal("payments", "Cash Disbursements Journal", {"vendor id", "check number", "cash account",
-                                                               "cash amount", VOIDED_BY}, "Accounts Payable")
+                                                               "cash amount", VOIDED_BY, "invoice paid"},
+                    "Accounts Payable")
 # The fields every distribution row of a transaction repeats, which must agree: a row Sage 50
 # leaves one of them blank on takes the transaction's value.
 SHARED = {
@@ -224,6 +229,15 @@ def _tax_type(tb: Table, row: dict[str, str], where: str) -> int:
     if not value.isdigit() or int(value) not in TAX_TYPES:
         raise ScanError(t("migration.err_sage50_tax_type", where=where, value=value))
     return int(value)
+
+
+def _row_type(tb: Table, row: dict[str, str], where: str) -> str:
+    """A Purchase Journal distribution's Row Type: blank or a whole number; any other value refuses
+    the set by name, so no retainage line can pass unrecognised."""
+    value = tb.value(row, "row type")
+    if value and not value.isdigit():
+        raise ScanError(t("migration.err_sage50_row_type", where=where, value=value))
+    return str(int(value)) if value else ""
 
 
 def _once(seen: set[str], ident: str, tb: Table) -> None:
@@ -540,7 +554,7 @@ class _Reader:
         if VOIDED_BY in tb.layout.columns and tb.value(rows[0], VOIDED_BY):
             label = VOIDED
         elif any(amount(tb.value(row, "retain percent"), where) or (
-                tb.value(row, "row type") == RETAINAGE_ROW and amount(tb.value(row, "amount"), where))
+                _row_type(tb, row, where) == RETAINAGE_ROW and amount(tb.value(row, "amount"), where))
                 for row in rows):
             label = RETAINAGE
         else:
