@@ -33,7 +33,7 @@ from celerp.modules.slots import fire_lifecycle
 from celerp.models.projections import Projection
 from celerp.inventory_codes import MAX_SCAN_CODE_LEN, PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES
 from celerp_docs.consignment_buy import bought_parcels, bought_receipt_lots, buy_consignment
-from celerp_docs.doc_money import document_money, money_from_lines, refuse_malformed_taxes
+from celerp_docs.doc_money import document_money, money_from_lines, refuse_malformed_taxes, refuse_unset_line_tax
 from celerp_docs.doc_projections import UNISSUED_STATUSES, payment_status
 from celerp_docs.taxes import TaxApplication
 from celerp.services.field_schema import reject_system_item_fields
@@ -2161,6 +2161,8 @@ async def mark_doc_sent(session: AsyncSession, company_id, entity_id: str, user,
         raise HTTPException(status_code=409, detail="Cannot send a closed memo; reopen it first.")
     if not (row.state.get("line_items") or []):
         raise HTTPException(status_code=422, detail="Add at least one line item before sending this document.")
+    if row.state.get("status") == "draft":  # sending a draft issues it
+        refuse_unset_line_tax(row.state["line_items"])
     from celerp_docs.doc_constants import NO_SEND_DOC_TYPES
     doc_type = row.state.get("doc_type", "")
     if doc_type in NO_SEND_DOC_TYPES:
@@ -2427,6 +2429,7 @@ async def finalize_document(
         return {"event_id": None, "already_finalized": True}
     if not (row.state.get("line_items") or []):
         raise HTTPException(status_code=422, detail="Add at least one line item before finalizing this document.")
+    refuse_unset_line_tax(row.state["line_items"])
     auto_je.refuse_unissuable_taxes((_company.settings or {}) if _company else {}, row.state.get("doc_type"), row.state)
     if row.state.get("doc_type") in _BILL_POSTED:
         await require_line_destinations(session, company_id, row.state["line_items"])
@@ -9217,6 +9220,7 @@ async def finalize_list_record(entity_id: str, company_id: str, user, session: A
     state = row.state
     if state.get("status") != DRAFT:
         raise HTTPException(status_code=409, detail=t("documents.err_list_not_finalizable"))
+    refuse_unset_line_tax(state.get("line_items"))
     lt = state.get("list_type") or DEFAULT_LIST_TYPE
     milestone = behavior(lt).finalize_milestone
     now = datetime.now(timezone.utc).isoformat()

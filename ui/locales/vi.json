@@ -4480,6 +4480,8 @@
   "documents.err_tax_unreadable": "A tax on this document can't be read: {tax}. Its totals can't be recalculated until it is removed or chosen again. Remove it from the document's taxes, or pick the line's tax again from the list, then try again.",
   "documents.err_tax_unreadable_issued": "A tax on this document can't be read: {tax}. Its totals can't be recalculated until the tax is fixed, and only a draft's taxes can be changed. If the document has payments or a credit note, void those first. Then use Revert to Draft, and remove the tax or pick it again from the list.",
   "documents.err_tax_unreadable_shared": "A tax on the shared document can't be read: {tax}. Ask the sender to correct the tax and share the document again.",
+  "documents.err_line_tax_unset": "Line {line} has no tax chosen yet, so it would be charged none. Choose the line's tax, or No Tax if it isn't taxed, then try again.",
+  "documents.err_line_tax_unset_issued": "Line {line} has no tax chosen yet, so it would be charged none, and only a draft's taxes can be changed. Revert the document to Draft, choose the line's tax (or No Tax if it isn't taxed), then try again.",
   "documents.err_tax_purchase_only": "{tax} là thuế mua hàng, ví dụ thuế khấu trừ của nhà cung cấp, nên không thể dùng trên chứng từ bán hàng. Hãy xóa thuế này khỏi chứng từ.",
   "documents.err_tax_sales_only": "{tax} là thuế bán hàng, nên không thể dùng trên chứng từ mua hàng. Hãy xóa thuế này khỏi chứng từ.",
   "documents.err_contact_not_contact": "Liên hệ bạn chọn không phải là bản ghi liên hệ. Hãy chọn lại liên hệ từ danh sách.",

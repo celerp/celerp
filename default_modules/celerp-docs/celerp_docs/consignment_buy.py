@@ -43,7 +43,7 @@ from celerp.services.company_lock import lock_projections
 from celerp.services.lot_origin import RETIRED
 from celerp.services.money import allocate_pro_rata, round_money, to_decimal, to_stored_float
 from celerp_docs.doc_constants import LIFECYCLE_OWNED_FIELDS
-from celerp_docs.doc_money import UnratedTaxError, document_money
+from celerp_docs.doc_money import UnratedTaxError, document_money, refuse_unset_line_tax
 
 _EPS = Decimal("1e-9")
 
@@ -387,6 +387,7 @@ async def buy_consignment(session, *, company_id, user_id, consignment_id: str, 
             "consignment.buy.nothing_kept",
             "Nothing received on this consignment is still held or sold, so there is nothing to buy. "
             "Receive the goods first."))
+    refuse_unset_line_tax(lines, state, source)  # the bill is born issued
     bill_id = f"doc:{ref}"
     # The bill starts its own lifecycle, as any conversion does: what went back to the consignor was
     # returned on the consignment, never on the bill, and the consignment's scan runs stay with it.

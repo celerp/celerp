@@ -11,7 +11,7 @@ from __future__ import annotations
 from fastapi import HTTPException
 
 from celerp.services.money import round_money, to_decimal, to_stored_float
-from celerp.tax_regimes import tax_entries, tax_text, unreadable_tax
+from celerp.tax_regimes import line_tax_unset, tax_entries, tax_text, unreadable_tax
 from celerp_docs.taxes import TaxApplication, compute_tax_amounts
 from ui.i18n import t
 
@@ -20,12 +20,27 @@ class UnratedTaxError(ValueError):
     """The document holds a tax amount with no rate to recompute it from."""
 
 
+def _past_draft(state: dict | None) -> bool:
+    """Whether a document *state* is past draft, where its taxes can no longer be changed."""
+    return (state or {}).get("status") not in (None, "draft")
+
+
 def unreadable_tax_refusal(tax: str, state: dict | None = None) -> HTTPException:
     """The 422 refusing a tax it cannot read, named. Only a draft's taxes can be changed, so on a
     document *state* past draft the message names the way back to one."""
-    issued = (state or {}).get("status") not in (None, "draft")
-    key = "documents.err_tax_unreadable_issued" if issued else "documents.err_tax_unreadable"
+    key = "documents.err_tax_unreadable_issued" if _past_draft(state) else "documents.err_tax_unreadable"
     return HTTPException(status_code=422, detail=t(key, tax=tax))
+
+
+def refuse_unset_line_tax(lines, state: dict | None = None, numbers: list[int] | None = None) -> None:
+    """Refuse (422, naming the line) issuing *lines* while one's tax is still for the user to set
+    (line_tax_unset): it would be charged none. Each line is numbered by its position, or by
+    *numbers* (counted from 0) when they are a selection of the document's lines. On a document
+    *state* past draft the message names the way back to one, as unreadable_tax_refusal does."""
+    for i, line in enumerate(lines or []):
+        if isinstance(line, dict) and line_tax_unset(line):
+            key = "documents.err_line_tax_unset_issued" if _past_draft(state) else "documents.err_line_tax_unset"
+            raise HTTPException(status_code=422, detail=t(key, line=(numbers[i] if numbers else i) + 1))
 
 
 def _definition(entry) -> TaxApplication | None:
