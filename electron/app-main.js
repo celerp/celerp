@@ -682,13 +682,21 @@ function serverEnv(dbUrl, cfg) {
 // process that did not inherit our env. It is written once the app has started and
 // watches the API for a restart, at boot and after every restart (which moves the API
 // to a new port): a restart requested earlier would stop the API with nothing to
-// bring it back.
+// bring it back. Once that API stops, and as the next one starts, the file is taken
+// away, so it never names a port nothing serves on.
 function publishApiPort() {
   try { fs.writeFileSync(path.join(DATA_DIR, "api-port"), String(apiPort)); } catch { /* non-fatal */ }
 }
 
+function withdrawApiPort() {
+  try { fs.rmSync(path.join(DATA_DIR, "api-port"), { force: true }); } catch { /* non-fatal */ }
+}
+
 function startApi(dbUrl, cfg) {
   return new Promise(async (resolve, reject) => {
+    // A port left by the API before this one (a previous session, or one that
+    // stopped without the app seeing it) is not this API's: see publishApiPort.
+    withdrawApiPort();
     // apiPort and uiPort are pre-allocated by the caller before startApi/startUi
     // are invoked, so both values are already set here.
     // Publish the database address too, for the password reset command run from a
@@ -1665,6 +1673,7 @@ app.whenReady().then(async () => {
       // resolves to the same directory that Electron watches.
       sentinelPath: path.join(path.dirname(PYTHON_CONFIG_PATH), ".restart_requested"),
       onWatching: publishApiPort,
+      onStopped: withdrawApiPort,
       isStopping: () => lifecycle.stopping,
       trackRestart: lifecycle.trackRestart,
       onCrash: (err) => {
