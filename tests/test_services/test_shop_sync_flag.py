@@ -96,30 +96,6 @@ async def test_shop_sync_event_acquires_connector_fence(session, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_bulk_shopify_sync_endpoint_sets_flag(session):
-    """The bulk endpoint emits shop.sync.enabled per item, which sets the projection flag."""
-    from types import SimpleNamespace
-
-    from celerp_inventory.routes import BulkShopifySyncBody, bulk_shopify_sync
-
-    cid = uuid.uuid4()
-    session.add(Company(id=cid, name="BulkCo", slug=f"bulkco-{cid.hex[:8]}"))
-    await session.flush()
-    eid = "item:bulk-1"
-    await _emit(session, cid, eid, "item.created", {"sku": "B", "name": "Bulk", "quantity": 1})
-
-    user = SimpleNamespace(id=None)  # actor_id is nullable; avoids needing a real users row
-    res = await bulk_shopify_sync(
-        BulkShopifySyncBody(entity_ids=[eid], enable=True),
-        company_id=cid, _=None, user=user, session=session,
-    )
-    assert res["updated"] == 1 and res["enabled"] is True
-    await ProjectionEngine.rebuild(session)
-    proj = (await session.execute(select(Projection).where(Projection.entity_id == eid))).scalar_one()
-    assert proj.is_sync_to_shopify is True
-
-
-@pytest.mark.asyncio
 async def test_list_items_source_filter(session):
     """?source=shopify returns only items linked to a connected platform (idempotency-key prefix);
     powers the connector detail 'View synced products' deep-link."""

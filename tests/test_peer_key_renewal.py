@@ -316,7 +316,7 @@ async def test_outbound_run_checks_the_key_once_before_sending(monkeypatch):
     monkeypatch.setattr(ownership, "lock_connector_operation", no_config)
     monkeypatch.setattr(sync_runner, "run_sync", fake_run_sync)
     monkeypatch.setattr(CelerpConnector, "before_outbound", before)
-    await sync_runner.run_connector_sync(CelerpConnector(), _ctx(str(uuid.uuid4())), SyncDirection.OUTBOUND)
+    await sync_runner.run_connector_sync(CelerpConnector(), _ctx(str(uuid.uuid4())))
     assert order[0] == "key" and order.count("key") == 1 and len(order) > 2
 
 

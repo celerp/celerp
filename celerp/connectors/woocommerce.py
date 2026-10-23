@@ -26,12 +26,19 @@ from celerp.connectors.base import (
     ConnectorBase,
     ConnectorCategory,
     ConnectorContext,
+    EntityFlow,
+    FirstSync,
+    RemoteOrder,
+    RemoteProduct,
     SyncDirection,
     SyncEntity,
     SyncResult,
     contact_matches,
+    direction_label,
+    entity_allowed,
     store_holds_records,
 )
+from ui.i18n import t
 import celerp.connectors.upsert as _upsert
 
 log = logging.getLogger(__name__)
@@ -66,6 +73,45 @@ def webhook_delivery_url() -> str:
     return f"{relay_http_url().rstrip('/')}/webhooks/woocommerce/events"
 
 
+# Longest store error text kept with a failed record.
+_ERROR_TEXT_LIMIT = 300
+
+
+def _raise_for_status(resp: httpx.Response) -> None:
+    """Raise for a failed store reply, keeping WooCommerce's own error code and message
+    (trimmed) so the person sees why it refused. Credentials travel only in the
+    Basic auth header and never appear here."""
+    if resp.is_success:
+        return
+    try:
+        body = resp.json()
+    except ValueError:
+        body = None
+    reason = resp.reason_phrase or "error"
+    if isinstance(body, dict) and (body.get("code") or body.get("message")):
+        reason = ": ".join(str(part) for part in (body.get("code"), body.get("message")) if part)
+    text = f"HTTP {resp.status_code} {reason}"
+    if len(text) > _ERROR_TEXT_LIMIT:
+        text = text[:_ERROR_TEXT_LIMIT - 1] + "…"
+    raise httpx.HTTPStatusError(text, request=resp.request, response=resp)
+
+
+def _gmt(value) -> datetime | None:
+    """A WooCommerce *_gmt timestamp (no zone, in UTC) as an aware datetime."""
+    from datetime import timezone
+
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value)).replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def _modified(raw: dict) -> datetime | None:
+    return _gmt(raw.get("date_modified_gmt"))
+
+
 def _http_client(*, max_retries: int = 3) -> RateLimitedClient:
     return RateLimitedClient(
         max_retries=max_retries,
@@ -81,13 +127,25 @@ def _auth(ctx: ConnectorContext) -> tuple[str, str]:
     key, secret = ctx.access_token.split(":", 1)
     return (key, secret)
 
-def _direction_allows_remote_product_create(direction) -> bool:
-    """Only outbound-capable connector modes may publish a new remote product."""
-    try:
-        resolved = direction if isinstance(direction, SyncDirection) else SyncDirection(direction)
-    except (TypeError, ValueError):
-        return False
-    return resolved in (SyncDirection.OUTBOUND, SyncDirection.BOTH)
+class LinkNeedsConfirmation(ValueError):
+    """WooCommerce already has a product with the item's SKU; linking it hands its
+    listing to Celerp, so a person confirms it first."""
+
+    def __init__(self, connector, remote: dict) -> None:
+        self.remote_id = str(remote.get("id"))
+        self.remote_name = str(remote.get("name") or remote.get("sku") or self.remote_id)
+        super().__init__(t("connectors.link_confirm", name=self.remote_name, service=connector.display_name))
+
+
+# The WooCommerce field each sent item field goes to.
+_WOO_FIELDS = {"sku": "sku", "description": "description", "sale_price": "regular_price", "name": "name"}
+
+
+def _made_up_sku(item: dict) -> bool:
+    """Whether the item's SKU is the one an earlier import made up from the product id."""
+    product_id, variation_id = item.get("woocommerce_product_id"), item.get("woocommerce_variation_id")
+    made_up = f"WC-{product_id}" + (f"-{variation_id}" if variation_id else "")
+    return str(item.get("sku") or "") == made_up
 
 
 def _link_needs_rediscovery(link: dict) -> bool:
@@ -116,12 +174,22 @@ class WooCommerceConnector(ConnectorBase):
     name = "woocommerce"
     display_name = "WooCommerce"
     category = ConnectorCategory.WEBSITE
-    direction = SyncDirection.BOTH
-    supported_entities = [SyncEntity.PRODUCTS, SyncEntity.ORDERS, SyncEntity.CONTACTS]
+    # The store's customer list is never imported: a customer is created only as the
+    # customer of an imported order.
+    imported_doc_marker = "woocommerce_order_id"
+    entity_flows = {
+        "products": EntityFlow(inbound=("products",), outbound=("products_out",)),
+        "stock": EntityFlow(outbound=("inventory_out",)),
+        "orders": EntityFlow(inbound=("orders",)),
+        "customers": EntityFlow(),
+    }
+    # A new connection publishes Celerp's catalog and stock and takes in new orders.
+    default_directions = {
+        "products": "outbound", "stock": "outbound", "orders": "inbound", "customers": "off",
+    }
     conflict_strategy = {
         "products": "external_wins",
         "orders": "external_wins",
-        "contacts": "external_wins",
     }
 
     async def same_store(self, ctx: ConnectorContext, records: list[dict]) -> bool:
@@ -210,7 +278,7 @@ class WooCommerceConnector(ConnectorBase):
                     auth=auth,
                     params=page_params,
                 )
-                resp.raise_for_status()
+                _raise_for_status(resp)
                 data = resp.json()
                 results.extend(data)
                 if not data:
@@ -239,117 +307,67 @@ class WooCommerceConnector(ConnectorBase):
         return f"/products/{product_id}"
 
     async def sync_products(
-        self, ctx: ConnectorContext, since: datetime | None = None, reconcile: bool = False
+        self,
+        ctx: ConnectorContext,
+        since: datetime | None = None,
+        reconcile: bool = False,
+        attention: list[dict] | None = None,
+        first_sync: FirstSync | None = None,
     ) -> SyncResult:
         """Pull WooCommerce products into Celerp catalog product anchors. The
         daily ``reconcile`` pass pulls every product, so ones deleted in the
-        store are found."""
-        from celerp_inventory.services import upsert_external_product
+        store are found.
 
+        A product with no SKU is not imported; it waits on a person to give it one
+        in WooCommerce. A linked product changed in both systems keeps Celerp's
+        values and waits on a person with both. Entries for products this run did
+        not read are carried. ``first_sync`` carries the first sync's choices: whether
+        new products are created, whether SKU matches keep Celerp's values, and the
+        import batch created items join; what it did is recorded on it."""
         result = SyncResult(entity=SyncEntity.PRODUCTS)
         errors: list[str] = []
-        if reconcile:
+        pending: dict[str, dict] = {}
+        processed: set[str] = set()
+        if reconcile or first_sync is not None:
             since = None
         full_scan = since is None
         seen_identities: set[tuple[str, str | None]] = set()
-        incomplete_parents: set[str] = set()
         params: dict = {}
         if since:
             params["modified_after"] = since.isoformat()
             params["dates_are_gmt"] = "true"
 
         try:
-            products = await self._paginate(ctx, "/products", params=params or None)
+            products, read_errors, incomplete_parents = await self._store_products(ctx, params)
         except (httpx.HTTPStatusError, ValueError) as exc:
             result.errors = [f"WooCommerce API error: {exc}"]
             return result
+        errors += read_errors
 
-        async def _import_one(*, sku, name, description, price, product_id,
-                              variation_id=None, manage_stock=None, stock_quantity=None,
-                              virtual=False):
-            try:
-                non_stock_virtual = bool(virtual) and manage_stock is False
-                outcome, entity_id = await upsert_external_product(
-                    ctx.company_id,
-                    platform="woocommerce",
-                    product_id=str(product_id),
-                    variation_id=str(variation_id) if variation_id is not None else None,
-                    sku=sku,
-                    name=name,
-                    description=description,
-                    sale_price=price,
-                    quantity=float(stock_quantity) if stock_quantity is not None else None,
-                    seed_quantity=(manage_stock is True),
-                    link_fields={"manage_stock": manage_stock},
-                    inventory_type="service" if non_stock_virtual else None,
-                    sell_by="service" if non_stock_virtual else None,
-                )
-                result.record(outcome)
-                return None if outcome == "disabled" else entity_id
-            except Exception as exc:
-                errors.append(f"SKU {sku}: {exc}")
-                return None
-
-        for product in products:
-            pid = product.get("id")
-            name = product.get("name") or f"WC-{pid}"
-            description = product.get("description") or ""
-            if product.get("type") == "variable":
-                try:
-                    variations = await self._paginate(ctx, f"/products/{pid}/variations")
-                except (httpx.HTTPStatusError, ValueError) as exc:
-                    errors.append(f"Product {pid} variations: {exc}")
-                    incomplete_parents.add(str(pid))
-                    continue
-                for var in variations:
-                    vid = var.get("id")
-                    seen_identities.add((str(pid), str(vid)))
-                    var_sku = (var.get("sku") or "").strip() or f"WC-{pid}-{vid}"
-                    opts = " / ".join(
-                        str(a.get("option", "")) for a in (var.get("attributes") or [])
-                        if a.get("option")
-                    )
-                    var_price = money(var.get("regular_price"))
-                    if var_price is None:
-                        var_price = money(var.get("price"))
-                    entity_id = await _import_one(
-                        sku=var_sku,
-                        name=f"{name} - {opts}" if opts else name,
-                        description=var.get("description") or description,
-                        price=var_price,
-                        product_id=pid,
-                        variation_id=vid,
-                        manage_stock=var.get("manage_stock"),
-                        stock_quantity=var.get("stock_quantity"),
-                        virtual=bool(var.get("virtual", product.get("virtual", False))),
-                    )
-                    if entity_id:
-                        var_img = var.get("image")
-                        files = {
-                            "images": ([var_img] if var_img and var_img.get("src") else [])
-                            + product.get("images", []),
-                            "meta_data": product.get("meta_data", []),
-                        }
-                        try:
-                            await self._pull_product_files(ctx, files, entity_id)
-                        except Exception as img_exc:
-                            log.warning("woocommerce file pull failed for item %s: %s", entity_id, img_exc)
-                continue
-
-            seen_identities.add((str(pid), None))
-            sku = (product.get("sku") or "").strip() or f"WC-{pid}"
-            sell_price = money(product.get("regular_price"))
-            if sell_price is None:
-                sell_price = money(product.get("price"))
-            entity_id = await _import_one(
-                sku=sku, name=name, description=description, price=sell_price,
-                product_id=pid, manage_stock=product.get("manage_stock"),
-                stock_quantity=product.get("stock_quantity"),
-                virtual=bool(product.get("virtual", False)),
+        for remote in products:
+            seen_identities.add((remote.product_id, remote.variation_id))
+            processed.add(remote.key)
+            manage_stock = remote.extra["manage_stock"]
+            stock_quantity = remote.extra["stock_quantity"]
+            non_stock_virtual = remote.extra["virtual"] and manage_stock is False
+            entity_id = await _upsert.import_store_product(
+                ctx, self, key=remote.key, label=remote.name, result=result, pending=pending,
+                first_sync=first_sync, errors=errors,
+                product_id=remote.product_id,
+                variation_id=remote.variation_id,
+                sku=remote.sku,
+                name=remote.name or remote.sku,
+                description=remote.description,
+                sale_price=remote.price,
+                quantity=float(stock_quantity) if stock_quantity is not None else None,
+                seed_quantity=(manage_stock is True),
+                link_fields={"manage_stock": manage_stock},
+                inventory_type="service" if non_stock_virtual else None,
+                sell_by="service" if non_stock_virtual else None,
             )
             if entity_id:
                 try:
-                    await self._pull_product_files(ctx, product, entity_id)
+                    await self._pull_product_files(ctx, remote.extra["files"], entity_id, first_sync)
                 except Exception as img_exc:
                     log.warning("woocommerce file pull failed for item %s: %s", entity_id, img_exc)
 
@@ -362,7 +380,92 @@ class WooCommerceConnector(ConnectorBase):
                 errors.append(f"Product reconciliation: {exc}")
 
         result.errors = errors or None
+        result.attention = _upsert.carried_attention(attention, pending, processed)
         return result
+
+    async def _store_products(
+        self, ctx: ConnectorContext, params: dict
+    ) -> tuple[list[RemoteProduct], list[str], set[str]]:
+        """Every sellable product the store returns for ``params``, a variable product's
+        variations each as their own: the products, the errors reading variations,
+        and the parents whose variations could not be read."""
+        products = await self._paginate(ctx, "/products", params=params or None)
+        out: list[RemoteProduct] = []
+        errors: list[str] = []
+        incomplete: set[str] = set()
+
+        def _price(raw: dict):
+            price = money(raw.get("regular_price"))
+            return price if price is not None else money(raw.get("price"))
+
+        for product in products:
+            pid = str(product.get("id"))
+            name = product.get("name") or ""
+            description = product.get("description") or ""
+            if product.get("type") == "variable":
+                try:
+                    variations = await self._paginate(ctx, f"/products/{pid}/variations")
+                except (httpx.HTTPStatusError, ValueError) as exc:
+                    errors.append(f"Product {pid} variations: {exc}")
+                    incomplete.add(pid)
+                    continue
+                for var in variations:
+                    vid = str(var.get("id"))
+                    opts = " / ".join(
+                        str(a.get("option", "")) for a in (var.get("attributes") or [])
+                        if a.get("option")
+                    )
+                    var_img = var.get("image")
+                    out.append(RemoteProduct(
+                        key=f"{pid}:{vid}", product_id=pid, variation_id=vid,
+                        sku=(var.get("sku") or "").strip(),
+                        name=f"{name} - {opts}" if opts else name,
+                        description=var.get("description") or description,
+                        price=_price(var), modified=_modified(var),
+                        extra={
+                            "manage_stock": var.get("manage_stock"),
+                            "stock_quantity": var.get("stock_quantity"),
+                            "virtual": bool(var.get("virtual", product.get("virtual", False))),
+                            "files": {
+                                "images": ([var_img] if var_img and var_img.get("src") else [])
+                                + product.get("images", []),
+                                "meta_data": product.get("meta_data", []),
+                            },
+                        },
+                    ))
+                continue
+            out.append(RemoteProduct(
+                key=pid, product_id=pid, variation_id=None,
+                sku=(product.get("sku") or "").strip(), name=name, description=description,
+                price=_price(product), modified=_modified(product),
+                extra={
+                    "manage_stock": product.get("manage_stock"),
+                    "stock_quantity": product.get("stock_quantity"),
+                    "virtual": bool(product.get("virtual", False)),
+                    "files": product,
+                },
+            ))
+        return out, errors, incomplete
+
+    async def preview_products(self, ctx: ConnectorContext) -> list[RemoteProduct]:
+        products, errors, _ = await self._store_products(ctx, {})
+        if errors:
+            raise ValueError("; ".join(errors))
+        return products
+
+    async def preview_orders(self, ctx: ConnectorContext, orders_from: datetime) -> list[RemoteOrder]:
+        from celerp_docs.doc_service import WOOCOMMERCE_ISSUED_STATUSES
+
+        orders = await self._paginate(ctx, "/orders", params={
+            "after": orders_from.isoformat(), "dates_are_gmt": "true",
+            "_fields": "id,number,status,date_created_gmt,total,currency",
+        })
+        return [RemoteOrder(
+            id=str(o.get("id")), number=str(o.get("number") or o.get("id")),
+            status=str(o.get("status") or ""), created=_gmt(o.get("date_created_gmt")),
+            total=money(o.get("total")), currency=o.get("currency"),
+            posts=str(o.get("status") or "") in WOOCOMMERCE_ISSUED_STATUSES,
+        ) for o in orders]
 
     async def _reconcile_missing_product_links(
         self,
@@ -416,8 +519,13 @@ class WooCommerceConnector(ConnectorBase):
                 await session.commit()
         return changed
 
-    async def _pull_product_files(self, ctx: ConnectorContext, product: dict[str, Any], entity_id: str) -> None:
-        """Pull images and certificate metafields onto an already-resolved item."""
+    async def _pull_product_files(
+        self, ctx: ConnectorContext, product: dict[str, Any], entity_id: str,
+        first_sync: FirstSync | None = None,
+    ) -> None:
+        """Pull images and certificate metafields onto an already-resolved item. Each
+        image is pulled once, recognised by its WooCommerce image id. The files a first
+        sync pulls onto an item it created join its import, so its undo removes them."""
         from celerp.db import get_session_ctx as get_async_session
         from celerp.models.projections import Projection
         from celerp.connectors.images import download_and_emit_file, _CERT_TAGS
@@ -430,15 +538,19 @@ class WooCommerceConnector(ConnectorBase):
             )
             if row is None or row.entity_type != "item":
                 return
+            created = first_sync is not None and any(
+                eid == entity_id for eid, _ in first_sync.record.created)
+            keys: list[str | None] = []
             for i, img in enumerate(images):
                 src = img.get("src")
                 if not src:
                     continue
-                await download_and_emit_file(
-                    session, ctx.company_id, row.entity_id, "system", src,
+                keys.append(await download_and_emit_file(
+                    session, ctx.company_id, row.entity_id, src,
                     img.get("name") or f"product-{i}.jpg",
                     "product_images", is_hero=(i == 0),
-                )
+                    platform=self.name, store=ctx.store_handle, remote_id=img.get("id"),
+                ))
             meta = {m["key"]: m["value"] for m in meta_data if m.get("key")}
             for tag_key in _CERT_TAGS:
                 raw = meta.get(tag_key)
@@ -448,18 +560,31 @@ class WooCommerceConnector(ConnectorBase):
                     certs = json.loads(raw) if isinstance(raw, str) else raw
                     for cert in (certs if isinstance(certs, list) else []):
                         if cert.get("url"):
-                            await download_and_emit_file(
-                                session, ctx.company_id, row.entity_id, "system",
+                            keys.append(await download_and_emit_file(
+                                session, ctx.company_id, row.entity_id,
                                 cert["url"], cert.get("name", "cert.pdf"),
                                 tag_key, is_hero=False,
-                            )
+                                platform=self.name, store=ctx.store_handle,
+                            ))
                 except Exception as exc:
                     log.warning("woocommerce: failed to pull cert metafield %s: %s", tag_key, exc)
+            if created:
+                first_sync.record.files += [key for key in keys if key]
             await session.commit()
 
 
-    async def ensure_product_link(self, ctx: ConnectorContext, entity_id: str, actor_id=None) -> str:
-        """Enable one item, linking or creating a simple WooCommerce product safely."""
+    async def ensure_product_link(
+        self, ctx: ConnectorContext, entity_id: str, actor_id=None, *, confirm_link: bool = False,
+    ) -> str:
+        """Publish one item: link it to its WooCommerce product, or create the product
+        published. A linked product WooCommerce holds as a draft is published again.
+
+        A product the store already has under the item's SKU is linked only with
+        ``confirm_link``: linking hands its listing to Celerp, which replaces its
+        name, description, price and images at the next sync, so it is asked first
+        (LinkNeedsConfirmation). When the product was created but its link could not
+        be saved, the error names the product so a person knows it is live; publishing
+        again links it by SKU."""
         from decimal import Decimal
         from celerp.db import SessionLocal as AsyncSessionLocal
         from celerp.models.connector_config import ConnectorConfig
@@ -485,17 +610,30 @@ class WooCommerceConnector(ConnectorBase):
                     ConnectorConfig.connector == "woocommerce",
                 ).limit(1)
             )
-            allow_create = _direction_allows_remote_product_create(
-                config.direction if config is not None else None
+            # Only a connection that sends products out may publish a new one.
+            allow_create = config is not None and entity_allowed(
+                self, "products_out", config.entity_directions
+            )
+            products_direction = SyncDirection(
+                (config.entity_directions if config is not None else {}).get("products", "off")
             )
         base_url, auth = _base_url(ctx), _auth(ctx)
         remote: dict | None = None
+        created = False
         rediscover = _link_needs_rediscovery(link)
         if link and not rediscover:
             item = {"woocommerce_product_id": link.get("product_id"),
                     "woocommerce_variation_id": link.get("variation_id")}
             async with _http_client() as client:
                 resp = await client.get(f"{base_url}{self._product_path(item)}", auth=auth)
+                if resp.status_code != 404:
+                    _raise_for_status(resp)
+                    remote = resp.json()
+                    if remote.get("status") not in (None, "publish") and not link.get("variation_id"):
+                        published = await client.put(
+                            f"{base_url}{self._product_path(item)}", auth=auth, json={"status": "publish"})
+                        _raise_for_status(published)
+                        remote = published.json()
             if resp.status_code == 404:
                 async with AsyncSessionLocal() as session:
                     await set_external_link_state(
@@ -511,9 +649,6 @@ class WooCommerceConnector(ConnectorBase):
                     )
                     await session.commit()
                 rediscover = True
-            else:
-                resp.raise_for_status()
-                remote = resp.json()
         if remote is None:
             if _deleted_variation_requires_import(link):
                 raise ValueError(
@@ -522,7 +657,7 @@ class WooCommerceConnector(ConnectorBase):
                 )
             async with _http_client() as client:
                 resp = await client.get(f"{base_url}/products", auth=auth, params={"sku": sku, "per_page": 100})
-                resp.raise_for_status()
+                _raise_for_status(resp)
                 exact = [p for p in resp.json() if str(p.get("sku") or "").strip().casefold() == sku.casefold()]
                 if len(exact) > 1:
                     raise ValueError(f"WooCommerce has multiple products with SKU {sku!r}")
@@ -530,12 +665,14 @@ class WooCommerceConnector(ConnectorBase):
                     remote = exact[0]
                     if remote.get("type") == "variable":
                         raise ValueError("This SKU belongs to a variable WooCommerce product; import the exact variation first")
+                    if not confirm_link:
+                        raise LinkNeedsConfirmation(self, remote)
                 else:
                     if not allow_create:
-                        raise ValueError(
-                            f"No WooCommerce product with SKU {sku!r} exists; "
-                            "this connector direction does not allow publishing new products"
-                        )
+                        raise ValueError(t(
+                            "connectors.err_publish_needs_outbound", sku=sku,
+                            direction=direction_label(self, products_direction),
+                        ))
                     stocked = str(state.get("inventory_type") or "stocked") == "stocked"
                     q = Decimal(str(qty))
                     if stocked and q != q.to_integral_value():
@@ -547,17 +684,36 @@ class WooCommerceConnector(ConnectorBase):
                     if price is not None: payload["regular_price"] = str(price)
                     if stocked: payload["stock_quantity"] = int(q)
                     create = await client.post(f"{base_url}/products", auth=auth, json=payload)
-                    create.raise_for_status()
+                    _raise_for_status(create)
                     remote = create.json()
+                    created = True
         if not remote or remote.get("id") in (None, ""):
             raise ValueError("WooCommerce did not return a product identity")
         if remote.get("type") == "variable":
             raise ValueError("A variable parent cannot be linked as a sellable catalog item; import an exact variation instead")
         new_link = {"product_id": str(remote["id"]), "sync_enabled": True,
-                    "remote_deleted": False, "manage_stock": remote.get("manage_stock")}
-        async with AsyncSessionLocal() as session:
-            from celerp_docs.doc_service import woocommerce_products_awaiting_reconciliation
+                    "remote_deleted": False, "manage_stock": remote.get("manage_stock"),
+                    "remote_status": remote.get("status")}
+        try:
+            await self._save_link(
+                ctx, anchor_id, sku, link, rediscover, new_link, actor_id,
+                set_external_link=set_external_link, set_external_link_state=set_external_link_state,
+            )
+        except Exception as exc:
+            if not created:
+                raise
+            raise ValueError(t(
+                "connectors.err_link_save_failed", name=remote.get("name") or state.get("name") or sku,
+                service=self.display_name, reason=exc,
+            )) from exc
+        return anchor_id
 
+    async def _save_link(self, ctx, anchor_id, sku, link, rediscover, new_link, actor_id, *,
+                         set_external_link, set_external_link_state) -> None:
+        from celerp.db import SessionLocal as AsyncSessionLocal
+        from celerp_docs.doc_service import woocommerce_products_awaiting_reconciliation
+
+        async with AsyncSessionLocal() as session:
             new_link["inventory_sync_paused"] = anchor_id in (
                 await woocommerce_products_awaiting_reconciliation(session, ctx.company_id)
             )
@@ -566,8 +722,9 @@ class WooCommerceConnector(ConnectorBase):
                     session, ctx.company_id, anchor_id, "woocommerce",
                     sync_enabled=True, remote_deleted=False,
                     link_updates={
-                        "manage_stock": remote.get("manage_stock"),
+                        "manage_stock": new_link["manage_stock"],
                         "inventory_sync_paused": new_link["inventory_sync_paused"],
+                        "remote_status": new_link["remote_status"],
                     },
                     expected_identity=(
                         str(link.get("product_id") or ""),
@@ -594,7 +751,35 @@ class WooCommerceConnector(ConnectorBase):
                     actor_id=actor_id, source="connector_ui",
                 )
             await session.commit()
-        return anchor_id
+
+    async def set_product_status(
+        self, ctx: ConnectorContext, entity_id: str, status: str, actor_id=None
+    ) -> None:
+        """Unpublish (``draft``) or publish one linked product in WooCommerce. The link
+        stays, so Publish puts it back; the product is never deleted."""
+        from celerp.db import SessionLocal as AsyncSessionLocal
+        from celerp_inventory.services import (
+            external_link_for_state, resolve_catalog_anchor_for_item, set_external_link_state,
+        )
+
+        async with AsyncSessionLocal() as session:
+            anchor = await resolve_catalog_anchor_for_item(session, ctx.company_id, entity_id)
+            link = external_link_for_state(anchor.state or {}, "woocommerce")
+        if not link or link.get("remote_deleted") is True:
+            raise ValueError(t("connectors.err_not_published", service=self.display_name))
+        item = {"woocommerce_product_id": link.get("product_id"),
+                "woocommerce_variation_id": link.get("variation_id")}
+        async with _http_client() as client:
+            resp = await client.put(
+                f"{_base_url(ctx)}{self._product_path(item)}", auth=_auth(ctx), json={"status": status})
+            _raise_for_status(resp)
+        async with AsyncSessionLocal() as session:
+            await set_external_link_state(
+                session, ctx.company_id, anchor.entity_id, "woocommerce",
+                link_updates={"remote_status": resp.json().get("status", status)},
+                actor_id=actor_id, source="connector_ui",
+            )
+            await session.commit()
 
     # -- Orders ----------------------------------------------------------------
 
@@ -604,8 +789,10 @@ class WooCommerceConnector(ConnectorBase):
         since: datetime | None = None,
         attention: list[dict] | None = None,
         reconcile: bool = False,
+        orders_from: datetime | None = None,
     ) -> SyncResult:
-        """Pull WooCommerce orders -> Celerp documents.
+        """Pull WooCommerce orders -> Celerp documents. Orders placed before
+        ``orders_from``, the connection's earliest order date, are not fetched.
 
         An order the import cannot complete (unmapped product, no stock to
         draw, a refund to reconcile) is not a sync failure: it goes on the
@@ -679,7 +866,10 @@ class WooCommerceConnector(ConnectorBase):
         params: dict = {}
         if since:
             params["modified_after"] = since.isoformat()
-            params["dates_are_gmt"] = "true"  # our watermark is UTC; make Woo interpret it as UTC
+        if orders_from:
+            params["after"] = orders_from.isoformat()
+        if params:
+            params["dates_are_gmt"] = "true"  # our dates are UTC; make Woo interpret them as UTC
 
         try:
             orders = await self._paginate(ctx, "/orders", params=params or None)
@@ -718,44 +908,22 @@ class WooCommerceConnector(ConnectorBase):
         )
         return result
 
-    # -- Contacts --------------------------------------------------------------
-
-    async def sync_contacts(self, ctx: ConnectorContext, since: datetime | None = None) -> SyncResult:
-        """Pull WooCommerce customers -> Celerp contacts."""
-        result = SyncResult(entity=SyncEntity.CONTACTS)
-        errors: list[str] = []
-
-        params: dict = {}
-        if since:
-            params["modified_after"] = since.isoformat()
-            params["dates_are_gmt"] = "true"  # our watermark is UTC; make Woo interpret it as UTC
-
-        try:
-            customers = await self._paginate(ctx, "/customers", params=params or None)
-        except (httpx.HTTPStatusError, ValueError) as exc:
-            result.errors = [f"WooCommerce API error: {exc}"]
-            return result
-
-        for customer in customers:
-            try:
-                result.record(await _upsert.upsert_contact_from_woocommerce(ctx.company_id, customer))
-            except Exception as exc:
-                errors.append(f"Customer {customer.get('id')}: {exc}")
-
-        result.errors = errors or None
-        log.info(
-            "woocommerce.sync_contacts company=%s created=%d skipped=%d",
-            ctx.company_id, result.created, result.skipped,
-        )
-        return result
-
-
     async def sync_products_out(self, ctx: ConnectorContext) -> SyncResult:
-        """Push enabled Celerp catalog product fields to WooCommerce."""
-        from celerp.connectors.images import build_platform_image_payload, build_platform_cert_payload
+        """Send linked Celerp products to WooCommerce.
+
+        Only the fields Celerp changed since the link last agreed on them are sent
+        (celerp.services.field_fingerprints); a product with nothing changed is not
+        sent at all. A SKU an import made up is never sent unless a person changes it.
+        Images go in a request of their own after the fields, by the store's own id
+        when it holds them and by a short-lived public link otherwise, so an image the
+        store refuses never holds back the fields; it waits on a person with the
+        store's reason."""
+        from celerp.connectors.images import product_image_files, store_images
+        from celerp.services.field_fingerprints import LINK_KEY, changed_since, fingerprint
 
         result = SyncResult(entity=SyncEntity.PRODUCTS, direction=SyncDirection.OUTBOUND)
         errors: list[str] = []
+        attention: list[dict] = []
         try:
             items = await _upsert.list_items_modified_since_last_sync(
                 ctx.company_id, platform="woocommerce"
@@ -771,46 +939,93 @@ class WooCommerceConnector(ConnectorBase):
                 if not product_id:
                     result.skipped += 1
                     continue
-                try:
-                    patch: dict = {}
-                    is_variation = bool(item.get("woocommerce_variation_id"))
-                    if item.get("sku"):
-                        patch["sku"] = item["sku"]
-                    if item.get("description") is not None:
-                        patch["description"] = item["description"]
-                    if item.get("sale_price") is not None:
-                        patch["regular_price"] = str(item["sale_price"])
-                    if not is_variation and item.get("name"):
-                        patch["name"] = item["name"]
+                variation_id = item.get("woocommerce_variation_id")
+                key = f"{product_id}:{variation_id}" if variation_id else str(product_id)
+                label = item.get("name") or item.get("sku") or key
+                link = dict(item.get("external_link") or {})
+                agreed = dict(link.get(LINK_KEY) or {})
+                fields = {
+                    "sku": item.get("sku") or None,
+                    "description": item.get("description"),
+                    "sale_price": item.get("sale_price"),
+                    "name": None if variation_id else (item.get("name") or None),
+                }
+                send = {k: v for k, v in fields.items() if v is not None and changed_since(link, k, v)}
+                if "sku" in send and agreed.get("sku") is None and _made_up_sku(item):
+                    del send["sku"]
+                image_ids = [f["id"] for f in product_image_files(item.get("files") or [])]
+                # An item with no images of its own never clears the store's.
+                images_changed = bool(image_ids) and changed_since(link, "images", image_ids)
+                if not send and not images_changed:
+                    result.skipped += 1
+                    continue
 
-                    files = item.get("files") or []
-                    image_payload = build_platform_image_payload(files)
-                    if image_payload["hero_url"]:
-                        if is_variation:
-                            patch["image"] = {"src": image_payload["hero_url"]}
-                        else:
-                            patch["images"] = [{"src": image_payload["hero_url"]}] + [
-                                {"src": u} for u in image_payload["additional_urls"]
-                            ]
-                    cert_payload = build_platform_cert_payload(files)
-                    if cert_payload:
-                        patch["meta_data"] = [
-                            {"key": key, "value": json.dumps(certs)}
-                            for key, certs in cert_payload.items()
-                        ]
-                    if not patch:
-                        result.skipped += 1
+                url = f"{base_url}{self._product_path(item)}"
+                updates: dict = {}
+                if send:
+                    try:
+                        resp = await client.put(url, auth=auth, json={
+                            _WOO_FIELDS[k]: str(v) if k == "sale_price" else v for k, v in send.items()
+                        })
+                        _raise_for_status(resp)
+                    except Exception as exc:
+                        errors.append(f"WooCommerce product {product_id}: {exc}")
                         continue
-                    resp = await client.put(
-                        f"{base_url}{self._product_path(item)}", auth=auth, json=patch
-                    )
-                    resp.raise_for_status()
-                    result.updated += 1
+                    agreed.update({k: fingerprint(v) for k, v in send.items()})
+                    updates["last_pushed_modified"] = resp.json().get("date_modified_gmt")
+                if images_changed:
+                    images, unshared = await store_images(ctx, self.name, item.get("files") or [], link)
+                    if unshared:
+                        attention.append({"id": key, "label": label, "kind": "image",
+                                          "reason": t("connectors.attention_image_unshared",
+                                                      service=self.display_name)})
+                    else:
+                        try:
+                            resp = await client.put(url, auth=auth, json=(
+                                {"image": images[0] if images else {}} if variation_id
+                                else {"images": images}))
+                            _raise_for_status(resp)
+                        except Exception as exc:
+                            attention.append({"id": key, "label": label, "kind": "image",
+                                              "reason": t("connectors.attention_image_refused",
+                                                          service=self.display_name, detail=exc)})
+                        else:
+                            body = resp.json()
+                            returned = [body["image"]] if variation_id and body.get("image") else body.get("images") or []
+                            updates["media_ids"] = {
+                                **(link.get("media_ids") or {}),
+                                **{fid: str(img["id"]) for fid, img in zip(image_ids, returned) if img.get("id")},
+                            }
+                            agreed["images"] = fingerprint(image_ids)
+                            updates["last_pushed_modified"] = body.get("date_modified_gmt") or updates.get(
+                                "last_pushed_modified")
+                if not updates:
+                    continue
+                try:
+                    await self._save_push(ctx, item, link, {LINK_KEY: agreed, **updates})
                 except Exception as exc:
                     errors.append(f"WooCommerce product {product_id}: {exc}")
+                    continue
+                result.updated += 1
 
         result.errors = errors or None
+        result.attention = attention
         return result
+
+    async def _save_push(self, ctx: ConnectorContext, item: dict, link: dict, updates: dict) -> None:
+        """Record on the link what the store now holds, so the next run sends only changes."""
+        from celerp.db import SessionLocal as AsyncSessionLocal
+        from celerp_inventory.services import set_external_link_state
+
+        async with AsyncSessionLocal() as session:
+            await set_external_link_state(
+                session, ctx.company_id, item["entity_id"], "woocommerce", link_updates=updates,
+                expected_identity=(
+                    str(link.get("product_id") or ""),
+                    str(link.get("variation_id")) if link.get("variation_id") not in (None, "") else None,
+                ),
+            )
+            await session.commit()
 
     async def _sync_inventory_items_out(
         self, ctx: ConnectorContext, items: list[dict], *, max_retries: int = 3
@@ -861,7 +1076,7 @@ class WooCommerceConnector(ConnectorBase):
                         auth=auth,
                         json={"stock_quantity": int(qty)},
                     )
-                    resp.raise_for_status()
+                    _raise_for_status(resp)
                     result.updated += 1
                 except Exception as exc:
                     errors.append(f"WooCommerce product {product_id}: {exc}")
@@ -909,11 +1124,17 @@ class WooCommerceConnector(ConnectorBase):
 
     # -- Webhook lifecycle -----------------------------------------------------
 
-    _WEBHOOK_TOPICS = [
-        "product.created", "product.updated", "product.deleted",
-        "order.created", "order.updated", "order.deleted",
-        "customer.created", "customer.updated",
-    ]
+    def webhook_topics(self, directions: dict) -> list[str]:
+        """The topics this connection listens to: orders when they come in, product
+        changes when products come in, and deletions whenever products are linked."""
+        topics: list[str] = []
+        if entity_allowed(self, "orders", directions):
+            topics += ["order.created", "order.updated", "order.deleted"]
+        if entity_allowed(self, "products", directions):
+            topics += ["product.created", "product.updated"]
+        if directions.get("products", SyncDirection.OFF.value) != SyncDirection.OFF.value:
+            topics.append("product.deleted")
+        return topics
 
     async def handle_product_deleted(self, ctx: ConnectorContext, payload: dict) -> None:
         """Mark an exact deleted variation or every linked variation under a deleted parent."""
@@ -970,26 +1191,27 @@ class WooCommerceConnector(ConnectorBase):
 
 
     async def register_webhooks(
-        self, ctx: ConnectorContext, webhook_url: str, secret: str | None = None
+        self, ctx: ConnectorContext, webhook_url: str, secret: str | None = None,
+        *, topics: list[str], status: str = "active",
     ) -> list[str]:
-        """Register the full WooCommerce webhook set. A failure part way leaves
-        hooks behind; callers remove them with `deregister_webhooks`, which finds
-        them by delivery address even when their ids were never returned."""
+        """Register one WooCommerce webhook per topic, in ``status``. A failure part
+        way leaves hooks behind; callers remove them with `deregister_webhooks`, which
+        finds them by delivery address even when their ids were never returned."""
         base_url = _base_url(ctx)
         auth = _auth(ctx)
         ids: list[str] = []
         async with _http_client() as client:
-            for topic in self._WEBHOOK_TOPICS:
+            for topic in topics:
                 body = {
                     "name": f"{_WEBHOOK_NAME_PREFIX}{topic}",
                     "topic": topic,
                     "delivery_url": webhook_url,
-                    "status": "active",
+                    "status": status,
                 }
                 if secret:
                     body["secret"] = secret
                 resp = await client.post(f"{base_url}/webhooks", auth=auth, json=body)
-                resp.raise_for_status()
+                _raise_for_status(resp)
                 webhook_id = str(resp.json().get("id") or "")
                 if not webhook_id:
                     raise RuntimeError(f"WooCommerce did not return a webhook id for {topic}")
@@ -1013,7 +1235,7 @@ class WooCommerceConnector(ConnectorBase):
                     f"{base_url}/webhooks", auth=auth,
                     params={"per_page": 100, "page": page},
                 )
-                resp.raise_for_status()
+                _raise_for_status(resp)
                 hooks = resp.json()
                 if not isinstance(hooks, list):
                     raise RuntimeError("WooCommerce returned an invalid webhook list")

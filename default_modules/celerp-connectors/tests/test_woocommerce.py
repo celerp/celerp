@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, patch
 
 from celerp.connectors.woocommerce import WooCommerceConnector, _base_url, _auth
 from celerp.connectors.base import ConnectorContext, SyncEntity
+from ui.i18n import t
 
 
 @pytest.fixture
@@ -39,12 +40,6 @@ def mock_upsert_item():
 @pytest.fixture
 def mock_upsert_order():
     with patch("celerp.connectors.upsert.upsert_order_from_woocommerce", new_callable=AsyncMock, return_value="created") as m:
-        yield m
-
-
-@pytest.fixture
-def mock_upsert_contact():
-    with patch("celerp.connectors.upsert.upsert_contact_from_woocommerce", new_callable=AsyncMock, return_value="created") as m:
         yield m
 
 
@@ -180,17 +175,30 @@ async def test_virtual_product_is_service_only_when_woo_does_not_manage_stock(
 
 
 @pytest.mark.asyncio
-async def test_sync_products_fallback_sku(woo, ctx, mock_upsert_item):
-    """When sku is blank, fall back to WC-{id}."""
+async def test_product_without_sku_not_imported(woo, ctx, mock_upsert_item):
+    """A store product with no SKU is not imported under a made-up one; it waits on a
+    person to give it a SKU in WooCommerce."""
     with respx.mock:
         respx.get("https://store.example.com/wp-json/wc/v3/products").mock(
             return_value=httpx.Response(200, json=[
-                {"id": 42, "name": "No SKU Product", "sku": "", "regular_price": "5.00"}
+                {"id": 42, "name": "No SKU Product", "sku": "", "regular_price": "5.00"},
+                {"id": 43, "name": "Shirt", "type": "variable", "sku": ""},
+                {"id": 44, "name": "Has SKU", "sku": "HAS-1", "regular_price": "1.00"},
+            ])
+        )
+        respx.get("https://store.example.com/wp-json/wc/v3/products/43/variations").mock(
+            return_value=httpx.Response(200, json=[
+                {"id": 7, "sku": " ", "attributes": [{"option": "Red"}]},
             ])
         )
         result = await woo.sync_products(ctx)
+    assert [c.kwargs["sku"] for c in mock_upsert_item.call_args_list] == ["HAS-1"]
     assert result.created == 1
-    assert mock_upsert_item.call_args.kwargs["sku"] == "WC-42"
+    no_sku = {e["id"]: e for e in result.attention}
+    assert set(no_sku) == {"42", "43:7"}
+    assert no_sku["42"]["label"] == "No SKU Product"
+    assert no_sku["42"]["reason"] == t("connectors.attention_no_sku", service="WooCommerce")
+    assert no_sku["43:7"]["label"] == "Shirt - Red"
 
 
 @pytest.mark.asyncio
@@ -521,33 +529,6 @@ async def test_sync_orders_incremental(woo, ctx, mock_upsert_order):
     assert "modified_after" in str(route.calls[0].request.url)
 
 
-# -- sync_contacts --
-
-@pytest.mark.asyncio
-async def test_sync_contacts_creates(woo, ctx, mock_upsert_contact):
-    with respx.mock:
-        respx.get("https://store.example.com/wp-json/wc/v3/customers").mock(
-            return_value=httpx.Response(200, json=[
-                {"id": 5, "email": "test@example.com", "first_name": "Alice", "last_name": "Smith"}
-            ])
-        )
-        result = await woo.sync_contacts(ctx)
-    assert result.created == 1
-    assert result.entity == SyncEntity.CONTACTS
-
-
-@pytest.mark.asyncio
-async def test_sync_contacts_incremental(woo, ctx, mock_upsert_contact):
-    since = datetime(2026, 3, 1, tzinfo=timezone.utc)
-    with respx.mock:
-        route = respx.get("https://store.example.com/wp-json/wc/v3/customers").mock(
-            return_value=httpx.Response(200, json=[])
-        )
-        await woo.sync_contacts(ctx, since=since)
-    assert "modified_after" in str(route.calls[0].request.url)
-
-
-
 # -- sync_inventory_out --
 
 @pytest.mark.asyncio
@@ -600,6 +581,7 @@ async def test_sync_inventory_out_refuses_parent_managed_variation(woo, ctx):
 @pytest.mark.asyncio
 async def test_sync_products_out_uses_nested_variation_endpoint(woo, ctx):
     item = {
+        "entity_id": "item:shirt-red",
         "sku": "SHIRT-RED", "name": "Shirt - Red", "description": "Red shirt",
         "sale_price": 19.99, "files": [],
         "woocommerce_product_id": "20", "woocommerce_variation_id": "201",
@@ -610,8 +592,10 @@ async def test_sync_products_out_uses_nested_variation_endpoint(woo, ctx):
             route = respx.put(
                 "https://store.example.com/wp-json/wc/v3/products/20/variations/201"
             ).mock(return_value=httpx.Response(200, json={}))
-            result = await woo.sync_products_out(ctx)
+            with patch.object(woo, "_save_push", new=AsyncMock()) as saved:
+                result = await woo.sync_products_out(ctx)
     assert result.updated == 1
+    saved.assert_awaited_once()
     payload = __import__("json").loads(route.calls[0].request.content)
     assert payload["sku"] == "SHIRT-RED"
     assert payload["regular_price"] == "19.99"
@@ -622,6 +606,7 @@ async def test_sync_products_out_uses_nested_variation_endpoint(woo, ctx):
 @pytest.mark.asyncio
 async def test_sync_products_out_simple_product_includes_core_fields(woo, ctx):
     item = {
+        "entity_id": "item:w-1",
         "sku": "W-1", "name": "Widget", "description": "Useful",
         "sale_price": 12.5, "files": [], "woocommerce_product_id": "10",
         "external_link": {"product_id": "10", "manage_stock": True},
@@ -631,8 +616,10 @@ async def test_sync_products_out_simple_product_includes_core_fields(woo, ctx):
             route = respx.put(
                 "https://store.example.com/wp-json/wc/v3/products/10"
             ).mock(return_value=httpx.Response(200, json={}))
-            result = await woo.sync_products_out(ctx)
+            with patch.object(woo, "_save_push", new=AsyncMock()):
+                result = await woo.sync_products_out(ctx)
     assert result.updated == 1
+    assert len(route.calls) == 1  # no images of its own: the store's are left alone
     payload = __import__("json").loads(route.calls[0].request.content)
     assert payload == {
         "sku": "W-1", "description": "Useful",
@@ -760,3 +747,263 @@ async def test_incremental_product_sync_does_not_infer_remote_deletions(woo, ctx
         await woo.sync_products(ctx, since=datetime.now(timezone.utc))
 
     reconcile.assert_not_awaited()
+
+
+# -- Per-record directions --
+
+from connector_test_support import add_item, connect, connector_session, seed_company  # noqa: E402,F401
+
+_WIDEST = {"products": "both", "stock": "outbound", "orders": "inbound", "customers": "off"}
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_publish_refused_when_products_inbound_only(woo, connector_session):
+    session = connector_session
+    cid = await seed_company(session, "InboundOnly")
+    await add_item(session, cid, "item:pub", "PUB-1")
+    await connect(session, cid, "woocommerce", {**_WIDEST, "products": "inbound"})
+    ctx = ConnectorContext(company_id=str(cid), access_token="ck:cs",
+                           store_handle="https://store.example.com")
+    respx.get("https://store.example.com/wp-json/wc/v3/products").mock(
+        return_value=httpx.Response(200, json=[]))
+    create = respx.post("https://store.example.com/wp-json/wc/v3/products")
+
+    with pytest.raises(ValueError, match="Products are set to WooCommerce to Celerp"):
+        await woo.ensure_product_link(ctx, "item:pub")
+    assert not create.called
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_publish_allowed_when_products_go_out(woo, connector_session):
+    session = connector_session
+    cid = await seed_company(session, "OutboundPublish")
+    await add_item(session, cid, "item:pub", "PUB-2")
+    await connect(session, cid, "woocommerce", {**_WIDEST, "products": "outbound"})
+    ctx = ConnectorContext(company_id=str(cid), access_token="ck:cs",
+                           store_handle="https://store.example.com")
+    respx.get("https://store.example.com/wp-json/wc/v3/products").mock(
+        return_value=httpx.Response(200, json=[]))
+    respx.post("https://store.example.com/wp-json/wc/v3/products").mock(
+        return_value=httpx.Response(201, json={"id": 501, "type": "simple", "manage_stock": True}))
+
+    assert await woo.ensure_product_link(ctx, "item:pub") == "item:pub"
+
+
+def test_customers_not_bulk_imported(woo):
+    from celerp.connectors.sync_runner import implements, sync_plan
+
+    assert not implements(woo, "contacts")
+    assert [d.value for d in woo.entity_flows["customers"].allowed()] == ["off"]
+    assert "contacts" not in sync_plan(woo, _WIDEST)
+    assert not [t for t in woo.webhook_topics(_WIDEST) if t.startswith("customer.")]
+
+
+# -- Store errors --
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_error_keeps_response_message(woo, ctx):
+    long_message = "Error getting remote image https://example.invalid/a.jpg. " + "x" * 400
+    respx.put("https://store.example.com/wp-json/wc/v3/products/7").mock(return_value=httpx.Response(
+        400, json={"code": "woocommerce_product_invalid_sku", "message": long_message}))
+    items = [{"woocommerce_product_id": "7", "sku": "S-7", "name": "Seven", "files": []}]
+    with patch("celerp.connectors.upsert.list_items_modified_since_last_sync",
+               new=AsyncMock(return_value=items)):
+        result = await woo.sync_products_out(ctx)
+    error = result.errors[0]
+    assert "woocommerce_product_invalid_sku" in error and "Error getting remote image" in error
+    assert "400" in error
+    assert len(error) < 400
+    assert "ck_testkey" not in error and "cs_testsecret" not in error
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_list_error_keeps_response_message(woo, ctx):
+    respx.get("https://store.example.com/wp-json/wc/v3/products").mock(return_value=httpx.Response(
+        401, json={"code": "woocommerce_rest_cannot_view", "message": "Sorry, you cannot list resources."}))
+    result = await woo.sync_products(ctx)
+    assert "woocommerce_rest_cannot_view" in result.errors[0]
+    assert "Sorry, you cannot list resources." in result.errors[0]
+
+
+# -- First sync --
+
+@pytest.mark.asyncio
+async def test_first_sync_orders_respect_start_date(woo, ctx, mock_upsert_order):
+    start = datetime(2026, 9, 1, tzinfo=timezone.utc)
+    with respx.mock:
+        route = respx.get("https://store.example.com/wp-json/wc/v3/orders").mock(
+            return_value=httpx.Response(200, json=[]))
+        await woo.sync_orders(ctx, orders_from=start)
+        await woo.sync_orders(ctx, since=datetime(2026, 10, 1, tzinfo=timezone.utc),
+                              orders_from=start)
+    for call in route.calls:
+        assert call.request.url.params["after"] == start.isoformat()
+
+
+# -- First sync preview --
+
+def _store_with_catalog_and_orders():
+    respx.get("https://store.example.com/wp-json/wc/v3/products").mock(return_value=httpx.Response(200, json=[
+        {"id": 1, "sku": "MATCH-1", "name": "Store shirt", "regular_price": "30.00",
+         "description": "Store words", "date_modified_gmt": "2026-09-02T10:00:00"},
+        {"id": 2, "sku": "NEW-1", "name": "New mug", "regular_price": "8.00",
+         "date_modified_gmt": "2026-09-05T10:00:00"},
+        {"id": 3, "sku": "", "name": "Untitled", "date_modified_gmt": "2026-09-01T10:00:00"},
+    ]))
+    respx.get("https://store.example.com/wp-json/wc/v3/orders").mock(return_value=httpx.Response(200, json=[
+        {"id": 10, "number": "1010", "status": "processing", "date_created_gmt": "2026-09-03T08:00:00",
+         "total": "40.00", "currency": "USD"},
+        {"id": 11, "number": "1011", "status": "completed", "date_created_gmt": "2026-09-04T08:00:00",
+         "total": "12.00", "currency": "USD"},
+        {"id": 12, "number": "1012", "status": "pending", "date_created_gmt": "2026-09-06T08:00:00",
+         "total": "5.00", "currency": "USD"},
+        {"id": 13, "number": "1013", "status": "cancelled", "date_created_gmt": "2026-09-02T08:00:00",
+         "total": "9.00", "currency": "USD"},
+    ]))
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_preview_writes_nothing(woo, connector_session):
+    from sqlalchemy import func, select
+
+    from celerp.connectors.first_sync import build_preview
+    from celerp.models.ledger import LedgerEntry
+    from celerp.models.projections import Projection
+
+    session = connector_session
+    cid = await seed_company(session, "PreviewOnly")
+    await add_item(session, cid, "item:match", "MATCH-1", name="Celerp shirt", sale_price=25.0)
+    await add_item(session, cid, "item:only", "ONLY-1", name="Celerp only")
+    await connect(session, cid, "woocommerce", _WIDEST)
+    ctx = ConnectorContext(company_id=str(cid), access_token="ck:cs", store_handle="https://store.example.com")
+    _store_with_catalog_and_orders()
+
+    async def counts():
+        return (await session.scalar(select(func.count()).select_from(LedgerEntry).where(LedgerEntry.company_id == cid)),
+                await session.scalar(select(func.max(Projection.version)).where(Projection.company_id == cid)))
+
+    before = await counts()
+    preview = await build_preview(woo, ctx, _WIDEST, datetime(2026, 9, 1, tzinfo=timezone.utc))
+    assert await counts() == before
+    assert {call.request.method for call in respx.calls} == {"GET"}
+
+    assert [(m["sku"], m["entity_id"]) for m in preview.matches] == [("MATCH-1", "item:match")]
+    assert preview.matches[0]["differences"] == {
+        "name": ("Celerp shirt", "Store shirt"), "description": (None, "Store words"),
+        "sale_price": (25.0, 30.0)}
+    assert [p["sku"] for p in preview.new] == ["NEW-1"]
+    assert [p["name"] for p in preview.no_sku] == ["Untitled"]
+    assert [p["sku"] for p in preview.to_publish] == ["ONLY-1"]
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_preview_counts_orders_and_accounting_effect(woo, connector_session):
+    from celerp.connectors.first_sync import build_preview
+
+    session = connector_session
+    cid = await seed_company(session, "PreviewOrders")
+    await connect(session, cid, "woocommerce", _WIDEST)
+    ctx = ConnectorContext(company_id=str(cid), access_token="ck:cs", store_handle="https://store.example.com")
+    _store_with_catalog_and_orders()
+    start = datetime(2026, 9, 1, tzinfo=timezone.utc)
+
+    preview = await build_preview(woo, ctx, _WIDEST, start)
+
+    order_call = next(c for c in respx.calls if c.request.url.path.endswith("/orders"))
+    assert order_call.request.url.params["after"] == start.isoformat()
+    assert preview.orders_by_status == {"processing": 1, "completed": 1, "pending": 1, "cancelled": 1}
+    assert preview.posting_orders == 2
+    assert preview.order_effect == t("connectors.preview_orders_post", n=2, service="WooCommerce")
+    # Newest first.
+    assert [o["number"] for o in preview.orders] == ["1012", "1011", "1010", "1013"]
+
+
+# -- Publishing --
+
+_OUT = {**_WIDEST, "products": "outbound"}
+_STORE = "https://store.example.com/wp-json/wc/v3"
+
+
+async def _publishing(session, company: str, sku: str, **item):
+    cid = await seed_company(session, company)
+    await add_item(session, cid, f"item:{sku.lower()}", sku, **item)
+    await connect(session, cid, "woocommerce", _OUT)
+    return cid, ConnectorContext(company_id=str(cid), access_token="ck:cs",
+                                 store_handle="https://store.example.com")
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_sku_match_needs_confirmation(woo, connector_session):
+    from celerp.connectors.woocommerce import LinkNeedsConfirmation
+    from celerp_inventory.services import external_link_for_state
+    from connector_test_support import item_state
+
+    session = connector_session
+    cid, ctx = await _publishing(session, "SkuConsent", "SM-1")
+    respx.get(f"{_STORE}/products").mock(return_value=httpx.Response(
+        200, json=[{"id": 88, "sku": "SM-1", "name": "Store mug", "type": "simple", "status": "publish"}]))
+    create = respx.post(f"{_STORE}/products")
+
+    with pytest.raises(LinkNeedsConfirmation) as asked:
+        await woo.ensure_product_link(ctx, "item:sm-1")
+    assert asked.value.remote_name == "Store mug"
+    assert str(asked.value) == t("connectors.link_confirm", name="Store mug", service="WooCommerce")
+    assert not external_link_for_state(await item_state(session, cid, "item:sm-1"), "woocommerce")
+
+    await woo.ensure_product_link(ctx, "item:sm-1", confirm_link=True)
+    assert external_link_for_state(await item_state(session, cid, "item:sm-1"), "woocommerce")["product_id"] == "88"
+    assert not create.called
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_unpublish_sets_draft_keeps_link(woo, connector_session):
+    import json as _json
+
+    from celerp_inventory.services import external_link_for_state
+    from connector_test_support import item_state
+
+    session = connector_session
+    cid, ctx = await _publishing(session, "Unpublish", "UP-1")
+    respx.get(f"{_STORE}/products").mock(return_value=httpx.Response(200, json=[]))
+    respx.post(f"{_STORE}/products").mock(return_value=httpx.Response(
+        201, json={"id": 501, "type": "simple", "status": "publish", "manage_stock": True}))
+    await woo.ensure_product_link(ctx, "item:up-1")
+
+    put = respx.put(f"{_STORE}/products/501").mock(side_effect=lambda request: httpx.Response(
+        200, json={"id": 501, "type": "simple", "status": _json.loads(request.content)["status"]}))
+    await woo.set_product_status(ctx, "item:up-1", "draft")
+    link = external_link_for_state(await item_state(session, cid, "item:up-1"), "woocommerce")
+    assert _json.loads(put.calls.last.request.content) == {"status": "draft"}
+    assert link["product_id"] == "501" and link["remote_status"] == "draft" and link["sync_enabled"]
+
+    respx.get(f"{_STORE}/products/501").mock(return_value=httpx.Response(
+        200, json={"id": 501, "type": "simple", "status": "draft", "manage_stock": True}))
+    await woo.ensure_product_link(ctx, "item:up-1")
+    assert _json.loads(put.calls.last.request.content) == {"status": "publish"}
+    link = external_link_for_state(await item_state(session, cid, "item:up-1"), "woocommerce")
+    assert link["remote_status"] == "publish"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_link_save_failure_names_created_product(woo, connector_session, monkeypatch):
+    session = connector_session
+    cid, ctx = await _publishing(session, "LinkSave", "LS-1", name="Blue lamp")
+    respx.get(f"{_STORE}/products").mock(return_value=httpx.Response(200, json=[]))
+    respx.post(f"{_STORE}/products").mock(return_value=httpx.Response(
+        201, json={"id": 77, "name": "Blue lamp", "type": "simple", "status": "publish"}))
+    monkeypatch.setattr("celerp_inventory.services.set_external_link",
+                        AsyncMock(side_effect=RuntimeError("database busy")))
+
+    with pytest.raises(ValueError) as failed:
+        await woo.ensure_product_link(ctx, "item:ls-1")
+    assert str(failed.value) == t("connectors.err_link_save_failed", name="Blue lamp",
+                                  service="WooCommerce", reason="database busy")

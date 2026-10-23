@@ -692,6 +692,612 @@
         "paid",
         "where"
       ]
+    },
+    "connectors.flow_products": {
+      "en": "Products",
+      "params": []
+    },
+    "connectors.flow_stock": {
+      "en": "Stock",
+      "params": []
+    },
+    "connectors.flow_orders": {
+      "en": "Orders",
+      "params": []
+    },
+    "connectors.flow_customers": {
+      "en": "Customers",
+      "params": []
+    },
+    "connectors.flow_invoices": {
+      "en": "Invoices",
+      "params": []
+    },
+    "connectors.flow_contacts": {
+      "en": "Contacts",
+      "params": []
+    },
+    "connectors.flow_journals": {
+      "en": "Journals",
+      "params": []
+    },
+    "connectors.flow_period_lock": {
+      "en": "Lock date",
+      "params": []
+    },
+    "connectors.flow_documents": {
+      "en": "Documents",
+      "params": []
+    },
+    "connectors.flow_attachments": {
+      "en": "Attachments",
+      "params": []
+    },
+    "connectors.flow_dir_inbound": {
+      "en": "{service} to Celerp",
+      "params": [
+        "service"
+      ]
+    },
+    "connectors.flow_dir_outbound": {
+      "en": "Celerp to {service}",
+      "params": [
+        "service"
+      ]
+    },
+    "connectors.flow_dir_both": {
+      "en": "Both ways",
+      "params": []
+    },
+    "connectors.flow_dir_off": {
+      "en": "Off",
+      "params": []
+    },
+    "connectors.err_flow_direction": {
+      "en": "{entity} cannot sync {direction}. Choose one of the directions shown for {entity}.",
+      "params": [
+        "direction",
+        "entity"
+      ]
+    },
+    "connectors.err_unknown_flow": {
+      "en": "{service} does not sync {entity}.",
+      "params": [
+        "entity",
+        "service"
+      ]
+    },
+    "connectors.err_publish_needs_outbound": {
+      "en": "WooCommerce has no product with SKU {sku}, and Products are set to {direction}, so Celerp does not publish new products. Set Products to Celerp to WooCommerce or Both ways in the connector settings to publish it.",
+      "params": [
+        "direction",
+        "sku"
+      ]
+    },
+    "connectors.err_webhook_resync": {
+      "en": "{service} did not accept the updated notifications for these settings, so nothing was changed: {detail}",
+      "params": [
+        "detail",
+        "service"
+      ]
+    },
+    "connectors.err_first_sync_needed": {
+      "en": "Review and start the first sync of {service} before syncing it.",
+      "params": [
+        "service"
+      ]
+    },
+    "connectors.products_rule": {
+      "en": "Celerp is the source for the name, description, price and images of linked products. Changes made in {service} are replaced at the next sync.",
+      "params": [
+        "service"
+      ]
+    },
+    "connectors.flow_inventory": {
+      "en": "Stock counts",
+      "params": []
+    },
+    "connectors.review_first_sync": {
+      "en": "Review first sync",
+      "params": []
+    },
+    "connectors.err_read_only_key": {
+      "en": "This API key is read-only. In WooCommerce, create a key with Read/Write permission and connect again.",
+      "params": []
+    },
+    "connectors.attention_no_sku": {
+      "en": "This product has no SKU, so it was not imported. Add a SKU in {service} to import it.",
+      "params": [
+        "service"
+      ]
+    },
+    "connectors.attention_conflict": {
+      "en": "Changed in both Celerp and {service}: {fields}. Celerp kept its values until you choose.",
+      "params": [
+        "fields",
+        "service"
+      ]
+    },
+    "connectors.conflict_field_sku": {
+      "en": "SKU",
+      "params": []
+    },
+    "connectors.conflict_field_name": {
+      "en": "Name",
+      "params": []
+    },
+    "connectors.conflict_field_description": {
+      "en": "Description",
+      "params": []
+    },
+    "connectors.conflict_field_sale_price": {
+      "en": "Price",
+      "params": []
+    },
+    "connectors.conflict_values": {
+      "en": "Celerp has {celerp}, {service} has {remote}",
+      "params": [
+        "celerp",
+        "remote",
+        "service"
+      ]
+    },
+    "connectors.conflict_keep_store": {
+      "en": "Use {service} values",
+      "params": [
+        "service"
+      ]
+    },
+    "connectors.conflict_keep_celerp": {
+      "en": "Keep Celerp values",
+      "params": []
+    },
+    "connectors.conflict_kept_store": {
+      "en": "Now uses the {service} values. Edit the item to change them back.",
+      "params": [
+        "service"
+      ]
+    },
+    "connectors.conflict_kept_celerp": {
+      "en": "Keeps the Celerp values. They are sent to {service} at the next sync when products go out.",
+      "params": [
+        "service"
+      ]
+    },
+    "connectors.err_conflict_choice": {
+      "en": "Choose to keep the store's values or Celerp's.",
+      "params": []
+    },
+    "connectors.err_conflict_gone": {
+      "en": "This product is no longer waiting on a choice, so nothing was changed. It may have been settled already.",
+      "params": []
+    },
+    "connectors.err_first_sync_done": {
+      "en": "First sync already done.",
+      "params": []
+    },
+    "connectors.first_sync_batch": {
+      "en": "{service} first sync",
+      "params": [
+        "service"
+      ]
+    },
+    "connectors.err_no_links_to_undo": {
+      "en": "There are no first sync links left to undo.",
+      "params": []
+    },
+    "connectors.connect_lapsed": {
+      "en": "Sync paused: Celerp Connect has ended. Renew Connect to resume {service} syncing; nothing is lost.",
+      "params": [
+        "service"
+      ]
+    },
+    "connectors.connect_lapsed_title": {
+      "en": "{service} sync paused",
+      "params": [
+        "service"
+      ]
+    },
+    "connectors.preview_orders_post": {
+      "en": "{n} orders in Processing or Completed will be issued as invoices and post revenue and stock.",
+      "params": [
+        "n"
+      ]
+    },
+    "connectors.preview_orders_record": {
+      "en": "{n} {service} invoices will be added to Celerp as records.",
+      "params": [
+        "n",
+        "service"
+      ]
+    },
+    "connectors.err_preview": {
+      "en": "Could not read {service} for the preview: {detail}",
+      "params": [
+        "detail",
+        "service"
+      ]
+    },
+    "connectors.preview_title": {
+      "en": "Review the first sync with {service}",
+      "params": [
+        "service"
+      ]
+    },
+    "connectors.preview_intro": {
+      "en": "Nothing has synced yet. This preview reads {service} and Celerp without changing either. Check what the first sync will do, adjust the directions or the order date, then start it.",
+      "params": [
+        "service"
+      ]
+    },
+    "connectors.preview_tab_matches": {
+      "en": "Matched by SKU ({n})",
+      "params": [
+        "n"
+      ]
+    },
+    "connectors.preview_tab_new": {
+      "en": "New to Celerp ({n})",
+      "params": [
+        "n"
+      ]
+    },
+    "connectors.preview_tab_no_sku": {
+      "en": "No SKU ({n})",
+      "params": [
+        "n"
+      ]
+    },
+    "connectors.preview_tab_problems": {
+      "en": "Cannot link ({n})",
+      "params": [
+        "n"
+      ]
+    },
+    "connectors.preview_tab_publish": {
+      "en": "Not in the store ({n})",
+      "params": [
+        "n"
+      ]
+    },
+    "connectors.preview_tab_orders": {
+      "en": "Orders ({n})",
+      "params": [
+        "n"
+      ]
+    },
+    "connectors.preview_matches_hint": {
+      "en": "These {service} products have the SKU of a Celerp product and will be linked to it.",
+      "params": [
+        "service"
+      ]
+    },
+    "connectors.preview_new_created": {
+      "en": "These {service} products are new to Celerp and will be created, with their stock booked as opening stock. The import can be undone in Import History.",
+      "params": [
+        "service"
+      ]
+    },
+    "connectors.preview_new_left": {
+      "en": "These {service} products are new to Celerp. Products are not set to come into Celerp, so they are left alone.",
+      "params": [
+        "service"
+      ]
+    },
+    "connectors.preview_problems_hint": {
+      "en": "These products cannot be linked until the reason is fixed.",
+      "params": []
+    },
+    "connectors.preview_publish_hint": {
+      "en": "These Celerp products are not in {service}. Publish them from Inventory when you want them in the store.",
+      "params": [
+        "service"
+      ]
+    },
+    "connectors.preview_none": {
+      "en": "Nothing here.",
+      "params": []
+    },
+    "connectors.preview_nothing": {
+      "en": "With these directions the first sync reads nothing. Set a direction above.",
+      "params": []
+    },
+    "connectors.preview_sku": {
+      "en": "SKU",
+      "params": []
+    },
+    "connectors.preview_celerp_name": {
+      "en": "Celerp name",
+      "params": []
+    },
+    "connectors.preview_store_name": {
+      "en": "{service} name",
+      "params": [
+        "service"
+      ]
+    },
+    "connectors.preview_differences": {
+      "en": "Differences",
+      "params": []
+    },
+    "connectors.preview_difference": {
+      "en": "{field}: Celerp {celerp}, store {remote}",
+      "params": [
+        "celerp",
+        "field",
+        "remote"
+      ]
+    },
+    "connectors.preview_changed": {
+      "en": "Last changed in {service}",
+      "params": [
+        "service"
+      ]
+    },
+    "connectors.preview_celerp_changed": {
+      "en": "Last changed in Celerp",
+      "params": []
+    },
+    "connectors.preview_price": {
+      "en": "Price",
+      "params": []
+    },
+    "connectors.preview_reason": {
+      "en": "Reason",
+      "params": []
+    },
+    "connectors.preview_order": {
+      "en": "Order",
+      "params": []
+    },
+    "connectors.preview_placed": {
+      "en": "Placed",
+      "params": []
+    },
+    "connectors.preview_total": {
+      "en": "Total",
+      "params": []
+    },
+    "connectors.preview_effect": {
+      "en": "In Celerp",
+      "params": []
+    },
+    "connectors.preview_issued": {
+      "en": "Issued as an invoice",
+      "params": []
+    },
+    "connectors.preview_recorded": {
+      "en": "Recorded",
+      "params": []
+    },
+    "connectors.preview_orders_from": {
+      "en": "Import orders placed on or after",
+      "params": []
+    },
+    "connectors.preview_orders_from_hint": {
+      "en": "Orders before this date are usually in your books already. Importing them again counts their revenue twice.",
+      "params": []
+    },
+    "connectors.preview_apply": {
+      "en": "Show",
+      "params": []
+    },
+    "connectors.preview_match_title": {
+      "en": "Products found in both",
+      "params": []
+    },
+    "connectors.preview_match_keep": {
+      "en": "Link, keep Celerp values (recommended)",
+      "params": []
+    },
+    "connectors.preview_match_take": {
+      "en": "Link, take {service} values",
+      "params": [
+        "service"
+      ]
+    },
+    "connectors.preview_start_hint": {
+      "en": "Starting links and imports as shown above and turns on {service} notifications. Afterwards the connector page shows what it did and how to undo it.",
+      "params": [
+        "service"
+      ]
+    },
+    "connectors.start_first_sync": {
+      "en": "Start first sync",
+      "params": []
+    },
+    "connectors.first_sync_title": {
+      "en": "First sync",
+      "params": []
+    },
+    "connectors.first_sync_started": {
+      "en": "Started {when}.",
+      "params": [
+        "when"
+      ]
+    },
+    "connectors.first_sync_created": {
+      "en": "It created {n} products.",
+      "params": [
+        "n"
+      ]
+    },
+    "connectors.first_sync_import_history": {
+      "en": "Undo them in Import History",
+      "params": []
+    },
+    "connectors.first_sync_links": {
+      "en": "It linked {n} products Celerp already had to {service}.",
+      "params": [
+        "n",
+        "service"
+      ]
+    },
+    "connectors.first_sync_links_undone": {
+      "en": "The {n} links it made to {service} were undone.",
+      "params": [
+        "n",
+        "service"
+      ]
+    },
+    "connectors.first_sync_undo_links": {
+      "en": "Undo links",
+      "params": []
+    },
+    "connectors.first_sync_undo_links_confirm": {
+      "en": "Detach the {n} products the first sync linked to {service}, and bring back any values it took from {service}?",
+      "params": [
+        "n",
+        "service"
+      ]
+    },
+    "connectors.first_sync_invoices": {
+      "en": "It imported {n} invoices. To reverse one, open it and void it; voiding keeps its history in your books.",
+      "params": [
+        "n"
+      ]
+    },
+    "connectors.link_confirm": {
+      "en": "{service} already has {name} with this SKU. Link it? Celerp will replace its name, description, price and images at the next sync.",
+      "params": [
+        "name",
+        "service"
+      ]
+    },
+    "connectors.err_link_save_failed": {
+      "en": "Created {name} in {service} but could not save the link: {reason}. Publish again to link it.",
+      "params": [
+        "name",
+        "reason",
+        "service"
+      ]
+    },
+    "connectors.err_not_published": {
+      "en": "This item is not published to {service}.",
+      "params": [
+        "service"
+      ]
+    },
+    "connectors.attention_image_unshared": {
+      "en": "Its images were not sent: Celerp could not create a link {service} can fetch them from. Check that Celerp Connect is active, then sync again.",
+      "params": [
+        "service"
+      ]
+    },
+    "connectors.attention_image_refused": {
+      "en": "{service} did not take its images, so they were not changed; the other changes were sent. {detail}",
+      "params": [
+        "detail",
+        "service"
+      ]
+    },
+    "inventory.col_channels": {
+      "en": "Channels",
+      "params": []
+    },
+    "inventory.channel_published": {
+      "en": "Published",
+      "params": []
+    },
+    "inventory.channel_draft": {
+      "en": "Draft in the store",
+      "params": []
+    },
+    "inventory.channel_syncing": {
+      "en": "Syncing",
+      "params": []
+    },
+    "inventory.channel_stopped": {
+      "en": "Sync stopped",
+      "params": []
+    },
+    "inventory.channel_missing": {
+      "en": "No longer in the store",
+      "params": []
+    },
+    "inventory.channel_ambiguous": {
+      "en": "Linked to more than one store product. Review the links on the item before changing them.",
+      "params": []
+    },
+    "inventory.channel_action_publish": {
+      "en": "Publish",
+      "params": []
+    },
+    "inventory.channel_action_unpublish": {
+      "en": "Unpublish",
+      "params": []
+    },
+    "inventory.channel_action_stop": {
+      "en": "Stop",
+      "params": []
+    },
+    "inventory.channel_action_resume": {
+      "en": "Resume",
+      "params": []
+    },
+    "inventory.channel_link": {
+      "en": "Link",
+      "params": []
+    },
+    "inventory.channel_link_all": {
+      "en": "Link all",
+      "params": []
+    },
+    "inventory.channel_bulk_done": {
+      "en": "{n} items updated on {service}.",
+      "params": [
+        "n",
+        "service"
+      ]
+    },
+    "inventory.channel_page_title": {
+      "en": "{name} on {service}",
+      "params": [
+        "name",
+        "service"
+      ]
+    },
+    "inventory.channel_page_hint": {
+      "en": "Publish sends this item to {service}. Unpublish sets it to draft there and keeps the link, so Publish brings it back. Stop pauses syncing in Celerp only; Resume picks it up again. Nothing is ever deleted in the store.",
+      "params": [
+        "service"
+      ]
+    },
+    "connectors.bulk_woo_publish": {
+      "en": "Publish to WooCommerce",
+      "params": []
+    },
+    "connectors.bulk_woo_unpublish": {
+      "en": "Unpublish from WooCommerce",
+      "params": []
+    },
+    "connectors.bulk_woo_stop": {
+      "en": "Stop syncing with WooCommerce",
+      "params": []
+    },
+    "connectors.bulk_woo_resume": {
+      "en": "Resume syncing with WooCommerce",
+      "params": []
+    },
+    "connectors.bulk_shopify_resume": {
+      "en": "Push to Shopify",
+      "params": []
+    },
+    "connectors.bulk_shopify_stop": {
+      "en": "Stop pushing to Shopify",
+      "params": []
+    },
+    "connectors.item_action_woocommerce": {
+      "en": "WooCommerce",
+      "params": []
+    },
+    "connectors.item_action_shopify": {
+      "en": "Shopify",
+      "params": []
+    },
+    "connectors.err_unpublish_shopify": {
+      "en": "Celerp cannot unpublish a Shopify product. Use Stop to stop pushing it to Shopify.",
+      "params": []
     }
   }
 }

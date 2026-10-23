@@ -25,8 +25,8 @@ from celerp.accounting_roles import PERIOD_LOCK_PATH
 from celerp.connectors.base import (
     INBOUND_ENTITIES, OUTBOUND_ENTITIES, ConnectorCategory, SyncFrequency,
 )
+from celerp.connectors.ownership import PRODUCT_CHANNEL_PLATFORMS
 from celerp.connectors.sync_runner import CONNECTOR_RESET_ENTITY
-from celerp.services.background import spawn_background
 
 log = logging.getLogger(__name__)
 
@@ -203,36 +203,45 @@ def _last_sync_info(run, attention: int = 0, href: str = "") -> FT:
     return Span(*joined, cls=f"connector-sync-info {status_cls}")
 
 
-def _direction_toggle(cid: str, current: str, lang: str = "en", detail: bool = False) -> FT:
-    """Three-option sync direction toggle: Inbound / Outbound / Both. On the detail
-    page (`detail`) it swaps itself; on the connectors list, the connector's card."""
-    options = [
-        ("inbound", t("connectors.dir_inbound", lang, default="Inbound")),
-        ("outbound", t("connectors.dir_outbound", lang, default="Outbound")),
-        ("both", t("connectors.dir_both", lang, default="Both")),
-    ]
-    buttons = []
-    for val, label in options:
-        active = "btn--primary" if val == current else "btn--outline"
-        buttons.append(
-            Button(
-                label,
-                cls=f"btn btn--xs {active}",
+def _entity_direction_rows(cid: str, directions: dict, lang: str = "en", detail: bool = False,
+                           error: str | None = None) -> FT:
+    """One row per kind of record the connector carries, each offering only the
+    directions this connector can sync it in. On the detail page (`detail`) the rows
+    swap themselves; on the connectors list, the connector's card. ``error`` says why
+    the last change was refused, under the rows."""
+    from celerp.connectors.base import SyncDirection, direction_label, entity_flow_label
+
+    connector = get_connector(cid)
+    rows = []
+    for key, flow in connector.entity_flows.items():
+        current = directions.get(key, SyncDirection.OFF.value)
+        rows.append(Div(
+            Span(entity_flow_label(key, lang), cls="connector-label"),
+            *[Button(
+                direction_label(connector, value, lang),
+                cls=f"btn btn--xs {'btn--primary' if value.value == current else 'btn--outline'}",
                 hx_post=f"/settings/connectors/{cid}/direction" + ("?detail=1" if detail else ""),
-                hx_vals=hx_vals({"direction": val}),
-                hx_target="closest .connector-direction-toggle" if detail else f"#connector-card-{cid}",
+                hx_vals=hx_vals({"entity": key, "direction": value.value}),
+                hx_target=f"#connector-directions-{cid}" if detail else f"#connector-card-{cid}",
                 hx_swap="outerHTML",
-            )
-        )
+            ) for value in flow.allowed()],
+            id=f"connector-flow-{cid}-{key}",
+            cls="connector-direction-toggle",
+        ))
+    products_out = directions.get("products") in (SyncDirection.OUTBOUND.value, SyncDirection.BOTH.value)
     return Div(
-        Span(t("connectors.direction", lang, default="Direction") + ": ", cls="connector-label"),
-        *buttons,
-        cls="connector-direction-toggle",
+        P(t("connectors.direction", lang), cls="settings-section-title"),
+        *rows,
+        *([P(t("connectors.products_rule", lang, service=connector.display_name), cls="settings-hint")]
+          if products_out and cid in PRODUCT_CHANNEL_PLATFORMS else []),
+        Span(error, cls="flash flash--warning") if error else Span(),
+        id=f"connector-directions-{cid}",
+        cls="connector-direction-rows",
     )
 
 
 def _frequency_select(cid: str, current: str, lang: str = "en", detail: bool = False) -> FT:
-    """Sync frequency selector for accounting connectors; swaps like _direction_toggle."""
+    """Sync frequency selector for accounting connectors; swaps like _entity_direction_rows."""
     options = [
         (SyncFrequency.MANUAL.value, t("connectors.freq_manual", lang, default="Manual")),
         (SyncFrequency.DAILY.value, t("connectors.freq_daily", lang, default="Daily")),
@@ -325,6 +334,13 @@ def _request_company_id(request: Request) -> str:
     return str(company_id)
 
 
+def get_connector(platform: str):
+    """The connector registered as ``platform``; imported where used, as the registry is
+    protected."""
+    from celerp.connectors.registry import get
+    return get(platform)
+
+
 async def _get_connector_config(company_id: str, connector: str):
     """Return company-owned state, adopting a lone legacy row safely."""
     import sqlalchemy as sa
@@ -364,8 +380,6 @@ async def _get_connector_config(company_id: str, connector: str):
 
 def _local_connector_entry(platform: str) -> dict:
     """Build display metadata for a locally known connector."""
-    from celerp.connectors.registry import get as get_connector
-
     connector = get_connector(platform)
     category = getattr(connector.category, "value", connector.category)
     return {
@@ -375,8 +389,7 @@ def _local_connector_entry(platform: str) -> dict:
         "auth_type": "api_key" if platform in ("woocommerce", "celerp") else "oauth",
         "connected": False,
         "entities": [
-            getattr(entity, "value", entity)
-            for entity in connector.supported_entities
+            key for key, flow in connector.entity_flows.items() if flow.inbound or flow.outbound
         ],
     }
 
@@ -401,14 +414,6 @@ async def _kickoff_connector_sync(company_id: str, platform: str, token: str) ->
     result = await start_connector_sync(token, platform)
     if not result.get("ok"):
         raise RuntimeError(refusal_text(result.get("detail")) or "Could not start connector sync")
-
-
-async def _autosync_once(company_id: str, platform: str, token: str) -> None:
-    """Best-effort background sync kickoff that never raises into a render path."""
-    try:
-        await _kickoff_connector_sync(company_id, platform, token)
-    except Exception:
-        log.warning("auto-sync on first view failed (non-fatal) for %s", platform, exc_info=True)
 
 
 # "How it works" steps per connector. Values are i18n keys resolved at render time
@@ -454,6 +459,12 @@ _ENTITY_LABELS: dict[str, str] = {
     "documents_out": "connectors.entity_documents_out",
     "inventory_out": "connectors.entity_inventory_out",
     "attachments_out": "connectors.entity_attachments_out",
+    # Kinds of record a connection sets a direction for.
+    "stock": "connectors.flow_stock",
+    "customers": "connectors.flow_customers",
+    "invoices": "connectors.flow_invoices",
+    "documents": "connectors.flow_documents",
+    "attachments": "connectors.flow_attachments",
 }
 
 
@@ -570,6 +581,11 @@ def _entity_status_table(runs: dict, lang: str = "en", attention: dict[str, int]
     )
 
 
+def _cell(value) -> str:
+    """A value as a table cell shows it: ``--`` when there is none."""
+    return "--" if value in (None, "") else str(value)
+
+
 def _attention_item(platform: str, entry: dict, lang: str = "en", error: str | None = None) -> FT:
     """One record waiting on a person. A change only a person can reconcile
     (it carries a signature) offers Mark reconciled, and Undo once marked; one the lock
@@ -592,6 +608,23 @@ def _attention_item(platform: str, entry: dict, lang: str = "en", error: str | N
                 cls="btn btn--xs btn--outline", hx_post=url,
                 hx_vals=hx_vals({"signature": entry["signature"]}), **common,
             ))
+    if entry.get("kind") == "conflict":
+        url = f"/settings/connectors/{platform}/attention/{record_id}/resolve"
+        common = {"hx_target": f"#{item_id}", "hx_swap": "outerHTML"}
+        service = get_connector(platform).display_name
+        action = Span(
+            Ul(*[Li(t(f"connectors.conflict_field_{key}", lang), ": ",
+                    t("connectors.conflict_values", lang, service=service,
+                      celerp=_cell(both.get("celerp")), remote=_cell(both.get("remote"))))
+                 for key, both in (entry.get("fields") or {}).items()]),
+            Button(t("connectors.conflict_keep_store", lang, service=service),
+                   cls="btn btn--xs btn--outline", hx_post=url,
+                   hx_vals=hx_vals({"keep": "store"}), **common),
+            " ",
+            Button(t("connectors.conflict_keep_celerp", lang),
+                   cls="btn btn--xs btn--outline", hx_post=url,
+                   hx_vals=hx_vals({"keep": "celerp"}), **common),
+        )
     from ui.components.shell import flash
     locked = Span(" ", t("connectors.attention_locked", lang), " ",
                   A(t("page.period_lock", lang), href=PERIOD_LOCK_PATH)) if entry.get("locked") else Span()
@@ -708,13 +741,17 @@ def _connector_detail_body(
         hx_target=f"#connector-disconnect-result-{cid}",
         hx_swap="innerHTML",
     )
-    config_rows = [_direction_toggle(cid, config.direction if config else "both", lang, detail=True)]
+    config_rows = [_entity_direction_rows(
+        cid, config.entity_directions if config else {}, lang, detail=True)]
     if category == ConnectorCategory.ACCOUNTING.value:
         config_rows.append(_frequency_select(cid, frequency, lang, detail=True))
     if deposit is not None:
         config_rows.append(_deposit_select_row(cid, deposit["current"], deposit["bank_accounts"], lang))
 
+    if config is not None and config.first_sync_at is None:
+        sync_btn = _first_sync_link(cid, lang)
     return Div(
+        _connect_lapsed_notice(cid, config, lang),
         Div(sync_btn, disconnect_btn, cls="connector-action-area"),
         Div(id=f"connector-disconnect-result-{cid}"),
         Div(*config_rows, cls="connector-connected-details"),
@@ -724,6 +761,40 @@ def _connector_detail_body(
             cls="btn btn--sm btn--outline"), cls="connector-synced-link"),
         cls="settings-card",
     )
+
+
+def _connect_lapsed_notice(cid: str, config, lang: str) -> FT:
+    """While Celerp Connect has ended a store connection is paused: say so, and how to
+    resume it, where it cannot be missed."""
+    if config is None or getattr(config, "connect_lapsed_at", None) is None:
+        return Span()
+    from ui.components.cloud_gate import commercial_cta
+    href, label = commercial_cta("subscribe", "cloud", t("btn.get_connect", lang), lang)
+    return Div(
+        P(t("connectors.connect_lapsed", lang, service=get_connector(cid).display_name)),
+        A(label, href=href, target="_blank", cls="btn btn--sm btn--primary"),
+        cls="flash flash--warning connector-entitlement-cta",
+    )
+
+
+async def _first_sync_summary(token: str, platform: str, config, lang: str) -> FT:
+    """What the connection's first sync did, once it started; the page still renders
+    when it cannot be read, saying so."""
+    if config is None or config.first_sync_at is None:
+        return ""
+    from ui.api_client import APIError, get_first_sync_summary
+    from ui.routes.settings_connectors_first_sync import first_sync_summary_card
+
+    try:
+        return first_sync_summary_card(platform, await get_first_sync_summary(token, platform), lang)
+    except APIError as exc:
+        return P(refusal_text(exc.detail) or str(exc.detail), cls="flash flash--warning")
+
+
+def _first_sync_link(cid: str, lang: str) -> FT:
+    """A connection's one next step until its first sync starts."""
+    return A(t("connectors.review_first_sync", lang), href=f"/settings/connectors/{cid}/first-sync",
+             cls="btn btn--sm btn--primary")
 
 
 def _disconnect_confirm(platform: str, lang: str, *, anyway: bool = False) -> str:
@@ -808,7 +879,8 @@ def _connector_card(
     connected_details = Span()
     if connected:
         sync_info = _last_sync_info(last_run, attention, href=f"/settings/connectors/{cid}")
-        dir_row = _direction_toggle(cid, config.direction if config else "both", lang)
+        paused = _connect_lapsed_notice(cid, config, lang)
+        dir_row = _entity_direction_rows(cid, config.entity_directions if config else {}, lang)
         freq_row = _frequency_select(cid, frequency, lang) if category == ConnectorCategory.ACCOUNTING.value else Span()
         connected_details = Div(
             Div(
@@ -816,6 +888,7 @@ def _connector_card(
                 Div(sync_info, id=f"connector-sync-info-{cid}", cls="connector-meta-value"),
                 cls="connector-meta-row",
             ),
+            paused,
             dir_row,
             freq_row,
             cls="connector-connected-details",
@@ -829,7 +902,8 @@ def _connector_card(
         )
     elif connected:
         action_area = Div(
-            A(
+            _first_sync_link(cid, lang) if config is not None and config.first_sync_at is None
+            else A(
                 t("connectors.open", lang),
                 href=f"/settings/connectors/{cid}",
                 cls="btn btn--sm btn--primary",
@@ -1130,14 +1204,6 @@ async def connectors_tab_content(lang: str, token: str, category: str, company_i
         elif c.get("connected"):
             c["connected"] = False
 
-    # Auto-sync a freshly connected store that has never synced (e.g. just returned from
-    # OAuth) so the merchant's data appears without a manual step - the activation moment.
-    # Idempotent: run_sync's in-progress row + concurrency guard prevent re-triggering on
-    # re-render, and once any run exists this branch no longer fires.
-    for c in catalog:
-        if c.get("connected") and last_runs.get(c["id"]) is None:
-            spawn_background(_autosync_once(company_id, c["id"], token))
-
     # The tab label already names the category, so the cards render directly.
     attention = {
         c["id"]: _open_attention_count(await _attention(company_id, c["id"]))
@@ -1414,6 +1480,9 @@ async def _grant_action(request: Request, grant_id: str, action):
 
 
 def setup_routes(app):
+    from ui.routes.settings_connectors_first_sync import setup_first_sync_routes
+
+    setup_first_sync_routes(app)
 
     @app.get("/settings/accountant-access")
     async def accountant_access_page(request: Request):
@@ -1634,7 +1703,9 @@ def setup_routes(app):
 
     @app.post("/settings/connectors/{platform}/direction")
     async def connector_set_direction(request: Request, platform: str):
-        """HTMX: update sync direction (inbound / outbound / both) for a connector."""
+        """HTMX: set the direction one kind of record syncs in. The API saves it and
+        refuses a direction the connector cannot sync that record in; the refusal
+        shows under the rows, which stay as they were."""
         token = _token(request)
         if not token:
             return Span(t("error.session_expired"), cls="flash flash--warning")
@@ -1643,40 +1714,36 @@ def setup_routes(app):
         if (err := _validate_platform(platform)):
             return err
 
-        from celerp.connectors.ownership import (
-            ConnectorOwnershipError,
-            lock_connector_operation,
-        )
-        from celerp.db import get_session_ctx
+        from ui.api_client import APIError, set_connector_direction
         from ui.config import RELAY_URL
-        from ui.i18n import get_lang
 
         company_id = _request_company_id(request)
         lang = get_lang(request)
         form = await request.form()
-        direction = form.get("direction")
-        if direction not in ("inbound", "outbound", "both"):
-            return Span(t("connectors.invalid_direction", lang), cls="flash flash--warning")
-
-        async with get_session_ctx() as session:
-            try:
-                config = await lock_connector_operation(
-                    session, company_id, platform, require_owner=True
-                )
-            except ConnectorOwnershipError as exc:
-                await session.rollback()
-                # Nothing is swapped, so the buttons stay; the reason is a toast.
-                from starlette.responses import Response
-                from ui.components.shell import toast_header
-                return Response(headers={**toast_header(str(exc), "error", persist=True),
-                                         "HX-Reswap": "none"})
-            config.direction = direction
-            await session.commit()
-        if request.query_params.get("detail"):
-            return _direction_toggle(platform, direction, lang, detail=True)
+        error = None
+        try:
+            saved = await set_connector_direction(
+                token, platform, str(form.get("entity") or ""), str(form.get("direction") or ""))
+        except APIError as exc:
+            saved, error = None, refusal_text(exc.detail) or str(exc.detail)
+        detail = bool(request.query_params.get("detail"))
+        if detail or error is not None:
+            # A refusal answers under the rows, wherever they are; nothing else changes.
+            if saved is None:
+                config = await _get_connector_config(company_id, platform)
+                directions = config.entity_directions if config else {}
+            else:
+                directions = saved["entity_directions"]
+            rows = _entity_direction_rows(platform, directions, lang, detail=detail, error=error)
+            if detail:
+                # A first sync's preview on the same page shows the new directions.
+                return HTMLResponse(to_xml(rows), headers={} if error else {
+                    "HX-Trigger": "connectorDirectionsChanged"})
+            return HTMLResponse(to_xml(rows), headers={
+                "HX-Retarget": f"#connector-directions-{platform}", "HX-Reswap": "outerHTML"})
 
         catalog, _fetch_err, _needs_plan = await _fetch_catalog(RELAY_URL, company_id, token=token)
-        c_data = next((c for c in catalog if c["id"] == platform), {"id": platform, "name": platform})
+        c_data = next((c for c in catalog if c["id"] == platform), _local_connector_entry(platform))
         last_runs = await _get_last_runs(company_id)
         config = await _get_connector_config(company_id, platform)
         return _connector_card(c_data, last_runs.get(platform), RELAY_URL, company_id,
@@ -1895,6 +1962,34 @@ def setup_routes(app):
             return _attention_item(platform, entry, lang, error=str(exc.detail))
         return _attention_item(platform, result["entry"], lang)
 
+    @app.post("/settings/connectors/{platform}/attention/{record_id}/resolve")
+    async def connector_resolve_conflict(request: Request, platform: str, record_id: str):
+        """HTMX: keep the store's or Celerp's values of a product changed in both, then
+        show what was kept in the entry's place."""
+        token = _token(request)
+        if not token:
+            return Span(t("error.session_expired"), cls="flash flash--warning")
+        if (r := await _check_permission(request, "manage_integrations")):
+            return r
+        if (err := _validate_platform(platform)):
+            return err
+        from ui.api_client import APIError, resolve_product_conflict
+
+        lang = get_lang(request)
+        keep = str((await request.form()).get("keep", ""))
+        try:
+            result = await resolve_product_conflict(token, platform, record_id, keep)
+        except APIError as exc:
+            entries = await _attention(_request_company_id(request), platform)
+            entry = next((e for e in entries if str(e.get("id")) == record_id), {"id": record_id})
+            return _attention_item(platform, entry, lang, error=refusal_text(exc.detail) or str(exc.detail))
+        entry = result["entry"]
+        kept = t("connectors.conflict_kept_store" if result["kept"] == "store"
+                 else "connectors.conflict_kept_celerp", lang,
+                 service=get_connector(platform).display_name)
+        return Li(Strong(str(entry.get("label", record_id))), ": ", kept,
+                  id=f"connector-attention-{platform}-{record_id}")
+
     @app.post("/settings/connectors/{platform}/attention/{record_id}/reconciled")
     async def connector_mark_reconciled(request: Request, platform: str, record_id: str):
         return await _set_reconciled(request, platform, record_id, mark=True)
@@ -1964,6 +2059,7 @@ def setup_routes(app):
             if platform == "celerp" else "",
             _connector_detail_body(c, runs, config, lang, deposit=deposit,
                                    attention=await _attention(company_id, platform)),
+            await _first_sync_summary(token, platform, config, lang),
             await _from_accountant_section(token, lang) if platform == "celerp" else "",
             _sync_accounts_card(lang) if platform == "celerp" else "",
             title=f"{name} - Celerp",
@@ -2028,7 +2124,7 @@ def setup_routes(app):
                 msg = t("connectors.no_subscription", lang)
             elif err in ("store_rejected", "store_unreachable"):
                 msg = t("connectors.connect_check_failed", lang, detail=detail.rstrip("."))
-            elif err in ("already_connected", "store_changed") and detail:
+            elif err in ("already_connected", "store_changed", "read_only_key") and detail:
                 msg = detail
             else:
                 msg = t("connectors.connect_failed", lang)
@@ -2048,13 +2144,7 @@ def setup_routes(app):
                 cls="connector-card",
             )
 
-        # Auto-sync on connect so the merchant's data appears without a manual step
-        # (the activation moment). Best-effort: a failure here doesn't block the connect.
-        try:
-            await _kickoff_connector_sync(company_id, platform, token)
-        except Exception:
-            log.warning("auto-sync on connect failed (non-fatal) for %s", platform, exc_info=True)
-
+        # Connecting starts nothing: the card's one next step is reviewing the first sync.
         last_runs = await _get_last_runs(company_id)
         return _connector_card(c_data, last_runs.get(platform), RELAY_URL, company_id,
                               config=config, lang=lang,

@@ -29,7 +29,7 @@ MAY = "2026-05-15"
 
 async def _run(company_id: str, credential: str) -> dict:
     """One run of the connector both ways; an entity that fails is kept as its error."""
-    from celerp.connectors.base import ConnectorContext, SyncDirection
+    from celerp.connectors.base import ConnectorContext
     from celerp.connectors.celerp import CelerpConnector
     from celerp.connectors.sync_runner import sync_plan
     from test_peer_two_way_sync import FIRM
@@ -37,7 +37,7 @@ async def _run(company_id: str, credential: str) -> dict:
     connector = CelerpConnector()
     ctx = ConnectorContext(company_id=company_id, store_handle=FIRM, access_token=credential)
     results = {}
-    for entity in sync_plan(connector, SyncDirection.BOTH):
+    for entity in sync_plan(connector, connector.default_directions):
         try:
             results[entity] = await getattr(connector, f"sync_{entity}")(ctx)
         except Exception as exc:  # the run reports it; the next entity still runs

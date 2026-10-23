@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 
 import sqlalchemy as sa
 
-from celerp.connectors.base import SyncDirection, SyncResult
+from celerp.connectors.base import SyncResult, entity_allowed
 from celerp.db import get_session_ctx
 from celerp.models.company import Company
 from celerp.models.connector_config import ConnectorConfig, OutboundQueue
@@ -21,17 +21,28 @@ from celerp.models.projections import Projection
 log = logging.getLogger(__name__)
 
 
-async def _pushes_outbound(session, company_id: str, connector: str) -> bool:
-    """True when the company's connector is set to send changes to the store."""
-    return await session.scalar(
-        sa.select(ConnectorConfig.id).where(
+# The push each queued entity type is part of.
+_QUEUED_SYNC = {"inventory": "inventory_out", "invoice": "invoices_out"}
+
+
+def _pushes(config: ConnectorConfig | None, entity_type: str) -> bool:
+    """True when this connection is set to send the queued entity type out."""
+    from celerp.connectors.registry import get
+
+    return config is not None and entity_allowed(
+        get(config.connector), _QUEUED_SYNC[entity_type], config.entity_directions
+    )
+
+
+async def _pushes_outbound(session, company_id: str, connector: str, entity_type: str) -> bool:
+    """True when the company's connector is set to send this entity type to the store."""
+    config = await session.scalar(
+        sa.select(ConnectorConfig).where(
             ConnectorConfig.company_id == company_id,
             ConnectorConfig.connector == connector,
-            ConnectorConfig.direction.in_([
-                SyncDirection.OUTBOUND.value, SyncDirection.BOTH.value
-            ]),
         ).limit(1)
-    ) is not None
+    )
+    return _pushes(config, entity_type)
 
 
 def _identity(link: dict) -> str:
@@ -101,7 +112,7 @@ async def enqueue_item_change(session, entry, *, previous_state: dict | None = N
     if entry.entity_type != "item" or entry.source == "connector":
         return False
     company_id = str(entry.company_id)
-    if not await _pushes_outbound(session, company_id, "woocommerce"):
+    if not await _pushes_outbound(session, company_id, "woocommerce", "inventory"):
         return False
     from celerp_inventory.services import external_link_for_state
 
@@ -287,7 +298,7 @@ async def enqueue_outbound(
     both insert; the processor keeps one row per identity. Nothing is queued
     unless the connector is set to send changes to the store."""
     async with get_session_ctx() as session:
-        if not await _pushes_outbound(session, str(company_id), connector):
+        if not await _pushes_outbound(session, str(company_id), connector, entity_type):
             return
         existing = await session.scalar(
             sa.select(OutboundQueue.id).where(
@@ -455,7 +466,7 @@ async def process_outbound_identity(
                     ConnectorConfig.connector == connector_name,
                 ).limit(1)
             )
-            if config is None or config.direction == SyncDirection.INBOUND.value:
+            if not _pushes(config, entity_type):
                 await _release_rows(
                     session, OutboundQueue.id.in_(ids),
                     message=_DISCONNECTED if config is None else

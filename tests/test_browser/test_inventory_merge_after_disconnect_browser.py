@@ -10,6 +10,7 @@ import uuid
 
 import pytest
 
+from celerp.connectors.registry import get as get_connector
 from ui.i18n import t
 
 from .test_migration_wizard_browser import _pg_admin
@@ -59,8 +60,9 @@ def test_inventory_merge_after_disconnect_browser(page, ui_server, api):
     _db("UPDATE projections SET state = CAST(%s AS json) WHERE company_id = %s AND entity_id = %s",
         json.dumps(state), company_id, a_id)
     assert not _db("SELECT 1 FROM connector_configs WHERE connector = 'shopify'")
-    _db("INSERT INTO connector_configs (company_id, connector, direction, sync_frequency, daily_sync_hour) "
-        "VALUES (%s, 'shopify', 'both', 'realtime', 2)", company_id)
+    _db("INSERT INTO connector_configs (company_id, connector, entity_directions, sync_frequency, daily_sync_hour) "
+        "VALUES (%s, 'shopify', CAST(%s AS json), 'realtime', 2)",
+        company_id, json.dumps(get_connector("shopify").default_directions))
     try:
         page.set_viewport_size({"width": 1440, "height": 1000})
         _start_merge(page, ui_server, tag, a_id)

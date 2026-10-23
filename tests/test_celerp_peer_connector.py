@@ -9,7 +9,7 @@ import pytest
 
 from celerp.connectors.base import ConnectorContext, SyncDirection
 from celerp.connectors.registry import get
-from celerp.connectors.sync_runner import supported_outbound, sync_plan
+from celerp.connectors.sync_runner import sync_plan
 from celerp.connectors import celerp as peer
 from peer_marks_support import KEY, memory_marks  # noqa: F401
 
@@ -19,9 +19,11 @@ pytestmark = pytest.mark.usefixtures("memory_marks")
 def test_celerp_sends_records_and_takes_journals_and_the_lock_date():
     connector = get("celerp")
     outbound = ["products_out", "contacts_out", "journals_out", "documents_out", "inventory_out", "attachments_out"]
-    assert supported_outbound(connector) == outbound
-    assert sync_plan(connector, SyncDirection.OUTBOUND) == outbound
-    assert sync_plan(connector, SyncDirection.INBOUND) == ["journals", "period_lock"]
+    sending = {key: "outbound" if flow.outbound else "off" for key, flow in connector.entity_flows.items()}
+    taking = {key: "inbound" if flow.inbound else "off" for key, flow in connector.entity_flows.items()}
+    assert sync_plan(connector, sending) == outbound
+    assert sync_plan(connector, taking) == ["journals", "period_lock"]
+    assert sync_plan(connector, connector.default_directions) == ["journals", "period_lock", *outbound]
 
 
 @pytest.mark.parametrize("url", [
@@ -278,7 +280,7 @@ async def test_receiving_company_refusal_is_the_attention_reason(monkeypatch):
 def test_physical_counts_depend_on_document_reconciliation():
     connector = peer.CelerpConnector()
     assert connector.outbound_dependencies["inventory_out"] == {"documents_out"}
-    plan = sync_plan(connector, SyncDirection.OUTBOUND)
+    plan = sync_plan(connector, connector.default_directions)
     assert plan.index("documents_out") < plan.index("inventory_out")
     assert plan.index("inventory_out") < plan.index("attachments_out")
 
@@ -337,8 +339,10 @@ async def test_accountant_downstream_stops_when_required_outbound_entity_failed(
     async def session():
         yield Session()
 
-    async def no_config(*args, **kwargs):
-        return None
+    async def sending_only(*args, **kwargs):
+        return SimpleNamespace(id=1, entity_directions={
+            key: "outbound" if flow.outbound else "off"
+            for key, flow in peer.CelerpConnector.entity_flows.items()})
 
     seen = []
     async def fake_run_sync(connector, ctx, entity, **kwargs):
@@ -350,7 +354,7 @@ async def test_accountant_downstream_stops_when_required_outbound_entity_failed(
         )
 
     monkeypatch.setattr(db, "get_session_ctx", session)
-    monkeypatch.setattr(ownership, "lock_connector_operation", no_config)
+    monkeypatch.setattr(ownership, "lock_connector_operation", sending_only)
     monkeypatch.setattr(sync_runner, "run_sync", fake_run_sync)
     connector = peer.CelerpConnector()
     assert connector.outbound_dependencies["documents_out"] == frozenset(
@@ -361,7 +365,6 @@ async def test_accountant_downstream_stops_when_required_outbound_entity_failed(
         connector,
         ConnectorContext(company_id=str(uuid.uuid4()), access_token="cp1.fake",
                          store_handle="https://firm.example"),
-        SyncDirection.OUTBOUND,
     )
     assert seen == ["products_out", "contacts_out", "journals_out"]
     assert len(results) == 3 and not results[0].ok

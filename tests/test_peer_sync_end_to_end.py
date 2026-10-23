@@ -117,14 +117,15 @@ def _route_to_app(monkeypatch, sent: list):
 
 async def _sync(company_id: str, credential: str) -> list:
     """One outbound run in the connector's own order; returns each entity's result."""
-    from celerp.connectors.base import ConnectorContext, SyncDirection
+    from celerp.connectors.base import ConnectorContext
     from celerp.connectors.celerp import CelerpConnector
     from celerp.connectors.sync_runner import sync_plan
 
     connector = CelerpConnector()
     ctx = ConnectorContext(company_id=company_id, store_handle=FIRM, access_token=credential)
+    sending = {key: "outbound" if flow.outbound else "off" for key, flow in connector.entity_flows.items()}
     results = []
-    for entity in sync_plan(connector, SyncDirection.OUTBOUND):
+    for entity in sync_plan(connector, sending):
         results.append(await getattr(connector, f"sync_{entity}")(ctx))
     return results
 

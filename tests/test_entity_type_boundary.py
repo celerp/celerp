@@ -141,7 +141,6 @@ async def test_a_second_birth_for_the_same_item_id_is_refused_in_language(client
 @pytest.mark.parametrize("path,body", [
     ("/items/bulk/delete", {}),
     ("/items/bulk/status", {"status": "sold"}),
-    ("/items/bulk/shopify-sync", {"enable": True}),
     ("/items/bulk/expire", {}),
     ("/items/bulk/make-available", {}),
     ("/items/bulk/revert-to-draft", {}),

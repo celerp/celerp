@@ -37,7 +37,7 @@ async def test_local_linked_item_change_enqueues_woocommerce_stock(session):
         settings={},
     ))
     session.add(ConnectorConfig(
-        company_id=str(company_id), connector="woocommerce", direction="both"
+        company_id=str(company_id), connector="woocommerce"
     ))
     item_id = "item:q"
     now = datetime.now(timezone.utc)
@@ -151,7 +151,7 @@ async def test_connector_ui_enable_enqueues_current_woocommerce_identity(session
         settings={},
     ))
     session.add(ConnectorConfig(
-        company_id=str(company_id), connector="woocommerce", direction="both"
+        company_id=str(company_id), connector="woocommerce"
     ))
     now = datetime.now(timezone.utc)
     session.add(Projection(
@@ -217,7 +217,7 @@ async def test_legacy_sku_change_invalidates_old_and_new_woocommerce_families(se
         settings={},
     ))
     session.add(ConnectorConfig(
-        company_id=str(company_id), connector="woocommerce", direction="both"
+        company_id=str(company_id), connector="woocommerce"
     ))
     now = datetime.now(timezone.utc)
     session.add_all([
@@ -306,7 +306,7 @@ async def test_explicit_catalog_child_change_enqueues_anchor_identity(session):
         settings={},
     ))
     session.add(ConnectorConfig(
-        company_id=str(company_id), connector="woocommerce", direction="both"
+        company_id=str(company_id), connector="woocommerce"
     ))
     now = datetime.now(timezone.utc)
     anchor_id = "item:anchor"
@@ -379,7 +379,6 @@ async def test_identity_backoff_applies_to_newer_rows(_db_engine):
             seed.add(ConnectorConfig(
                 company_id=str(company_id),
                 connector="woocommerce",
-                direction="both",
             ))
             seed.add_all([
                 OutboundQueue(
@@ -470,7 +469,7 @@ async def test_legacy_sku_lookup_is_case_insensitive_in_database(session):
         settings={},
     ))
     session.add(ConnectorConfig(
-        company_id=str(company_id), connector="woocommerce", direction="both"
+        company_id=str(company_id), connector="woocommerce"
     ))
     now = datetime.now(timezone.utc)
     session.add_all([

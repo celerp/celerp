@@ -12,19 +12,41 @@ from sqlalchemy.orm import Mapped, mapped_column
 from celerp.models.base import Base
 
 
+def _default_directions(context) -> dict[str, str]:
+    from celerp.connectors.registry import get
+
+    try:
+        return dict(get(context.get_current_parameters()["connector"]).default_directions)
+    except KeyError:
+        return {}
+
+
 class ConnectorConfig(Base):
-    """Per-connector, per-company sync configuration."""
+    """Per-connector, per-company sync configuration.
+
+    ``entity_directions`` sets, for each kind of record the connector carries, which
+    way it syncs (see ConnectorBase.entity_flows). ``first_sync_at`` is when a person
+    started the first sync; nothing runs on a schedule, and webhooks deliver nothing,
+    before it. ``orders_from`` is the earliest order date the connection imports.
+    ``first_sync_undo`` records what the first sync linked and created, for its undo.
+    ``connect_lapsed_at`` is set while Celerp Connect has ended and syncing is paused."""
     __tablename__ = "connector_configs"
 
     id: Mapped[int] = mapped_column(sa.Integer, primary_key=True, autoincrement=True)
     company_id: Mapped[str] = mapped_column(sa.String(64), nullable=False, index=True)
     connector: Mapped[str] = mapped_column(sa.String(32), nullable=False)
-    direction: Mapped[str] = mapped_column(sa.String(16), nullable=False, default="both")
+    entity_directions: Mapped[dict] = mapped_column(
+        sa.JSON, nullable=False, default=_default_directions
+    )
     sync_frequency: Mapped[str] = mapped_column(sa.String(16), nullable=False, default="realtime")
     daily_sync_hour: Mapped[int] = mapped_column(sa.Integer, nullable=False, default=2)
     webhook_ids_json: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
     webhook_secret: Mapped[str | None] = mapped_column(sa.String(128), nullable=True)
     last_daily_sync_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
+    first_sync_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
+    orders_from: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
+    first_sync_undo: Mapped[dict | None] = mapped_column(sa.JSON, nullable=True)
+    connect_lapsed_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
         sa.UniqueConstraint("company_id", "connector", name="uq_connector_config"),

@@ -3,6 +3,7 @@
 """Connector configuration ownership."""
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from contextlib import asynccontextmanager
@@ -265,6 +266,9 @@ async def claim_connector_ownership(
 
     created = current is None and legacy is None and create
     if current is None and create:
+        from celerp.connectors.base import restored_directions
+        from celerp.connectors.registry import get as get_connector
+
         # A company restored from a backup starts with nothing pushed outward
         # until its owner turns outbound sync on for this connector.
         current = ConnectorConfig(
@@ -275,7 +279,7 @@ async def claim_connector_ownership(
                 if default_sync_frequency is not None else {}
             ),
             **(
-                {"direction": "inbound"}
+                {"entity_directions": restored_directions(get_connector(connector))}
                 if (company.settings or {}).get("restored_backup") else {}
             ),
         )
@@ -492,8 +496,39 @@ async def release_unassigned_connector(
 
 
 # Imported records a connector reads back from the store to confirm it is the
-# store they came from.
+# store they came from, and how long the store has to answer.
 STORE_PROOF_SAMPLE = 20
+STORE_PROOF_TIMEOUT_S = 10
+
+
+async def _bound(session: AsyncSession, company_id, connector, store_handle: str) -> bool:
+    """Whether this connection is already bound to ``store_handle`` (an unlocked read)."""
+    from celerp.models.connector_source import ConnectorSource
+
+    key = (str(uuid.UUID(str(company_id))), connector.name)
+    source = await session.get(ConnectorSource, key, populate_existing=True)
+    config_id = await session.scalar(sa.select(ConnectorConfig.id).where(
+        ConnectorConfig.company_id == key[0],
+        ConnectorConfig.connector == connector.name,
+    ))
+    return (source is not None and source.store_handle == store_handle
+            and source.config_id == config_id)
+
+
+async def ensure_store_bound(company_id, connector, ctx) -> None:
+    """Bind a sync's store before it runs, outside the sync's own transaction. An
+    already bound connection is only read; a binding that is needed takes the company
+    lock in its own short transaction and commits, so no sync ever holds that lock."""
+    from celerp.db import get_session_ctx
+
+    if not connector.store_scoped_ids or not ctx.store_handle:
+        return
+    async with get_session_ctx() as session:
+        if await _bound(session, company_id, connector, ctx.store_handle):
+            return
+    async with get_session_ctx() as session:
+        await bind_connector_store(session, company_id, connector, ctx)
+        await session.commit()
 
 
 async def bind_connector_store(session: AsyncSession, company_id, connector, ctx) -> None:
@@ -513,14 +548,13 @@ async def bind_connector_store(session: AsyncSession, company_id, connector, ctx
     await _lock_active_company(session, company_id, connector.name)
     cid = uuid.UUID(str(company_id))
     key = (str(cid), connector.name)
-    source = await session.get(ConnectorSource, key, populate_existing=True)
+    if await _bound(session, company_id, connector, store_handle):
+        return
+    source = await session.get(ConnectorSource, key)
     config_id = await session.scalar(sa.select(ConnectorConfig.id).where(
         ConnectorConfig.company_id == key[0],
         ConnectorConfig.connector == connector.name,
     ))
-    if (source is not None and source.store_handle == store_handle
-            and source.config_id == config_id):
-        return
 
     async def sample(*conditions) -> list[dict]:
         return list((await session.scalars(
@@ -543,7 +577,9 @@ async def bind_connector_store(session: AsyncSession, company_id, connector, ctx
     if samples:
         origin = f" from {source.store_handle}" if source is not None else ""
         try:
-            confirmed = await connector.same_store(ctx, samples)
+            confirmed = await asyncio.wait_for(
+                connector.same_store(ctx, samples), STORE_PROOF_TIMEOUT_S
+            )
         except Exception as exc:
             raise ConnectorStoreChangedError(
                 t("error.store_unchecked", store=store_handle, service=connector.display_name)

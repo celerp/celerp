@@ -13,7 +13,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
-from celerp.connectors.base import ConnectorContext, SyncDirection, entity_allowed
+from celerp.connectors.base import ConnectorContext, SyncDirection
 from celerp.connectors.sync_runner import run_sync
 import celerp.connectors as connector_registry
 
@@ -39,6 +39,52 @@ class WebhookEvent:
     payload: dict[str, Any] | None = None
 
 
+async def _first_sync_started(company_id: str, platform: str) -> bool:
+    """Whether the company's connection to ``platform`` started its first sync; a
+    connection with no configuration is left to the sync's own checks."""
+    import sqlalchemy as sa
+
+    from celerp.db import get_session_ctx
+    from celerp.models.connector_config import ConnectorConfig
+
+    async with get_session_ctx() as session:
+        config = await session.scalar(sa.select(ConnectorConfig).where(
+            ConnectorConfig.company_id == str(company_id), ConnectorConfig.connector == platform))
+    return config is None or config.first_sync_at is not None
+
+
+async def _own_push(company_id: str, payload: dict) -> bool:
+    """Whether a WooCommerce product update is the store echoing Celerp's own push:
+    its modified time is the one the store returned for that push."""
+    import uuid
+
+    import sqlalchemy as sa
+
+    from celerp.db import get_session_ctx
+    from celerp.models.projections import Projection
+    from celerp_inventory.services import external_link_for_state
+
+    remote_id, parent_id = payload.get("id"), payload.get("parent_id")
+    modified = payload.get("date_modified_gmt")
+    if remote_id in (None, "") or not modified:
+        return False
+    is_variation = parent_id not in (None, "", 0, "0")
+    product_id = str(parent_id) if is_variation else str(remote_id)
+    async with get_session_ctx() as session:
+        rows = (await session.execute(sa.select(Projection.state).where(
+            Projection.company_id == uuid.UUID(str(company_id)),
+            Projection.entity_type == "item",
+            Projection.state["external_links"]["woocommerce"]["product_id"].as_string() == product_id,
+        ))).scalars().all()
+    for state in rows:
+        link = external_link_for_state(state or {}, "woocommerce")
+        if is_variation and str(link.get("variation_id") or "") != str(remote_id):
+            continue
+        if link.get("last_pushed_modified") == modified:
+            return True
+    return False
+
+
 def topic_to_entity(topic: str) -> str | None:
     """Map a webhook topic (e.g. 'products/update') to a sync entity name."""
     prefix = topic.split("/")[0].split(".")[0]
@@ -48,7 +94,6 @@ def topic_to_entity(topic: str) -> str | None:
 async def handle_webhook(
     event: WebhookEvent,
     ctx: ConnectorContext,
-    direction: SyncDirection = SyncDirection.BOTH,
     *,
     expected_config_id=None,
     expected_store_handle: str | None = None,
@@ -67,12 +112,20 @@ async def handle_webhook(
         return
 
     normalized_topic = event.topic.replace("/", ".").lower()
+    if not await _first_sync_started(ctx.company_id, event.platform):
+        # Accepted and left alone: nothing syncs before a person starts the first sync.
+        log.info("webhook: %s/%s before the first sync, ignored", event.platform, event.topic)
+        return
+    if (event.platform == "woocommerce" and normalized_topic == "product.updated"
+            and await _own_push(ctx.company_id, event.payload or {})):
+        log.info("webhook: WooCommerce echo of Celerp's own product update, ignored")
+        return
     if event.platform == "woocommerce" and normalized_topic == "product.deleted":
         from celerp.connectors.ownership import (
             ConnectorOwnershipError,
             lock_connector_operation,
         )
-        from celerp.connectors.relay_token import fetch_context
+        from celerp.connectors.relay_token import ConnectRequired, fetch_context
         from celerp.db import get_session_ctx
 
         try:
@@ -90,8 +143,8 @@ async def handle_webhook(
                     and config.webhook_secret != expected_webhook_secret
                 ):
                     return
-                current_direction = SyncDirection(config.direction)
-                if not entity_allowed(entity, current_direction):
+                # A deletion matters to every linked product, whichever way products sync.
+                if (config.entity_directions or {}).get("products", SyncDirection.OFF.value) == SyncDirection.OFF.value:
                     return
                 current_ctx = await fetch_context(
                     ctx.company_id,
@@ -109,7 +162,7 @@ async def handle_webhook(
                     current_ctx, event.payload or {}
                 )
                 await guard_session.commit()
-        except ConnectorOwnershipError:
+        except (ConnectorOwnershipError, ConnectRequired):
             return
         log.info(
             "webhook: processed targeted WooCommerce product deletion for %s",
@@ -121,7 +174,6 @@ async def handle_webhook(
         connector,
         ctx,
         entity,
-        direction=direction,
         # WooCommerce names only the deleted order; the reconciliation pass
         # finds every imported order the store no longer returns.
         reconcile=event.platform == "woocommerce" and normalized_topic == "order.deleted",
@@ -146,7 +198,7 @@ async def dispatch_woocommerce_webhook(
     import sqlalchemy as sa
 
     from celerp.connectors.ownership import lock_connector_key
-    from celerp.connectors.relay_token import fetch_context
+    from celerp.connectors.relay_token import ConnectRequired, fetch_context
     from celerp.db import get_session_ctx
     from celerp.models.connector_config import ConnectorConfig
 
@@ -160,7 +212,6 @@ async def dispatch_woocommerce_webhook(
             sa.select(
                 ConnectorConfig.company_id,
                 ConnectorConfig.webhook_secret,
-                ConnectorConfig.direction,
             ).where(ConnectorConfig.connector == "woocommerce")
         )
         candidates = [
@@ -177,7 +228,6 @@ async def dispatch_woocommerce_webhook(
                 sa.select(
                     ConnectorConfig.company_id,
                     ConnectorConfig.webhook_secret,
-                    ConnectorConfig.direction,
                 )
                 .where(
                     ConnectorConfig.connector == "woocommerce",
@@ -202,10 +252,13 @@ async def dispatch_woocommerce_webhook(
             ):
                 continue
 
-            ctx = await fetch_context(company_id, "woocommerce")
+            try:
+                ctx = await fetch_context(company_id, "woocommerce")
+            except ConnectRequired:
+                # Syncing is paused until Connect is renewed; the delivery is accepted.
+                return True
             if ctx is None:
                 continue
-            direction = SyncDirection(current[2] or "both")
             expected_store_handle = ctx.store_handle
 
         try:
@@ -216,7 +269,6 @@ async def dispatch_woocommerce_webhook(
         await handle_webhook(
             event,
             ctx,
-            direction,
             expected_store_handle=expected_store_handle,
             expected_webhook_secret=secret,
         )

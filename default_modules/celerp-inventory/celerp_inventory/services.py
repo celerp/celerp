@@ -9,7 +9,7 @@ import math
 import re
 import unicodedata
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from decimal import Decimal
 from types import SimpleNamespace
@@ -1061,6 +1061,22 @@ def relinked_external_sync_enabled(link: dict | None) -> bool:
     return bool(link.get("sync_enabled", True))
 
 
+@dataclass
+class ExternalImportRecord:
+    """What a connector's product import did, for its attention list and its undo.
+
+    ``created``: (entity id, ledger key of its creation) for each item it created.
+    ``linked``: {"entity_id", "restore"} for each existing item it newly linked by SKU;
+    ``restore`` holds the item's values before the store's replaced them, or None when
+    the item kept its own. ``conflicts``: {"entity_id", "fields"} for each linked item
+    whose field changed in both systems, each field with both values."""
+    created: list[tuple[str, str]] = field(default_factory=list)
+    linked: list[dict] = field(default_factory=list)
+    conflicts: list[dict] = field(default_factory=list)
+    # Ledger keys of the files pulled onto the items it created.
+    files: list[str] = field(default_factory=list)
+
+
 async def upsert_external_product(
     company_id: str,
     *,
@@ -1076,9 +1092,22 @@ async def upsert_external_product(
     link_fields: dict | None = None,
     inventory_type: str | None = None,
     sell_by: str | None = None,
-) -> tuple[str, str]:
-    """Create or link one external product without making the connector an inventory engine."""
+    link_only: bool = True,
+    create: bool = True,
+    record: ExternalImportRecord | None = None,
+    opening_operation: str | None = None,
+) -> tuple[str, str | None]:
+    """Create or link one external product without making the connector an inventory engine.
+
+    An item already linked to this product takes a field from the store only when the
+    store changed it since the link last agreed on it (celerp.services.field_fingerprints);
+    when Celerp changed it too, Celerp keeps its value and the conflict goes on
+    ``record``. An existing item matched by SKU is linked keeping its own values
+    (``link_only``), or taking the store's. With ``create`` False a product with no
+    match is left alone ("skipped"). ``opening_operation`` names the operation that
+    books a created item's opening stock (a first sync's import batch)."""
     from celerp.db import SessionLocal as AsyncSessionLocal
+    from celerp.services.field_fingerprints import LINK_KEY, fingerprint
 
     cid = uuid.UUID(str(company_id))
     product_id = str(product_id)
@@ -1135,8 +1164,17 @@ async def upsert_external_product(
         }
         if variation_id:
             incoming_link[_external_variant_key(platform)] = variation_id
+        remote_fields: dict = {"sku": sku, "name": name}
+        if description is not None:
+            remote_fields["description"] = description
+        if sale_price is not None:
+            remote_fields["sale_price"] = sale_price
+        agreed = {key: fingerprint(value) for key, value in remote_fields.items()}
 
+        if row is None and not create:
+            return "skipped", None
         if row is None:
+            incoming_link[LINK_KEY] = agreed
             await _assert_external_identity_available(
                 session, cid, platform, incoming_link
             )
@@ -1165,9 +1203,15 @@ async def upsert_external_product(
             )
             # A store product is stock held here: it records the opening inventory account,
             # and any value it carries is booked as opening stock.
-            await recognize_opening_lots(session, cid, [entity_id], None, f"connector:{identity}")
+            await recognize_opening_lots(
+                session, cid, [entity_id], None, opening_operation or f"connector:{identity}"
+            )
             await session.commit()
-            return ("noop" if getattr(entry, "was_deduped", False) else "created", entity_id)
+            if getattr(entry, "was_deduped", False):
+                return "noop", entity_id
+            if record is not None:
+                record.created.append((entity_id, event_idem))
+            return "created", entity_id
 
         entity_id = row.entity_id
         state = dict(row.state or {})
@@ -1217,33 +1261,62 @@ async def upsert_external_product(
 
         links = dict(state.get("external_links") or {})
         previous_link = external_link_for_state(state, platform)
-        links[platform] = {
-            **previous_link,
-            **incoming_link,
-            "sync_enabled": relinked_external_sync_enabled(previous_link),
-        }
         identity_only = bool(
             previous_link
             and previous_link.get("remote_deleted") is True
             and previous_link.get("sync_enabled") is False
         )
+        fingerprints = dict(previous_link.get(LINK_KEY) or {})
+        apply: dict = {}
+        if identity_only:
+            pass
+        elif selected_by_identity:
+            # A field the store changed since the link last agreed on it comes in; one
+            # Celerp changed too stays Celerp's and waits on a person.
+            conflict: dict = {}
+            for key, remote in remote_fields.items():
+                last = fingerprints.get(key)
+                if last == agreed[key]:
+                    continue
+                mine = state.get(key)
+                if last is not None and fingerprint(mine) not in (last, agreed[key]):
+                    conflict[key] = {"celerp": mine, "remote": remote}
+                    continue
+                apply[key] = remote
+                fingerprints[key] = agreed[key]
+            if conflict and record is not None:
+                record.conflicts.append({"entity_id": entity_id, "fields": conflict})
+        else:
+            # A new link by SKU: the item keeps its own values unless the store's are taken.
+            fingerprints = dict(agreed)
+            if not link_only:
+                apply = dict(remote_fields)
+            if record is not None:
+                restore = {key: state.get(key) for key in apply}
+                if "sale_price" in apply:
+                    restore["retail_price"] = state.get("retail_price")
+                record.linked.append({"entity_id": entity_id, "restore": restore or None})
+        links[platform] = {
+            **previous_link,
+            **incoming_link,
+            LINK_KEY: fingerprints,
+            "sync_enabled": relinked_external_sync_enabled(previous_link),
+        }
         desired = {"external_links": links}
-        if not identity_only:
-            if normalize_sku(state.get("sku")) != normalize_sku(sku):
+        if apply:
+            if "sku" in apply and normalize_sku(state.get("sku")) != normalize_sku(sku):
                 await stamp_catalog_family_members(
                     session, cid, entity_id, source="connector"
                 )
                 state = dict(row.state or {})
-            desired.update({"sku": sku, "name": name})
+            desired.update(apply)
+            if "sale_price" in apply:
+                desired["retail_price"] = apply["sale_price"]
+        if selected_by_identity and not identity_only:
             if inventory_type is not None:
                 desired["inventory_type"] = inventory_type
             if sell_by is not None:
                 desired["sell_by"] = sell_by
-            if description is not None:
-                desired["description"] = description
-            if sale_price is not None:
-                desired["sale_price"] = sale_price
-                desired["retail_price"] = sale_price
 
         fields_changed = {
             key: {"old": state.get(key), "new": value}
@@ -1422,6 +1495,15 @@ async def detach_external_links_for_platform(
         ):
             detached += 1
     return detached
+
+
+async def catalog_product_rows(session: AsyncSession, company_id) -> list[Projection]:
+    """Every catalog product of the company: the items a store product links to."""
+    cid = uuid.UUID(str(company_id))
+    rows = (await session.execute(select(Projection).where(
+        Projection.company_id == cid, Projection.entity_type == "item",
+    ))).scalars().all()
+    return [row for row in rows if _is_product_anchor_state(row.state or {})]
 
 
 async def resolve_catalog_anchor_for_item(session: AsyncSession, company_id, entity_id: str) -> Projection:
@@ -1724,6 +1806,16 @@ async def aggregate_sellable_quantity_for_sku(
     )
 
 
+async def connected_catalog_platforms(session: AsyncSession, company_id) -> set[str]:
+    """The platforms this company is connected to; none when connector ownership cannot
+    be read, so every link then shows as history rather than as live."""
+    from celerp.connectors import ownership
+    try:
+        return await ownership.connected_connector_platforms(session, company_id)
+    except ownership.ConnectorOwnershipError:
+        return set()
+
+
 def build_channel_states(
     rows: list[Projection], *, connected_platforms: set[str]
 ) -> dict[str, dict[str, dict]]:
@@ -1803,6 +1895,9 @@ def build_channel_states(
                 "enabled": bool(enabled),
                 "anchor_id": anchor.entity_id,
                 "remote_deleted": bool(link.get("remote_deleted")),
+                # The store's own status for the product ("publish", "draft"), when
+                # the platform has one; None when it was never read.
+                "remote_status": link.get("remote_status"),
             }
             for row in family_rows:
                 result[row.entity_id][platform] = dict(state)
@@ -2031,7 +2126,10 @@ def _reported_quantity(item) -> float | None:
     return item.quantity
 
 
-async def upsert_from_connector(company_id: str, item) -> str:
+async def upsert_from_connector(
+    company_id: str, item, *, record: ExternalImportRecord | None = None,
+    opening_operation: str | None = None,
+) -> str:
     """
     Create or update an item from a connector payload. Returns the write outcome:
     "created", "updated", or "noop" (this exact content was already applied, or the user
@@ -2041,7 +2139,9 @@ async def upsert_from_connector(company_id: str, item) -> str:
     Optional: sale_price, quantity, cost_price, description.
 
     Uses a fresh DB session so the connector does not need to manage
-    session lifecycle. Idempotency is enforced at the ledger level.
+    session lifecycle. Idempotency is enforced at the ledger level. A created item is
+    added to ``record``, its opening stock booked under ``opening_operation`` when given
+    (a first sync's import batch).
     """
     from celerp.db import SessionLocal as AsyncSessionLocal
     from celerp.events.engine import connector_upsert
@@ -2086,9 +2186,16 @@ async def upsert_from_connector(company_id: str, item) -> str:
             on_create={"status": "draft" if has_cost else "available"},
             update=functools.partial(update_item_from_connector, company_id=company_id),
         )
+        entity_id = f"item:{idem_key}"
         if outcome == "created" and not has_cost:
-            await recognize_opening_lots(session, uuid.UUID(str(company_id)), [f"item:{idem_key}"], None,
-                                         f"connector:{idem_key}")
+            await recognize_opening_lots(session, uuid.UUID(str(company_id)), [entity_id], None,
+                                         opening_operation or f"connector:{idem_key}")
+        if outcome == "created" and record is not None:
+            from celerp.models.ledger import LedgerEntry
+            created_key = await session.scalar(select(LedgerEntry.idempotency_key).where(
+                LedgerEntry.company_id == uuid.UUID(str(company_id)),
+                LedgerEntry.entity_id == entity_id, LedgerEntry.event_type == "item.created"))
+            record.created.append((entity_id, created_key))
         await session.commit()
         return outcome
 

@@ -6,6 +6,7 @@ Cloud-gated via X-Session-Token (Celerp Connect subscription required).
 
 Bundled connectors
 ------------------
+- WooCommerce  (products, stock, orders)
 - Shopify      (products, orders, contacts, inventory)
 - QuickBooks   (products, orders, contacts, invoices)
 - Xero         (products, orders, contacts, invoices)
@@ -22,8 +23,8 @@ PLUGIN_MANIFEST = {
     "version": "0.1.0",
     "display_name": "Connectors",
     "description": (
-        "Sync products, orders, and contacts from Shopify, QuickBooks, and "
-        "Xero. Requires Celerp Connect subscription."
+        "Sync products, orders, and contacts with WooCommerce, Shopify, "
+        "QuickBooks, and Xero. Requires Celerp Connect subscription."
     ),
     "license": "LicenseRef-Proprietary",
     "author": "Celerp",
@@ -51,14 +52,32 @@ PLUGIN_MANIFEST = {
              "requires_connector": "shopify", "write_permission": "adjust_inventory", "can_create": False},
         ],
         "bulk_action": [
-            {"label": "Sync with WooCommerce", "form_action": "/api/items/bulk/channel-sync/woocommerce/enable",
+            {"label": "Publish to WooCommerce", "label_key": "connectors.bulk_woo_publish",
+             "form_action": "/api/items/bulk/channel-sync/woocommerce/publish",
              "action_type": "htmx", "permission": "adjust_inventory", "requires_connector": "woocommerce"},
-            {"label": "Stop WooCommerce sync", "form_action": "/api/items/bulk/channel-sync/woocommerce/disable",
+            {"label": "Unpublish from WooCommerce", "label_key": "connectors.bulk_woo_unpublish",
+             "form_action": "/api/items/bulk/channel-sync/woocommerce/unpublish",
              "action_type": "htmx", "permission": "adjust_inventory", "requires_connector": "woocommerce"},
-            {"label": "Push to Shopify", "form_action": "/api/items/bulk/channel-sync/shopify/enable",
+            {"label": "Stop syncing with WooCommerce", "label_key": "connectors.bulk_woo_stop",
+             "form_action": "/api/items/bulk/channel-sync/woocommerce/stop",
+             "action_type": "htmx", "permission": "adjust_inventory", "requires_connector": "woocommerce"},
+            {"label": "Resume syncing with WooCommerce", "label_key": "connectors.bulk_woo_resume",
+             "form_action": "/api/items/bulk/channel-sync/woocommerce/resume",
+             "action_type": "htmx", "permission": "adjust_inventory", "requires_connector": "woocommerce"},
+            {"label": "Push to Shopify", "label_key": "connectors.bulk_shopify_resume",
+             "form_action": "/api/items/bulk/channel-sync/shopify/resume",
              "action_type": "htmx", "permission": "adjust_inventory", "requires_connector": "shopify"},
-            {"label": "Stop pushing to Shopify", "form_action": "/api/items/bulk/channel-sync/shopify/disable",
+            {"label": "Stop pushing to Shopify", "label_key": "connectors.bulk_shopify_stop",
+             "form_action": "/api/items/bulk/channel-sync/shopify/stop",
              "action_type": "htmx", "permission": "adjust_inventory", "requires_connector": "shopify"},
+        ],
+        "item_action": [
+            {"label": "WooCommerce", "label_key": "connectors.item_action_woocommerce",
+             "href_template": "/inventory/{entity_id}/channel/woocommerce",
+             "permission": "view_inventory", "requires_connector": "woocommerce"},
+            {"label": "Shopify", "label_key": "connectors.item_action_shopify",
+             "href_template": "/inventory/{entity_id}/channel/shopify",
+             "permission": "view_inventory", "requires_connector": "shopify"},
         ],
     },
 }

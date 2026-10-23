@@ -8,6 +8,8 @@ state and merge protection all read the same definition."""
 
 from __future__ import annotations
 
+import json
+
 import ast
 import asyncio
 import importlib.util
@@ -82,7 +84,7 @@ def test_product_channel_platforms_match_registry():
     from celerp.connectors.ownership import PRODUCT_CHANNEL_PLATFORMS
     writers = {
         c.name for c in registry.all_connectors()
-        if "upsert_external_product" in Path(inspect.getsourcefile(type(c))).read_text()
+        if "import_store_product" in Path(inspect.getsourcefile(type(c))).read_text()
     }
     assert set(PRODUCT_CHANNEL_PLATFORMS) == writers
     assert set(PRODUCT_CHANNEL_PLATFORMS) == _catalog_channel_ids()
@@ -114,6 +116,12 @@ EXTERNAL_LINK_CALLERS: dict[tuple[str, str], tuple[str, str]] = {
     ("celerp/connectors/woocommerce.py", "_reconcile_missing_product_links"): ("SYNC", _SYNC),
     ("celerp/connectors/woocommerce.py", "ensure_product_link"): ("SYNC", _SYNC),
     ("celerp/connectors/woocommerce.py", "handle_product_deleted"): ("SYNC", _SYNC),
+    ("celerp/connectors/woocommerce.py", "set_product_status"): ("SYNC", _SYNC),
+    ("celerp/connectors/first_sync.py", "build_preview"):
+        ("SYNC", "reads links for the first sync's preview of an owned connector"),
+    ("celerp/connectors/webhooks.py", "_own_push"): ("SYNC", _SYNC),
+    ("default_modules/celerp-connectors/celerp_connectors/routes.py", "resolve_product_conflict"):
+        ("SYNC", "acts only on an entry of the owned connector's attention list"),
     ("celerp/connectors/outbound_queue.py", "enqueue_item_change"):
         ("SYNC", "queues Woo pushes only while an outbound WooCommerce config is held by the company"),
     ("default_modules/celerp-connectors/celerp_connectors/routes.py", "set_item_sync"):
@@ -314,7 +322,8 @@ async def test_historical_identity_authorizes_no_outbound(client, session):
     r = await client.patch(f"/items/{a}", headers=h, json={"fields_changed": {"quantity": {"old": 5.0, "new": 4.0}}})
     assert r.status_code == 200, r.text
     assert await queued() == 0
-    await _connect(session, cid, "woocommerce", direction="both")
+    await _connect(session, cid, "woocommerce", entity_directions={
+        "products": "both", "stock": "outbound", "orders": "inbound", "customers": "off"})
     r = await client.patch(f"/items/{a}", headers=h, json={"fields_changed": {"quantity": {"old": 4.0, "new": 3.0}}})
     assert r.status_code == 200, r.text
     assert await queued() == 0
@@ -513,11 +522,16 @@ async def _real_links(engine, cid, eid: str, links: dict) -> None:
             {"s": json.dumps({**state, "external_links": links}), "c": cid, "e": eid})
 
 
+SHOPIFY_BOTH = json.dumps({"products": "both", "stock": "outbound", "orders": "inbound",
+                           "customers": "inbound"})
+
+
 async def _set_shopify_owner(engine, owner_id: str | None) -> None:
     await _sql(engine, "DELETE FROM connector_configs WHERE connector = 'shopify'")
     if owner_id is not None:
-        await _sql(engine, "INSERT INTO connector_configs (company_id, connector, direction, sync_frequency, "
-                           "daily_sync_hour) VALUES (:c, 'shopify', 'both', 'realtime', 2)", c=owner_id)
+        await _sql(engine, "INSERT INTO connector_configs (company_id, connector, entity_directions, "
+                           "sync_frequency, daily_sync_hour) VALUES (:c, 'shopify', CAST(:d AS json), "
+                           "'realtime', 2)", c=owner_id, d=SHOPIFY_BOTH)
 
 
 async def test_connector_state_and_catalog_state_agree(real_engine, real_client):
@@ -657,8 +671,9 @@ async def test_merge_racing_connect_rechecks_ownership(real_engine, real_client)
         try:
             await _await_advisory_waiter(real_engine, task)
             await holder.execute(text(
-                "INSERT INTO connector_configs (company_id, connector, direction, sync_frequency, daily_sync_hour) "
-                "VALUES (:c, 'shopify', 'both', 'realtime', 2)"), {"c": str(cid)})
+                "INSERT INTO connector_configs (company_id, connector, entity_directions, sync_frequency, "
+                "daily_sync_hour) VALUES (:c, 'shopify', CAST(:d AS json), 'realtime', 2)"),
+                {"c": str(cid), "d": SHOPIFY_BOTH})
             state = (await holder.execute(text(
                 "SELECT state FROM projections WHERE company_id = :c AND entity_id = :e"),
                 {"c": cid, "e": a})).scalar_one()
@@ -697,16 +712,16 @@ async def test_item_sync_route_toggles_the_shopify_sync_flag_through_the_ledger(
         return list(rows.scalars())
 
     r = await client.post("/connector-items/shopify/sync", headers=h,
-                          json={"entity_ids": [a], "enable": True})
+                          json={"entity_ids": [a], "action": "publish"})
     assert r.status_code == 200, r.text
-    assert r.json() == {"updated": 1, "enabled": True, "errors": []}
+    assert r.json() == {"updated": 1, "action": "publish", "errors": [], "needs_confirmation": []}
     assert await _flag() is True
     again = await client.post("/connector-items/shopify/sync", headers=h,
-                              json={"entity_ids": [a], "enable": True})
+                              json={"entity_ids": [a], "action": "publish"})
     assert again.json()["updated"] == 0
 
     r = await client.post("/connector-items/shopify/sync", headers=h,
-                          json={"entity_ids": [a], "enable": False})
+                          json={"entity_ids": [a], "action": "stop"})
     assert r.status_code == 200, r.text
     assert r.json()["updated"] == 1
     assert await _flag() is False

@@ -1476,5 +1476,28 @@
   },
   "PUT /manufacturing/items/{item_id}/workflow": {
     "path:item_id": "Identifier of the inventory item."
+  },
+  "GET /connector-media/{token}": {
+    "path:token": "Signed, short-lived media token naming one product image being sent to a store."
+  },
+  "GET /connectors/{connector_name}/first-sync/preview": {
+    "path:connector_name": "Connector name identifying the external integration.",
+    "query:orders_from": "Preview orders created on or after this date (YYYY-MM-DD). Today when not given."
+  },
+  "GET /connectors/{connector_name}/first-sync/summary": {
+    "path:connector_name": "Connector name identifying the external integration."
+  },
+  "POST /connectors/{connector_name}/directions": {
+    "path:connector_name": "Connector name identifying the external integration."
+  },
+  "POST /connectors/{connector_name}/first-sync": {
+    "path:connector_name": "Connector name identifying the external integration."
+  },
+  "POST /connectors/{connector_name}/first-sync/undo-links": {
+    "path:connector_name": "Connector name identifying the external integration."
+  },
+  "POST /connectors/{connector_name}/products/{record_id}/resolve": {
+    "path:connector_name": "Connector name identifying the external integration.",
+    "path:record_id": "Attention record id of the product whose conflicting store edit is being resolved."
   }
 }

@@ -997,10 +997,13 @@ def test_es_uses_usted_register():
     root = Path(__file__).resolve().parents[1]
     catalogs = [Path(_LOCALES_DIR) / "es.json",
                 *sorted(root.glob("default_modules/*/*/locales/es.json"))]
+    # A string waiting for its translation is still English ("has" is not Spanish).
+    pending = set(json.loads((root / "tests" / "i18n_pending_translation.json")
+                             .read_text(encoding="utf-8"))["keys"])
     informal = {f"{p.parent.parent.name}:{k}": hits
                 for p in catalogs
                 for k, v in json.loads(p.read_text(encoding="utf-8")).items()
-                if (hits := _tu_forms(v))}
+                if k not in pending and (hits := _tu_forms(v))}
     assert not informal, informal
 
 

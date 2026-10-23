@@ -1044,10 +1044,9 @@ def _inventory_table(
     eff_schema = _apply_edit_permission(eff_schema, role, _cs)
     if catalog_channels and any(f.get("key") == "name" for f in eff_schema):
         eff_schema = eff_schema + [{
-            "key": "_channels", "label": "Channels", "type": "text",
+            "key": "_channels", "label": "Channels", "label_key": "inventory.col_channels", "type": "text",
             "editable": False, "required": False, "options": [],
-            "visible_to_roles": [], "position": 2.5, "show_in_table": True,
-            "virtual": True, "paired_with": "name", "sortable": False,
+            "visible_to_roles": [], "position": 2.5, "show_in_table": True, "sortable": False,
         }]
     # Draft rows stay authorable: when the transform above locked the amount or cost
     # fields for this role, mark each DRAFT row so the table renders those cells
@@ -1096,7 +1095,7 @@ def _inventory_table(
             eff_schema, unit_names, units_map, category_label_map, currency=currency,
             can_edit_images=role_has_permission(_cs, role, "edit_inventory"),
             catalog_channels=catalog_channels,
-            channel_query=urlencode(_base_state({**p, "cols": visible_cols})), settings=_cs, role=role,
+            settings=_cs, role=role,
         ),
         hidden_fields=set(_PAIRED_TABLE.values()),
     )
@@ -1328,6 +1327,8 @@ async def _cost_correction_toast(token: str, results: list[dict]) -> dict:
 
 
 def setup_routes(app):
+    from ui.routes import inventory_channels
+    inventory_channels.setup_routes(app)
 
     @app.get("/inventory")
     async def inventory_page(request: Request):
@@ -3419,66 +3420,6 @@ function celerpPrintLabel(entityId, templateId) {
             return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
         updated = result.get("updated", len(entity_ids))
         return _bulk_destructive_success(request, t("inventory.bulk_reverted_draft", n=updated))
-
-    @app.post("/api/items/{entity_id}/channel-sync/{platform}/{action}")
-    async def item_channel_sync(request: Request, entity_id: str, platform: str, action: str):
-        token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
-        try:
-            result = await api.set_connector_item_sync(token, platform, [entity_id], action == "enable")
-        except APIError as e:
-            return HTMLResponse(
-                to_xml(Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")),
-                headers={"HX-Retarget": "#bulk-action-result", "HX-Reswap": "outerHTML"},
-            )
-        errors = result.get("errors") or []
-        if errors:
-            return HTMLResponse(
-                to_xml(Div(P("; ".join(errors), cls="flash flash--warning"), id="bulk-action-result")),
-                headers={"HX-Retarget": "#bulk-action-result", "HX-Reswap": "outerHTML"},
-            )
-        return await _render_inventory_fragment(token, _parse_params(request), get_lang(request), _get_role(request))
-
-    @app.post("/api/items/bulk/channel-sync/{platform}/{action}")
-    async def bulk_item_channel_sync(request: Request, platform: str, action: str):
-        token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
-        form = await request.form()
-        entity_ids = [v.strip() for v in form.getlist("selected") if v.strip()]
-        if not entity_ids:
-            return Div(P(t("flash.no_items_selected"), cls="flash flash--warning"), id="bulk-action-result")
-        try:
-            result = await api.set_connector_item_sync(token, platform, entity_ids, action == "enable")
-        except APIError as e:
-            return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
-        errors = result.get("errors") or []
-        if errors:
-            return Div(P("; ".join(errors), cls="flash flash--warning"), id="bulk-action-result")
-        return HTMLResponse(
-            to_xml(_bulk_destructive_success(request, t("inventory.bulk_verb_count", verb="Sync", n=result.get("updated", 0)))),
-            headers={"HX-Refresh": "true"},
-        )
-
-    @app.post("/api/items/bulk/shopify-sync/{action}")
-    async def bulk_item_shopify_sync(request: Request, action: str):
-        """Compatibility alias for the older Shopify-specific bulk action URL."""
-        token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
-        form = await request.form()
-        entity_ids = [v.strip() for v in form.getlist("selected") if v.strip()]
-        if not entity_ids:
-            return Div(P(t("flash.no_items_selected"), cls="flash flash--warning"), id="bulk-action-result")
-        try:
-            result = await api.set_connector_item_sync(token, "shopify", entity_ids, action == "enable")
-        except APIError as e:
-            return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
-        return _bulk_destructive_success(
-            request,
-            t("inventory.bulk_verb_count", verb="Shopify sync", n=result.get("updated", 0))
-        )
 
     @app.post("/api/items/bulk/transfer")
     async def bulk_item_transfer(request: Request):
@@ -5640,7 +5581,7 @@ def _default_sell_qty_cell(entity_id: str, item: dict, f_def: dict | None, units
     return cell
 
 
-def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None = None, units_map: dict[str, dict] | None = None, category_label_map: dict | None = None, currency: str | None = None, can_edit_images: bool = False, catalog_channels: list[dict] | None = None, channel_query: str = "", settings: dict | None = None, role: str = "owner") -> dict:
+def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None = None, units_map: dict[str, dict] | None = None, category_label_map: dict | None = None, currency: str | None = None, can_edit_images: bool = False, catalog_channels: list[dict] | None = None, settings: dict | None = None, role: str = "owner") -> dict:
     """Build cell_renderers dict for paired/triple columns.
 
     Handles:
@@ -5764,57 +5705,10 @@ def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None =
         renderers["pieces"] = _pieces_renderer
 
     if "_channels" in schema_keys and catalog_channels:
-        _channels = list(catalog_channels)
-        _settings = settings or {}
-        def _channels_renderer(entity_id: str, row: dict) -> FT:
-            state_map = row.get("_channel_state") or {}
-            buttons = []
-            for channel in _channels:
-                platform = str(channel.get("id") or "")
-                label = str(channel.get("label") or platform)
-                marker = str(channel.get("marker") or label[:1]).upper()
-                state = state_map.get(platform) or {}
-                linked = bool(state.get("linked"))
-                enabled = bool(state.get("enabled")) and not state.get("remote_deleted")
-                ambiguous = bool(state.get("ambiguous"))
-                can_write = (
-                    not ambiguous
-                    and role_has_permission(_settings, role, channel.get("write_permission") or "adjust_inventory")
-                    and (linked or bool(channel.get("can_create")))
-                )
-                cls = "catalog-channel"
-                if enabled:
-                    cls += " catalog-channel--on"
-                elif state.get("remote_deleted") or ambiguous:
-                    cls += " catalog-channel--warn"
-                else:
-                    cls += " catalog-channel--off"
-                if enabled:
-                    title, action = f"Synced with {label}. Click to stop synchronization.", "disable"
-                elif ambiguous:
-                    title, action = f"{label} link is ambiguous and cannot be changed here.", "enable"
-                elif state.get("remote_deleted"):
-                    title, action = f"The linked {label} product no longer exists.", "enable"
-                elif linked:
-                    title, action = f"Not syncing with {label}. Click to enable synchronization.", "enable"
-                elif channel.get("can_create"):
-                    title, action = f"Not linked to {label}. Click to link or publish this product.", "enable"
-                else:
-                    title, action = f"Not linked to {label}.", "enable"
-                attrs = {"type": "button", "cls": cls, "title": title, "aria_label": title}
-                if can_write:
-                    qs = f"?{channel_query}" if channel_query else ""
-                    attrs.update({
-                        "hx_post": f"/api/items/{entity_id}/channel-sync/{platform}/{action}{qs}",
-                        "hx_target": "#inventory-content", "hx_swap": "outerHTML",
-                    })
-                else:
-                    attrs["disabled"] = True
-                buttons.append(Button(marker, **attrs))
-            return Td(Div(*buttons, cls="catalog-channels"),
-                      id=f"cell-{entity_id.replace(':', '-')}-_channels",
-                      cls="cell cell--channels", data_col="_channels")
-        renderers["_channels"] = _channels_renderer
+        from ui.routes.inventory_channels import channels_cell
+        _channels, _settings = list(catalog_channels), settings or {}
+        renderers["_channels"] = lambda entity_id, row: channels_cell(
+            entity_id, _channels, row.get("_channel_state") or {}, _settings, role)
 
     if "default_sell_qty" in schema_keys:
         _dsq_def = next(f for f in schema if f["key"] == "default_sell_qty")

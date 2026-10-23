@@ -48,6 +48,37 @@ async def mint_free_share_url(doc_token: str) -> str | None:
     return None
 
 
+async def mint_media_url(company_id, file: dict) -> str | None:
+    """A short-lived public address for one product image, for a store to fetch it
+    (celerp.services.connector_media). Its file name keeps the image's extension,
+    which stores read the type from. None for a file that is not an image, or when the
+    relay cannot be reached, so the image is not sent rather than sent unreachable."""
+    from celerp.services.attachments import stored_file_name
+    from celerp.services.connector_media import media_token
+
+    token = media_token(company_id, file)
+    filename = stored_file_name(str(file.get("id") or "image"), str(file.get("mime") or ""))
+    if token is None or filename is None:
+        return None
+    from celerp.gateway.state import relay_http_url, relay_session_headers
+
+    try:
+        import httpx
+
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.post(
+                f"{relay_http_url()}/media/mint",
+                headers=relay_session_headers(),
+                json={"media_token": token, "filename": filename},
+            )
+        if resp.status_code == 200:
+            return resp.json().get("url")
+        log.warning("Relay media mint failed: %s", resp.status_code)
+    except Exception as exc:
+        log.warning("Relay media mint failed: %s", exc)
+    return None
+
+
 def ensure_running() -> None:
     """Bring the lazy relay tunnel up on demand for a free instance.
 

@@ -98,8 +98,11 @@ async def restored(real_engine, real_client, tmp_path, monkeypatch):
     a = await _item(real_client, tok, "RST-A")
     await _item(real_client, tok, "RST-B")
     await _links(real_engine, source, a, {"shopify": dict(LIVE_SHOPIFY), "woocommerce": dict(LIVE_WOO)})
-    r = await real_client.post("/items/bulk/shopify-sync", headers=auth(tok), json={"entity_ids": [a], "enable": True})
-    assert r.status_code == 200, r.text
+    await _sql(real_engine,
+               "INSERT INTO ledger (company_id, entity_id, entity_type, event_type, data, source, idempotency_key) "
+               "VALUES (:c, :e, 'item', 'shop.sync.enabled', CAST('{}' AS json), 'connector_ui', :k)",
+               c=uuid.UUID(str(source)), e=a, k=f"k-shop-sync-{a}")
+    await settle(real_engine, source)
     assert (await _projection(real_engine, source, a))[1] is True
     await _doc(real_engine, source, "doc:imported", shopify_order_id="5001")
     await _doc(real_engine, source, "doc:pushed", xero_invoice_id="X-1")
@@ -117,16 +120,28 @@ async def _claim(engine, cid, connector: str):
     from celerp.connectors.ownership import claim_connector_ownership
     async with maker(engine)() as s:
         config = await claim_connector_ownership(s, cid, connector)
-        direction = config.direction
+        directions = dict(config.entity_directions)
         await s.commit()
-    return direction
+    return directions
 
 
-async def _direction(engine, cid, connector: str) -> str | None:
+async def _direction(engine, cid, connector: str) -> dict | None:
     async with engine.connect() as conn:
-        return (await conn.execute(text(
-            "SELECT direction FROM connector_configs WHERE company_id = :c AND connector = :n"),
+        raw = (await conn.execute(text(
+            "SELECT entity_directions FROM connector_configs WHERE company_id = :c AND connector = :n"),
             {"c": str(cid), "n": connector})).scalar_one_or_none()
+    return raw if raw is None or isinstance(raw, dict) else json.loads(raw)
+
+
+# A restored company's connection brings records in and pushes nothing out.
+RESTORED_WOO = {"products": "inbound", "stock": "off", "orders": "inbound", "customers": "off"}
+RESTORED_XERO = {"products": "inbound", "invoices": "inbound", "contacts": "inbound"}
+STOCK_OUT = {**RESTORED_WOO, "stock": "outbound"}
+
+
+async def _set_directions(engine, cid, directions: dict) -> None:
+    await _sql(engine, "UPDATE connector_configs SET entity_directions = CAST(:d AS json) WHERE company_id = :c",
+               c=cid, d=json.dumps(directions))
 
 
 async def _queued(engine, cid) -> int:
@@ -179,17 +194,18 @@ async def test_restored_doc_markers_prevent_duplicate_invoice_push(restored):
 
 
 async def test_restored_company_new_connector_is_inbound(restored, real_engine):
-    assert await _claim(real_engine, restored.cid, "woocommerce") == "inbound"
-    assert await _direction(real_engine, restored.cid, "woocommerce") == "inbound"
-    assert await _claim(real_engine, restored.source, "xero") == "both"
+    assert await _claim(real_engine, restored.cid, "woocommerce") == RESTORED_WOO
+    assert await _direction(real_engine, restored.cid, "woocommerce") == RESTORED_WOO
+    assert await _claim(real_engine, restored.source, "xero") == {
+        "products": "inbound", "invoices": "both", "contacts": "inbound"}
 
 
 async def test_reconnect_does_not_reset_direction(restored, real_engine):
     """Reconnecting or refreshing a connector keeps the direction its owner chose."""
-    assert await _claim(real_engine, restored.cid, "woocommerce") == "inbound"
-    await _sql(real_engine, "UPDATE connector_configs SET direction = 'both' WHERE company_id = :c", c=restored.cid)
-    assert await _claim(real_engine, restored.cid, "woocommerce") == "both"
-    assert await _direction(real_engine, restored.cid, "woocommerce") == "both"
+    assert await _claim(real_engine, restored.cid, "woocommerce") == RESTORED_WOO
+    await _set_directions(real_engine, restored.cid, STOCK_OUT)
+    assert await _claim(real_engine, restored.cid, "woocommerce") == STOCK_OUT
+    assert await _direction(real_engine, restored.cid, "woocommerce") == STOCK_OUT
 
 
 async def test_restored_woocommerce_pushes_nothing_until_enabled(restored, real_engine, real_client):
@@ -199,7 +215,7 @@ async def test_restored_woocommerce_pushes_nothing_until_enabled(restored, real_
     assert await _queued(real_engine, restored.cid) == 0
     await enqueue_outbound(restored.cid, "woocommerce", "inventory", "77")
     assert await _queued(real_engine, restored.cid) == 0
-    await _sql(real_engine, "UPDATE connector_configs SET direction = 'both' WHERE company_id = :c", c=restored.cid)
+    await _set_directions(real_engine, restored.cid, STOCK_OUT)
     await _patch_qty(real_client, restored.tok, restored.a, 4.0, 3.0)
     assert await _queued(real_engine, restored.cid) == 1
 
@@ -230,36 +246,38 @@ async def ui(real_client, monkeypatch):
         yield c
 
 
-async def _set_direction(ui, tok: str, connector: str, value: str) -> httpx.Response:
+async def _set_direction(ui, tok: str, connector: str, entity: str, value: str) -> httpx.Response:
     ui.cookies.set("celerp_token", tok)
-    return await ui.post(f"/settings/connectors/{connector}/direction", data={"direction": value})
+    return await ui.post(f"/settings/connectors/{connector}/direction",
+                         data={"entity": entity, "direction": value})
 
 
 async def test_owner_enables_outbound_after_restore(restored, real_engine, real_client, ui):
-    assert await _claim(real_engine, restored.cid, "woocommerce") == "inbound"
-    r = await _set_direction(ui, restored.tok, "woocommerce", "sideways")
+    assert await _claim(real_engine, restored.cid, "woocommerce") == RESTORED_WOO
+    r = await _set_direction(ui, restored.tok, "woocommerce", "stock", "sideways")
     assert r.status_code == 200 and "flash--warning" in r.text, r.text
-    assert await _direction(real_engine, restored.cid, "woocommerce") == "inbound"
-    r = await _set_direction(ui, restored.tok, "woocommerce", "both")
+    assert await _direction(real_engine, restored.cid, "woocommerce") == RESTORED_WOO
+    r = await _set_direction(ui, restored.tok, "woocommerce", "stock", "outbound")
     assert r.status_code == 200, r.text
-    assert await _direction(real_engine, restored.cid, "woocommerce") == "both"
+    assert await _direction(real_engine, restored.cid, "woocommerce") == STOCK_OUT
     await _patch_qty(real_client, restored.tok, restored.a, 5.0, 4.0)
     assert await _queued(real_engine, restored.cid) == 1
 
 
 async def test_outbound_enable_requires_owner_and_is_per_connector(restored, real_engine, ui):
     from celerp.connectors.outbound_queue import enqueue_outbound
-    assert await _claim(real_engine, restored.cid, "woocommerce") == "inbound"
-    assert await _claim(real_engine, restored.cid, "xero") == "inbound"
+    assert await _claim(real_engine, restored.cid, "woocommerce") == RESTORED_WOO
+    assert await _claim(real_engine, restored.cid, "xero") == RESTORED_XERO
     viewer = await owner(real_engine, email="viewer@example.test", name="Viewer")
     await member(real_engine, viewer, uuid.UUID(restored.cid), "viewer")
-    r = await _set_direction(ui, await token(real_engine, viewer, restored.cid, "viewer"), "woocommerce", "both")
+    r = await _set_direction(ui, await token(real_engine, viewer, restored.cid, "viewer"),
+                             "woocommerce", "stock", "outbound")
     assert r.status_code in (302, 303), r.text
-    assert await _direction(real_engine, restored.cid, "woocommerce") == "inbound"
-    r = await _set_direction(ui, restored.tok, "woocommerce", "both")
+    assert await _direction(real_engine, restored.cid, "woocommerce") == RESTORED_WOO
+    r = await _set_direction(ui, restored.tok, "woocommerce", "stock", "outbound")
     assert r.status_code == 200, r.text
-    assert await _direction(real_engine, restored.cid, "woocommerce") == "both"
-    assert await _direction(real_engine, restored.cid, "xero") == "inbound"
+    assert await _direction(real_engine, restored.cid, "woocommerce") == STOCK_OUT
+    assert await _direction(real_engine, restored.cid, "xero") == RESTORED_XERO
     await enqueue_outbound(restored.cid, "xero", "invoice", "doc:native")
     assert await _queued(real_engine, restored.cid) == 0
 
@@ -396,7 +414,7 @@ async def test_reconnect_different_store_fails_closed(restored, real_engine):
 async def test_restored_company_reconnect_enqueues_no_outbound(restored, real_engine, real_client):
     """Reconnecting a restored company and relinking its products queues no push."""
     assert await _Connect(real_engine, restored.cid)() == {"ok": True}
-    assert await _direction(real_engine, restored.cid, "woocommerce") == "inbound"
+    assert await _direction(real_engine, restored.cid, "woocommerce") == RESTORED_WOO
     await _links(real_engine, restored.cid, restored.a, {"woocommerce": dict(LIVE_WOO)})
     await _patch_qty(real_client, restored.tok, restored.a, 5.0, 4.0)
     assert await _queued(real_engine, restored.cid) == 0

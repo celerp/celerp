@@ -9,9 +9,70 @@ light and to respect default-module load order.
 from __future__ import annotations
 
 
-async def upsert_item(company_id: str, item) -> str:
+async def import_store_product(
+    ctx, connector, *, key: str, label: str, result, pending: dict, first_sync=None,
+    errors: list[str], **fields,
+) -> str | None:
+    """Import one store product for a product pull and return the item it landed on,
+    or None when nothing more should happen to it (no SKU, refused, disabled, or left
+    alone by a first sync that creates nothing).
+
+    A product with no SKU is not imported and waits on a person (``pending``, keyed
+    by ``key``). A linked product changed in both systems keeps Celerp's values and
+    waits on a person with both. ``first_sync`` carries the first sync's choices and
+    collects what it did."""
+    from celerp_inventory.services import ExternalImportRecord, upsert_external_product
+    from ui.i18n import t
+
+    sku = fields.pop("sku")
+    if not sku:
+        pending[key] = {"id": key, "label": label, "kind": "no_sku",
+                        "reason": t("connectors.attention_no_sku", service=connector.display_name)}
+        result.skipped += 1
+        return None
+    record = ExternalImportRecord()
+    options = {} if first_sync is None else {
+        "link_only": first_sync.match == "keep",
+        "create": first_sync.create,
+        "opening_operation": first_sync.batch_id,
+    }
+    try:
+        outcome, entity_id = await upsert_external_product(
+            ctx.company_id, platform=connector.name, sku=sku, record=record, **options, **fields,
+        )
+    except Exception as exc:
+        errors.append(f"SKU {sku}: {exc}")
+        return None
+    result.record(outcome)
+    if first_sync is not None:
+        first_sync.record.created += record.created
+        first_sync.record.linked += record.linked
+    for conflict in record.conflicts:
+        pending[key] = {
+            "id": key, "label": label, "kind": "conflict",
+            "entity_id": conflict["entity_id"], "fields": conflict["fields"],
+            "reason": t("connectors.attention_conflict", service=connector.display_name,
+                        fields=", ".join(t(f"connectors.conflict_field_{f}")
+                                         for f in conflict["fields"])),
+        }
+    return None if outcome in ("disabled", "skipped") else entity_id
+
+
+def carried_attention(attention: list[dict] | None, pending: dict, processed: set[str]) -> list[dict]:
+    """This run's entries, then the previous run's for records this run did not read."""
+    return list(pending.values()) + [
+        entry for entry in (attention or [])
+        if entry.get("id") and str(entry["id"]) not in processed
+    ]
+
+
+async def upsert_item(company_id: str, item, first_sync=None) -> str:
+    """One accounting item, recorded on a first sync when it creates one."""
     from celerp_inventory import services as items_svc
-    return await items_svc.upsert_from_connector(company_id, item)
+    if first_sync is None:
+        return await items_svc.upsert_from_connector(company_id, item)
+    return await items_svc.upsert_from_connector(
+        company_id, item, record=first_sync.record, opening_operation=first_sync.batch_id)
 
 
 async def upsert_order_from_shopify(company_id: str, order: dict) -> str:
@@ -62,11 +123,6 @@ async def upsert_contact_from_quickbooks(company_id: str, customer: dict) -> str
 async def upsert_contact_from_xero(company_id: str, contact: dict) -> str:
     from celerp_contacts import services as contacts_svc
     return await contacts_svc.upsert_contact_from_xero(company_id, contact)
-
-
-async def upsert_contact_from_woocommerce(company_id: str, customer: dict) -> str:
-    from celerp_contacts import services as contacts_svc
-    return await contacts_svc.upsert_contact_from_woocommerce(company_id, customer)
 
 
 # -- Outbound: read the Celerp-side list of records to push ---------------------

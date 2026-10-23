@@ -28,14 +28,14 @@ PERIOD_LOCK = "/settings/accounting?tab=period-lock"
 
 async def _two_way(company_id: str, credential: str) -> dict:
     """One run of the connector both ways, in its own order; each entity's result."""
-    from celerp.connectors.base import ConnectorContext, SyncDirection
+    from celerp.connectors.base import ConnectorContext
     from celerp.connectors.celerp import CelerpConnector
     from celerp.connectors.sync_runner import sync_plan
 
     connector = CelerpConnector()
     ctx = ConnectorContext(company_id=company_id, store_handle=FIRM, access_token=credential)
     results = {}
-    for entity in sync_plan(connector, SyncDirection.BOTH):
+    for entity in sync_plan(connector, connector.default_directions):
         results[entity] = await getattr(connector, f"sync_{entity}")(ctx)
     return results
 

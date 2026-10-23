@@ -22,12 +22,12 @@ pytestmark = pytest.mark.asyncio
 
 async def _sync(client_company: str, credential: str):
     """One run of the connector through the runner, as Sync now does."""
-    from celerp.connectors.base import ConnectorContext, SyncDirection
+    from celerp.connectors.base import ConnectorContext
     from celerp.connectors.celerp import CelerpConnector
     from celerp.connectors.sync_runner import run_connector_sync
 
     ctx = ConnectorContext(company_id=client_company, store_handle=FIRM, access_token=credential)
-    return await run_connector_sync(CelerpConnector(), ctx, SyncDirection.BOTH)
+    return await run_connector_sync(CelerpConnector(), ctx)
 
 
 async def _client_screen(client_company: str) -> tuple[dict, str, str, list[dict]]:

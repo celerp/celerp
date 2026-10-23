@@ -91,3 +91,19 @@ async def test_sync_products_incremental(xero, ctx_xero, mock_upsert_item, xero_
         await xero.sync_products(ctx_xero, since=since)
     request = route.calls[0].request
     assert "If-Modified-Since" in request.headers
+
+
+@pytest.mark.asyncio
+async def test_invoices_before_the_start_date_are_not_fetched(ctx_xero, xero_relay, _db_engine):
+    from datetime import datetime, timezone
+    from unittest.mock import AsyncMock, patch
+
+    import httpx
+    import respx
+
+    from celerp.connectors.xero import XeroConnector
+
+    with respx.mock, patch("celerp.connectors.upsert.upsert_invoice_from_xero", new=AsyncMock()):
+        route = respx.get(f"{xero_relay}/Invoices").mock(return_value=httpx.Response(200, json={"Invoices": []}))
+        await XeroConnector().sync_orders(ctx_xero, orders_from=datetime(2026, 9, 1, tzinfo=timezone.utc))
+    assert route.calls[0].request.url.params["where"] == "Date>=DateTime(2026,09,01)"

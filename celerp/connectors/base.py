@@ -7,10 +7,11 @@ Each connector (Shopify, QuickBooks, Xero, ...) implements ConnectorBase.
 Connectors do NOT hold OAuth tokens directly - tokens are brokered by the
 CelERP relay service and injected at call time via ConnectorContext.
 
-Sync direction:
+Sync direction is set per kind of record (see EntityFlow):
   - INBOUND: external platform -> Celerp (pull products, orders, contacts)
   - OUTBOUND: Celerp -> external platform (push items, invoices, inventory)
   - BOTH: bidirectional
+  - OFF: not synced
 """
 from __future__ import annotations
 
@@ -18,7 +19,7 @@ import base64
 import hashlib
 import hmac
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Any
@@ -28,6 +29,7 @@ class SyncDirection(str, Enum):
     INBOUND = "inbound"
     OUTBOUND = "outbound"
     BOTH = "both"
+    OFF = "off"
 
 
 class SyncEntity(str, Enum):
@@ -64,15 +66,103 @@ OUTBOUND_ENTITIES = (
 )
 
 
-def entity_allowed(entity: str, direction: SyncDirection) -> bool:
-    """Check whether an entity sync is allowed given the configured direction."""
-    if direction == SyncDirection.BOTH:
-        return True
-    if direction == SyncDirection.INBOUND:
-        return entity in INBOUND_ENTITIES
-    if direction == SyncDirection.OUTBOUND:
-        return entity in OUTBOUND_ENTITIES
-    return False
+@dataclass(frozen=True)
+class EntityFlow:
+    """One kind of record a person sets a direction for, and the syncs that carry it
+    each way: ``inbound`` names INBOUND_ENTITIES pulled from the platform,
+    ``outbound`` names OUTBOUND_ENTITIES pushed to it."""
+    inbound: tuple[str, ...] = ()
+    outbound: tuple[str, ...] = ()
+
+    def allowed(self) -> tuple[SyncDirection, ...]:
+        """The directions this record can be set to: the ways the connector can carry
+        it, both when it carries it each way, and always Off."""
+        values = []
+        if self.inbound:
+            values.append(SyncDirection.INBOUND)
+        if self.outbound:
+            values.append(SyncDirection.OUTBOUND)
+        if self.inbound and self.outbound:
+            values.append(SyncDirection.BOTH)
+        return (*values, SyncDirection.OFF)
+
+    def widest(self) -> SyncDirection:
+        """The direction carrying the record every way the connector can."""
+        return self.allowed()[-2] if len(self.allowed()) > 1 else SyncDirection.OFF
+
+    def runs(self, direction: SyncDirection) -> tuple[str, ...]:
+        """The syncs this record runs when set to ``direction``."""
+        pulls = direction in (SyncDirection.INBOUND, SyncDirection.BOTH)
+        pushes = direction in (SyncDirection.OUTBOUND, SyncDirection.BOTH)
+        return (*(self.inbound if pulls else ()), *(self.outbound if pushes else ()))
+
+
+class DirectionError(ValueError):
+    """A record was set to a direction its connector cannot sync it in."""
+
+
+def _direction_of(directions: dict | None, key: str) -> SyncDirection:
+    try:
+        return SyncDirection((directions or {}).get(key, SyncDirection.OFF.value))
+    except ValueError:
+        return SyncDirection.OFF
+
+
+def entity_allowed(connector: "ConnectorBase", entity: str, directions: dict | None) -> bool:
+    """Whether the sync ``entity`` runs under these per-record directions."""
+    return any(
+        entity in flow.runs(_direction_of(directions, key))
+        for key, flow in connector.entity_flows.items()
+    )
+
+
+def direction_label(connector: "ConnectorBase", direction: SyncDirection, lang: str | None = None) -> str:
+    """How a direction reads to a person, naming the platform."""
+    from ui.i18n import t
+
+    return t(f"connectors.flow_dir_{direction.value}", lang, service=connector.display_name)
+
+
+def entity_flow_label(key: str, lang: str | None = None) -> str:
+    """The name a person knows one kind of record by."""
+    from ui.i18n import t
+
+    return t(f"connectors.flow_{key}", lang)
+
+
+def validate_directions(connector: "ConnectorBase", directions: dict) -> dict[str, str]:
+    """Return a full per-record direction map for ``connector``, every record named.
+    Raises DirectionError naming the record and the direction it cannot take."""
+    from ui.i18n import t
+
+    unknown = set(directions) - set(connector.entity_flows)
+    if unknown:
+        raise DirectionError(t("connectors.err_unknown_flow", entity=", ".join(sorted(unknown)),
+                               service=connector.display_name))
+    out: dict[str, str] = {}
+    for key, flow in connector.entity_flows.items():
+        raw = directions.get(key, SyncDirection.OFF.value)
+        try:
+            value = SyncDirection(raw)
+        except ValueError:
+            value = None
+        if value not in flow.allowed():
+            raise DirectionError(t(
+                "connectors.err_flow_direction", entity=entity_flow_label(key),
+                direction=direction_label(connector, value) if value else str(raw),
+                service=connector.display_name,
+            ))
+        out[key] = value.value
+    return out
+
+
+def restored_directions(connector: "ConnectorBase") -> dict[str, str]:
+    """A company restored from a backup pushes nothing outward until its owner says so:
+    each record that can come in does, the rest are Off."""
+    return {
+        key: (SyncDirection.INBOUND if flow.inbound else SyncDirection.OFF).value
+        for key, flow in connector.entity_flows.items()
+    }
 
 
 @dataclass
@@ -82,6 +172,49 @@ class ConnectorContext:
     access_token: str          # short-lived token from relay service; empty for connectors whose calls go through the relay
     store_handle: str | None = None   # e.g. Shopify myshopify domain
     extra: dict[str, Any] | None = None
+
+
+@dataclass
+class RemoteProduct:
+    """One sellable product as a platform holds it (a variation counts as its own),
+    read the same way for a sync and for the first sync's preview."""
+    key: str                    # the platform identity: product id, or "product:variation"
+    product_id: str
+    variation_id: str | None
+    sku: str                    # "" when the platform has none
+    name: str
+    description: str | None
+    price: float | None
+    modified: datetime | None   # when the platform last changed it
+    extra: dict = field(default_factory=dict)  # platform fields only its sync reads
+
+
+@dataclass
+class RemoteOrder:
+    """One order (or invoice) as a platform holds it, for the first sync's preview.
+    ``posts`` is whether importing it issues an invoice that posts revenue and stock."""
+    id: str
+    number: str
+    status: str
+    created: datetime | None
+    total: float | None
+    currency: str | None
+    posts: bool
+
+
+@dataclass
+class FirstSync:
+    """A first sync's choices for its product pass, and what that pass did.
+
+    ``match``: "keep" links products that match by SKU keeping Celerp's values,
+    "take" replaces them with the platform's. ``create``: whether products new to
+    Celerp are created (only when products come in). ``batch_id``: the import batch
+    the items it creates join, so its undo removes them with their opening stock.
+    ``record``: the celerp_inventory ExternalImportRecord the pass fills in."""
+    match: str
+    create: bool
+    batch_id: str | None
+    record: Any
 
 
 @dataclass
@@ -135,10 +268,19 @@ class ConnectorBase(ABC):
 
     name: str
     display_name: str
-    supported_entities: list[SyncEntity]
-    direction: SyncDirection
+    # The kinds of record a person sets a direction for, in the order they are shown.
+    entity_flows: dict[str, EntityFlow]
     category: ConnectorCategory
     conflict_strategy: dict[str, str]
+
+    @property
+    def default_directions(self) -> dict[str, str]:
+        """Directions a new connection starts with: every record each way the connector
+        can carry it. A connector whose first sync should start narrower overrides this."""
+        return {key: flow.widest().value for key, flow in self.entity_flows.items()}
+
+    # The document state key naming the platform record an imported invoice came from.
+    imported_doc_marker: str | None = None
 
     # Order and customer numbers are only unique within one store, so imported
     # records are tied to the store they came from (see bind_connector_store).
@@ -148,6 +290,15 @@ class ConnectorBase(ABC):
         """True when the store in ctx still holds most of these imported
         document states. Connectors that cannot tell return False."""
         return False
+
+    async def preview_products(self, ctx: ConnectorContext) -> list[RemoteProduct]:
+        """Every product the platform holds, read only. Override if products sync."""
+        return []
+
+    async def preview_orders(self, ctx: ConnectorContext, orders_from: datetime) -> list[RemoteOrder]:
+        """The platform's orders placed on or after ``orders_from``, read only.
+        Override if orders sync."""
+        return []
 
     async def before_outbound(self, ctx: ConnectorContext, now: datetime | None = None) -> None:
         """Called once before a run sends anything, e.g. to warn about expiring credentials."""
@@ -189,8 +340,11 @@ class ConnectorBase(ABC):
 
     # -- Webhook lifecycle (override for e-commerce connectors) ----------------
 
-    async def register_webhooks(self, ctx: ConnectorContext, webhook_url: str, secret: str | None = None) -> list[str]:
-        """Register platform webhooks. Returns list of webhook IDs. Override if supported."""
+    async def register_webhooks(
+        self, ctx: ConnectorContext, webhook_url: str, secret: str | None = None,
+        *, topics: list[str], status: str = "active",
+    ) -> list[str]:
+        """Register platform webhooks for ``topics``. Returns list of webhook IDs. Override if supported."""
         return []
 
     async def deregister_webhooks(
@@ -200,8 +354,8 @@ class ConnectorBase(ABC):
         Override if supported."""
         pass
 
-    def webhook_topics_for_direction(self, direction: SyncDirection) -> list[str]:
-        """Return webhook topics to register for the given direction. Override if supported."""
+    def webhook_topics(self, directions: dict) -> list[str]:
+        """The webhook topics these per-record directions listen to. Override if supported."""
         return []
 
     def validate_webhook(self, payload: bytes, signature: str, secret: str) -> bool:

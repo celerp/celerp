@@ -143,7 +143,6 @@ async def test_scheduler_reconciles_realtime_config():
 
     config = MagicMock()
     config.connector = "shopify"
-    config.direction = "both"
     config.id = 7
     config.last_daily_sync_at = None                       # never synced → due
     config.daily_sync_hour = datetime.now(timezone.utc).hour  # this hour → due
@@ -166,16 +165,9 @@ async def test_scheduler_reconciles_realtime_config():
         synced = await check_and_run_daily_syncs("co-1", token_fetcher=AsyncMock(return_value=MagicMock()))
 
     assert "shopify" in synced                # realtime connector was reconciled
-    # Regression for the "outbound never dispatched" bug: a direction=both connector
-    # must dispatch BOTH inbound entities AND the outbound (*_out) ones it implements.
-    # (Asserting await_count >= 1 — the old check — passed even when outbound was dead.)
     run_sync_mock.assert_awaited_once()
     connector, _ctx = run_sync_mock.await_args.args
-    direction = run_sync_mock.await_args.kwargs["direction"]
-    from celerp.connectors.sync_runner import sync_plan
-    entities_run = set(sync_plan(connector, direction))
-    assert {"products", "orders", "contacts"} <= entities_run
-    assert "products_out" in entities_run
+    assert connector.name == "shopify"
     lock.assert_awaited_once_with(
         sess, "co-1", "shopify", require_owner=True
     )
@@ -211,7 +203,6 @@ async def test_scheduler_does_not_stamp_reconnected_generation():
 def _sched_config(**over):
     c = MagicMock()
     c.connector = over.get("connector", "shopify")
-    c.direction = "both"
     c.id = 7
     c.last_daily_sync_at = over.get("last_daily_sync_at", None)
     c.daily_sync_hour = over.get("daily_sync_hour", datetime.now(timezone.utc).hour)
@@ -370,28 +361,33 @@ async def test_scheduler_loop_single_company_then_exits():
     ("xero", {"invoices_out"}),
 ])
 def test_supported_outbound_entities_are_detected(connector, expected):
-    """Every outbound push a connector implements must be detected so the scheduler
-    dispatches it. Regression: Shopify's inventory push was named `sync_inventory`
-    (not `sync_inventory_out`), so it was classified as the inbound 'inventory' entity
-    and never ran — this would have caught that (shopify would return {'products_out'})."""
+    """Every outbound push a connector implements is carried by one of its records, so
+    the scheduler dispatches it. Regression: Shopify's inventory push was named
+    `sync_inventory` (not `sync_inventory_out`), so it was classified as the inbound
+    'inventory' entity and never ran."""
     import celerp.connectors as registry
-    from celerp.connectors.sync_runner import supported_outbound
+    from celerp.connectors.base import OUTBOUND_ENTITIES
+    from celerp.connectors.sync_runner import implements
 
-    assert set(supported_outbound(registry.get(connector))) == expected
+    c = registry.get(connector)
+    declared = {e for flow in c.entity_flows.values() for e in flow.outbound}
+    assert declared == expected
+    assert {e for e in OUTBOUND_ENTITIES if implements(c, e)} == expected
 
 
-@pytest.mark.parametrize("direction,expected_inbound,expected_outbound", [
+@pytest.mark.parametrize("products,expected_inbound,expected_outbound", [
     ("inbound", True, False),
     ("outbound", False, True),
     ("both", True, True),
+    ("off", False, False),
 ])
-def test_sync_plan_honours_direction(direction, expected_inbound, expected_outbound):
+def test_sync_plan_honours_direction(products, expected_inbound, expected_outbound):
     import celerp.connectors as registry
-    from celerp.connectors.base import SyncDirection
     from celerp.connectors.sync_runner import sync_plan
-    plan = sync_plan(registry.get("woocommerce"), SyncDirection(direction))
+    plan = sync_plan(registry.get("woocommerce"),
+                     {"products": products, "stock": "off", "orders": "off", "customers": "off"})
     assert ("products" in plan) is expected_inbound
-    assert ("inventory_out" in plan) is expected_outbound
+    assert ("products_out" in plan) is expected_outbound
 
 
 @pytest.mark.asyncio

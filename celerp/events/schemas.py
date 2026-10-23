@@ -1366,6 +1366,8 @@ class EntityFileAttached(BaseModel):
     size: int
     document_tag: str | None = None
     description: str | None = None
+    # The platform file it was pulled from: {platform: {"id", "src", "store"}}.
+    remote: dict | None = None
 
 
 class EntityFileTagged(BaseModel):

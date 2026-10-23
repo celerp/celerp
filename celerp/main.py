@@ -861,13 +861,8 @@ if _connectors_pkg.exists() and str(_connectors_pkg) not in sys.path:
     sys.path.insert(0, str(_connectors_pkg))
 from celerp_connectors.routes import setup_api_routes as _setup_connectors  # noqa: E402
 _setup_connectors(app)
-# Connectors' marketplace projection handler is registered directly (its handler lives in the kernel).
-from celerp.modules.slots import register as _register_slot  # noqa: E402
-_register_slot("projection_handler", {
-    "prefix": "mp.",
-    "handler": "celerp.projections.handlers.marketplace:apply_marketplace_event",
-    "_module": "celerp-connectors",
-})
+from celerp.modules.loader import register_core_folded_slots  # noqa: E402
+register_core_folded_slots(_Path(__file__).parent.parent / "default_modules")
 
 # Debug router — only active when CELERP_DEBUG=1 (never in production by default)
 if _os.environ.get("CELERP_DEBUG") == "1":

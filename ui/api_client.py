@@ -2754,18 +2754,16 @@ async def revert_items_to_draft(token: str, entity_ids: list[str], reason: str |
         return _raise(await c.post("/items/bulk/revert-to-draft", json={"entity_ids": entity_ids, "reason": reason})).json()
 
 
-async def bulk_shopify_sync(token: str, entity_ids: list[str], enable: bool) -> dict:
-    async with _api_client(token) as c:
-        return _raise(await c.post("/items/bulk/shopify-sync", json={"entity_ids": entity_ids, "enable": enable})).json()
-
-
 async def set_connector_item_sync(
-    token: str, platform: str, entity_ids: list[str], enable: bool
+    token: str, platform: str, entity_ids: list[str], action: str,
+    confirm_link: list[str] | None = None,
 ) -> dict:
-    async with _api_client(token) as c:
+    """Publish, unpublish, stop or resume items on a store; ``confirm_link`` names the
+    items whose existing store product a person agreed to link."""
+    async with _api_client(token, timeout=60.0) as c:
         return _raise(await c.post(
             f"/connector-items/{platform}/sync",
-            json={"entity_ids": entity_ids, "enable": enable},
+            json={"entity_ids": entity_ids, "action": action, "confirm_link": confirm_link or []},
         )).json()
 
 
@@ -3921,6 +3919,51 @@ async def set_woocommerce_order_reconciled(
         if signature is None:
             return _raise(await c.delete(path)).json()
         return _raise(await c.post(path, json={"signature": signature})).json()
+
+
+async def set_connector_direction(token: str, platform: str, entity: str, direction: str) -> dict:
+    """Set the direction one kind of record syncs in; the API refuses one the connector
+    cannot sync it in (422) and returns the connection's directions."""
+    async with _api_client(token) as c:
+        return _raise(await c.post(
+            f"/connectors/{platform}/directions", json={"entity": entity, "direction": direction},
+        )).json()
+
+
+async def resolve_product_conflict(token: str, platform: str, record_id: str, keep: str) -> dict:
+    """Keep the store's ("store") or Celerp's ("celerp") values of a product changed in both."""
+    async with _api_client(token) as c:
+        return _raise(await c.post(
+            f"/connectors/{platform}/products/{record_id}/resolve", json={"keep": keep},
+        )).json()
+
+
+async def get_first_sync_preview(token: str, platform: str, orders_from: str | None) -> dict:
+    """What starting the connection's first sync would do (read only on both sides)."""
+    params = {"orders_from": orders_from} if orders_from else None
+    async with _api_client(token, timeout=60.0) as c:
+        return _raise(await c.get(f"/connectors/{platform}/first-sync/preview", params=params)).json()
+
+
+async def start_first_sync(token: str, platform: str, directions: dict, match: str,
+                           orders_from: str | None) -> dict:
+    """Start the connection's first sync with the choices made on its preview."""
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/connectors/{platform}/first-sync", json={
+            "directions": directions, "match": match, "orders_from": orders_from or None,
+        })).json()
+
+
+async def get_first_sync_summary(token: str, platform: str) -> dict:
+    """What the first sync did and what of it can be undone."""
+    async with _api_client(token) as c:
+        return _raise(await c.get(f"/connectors/{platform}/first-sync/summary")).json()
+
+
+async def undo_first_sync_links(token: str, platform: str) -> dict:
+    """Undo the links the first sync made to items Celerp already had."""
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/connectors/{platform}/first-sync/undo-links")).json()
 
 
 async def start_connector_sync(token: str, platform: str) -> dict:
