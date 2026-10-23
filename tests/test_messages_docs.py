@@ -92,10 +92,11 @@ def test_shipment_values_name_the_bad_value():
 
 @pytest.mark.parametrize(("entries", "named"), [(["bad"], "bad"), ([{"code": "VAT", "rate": "seven"}], "VAT")])
 def test_damaged_tax_says_which_tax_and_where_to_fix_it(entries, named):
-    from celerp_docs.doc_money import _recompute_tax_applications
+    from celerp_docs.doc_money import document_money
 
+    line = {"quantity": 1, "unit_price": 100}
     with pytest.raises(HTTPException) as exc:
-        _recompute_tax_applications(entries, 100, "USD")
+        document_money({"doc_taxes": entries}, [line], "USD", keep_unrated_tax=True)
     assert exc.value.detail == t("documents.err_tax_unreadable", "en", tax=named)
 
 
