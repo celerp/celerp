@@ -174,9 +174,11 @@ def json_value(text: str):
 
 def json_size(text: str) -> int:
     """At most what decoding `text` (json_value) holds at once: the decoder's own, twice the text,
-    for the strings copied out of it, and JSON_VALUE_BYTES for each value it can hold, one more
-    than its commas, colons and opening brackets."""
-    return JSON_DECODER_BYTES + 2 * sys.getsizeof(text) + JSON_VALUE_BYTES * (1 + sum(map(text.count, ",:[{")))
+    for the strings copied out of it, at four bytes a character when it holds an escape (one
+    escaped emoji makes the whole decoded string that wide), and JSON_VALUE_BYTES for each value
+    it can hold, one more than its commas, colons and opening brackets."""
+    return (JSON_DECODER_BYTES + 2 * text_size([text], width=4 if "\\u" in text else 1)
+            + JSON_VALUE_BYTES * (1 + sum(map(text.count, ",:[{"))))
 
 
 def translation(value: str) -> str | None:

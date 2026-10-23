@@ -253,6 +253,10 @@ _SWOLLEN_JSON = {
     "names": "{" + ",".join(f'"{i:x}": ""' for i in range(500_000)) + "}",
     "lists": '{"en_US": "x", "k": [' + ",".join(["[]"] * 1_000_000) + "]}",
     "objects": '{"en_US": "x", "k": [' + ",".join(["{}"] * 1_000_000) + "]}",
+    # ASCII text whose one escape decodes the whole string to four or two bytes a character
+    "an emoji escaped": '{"en_US": "\\ud83d\\ude00' + "a" * 2_000_000 + '"}',
+    "a Thai letter escaped": '{"en_US": "\\u0e01' + "a" * 2_000_000 + '"}',
+    "a key with an emoji escaped": '{"\\ud83d\\ude00' + "a" * 2_000_000 + '": 100}',
 }
 
 
