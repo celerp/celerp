@@ -448,6 +448,19 @@ def _ensure_slots() -> None:
             register(slot, contrib)
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _one_current_event_loop():
+    """The test thread's current event loop, held for the whole run and closed at its end.
+    pytest-asyncio restores the current loop after each async test, making one the first
+    time it finds none; a plain test that calls asyncio.run() then replaces it, and the
+    dropped loop warns as unclosed in whichever test is running when it is collected."""
+    import asyncio
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    yield
+    loop.close()
+
+
 @pytest.fixture(autouse=True)
 def _reset_hot_path_caches():
     """Bust the in-process drain cache before each test.
