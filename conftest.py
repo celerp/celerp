@@ -3,12 +3,20 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import shutil
 from pathlib import Path
 
 from conftest_support import (
     is_own_test_config, provision_worker_db, resolve_worker_config, resolve_worker_data_dir)
+
+# No event loop is current until a test makes one. Otherwise the first async test's
+# runner asks for the current loop and asyncio makes one on the spot; the runner puts
+# it back as current afterwards, and the next sync test that calls asyncio.run()
+# replaces it without closing it, so its sockets are reported as unclosed in whichever
+# later test the garbage collector happens to run in.
+asyncio.set_event_loop(None)
 
 # Must be set before celerp.config is imported (JWT guard fires at module load).
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
