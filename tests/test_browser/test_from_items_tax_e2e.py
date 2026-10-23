@@ -280,19 +280,22 @@ def test_the_editor_leaves_off_only_a_default_the_document_charges(page, api_ser
     _taxed_once(doc, 1.18)
 
 
-def _store_doc_taxes(doc_id: str, doc_taxes: list, tax: float, total: float) -> None:
-    """Write `doc_taxes` straight into the draft's projection: no write takes an entry of another
-    shape any more, so this is how a value an older version stored reaches the editor."""
+def _store_doc_taxes(company_id: str, doc_id: str, doc_taxes: list, tax: float, total: float) -> None:
+    """Write `doc_taxes` straight into the company's draft projection (a document id is unique only
+    within its company): no write takes an entry of another shape any more, so this is how a value
+    an older version stored reaches the editor."""
     parts = urlsplit(os.environ["DATABASE_URL"].replace("+asyncpg", ""))
     conn = psycopg2.connect(host=parts.hostname, port=parts.port, user=parts.username,
                             password=parts.password, dbname=parts.path.lstrip("/"))
     conn.autocommit = True
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT state FROM projections WHERE entity_id = %s", (doc_id,))
+            key = (company_id, doc_id)
+            cur.execute("SELECT state FROM projections WHERE company_id = %s AND entity_id = %s", key)
             state = cur.fetchone()[0]
             state.update(doc_taxes=doc_taxes, tax=tax, total=total)
-            cur.execute("UPDATE projections SET state = %s WHERE entity_id = %s", (json.dumps(state), doc_id))
+            cur.execute("UPDATE projections SET state = %s WHERE company_id = %s AND entity_id = %s",
+                        (json.dumps(state), *key))
     finally:
         conn.close()
 
@@ -307,7 +310,8 @@ def test_the_editor_keeps_a_tax_it_cannot_read_until_it_is_removed(page, api_ser
                                                         "unit_price": 100.0}]})
         assert r.status_code in (200, 201), r.text
         doc_id = r.json()["id"]
-        _store_doc_taxes(doc_id, [{**_VAT_WHOLE, "amount": 7.0}, "Levy 5%"], 12.0, 112.0)
+        _store_doc_taxes(company.get("/companies/me").json()["id"], doc_id,
+                         [{**_VAT_WHOLE, "amount": 7.0}, "Levy 5%"], 12.0, 112.0)
         ctx = page.context.browser.new_context(base_url=ui_server)
         try:
             ctx.add_cookies([{"name": "celerp_token", "value": token, "domain": "127.0.0.1", "path": "/"}])
@@ -321,7 +325,7 @@ def test_the_editor_keeps_a_tax_it_cannot_read_until_it_is_removed(page, api_ser
             qty.blur()
             tab.locator(".toast-container .toast--error", has_text="Levy 5%").wait_for(timeout=8000)
             doc = company.get(f"/docs/{doc_id}").json()
-            assert (doc["line_items"][0]["quantity"], doc["tax"], doc["total"]) == (1, 12.0, 112.0)
+            assert (doc["line_items"][0]["quantity"], doc["tax"], doc["total"]) == (1, 12.0, 112.0), doc
             levy.locator("button").click()
             for _ in range(120):
                 doc = company.get(f"/docs/{doc_id}").json()
