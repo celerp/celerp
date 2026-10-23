@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import re
 from functools import lru_cache
+from urllib.parse import parse_qsl
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
@@ -89,15 +90,25 @@ async def help_read(
 
 @lru_cache(maxsize=512)
 def _route_pattern(route: str) -> re.Pattern:
-    """A help page route as a full-path match; each {name} stands for one path segment."""
+    """A help page route's path as a full-path match; each {name} stands for one path segment."""
     parts = _SEGMENT.split(route)
     return re.compile("[^/]+".join(re.escape(p) for p in parts) + r"/?\Z")
 
 
+def _covers(route: str, path: str, query: set[tuple[str, str]]) -> bool:
+    """Whether a help page route covers the screen at ``path`` with ``query``: the paths
+    match and every query pair the route names (a tab, say) is on the screen's address."""
+    route_path, _, route_query = route.partition("?")
+    return (_route_pattern(route_path).match(path) is not None
+            and set(parse_qsl(route_query)) <= query)
+
+
 @router.get("/help/for-route")
 async def help_for_route(path: str = Query(..., max_length=_MAX_PATH_LEN, pattern=r"^/")) -> dict:
-    """The help pages that cover the screen at ``path``, for the top bar Help panel."""
-    pages = [p for p in get_index().pages.values()
-             if any(_route_pattern(r).match(path) for r in p.routes)]
+    """The help pages that cover the screen at ``path`` (its query included), for the top
+    bar Help panel."""
+    path, _, query = path.partition("?")
+    pairs = set(parse_qsl(query))
+    pages = [p for p in get_index().pages.values() if any(_covers(r, path, pairs) for r in p.routes)]
     pages.sort(key=lambda p: (p.order, p.id))
     return {"pages": [_summary(p) for p in pages]}

@@ -2181,7 +2181,7 @@ async def _recovery_outcome_notice(request) -> list:
     return notices
 
 
-def _shell_document(*content, nav: FT, title: str = "Celerp", companies: list[dict] | None = None, extra_head: list | None = None, lang: str = "en", request=None) -> FT:
+def _shell_document(*content, nav: FT, title: str = "Celerp", companies: list[dict] | None = None, extra_head: list | None = None, lang: str = "en", request=None, help_path: str | None = None) -> FT:
     """The outer HTML document shared by every full-chrome page: head assets, the
     supplied nav, top bar, banners, main content, and footer.
 
@@ -2219,7 +2219,7 @@ def _shell_document(*content, nav: FT, title: str = "Celerp", companies: list[di
             Div(
                 nav,
                 Div(
-                    _topbar(companies or [], lang=lang, user_email=user_email, relay_info=relay_info),
+                    _topbar(companies or [], lang=lang, user_email=user_email, relay_info=relay_info, help_path=help_path),
                     _HEALTH_BANNER_HTML,
                     _backup_banner_html(lang),
                     _OPEN_MIGRATIONS_LOADER,
@@ -2258,8 +2258,12 @@ def _minimal_sidebar() -> FT:
     )
 
 
-async def base_shell(*content, title: str = "Celerp", nav_active: str = "", companies: list[dict] | None = None, extra_head: list | None = None, lang: str = "en", request=None, company_settings: dict | None = None) -> FT:
-    """Outer chrome: permission-filtered sidebar nav + top header + content area."""
+async def base_shell(*content, title: str = "Celerp", nav_active: str = "", companies: list[dict] | None = None, extra_head: list | None = None, lang: str = "en", request=None, company_settings: dict | None = None, help_path: str | None = None) -> FT:
+    """Outer chrome: permission-filtered sidebar nav + top header + content area.
+
+    ``help_path`` is the screen the top bar Help panel looks up, for a page whose
+    address does not say which screen it shows (a tab chosen by role); without it
+    the panel uses the browser's address."""
     from ui.config import get_token
     role = get_role(request) if request is not None else "owner"
     if company_settings is None:
@@ -2276,7 +2280,7 @@ async def base_shell(*content, title: str = "Celerp", nav_active: str = "", comp
     sidebar = _sidebar(nav_active, lang=lang, role=role, request=request, settings=company_settings)
     return _shell_document(
         *await _recovery_outcome_notice(request), *content, nav=sidebar, title=title, companies=companies,
-        extra_head=extra_head, lang=lang, request=request,
+        extra_head=extra_head, lang=lang, request=request, help_path=help_path,
     )
 
 
@@ -2387,7 +2391,7 @@ def search_help(lang: str = "en", panel_id: str = "global-search-help-panel") ->
     )
 
 
-def _topbar(companies: list[dict], lang: str = "en", user_email: str | None = None, relay_info: dict | None = None) -> FT:
+def _topbar(companies: list[dict], lang: str = "en", user_email: str | None = None, relay_info: dict | None = None, help_path: str | None = None) -> FT:
     """Top bar with hamburger toggle, global search, and optional company switcher."""
     parts: list[FT] = [
         Button("☰", cls="sidebar-toggle", type="button"),
@@ -2414,7 +2418,7 @@ def _topbar(companies: list[dict], lang: str = "en", user_email: str | None = No
         Div(
             id="topbar-help",
             hx_get="/help/for-page",
-            hx_vals="js:{path: location.pathname}",
+            hx_vals=json.dumps({"path": help_path}) if help_path else "js:{path: location.pathname + location.search}",
             hx_trigger="load",
             hx_swap="outerHTML",
             data_quiet_error="1",

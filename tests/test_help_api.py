@@ -123,6 +123,9 @@ async def test_help_for_route_matches_patterns(client, help_pages):
     r = await client.get("/help/for-route", params={"path": "/contacts/abc/edit"}, headers=headers)
     assert r.json()["pages"] == []
     assert (await client.get("/help/for-route", params={"path": "contacts"}, headers=headers)).status_code == 422
+    # A query on the screen's address still finds the screen's pages.
+    r = await client.get("/help/for-route", params={"path": "/contacts/abc?tab=notes"}, headers=headers)
+    assert [p["id"] for p in r.json()["pages"]] == ["contacts.add-supplier"]
     assert (await client.get("/help/for-route", params={"path": "/" + "a" * 300},
                              headers=headers)).status_code == 422
 
@@ -132,3 +135,20 @@ async def test_help_routes_are_agent_tools():
     assert compiled["help_search"]["path"] == "/help/search"
     assert compiled["help_read"]["path"] == "/help/page/{page_id}"
     assert not any(cap["path"] == "/help/for-route" for cap in compiled.values())
+
+
+async def test_help_for_route_matches_tab_routes(client, monkeypatch):
+    found = [_page("core.users", "Users", routes=["/settings/general?tab=users"]),
+             _page("core.companies", "Companies", routes=["/settings/general?tab=company"])]
+    monkeypatch.setattr(registry, "_index", registry.Index(pages={p.id: p for p in found}))
+    headers = await _headers(client)
+
+    async def ids(path: str) -> list[str]:
+        r = await client.get("/help/for-route", params={"path": path}, headers=headers)
+        assert r.status_code == 200
+        return [p["id"] for p in r.json()["pages"]]
+
+    assert await ids("/settings/general?tab=users&x=1") == ["core.users"]
+    assert await ids("/settings/general?x=1&tab=company") == ["core.companies"]
+    assert await ids("/settings/general?tab=backup") == []
+    assert await ids("/settings/general") == []

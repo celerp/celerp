@@ -6353,5 +6353,6 @@
   "ai.free_text_too_large": "This question is too long for a free account. Shorten it, or choose a plan for longer questions.",
   "ai.help_hits": "These help pages may answer it:",
   "ai.plan_lifetime_credits": "{n} query AI a vita incluse",
-  "ai.plan_monthly_credits": "{n} query AI ogni mese"
+  "ai.plan_monthly_credits": "{n} query AI ogni mese",
+  "help.core_section": "Celerp basics"
 }

@@ -151,7 +151,49 @@ async def test_help_for_page_lists_matching_pages(client, ui_client, pages):
     assert t("help.none_for_this_page") in empty.text
     assert 'href="/help"' in empty.text and 'href="/ai"' in empty.text
 
-    # The slot sits in the top bar of every page and loads the panel for the page it is on.
+    # The slot sits in the top bar of every page and loads the panel for the page it is on,
+    # query included, so a tab of a tabbed page finds its own help.
     page = await ui_get(headers, "/help")
     assert 'hx-get="/help/for-page"' in page.text
-    assert "location.pathname" in page.text
+    assert 'hx-vals="js:{path: location.pathname + location.search}"' in page.text
+
+
+@pytest.mark.asyncio
+async def test_global_config_panel_asks_for_the_tab_it_shows(client):
+    """Global Config picks its tab from the role when the address names none, so the
+    page tells the panel which tab it shows instead of leaving it to the address."""
+    headers = {"Authorization": f"Bearer {await register_admin(client)}"}
+    page = await ui_get(headers, "/settings/general")
+    assert 'hx-vals=\'{"path": "/settings/general?tab=company"}\'' in page.text
+    users = await ui_get(headers, "/settings/general?tab=users")
+    assert 'hx-vals=\'{"path": "/settings/general?tab=users"}\'' in users.text
+
+
+@pytest.mark.asyncio
+async def test_help_ended_session_goes_to_login(ui_client, pages, monkeypatch):
+    async def _ended(*_a, **_k):
+        raise APIError(401, "Session expired")
+
+    for name in ("help_read", "help_search", "help_for_route"):
+        monkeypatch.setattr(help_route.api, name, _ended)
+    _signed_in(ui_client)
+    for path in ("/help/contacts.add-supplier", "/help?q=supplier", "/help/for-page?path=/contacts"):
+        r = await ui_client.get(path)
+        assert r.status_code in (302, 303), path
+        assert r.headers["location"].startswith("/login"), path
+    # The panel loads through HTMX, so the sign-in page replaces the window, not the slot.
+    r = await ui_client.get("/help/for-page?path=/contacts", headers={"HX-Request": "true"})
+    assert r.headers["hx-redirect"].startswith("/login")
+
+
+@pytest.mark.asyncio
+async def test_help_search_box_and_browse_headings(client, pages, monkeypatch):
+    core = _page("core.users", "Adding staff", module="core")
+    monkeypatch.setattr(registry, "_index", registry.Index(pages={p.id: p for p in [*pages, core]}))
+    headers = {"Authorization": f"Bearer {await register_admin(client)}"}
+    r = await ui_get(headers, "/help")
+    assert 'class="form-input help-search__input"' in r.text
+    assert f"<h2>{t('help.browse')}</h2>" in r.text
+    assert "<h3>Contacts</h3>" in r.text
+    assert f"<h3>{t('help.core_section')}</h3>" in r.text
+    assert t("help.core_section") != t("help.title")

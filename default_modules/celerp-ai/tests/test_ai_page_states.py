@@ -252,6 +252,9 @@ async def test_free_zero_left_shows_help_hits_no_topup(ui_client):
     assert t("msg.get_the_ai_plan") in r.text and t("ai.plan_monthly_credits", n=200) in r.text
     assert t("msg.buy_more_credits") not in r.text
     assert search.await_args.args[1] == "How do I add a supplier?"
+    # The bubble is the help line itself: no wrapper whose markup whitespace would show
+    # as blank lines in a pre-wrap bubble.
+    assert f'<p class="ai-msg ai-msg--ai ai-msg__sources">\n{t("ai.help_hits")} <a' in r.text
 
 
 @pytest.mark.asyncio

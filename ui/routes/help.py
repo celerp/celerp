@@ -42,7 +42,7 @@ def _ask_ai(lang: str) -> FT:
 def _search_form(q: str, module: str, lang: str) -> FT:
     return Form(
         Input(type="search", name="q", value=q, placeholder=t("help.search_placeholder", lang),
-              aria_label=t("help.search_placeholder", lang), maxlength="200", cls="help-search__input"),
+              aria_label=t("help.search_placeholder", lang), maxlength="200", cls="form-input help-search__input"),
         *([Input(type="hidden", name="module", value=module)] if module else []),
         Button(t("label.search", lang), type="submit", cls="btn btn--primary btn--sm"),
         method="get", action="/help", cls="help-search",
@@ -75,7 +75,7 @@ def _browse(module: str, lang: str) -> FT:
         if not module or page.module == module:
             by_module.setdefault(page.module, []).append(page)
     sections = [
-        Section(H2(t("help.title", lang) if name == CORE else pages[0].module_display),
+        Section(H3(t("help.core_section", lang) if name == CORE else pages[0].module_display),
                 Ul(*[_page_link({"id": p.id, "title": p.title, "summary": p.summary})
                      for p in sorted(pages, key=lambda p: (p.order, p.id))], cls="help-list"),
                 cls="help-module")
@@ -120,7 +120,9 @@ def setup_routes(app):
         if q:
             try:
                 body = await _results(token, q, module, get_role(request), lang)
-            except APIError:
+            except APIError as e:
+                if e.status == 401:  # an ended session goes to sign-in through the app's handler
+                    raise
                 here = request.url.path + (f"?{request.url.query}" if request.url.query else "")
                 body = load_error(t("help.load_failed", lang), lang, href=here)
         else:
@@ -142,7 +144,9 @@ def setup_routes(app):
             pages = (await api.help_for_route(token, request.query_params.get("path", "/")))["pages"]
             listing: FT = (Ul(*[_page_link(p) for p in pages], cls="help-list") if pages
                            else P(t("help.none_for_this_page", lang), cls="help-panel__none"))
-        except APIError:
+        except APIError as e:
+            if e.status == 401:
+                raise
             listing = P(t("help.load_failed", lang), cls="help-panel__none")
         panel = Div(
             Div(t("help.for_this_page", lang), cls="help-panel__title"),
@@ -191,6 +195,8 @@ def setup_routes(app):
             )
             title = body["title"]
         except APIError as e:
+            if e.status == 401:
+                raise
             if e.status == 404:
                 status, title = 404, t("error.not_found_title", lang)
                 content = Div(_back(lang), cls="help-page")

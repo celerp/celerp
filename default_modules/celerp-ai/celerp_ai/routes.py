@@ -1,7 +1,7 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
 
-"""AI router: /ai/* and /settings/ai/*
+"""AI router: /ai/*
 
 AI routes require an authenticated user, an active Connect session, and the
 ``use_ai_assistant`` permission.
@@ -26,7 +26,7 @@ Endpoints:
   POST   /ai/conversations/{id}/confirm-all          Run every proposed change on a message
   POST   /ai/conversations/{id}/jobs/{job}/proposals Turn read receipts into bill proposals
   GET    /ai/batch/{job_id}                          Job status and per-file results
-  GET    /settings/ai/usage-stats                    Per-user questions this month or all time
+  GET    /ai/usage-stats                             Per-user questions this month or all time
 """
 
 from __future__ import annotations

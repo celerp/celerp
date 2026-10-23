@@ -1323,6 +1323,8 @@ th.cell--number { font-family: inherit; }
 .help-page { display: flex; flex-direction: column; gap: 0.75rem; max-width: 760px; }
 .help-search { display: flex; gap: 0.5rem; }
 .help-search__input { flex: 1; }
+.help-module { margin-top: 1rem; }
+.help-module h3 { margin: 0 0 0.5rem; }
 .help-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.6rem; }
 .help-list__title { font-weight: 600; }
 .help-list__summary { margin: 0.15rem 0 0; color: var(--c-text2); }
@@ -2775,6 +2777,7 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
 .ai-action-group > .ai-action__done, .ai-action-group > .ai-action__error { margin: 0; }
 .ai-msg--error { color: var(--c-red-text); border: 1px solid rgba(239,68,68,0.35); }
 .ai-msg__sources { margin: 0.5rem 0 0; font-size: 0.8rem; color: var(--c-text2); white-space: normal; }
+.ai-msg.ai-msg__sources { margin: 0; }
 .load-error { display: flex; flex-direction: column; align-items: flex-start; gap: 0.5rem; padding: 0.75rem; border: 1px solid rgba(239,68,68,0.35); border-radius: var(--radius); color: var(--c-red-text); background: var(--c-bg2); }
 .load-error__text { margin: 0; }
 .ai-job { white-space: normal; }

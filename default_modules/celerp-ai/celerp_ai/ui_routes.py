@@ -165,8 +165,7 @@ async def _help_hits(token: str, query: str, lang: str) -> list[FT]:
     links = [(str(h["id"]), str(h.get("title") or h["id"])) for h in hits[:3] if h.get("id")]
     if not links:
         return []
-    return [Div(P(t("ai.help_hits", lang), " ", *_page_links(links), cls="ai-msg__sources"),
-                cls="ai-msg ai-msg--ai")]
+    return [P(t("ai.help_hits", lang), " ", *_page_links(links), cls="ai-msg ai-msg--ai ai-msg__sources")]
 
 
 async def _ai_offer(token: str) -> dict:

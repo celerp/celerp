@@ -174,4 +174,5 @@ def setup_routes(app):
             lang=lang,
             extra_head=_phone_head_items(),
             request=request,
+            help_path=f"/settings/general?tab={tab}",
         )
