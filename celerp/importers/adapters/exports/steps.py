@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: BUSL-1.1
 """Reading steps every source shares once its files are in a `Book`: the base currency,
 foreign bank accounts, contact roles, tax rates, the trial balances rolled up from the
-first record, and the aged balances' date checked against the ledger."""
+first record, the aged balances' date checked against the ledger, and every amount checked
+against its currency's minor units."""
 
 from __future__ import annotations
 
@@ -12,6 +13,7 @@ from decimal import Decimal
 
 from celerp.importers.adapters.base import ScanError
 from celerp.importers.adapters.exports.book import PROFIT_AND_LOSS, ZERO, Book
+from celerp.services.money import currency_dp, round_money
 from ui.i18n import t
 
 
@@ -97,3 +99,30 @@ def refuse_stale_aged(book: Book, label: str, as_at: date) -> None:
     last = book.journals[-1].date if book.journals else None
     if last and as_at < last:
         raise ScanError(t("migration.err_export_aged_stale", label=label, as_at=show(as_at), last=show(last)))
+
+
+def check_precision(book: Book) -> None:
+    """Every amount the set states fits the minor units of its currency: each is imported as the
+    source printed it, never rounded to fit. One that does not refuses the set by name."""
+    def fits(value: Decimal | None, currency: str, where: str) -> None:
+        currency = currency or book.base
+        if value is not None and value != round_money(value, currency):
+            raise ScanError(t("migration.err_export_precision", where=where, value=f"{value:,f}", currency=currency,
+                              places=currency_dp(currency)))
+
+    for doc in book.documents.values():
+        where = " ".join(filter(None, (doc.file, doc.number)))
+        for value in (doc.total, doc.tax_total, doc.paid, doc.amount_due, *doc.applied.values(),
+                      *doc.withheld.values(), *(v for ln in doc.lines for v in (ln.net, *(x.amount for x in ln.taxes)))):
+            fits(value, doc.currency, where)
+    for j in book.journals:
+        where = " ".join(filter(None, (j.source, j.reference or j.number)))
+        for ln in j.lines:
+            fits(ln.amount, book.base, where)
+            fits(ln.foreign, j.currency, where)
+    for on, balances in book.trial_balances.items():
+        for code, value in balances.items():
+            fits(value, book.base, f"{book.accounts[code].label}, {show(on)}")
+    for on, owed in book.aged.values():
+        for contact, value in owed.items():
+            fits(value, book.base, f"{contact}, {show(on)}")

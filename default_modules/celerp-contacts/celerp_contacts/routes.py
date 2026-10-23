@@ -195,7 +195,7 @@ async def get_contact(contact_id: str, company_id: str = Depends(get_current_com
 
 @router.patch("/contacts/{contact_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True})
 async def update_contact(contact_id: str, payload: ContactUpdate, company_id: str = Depends(get_current_company_id), user=Depends(get_current_user), _: None = require_permission("edit_contacts"), session: AsyncSession = Depends(get_session)) -> dict:
-    row = await _get_contact(session, company_id, contact_id)
+    row = await _locked_contact(session, company_id, contact_id)
     if payload.idempotency_key:
         replay = await find_event_by_idempotency(session, company_id, payload.idempotency_key)
         if replay is not None:
@@ -249,7 +249,7 @@ async def tag_contact(contact_id: str, payload: TagBody, company_id: str = Depen
 
 
 async def _locked_contact(session: AsyncSession, company_id, contact_id: str) -> Projection:
-    """The contact a file change applies to, read once no other write to it is in flight."""
+    """The contact a change applies to, read once no other write to it is in flight."""
     row = (await lock_contacts(session, company_id, [contact_id])).get(contact_id)
     if row is None:
         raise HTTPException(status_code=404, detail=t("error.record_not_found"))

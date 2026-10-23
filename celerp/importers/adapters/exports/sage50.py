@@ -20,17 +20,27 @@ Sage 50 differs from the other export sets in four ways, each read here:
   cash line balance; a transaction that does not is refused as damaged.
 - Journals name customers, vendors and accounts by their IDs; the lists give the names.
 - Sales tax is a distribution of its own per tax agency (Tax Type 0), not a line's tax.
-  Which tax types are taxable is set in the company's item defaults, which are not
-  exported, so the tax is spread over the invoice's lines (by the one allocation of an
-  amount over parts) only when they share one tax type; otherwise it stays one tax line on
-  the invoice, listed in the coverage. The invoice keeps its total tax either way.
+  Every distribution states its Tax Type, a whole number from 0 to 27; any other value
+  refuses the set. Which tax types are taxable is set in the company's item defaults, which
+  are not exported, so the tax is spread over the invoice's lines (by the one allocation of
+  an amount over parts) only when they share one tax type; otherwise it stays one tax line
+  on the invoice, listed in the coverage. The invoice keeps its total tax either way.
 - The exports state no currency. The user chooses it from the currencies Celerp keeps books
   in (CURRENCY_QUESTION); the one a sign the reports print names, such as $ or Br, is suggested.
 
+A transaction's own flags decide what it is, never a guess: a quote posts nothing and is
+not imported; a customer's or vendor's beginning balance is kept outside the general ledger,
+whose beginning balances the trial balance carries, so it posts nothing here either; a
+transaction voided, or holding back retainage, is imported as the journal it posted, not as
+an invoice, purchase, receipt or payment. Each is listed in the coverage, and the last three
+keep a full history import from running. A prepayment, a receipt applied to no invoice, stays
+on the customer as credit.
+
 A trial balance dated before the first transaction holds the books' beginning balances
 and is carried as one journal on that day. Templates Sage 50 can leave empty (a business
-that never entered a purchase) are optional; one not uploaded is listed in the coverage
-with what it means for the import.
+that never entered a purchase) are optional for a cutover import, which carries the
+balances at the cutover date; a full history import needs every journal, an empty export
+of one included. One not uploaded is listed in the coverage with what it means.
 """
 
 from __future__ import annotations
@@ -62,9 +72,18 @@ CURRENCY_QUESTION = "currency"
 EMPLOYEE = "Employee"
 STOCK = "Stock item quantity on hand"
 UNASSIGNED_TAX = "Invoice with its sales tax on one line"
-# A distribution's Tax Type: 0 is a tax distribution. Which of the others are taxable is set in
-# each company's own item defaults, which Sage 50 does not export.
-TAX_DISTRIBUTION = "0"
+QUOTE = "Quote"
+BEGINNING = "Customer or vendor beginning balance"
+VOIDED = "Voided transaction"
+RETAINAGE = "Invoice or purchase with retainage"
+# The journal one of those is carried as, as the coverage lists it.
+CARRIED = "{} (journal)"
+# A distribution's Tax Type, 0 to 27: 0 is a tax distribution. Which of the others are taxable is
+# set in each company's own item defaults, which Sage 50 does not export.
+TAX_DISTRIBUTION = 0
+TAX_TYPES = range(28)
+# How the templates write True and False.
+FLAGS = {"true": True, "yes": True, "1": True, "false": False, "no": False, "0": False, "": False}
 # Sage 50 accepts at most this many distribution lines on one transaction.
 MAX_DISTRIBUTIONS = 560
 
@@ -96,13 +115,14 @@ EMPLOYEES = Layout("employees", "Employee List", frozenset({"employee id", "empl
                    menu=_template("Payroll", "Employee List"), optional=True)
 GENERAL = _journal("general", "General Journal", {"reference"}, "General Ledger")
 # The Sales Journal needs its Tax Type: it alone tells a tax distribution from freight, both of
-# which Sage 50 writes as Invoice/CM Distribution 0.
-SALES = _journal("sales", "Sales Journal", {"customer id", "invoice/cm #", "accounts receivable account", "tax type"},
-                 "Accounts Receivable")
+# which Sage 50 writes as Invoice/CM Distribution 0. Both document journals need the Date Due
+# Sage 50 requires of every invoice and purchase.
+SALES = _journal("sales", "Sales Journal", {"customer id", "invoice/cm #", "accounts receivable account", "tax type",
+                                            "date due"}, "Accounts Receivable")
 RECEIPTS = _journal("receipts", "Cash Receipts Journal", {"customer id", "reference", "cash account", "cash amount"},
                     "Accounts Receivable")
-PURCHASES = _journal("purchases", "Purchase Journal", {"vendor id", "invoice/cm #", "accounts payable account"},
-                     "Accounts Payable")
+PURCHASES = _journal("purchases", "Purchase Journal", {"vendor id", "invoice/cm #", "accounts payable account",
+                                                       "date due"}, "Accounts Payable")
 PAYMENTS = _journal("payments", "Cash Disbursements Journal", {"vendor id", "check number", "cash account",
                                                                "cash amount"}, "Accounts Payable")
 TRIAL_BALANCE = Layout("trial_balance", "General Ledger Trial Balance",
@@ -162,8 +182,29 @@ class SageBook(Book):
     absent: tuple[str, ...] = ()                # kinds of the journals not uploaded
 
 
-def _true(text: str) -> bool:
-    return normalize(text) in ("true", "yes", "1")
+def _flag(tb: Table, row: dict[str, str], column: str, where: str) -> bool:
+    """A True or False field; any other value refuses the set by name. A template exported
+    without the field states False."""
+    value = tb.value(row, column)
+    if normalize(value) not in FLAGS:
+        raise ScanError(t("migration.err_sage50_flag", where=where, value=value, column=column))
+    return FLAGS[normalize(value)]
+
+
+def _tax_type(tb: Table, row: dict[str, str], where: str) -> int:
+    """A Sales Journal distribution's Tax Type: a whole number from 0 to 27, never blank."""
+    value = tb.value(row, "tax type")
+    if not value.isdigit() or int(value) not in TAX_TYPES:
+        raise ScanError(t("migration.err_sage50_tax_type", where=where, value=value))
+    return int(value)
+
+
+def _once(seen: set[str], ident: str, tb: Table) -> None:
+    """Each ID a list holds names one record: an ID listed twice refuses the set rather than
+    one record silently replacing the other."""
+    if ident in seen:
+        raise ScanError(t("migration.err_sage50_id_twice", name=tb.name, label=tb.layout.label, id=ident))
+    seen.add(ident)
 
 
 def _first(tb: Table, row: dict[str, str], *columns: str) -> str:
@@ -271,23 +312,28 @@ class _Reader:
         self.missing_accounts: set[str] = set()
         self.missing_contacts: dict[tuple[str, str], set[str]] = defaultdict(set)
         self.party_accounts: dict[str, str] = {}       # document key -> its receivable or payable account
+        # (sales, number, contact) of a beginning balance -> its receivable or payable account
+        self.beginning: dict[tuple[bool, str, str], str] = {}
+        self.numbers: dict[tuple[str, str], list[str]] = defaultdict(list)   # (S or P, number) -> contacts
         self.sequence = 0
 
     # ── Lists ────────────────────────────────────────────────────────────────
 
     def read_chart(self) -> None:
+        seen: set[str] = set()
         for tb in of(self.tables, CHART):
             for row in tb.rows:
                 code, name = tb.value(row, "account id"), tb.value(row, "account description")
                 if not code:
                     continue
+                _once(seen, code, tb)
                 kind = normalize(tb.value(row, "account type"))
                 if kind not in ACCOUNT_TYPES:
                     raise ScanError(t("migration.err_export_account_type", account=f"{code} {name}".strip(),
                                       type=tb.value(row, "account type")))
                 account_type, control = ACCOUNT_TYPES[kind]
                 self.book.accounts[code] = Account(code, name or code, account_type, control,
-                                                   active=not _true(tb.value(row, "inactive")))
+                                                   active=not _flag(tb, row, "inactive", f"{tb.name} {code}"))
 
     def read_contacts(self) -> None:
         """Customers and vendors, keyed by name as the other export sets key them; two records
@@ -295,8 +341,10 @@ class _Reader:
         for layout, prefix, role in ((CUSTOMERS, "customer", "customer"), (VENDORS, "vendor", "supplier")):
             rows = [(tb, row) for tb in of(self.tables, layout) for row in tb.rows
                     if tb.value(row, f"{prefix} id")]
+            seen: set[str] = set()
             names = defaultdict(int)
             for tb, row in rows:
+                _once(seen, tb.value(row, f"{prefix} id"), tb)
                 names[tb.value(row, f"{prefix} name") or tb.value(row, f"{prefix} id")] += 1
             for tb, row in rows:
                 ident = tb.value(row, f"{prefix} id")
@@ -314,16 +362,18 @@ class _Reader:
                 contact.roles.add(role)
 
     def read_items(self) -> None:
+        seen: set[str] = set()
         for tb in of(self.tables, ITEMS):
             for row in tb.rows:
                 code = tb.value(row, "item id")
                 if not code:
                     continue
+                _once(seen, code, tb)
                 price = tb.value(row, "sales price 1")
                 self.book.items[code] = Item(code, tb.value(row, "item description") or code,
                                              tb.value(row, "description for sales") or None,
                                              money(price, f"{tb.name} {code}") if price else None,
-                                             not _true(tb.value(row, "inactive")))
+                                             not _flag(tb, row, "inactive", f"{tb.name} {code}"))
                 if normalize(tb.value(row, "item class")) in STOCK_CLASSES:
                     self.book.skipped[STOCK] += 1
 
@@ -369,84 +419,126 @@ class _Reader:
 
     def read_documents(self, layout: Layout, sales: bool) -> None:
         """Invoices and credit memos, or purchases and vendor credit memos, with their lines,
-        tax and the journal that posts them."""
+        tax and the journal that posts them; each other kind of transaction as its flags say."""
         party, side = ("customer id", "receivable") if sales else ("vendor id", "payable")
         letter = "S" if sales else "P"
         for tb in of(self.tables, layout):
             for where, rows in _transactions(tb, (party, "invoice/cm #", "date")):
                 first = rows[0]
-                credit = _true(tb.value(first, "credit memo"))
+                kinds = [_tax_type(tb, row, where) if sales else None for row in rows]
+                if sales and _flag(tb, first, "quote", where):
+                    self.book.skipped[QUOTE] += 1
+                    continue
+                credit = _flag(tb, first, "credit memo", where)
                 doc_type = ("credit_note" if credit else "invoice") if sales else ("debit_note" if credit else "bill")
                 sign = PARTY_SIGN[doc_type]
                 contact = self.contact(tb.value(first, party), sales, layout.label)
                 number = tb.value(first, "invoice/cm #")
                 on = self.read_date(tb.value(first, "date"), where)
-                distributions: list[GLLine] = []
-                lines: list[DocLine] = []
-                kinds: list[str] = []                    # each line's Tax Type
-                taxes: dict[str, Decimal] = defaultdict(lambda: ZERO)
-                for row in rows:
-                    account = self.account(tb.value(row, "g/l account"))
-                    posted = money(tb.value(row, "amount"), where)
-                    description = tb.value(row, "description")
-                    distributions.append(GLLine(account, posted, None, description))
-                    kind = tb.value(row, "tax type")
-                    agency = tb.value(row, "sales tax agency")
-                    # Tax Type 0 marks a tax distribution: a sold line names its tax agency too.
-                    if sales and kind == TAX_DISTRIBUTION:
-                        # A tax distribution names its agency; one that does not is the customer's tax code's.
-                        agency = agency or tb.value(first, "sales tax id") or description or "--"
-                        taxes[agency] += -sign * posted
-                        tax = self.book.tax_codes.setdefault(agency, TaxCode(agency, ZERO, account))
-                        if tax.account in self.book.accounts and self.book.accounts[tax.account].control is None:
-                            self.book.accounts[tax.account].control = "tax"
-                        continue
-                    net = -sign * posted
-                    quantity = abs(amount(tb.value(row, "quantity"), where))
-                    item = tb.value(row, "item id") or None
-                    if item and item not in self.book.items:
-                        self.book.items[item] = Item(item, description or item)
-                    lines.append(DocLine(item, description, quantity if net >= 0 else -quantity,
-                                         abs(amount(tb.value(row, "unit price"), where)), None, net, [], account))
-                    kinds.append(kind)
+                party_account = self.account(tb.value(first, f"accounts {side} account"))
+                distributions = [GLLine(self.account(tb.value(row, "g/l account")), money(tb.value(row, "amount"), where),
+                                        None, tb.value(row, "description")) for row in rows]
                 # The customer or vendor line balances the distributions. Its stated amount, where the
                 # template has it, is checked by size: the distributions carry the sign.
                 party_line = -sum((ln.amount for ln in distributions), ZERO)
                 stated = tb.value(first, f"accounts {side} amount")
                 if stated and abs(money(stated, where)) != abs(party_line):
                     raise _unbalanced(where, layout.label, abs(money(stated, where)) - abs(party_line))
-                self._spread_taxes(lines, kinds, taxes)
-                # A number two contacts share keys the later one by its contact as well; an unnumbered
-                # document (one never printed) by its journal.
-                key = f"{letter}:{number}" if number else f"{letter}:#{self.sequence + 1}"
-                if key in self.book.documents:
-                    key = f"{key}|{contact}"
-                if key in self.book.documents:
-                    key = f"{key}|{self.sequence + 1}"
+                if _flag(tb, first, "beginning balance transaction", where):
+                    # Kept outside the general ledger: the trial balance's beginning balances carry it.
+                    self.book.skipped[BEGINNING] += 1
+                    self.beginning[(sales, number, contact)] = party_account
+                    continue
+                posted = [GLLine(party_account, party_line, None, number, contact=contact), *distributions]
+                unsupported = self.unsupported(tb, rows, where, VOIDED, RETAINAGE)
+                if unsupported:
+                    self.journal(letter, on, CARRIED.format(unsupported), "general journal", number, contact, posted)
+                    continue
+                lines: list[DocLine] = []
+                charged: list[int | None] = []           # each line's Tax Type
+                taxes: dict[str, Decimal] = defaultdict(lambda: ZERO)
+                for row, kind, ln in zip(rows, kinds, distributions):
+                    if kind == TAX_DISTRIBUTION:
+                        # A tax distribution names its agency; one that does not is the customer's tax code's.
+                        agency = tb.value(row, "sales tax agency") or tb.value(first, "sales tax id") or \
+                            ln.description or "--"
+                        taxes[agency] += -sign * ln.amount
+                        self.tax_code(agency, ln.account, where)
+                        continue
+                    net = -sign * ln.amount
+                    quantity = abs(amount(tb.value(row, "quantity"), where))
+                    item = tb.value(row, "item id") or None
+                    if item and item not in self.book.items:
+                        self.book.items[item] = Item(item, ln.description or item)
+                    lines.append(DocLine(item, ln.description, quantity if net >= 0 else -quantity,
+                                         abs(amount(tb.value(row, "unit price"), where)), None, net, [], ln.account))
+                    charged.append(kind)
+                self._spread_taxes(lines, charged, taxes)
+                due = tb.value(first, "date due")
+                if not due and not credit:
+                    # A credit memo is applied, never paid, so it alone may have no due date.
+                    raise ScanError(t("migration.err_sage50_due", where=where, label=layout.label))
+                key = self.document_key(letter, number, contact)
                 total = sign * party_line
                 source = {"invoice": "Sales invoice", "credit_note": "Credit memo", "bill": "Purchase",
                           "debit_note": "Vendor credit memo"}[doc_type]
-                due = tb.value(first, "date due")
                 self.book.documents[key] = Document(
                     key=key, number=number, doc_type=doc_type, source_type=source, contact=contact,
                     reference=tb.value(first, "apply to invoice number") if credit else "", date=on,
                     due=self.read_date(due, where) if due else None, currency=self.book.base, status="posted",
                     lines=lines, total=total, tax_total=sum((ln.tax for ln in lines), ZERO), paid=total,
                     amount_due=ZERO, file=tb.name)
-                party_account = self.account(tb.value(first, f"accounts {side} account"))
                 self.party_accounts[key] = party_account
                 self.journal(letter, on, source, f"{side} {'credit note' if credit else 'invoice'}",
-                             number, contact, [GLLine(party_account, party_line, None, number), *distributions],
-                             invoice=number, document=key)
+                             number, contact, posted, invoice=number, document=key)
 
-    def _spread_taxes(self, lines: list[DocLine], kinds: list[str], taxes: dict[str, Decimal]) -> None:
+    def unsupported(self, tb: Table, rows: list[dict[str, str]], where: str, *labels: str) -> str:
+        """The coverage label of a transaction Celerp carries only as the journal it posted: one a
+        later transaction voided, or one holding back retainage. Counted; "" for any other."""
+        first = rows[0]
+        if VOIDED in labels and tb.value(first, "voided by transaction"):
+            label = VOIDED
+        elif RETAINAGE in labels and any(amount(tb.value(row, c), where) for row in rows
+                                         for c in ("retainage percent", "retainage amount")):
+            label = RETAINAGE
+        else:
+            return ""
+        self.book.skipped[label] += 1
+        return label
+
+    def tax_code(self, agency: str, account: str, where: str) -> None:
+        """The agency's tax rate, posting to the one account its tax distributions name: an agency
+        whose tax posts to two accounts refuses the set."""
+        tax = self.book.tax_codes.setdefault(agency, TaxCode(agency, ZERO, account))
+        if tax.account != account:
+            raise ScanError(t("migration.err_sage50_agency_accounts", agency=agency, accounts=f"{tax.account}, {account}",
+                              where=where))
+        if account in self.book.accounts and self.book.accounts[account].control is None:
+            self.book.accounts[account].control = "tax"
+
+    def document_key(self, letter: str, number: str, contact: str) -> str:
+        """S:number or P:number; where another contact's document has the number, with the contact
+        as well; an unnumbered document (one never printed) by its journal. A contact holding two
+        documents of one number is noted, so a reference to it is refused, never guessed."""
+        if not number:
+            return f"{letter}:#{self.sequence + 1}"
+        held = self.numbers[(letter, number)]
+        if contact in held:
+            self.book.repeated.add((letter, number, contact))
+        held.append(contact)
+        key = f"{letter}:{number}"
+        for candidate in (key, f"{key}|{contact}"):
+            if candidate not in self.book.documents:
+                return candidate
+        return f"{key}|{contact}|{self.sequence + 1}"
+
+    def _spread_taxes(self, lines: list[DocLine], kinds: list[int | None], taxes: dict[str, Decimal]) -> None:
         """Each tax agency's line spread over the lines it was charged on, in proportion to them:
         the document's one charged line, or its charged lines when they share one Tax Type. Lines
         of different tax types may be taxable or exempt, which the export does not say, so their
         document keeps each tax as a line of its own and is listed in the coverage."""
         charged = [i for i, ln in enumerate(lines) if ln.net > 0]
-        types = {kinds[i] for i in charged}
-        spread = len(charged) == 1 or (len(types) == 1 and "" not in types)
+        spread = len({kinds[i] for i in charged}) == 1
         if any(taxes.values()) and not spread:
             self.book.skipped[UNASSIGNED_TAX] += 1
         weights = [ln.net if i in charged else ZERO for i, ln in enumerate(lines)]
@@ -457,8 +549,7 @@ class _Reader:
                 lines.append(DocLine(None, agency, ZERO, ZERO, None, ZERO, [LineTax(agency, tax)],
                                      self.book.tax_codes[agency].account or ""))
                 continue
-            # Sage 50 keeps every amount at cents, whatever the currency.
-            for ln, share in zip(lines, allocate_pro_rata(tax, weights, "")):
+            for ln, share in zip(lines, allocate_pro_rata(tax, weights, self.book.base)):
                 if share:
                     ln.taxes.append(LineTax(agency, share))
 
@@ -466,7 +557,8 @@ class _Reader:
         """Receipts or payments: the cash line, its distributions and a discount taken, the
         invoices or purchases each distribution pays. Sage 50 leaves the G/L Account of a
         distribution applied to an invoice or purchase empty: it posts to that document's
-        receivable or payable account."""
+        receivable or payable account. A receipt applied to no invoice (a prepayment) stays on
+        the customer as credit."""
         party, reference = ("customer id", "reference") if sales else ("vendor id", "check number")
         discount_sign = 1 if sales else -1
         for tb in of(self.tables, layout):
@@ -480,9 +572,9 @@ class _Reader:
                     posted = money(tb.value(row, "amount"), where)
                     paid = tb.value(row, "invoice paid")
                     doc = find_document(self.book, sales, paid, contact) if paid and contact else None
-                    account = self.account(tb.value(row, "g/l account")
-                                           or (self.party_accounts[doc.key] if doc is not None else ""))
-                    lines.append(GLLine(account, posted, None, tb.value(row, "description")))
+                    account = tb.value(row, "g/l account") or (
+                        self.party_accounts[doc.key] if doc is not None else self.beginning.get((sales, paid, contact), ""))
+                    lines.append(GLLine(self.account(account), posted, None, tb.value(row, "description")))
                     discount = money(tb.value(row, "discount amount"), where)
                     if discount:
                         lines.append(GLLine(self.account(tb.value(first, "discount account")), discount_sign * discount,
@@ -490,6 +582,8 @@ class _Reader:
                     if doc is not None:
                         settles[doc.key] += -discount_sign * posted
                 _balanced(where, layout.label, lines)
+                if self.unsupported(tb, rows, where, VOIDED):
+                    settles.clear()
                 settles = {k: v for k, v in settles.items() if v}
                 kind = ("receivable payment" if sales else "payable payment") if settles else \
                     ("cash receipt" if sales else "cash disbursement")

@@ -130,6 +130,8 @@ def test_each_journal_not_uploaded_is_listed_with_what_it_means(tmp_path):
     assert rows["Purchase Journal (not uploaded)"].note == t("migration.sage50_absent_purchases")
     assert rows["Cash Disbursements Journal (not uploaded)"].note == t("migration.sage50_absent_payments")
     assert rows["Purchase Journal (not uploaded)"].count == 0
+    # Without it the history is not the whole history: a full history import cannot run.
+    assert rows["Purchase Journal (not uploaded)"].coverage_class == CoverageClass.UNSUPPORTED_FINANCIAL_BLOCKER
     assert "Sales Journal (not uploaded)" not in rows
 
 
@@ -255,6 +257,8 @@ PUBLISHED = {
         "Vendor ID,Vendor Name,Check Number,Date,Cash Account,Cash Amount,Number of Distributions,Invoice Paid,"
         "Description,G/L Account,Amount\r\n"
         "V1,First Vendor,101,01/25/25,1020,-500.00,1,B-1,Rent,,500.00\r\n"),
+    # A journal the business made no entry in, exported all the same: its headings alone.
+    "GENERAL.CSV": "Date,Reference,Number of Distributions,G/L Account,Description,Amount\r\n",
     "TB.CSV": (
         "First Company\r\nGeneral Ledger Trial Balance\r\n\"As of Jan 31, 2025\"\r\n\r\n"
         "Account ID,Account Description,Debit Amt,Credit Amt\r\n"
@@ -303,11 +307,11 @@ def test_a_sales_journal_without_tax_types_is_refused_rather_than_guessing_tax_f
     from celerp.importers.adapters.exports import sage50
 
     sales = (
-        "Customer ID,Customer Name,Invoice/CM #,Credit Memo,Date,Accounts Receivable Account,"
+        "Customer ID,Customer Name,Invoice/CM #,Credit Memo,Date,Date Due,Accounts Receivable Account,"
         "Number of Distributions,Invoice/CM Distribution,Description,G/L Account,Amount,Sales Tax Agency\r\n"
-        "C1,First Customer,1001,FALSE,01/10/25,1100,3,1,Goods,4000,-100.00,AGENCY\r\n"
-        "C1,First Customer,1001,FALSE,01/10/25,1100,3,0,Freight,4100,-15.00,AGENCY\r\n"
-        "C1,First Customer,1001,FALSE,01/10/25,1100,3,0,Sales tax,2310,-10.00,AGENCY\r\n")
+        "C1,First Customer,1001,FALSE,01/10/25,02/09/25,1100,3,1,Goods,4000,-100.00,AGENCY\r\n"
+        "C1,First Customer,1001,FALSE,01/10/25,02/09/25,1100,3,0,Freight,4100,-15.00,AGENCY\r\n"
+        "C1,First Customer,1001,FALSE,01/10/25,02/09/25,1100,3,0,Sales tax,2310,-10.00,AGENCY\r\n")
     files = [(n, (sales if n == "SALES.CSV" else d).encode("cp1252")) for n, d in PUBLISHED.items()]
     message = _refusal(tmp_path, files)
     assert t("migration.err_export_lacks_column", name="SALES.CSV", label="Sales Journal", columns="tax type",
@@ -480,6 +484,8 @@ def test_any_value_the_reader_cannot_convert_ends_as_the_damaged_refusal(tmp_pat
 def _route_cases() -> dict[str, tuple[list[tuple[str, bytes]], str]]:
     where = "SALES.CSV ALEM01 10001 07/02/23"
     return {
+        "tax_type": (_edited("SALES.CSV", ",2310,,0,-67.50,VAT15,,1", ",2310,,,-67.50,VAT15,,1"),
+                     t("migration.err_sage50_tax_type", where=where, value="")),
         "nan": (_edited("SALES.CSV", AMOUNT, '"NaN",VAT15,,1'), t("migration.err_export_number", value="NaN", where=where)),
         "exponent": (_edited("SALES.CSV", AMOUNT, '"1e999999",VAT15,,1'),
                      t("migration.err_export_number", value="1e999999", where=where)),
@@ -558,3 +564,232 @@ async def test_a_sage50_set_migrates_with_every_check_passing(real_engine, monke
     _passing(run)
     measures = {r["check"] for r in run.reconciliation["rows"]}
     assert {"trial_balance_at", "ar_by_customer", "ap_by_supplier", "bank_cash", "document_residual"} <= measures
+
+
+# ── What each transaction is, from its own fields ────────────────────────────
+#
+# Each case below is the documented set above with one thing changed, and states by hand what
+# Sage 50 means by it: never a figure taken from the reader's own output.
+
+BLOCKER = CoverageClass.UNSUPPORTED_FINANCIAL_BLOCKER
+FIRST = "SALES.CSV C1 1001 01/10/25"      # the first invoice, as a refusal names it
+SECOND = "SALES.CSV C1 1002 01/12/25"
+
+
+def _documented(changes: dict[str, str | None]) -> list[tuple[str, bytes]]:
+    """The documented set with files replaced, or left out where None."""
+    return [(n, d.encode("cp1252")) for n, d in {**PUBLISHED, **changes}.items() if d is not None]
+
+
+def _column(text: str, heading: str, *values: str) -> str:
+    """A template's text with one more column, holding `values` row by row."""
+    head, *rows = text.removesuffix("\r\n").split("\r\n")
+    assert len(rows) == len(values)
+    return "\r\n".join([f"{head},{heading}", *(f"{r},{v}" for r, v in zip(rows, values))]) + "\r\n"
+
+
+def _built(tmp_path, changes: dict[str, str | None], decisions: MigrationDecisions = ETB):
+    return _adapter().build_manifest(_set(tmp_path, _documented(changes)), decisions)
+
+
+@pytest.mark.parametrize("value", ["", "28", "1.5", "-1", "x", "0x"])
+def test_a_tax_type_sage50_does_not_have_is_refused_naming_its_transaction(tmp_path, value):
+    """Sage 50's Tax Type is a whole number from 0 to 27. Read as anything else, a 10.00 tax line
+    left blank would make 1001 an invoice of 210.00 with no tax at all; it is refused instead."""
+    sales = PUBLISHED["SALES.CSV"].replace(",Sales tax,2310,,0,-10.00,", f",Sales tax,2310,,{value},-10.00,")
+    assert _refusal(tmp_path, _documented({"SALES.CSV": sales})) == t(
+        "migration.err_sage50_tax_type", where=FIRST, value=value)
+
+
+def test_a_flag_that_is_neither_true_nor_false_is_refused(tmp_path):
+    sales = PUBLISHED["SALES.CSV"].replace(",FALSE,01/10/25,", ",MAYBE,01/10/25,", 1)
+    assert _refusal(tmp_path, _documented({"SALES.CSV": sales})) == t(
+        "migration.err_sage50_flag", where=FIRST, value="MAYBE", column="credit memo")
+
+
+def test_a_quote_posts_nothing_and_is_listed_not_imported(tmp_path):
+    sales = _column(PUBLISHED["SALES.CSV"] + "C1,First Customer,Q-1,,FALSE,01/15/25,02/14/25,1100,ST,1,1,5,,Goods,"
+                                             "4000,100.00,1,-500.00,\r\n", "Quote", *["FALSE"] * 6, "TRUE")
+    manifest = _built(tmp_path, {"SALES.CSV": sales})
+    assert sorted(d.ref for d in manifest.bundle.documents if d.doc_type == "invoice") == ["1001", "1002"]
+    assert not any(ln.credit == Decimal("500.00") for j in manifest.bundle.journals for ln in j.lines)
+    row = {r.source_type: r for r in manifest.coverage}["Quote"]
+    assert (row.count, row.coverage_class, row.note) == (1, CoverageClass.UNSUPPORTED_NONFINANCIAL,
+                                                         t("migration.sage50_quote_note"))
+
+
+def _carried(manifest, source: str) -> list[tuple[str, Decimal, str | None]]:
+    [journal] = [j for j in manifest.bundle.journals if j.source_type == source]
+    return sorted((ln.account_external_id, ln.debit - ln.credit, ln.contact_external_id) for ln in journal.lines)
+
+
+# What invoice 1002 posts: 440.00 on the customer, 300.00 and 100.00 of sales, 40.00 of tax.
+POSTED_1002 = [("1100", Decimal("440.00"), "First Customer"), ("2310", Decimal("-40.00"), None),
+               ("4000", Decimal("-300.00"), None), ("4000", Decimal("-100.00"), None)]
+
+
+@pytest.mark.parametrize("heading, values, label, note", [
+    ("Voided by Transaction", ("", "", "", "V1002", "V1002", "V1002"), "Voided transaction",
+     "migration.sage50_voided_note"),
+    ("Retainage Percent", ("", "", "", "10", "10", "10"), "Invoice or purchase with retainage",
+     "migration.sage50_retainage_note"),
+])
+def test_a_voided_invoice_or_one_holding_retainage_is_the_journal_it_posted_and_stops_a_full_history(
+        tmp_path, heading, values, label, note):
+    """Never an active invoice: what it posted is carried, so every account ends at Sage 50's
+    balance, and the coverage keeps a full history import from running."""
+    manifest = _built(tmp_path, {"SALES.CSV": _column(PUBLISHED["SALES.CSV"], heading, *values)})
+    assert [d.ref for d in manifest.bundle.documents if d.doc_type == "invoice"] == ["1001"]
+    assert _carried(manifest, f"{label} (journal)") == POSTED_1002
+    row = {r.source_type: r for r in manifest.coverage}[label]
+    assert (row.count, row.coverage_class, row.note) == (1, BLOCKER, t(note))
+
+
+def test_a_beginning_balance_posts_nothing_and_what_pays_it_relieves_the_customer(tmp_path):
+    """Sage 50 keeps a customer's beginning balance outside the general ledger, whose beginning
+    balances the trial balance carries: invoice 1001 posts nothing, and receipt R1, which pays it
+    with its G/L Account left empty, takes 210.00 off the customer's receivable."""
+    sales = _column(PUBLISHED["SALES.CSV"], "Beginning Balance Transaction", "TRUE", "TRUE", "TRUE",
+                    "FALSE", "FALSE", "FALSE")
+    manifest = _built(tmp_path, {"SALES.CSV": sales})
+    assert [d.ref for d in manifest.bundle.documents if d.doc_type == "invoice"] == ["1002"]
+    assert not any(ln.account_external_id == "4100" for j in manifest.bundle.journals for ln in j.lines)
+    assert _carried(manifest, "Receipt") == [("1020", Decimal("210.00"), None),
+                                             ("1100", Decimal("-210.00"), "First Customer")]
+    row = {r.source_type: r for r in manifest.coverage}["Customer or vendor beginning balance"]
+    assert (row.count, row.coverage_class, row.note) == (1, BLOCKER, t("migration.sage50_beginning_note"))
+
+
+def test_an_invoice_needs_its_date_due_and_a_credit_memo_may_have_none(tmp_path):
+    sales = PUBLISHED["SALES.CSV"].replace("01/10/25,02/09/25", "01/10/25,", 3)
+    assert _refusal(tmp_path, _documented({"SALES.CSV": sales})) == t(
+        "migration.err_sage50_due", where=FIRST, label="Sales Journal")
+    purchases = PUBLISHED["PURCHASE.CSV"].replace(",Date Due,", ",Due,").replace(",01/05/25,02/04/25,", ",01/05/25,,")
+    assert "lacks the column date due" in _refusal(tmp_path, _documented({"PURCHASE.CSV": purchases}))
+    # A credit memo is applied, never paid: 100.00 of goods returned against 1002, with no due date.
+    credit = PUBLISHED["SALES.CSV"] + "C1,First Customer,CM-1,1002,TRUE,01/20/25,,1100,ST,1,1,1,,Returned,4000,100.00,1,100.00,\r\n"
+    [note] = [d for d in _built(tmp_path, {"SALES.CSV": credit}).bundle.documents if d.doc_type == "credit_note"]
+    assert (note.ref, note.total, note.payment_due_date) == ("CM-1", Decimal("100.00"), None)
+
+
+@pytest.mark.parametrize("name, old, new, label, ident", [
+    ("CHART.CSV", "1020,Bank,FALSE,0\r\n", "1020,Bank,FALSE,0\r\n1020,Other Bank,FALSE,0\r\n",
+     "Chart of Accounts List", "1020"),
+    ("CUSTOMER.CSV", "C1,First Customer,FALSE\r\n", "C1,First Customer,FALSE\r\nC1,Other Customer,FALSE\r\n",
+     "Customer List", "C1"),
+    ("VENDOR.CSV", "V1,First Vendor,FALSE\r\n", "V1,First Vendor,FALSE\r\nV1,Other Vendor,FALSE\r\n", "Vendor List", "V1"),
+])
+def test_an_id_a_list_holds_twice_is_refused_rather_than_one_record_replacing_the_other(tmp_path, name, old, new,
+                                                                                      label, ident):
+    assert _refusal(tmp_path, _documented({name: PUBLISHED[name].replace(old, new)})) == t(
+        "migration.err_sage50_id_twice", name=name, label=label, id=ident)
+    items = "Item ID,Item Description\r\nA1,Paper\r\nA1,Pens\r\n"
+    assert _refusal(tmp_path, _documented({"ITEMS.CSV": items})) == t(
+        "migration.err_sage50_id_twice", name="ITEMS.CSV", label="Inventory Item List", id="A1")
+
+
+def test_an_agency_whose_tax_posts_to_two_accounts_is_refused(tmp_path):
+    sales = PUBLISHED["SALES.CSV"].replace(",Sales tax,2310,,0,-40.00,", ",Sales tax,3000,,0,-40.00,")
+    assert _refusal(tmp_path, _documented({"SALES.CSV": sales})) == t(
+        "migration.err_sage50_agency_accounts", agency="AGENCY", accounts="2310, 3000", where=SECOND)
+
+
+def test_a_receipt_naming_a_number_its_customer_holds_twice_is_refused_rather_than_guessed(tmp_path):
+    sales = PUBLISHED["SALES.CSV"].replace(",1002,", ",1001,")
+    assert _refusal(tmp_path, _documented({"SALES.CSV": sales})) == t(
+        "migration.err_export_reference_ambiguous", number="1001", contact="First Customer")
+
+
+def test_a_column_headed_twice_or_a_value_under_no_heading_refuses_the_file(tmp_path):
+    sales = _column(PUBLISHED["SALES.CSV"], "Tax Type", *["1"] * 6)
+    assert t("migration.err_export_column_twice", name="SALES.CSV", column="Tax Type") in _refusal(
+        tmp_path, _documented({"SALES.CSV": sales}))
+    # Another release's name for a column the file already has is the same column.
+    purchases = _column(PUBLISHED["PURCHASE.CSV"], "Invoice/CM #", "B-1")
+    assert t("migration.err_export_column_twice", name="PURCHASE.CSV", column="Invoice/CM #") in _refusal(
+        tmp_path, _documented({"PURCHASE.CSV": purchases}))
+    sales = PUBLISHED["SALES.CSV"].replace(",-100.00,AGENCY\r\n", ",-100.00,AGENCY,stray\r\n", 1)
+    assert t("migration.err_export_value_unheaded", name="SALES.CSV", value="stray") in _refusal(
+        tmp_path, _documented({"SALES.CSV": sales}))
+
+
+def test_another_releases_column_names_are_read_in_the_heading_only_never_in_the_data(tmp_path):
+    customers = PUBLISHED["CUSTOMER.CSV"].replace("C1,First Customer,", "C1,Invoice #,")
+    names = {c.name for c in _built(tmp_path, {"CUSTOMER.CSV": customers}).bundle.contacts}
+    assert "Invoice #" in names and "invoice/cm #" not in names
+
+
+def test_an_empty_journal_export_is_a_journal_and_one_not_uploaded_stops_a_full_history(tmp_path):
+    scan = _adapter().inspect(_set(tmp_path, _documented({})))
+    assert not [r for r in scan.coverage if r.coverage_class == BLOCKER]
+    rows = {r.source_type: r for r in _adapter().inspect(_set(tmp_path, _documented({"GENERAL.CSV": None}))).coverage}
+    assert (rows["General Journal (not uploaded)"].coverage_class, rows["General Journal (not uploaded)"].note) == (
+        BLOCKER, t("migration.sage50_absent_general"))
+
+
+# Books whose one transaction is a month's rent, kept in currencies of 0, 2 and 3 decimal places.
+EMPTY = {"SALES.CSV": "Customer ID,Invoice/CM #,Date,Date Due,Accounts Receivable Account,Number of Distributions,"
+                      "G/L Account,Tax Type,Amount\r\n",
+         "RECEIPTS.CSV": "Customer ID,Reference,Date,Cash Account,Cash Amount,Number of Distributions,G/L Account,"
+                         "Amount\r\n",
+         "PURCHASE.CSV": "Vendor ID,Invoice #,Date,Date Due,Accounts Payable Account,Number of Distributions,"
+                         "G/L Account,Amount\r\n",
+         "PAYMENTS.CSV": "Vendor ID,Check Number,Date,Cash Account,Cash Amount,Number of Distributions,G/L Account,"
+                         "Amount\r\n"}
+
+
+def _rent(rent: str) -> list[tuple[str, bytes]]:
+    paid = Decimal(rent)
+    tb = ("First Company\r\nGeneral Ledger Trial Balance\r\n\"As of {}\"\r\n\r\n"
+          "Account ID,Account Description,Debit Amt,Credit Amt\r\n{}")
+    files = {"CHART.CSV": "Account ID,Account Description,Inactive,Account Type\r\n1020,Bank,FALSE,0\r\n"
+                          "3000,Capital,FALSE,16\r\n3900,Retained Earnings,FALSE,18\r\n6000,Rent,FALSE,24\r\n",
+             "GENERAL.CSV": "Date,Reference,Number of Distributions,G/L Account,Description,Amount\r\n"
+                            f"01/05/25,RENT-1,2,6000,Rent,{rent}\r\n01/05/25,RENT-1,2,1020,Rent,-{rent}\r\n",
+             "TB-OPENING.CSV": tb.format("Dec 31, 2024", "1020,Bank,10000,\r\n3000,Capital,,10000\r\n"),
+             "TB.CSV": tb.format("Jan 31, 2025", f"1020,Bank,{10000 - paid},\r\n3000,Capital,,10000\r\n"
+                                                 f"6000,Rent,{paid},\r\n"),
+             **EMPTY}
+    return [(n, d.encode("cp1252")) for n, d in files.items()]
+
+
+@pytest.mark.parametrize("currency, rent", [("TND", "1.234"), ("JPY", "1234"), ("ETB", "1234.50")])
+def test_an_amount_is_imported_exactly_as_sage50_printed_it_in_its_currency(tmp_path, currency, rent):
+    decisions = MigrationDecisions(mode=CIFMode.FULL_HISTORY, mappings={"currency": currency})
+    files = _set(tmp_path, _rent(rent))
+    manifest = _adapter().build_manifest(files, decisions)
+    [journal] = [j for j in manifest.bundle.journals if j.source_external_id != "J:opening"]
+    assert {ln.account_external_id: ln.debit - ln.credit for ln in journal.lines} == {
+        "6000": Decimal(rent), "1020": -Decimal(rent)}
+    by = {(e.measure, e.key): e.expected for e in _adapter().source_expectations(files, decisions).expectations}
+    assert by[(M.TRIAL_BALANCE, "6000")] == Decimal(rent)
+
+
+@pytest.mark.parametrize("currency, rent, places", [("ETB", "1.234", 2), ("JPY", "1234.50", 0), ("TND", "1.2345", 3)])
+def test_an_amount_finer_than_the_chosen_currency_keeps_is_refused_never_rounded(tmp_path, currency, rent, places):
+    """Kept at cents, 1.234 would be imported as 1.23 and still tie out to a trial balance read the
+    same way: the import is refused by name instead."""
+    decisions = MigrationDecisions(mode=CIFMode.FULL_HISTORY, mappings={"currency": currency})
+    with pytest.raises(ScanError) as refused:
+        _adapter().build_manifest(_set(tmp_path, _rent(rent)), decisions)
+    assert str(refused.value) == t("migration.err_export_precision", where="General journal entry RENT-1",
+                                   value=f"{Decimal(rent):,f}", currency=currency, places=places)
+
+
+@pytest.mark.asyncio
+async def test_a_chart_and_trial_balance_alone_cannot_run_as_a_full_history(client, monkeypatch, tmp_path):
+    """Its trial balance would tie out from one opening journal with none of the transactions that
+    made it: only a cutover import, which says it carries balances, may run."""
+    from celerp.config import settings
+    from migration_support import save_decisions, scan_upload
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    files = [(n, d) for n, d in _rent("100.00") if n in ("CHART.CSV", "TB-OPENING.CSV", "TB.CSV")]
+    r = await scan_upload(client, _zip(files), name="sage50.zip", source="sage50")
+    assert r.status_code == 200 and "scan_token" in r.json(), r.text
+    token = r.json()["scan_token"]
+    r = await save_decisions(client, token, mappings={"currency": "ETB"})
+    assert r.status_code == 422, r.text
+    assert "Sales Journal (not uploaded)" in r.text and "General Journal (not uploaded)" in r.text
+    r = await save_decisions(client, token, mode="cutover", cutover_date="2025-01-31", mappings={"currency": "ETB"})
+    assert r.status_code == 200, r.text

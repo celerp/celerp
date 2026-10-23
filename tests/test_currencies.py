@@ -174,6 +174,32 @@ async def test_a_contact_kept_in_a_withdrawn_currency_keeps_it_and_none_moves_to
     assert await change(ids[1], "EUR") == 422
 
 
+@pytest.mark.asyncio
+async def test_a_withdrawn_currency_is_checked_against_the_contact_as_it_now_stands(client, session):
+    """A copy read before another change moved the contact to the euro cannot put it back on the
+    kuna: the change is checked against the contact as saved."""
+    from sqlalchemy import update
+
+    from celerp.models.projections import Projection
+
+    h = _auth(await _register(client))
+    r = await client.post("/crm/contacts", headers=h, json={"name": "Old Supplier", "currency": "EUR"})
+    assert r.status_code == 200, r.text
+    cid = r.json()["id"]
+    row = (await session.execute(select(Projection).where(Projection.entity_id == cid))).scalar_one()
+    row.state = {**row.state, "currency": "HRK"}
+    await session.commit()
+    # Another writer moves it to the euro; the copy this session holds still reads the kuna.
+    await session.execute(update(Projection).where(Projection.company_id == row.company_id,
+                                                   Projection.entity_id == cid)
+                          .values(state={**row.state, "currency": "EUR"})
+                          .execution_options(synchronize_session=False))
+    assert row.state["currency"] == "HRK"
+    r = await client.patch(f"/crm/contacts/{cid}", headers=h,
+                           json={"fields_changed": {"currency": {"old": "HRK", "new": "HRK"}}})
+    assert r.status_code == 422, r.text
+
+
 # ── The pickers ──────────────────────────────────────────────────────────────
 
 @pytest_asyncio.fixture

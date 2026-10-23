@@ -7,8 +7,9 @@ archive of them. Every file is matched to one of the source's layouts by its
 header row and, for a report, the title printed above it; never by its name. The
 set is checked against the source's checklist: each file is received, missing,
 optional, not needed, or pending until the ledger shows whether it is needed. A set
-that is missing a required file, holds a file no layout matches or a file twice, or
-holds a report exported a period at a time whose periods overlap or leave a gap, is
+that is missing a required file, holds a file no layout matches or a file twice, a file
+whose values cannot each be told by their heading (a column headed twice, a value under
+none), or a report exported a period at a time whose periods overlap or leave a gap, is
 refused with a message naming each file and what to export instead.
 """
 
@@ -114,12 +115,20 @@ def _members(name: str, path: Path) -> list[tuple[str, bytes]]:
             raise ScanError(t("migration.err_export_unreadable", name=name)) from exc
 
 
-def _match(lines: list[list[str]], layouts: tuple[Layout, ...]) -> tuple[Layout, int] | None:
+def heading(cell: str, aliases: dict[str, str]) -> str:
+    """A header cell as the layouts name it: normalized, under its alias where another version
+    of the source heads it differently. Only header cells are read so; data never is."""
+    name = normalize(cell)
+    return aliases.get(name, name)
+
+
+def _match(lines: list[list[str]], layouts: tuple[Layout, ...],
+           aliases: dict[str, str]) -> tuple[Layout, int] | None:
     """The layout a file's lines carry and the index of its header line. A report layout
     whose title is printed above its header wins over one matched on columns alone."""
     found: list[tuple[int, int, Layout, int]] = []
     for index, line in enumerate(lines[:HEADER_SEARCH]):
-        cells = {normalize(c) for c in line if c.strip()}
+        cells = {heading(c, aliases) for c in line if c.strip()}
         titles = {normalize(c) for above in lines[:index] for c in above if c.strip()}
         for layout in layouts:
             if not layout.columns <= cells:
@@ -139,6 +148,7 @@ class Stranger:
     name: str
     lines: list[list[str]]
     reason: str = ""
+    aliases: dict[str, str] = field(default_factory=dict)   # the source's other names for its columns
 
 
 def read_set(artifacts: ArtifactSet, layouts: tuple[Layout, ...],
@@ -162,22 +172,38 @@ def read_set(artifacts: ArtifactSet, layouts: tuple[Layout, ...],
             except ScanError as exc:
                 strangers.append(Stranger(name, [], str(exc)))
                 continue
-            if aliases:
-                lines[:HEADER_SEARCH] = [[aliases.get(normalize(c), c) for c in line] for line in lines[:HEADER_SEARCH]]
-            matched = _match(lines, layouts)
+            matched = _match(lines, layouts, aliases or {})
             if matched is None:
-                strangers.append(Stranger(name, lines[:HEADER_SEARCH]))
+                strangers.append(Stranger(name, lines[:HEADER_SEARCH], aliases=aliases or {}))
                 continue
             layout, index = matched
-            header = [normalize(c) for c in lines[index]]
-            table = Table(name, layout, lines[:index], header)
-            for line in lines[index + 1:]:
-                if any(c.strip() for c in line):
-                    # A report's first column may have no heading; it is read under "".
-                    table.rows.append({h: (line[i] if i < len(line) else "") for i, h in enumerate(header)
-                                       if h or i == 0})
-            tables.append(table)
+            header = [heading(c, aliases or {}) for c in lines[index]]
+            try:
+                tables.append(_table(name, layout, lines, index, header))
+            except ScanError as exc:
+                strangers.append(Stranger(name, [], str(exc)))
     return tables, strangers
+
+
+def _table(name: str, layout: Layout, lines: list[list[str]], index: int, header: list[str]) -> Table:
+    """The file's rows keyed by its header. Every value must sit under a heading of its own, so
+    none is lost or read as another: a column headed twice, or a value under no heading, refuses
+    the file. A report's first column may have no heading; it is read under ""."""
+    seen: set[str] = set()
+    for column, h in enumerate(header):
+        if h and h in seen:
+            raise ScanError(t("migration.err_export_column_twice", name=name, column=lines[index][column].strip()))
+        seen.add(h)
+    table = Table(name, layout, lines[:index], header)
+    for line in lines[index + 1:]:
+        if not any(c.strip() for c in line):
+            continue
+        stray = next((c.strip() for column, c in enumerate(line)
+                      if column and c.strip() and (column >= len(header) or not header[column])), "")
+        if stray:
+            raise ScanError(t("migration.err_export_value_unheaded", name=name, value=stray))
+        table.rows.append({h: (line[i] if i < len(line) else "") for i, h in enumerate(header) if h or i == 0})
+    return table
 
 
 def of(tables: list[Table], layout: Layout) -> list[Table]:
@@ -271,7 +297,7 @@ def _stranger_problem(stranger: Stranger, layouts: tuple[Layout, ...], source: s
         return stranger.reason
     best: tuple[int, Layout, frozenset[str]] | None = None
     for index, line in enumerate(stranger.lines):
-        cells = {normalize(c) for c in line if c.strip()}
+        cells = {heading(c, stranger.aliases) for c in line if c.strip()}
         titles = {normalize(c) for above in stranger.lines[:index] for c in above if c.strip()}
         for layout in layouts:
             if layout.title and normalize(layout.title) not in titles:
@@ -386,6 +412,8 @@ CURRENCY_SIGNS = ("$", "£", "€", "¥", "ETB", "Br", "ብር")
 # The largest amount read, in digits before the point: no book holds a quadrillion, and a
 # longer one is a damaged value that would overflow the money arithmetic.
 MAX_DIGITS = 15
+# The places past which a printed amount is a workbook's binary fraction, not the source's figure.
+NOISE = 9
 _PERIOD = re.compile(r"^(\d{1,2} \w+ \d{4}|\w+ \d{1,2}, \d{4}) ?[-\u2013] ?(\d{1,2} \w+ \d{4}|\w+ \d{1,2}, \d{4})$")
 
 
@@ -422,8 +450,15 @@ def amount(value: str, where: str = "") -> Decimal:
 
 
 def money(value: str, where: str = "") -> Decimal:
-    """An amount at cents: a workbook stores money as a binary fraction."""
-    return amount(value, where).quantize(Decimal("0.01"))
+    """An amount exactly as the file prints it, never rounded to a currency: whether it fits its
+    currency's minor units is checked once the currency is known (steps.check_precision). A
+    workbook stores money as a binary fraction, 0.1 + 0.2 written 0.30000000000000004; no currency
+    keeps more than four places, so a value printed past NOISE places is read at NOISE places."""
+    number = amount(value, where)
+    if number.as_tuple().exponent < -NOISE:
+        number = number.quantize(Decimal(1).scaleb(-NOISE)).normalize()
+    # Written as places, never as an exponent: 1e3 is 1000.
+    return number.quantize(Decimal(1)) if number.as_tuple().exponent > 0 else number
 
 
 class DateReader:

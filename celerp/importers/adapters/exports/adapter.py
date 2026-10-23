@@ -24,7 +24,7 @@ from celerp.importers.adapters.base import (
     SourceRevisionError,
     SourceScan,
 )
-from celerp.importers.adapters.exports import files, qbo, sage50, xero
+from celerp.importers.adapters.exports import files, qbo, sage50, steps, xero
 from celerp.importers.adapters.exports.book import Book
 from celerp.importers.adapters.exports.bundle import Source, build_bundle, coverage
 from celerp.importers.adapters.exports.ledger import Ledger, build_ledger
@@ -78,8 +78,11 @@ class ExportSetAdapter:
             raise SourceRevisionError(t(DAMAGED, source=self.display_name)) from exc
 
     def _book(self, artifacts: ArtifactSet, decisions: MigrationDecisions) -> Book:
-        """The set's books as the decisions read them. A source that asks a question reads its answer here."""
-        return self.read(artifacts)
+        """The set's books as the decisions read them, every amount checked against its currency.
+        A source that asks a question reads its answer here."""
+        book = self.read(artifacts)
+        steps.check_precision(book)
+        return book
 
     def _questions(self, book: Book) -> tuple[MappingQuestion, ...]:
         """What the user must decide about the set before it is imported; most sources ask nothing."""
@@ -168,22 +171,34 @@ class Sage50Adapter(ExportSetAdapter):
     display_name = sage50.SOURCE_NAME
     accepts_key = "migration.sage50_accepts"
     skipped = {sage50.EMPLOYEE: CoverageClass.UNSUPPORTED_NONFINANCIAL, sage50.STOCK: CoverageClass.UNSUPPORTED_NONFINANCIAL,
-               sage50.UNASSIGNED_TAX: CoverageClass.MAPPED_WITH_LOSS}
+               sage50.UNASSIGNED_TAX: CoverageClass.MAPPED_WITH_LOSS, sage50.QUOTE: CoverageClass.UNSUPPORTED_NONFINANCIAL,
+               sage50.BEGINNING: CoverageClass.UNSUPPORTED_FINANCIAL_BLOCKER,
+               sage50.VOIDED: CoverageClass.UNSUPPORTED_FINANCIAL_BLOCKER,
+               sage50.RETAINAGE: CoverageClass.UNSUPPORTED_FINANCIAL_BLOCKER}
     notes = {sage50.EMPLOYEE: "migration.sage50_employee_note", sage50.STOCK: "migration.sage50_stock_note",
-             sage50.UNASSIGNED_TAX: "migration.sage50_tax_unassigned_note"}
+             sage50.UNASSIGNED_TAX: "migration.sage50_tax_unassigned_note", sage50.QUOTE: "migration.sage50_quote_note",
+             sage50.BEGINNING: "migration.sage50_beginning_note", sage50.VOIDED: "migration.sage50_voided_note",
+             sage50.RETAINAGE: "migration.sage50_retainage_note"}
     matches = staticmethod(sage50.matches)
     check_files = staticmethod(sage50.check)
 
     def _book(self, artifacts: ArtifactSet, decisions: MigrationDecisions) -> Book:
-        return sage50.read_sage50(artifacts, decisions.mappings.get(sage50.CURRENCY_QUESTION))
+        """The books in the chosen currency, every amount checked against it; before one is chosen,
+        in the currency the reports suggest, whose places decide nothing."""
+        currency = decisions.mappings.get(sage50.CURRENCY_QUESTION)
+        book = sage50.read_sage50(artifacts, currency)
+        if currency:
+            steps.check_precision(book)
+        return book
 
     def _questions(self, book: Book) -> tuple[MappingQuestion, ...]:
         return (sage50.question(book.base or None),)
 
     def _coverage(self, ledger: Ledger) -> list[CIFCoverageEntry]:
-        """The shared coverage, and each journal not uploaded with what leaving it out means."""
+        """The shared coverage, and each journal not uploaded with what leaving it out means: a full
+        history import cannot run without it, a cutover import carries the balances at its date."""
         absent = [CIFCoverageEntry(source_type=sage50.ABSENT.format(layout.label), count=0,
-                                   coverage_class=CoverageClass.UNSUPPORTED_NONFINANCIAL,
+                                   coverage_class=CoverageClass.UNSUPPORTED_FINANCIAL_BLOCKER,
                                    note=t(sage50.ABSENT_NOTES[layout.kind]))
                   for layout in sage50.JOURNALS if layout.kind in ledger.book.absent]
         return sorted(super()._coverage(ledger) + absent, key=lambda r: r.source_type)

@@ -83,23 +83,23 @@
       "params": []
     },
     "migration.sage50_absent_general": {
-      "en": "No general journal entries are imported. Upload the General Journal if the business made any.",
+      "en": "Without the General Journal no general journal entries are imported, so a full history import cannot run. Upload it, even an export with no transactions, or import from a cutover date.",
       "params": []
     },
     "migration.sage50_absent_sales": {
-      "en": "No invoice or credit memo history is imported. Upload the Sales Journal if the business invoiced customers.",
+      "en": "Without the Sales Journal no invoice or credit memo history is imported, so a full history import cannot run. Upload it, even an export with no transactions, or import from a cutover date.",
       "params": []
     },
     "migration.sage50_absent_receipts": {
-      "en": "No receipts are imported, so invoices stay unpaid. Upload the Cash Receipts Journal if the business received money.",
+      "en": "Without the Cash Receipts Journal no receipts are imported, so a full history import cannot run. Upload it, even an export with no transactions, or import from a cutover date.",
       "params": []
     },
     "migration.sage50_absent_purchases": {
-      "en": "No purchase or vendor credit memo history is imported. Upload the Purchase Journal if the business entered purchases.",
+      "en": "Without the Purchase Journal no purchase or vendor credit memo history is imported, so a full history import cannot run. Upload it, even an export with no transactions, or import from a cutover date.",
       "params": []
     },
     "migration.sage50_absent_payments": {
-      "en": "No payments are imported, so purchases stay unpaid. Upload the Cash Disbursements Journal if the business paid money out.",
+      "en": "Without the Cash Disbursements Journal no payments are imported, so a full history import cannot run. Upload it, even an export with no transactions, or import from a cutover date.",
       "params": []
     },
     "migration.sage50_accepts": {
@@ -548,6 +548,90 @@
     },
     "currency.name.ZWL": {
       "en": "Zimbabwean Dollar (2009)",
+      "params": []
+    },
+    "migration.err_export_column_twice": {
+      "en": "{name} holds the column {column} twice, so its values cannot be told apart. Export it again and upload the new file.",
+      "params": [
+        "column",
+        "name"
+      ]
+    },
+    "migration.err_export_value_unheaded": {
+      "en": "{name}: the value \"{value}\" sits in a column with no heading. Export the file again with its headings and upload the new file.",
+      "params": [
+        "name",
+        "value"
+      ]
+    },
+    "migration.err_export_precision": {
+      "en": "{where}: {value} carries more decimal places than {currency} keeps ({places}). Check that these books are kept in {currency}.",
+      "params": [
+        "currency",
+        "places",
+        "value",
+        "where"
+      ]
+    },
+    "migration.err_export_reference_ambiguous": {
+      "en": "{contact} holds more than one document numbered {number}, so a payment, credit or report naming {number} could mean either. Give each its own number in the source and export the set again.",
+      "params": [
+        "contact",
+        "number"
+      ]
+    },
+    "migration.err_sage50_flag": {
+      "en": "{where}: \"{value}\" in {column} is neither TRUE nor FALSE. Export the file again.",
+      "params": [
+        "column",
+        "value",
+        "where"
+      ]
+    },
+    "migration.err_sage50_tax_type": {
+      "en": "{where}: \"{value}\" is not a Sage 50 Tax Type, a whole number from 0 to 27. Export the Sales Journal again.",
+      "params": [
+        "value",
+        "where"
+      ]
+    },
+    "migration.err_sage50_id_twice": {
+      "en": "{name} ({label}) lists the ID {id} twice. Export it again and upload the new file.",
+      "params": [
+        "id",
+        "label",
+        "name"
+      ]
+    },
+    "migration.err_sage50_agency_accounts": {
+      "en": "The sales tax of {agency} posts to two accounts, {accounts} (the second in {where}). Post each tax agency's tax to one account in Sage 50 and export the Sales Journal again.",
+      "params": [
+        "accounts",
+        "agency",
+        "where"
+      ]
+    },
+    "migration.err_sage50_due": {
+      "en": "{where} gives no Date Due. Sage 50 requires one on every invoice and purchase: export the {label} again.",
+      "params": [
+        "label",
+        "where"
+      ]
+    },
+    "migration.sage50_quote_note": {
+      "en": "Quotes post nothing in Sage 50 and are not imported.",
+      "params": []
+    },
+    "migration.sage50_beginning_note": {
+      "en": "Sage 50 keeps customer and vendor beginning balances outside its general ledger, whose beginning balances the trial balance carries, so they are not imported as invoices or purchases. A full history import cannot run: import from a cutover date after they are paid.",
+      "params": []
+    },
+    "migration.sage50_voided_note": {
+      "en": "These transactions were voided in Sage 50. What each posted is imported as a journal entry, so every account ends at Sage 50's balance, but not as an invoice, purchase, receipt or payment. A full history import cannot run: import from a cutover date after them.",
+      "params": []
+    },
+    "migration.sage50_retainage_note": {
+      "en": "These invoices or purchases hold back retainage, which Celerp does not keep on a document. What each posted is imported as a journal entry, so every account ends at Sage 50's balance. A full history import cannot run: import from a cutover date after them.",
       "params": []
     }
   }

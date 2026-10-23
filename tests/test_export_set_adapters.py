@@ -513,6 +513,12 @@ def test_a_document_number_is_found_only_on_its_own_contacts_document():
     assert find_document(book, True, "INV-1", "").key == "S:INV-1"    # a journal naming no contact
     assert find_document(book, False, "INV-1", "Cy").key == "P:INV-1|Cy"
     assert find_document(book, False, "INV-1", "Ann") is None
+    # Two of Bob's documents share the number: a reference to it names neither, and is refused.
+    book.repeated.add(("S", "INV-1", "Bob"))
+    with pytest.raises(ScanError) as refused:
+        find_document(book, True, "INV-1", "Bob")
+    assert str(refused.value) == t("migration.err_export_reference_ambiguous", number="INV-1", contact="Bob")
+    assert find_document(book, True, "INV-1", "Ann").key == "S:INV-1"
 
 
 # ── Values an export set holds ────────────────────────────────────────────────
@@ -613,3 +619,86 @@ def test_a_damaged_workbook_is_named_as_unreadable(tmp_path):
 
     _, strangers = files.read_set(_set(tmp_path, [("Trial Balance.xlsx", _broken_workbook())]), ())
     assert [s.reason for s in strangers] == [t("migration.err_export_unreadable", name="Trial Balance.xlsx")]
+
+
+# ── Headers and amounts, as every export set reads them ──────────────────────
+
+def _xero_edited(name: str, old: str, new: str) -> list[tuple[str, bytes]]:
+    """The Xero set with `old` written as `new` once in one of its text files."""
+    out = []
+    for n, data in _xero():
+        if n == name:
+            text = data.decode("utf-8-sig")
+            assert old in text, old
+            data = text.replace(old, new, 1).encode("utf-8-sig")
+        out.append((n, data))
+    return out
+
+
+def _qbo_cell(name: str, coordinate: str, value: str) -> list[tuple[str, bytes]]:
+    """The QuickBooks Online set with one cell of one workbook set to `value`."""
+    out = []
+    for n, data in _qbo():
+        if n == name:
+            book = openpyxl.load_workbook(io.BytesIO(data))
+            book.active[coordinate] = value
+            saved = io.BytesIO()
+            book.save(saved)
+            data = saved.getvalue()
+        out.append((n, data))
+    return out
+
+
+def _refused(adapter, tmp_path, files) -> str:
+    with pytest.raises(ScanError) as refused:
+        adapter.inspect(_set(tmp_path, files))
+    return str(refused.value)
+
+
+def test_a_column_headed_twice_is_refused_rather_than_one_value_replacing_the_other(tmp_path):
+    # "Description" headed "Name" again: *Name and Name are one column to the reader.
+    files = _xero_edited("ChartOfAccounts.csv", "*Tax Code,Description,", "*Tax Code,Name,")
+    assert t("migration.err_export_column_twice", name="ChartOfAccounts.csv", column="Name") in _refused(
+        _adapter(), tmp_path, files)
+    files = _qbo_cell("Account List.xlsx", "E5", "Account")
+    assert t("migration.err_export_column_twice", name="Account List.xlsx", column="Account") in _refused(
+        _qbo_adapter(), tmp_path, files)
+
+
+def test_a_value_under_no_heading_is_refused_rather_than_dropped(tmp_path):
+    files = _xero_edited("ChartOfAccounts.csv", "090,Business Bank Account,Bank,No VAT,,No,No,No,",
+                         "090,Business Bank Account,Bank,No VAT,,No,No,No,,stray")
+    assert t("migration.err_export_value_unheaded", name="ChartOfAccounts.csv", value="stray") in _refused(
+        _adapter(), tmp_path, files)
+    files = _qbo_cell("Account List.xlsx", "G6", "stray")
+    assert t("migration.err_export_value_unheaded", name="Account List.xlsx", value="stray") in _refused(
+        _qbo_adapter(), tmp_path, files)
+
+
+def test_an_amount_is_read_exactly_as_printed_and_a_workbooks_binary_fraction_as_meant():
+    from celerp.importers.adapters.exports.files import money
+
+    assert money("1.234") == Decimal("1.234") and str(money("1.234")) == "1.234"
+    assert money("1,234.5") == Decimal("1234.5")
+    assert money("0.30000000000000004") == Decimal("0.3")
+    assert money("1e3") == Decimal(1000) and str(money("1e3")) == "1000"
+
+
+def test_an_amount_finer_than_its_currency_is_refused_never_rounded(tmp_path):
+    """A pound amount of three decimal places cannot be the books' figure: it is refused by name,
+    where reading it at cents would have changed it unseen."""
+    files = _xero_edited("Invoices 1.csv", "INV-0001,,01/01/2023,31/01/2023,10.08,1.68,10.08,0.00",
+                         "INV-0001,,01/01/2023,31/01/2023,10.08,1.68,10.075,0.005")
+    assert _refused(_adapter(), tmp_path, files) == t(
+        "migration.err_export_precision", where="Invoices 1.csv INV-0001", value="10.075", currency="GBP", places=2)
+
+
+def test_xero_and_quickbooks_sets_read_the_same_with_amounts_kept_exact(tmp_path):
+    """Every amount both fixtures print fits its currency, so reading them exactly changes nothing."""
+    for adapter, files in ((_adapter(), _xero()), (_qbo_adapter(), _qbo())):
+        manifest = adapter.build_manifest(_set(tmp_path, files), FULL)
+        for doc in manifest.bundle.documents:
+            assert doc.total == doc.total.quantize(Decimal("0.01")), doc.source_external_id
+        for journal in manifest.bundle.journals:
+            for line in journal.lines:
+                assert line.debit == line.debit.quantize(Decimal("0.01")), journal.source_external_id
