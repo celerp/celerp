@@ -11,6 +11,7 @@ tests/helpers.py is a shim that re-exports from here for backward compatibility.
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import os
@@ -506,3 +507,13 @@ def released_migration_history(database_url: str = DATABASE_URL):
             else:
                 cur.execute("DROP TABLE IF EXISTS alembic_version")
         conn.close()
+
+
+async def settle_background() -> None:
+    """Wait for the background work the app started on this event loop (and any work
+    that work starts) to finish, so none of it is cut off when the loop closes."""
+    from celerp.services import background
+
+    loop = asyncio.get_running_loop()
+    while pending := [t for t in background._BG_TASKS if t.get_loop() is loop and not t.done()]:
+        await asyncio.gather(*pending, return_exceptions=True)

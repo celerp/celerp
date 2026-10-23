@@ -40,6 +40,7 @@ from celerp.services.field_schema import reject_system_item_fields
 from celerp.services.locations import require_company_location, require_ship_from
 from celerp.accounting_roles import CONSIGNOR_FIELD, CONSIGNOR_PAYABLE_FIELD, LOT_ACCOUNT_FIELD, VALUED_FROM_KEY, AccountRole, refusal
 from celerp.services.account_roles import current_settings, is_consigned, lineage, lot_account, new_lot_account, role_map
+from celerp.services.background import spawn_background
 from celerp.services.company_lock import lock_company, lock_projections, locked_company
 from celerp.services.goods_cost import negative_cost_error
 from celerp.services.journal_accounts import require_destinations, require_line_destinations, require_settlement_account
@@ -2133,7 +2134,7 @@ def _email_with_receipt(company_id, doc_label: str, sent_to: str, action_url: st
             import logging
             logging.getLogger(__name__).exception("Email receipt notification failed for %s", sent_to)
 
-    asyncio.create_task(_run())
+    spawn_background(_run())
 
 
 async def mark_doc_sent(session: AsyncSession, company_id, entity_id: str, user,

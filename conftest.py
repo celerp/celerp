@@ -151,7 +151,7 @@ from ui.app import app as _ui_app
 import sys as _sys, os as _os
 from pathlib import Path
 
-from test_helpers import REPO_ROOT, DATABASE_URL, make_test_token, authed_cookies, _crm_available, company_auth  # noqa: F401
+from test_helpers import REPO_ROOT, DATABASE_URL, make_test_token, authed_cookies, _crm_available, company_auth, settle_background  # noqa: F401
 
 # Register inventory module routes onto the test app.
 _inv_src = _os.path.join(_os.path.dirname(__file__), "default_modules", "celerp-inventory")
@@ -808,6 +808,22 @@ async def committed_engine():
                 cur.execute(f'DROP DATABASE IF EXISTS "{race_db}"')
         finally:
             admin.close()
+
+
+@pytest_asyncio.fixture
+async def _background_work_finishes():
+    """Background work a test's requests started finishes on the test's own event
+    loop. Left running, it would be cut off when the loop closes, and a database
+    connection it held would only be reported unclosed in some later test."""
+    yield
+    await settle_background()
+
+
+def pytest_collection_modifyitems(items):
+    # Every async test, and only those: a sync test has no loop of its own to settle.
+    for item in items:
+        if pytest_asyncio.is_async_test(item) and "_background_work_finishes" not in item.fixturenames:
+            item.fixturenames.append("_background_work_finishes")
 
 
 @pytest_asyncio.fixture
