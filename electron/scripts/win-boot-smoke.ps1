@@ -245,13 +245,15 @@ function AppOutput([string]$boot) {
   if (Test-Path $boot) { Get-Content $boot -Tail 200 } else { Write-Host "(no captured output)" }
   Write-Host "===== boot-relevant files (logs / postgres state) ====="
   Get-ChildItem -Path $udd -Recurse -EA SilentlyContinue |
-    Where-Object { -not $_.PSIsContainer -and $_.Name -match '(?i)\.log(\.prev)?$|logfile|PG_VERSION|postmaster|\.pid$|migrat|deelevate' } |
+    Where-Object { -not $_.PSIsContainer -and $_.FullName -notmatch '(?i)\\celerp-data\\modules\\' -and
+                   $_.Name -match '(?i)\.log(\.prev)?$|logfile|PG_VERSION|postmaster|\.pid$|migrat|deelevate' } |
     ForEach-Object { Write-Host "== $($_.FullName) =="; Get-Content $_.FullName -Tail 80 -EA SilentlyContinue }
 }
 
 # Launches the installed app exactly as a user would (default data directory, no
-# --user-data-dir) and waits for db:ok; returns the API port. -NewInstall names no
-# modules, so only the ones a new install starts are running.
+# --user-data-dir) and waits until it is ready: it has published its API port (it does
+# once it has started and handles a restart) and the API answers db:ok. Returns the
+# port. -NewInstall names no modules, so only the ones a new install starts are running.
 function Launch([string]$exe, [string]$what, [switch]$MustFail, [switch]$NewInstall) {
   Get-ChildItem -Path $udd -Recurse -Filter "api-port" -EA SilentlyContinue | Remove-Item -Force
   $boot = Join-Path $pub "celerp-boot.out"

@@ -1,9 +1,10 @@
 // Copyright (c) 2026 Noah Severs
 // SPDX-License-Identifier: BUSL-1.1
 //
-// The data folder's api-port file names the port the API serves on now. A restart
-// (after a restore, a module change, the in-app Restart) starts the API on a new
-// port, so every start of the API publishes its port, not only the first one.
+// The data folder's api-port file names the port the API serves on now. Tooling that
+// finds the API there may restart it at once, so the file is written only once the
+// app watches the API for a restart (restart.test.js covers when that is), never
+// as the API process starts: a restart before that stops the API for good.
 
 "use strict";
 
@@ -13,8 +14,8 @@ const path = require("path");
 const { EventEmitter } = require("events");
 const { loadAppMain } = require("./app-main-loader.lib");
 
-test("every start of the API publishes its port",
-  async function test_every_start_of_the_api_publishes_its_port() {
+test("starting the API leaves the port of the API before it in place",
+  async function test_starting_the_api_leaves_the_published_port_alone() {
     const userData = fs.mkdtempSync(path.join(os.tmpdir(), "celerp-port-"));
     const childProcess = {
       execFileSync: () => "",
@@ -24,7 +25,7 @@ test("every start of the API publishes its port",
         return server;
       },
     };
-    const { startServer } = loadAppMain({
+    const { startServer, publishApiPort } = loadAppMain({
       app: { getPath: () => userData },
       extraFakes: { child_process: childProcess },
     });
@@ -33,6 +34,8 @@ test("every start of the API publishes its port",
     fs.writeFileSync(portFile, "51969");   // the port of the API before the restart
 
     await expect(startServer("api", "postgresql://db", {})).rejects.toThrow("test boundary");
+    expect(fs.readFileSync(portFile, "utf8")).toBe("51969");
 
+    publishApiPort();
     expect(fs.readFileSync(portFile, "utf8")).toBe("9");
   });

@@ -21,6 +21,7 @@ const SETTERS = "\n;module.exports.setMainWindow = (win) => { mainWindow = win; 
   ";module.exports.setupAutoUpdater = () => setupAutoUpdater();\n" +
   ";module.exports.windowsPrivateRoot = () => windowsPrivateRoot();\n" +
   ";module.exports.serverCommand = (asgiApp, port) => serverCommand(asgiApp, port);\n" +
+  ";module.exports.publishApiPort = () => publishApiPort();\n" +
   ";module.exports.startServer = (which, dbUrl, cfg) => { apiPort = apiPort || 9; uiPort = uiPort || 9; " +
   "return (which === \"api\" ? startApi : startUi)(dbUrl, cfg); };\n";
 
@@ -75,7 +76,8 @@ function loadAppMain({ app = {}, dialog = {}, shell = {}, extraFakes = {}, resou
   return { handlers, listeners, updater, setMainWindow: mod.exports.setMainWindow,
            setServices: mod.exports.setServices, postgresLauncher: mod.exports.postgresLauncher,
            windowsPrivateRoot: mod.exports.windowsPrivateRoot, setupAutoUpdater: mod.exports.setupAutoUpdater,
-           serverCommand: mod.exports.serverCommand, startServer: mod.exports.startServer };
+           serverCommand: mod.exports.serverCommand, startServer: mod.exports.startServer,
+           publishApiPort: mod.exports.publishApiPort };
 }
 
 module.exports = { loadAppMain };

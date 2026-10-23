@@ -743,21 +743,26 @@ jobs:
           [ "$RUNNER_OS" = "Linux" ] && LAUNCH=(xvfb-run -a "$APP_BIN")
           # The app keeps its data under the user's real home, which macOS reads without $HOME.
           REAL_HOME="$(python3 -c 'import os,pwd; print(pwd.getpwuid(os.getuid()).pw_dir)')"
-          # Launches the app ($1 names the launch) and waits for db:ok.
+          # Launches the app ($1 names the launch) and waits until it is ready: it has
+          # published its API port (it does once it has started and handles a restart)
+          # and the API answers db:ok.
           boot() {
+            find "$HOME" "$REAL_HOME" -maxdepth 6 -path '*celerp-data/api-port' -type f -delete || true
             "${LAUNCH[@]}" >"$LOG" 2>&1 &
             APP_PID=$!
             DEADLINE=$(( $(date +%s) + 120 ))     # generous cap; we poll, never sleep-then-check
             ok=""
             while [ "$(date +%s)" -lt "$DEADLINE" ]; do
               kill -0 "$APP_PID" 2>/dev/null || { echo "::error::app exited before becoming ready (crash on launch)"; break; }
-              if curl -fs --max-time 5 "http://127.0.0.1:$API_PORT/health/ready" 2>/dev/null | grep -q '"db"[[:space:]]*:[[:space:]]*"ok"'; then
+              PORT_FILE="$(find "$HOME" "$REAL_HOME" -maxdepth 6 -path '*celerp-data/api-port' -type f | head -1)"
+              if [ -n "$PORT_FILE" ] && [ "$(cat "$PORT_FILE")" = "$API_PORT" ] \
+                 && curl -fs --max-time 5 "http://127.0.0.1:$API_PORT/health/ready" 2>/dev/null | grep -q '"db"[[:space:]]*:[[:space:]]*"ok"'; then
                 ok=1; break
               fi
               sleep 1
             done
             if [ -z "$ok" ]; then
-              echo "::error::boot smoke FAILED on $RUNNER_OS ($1) - /health/ready never returned db:ok"
+              echo "::error::boot smoke FAILED on $RUNNER_OS ($1) - the app never published its API port with /health/ready at db:ok"
               echo "----- app log (tail) -----"; tail -n 200 "$LOG" || true
               find "$HOME" "$REAL_HOME" -maxdepth 6 -path '*celerp-data/logs/*' -type f -exec tail -n 100 {} + || true
               kill -9 "$APP_PID" 2>/dev/null || true
@@ -769,7 +774,6 @@ jobs:
           # the ones a new install starts are running. Every business type must set up a
           # company, and keep it through the restart that loads its modules.
           boot "new install"
-          PORT_FILE="$(find "$HOME" "$REAL_HOME" -maxdepth 6 -path '*celerp-data/api-port' -type f | head -1)"
           if ! python3 ../scripts/smoke_records.py first-run "$PORT_FILE" ../default_modules/celerp-verticals/celerp_verticals/presets; then
             echo "::error::setting up a new install FAILED on $RUNNER_OS"
             echo "----- app log (tail) -----"; tail -n 200 "$LOG" || true
