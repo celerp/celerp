@@ -9,6 +9,7 @@ receipt reading jobs in the module's batch tests.
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -330,6 +331,44 @@ async def test_question_sent_twice_at_once_is_refused_once(client, session, owne
     r = await _ask(client, token, conv, question)
     assert r.status_code == 409, r.text
     assert r.json()["detail"]["code"] == "question_in_progress"
+
+
+async def test_question_sent_again_while_it_is_answered_runs_once(client, owner, monkeypatch):
+    """The same question sent again half a second later, while its first send is still
+    being answered, is told it is in progress: one model run, one stored answer, one
+    charge. Once answered, sending it again returns that answer without asking."""
+    token, _, _ = owner
+    sent: list = []
+
+    async def _slow(messages, *, tools=None, reservation_id=None, operation_id=None, **_kw):
+        sent.append(operation_id)
+        await asyncio.sleep(1.0)
+        return _answer()
+
+    set_session_token("s" * 64)
+    monkeypatch.setattr(service, "complete", _slow)
+    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None: {})
+    conv = await _conversation(client, token)
+    question = uuid.uuid4()
+
+    async def _again():
+        await asyncio.sleep(0.5)
+        return await _ask(client, token, conv, question)
+
+    first, second = await asyncio.gather(_ask(client, token, conv, question), _again())
+    assert first.status_code == 200, first.text
+    assert second.status_code == 409, second.text
+    assert second.json()["detail"]["code"] == "question_in_progress"
+    assert sent == [question]
+    thread = await _messages(client, token, conv)
+    assert [m["role"] for m in thread] == ["user", "assistant"]
+    assert _counts((await _usage(client, token)).json()["users"]) == [(1, 1)]
+
+    again = await _ask(client, token, conv, question)
+    assert (again.status_code, again.json()["asked_again"], again.json()["answer"]) == (
+        200, True, first.json()["answer"])
+    assert sent == [question]
+    assert len(await _messages(client, token, conv)) == 2
 
 
 async def test_one_off_query_is_counted_and_cites_help(client, owner, monkeypatch):

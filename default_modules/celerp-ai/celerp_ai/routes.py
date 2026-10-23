@@ -34,6 +34,7 @@ from __future__ import annotations
 import copy
 import secrets
 import uuid
+from contextlib import contextmanager
 from dataclasses import asdict
 from datetime import date, datetime, timedelta, timezone
 from typing import Literal
@@ -160,6 +161,25 @@ def _attachment_kinds(file_ids: list[str] | None, company_id, user_id) -> set[st
         _, meta = _load_file_http(fid, company_id, user_id)
         kinds.add("table" if meta.get("content_type") in _TABLE_TYPES else "document")
     return kinds
+
+
+# Questions whose agent run is under way in this process. The app runs one server
+# process, so this is every run: a question sent again while its first send is
+# still being answered is told so instead of being answered twice.
+_ANSWERING: set[uuid.UUID] = set()
+
+
+@contextmanager
+def _answering(question_id: uuid.UUID):
+    """Hold ``question_id`` as being answered for the duration of the block; a
+    second hold while the first is held is refused as ``question_in_progress``."""
+    if question_id in _ANSWERING:
+        raise _conflict("question_in_progress", t("ai.err_question_in_progress"))
+    _ANSWERING.add(question_id)
+    try:
+        yield
+    finally:
+        _ANSWERING.discard(question_id)
 
 
 def _conflict(code: str, message: str) -> HTTPException:
@@ -710,7 +730,8 @@ async def query_in_conversation(
     Sent again with the same text and files while it is the conversation's
     latest question, it asks that question again instead of adding a new one:
     a question that already has an answer returns it, and one whose run failed
-    runs again, charged at most once in all.
+    runs again, charged at most once in all. Sent again while its first send is
+    still being answered, it is refused as in progress.
     """
     from sqlalchemy.exc import IntegrityError
 
@@ -776,64 +797,65 @@ async def query_in_conversation(
     if answered is not None:
         return _answer_response(answered, question_id=question_id, asked_again=True)
 
-    # Assemble the read-only context, then commit so the session is quiescent
-    # for the duration of the agent loop (which reaches the app over its own
-    # request sessions). The history is what came before the question.
-    prior_msgs = await get_messages(session, conversation_id)
-    if asked is not None:
-        prior_msgs = [m for m in prior_msgs if m.created_at < asked.created_at]
-    history = build_history_context(prior_msgs)
-    memory = await get_memory(session, company_id)
-    try:
-        user_msg = asked or await add_message(
-            session, conversation_id, "user", body.query, file_ids=body.file_ids, message_id=question_id,
+    with _answering(question_id):
+        # Assemble the read-only context, then commit so the session is quiescent
+        # for the duration of the agent loop (which reaches the app over its own
+        # request sessions). The history is what came before the question.
+        prior_msgs = await get_messages(session, conversation_id)
+        if asked is not None:
+            prior_msgs = [m for m in prior_msgs if m.created_at < asked.created_at]
+        history = build_history_context(prior_msgs)
+        memory = await get_memory(session, company_id)
+        try:
+            user_msg = asked or await add_message(
+                session, conversation_id, "user", body.query, file_ids=body.file_ids, message_id=question_id,
+            )
+            await session.commit()
+        except IntegrityError:
+            await session.rollback()
+            raise _conflict("question_in_progress", t("ai.err_question_in_progress"))
+
+        try:
+            result: AgentResult = await run_agent(
+                app=request.app,
+                authorization=request.headers.get("authorization", ""),
+                query=body.query,
+                company_id=company_id,
+                company_settings=company_settings,
+                user_id=user.id,
+                role=role,
+                memory=memory,
+                file_ids=body.file_ids,
+                history=history,
+                operation_id=question_id,
+            )
+        except AgentRefusal as refusal:
+            # The refusal is stored with the credits charged before it, so a reloaded
+            # thread explains it; the question's id lets it be sent again.
+            detail = refusal.detail if isinstance(refusal.detail, dict) else {"message": str(refusal.detail)}
+            await record_credits(session, user_msg, refusal.credits, company_id=company_id, user_id=user.id)
+            await add_message(
+                session, conversation_id, "assistant", str(detail.get("message") or ""),
+                tools_called=[failure_record(detail.get("code"), status=refusal.status_code, refusal=detail)],
+            )
+            await session.commit()
+            raise HTTPException(
+                status_code=refusal.status_code, headers=refusal.headers,
+                detail={**detail, "message_id": str(question_id), "asked_again": asked is not None},
+            ) from refusal
+
+        await record_credits(session, user_msg, result.credits, company_id=company_id, user_id=user.id)
+        if result.error:
+            tools_called = [*result.tools_called, failure_record(result.error_code)]
+        else:
+            tools_called = [*result.tools_called, *[asdict(p) for p in result.pending_actions],
+                            *help_record(result.help_pages)]
+        msg = await add_message(
+            session, conversation_id, "assistant", result.error or result.answer,
+            model_used=result.model_used, tools_called=tools_called,
         )
         await session.commit()
-    except IntegrityError:
-        await session.rollback()
-        raise _conflict("question_in_progress", t("ai.err_question_in_progress"))
-
-    try:
-        result: AgentResult = await run_agent(
-            app=request.app,
-            authorization=request.headers.get("authorization", ""),
-            query=body.query,
-            company_id=company_id,
-            company_settings=company_settings,
-            user_id=user.id,
-            role=role,
-            memory=memory,
-            file_ids=body.file_ids,
-            history=history,
-            operation_id=question_id,
-        )
-    except AgentRefusal as refusal:
-        # The refusal is stored with the credits charged before it, so a reloaded
-        # thread explains it; the question's id lets it be sent again.
-        detail = refusal.detail if isinstance(refusal.detail, dict) else {"message": str(refusal.detail)}
-        await record_credits(session, user_msg, refusal.credits, company_id=company_id, user_id=user.id)
-        await add_message(
-            session, conversation_id, "assistant", str(detail.get("message") or ""),
-            tools_called=[failure_record(detail.get("code"), status=refusal.status_code, refusal=detail)],
-        )
-        await session.commit()
-        raise HTTPException(
-            status_code=refusal.status_code, headers=refusal.headers,
-            detail={**detail, "message_id": str(question_id), "asked_again": asked is not None},
-        ) from refusal
-
-    await record_credits(session, user_msg, result.credits, company_id=company_id, user_id=user.id)
-    if result.error:
-        tools_called = [*result.tools_called, failure_record(result.error_code)]
-    else:
-        tools_called = [*result.tools_called, *[asdict(p) for p in result.pending_actions],
-                        *help_record(result.help_pages)]
-    msg = await add_message(
-        session, conversation_id, "assistant", result.error or result.answer,
-        model_used=result.model_used, tools_called=tools_called,
-    )
-    await session.commit()
-    return _answer_response(msg, question_id=question_id, asked_again=asked is not None)
+        return _answer_response(msg, question_id=question_id, asked_again=asked is not None)
 
 
 def _resolve_action_arguments(records: list, record: dict) -> tuple[dict | None, str | None]:
