@@ -16,8 +16,9 @@ import pytest
 
 from test_dashboard_getting_started import _card, _dashboard, ui  # noqa: F401
 from ui.api_client import APIError
+from ui.i18n import t
 
-_WITH_COUNT = "A free account includes 20 questions."
+_WITH_COUNT = t("ai.free_questions_included", n=20)
 
 
 def _ai_line(card: str) -> str:
