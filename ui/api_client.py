@@ -3940,6 +3940,34 @@ async def resolve_product_conflict(token: str, platform: str, record_id: str, ke
         )).json()
 
 
+async def get_first_sync_preview(token: str, platform: str, orders_from: str | None) -> dict:
+    """What starting the connection's first sync would do (read only on both sides)."""
+    params = {"orders_from": orders_from} if orders_from else None
+    async with _api_client(token, timeout=60.0) as c:
+        return _raise(await c.get(f"/connectors/{platform}/first-sync/preview", params=params)).json()
+
+
+async def start_first_sync(token: str, platform: str, directions: dict, match: str,
+                           orders_from: str | None) -> dict:
+    """Start the connection's first sync with the choices made on its preview."""
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/connectors/{platform}/first-sync", json={
+            "directions": directions, "match": match, "orders_from": orders_from or None,
+        })).json()
+
+
+async def get_first_sync_summary(token: str, platform: str) -> dict:
+    """What the first sync did and what of it can be undone."""
+    async with _api_client(token) as c:
+        return _raise(await c.get(f"/connectors/{platform}/first-sync/summary")).json()
+
+
+async def undo_first_sync_links(token: str, platform: str) -> dict:
+    """Undo the links the first sync made to items Celerp already had."""
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/connectors/{platform}/first-sync/undo-links")).json()
+
+
 async def start_connector_sync(token: str, platform: str) -> dict:
     """Start the connector's canonical sync plan in the API process."""
     async with _api_client(token) as c:

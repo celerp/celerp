@@ -69,6 +69,10 @@ def _route(monkeypatch, config):
                 if getattr(r, "path", "") == "/settings/connectors/{platform}/direction")
 
 
+def _html(response) -> str:
+    return response.body.decode() if hasattr(response, "body") else to_xml(response)
+
+
 def _post(body: bytes):
     from starlette.requests import Request
 
@@ -86,7 +90,7 @@ def _post(body: bytes):
 async def test_entity_direction_change_saves_that_record_only(monkeypatch):
     config = SimpleNamespace(entity_directions=dict(_WOO), first_sync_at=None)
     endpoint = _route(monkeypatch, config)
-    html = to_xml(await endpoint(_post(b"entity=products&direction=both"), "woocommerce"))
+    html = _html(await endpoint(_post(b"entity=products&direction=both"), "woocommerce"))
     assert config.entity_directions == {**_WOO, "products": "both"}
     assert "btn--primary" in _button(html, "products", "Both ways")
 
@@ -95,6 +99,6 @@ async def test_entity_direction_change_saves_that_record_only(monkeypatch):
 async def test_invalid_entity_direction_message(monkeypatch):
     config = SimpleNamespace(entity_directions=dict(_WOO), first_sync_at=None)
     endpoint = _route(monkeypatch, config)
-    html = to_xml(await endpoint(_post(b"entity=stock&direction=inbound"), "woocommerce"))
+    html = _html(await endpoint(_post(b"entity=stock&direction=inbound"), "woocommerce"))
     assert config.entity_directions == _WOO
     assert "Stock cannot sync WooCommerce to Celerp" in html

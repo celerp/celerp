@@ -42,6 +42,11 @@ def _source_rate(value, *, invert: bool = False):
     return to_stored_float(rate)
 
 
+# WooCommerce order statuses whose import issues the invoice, posting revenue and
+# drawing stock.
+WOOCOMMERCE_ISSUED_STATUSES = frozenset({"processing", "completed"})
+
+
 async def upsert_order_from_shopify(company_id: str, order: dict) -> str:
     """
     Create/update a doc (invoice) from a Shopify order dict.
@@ -91,10 +96,11 @@ async def upsert_order_from_shopify(company_id: str, order: dict) -> str:
         return await _emit_doc(session, company_id, data, idem_key)
 
 
-_IMPORTED_INVOICE_MARKERS = (
-    "shopify_order_id", "woocommerce_order_id",
-    "quickbooks_invoice_id", "xero_invoice_id",
-)
+def _imported_invoice_markers() -> tuple[str, ...]:
+    """The state keys naming the platform record an imported invoice came from."""
+    from celerp.connectors import all_connectors
+
+    return tuple(c.imported_doc_marker for c in all_connectors() if c.imported_doc_marker)
 
 
 def _invoice_for_push(entity_id: str, state: dict) -> dict:
@@ -131,10 +137,11 @@ async def list_unsynced_invoices(company_id: str, platform: str) -> list[dict]:
                 Projection.state["doc_type"].as_string() == "invoice",
             )
         )).scalars().all()
+    markers = _imported_invoice_markers()
     return [
         _invoice_for_push(r.entity_id, st)
         for r in rows
-        if not any((st := r.state or {}).get(m) for m in _IMPORTED_INVOICE_MARKERS)
+        if not any((st := r.state or {}).get(m) for m in markers)
         and not st.get(f"{platform}_invoice_id")
         and not (platform in {"quickbooks", "xero", "celerp"} and st.get("accounting_sync_excluded"))
     ]
@@ -160,7 +167,7 @@ async def invoice_for_push(company_id: str, entity_id: str, platform: str) -> di
     return {
         **_invoice_for_push(row.entity_id, state),
         "pushed_id": state.get(f"{platform}_invoice_id"),
-        "imported": any(state.get(m) for m in _IMPORTED_INVOICE_MARKERS),
+        "imported": any(state.get(m) for m in _imported_invoice_markers()),
     }
 
 
@@ -1031,7 +1038,7 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
                 "manual financial/inventory reconciliation is required"
             )
 
-        if wc_status in {"processing", "completed"} and not doc.state.get("finalized"):
+        if wc_status in WOOCOMMERCE_ISSUED_STATUSES and not doc.state.get("finalized"):
             await finalize_document(entity_id, cid, actor, session, commit=False)
             changed = True
             doc = await _get_doc(session, cid, entity_id, for_update=True)
@@ -1145,7 +1152,7 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
 
         doc = await _get_doc(session, cid, entity_id, for_update=True)
         if (
-            wc_status in {"processing", "completed"}
+            wc_status in WOOCOMMERCE_ISSUED_STATUSES
             and order.get("date_paid")
             and float(outstanding_balance(doc.state) or 0) > 0
         ):

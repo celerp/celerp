@@ -141,7 +141,7 @@ async def test_connector_backlinks_target_cloud_tab():
         with patch("ui.routes.settings_connectors._fetch_catalog",
                    AsyncMock(return_value=([], None, False))), \
              patch("ui.routes.settings_connectors._get_connector_config",
-                   AsyncMock(return_value={})), \
+                   AsyncMock(return_value=None)), \
              patch("ui.routes.settings_connectors._entity_runs",
                    AsyncMock(return_value={})), \
              patch("ui.api_client.get_company",

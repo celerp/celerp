@@ -839,3 +839,83 @@ async def test_first_sync_orders_respect_start_date(woo, ctx, mock_upsert_order)
                               orders_from=start)
     for call in route.calls:
         assert call.request.url.params["after"] == start.isoformat()
+
+
+# -- First sync preview --
+
+def _store_with_catalog_and_orders():
+    respx.get("https://store.example.com/wp-json/wc/v3/products").mock(return_value=httpx.Response(200, json=[
+        {"id": 1, "sku": "MATCH-1", "name": "Store shirt", "regular_price": "30.00",
+         "description": "Store words", "date_modified_gmt": "2026-09-02T10:00:00"},
+        {"id": 2, "sku": "NEW-1", "name": "New mug", "regular_price": "8.00",
+         "date_modified_gmt": "2026-09-05T10:00:00"},
+        {"id": 3, "sku": "", "name": "Untitled", "date_modified_gmt": "2026-09-01T10:00:00"},
+    ]))
+    respx.get("https://store.example.com/wp-json/wc/v3/orders").mock(return_value=httpx.Response(200, json=[
+        {"id": 10, "number": "1010", "status": "processing", "date_created_gmt": "2026-09-03T08:00:00",
+         "total": "40.00", "currency": "USD"},
+        {"id": 11, "number": "1011", "status": "completed", "date_created_gmt": "2026-09-04T08:00:00",
+         "total": "12.00", "currency": "USD"},
+        {"id": 12, "number": "1012", "status": "pending", "date_created_gmt": "2026-09-06T08:00:00",
+         "total": "5.00", "currency": "USD"},
+        {"id": 13, "number": "1013", "status": "cancelled", "date_created_gmt": "2026-09-02T08:00:00",
+         "total": "9.00", "currency": "USD"},
+    ]))
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_preview_writes_nothing(woo, connector_session):
+    from sqlalchemy import func, select
+
+    from celerp.connectors.first_sync import build_preview
+    from celerp.models.ledger import LedgerEntry
+    from celerp.models.projections import Projection
+
+    session = connector_session
+    cid = await seed_company(session, "PreviewOnly")
+    await add_item(session, cid, "item:match", "MATCH-1", name="Celerp shirt", sale_price=25.0)
+    await add_item(session, cid, "item:only", "ONLY-1", name="Celerp only")
+    await connect(session, cid, "woocommerce", _WIDEST)
+    ctx = ConnectorContext(company_id=str(cid), access_token="ck:cs", store_handle="https://store.example.com")
+    _store_with_catalog_and_orders()
+
+    async def counts():
+        return (await session.scalar(select(func.count()).select_from(LedgerEntry).where(LedgerEntry.company_id == cid)),
+                await session.scalar(select(func.max(Projection.version)).where(Projection.company_id == cid)))
+
+    before = await counts()
+    preview = await build_preview(woo, ctx, _WIDEST, datetime(2026, 9, 1, tzinfo=timezone.utc))
+    assert await counts() == before
+    assert {call.request.method for call in respx.calls} == {"GET"}
+
+    assert [(m["sku"], m["entity_id"]) for m in preview.matches] == [("MATCH-1", "item:match")]
+    assert preview.matches[0]["differences"] == {
+        "name": ("Celerp shirt", "Store shirt"), "description": (None, "Store words"),
+        "sale_price": (25.0, 30.0)}
+    assert [p["sku"] for p in preview.new] == ["NEW-1"]
+    assert [p["name"] for p in preview.no_sku] == ["Untitled"]
+    assert [p["sku"] for p in preview.to_publish] == ["ONLY-1"]
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_preview_counts_orders_and_accounting_effect(woo, connector_session):
+    from celerp.connectors.first_sync import build_preview
+
+    session = connector_session
+    cid = await seed_company(session, "PreviewOrders")
+    await connect(session, cid, "woocommerce", _WIDEST)
+    ctx = ConnectorContext(company_id=str(cid), access_token="ck:cs", store_handle="https://store.example.com")
+    _store_with_catalog_and_orders()
+    start = datetime(2026, 9, 1, tzinfo=timezone.utc)
+
+    preview = await build_preview(woo, ctx, _WIDEST, start)
+
+    order_call = next(c for c in respx.calls if c.request.url.path.endswith("/orders"))
+    assert order_call.request.url.params["after"] == start.isoformat()
+    assert preview.orders_by_status == {"processing": 1, "completed": 1, "pending": 1, "cancelled": 1}
+    assert preview.posting_orders == 2
+    assert preview.order_effect == t("connectors.preview_orders_post", n=2, service="WooCommerce")
+    # Newest first.
+    assert [o["number"] for o in preview.orders] == ["1012", "1011", "1010", "1013"]

@@ -771,6 +771,20 @@ def _connect_lapsed_notice(cid: str, config, lang: str) -> FT:
     )
 
 
+async def _first_sync_summary(token: str, platform: str, config, lang: str) -> FT:
+    """What the connection's first sync did, once it started; the page still renders
+    when it cannot be read, saying so."""
+    if config is None or config.first_sync_at is None:
+        return ""
+    from ui.api_client import APIError, get_first_sync_summary
+    from ui.routes.settings_connectors_first_sync import first_sync_summary_card
+
+    try:
+        return first_sync_summary_card(platform, await get_first_sync_summary(token, platform), lang)
+    except APIError as exc:
+        return P(refusal_text(exc.detail) or str(exc.detail), cls="flash flash--warning")
+
+
 def _first_sync_link(cid: str, lang: str) -> FT:
     """A connection's one next step until its first sync starts."""
     return A(t("connectors.review_first_sync", lang), href=f"/settings/connectors/{cid}/first-sync",
@@ -1460,6 +1474,9 @@ async def _grant_action(request: Request, grant_id: str, action):
 
 
 def setup_routes(app):
+    from ui.routes.settings_connectors_first_sync import setup_first_sync_routes
+
+    setup_first_sync_routes(app)
 
     @app.get("/settings/accountant-access")
     async def accountant_access_page(request: Request):
@@ -1713,7 +1730,9 @@ def setup_routes(app):
                 directions = saved["entity_directions"]
             rows = _entity_direction_rows(platform, directions, lang, detail=detail, error=error)
             if detail:
-                return rows
+                # A first sync's preview on the same page shows the new directions.
+                return HTMLResponse(to_xml(rows), headers={} if error else {
+                    "HX-Trigger": "connectorDirectionsChanged"})
             return HTMLResponse(to_xml(rows), headers={
                 "HX-Retarget": f"#connector-directions-{platform}", "HX-Reswap": "outerHTML"})
 
@@ -2034,6 +2053,7 @@ def setup_routes(app):
             if platform == "celerp" else "",
             _connector_detail_body(c, runs, config, lang, deposit=deposit,
                                    attention=await _attention(company_id, platform)),
+            await _first_sync_summary(token, platform, config, lang),
             await _from_accountant_section(token, lang) if platform == "celerp" else "",
             _sync_accounts_card(lang) if platform == "celerp" else "",
             title=f"{name} - Celerp",

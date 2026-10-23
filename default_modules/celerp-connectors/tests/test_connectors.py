@@ -605,7 +605,7 @@ async def test_xero_sync_products_success(xero, xero_ctx, xero_relay):
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_xero_sync_orders_filters_non_accrec(xero, xero_ctx, xero_relay):
+async def test_xero_sync_orders_filters_non_accrec(xero, xero_ctx, xero_relay, _db_engine):
     respx.get(f"{xero_relay}/Invoices").mock(
         return_value=httpx.Response(200, json={
             "Invoices": [

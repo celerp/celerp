@@ -897,6 +897,265 @@
       "params": [
         "service"
       ]
+    },
+    "connectors.preview_orders_post": {
+      "en": "{n} orders in Processing or Completed will be issued as invoices and post revenue and stock.",
+      "params": [
+        "n"
+      ]
+    },
+    "connectors.preview_orders_record": {
+      "en": "{n} {service} invoices will be added to Celerp as records.",
+      "params": [
+        "n",
+        "service"
+      ]
+    },
+    "connectors.err_preview": {
+      "en": "Could not read {service} for the preview: {detail}",
+      "params": [
+        "detail",
+        "service"
+      ]
+    },
+    "connectors.preview_title": {
+      "en": "Review the first sync with {service}",
+      "params": [
+        "service"
+      ]
+    },
+    "connectors.preview_intro": {
+      "en": "Nothing has synced yet. This preview reads {service} and Celerp without changing either. Check what the first sync will do, adjust the directions or the order date, then start it.",
+      "params": [
+        "service"
+      ]
+    },
+    "connectors.preview_tab_matches": {
+      "en": "Matched by SKU ({n})",
+      "params": [
+        "n"
+      ]
+    },
+    "connectors.preview_tab_new": {
+      "en": "New to Celerp ({n})",
+      "params": [
+        "n"
+      ]
+    },
+    "connectors.preview_tab_no_sku": {
+      "en": "No SKU ({n})",
+      "params": [
+        "n"
+      ]
+    },
+    "connectors.preview_tab_problems": {
+      "en": "Cannot link ({n})",
+      "params": [
+        "n"
+      ]
+    },
+    "connectors.preview_tab_publish": {
+      "en": "Not in the store ({n})",
+      "params": [
+        "n"
+      ]
+    },
+    "connectors.preview_tab_orders": {
+      "en": "Orders ({n})",
+      "params": [
+        "n"
+      ]
+    },
+    "connectors.preview_matches_hint": {
+      "en": "These {service} products have the SKU of a Celerp product and will be linked to it.",
+      "params": [
+        "service"
+      ]
+    },
+    "connectors.preview_new_created": {
+      "en": "These {service} products are new to Celerp and will be created, with their stock booked as opening stock. The import can be undone in Import History.",
+      "params": [
+        "service"
+      ]
+    },
+    "connectors.preview_new_left": {
+      "en": "These {service} products are new to Celerp. Products are not set to come into Celerp, so they are left alone.",
+      "params": [
+        "service"
+      ]
+    },
+    "connectors.preview_problems_hint": {
+      "en": "These products cannot be linked until the reason is fixed.",
+      "params": []
+    },
+    "connectors.preview_publish_hint": {
+      "en": "These Celerp products are not in {service}. Publish them from Inventory when you want them in the store.",
+      "params": [
+        "service"
+      ]
+    },
+    "connectors.preview_none": {
+      "en": "Nothing here.",
+      "params": []
+    },
+    "connectors.preview_nothing": {
+      "en": "With these directions the first sync reads nothing. Set a direction above.",
+      "params": []
+    },
+    "connectors.preview_sku": {
+      "en": "SKU",
+      "params": []
+    },
+    "connectors.preview_celerp_name": {
+      "en": "Celerp name",
+      "params": []
+    },
+    "connectors.preview_store_name": {
+      "en": "{service} name",
+      "params": [
+        "service"
+      ]
+    },
+    "connectors.preview_differences": {
+      "en": "Differences",
+      "params": []
+    },
+    "connectors.preview_difference": {
+      "en": "{field}: Celerp {celerp}, store {remote}",
+      "params": [
+        "celerp",
+        "field",
+        "remote"
+      ]
+    },
+    "connectors.preview_changed": {
+      "en": "Last changed in {service}",
+      "params": [
+        "service"
+      ]
+    },
+    "connectors.preview_celerp_changed": {
+      "en": "Last changed in Celerp",
+      "params": []
+    },
+    "connectors.preview_price": {
+      "en": "Price",
+      "params": []
+    },
+    "connectors.preview_reason": {
+      "en": "Reason",
+      "params": []
+    },
+    "connectors.preview_order": {
+      "en": "Order",
+      "params": []
+    },
+    "connectors.preview_placed": {
+      "en": "Placed",
+      "params": []
+    },
+    "connectors.preview_total": {
+      "en": "Total",
+      "params": []
+    },
+    "connectors.preview_effect": {
+      "en": "In Celerp",
+      "params": []
+    },
+    "connectors.preview_issued": {
+      "en": "Issued as an invoice",
+      "params": []
+    },
+    "connectors.preview_recorded": {
+      "en": "Recorded",
+      "params": []
+    },
+    "connectors.preview_orders_from": {
+      "en": "Import orders placed on or after",
+      "params": []
+    },
+    "connectors.preview_orders_from_hint": {
+      "en": "Orders before this date are usually in your books already. Importing them again counts their revenue twice.",
+      "params": []
+    },
+    "connectors.preview_apply": {
+      "en": "Show",
+      "params": []
+    },
+    "connectors.preview_match_title": {
+      "en": "Products found in both",
+      "params": []
+    },
+    "connectors.preview_match_keep": {
+      "en": "Link, keep Celerp values (recommended)",
+      "params": []
+    },
+    "connectors.preview_match_take": {
+      "en": "Link, take {service} values",
+      "params": [
+        "service"
+      ]
+    },
+    "connectors.preview_start_hint": {
+      "en": "Starting links and imports as shown above and turns on {service} notifications. Afterwards the connector page shows what it did and how to undo it.",
+      "params": [
+        "service"
+      ]
+    },
+    "connectors.start_first_sync": {
+      "en": "Start first sync",
+      "params": []
+    },
+    "connectors.first_sync_title": {
+      "en": "First sync",
+      "params": []
+    },
+    "connectors.first_sync_started": {
+      "en": "Started {when}.",
+      "params": [
+        "when"
+      ]
+    },
+    "connectors.first_sync_created": {
+      "en": "It created {n} products.",
+      "params": [
+        "n"
+      ]
+    },
+    "connectors.first_sync_import_history": {
+      "en": "Undo them in Import History",
+      "params": []
+    },
+    "connectors.first_sync_links": {
+      "en": "It linked {n} products Celerp already had to {service}.",
+      "params": [
+        "n",
+        "service"
+      ]
+    },
+    "connectors.first_sync_links_undone": {
+      "en": "The {n} links it made to {service} were undone.",
+      "params": [
+        "n",
+        "service"
+      ]
+    },
+    "connectors.first_sync_undo_links": {
+      "en": "Undo links",
+      "params": []
+    },
+    "connectors.first_sync_undo_links_confirm": {
+      "en": "Detach the {n} products the first sync linked to {service}, and bring back any values it took from {service}?",
+      "params": [
+        "n",
+        "service"
+      ]
+    },
+    "connectors.first_sync_invoices": {
+      "en": "It imported {n} invoices. To reverse one, open it and void it; voiding keeps its history in your books.",
+      "params": [
+        "n"
+      ]
     }
   }
 }

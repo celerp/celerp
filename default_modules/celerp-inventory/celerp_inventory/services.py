@@ -1497,6 +1497,15 @@ async def detach_external_links_for_platform(
     return detached
 
 
+async def catalog_product_rows(session: AsyncSession, company_id) -> list[Projection]:
+    """Every catalog product of the company: the items a store product links to."""
+    cid = uuid.UUID(str(company_id))
+    rows = (await session.execute(select(Projection).where(
+        Projection.company_id == cid, Projection.entity_type == "item",
+    ))).scalars().all()
+    return [row for row in rows if _is_product_anchor_state(row.state or {})]
+
+
 async def resolve_catalog_anchor_for_item(session: AsyncSession, company_id, entity_id: str) -> Projection:
     """Resolve a selected catalog or lot row to one unambiguous product anchor."""
     cid = uuid.UUID(str(company_id))

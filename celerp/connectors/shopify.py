@@ -30,6 +30,8 @@ from celerp.connectors.base import (
     ConnectorContext,
     EntityFlow,
     FirstSync,
+    RemoteOrder,
+    RemoteProduct,
     SyncDirection,
     SyncEntity,
     SyncResult,
@@ -40,6 +42,14 @@ log = logging.getLogger(__name__)
 
 _API_VERSION = "2024-01"
 _PAGE_LIMIT = 250  # Shopify max per page
+
+
+def _when(value) -> datetime | None:
+    """A Shopify ISO timestamp as a datetime, or None."""
+    try:
+        return datetime.fromisoformat(str(value)) if value else None
+    except ValueError:
+        return None
 
 
 def _base_url(ctx: ConnectorContext) -> str:
@@ -60,6 +70,7 @@ class ShopifyConnector(ConnectorBase):
     name = "shopify"
     display_name = "Shopify"
     store_scoped_ids = False  # Shopify ids are unique across all stores
+    imported_doc_marker = "shopify_order_id"
     entity_flows = {
         "products": EntityFlow(inbound=("products",), outbound=("products_out",)),
         "stock": EntityFlow(outbound=("inventory_out",)),
@@ -120,38 +131,32 @@ class ShopifyConnector(ConnectorBase):
             since = None
 
         try:
-            products = await self._paginate(ctx, "/products.json", "products", params={"updated_at_min": since.isoformat()} if since else None)
+            products = await self._store_products(ctx, since)
         except (httpx.HTTPStatusError, ValueError) as exc:
             result.errors = [f"Shopify API error: {exc}"]
             return result
 
-        for product in products:
-            for variant in product.get("variants", []):
-                variant_title = variant.get("title", "")
-                name = product["title"]
-                if variant_title and variant_title.lower() != "default title":
-                    name = f"{name} - {variant_title}"
-                key = f"{product['id']}:{variant['id']}"
-                processed.add(key)
-                entity_id = await _upsert.import_store_product(
-                    ctx, self, key=key, label=name, result=result, pending=pending,
-                    first_sync=first_sync, errors=errors,
-                    product_id=str(product["id"]),
-                    variation_id=str(variant["id"]),
-                    sku=(variant.get("sku") or "").strip(),
-                    name=name,
-                    sale_price=money(variant.get("price")),
-                    quantity=float(variant.get("inventory_quantity") or 0),
-                    seed_quantity=variant.get("inventory_management") == "shopify",
-                    sell_by="piece",
-                )
-                if entity_id is None:
-                    continue
-                # Pull product images after upsert (idempotent, best-effort)
-                try:
-                    await self._pull_product_images(ctx, product, entity_id)
-                except Exception as img_exc:
-                    log.warning("shopify image pull failed for %s: %s", key, img_exc)
+        for remote in products:
+            processed.add(remote.key)
+            entity_id = await _upsert.import_store_product(
+                ctx, self, key=remote.key, label=remote.name, result=result, pending=pending,
+                first_sync=first_sync, errors=errors,
+                product_id=remote.product_id,
+                variation_id=remote.variation_id,
+                sku=remote.sku,
+                name=remote.name,
+                sale_price=remote.price,
+                quantity=float(remote.extra["inventory_quantity"] or 0),
+                seed_quantity=remote.extra["inventory_management"] == "shopify",
+                sell_by="piece",
+            )
+            if entity_id is None:
+                continue
+            # Pull product images after upsert (idempotent, best-effort)
+            try:
+                await self._pull_product_images(ctx, remote.extra["product"], entity_id)
+            except Exception as img_exc:
+                log.warning("shopify image pull failed for %s: %s", remote.key, img_exc)
 
         result.errors = errors or None
         result.attention = _upsert.carried_attention(attention, pending, processed)
@@ -160,6 +165,43 @@ class ShopifyConnector(ConnectorBase):
             ctx.company_id, result.created, result.skipped, len(errors),
         )
         return result
+
+    async def _store_products(self, ctx: ConnectorContext, since: datetime | None) -> list[RemoteProduct]:
+        """Every variant the store returns, each a sellable product of its own."""
+        products = await self._paginate(
+            ctx, "/products.json", "products",
+            params={"updated_at_min": since.isoformat()} if since else None)
+        out: list[RemoteProduct] = []
+        for product in products:
+            for variant in product.get("variants", []):
+                variant_title = variant.get("title", "")
+                name = product["title"]
+                if variant_title and variant_title.lower() != "default title":
+                    name = f"{name} - {variant_title}"
+                out.append(RemoteProduct(
+                    key=f"{product['id']}:{variant['id']}", product_id=str(product["id"]),
+                    variation_id=str(variant["id"]), sku=(variant.get("sku") or "").strip(),
+                    name=name, description=None, price=money(variant.get("price")),
+                    modified=_when(variant.get("updated_at") or product.get("updated_at")),
+                    extra={"inventory_quantity": variant.get("inventory_quantity"),
+                           "inventory_management": variant.get("inventory_management"),
+                           "product": product},
+                ))
+        return out
+
+    async def preview_products(self, ctx: ConnectorContext) -> list[RemoteProduct]:
+        return await self._store_products(ctx, None)
+
+    async def preview_orders(self, ctx: ConnectorContext, orders_from: datetime) -> list[RemoteOrder]:
+        orders = await self._paginate(ctx, "/orders.json", "orders", params={
+            "status": "any", "created_at_min": orders_from.isoformat(),
+            "fields": "id,name,financial_status,created_at,total_price,currency",
+        })
+        return [RemoteOrder(
+            id=str(o["id"]), number=str(o.get("name") or o["id"]),
+            status=str(o.get("financial_status") or ""), created=_when(o.get("created_at")),
+            total=money(o.get("total_price")), currency=o.get("currency"), posts=False,
+        ) for o in orders]
 
     async def _pull_product_images(self, ctx: ConnectorContext, product: dict[str, Any], entity_id: str) -> None:
         """Pull images from a Shopify product and store them as the item's files."""
@@ -185,9 +227,14 @@ class ShopifyConnector(ConnectorBase):
 
     # -- Orders ----------------------------------------------------------------
 
-    async def sync_orders(self, ctx: ConnectorContext, since: datetime | None = None) -> SyncResult:
+    async def sync_orders(
+        self, ctx: ConnectorContext, since: datetime | None = None,
+        orders_from: datetime | None = None,
+    ) -> SyncResult:
         """
         Pull Shopify orders -> Celerp documents (type=invoice, status=unpaid/paid).
+        Orders placed before ``orders_from``, the connection's earliest order date,
+        are not fetched.
 
         Mapping:
           order.name (#1001)          -> doc.reference
@@ -203,6 +250,8 @@ class ShopifyConnector(ConnectorBase):
             params: dict = {"status": "any"}
             if since:
                 params["updated_at_min"] = since.isoformat()
+            if orders_from:
+                params["created_at_min"] = orders_from.isoformat()
             orders = await self._paginate(ctx, "/orders.json", "orders", params=params)
         except (httpx.HTTPStatusError, ValueError) as exc:
             result.errors = [f"Shopify API error: {exc}"]

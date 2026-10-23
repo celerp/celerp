@@ -28,6 +28,8 @@ from celerp.connectors.base import (
     ConnectorContext,
     EntityFlow,
     FirstSync,
+    RemoteOrder,
+    RemoteProduct,
     SyncDirection,
     SyncEntity,
     SyncResult,
@@ -94,6 +96,22 @@ def _raise_for_status(resp: httpx.Response) -> None:
     raise httpx.HTTPStatusError(text, request=resp.request, response=resp)
 
 
+def _gmt(value) -> datetime | None:
+    """A WooCommerce *_gmt timestamp (no zone, in UTC) as an aware datetime."""
+    from datetime import timezone
+
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value)).replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def _modified(raw: dict) -> datetime | None:
+    return _gmt(raw.get("date_modified_gmt"))
+
+
 def _http_client(*, max_retries: int = 3) -> RateLimitedClient:
     return RateLimitedClient(
         max_retries=max_retries,
@@ -137,6 +155,7 @@ class WooCommerceConnector(ConnectorBase):
     category = ConnectorCategory.WEBSITE
     # The store's customer list is never imported: a customer is created only as the
     # customer of an imported order.
+    imported_doc_marker = "woocommerce_order_id"
     entity_flows = {
         "products": EntityFlow(inbound=("products",), outbound=("products_out",)),
         "stock": EntityFlow(outbound=("inventory_out",)),
@@ -292,101 +311,42 @@ class WooCommerceConnector(ConnectorBase):
             since = None
         full_scan = since is None
         seen_identities: set[tuple[str, str | None]] = set()
-        incomplete_parents: set[str] = set()
         params: dict = {}
         if since:
             params["modified_after"] = since.isoformat()
             params["dates_are_gmt"] = "true"
 
         try:
-            products = await self._paginate(ctx, "/products", params=params or None)
+            products, read_errors, incomplete_parents = await self._store_products(ctx, params)
         except (httpx.HTTPStatusError, ValueError) as exc:
             result.errors = [f"WooCommerce API error: {exc}"]
             return result
+        errors += read_errors
 
-        async def _import_one(*, key, label, sku, name, description, price, product_id,
-                              variation_id=None, manage_stock=None, stock_quantity=None,
-                              virtual=False):
-            processed.add(key)
-            non_stock_virtual = bool(virtual) and manage_stock is False
-            return await _upsert.import_store_product(
-                ctx, self, key=key, label=label, result=result, pending=pending,
+        for remote in products:
+            seen_identities.add((remote.product_id, remote.variation_id))
+            processed.add(remote.key)
+            manage_stock = remote.extra["manage_stock"]
+            stock_quantity = remote.extra["stock_quantity"]
+            non_stock_virtual = remote.extra["virtual"] and manage_stock is False
+            entity_id = await _upsert.import_store_product(
+                ctx, self, key=remote.key, label=remote.name, result=result, pending=pending,
                 first_sync=first_sync, errors=errors,
-                product_id=str(product_id),
-                variation_id=str(variation_id) if variation_id is not None else None,
-                sku=sku,
-                name=name or sku,
-                description=description,
-                sale_price=price,
+                product_id=remote.product_id,
+                variation_id=remote.variation_id,
+                sku=remote.sku,
+                name=remote.name or remote.sku,
+                description=remote.description,
+                sale_price=remote.price,
                 quantity=float(stock_quantity) if stock_quantity is not None else None,
                 seed_quantity=(manage_stock is True),
                 link_fields={"manage_stock": manage_stock},
                 inventory_type="service" if non_stock_virtual else None,
                 sell_by="service" if non_stock_virtual else None,
             )
-
-        for product in products:
-            pid = product.get("id")
-            name = product.get("name") or ""
-            description = product.get("description") or ""
-            if product.get("type") == "variable":
-                try:
-                    variations = await self._paginate(ctx, f"/products/{pid}/variations")
-                except (httpx.HTTPStatusError, ValueError) as exc:
-                    errors.append(f"Product {pid} variations: {exc}")
-                    incomplete_parents.add(str(pid))
-                    continue
-                for var in variations:
-                    vid = var.get("id")
-                    seen_identities.add((str(pid), str(vid)))
-                    opts = " / ".join(
-                        str(a.get("option", "")) for a in (var.get("attributes") or [])
-                        if a.get("option")
-                    )
-                    var_price = money(var.get("regular_price"))
-                    if var_price is None:
-                        var_price = money(var.get("price"))
-                    var_name = f"{name} - {opts}" if opts else name
-                    entity_id = await _import_one(
-                        key=f"{pid}:{vid}",
-                        label=var_name,
-                        sku=(var.get("sku") or "").strip(),
-                        name=var_name,
-                        description=var.get("description") or description,
-                        price=var_price,
-                        product_id=pid,
-                        variation_id=vid,
-                        manage_stock=var.get("manage_stock"),
-                        stock_quantity=var.get("stock_quantity"),
-                        virtual=bool(var.get("virtual", product.get("virtual", False))),
-                    )
-                    if entity_id:
-                        var_img = var.get("image")
-                        files = {
-                            "images": ([var_img] if var_img and var_img.get("src") else [])
-                            + product.get("images", []),
-                            "meta_data": product.get("meta_data", []),
-                        }
-                        try:
-                            await self._pull_product_files(ctx, files, entity_id, first_sync)
-                        except Exception as img_exc:
-                            log.warning("woocommerce file pull failed for item %s: %s", entity_id, img_exc)
-                continue
-
-            seen_identities.add((str(pid), None))
-            sell_price = money(product.get("regular_price"))
-            if sell_price is None:
-                sell_price = money(product.get("price"))
-            entity_id = await _import_one(
-                key=str(pid), label=name, sku=(product.get("sku") or "").strip(), name=name,
-                description=description, price=sell_price,
-                product_id=pid, manage_stock=product.get("manage_stock"),
-                stock_quantity=product.get("stock_quantity"),
-                virtual=bool(product.get("virtual", False)),
-            )
             if entity_id:
                 try:
-                    await self._pull_product_files(ctx, product, entity_id, first_sync)
+                    await self._pull_product_files(ctx, remote.extra["files"], entity_id, first_sync)
                 except Exception as img_exc:
                     log.warning("woocommerce file pull failed for item %s: %s", entity_id, img_exc)
 
@@ -401,6 +361,90 @@ class WooCommerceConnector(ConnectorBase):
         result.errors = errors or None
         result.attention = _upsert.carried_attention(attention, pending, processed)
         return result
+
+    async def _store_products(
+        self, ctx: ConnectorContext, params: dict
+    ) -> tuple[list[RemoteProduct], list[str], set[str]]:
+        """Every sellable product the store returns for ``params``, a variable product's
+        variations each as their own: the products, the errors reading variations,
+        and the parents whose variations could not be read."""
+        products = await self._paginate(ctx, "/products", params=params or None)
+        out: list[RemoteProduct] = []
+        errors: list[str] = []
+        incomplete: set[str] = set()
+
+        def _price(raw: dict):
+            price = money(raw.get("regular_price"))
+            return price if price is not None else money(raw.get("price"))
+
+        for product in products:
+            pid = str(product.get("id"))
+            name = product.get("name") or ""
+            description = product.get("description") or ""
+            if product.get("type") == "variable":
+                try:
+                    variations = await self._paginate(ctx, f"/products/{pid}/variations")
+                except (httpx.HTTPStatusError, ValueError) as exc:
+                    errors.append(f"Product {pid} variations: {exc}")
+                    incomplete.add(pid)
+                    continue
+                for var in variations:
+                    vid = str(var.get("id"))
+                    opts = " / ".join(
+                        str(a.get("option", "")) for a in (var.get("attributes") or [])
+                        if a.get("option")
+                    )
+                    var_img = var.get("image")
+                    out.append(RemoteProduct(
+                        key=f"{pid}:{vid}", product_id=pid, variation_id=vid,
+                        sku=(var.get("sku") or "").strip(),
+                        name=f"{name} - {opts}" if opts else name,
+                        description=var.get("description") or description,
+                        price=_price(var), modified=_modified(var),
+                        extra={
+                            "manage_stock": var.get("manage_stock"),
+                            "stock_quantity": var.get("stock_quantity"),
+                            "virtual": bool(var.get("virtual", product.get("virtual", False))),
+                            "files": {
+                                "images": ([var_img] if var_img and var_img.get("src") else [])
+                                + product.get("images", []),
+                                "meta_data": product.get("meta_data", []),
+                            },
+                        },
+                    ))
+                continue
+            out.append(RemoteProduct(
+                key=pid, product_id=pid, variation_id=None,
+                sku=(product.get("sku") or "").strip(), name=name, description=description,
+                price=_price(product), modified=_modified(product),
+                extra={
+                    "manage_stock": product.get("manage_stock"),
+                    "stock_quantity": product.get("stock_quantity"),
+                    "virtual": bool(product.get("virtual", False)),
+                    "files": product,
+                },
+            ))
+        return out, errors, incomplete
+
+    async def preview_products(self, ctx: ConnectorContext) -> list[RemoteProduct]:
+        products, errors, _ = await self._store_products(ctx, {})
+        if errors:
+            raise ValueError("; ".join(errors))
+        return products
+
+    async def preview_orders(self, ctx: ConnectorContext, orders_from: datetime) -> list[RemoteOrder]:
+        from celerp_docs.doc_service import WOOCOMMERCE_ISSUED_STATUSES
+
+        orders = await self._paginate(ctx, "/orders", params={
+            "after": orders_from.isoformat(), "dates_are_gmt": "true",
+            "_fields": "id,number,status,date_created_gmt,total,currency",
+        })
+        return [RemoteOrder(
+            id=str(o.get("id")), number=str(o.get("number") or o.get("id")),
+            status=str(o.get("status") or ""), created=_gmt(o.get("date_created_gmt")),
+            total=money(o.get("total")), currency=o.get("currency"),
+            posts=str(o.get("status") or "") in WOOCOMMERCE_ISSUED_STATUSES,
+        ) for o in orders]
 
     async def _reconcile_missing_product_links(
         self,

@@ -792,6 +792,106 @@ async def unmark_order_reconciled(
     return await _set_order_reconciled(session, company_id, order_id, None, user.id)
 
 
+@router.get("/{connector_name}/first-sync/preview")
+async def preview_first_sync(
+    connector_name: str,
+    company_id: Annotated[str, Depends(get_current_company_id)],
+    orders_from: date | None = None,
+    _: None = require_permission("manage_integrations"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """What starting the first sync in the connection's current directions would do,
+    importing orders from ``orders_from`` (today when not given). Reads both sides and
+    writes to neither."""
+    import dataclasses
+    from datetime import datetime, time, timezone
+
+    from fastapi.encoders import jsonable_encoder
+
+    from celerp import connectors
+    from celerp.connectors.first_sync import build_preview
+
+    try:
+        connector = connectors.get(connector_name)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=t("connectors.unknown_connector", platform=connector_name)) from exc
+    config = await _owned_config(session, company_id, connector)
+    if config.first_sync_at is not None:
+        raise HTTPException(status_code=409, detail=t("connectors.err_first_sync_done"))
+    ctx = await _connector_context(str(company_id), connector_name)
+    if ctx is None:
+        raise HTTPException(status_code=409, detail=t("error.connector_not_connected", service=connector.display_name))
+    start = datetime.combine(orders_from or datetime.now(timezone.utc).date(), time(), tzinfo=timezone.utc)
+    try:
+        preview = await build_preview(connector, ctx, dict(config.entity_directions), start)
+    except (httpx.HTTPError, ValueError) as exc:
+        raise HTTPException(status_code=502, detail=t(
+            "connectors.err_preview", service=connector.display_name, detail=exc)) from exc
+    return jsonable_encoder(dataclasses.asdict(preview))
+
+
+@router.get("/{connector_name}/first-sync/summary")
+async def first_sync_summary(
+    connector_name: str,
+    company_id: Annotated[str, Depends(get_current_company_id)],
+    _: None = require_permission("manage_integrations"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """What the first sync did and how to undo it: the import of the products it created,
+    the links it made (with whether they were undone), and the invoices it imported,
+    newest first. Invoices are voided one by one, which keeps their audit trail."""
+    import uuid
+
+    import sqlalchemy as sa
+
+    from celerp import connectors
+    from celerp.models.import_batch import ImportBatch
+    from celerp.models.projections import Projection
+
+    try:
+        connector = connectors.get(connector_name)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=t("connectors.unknown_connector", platform=connector_name)) from exc
+    config = await _owned_config(session, company_id, connector)
+    undo = dict(config.first_sync_undo or {})
+    batch = None
+    if undo.get("batch_id"):
+        row = await session.get(ImportBatch, uuid.UUID(undo["batch_id"]))
+        if row is not None:
+            batch = {"id": str(row.id), "rows": row.row_count, "status": row.status}
+    invoices = []
+    if config.first_sync_at is not None and connector.imported_doc_marker:
+        rows = (await session.execute(sa.select(Projection).where(
+            Projection.company_id == uuid.UUID(str(company_id)),
+            Projection.entity_type == "doc",
+            Projection.created_at >= config.first_sync_at,
+            Projection.state[connector.imported_doc_marker].as_string().is_not(None),
+        ).order_by(Projection.created_at.desc()))).scalars().all()
+        invoices = [{"entity_id": r.entity_id,
+                     "number": (r.state or {}).get("doc_number") or (r.state or {}).get("ref_id"),
+                     "total": (r.state or {}).get("total"), "status": (r.state or {}).get("status")}
+                    for r in rows]
+    return {
+        "first_sync_at": config.first_sync_at.isoformat() if config.first_sync_at else None,
+        "batch": batch,
+        "links": len(undo.get("links") or []),
+        "links_undone_at": undo.get("links_undone_at"),
+        "invoices": invoices,
+    }
+
+
+async def _owned_config(session: AsyncSession, company_id, connector):
+    from celerp.connectors.ownership import ConnectorOwnershipError, lock_connector_operation
+
+    try:
+        config = await lock_connector_operation(session, company_id, connector.name, require_owner=True)
+    except ConnectorOwnershipError as exc:
+        await session.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    await session.commit()
+    return config
+
+
 class FirstSyncRequest(BaseModel):
     """The choices a person made on the first sync's preview."""
     directions: dict[str, str]

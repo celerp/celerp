@@ -19,7 +19,7 @@ import base64
 import hashlib
 import hmac
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Any
@@ -175,6 +175,34 @@ class ConnectorContext:
 
 
 @dataclass
+class RemoteProduct:
+    """One sellable product as a platform holds it (a variation counts as its own),
+    read the same way for a sync and for the first sync's preview."""
+    key: str                    # the platform identity: product id, or "product:variation"
+    product_id: str
+    variation_id: str | None
+    sku: str                    # "" when the platform has none
+    name: str
+    description: str | None
+    price: float | None
+    modified: datetime | None   # when the platform last changed it
+    extra: dict = field(default_factory=dict)  # platform fields only its sync reads
+
+
+@dataclass
+class RemoteOrder:
+    """One order (or invoice) as a platform holds it, for the first sync's preview.
+    ``posts`` is whether importing it issues an invoice that posts revenue and stock."""
+    id: str
+    number: str
+    status: str
+    created: datetime | None
+    total: float | None
+    currency: str | None
+    posts: bool
+
+
+@dataclass
 class FirstSync:
     """A first sync's choices for its product pass, and what that pass did.
 
@@ -251,6 +279,9 @@ class ConnectorBase(ABC):
         can carry it. A connector whose first sync should start narrower overrides this."""
         return {key: flow.widest().value for key, flow in self.entity_flows.items()}
 
+    # The document state key naming the platform record an imported invoice came from.
+    imported_doc_marker: str | None = None
+
     # Order and customer numbers are only unique within one store, so imported
     # records are tied to the store they came from (see bind_connector_store).
     store_scoped_ids: bool = True
@@ -259,6 +290,15 @@ class ConnectorBase(ABC):
         """True when the store in ctx still holds most of these imported
         document states. Connectors that cannot tell return False."""
         return False
+
+    async def preview_products(self, ctx: ConnectorContext) -> list[RemoteProduct]:
+        """Every product the platform holds, read only. Override if products sync."""
+        return []
+
+    async def preview_orders(self, ctx: ConnectorContext, orders_from: datetime) -> list[RemoteOrder]:
+        """The platform's orders placed on or after ``orders_from``, read only.
+        Override if orders sync."""
+        return []
 
     async def before_outbound(self, ctx: ConnectorContext, now: datetime | None = None) -> None:
         """Called once before a run sends anything, e.g. to warn about expiring credentials."""
