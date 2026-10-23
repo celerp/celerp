@@ -5,12 +5,13 @@
 from __future__ import annotations
 
 from celerp.importers.adapters.base import ArtifactSet, SourceAdapter
-from celerp.importers.adapters.exports import QuickBooksOnlineAdapter, XeroAdapter
+from celerp.importers.adapters.exports import QuickBooksOnlineAdapter, Sage50Adapter, XeroAdapter
 from celerp.importers.adapters.manager_io import ManagerIOAdapter
 from celerp.importers.adapters.odoo import OdooAdapter
 
 # Single-file sources first: their detection reads one header, an export set's reads every file.
-_ADAPTERS: tuple[SourceAdapter, ...] = (ManagerIOAdapter(), OdooAdapter(), XeroAdapter(), QuickBooksOnlineAdapter())
+_ADAPTERS: tuple[SourceAdapter, ...] = (ManagerIOAdapter(), OdooAdapter(), XeroAdapter(), QuickBooksOnlineAdapter(),
+                                        Sage50Adapter())
 
 
 def list_adapters() -> tuple[SourceAdapter, ...]:

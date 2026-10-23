@@ -26,7 +26,7 @@ from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
 
 from celerp.importers.adapters.attachment_files import MAX_ATTACHMENT_BYTES
-from celerp.importers.adapters.base import ScanError, SourceRevisionError
+from celerp.importers.adapters.base import CONVERSION_ERRORS, ScanError, SourceRevisionError
 from celerp.importers.adapters.exports import steps
 from celerp.importers.adapters.exports.book import (
     PARTY_SIGN, ZERO, Account, Book, Contact, DocLine, Document, GLJournal, GLLine, Item, LineTax, StockHolding,
@@ -932,12 +932,6 @@ class _Reader:
             key = f"attachment:{row_id}"
             self.out.attachments[key] = AttachmentRef(key, "", None, None, None, None, None, too_long=True)
         book.object_counts["Attachment"] = len(self.out.attachments)
-
-
-# What converting a damaged field raises: a number that is not one (decimal's ArithmeticError),
-# a date or JSON that does not parse, JSON of another shape than Odoo writes, a reference to a
-# row that is not there, a NULL where Odoo requires a value, or a name nested past the parser's depth.
-CONVERSION_ERRORS = (ArithmeticError, ValueError, TypeError, KeyError, AttributeError, RecursionError)
 
 
 def read_odoo(backup: Backup, company: str | None = None) -> OdooBook:

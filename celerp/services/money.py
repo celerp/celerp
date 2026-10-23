@@ -16,14 +16,15 @@ from __future__ import annotations
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Union
 
-# ISO 4217 decimal place overrides. All other currencies default to DEFAULT_DP.
+# ISO 4217 minor units (the digits after the point) of every currency that does not use 2,
+# as ISO 4217 states them. All other currencies use DEFAULT_DP.
 CURRENCY_DP: dict[str, int] = {
     # 0 decimal places
-    "JPY": 0, "KRW": 0, "VND": 0, "IDR": 0, "UGX": 0,
-    "RWF": 0, "GNF": 0, "BIF": 0, "XOF": 0, "XAF": 0,
+    "BIF": 0, "CLP": 0, "DJF": 0, "GNF": 0, "ISK": 0, "JPY": 0, "KMF": 0, "KRW": 0, "PYG": 0,
+    "RWF": 0, "UGX": 0, "VND": 0, "VUV": 0, "XAF": 0, "XOF": 0, "XPF": 0,
     # 3 decimal places
-    "KWD": 3, "BHD": 3, "OMR": 3, "JOD": 3, "TND": 3,
-    # 4 decimal places
+    "BHD": 3, "IQD": 3, "JOD": 3, "KWD": 3, "LYD": 3, "OMR": 3, "TND": 3,
+    # 4 decimal places: Chile's unidad de fomento, a unit of account rates are quoted in
     "CLF": 4,
 }
 DEFAULT_DP: int = 2

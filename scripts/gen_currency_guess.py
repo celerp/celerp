@@ -26,6 +26,9 @@ from pathlib import Path
 
 from babel.numbers import get_territory_currencies
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from celerp.services.currencies import CURRENCY_CODES  # noqa: E402
+
 OUT = Path(__file__).resolve().parents[1] / "ui" / "static" / "currency-guess.js"
 
 
@@ -51,10 +54,12 @@ def zone_links(tzdata_zi: Path, zones: dict[str, str]) -> dict[str, str]:
 
 
 def country_currencies(countries: set[str]) -> dict[str, str]:
-    """ISO 3166 country code -> the currency CLDR says is legal tender there today."""
+    """ISO 3166 country code -> the first currency CLDR says is legal tender there today that
+    Celerp offers (celerp.services.currencies). A country whose only tender CLDR still lists
+    is a withdrawn currency gets no suggestion."""
     out: dict[str, str] = {}
     for country in sorted(countries):
-        current = get_territory_currencies(country, tender=True)
+        current = [c for c in get_territory_currencies(country, tender=True) if c in CURRENCY_CODES]
         if current:
             out[country] = current[0]
     return out

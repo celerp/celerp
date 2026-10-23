@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.accounting_roles import LOT_ACCOUNT_FIELD, refusal
 from celerp.connectors.ownership import PRODUCT_CHANNEL_PLATFORMS
-from celerp.constants import ISO_4217_CURRENCIES
+from celerp.services.currencies import KNOWN_CURRENCY_CODES
 from celerp.events.engine import emit_event, find_event_by_idempotency
 from celerp.importers.results import ImportOutcome
 from celerp.importers.schema import IMPORT_ITEM_STATUSES
@@ -2284,7 +2284,7 @@ def _header_currencies(header: str) -> list[str]:
     codes: list[str] = []
     for i, word in enumerate(words):
         code = word.upper()
-        if len(word) != 3 or code not in ISO_4217_CURRENCIES:
+        if len(word) != 3 or code not in KNOWN_CURRENCY_CODES:
             continue
         if word.lower() in _PLAIN_WORD_CURRENCIES and not (
             re.search(rf"[(\[]\s*{word}\s*[)\]]", header)
@@ -2455,7 +2455,7 @@ def parse_import_money(value, currency: str, *, stated_currency: str | None = No
         return None, "invalid_value"
     if codes:
         code = codes[0].upper()
-        if code not in ISO_4217_CURRENCIES:
+        if code not in KNOWN_CURRENCY_CODES:
             return None, "invalid_value"
     else:
         code = _CURRENCY_SYMBOLS.get(symbols[0]) or (stated_currency if stated_currency == currency else None)

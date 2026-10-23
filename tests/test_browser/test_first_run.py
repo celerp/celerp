@@ -104,6 +104,7 @@ def test_first_run_one_form_to_dashboard(playwright, fresh, width):
     ("en", "UTC", ""),
     # Chrome reports this zone by its old name, Asia/Calcutta.
     ("en-US", "Asia/Kolkata", "INR"),
+    ("am-ET", "Africa/Addis_Ababa", "ETB"),
 ])
 def test_currency_guess_uses_timezone_country_first(playwright, fresh, locale, timezone_id, expected):
     """INV-14: the timezone's country decides before the language region; unknown is no guess."""
@@ -128,8 +129,8 @@ def test_timezone_hidden_field_filled_from_browser(playwright, fresh):
         assert _hidden(page, "timezone") == "America/Argentina/Buenos_Aires"
         _fill_text_fields(page, "tz@first-run.test")
         _choose(page, "vertical", "blank")
-        # The peso is not in the app's currency list, so nothing is suggested.
-        assert _hidden(page, "currency") == ""
+        # The timezone's country suggests the peso; the owner keeps the books in dollars instead.
+        assert _hidden(page, "currency") == "ARS"
         _choose(page, "currency", "USD")
         page.locator('#setup-form button[type="submit"]').click()
         page.wait_for_url(lambda u: urlsplit(u).path in ("/dashboard", "/setup/activating"), timeout=30000)

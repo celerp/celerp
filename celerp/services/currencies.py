@@ -7,16 +7,29 @@ from fastapi import HTTPException
 
 from ui.i18n import t
 
-# ISO-4217 codes, in display order. Add new currencies here only; each one's name
-# is the catalog key currency.name.<code> in every UI language.
+# The currencies a company, contact, account or document may be kept in: ISO 4217's active
+# circulating currencies (list one, as SIX Group maintains it), without its fund, metal and
+# testing codes, in display order. Each one's name is the catalog key currency.name.<code>.
 CURRENCIES: tuple[str, ...] = (
-    "AED", "AUD", "BDT", "BRL", "CAD", "CHF", "CLP", "CNY", "COP", "CZK", "DKK", "EGP",
-    "EUR", "GBP", "HKD", "HUF", "IDR", "ILS", "INR", "IRR", "JPY", "KRW", "KWD", "LAK",
-    "LBP", "MXN", "MYR", "NGN", "NOK", "NZD", "PEN", "PHP", "PKR", "PLN", "QAR", "RON",
-    "RUB", "SAR", "SEK", "SGD", "SLE", "THB", "TRY", "TWD", "UAH", "USD", "VND", "ZAR",
+    "AED", "AFN", "ALL", "AMD", "AOA", "ARS", "AUD", "AWG", "AZN", "BAM", "BBD", "BDT", "BHD",
+    "BIF", "BMD", "BND", "BOB", "BRL", "BSD", "BTN", "BWP", "BYN", "BZD", "CAD", "CDF", "CHF",
+    "CLP", "CNY", "COP", "CRC", "CUP", "CVE", "CZK", "DJF", "DKK", "DOP", "DZD", "EGP", "ERN",
+    "ETB", "EUR", "FJD", "FKP", "GBP", "GEL", "GHS", "GIP", "GMD", "GNF", "GTQ", "GYD", "HKD",
+    "HNL", "HTG", "HUF", "IDR", "ILS", "INR", "IQD", "IRR", "ISK", "JMD", "JOD", "JPY", "KES",
+    "KGS", "KHR", "KMF", "KPW", "KRW", "KWD", "KYD", "KZT", "LAK", "LBP", "LKR", "LRD", "LSL",
+    "LYD", "MAD", "MDL", "MGA", "MKD", "MMK", "MNT", "MOP", "MRU", "MUR", "MVR", "MWK", "MXN",
+    "MYR", "MZN", "NAD", "NGN", "NIO", "NOK", "NPR", "NZD", "OMR", "PAB", "PEN", "PGK", "PHP",
+    "PKR", "PLN", "PYG", "QAR", "RON", "RSD", "RUB", "RWF", "SAR", "SBD", "SCR", "SDG", "SEK",
+    "SGD", "SHP", "SLE", "SOS", "SRD", "SSP", "STN", "SVC", "SYP", "SZL", "THB", "TJS", "TMT",
+    "TND", "TOP", "TRY", "TTD", "TWD", "TZS", "UAH", "UGX", "USD", "UYU", "UZS", "VED", "VES",
+    "VND", "VUV", "WST", "XAF", "XCD", "XCG", "XOF", "XPF", "YER", "ZAR", "ZMW", "ZWG",
 )
+# Codes ISO 4217 has withdrawn that records made before still carry: read and shown with
+# their names, never offered for anything new.
+HISTORICAL: tuple[str, ...] = ("ANG", "BGN", "HRK", "ZWL")
 
 CURRENCY_CODES: frozenset[str] = frozenset(CURRENCIES)
+KNOWN_CURRENCY_CODES: frozenset[str] = CURRENCY_CODES | frozenset(HISTORICAL)
 
 
 def require_currency_code(code: str | None) -> None:
