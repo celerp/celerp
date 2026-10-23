@@ -1792,7 +1792,8 @@ def setup_routes(app):
         try:
             doc = await api.get_doc(token, target_id)
             new_lines = await _line_items_from_inventory(token, entity_ids, doc_type=doc.get("doc_type"), doc=doc)
-            await api.patch_doc(token, target_id, {"line_items": (doc.get("line_items") or []) + new_lines})
+            await api.patch_doc(token, target_id, {"line_items": (doc.get("line_items") or []) + new_lines},
+                                expected_version=doc.get("version"))
         except APIError as e:
             return Div(P(error_message(e), cls="flash flash--error"), id="modal-container")
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{target_id}"})
@@ -2073,7 +2074,8 @@ def setup_routes(app):
 
         # Appended to the lines as they stand; the server recalculates the money.
         try:
-            await api.patch_doc(token, entity_id, {"line_items": (doc.get("line_items") or []) + new_lines})
+            await api.patch_doc(token, entity_id, {"line_items": (doc.get("line_items") or []) + new_lines},
+                                expected_version=doc.get("version"))
         except APIError as e:
             return _J({"error": error_message(e)}, status_code=e.status)
 
@@ -2982,7 +2984,7 @@ celerpUpdateBulkAlloc();
             if not (0 <= idx < len(line_items)):
                 return _action_error(t("documents.line_item_not_found"))
             line_items[idx] = {**line_items[idx], field: value}
-            await api.patch_doc(token, entity_id, {"line_items": line_items})
+            await api.patch_doc(token, entity_id, {"line_items": line_items}, expected_version=doc.get("version"))
         except APIError as e:
             return _action_error(error_message(e))
         display_value = value

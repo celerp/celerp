@@ -4164,7 +4164,8 @@ function celerpPrintLabel(entityId, templateId) {
                 if doc_type == "invoice":
                     doc = await api.get_doc(token, target_id)
                     new_lines = await _line_items_from_inventory(token, entity_ids, doc_type="invoice", doc=doc)
-                    await api.patch_doc(token, target_id, {"line_items": (doc.get("line_items") or []) + new_lines})
+                    await api.patch_doc(token, target_id, {"line_items": (doc.get("line_items") or []) + new_lines},
+                                        expected_version=doc.get("version"))
                     return Response("", status_code=204, headers={"HX-Redirect": f"/docs/{target_id}"})
                 elif doc_type in ("list", "shipping_doc"):
                     new_lines = await _line_items_from_inventory(token, entity_ids)
@@ -4178,12 +4179,14 @@ function celerpPrintLabel(entityId, templateId) {
                 elif doc_type == "memo":
                     doc = await api.get_doc(token, target_id)
                     new_lines = await _line_items_from_inventory(token, entity_ids, doc_type="memo", doc=doc)
-                    await api.patch_doc(token, target_id, {"line_items": (doc.get("line_items") or []) + new_lines})
+                    await api.patch_doc(token, target_id, {"line_items": (doc.get("line_items") or []) + new_lines},
+                                        expected_version=doc.get("version"))
                     return Response("", status_code=204, headers={"HX-Redirect": f"/docs/{target_id}"})
                 elif doc_type == "purchase_order":
                     doc = await api.get_doc(token, target_id)
                     new_lines = await _reorder_lines_from_inventory(token, entity_ids, doc_type="purchase_order", doc=doc)
-                    await api.patch_doc(token, target_id, {"line_items": (doc.get("line_items") or []) + new_lines})
+                    await api.patch_doc(token, target_id, {"line_items": (doc.get("line_items") or []) + new_lines},
+                                        expected_version=doc.get("version"))
                     return Response("", status_code=204, headers={"HX-Redirect": f"/docs/{target_id}"})
             else:
                 # Create new document

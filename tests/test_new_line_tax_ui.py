@@ -287,3 +287,46 @@ async def test_a_failed_tax_read_imports_no_csv_line(ui_client):
                           patch_doc=patch_doc, taxes=AsyncMock(side_effect=APIError(503, "The tax list could not be read.")))
     assert r.status_code == 503 and r.json()["error"] == "The tax list could not be read."
     patch_doc.assert_not_awaited()
+
+
+@pytest.mark.parametrize("url, body", [
+    ("/docs/from-items/add", b"selected=item%3Ap1&target_id=doc%3AINV-1"),
+    ("/api/items/send-to", b"selected=item%3Ap1&send_to_doc_type=invoice&send_to_target=doc%3AINV-1"),
+    ("/api/items/send-to", b"selected=item%3Ap1&send_to_doc_type=memo&send_to_target=doc%3AMEMO-1"),
+    ("/api/items/send-to", b"selected=item%3Ap1&send_to_doc_type=purchase_order&send_to_target=doc%3APO-1"),
+])
+async def test_appending_items_saves_against_the_version_it_read(ui_client, url, body):
+    """The new line's tax is chosen from the document as read, so the save names that version: an
+    edit made in between is refused (documents.err_doc_changed), never overwritten."""
+    patch_doc = AsyncMock(return_value={"event_id": "e1"})
+    r = await _post(ui_client, url, body, taxes=_taxes(), doc={**_DRAFT, "version": 9}, patch_doc=patch_doc)
+    assert r.status_code == 204, r.text
+    assert patch_doc.call_args.kwargs.get("expected_version") == 9
+
+
+async def test_a_csv_import_saves_against_the_version_it_read(ui_client):
+    patch_doc = AsyncMock(return_value={"event_id": "e1"})
+    r = await _import_csv(ui_client, "sku,quantity\nJWL-002,1\n", doc={**_DRAFT, "version": 9}, patch_doc=patch_doc)
+    assert r.status_code == 200, r.text
+    assert patch_doc.call_args.kwargs.get("expected_version") == 9
+
+
+async def test_a_line_field_edit_saves_against_the_version_it_read(ui_client):
+    patch_doc = AsyncMock(return_value={"event_id": "e1"})
+    ui_client.cookies.update(_authed())
+    with patch("ui.api_client.get_doc", new=AsyncMock(return_value={**_DRAFT, "version": 9})), \
+            patch("ui.api_client.patch_doc", new=patch_doc):
+        await ui_client.patch("/docs/doc:INV-1/line/0/field/description", data={"value": "Ring, 18k"})
+    assert patch_doc.call_args.kwargs.get("expected_version") == 9
+
+
+async def test_every_rewrite_of_lines_read_from_the_server_names_the_version_it_read():
+    """A UI route that reads a document and saves its line_items back from that read passes the
+    version it read, as the list paths do. The editor's own save sends the lines the browser holds."""
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent / "ui"
+    calls = [m.group(0) for p in root.rglob("*.py")
+             for m in re.finditer(r'api\.patch_doc\(token, \w+, \{"line_items":(?:[^\n]|\n\s+(?=expected_version=))*', p.read_text())]
+    assert len(calls) == 6 and all("expected_version=" in call for call in calls), calls
