@@ -579,17 +579,19 @@ async def create_location(
         is_default=payload.is_default,
     )
     session.add(loc)
+    await _flush_location(session, payload.name)
     if payload.is_default:
         await _maybe_apply_regime(session, company_id, payload.address)
-    await _commit_location(session, payload.name)
+    await session.commit()
     return {"id": str(loc.id)}
 
 
-async def _commit_location(session: AsyncSession, name: str) -> None:
-    """Commit a location write, refusing a name the company already uses with a message
-    naming it."""
+async def _flush_location(session: AsyncSession, name: str) -> None:
+    """Write a location's name now, refusing a name the company already uses with a message
+    naming it. Runs before any later query, which would otherwise flush the name first and
+    fail outside this check."""
     try:
-        await session.commit()
+        await session.flush()
     except IntegrityError as exc:
         await session.rollback()
         if "uq_location_company_name" not in str(exc.orig):
@@ -665,6 +667,7 @@ async def patch_location(
         raise HTTPException(status_code=404, detail=t("company.err_location_not_found"))
     if payload.name is not None:
         loc.name = payload.name
+        await _flush_location(session, payload.name)
     if payload.address is not None:
         loc.address = payload.address
     if payload.type is not None:
@@ -683,7 +686,7 @@ async def patch_location(
     effective_address = payload.address if payload.address is not None else loc.address
     if effective_default:
         await _maybe_apply_regime(session, company_id, effective_address)
-    await _commit_location(session, loc.name)
+    await session.commit()
     return {"id": str(loc.id), "name": loc.name, "type": loc.type, "address": loc.address, "is_default": loc.is_default}
 
 
