@@ -15,6 +15,7 @@ Proves:
 4. Clicking a ticked option unticks it.
 5. The closed input names a single selection and counts several.
 6. Submitting renders one section per selected subject.
+7. The open list follows the field when content loads above it.
 """
 from __future__ import annotations
 
@@ -105,6 +106,31 @@ def test_clicking_a_ticked_option_unticks_it(page, statement_url):
     opt.click()
     assert _selected_inputs(page).count() == 0
     assert "combobox-option--selected" not in (opt.get_attribute("class") or "")
+
+
+_LIST_OFFSET = """(() => {
+    const w = document.querySelector('.combobox-wrap[data-multiple]');
+    return w.querySelector('.combobox-list').getBoundingClientRect().top
+        - w.querySelector('.combobox-input').getBoundingClientRect().bottom;
+})()"""
+
+
+def test_the_open_list_follows_the_field_when_content_loads_above_it(page, statement_url):
+    """The list is position:fixed and placed when it opens. A notice that loads above the
+    form afterwards moves the field down; a list left where it was covers the wrong spot,
+    and a pick there moves it under the field mid-click, so the click lands outside the
+    field and closes the list."""
+    _open_picker(page, statement_url)
+    offset = page.evaluate(_LIST_OFFSET)
+    page.evaluate(
+        "htmx.swap('#main-content', '<div style=\"height:80px\"></div>', {swapStyle: 'afterbegin'})")
+    page.wait_for_function(f"Math.abs({_LIST_OFFSET} - {offset}) < 1", timeout=3000)
+
+    opt = _options(page).first
+    opt.click()
+    opt.click()
+    assert _selected_inputs(page).count() == 0
+    assert page.locator(".combobox-list.open").is_visible(), "unticking closed the list"
 
 
 def test_closed_input_names_one_selection_and_counts_several(page, statement_url):
