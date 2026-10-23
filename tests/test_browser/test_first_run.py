@@ -614,6 +614,67 @@ def test_setup_options_side_by_side_small_and_flush_left(playwright, fresh, widt
         browser.close()
 
 
+_PRESETS = _REPO / "default_modules" / "celerp-verticals" / "celerp_verticals" / "presets"
+
+
+def _offered_types() -> dict[str, list[str]]:
+    """Every business type the setup page offers, with the modules its preset names."""
+    import json
+
+    presets = (json.loads(p.read_text("utf-8")) for p in sorted(_PRESETS.glob("*.json")))
+    return {p["name"]: p.get("modules", []) for p in presets if not p.get("hidden")}
+
+
+@pytest.mark.parametrize("vertical", sorted(_offered_types()))
+def test_each_business_type_chosen_first_on_a_new_install(playwright, fresh, vertical):
+    """Each business type, chosen on the setup form as the first thing a new install does,
+    reaches a dashboard that shows its figures with no error. Celerp restarts to load the
+    type's modules exactly when one of them (or a module it needs) is not among those a new
+    install runs, and afterwards every module the company uses is running."""
+    from celerp.modules.loader import is_core_folded
+    from celerp.services.starter_modules import STARTER_MODULES
+    from migration_support import smoke_records
+
+    boot = httpx.get(f"{fresh.api}/health", timeout=10).json()["boot"]
+    browser, ctx = _context(playwright)
+    try:
+        page = ctx.new_page()
+        visited: list[str] = []
+        failures: list[str] = []
+        page.on("framenavigated", lambda f: visited.append(urlsplit(f.url).path) if f == page.main_frame else None)
+        page.on("pageerror", lambda e: failures.append(str(e)))
+        page.goto(f"{fresh.ui}/setup", wait_until="networkidle")
+        _fill_text_fields(page, f"{vertical}@first-run.test")
+        _choose(page, "vertical", vertical)
+        _choose(page, "currency", "USD")
+        page.locator('#setup-form button[type="submit"]').click()
+        page.wait_for_url(f"{fresh.ui}/dashboard", timeout=180000)
+        page.wait_for_load_state("load")
+
+        expect(page.locator(".kpi-grid").first).to_be_visible()
+        assert page.locator(".kpi-grid").first.locator(":scope > *").count() > 0, "the dashboard shows no figures"
+        expect(page.locator(".charts-section")).to_be_visible()
+        expect(page.locator(".quick-links-section")).to_be_visible()
+        assert page.locator(".error-banner").count() == 0, page.locator(".error-banner").all_inner_texts()
+        assert not failures, failures
+
+        token = next(c["value"] for c in ctx.cookies() if c["name"] == "celerp_token")
+        listed = httpx.get(f"{fresh.api}/companies/me/modules", headers={"Authorization": f"Bearer {token}"},
+                           timeout=30)
+        listed.raise_for_status()
+        modules = {m["name"]: m for m in listed.json()}
+        uses = smoke_records().turned_on(_offered_types()[vertical], modules)
+        not_running_at_first = sorted(m for m in uses if m not in STARTER_MODULES and not is_core_folded(m))
+        restarted = "/setup/activating" in visited
+        assert restarted == bool(not_running_at_first), (vertical, visited, not_running_at_first)
+        assert (httpx.get(f"{fresh.api}/health", timeout=10).json()["boot"] != boot) == restarted
+        stopped = {m: modules[m] for m in uses if not (modules[m]["enabled"] and modules[m]["running"])}
+        assert not stopped, stopped
+        assert fresh.company(ctx)["settings"]["vertical"] == vertical
+    finally:
+        browser.close()
+
+
 def test_every_business_type_sets_up_on_a_new_install(fresh, tmp_path):
     """Every business type the setup page offers sets up a company on one new install, one
     after another: Celerp restarts exactly when a type needs modules that are not running,
@@ -623,5 +684,4 @@ def test_every_business_type_sets_up_on_a_new_install(fresh, tmp_path):
 
     port_file = tmp_path / "api-port"
     port_file.write_text(str(_API_PORT))
-    smoke_records().first_run(str(port_file), str(_REPO / "default_modules" / "celerp-verticals"
-                                                  / "celerp_verticals" / "presets"))
+    smoke_records().first_run(str(port_file), str(_PRESETS))

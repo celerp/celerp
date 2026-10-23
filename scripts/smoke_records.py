@@ -370,7 +370,7 @@ def _modules(api: str, token: str, what: str) -> dict[str, dict]:
     return {m["name"]: m for m in _ok(*http("GET", api + "/companies/me/modules", token), f"GET /companies/me/modules {what}")}
 
 
-def _turned_on(preset: list[str], modules: dict[str, dict]) -> set[str]:
+def turned_on(preset: list[str], modules: dict[str, dict]) -> set[str]:
     """The company's modules once it chooses a type, as the server adds them: those
     it already uses, and the type's installed modules with every module they need."""
     wanted = [n for n in preset if n in modules]
@@ -418,7 +418,7 @@ def first_run(port_file: str, presets: str) -> None:
         _ok(*http("PATCH", api + "/companies/me", token, {"currency": "USD", "timezone": "UTC"}),
             f"currency and timezone for {vertical}")
         before = _modules(api, token, f"before choosing {vertical}")
-        need = _turned_on(types[vertical], before)
+        need = turned_on(types[vertical], before)
         stopped = sorted(m for m in need if not before[m]["running"])
         chosen = _ok(*http("POST", api + "/companies/me/business-type", token, {"vertical": vertical}),
                      f"business type {vertical}")
