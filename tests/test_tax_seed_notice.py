@@ -107,6 +107,23 @@ async def test_tax_seed_notice_clears_when_row_fixed(session):
     assert set(await _notices(session, company_id)) == {"et-tot-2025"}
 
 
+# What each retired entry's notice tells the company to do instead. A new entry fails the test
+# below until its replacement is declared here and named in its notice.
+_REPLACEMENT = {"in-default-2025": "IGST 18%", "et-wht-2025": "3%", "et-tot-2025": "Remove",
+                "ca-qst-compound": "Set Compound to No", "my-sst-6": "Sales Tax at 10%"}
+
+
+async def test_each_retired_seed_notice_names_its_rows_and_the_replacement():
+    from celerp.tax_regimes import RETIRED_SEED_ROWS
+    from ui.i18n import t
+
+    assert {entry["id"] for entry in RETIRED_SEED_ROWS} == set(_REPLACEMENT)
+    for entry in RETIRED_SEED_ROWS:
+        body = t(f"notice.tax_seed.{entry['id']}.body", "en")
+        assert [row["name"] for row in entry["rows"] if row["name"] not in body] == [], entry["id"]
+        assert _REPLACEMENT[entry["id"]] in body, entry["id"]
+
+
 async def test_tax_seed_notice_links_purchasing_tab_for_purchasing_match(session):
     vat = [r for r in _OLD_ET if r["name"] == "VAT 15%"]
     wht = [r for r in _OLD_ET if r["name"] == "WHT 2%"]

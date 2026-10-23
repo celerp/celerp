@@ -118,10 +118,10 @@ async def test_retype_to_customs_type_freezes(client, auth):
     assert (await _lines(client, auth, quote))[0]["hs_code"] == "1234"
 
 
-def _import_record(n: str, item_id: str, status: str = "finalized") -> dict:
+def _import_record(n: str, item_id: str, status: str = "finalized", list_type: str = "shipping_doc") -> dict:
     return {"entity_id": f"list:CFIMP-{n}", "event_type": "list.created", "source": "csv",
             "idempotency_key": f"cf-imp-{n}-{uuid.uuid4().hex[:6]}",
-            "data": {"ref_id": f"CFIMP-{n}", "list_type": "shipping_doc", "status": status,
+            "data": {"ref_id": f"CFIMP-{n}", "list_type": list_type, "status": status,
                      "contact_name": "Buyer", "line_items": [_line(item_id)]}}
 
 
@@ -308,6 +308,34 @@ async def test_startup_saves_the_flag_on_an_issued_list_whose_lines_already_hold
     r = await client.get(f"/lists/{ship}", headers=auth["headers"])
     assert r.json()["customs_saved"] is True
     assert r.json()["line_items"][0]["hs_code"] == "5555"
+
+
+@pytest.mark.parametrize("path", ["issue", "import", "batch_import", "retype", "startup"])
+async def test_a_list_that_is_not_a_shipping_document_keeps_its_lines_as_written(client, auth, session, path):
+    """Customs codes are filled only on shipping documents: any other list issued, imported, retyped
+    or passed at startup keeps its lines without the item's codes and is never marked saved."""
+    item_id = await _item(client, auth)
+    if path in ("import", "batch_import"):
+        record = _import_record(f"Q{uuid.uuid4().hex[:6]}", item_id, list_type="quotation")
+        r = await (client.post("/lists/import", headers=auth["headers"], json=record) if path == "import" else
+                   client.post("/lists/import/batch", headers=auth["headers"], json={"records": [record]}))
+        assert r.status_code == 200, r.text
+        quote = record["entity_id"]
+    else:
+        quote = await _list(client, auth, "quotation", item_id)
+        await _issue(client, auth, quote)
+    if path == "retype":
+        r = await client.post(f"/lists/{quote}/change-type", headers=auth["headers"], json={"list_type": "transfer"})
+        assert r.status_code == 200, r.text
+    if path == "startup":
+        await _reset_marker(session)
+        await _start(session)
+
+    r = await client.get(f"/lists/{quote}", headers=auth["headers"])
+    assert r.json()["status"] == "finalized"
+    assert not r.json().get("customs_saved")
+    assert not r.json()["line_items"][0].get("hs_code")
+    assert not r.json()["line_items"][0].get("country_of_origin")
 
 
 @pytest.mark.parametrize("state, reads", [
