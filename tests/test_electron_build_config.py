@@ -433,7 +433,8 @@ def test_packaged_build_checks_its_modules_and_boots_with_every_locked_module():
     assert "wait" not in failed
     # The force-quit check reads the database's data directory from the running
     # database; the app does not keep its data under $HOME on every runner.
-    assert 'PG_PIDFILE="$PG_DATA/postmaster.pid"' in unix["run"] and 'find "$HOME"' not in unix["run"].split("boot smoke OK")[1]
+    force_quit = unix["run"].split("# A force-quit app must not leave its servers running", 1)[1].split("force-quit OK on", 1)[0]
+    assert 'PG_PIDFILE="$PG_DATA/postmaster.pid"' in force_quit and 'find "$HOME"' not in force_quit
     # Linux and macOS: a force-quit app (SIGKILL) must leave no API or database running.
     assert 'kill -9 "$ELECTRON"' in unix["run"] and "left the API or the database running" in unix["run"]
     # A fresh install under an account named with spaces and non-ASCII letters: the
