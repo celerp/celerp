@@ -20,16 +20,10 @@ class UnratedTaxError(ValueError):
     """The document holds a tax amount with no rate to recompute it from."""
 
 
-def _recompute_tax_applications(raw, base, currency: str):
-    """Recompute stored tax definitions against a new base, never stale amounts."""
-    if not isinstance(raw, list) or not raw:
-        return [], to_decimal(0)
-    definitions: list[TaxApplication] = []
+def _recompute_tax_applications(entries: list[dict], base, currency: str):
+    """Recompute stored tax definitions (tax_entries) against a new base, never stale amounts."""
     try:
-        for value in raw:
-            if not isinstance(value, dict):
-                raise ValueError("tax entry is not an object")
-            definitions.append(TaxApplication.model_validate({**value, "amount": 0.0}))
+        definitions = [TaxApplication.model_validate({**value, "amount": 0.0}) for value in entries]
     except Exception as exc:
         raise HTTPException(
             status_code=422,
@@ -102,9 +96,9 @@ def document_money(state: dict, lines: list[dict], currency: str, *, keep_unrate
         if not isinstance(line, dict):
             continue
         base = _line_amount(line) * ratio
-        raw_taxes = line.get("taxes")
-        if isinstance(raw_taxes, list) and raw_taxes:
-            resolved, amount = _recompute_tax_applications(raw_taxes, base, currency)
+        line_taxes = tax_entries(line.get("taxes"))
+        if line_taxes:
+            resolved, amount = _recompute_tax_applications(line_taxes, base, currency)
             line["taxes"] = resolved
             line_tax_total += amount
             has_line_tax = True
@@ -118,10 +112,10 @@ def document_money(state: dict, lines: list[dict], currency: str, *, keep_unrate
         "subtotal": to_stored_float(subtotal),
         "discount_amount": to_stored_float(discount_amount),
     }
-    raw_doc_taxes = state.get("doc_taxes")
-    if isinstance(raw_doc_taxes, list) and raw_doc_taxes:
+    doc_taxes = tax_entries(state.get("doc_taxes"))
+    if doc_taxes:
         resolved_doc_taxes, doc_tax_total = _recompute_tax_applications(
-            raw_doc_taxes, taxable, currency)
+            doc_taxes, taxable, currency)
         result["doc_taxes"] = resolved_doc_taxes
         tax_total = line_tax_total + doc_tax_total
     elif has_line_tax:

@@ -2,9 +2,9 @@
 # SPDX-License-Identifier: LicenseRef-Proprietary
 """A document's taxes (``doc_taxes``) and a line's taxes (``taxes``) are a list of tax
 objects or absent. Every write refuses any other shape with the tax error and stores
-nothing: the document edit, the list edit and its line pages, and an import. Every page and
-printout that shows taxes reads a stored value of another shape as no taxes rather than
-failing."""
+nothing: the document edit, the list edit and its line pages, and an import. Every
+page, printout and money recompute that reads taxes reads a stored value of another shape as
+no taxes rather than failing."""
 from __future__ import annotations
 
 import uuid
@@ -12,6 +12,10 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from sqlalchemy import select
+from sqlalchemy.orm.attributes import flag_modified
+
+from celerp.models.projections import Projection
 from test_money_stock_and_contact_invariants import _auth_company
 from test_ui import _authed, _mock_get_company, _mock_get_modules, ui_client  # noqa: F401  (fixtures)
 from ui.i18n import t
@@ -108,6 +112,35 @@ async def test_an_import_refuses_taxes_of_another_shape(client, session, field):
         "idempotency_key": uuid.uuid4().hex, "data": data})
     assert _refused(r), r.text
     assert (await client.get(f"/docs/{eid}", headers=auth["headers"])).status_code == 404
+
+
+@pytest.mark.parametrize("where", ["doc_taxes", "taxes"])
+async def test_a_document_holding_a_stored_tax_value_of_another_shape_still_takes_an_edit(client, session, where):
+    auth = await _auth_company(session)
+    doc_id, _ = await _draft(client, auth)
+    row = (await session.execute(select(Projection).where(
+        Projection.company_id == auth["company_id"], Projection.entity_id == doc_id))).scalar_one()
+    state = dict(row.state)
+    if where == "doc_taxes":
+        state["doc_taxes"] = ["x"]
+    else:
+        state["line_items"] = [{**state["line_items"][0], "taxes": ["x"]}]
+    row.state = state
+    flag_modified(row, "state")
+    await session.commit()
+    r = await client.patch(f"/docs/{doc_id}", headers=auth["headers"],
+                           json={"fields_changed": {"discount": {"new": 5}}})
+    assert r.status_code == 200, r.text
+    after = (await client.get(f"/docs/{doc_id}", headers=auth["headers"])).json()
+    assert (after["tax"], after["total"]) == (0.0, 95.0)
+
+
+async def test_a_received_document_takes_only_its_tax_objects_as_a_list_rate():
+    from celerp_docs.received import managed_fields
+
+    doc = {"doc_taxes": ["VAT", *_TAX], "line_items": [{"description": "S", "quantity": 1, "taxes": ["VAT", *_TAX]}]}
+    fields = managed_fields(doc, type("Target", (), {"kind": "list", "type": "quotation"})())
+    assert fields["tax"] == 7.0 and fields["line_items"][0]["tax_rate"] == 7.0
 
 
 @pytest.mark.parametrize("value, entries", [

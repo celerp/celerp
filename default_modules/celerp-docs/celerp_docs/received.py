@@ -328,9 +328,7 @@ _BILL_FIELDS = ("issue_date", "due_date", "payment_terms")
 
 def _tax_rate(taxes) -> float | None:
     """A list line carries one tax rate; the sender's line taxes collapse to their sum."""
-    if not isinstance(taxes, list) or not taxes:
-        return None
-    return sum(float(t.get("rate") or 0) for t in taxes if isinstance(t, dict)) or None
+    return sum(float(t.get("rate") or 0) for t in tax_entries(taxes)) or None
 
 
 def _lines(document: dict, kind: str) -> list[dict]:
