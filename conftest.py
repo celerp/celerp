@@ -707,6 +707,16 @@ def _refuse_live_database():
 from celerp.models.base import Base
 import celerp.models.marketplace  # noqa: F401,E402 - registers marketplace_configs, as celerp/migrations/env.py does
 
+@pytest.fixture
+def no_relay_check_in(monkeypatch):
+    """A lifespan under test never reaches the real relay: its activation check-in would
+    be cut off mid-connect at shutdown, leaving an open socket for a later test to collect."""
+    from unittest.mock import AsyncMock
+    import celerp.main as main_mod
+    monkeypatch.setattr(main_mod, "_try_auto_activate", AsyncMock())
+    monkeypatch.setattr(main_mod, "_try_sync_existing_entitlement", AsyncMock())
+
+
 # Session-scoped engine: created once, shared across all tests to avoid OOM from
 # 1000+ engine create/dispose cycles when test_ui.py + test_routers/ run together.
 @pytest_asyncio.fixture(scope="session")
