@@ -1297,11 +1297,8 @@ async def query_items(
     # visible_to_roles floor and are safe to filter here; category/inventory_type/
     # location_id ARE schema fields a role may be denied, so their filters run after
     # apply_field_visibility (below) to avoid a membership oracle.
-    from celerp.connectors import ownership
-    try:
-        _connected = await ownership.connected_connector_platforms(session, company_id)
-    except ownership.ConnectorOwnershipError:
-        _connected = set()
+    from celerp_inventory.services import connected_catalog_platforms
+    _connected = await connected_catalog_platforms(session, company_id)
     if f.source:
         from celerp_inventory.services import external_link_for_state
         _platform = f.source.strip().lower()
@@ -2210,6 +2207,12 @@ async def get_item(entity_id: str, company_id=Depends(get_current_company_id), r
                 [(row.entity_id, row.state)], [(sold_doc.entity_id, sold_doc.state)],
                 settings.get("currency") or "USD",
             ).get(row.entity_id)
+    from celerp_inventory.search import load_item_rows
+    from celerp_inventory.services import build_channel_states, connected_catalog_platforms
+    connected = await connected_catalog_platforms(session, company_id)
+    result["_channel_state"] = build_channel_states(
+        await load_item_rows(session, company_id), connected_platforms=connected,
+    ).get(entity_id, {}) if connected else {}
     return result
 
 
@@ -2908,39 +2911,6 @@ async def _lock_selected_items(session: AsyncSession, company_id, entity_ids: li
 
 def _row_is_draft(row: Projection) -> bool:
     return str((row.state or {}).get("status") or "").lower() == "draft"
-
-
-class BulkShopifySyncBody(BaseModel):
-    entity_ids: list[str]
-    enable: bool = True
-
-
-@router.post("/bulk/shopify-sync")
-async def bulk_shopify_sync(payload: BulkShopifySyncBody, company_id=Depends(get_current_company_id), _: None = require_permission("adjust_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
-    """Opt the selected items into (or out of) outbound Shopify sync by emitting
-    shop.sync.enabled/disabled, which sets is_sync_to_shopify on each item's projection."""
-    if not payload.entity_ids:
-        raise HTTPException(status_code=422, detail=t("inventory.err_none_selected"))
-    await _lock_selected_items(session, company_id, payload.entity_ids)
-    event_type = "shop.sync.enabled" if payload.enable else "shop.sync.disabled"
-    event_ids = []
-    for entity_id in payload.entity_ids:
-        entry = await emit_event(
-            session,
-            company_id=company_id,
-            entity_id=entity_id,
-            entity_type="item",
-            event_type=event_type,
-            data={},
-            actor_id=user.id,
-            location_id=None,
-            source="api",
-            idempotency_key=str(uuid.uuid4()),
-            metadata_={},
-        )
-        event_ids.append(entry.id)
-    await session.commit()
-    return {"updated": len(event_ids), "enabled": payload.enable}
 
 
 async def _build_transfer_data(session, company_id, entity_id: str, to_location_id, loc_map: dict | None = None) -> dict:

@@ -98,8 +98,11 @@ async def restored(real_engine, real_client, tmp_path, monkeypatch):
     a = await _item(real_client, tok, "RST-A")
     await _item(real_client, tok, "RST-B")
     await _links(real_engine, source, a, {"shopify": dict(LIVE_SHOPIFY), "woocommerce": dict(LIVE_WOO)})
-    r = await real_client.post("/items/bulk/shopify-sync", headers=auth(tok), json={"entity_ids": [a], "enable": True})
-    assert r.status_code == 200, r.text
+    await _sql(real_engine,
+               "INSERT INTO ledger (company_id, entity_id, entity_type, event_type, data, source, idempotency_key) "
+               "VALUES (:c, :e, 'item', 'shop.sync.enabled', CAST('{}' AS json), 'connector_ui', :k)",
+               c=uuid.UUID(str(source)), e=a, k=f"k-shop-sync-{a}")
+    await settle(real_engine, source)
     assert (await _projection(real_engine, source, a))[1] is True
     await _doc(real_engine, source, "doc:imported", shopify_order_id="5001")
     await _doc(real_engine, source, "doc:pushed", xero_invoice_id="X-1")

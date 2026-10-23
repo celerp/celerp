@@ -2754,11 +2754,6 @@ async def revert_items_to_draft(token: str, entity_ids: list[str], reason: str |
         return _raise(await c.post("/items/bulk/revert-to-draft", json={"entity_ids": entity_ids, "reason": reason})).json()
 
 
-async def bulk_shopify_sync(token: str, entity_ids: list[str], enable: bool) -> dict:
-    async with _api_client(token) as c:
-        return _raise(await c.post("/items/bulk/shopify-sync", json={"entity_ids": entity_ids, "enable": enable})).json()
-
-
 async def set_connector_item_sync(
     token: str, platform: str, entity_ids: list[str], action: str,
     confirm_link: list[str] | None = None,

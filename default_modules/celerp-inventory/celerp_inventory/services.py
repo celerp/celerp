@@ -1806,6 +1806,16 @@ async def aggregate_sellable_quantity_for_sku(
     )
 
 
+async def connected_catalog_platforms(session: AsyncSession, company_id) -> set[str]:
+    """The platforms this company is connected to; none when connector ownership cannot
+    be read, so every link then shows as history rather than as live."""
+    from celerp.connectors import ownership
+    try:
+        return await ownership.connected_connector_platforms(session, company_id)
+    except ownership.ConnectorOwnershipError:
+        return set()
+
+
 def build_channel_states(
     rows: list[Projection], *, connected_platforms: set[str]
 ) -> dict[str, dict[str, dict]]:
@@ -1885,6 +1895,9 @@ def build_channel_states(
                 "enabled": bool(enabled),
                 "anchor_id": anchor.entity_id,
                 "remote_deleted": bool(link.get("remote_deleted")),
+                # The store's own status for the product ("publish", "draft"), when
+                # the platform has one; None when it was never read.
+                "remote_status": link.get("remote_status"),
             }
             for row in family_rows:
                 result[row.entity_id][platform] = dict(state)

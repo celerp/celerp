@@ -1127,6 +1127,25 @@ def is_core_folded(pkg_name: str) -> bool:
     return pkg_name in CORE_FOLDED
 
 
+def register_core_folded_slots(root: Path) -> None:
+    """Register the manifest slots of the modules folded into core, found under
+    ``root``. The loader never loads these modules, so each app registers their slots
+    at construction, exactly as the loader registers a loaded module's. Idempotent:
+    the API and UI apps can share one process, and each registers every folded module."""
+    for name in sorted(CORE_FOLDED):
+        manifest = read_manifest(root / name)
+        entries = [
+            (slot_name, {**item, **_runtime_keys(name, True)})
+            for slot_name, contribution in (manifest.get("slots") or {}).items()
+            for item in (contribution if isinstance(contribution, list) else [contribution])
+        ]
+        for slot_name, item in entries:
+            check_slot(slot_name, item)
+        unregister_module_slots(name)
+        for slot_name, item in entries:
+            register_slot(slot_name, item)
+
+
 def is_running(pkg_name: str) -> bool:
     """Single source of truth for "is this module active in the process".
 

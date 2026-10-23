@@ -1190,6 +1190,110 @@
         "detail",
         "service"
       ]
+    },
+    "inventory.col_channels": {
+      "en": "Channels",
+      "params": []
+    },
+    "inventory.channel_published": {
+      "en": "Published",
+      "params": []
+    },
+    "inventory.channel_draft": {
+      "en": "Draft in the store",
+      "params": []
+    },
+    "inventory.channel_syncing": {
+      "en": "Syncing",
+      "params": []
+    },
+    "inventory.channel_stopped": {
+      "en": "Sync stopped",
+      "params": []
+    },
+    "inventory.channel_missing": {
+      "en": "No longer in the store",
+      "params": []
+    },
+    "inventory.channel_ambiguous": {
+      "en": "Linked to more than one store product. Review the links on the item before changing them.",
+      "params": []
+    },
+    "inventory.channel_action_publish": {
+      "en": "Publish",
+      "params": []
+    },
+    "inventory.channel_action_unpublish": {
+      "en": "Unpublish",
+      "params": []
+    },
+    "inventory.channel_action_stop": {
+      "en": "Stop",
+      "params": []
+    },
+    "inventory.channel_action_resume": {
+      "en": "Resume",
+      "params": []
+    },
+    "inventory.channel_link": {
+      "en": "Link",
+      "params": []
+    },
+    "inventory.channel_link_all": {
+      "en": "Link all",
+      "params": []
+    },
+    "inventory.channel_bulk_done": {
+      "en": "{n} items updated on {service}.",
+      "params": [
+        "n",
+        "service"
+      ]
+    },
+    "inventory.channel_page_title": {
+      "en": "{name} on {service}",
+      "params": [
+        "name",
+        "service"
+      ]
+    },
+    "inventory.channel_page_hint": {
+      "en": "Publish sends this item to {service}. Unpublish sets it to draft there and keeps the link, so Publish brings it back. Stop pauses syncing in Celerp only; Resume picks it up again. Nothing is ever deleted in the store.",
+      "params": [
+        "service"
+      ]
+    },
+    "connectors.bulk_woo_publish": {
+      "en": "Publish to WooCommerce",
+      "params": []
+    },
+    "connectors.bulk_woo_unpublish": {
+      "en": "Unpublish from WooCommerce",
+      "params": []
+    },
+    "connectors.bulk_woo_stop": {
+      "en": "Stop syncing with WooCommerce",
+      "params": []
+    },
+    "connectors.bulk_woo_resume": {
+      "en": "Resume syncing with WooCommerce",
+      "params": []
+    },
+    "connectors.bulk_shopify_resume": {
+      "en": "Push to Shopify",
+      "params": []
+    },
+    "connectors.bulk_shopify_stop": {
+      "en": "Stop pushing to Shopify",
+      "params": []
+    },
+    "connectors.item_action_woocommerce": {
+      "en": "WooCommerce",
+      "params": []
+    },
+    "connectors.item_action_shopify": {
+      "en": "Shopify",
+      "params": []
     }
   }
 }
