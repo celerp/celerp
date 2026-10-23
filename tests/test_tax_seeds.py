@@ -11,7 +11,7 @@ import inspect
 import pytest
 
 from celerp import tax_regimes
-from celerp.tax_regimes import TAX_REGIMES, default_line_taxes
+from celerp.tax_regimes import TAX_REGIMES, default_line_taxes, tax_key
 
 
 def _rows(country: str) -> dict[str, dict]:
@@ -145,8 +145,8 @@ def _money(doc_taxes: list[dict], lines: list[dict]) -> tuple[float, float]:
 def test_a_document_wide_levy_leaves_an_unrelated_default_on_a_new_line():
     """A draft with a $100 line taxed VAT 7% and a document-wide 5% levy: a $100 line added to it
     still takes VAT 7%, so VAT is $14, the levy $10 and the total $224 (not $217). Only the same
-    tax (name, rate and basis) already on the document is left off a new line; a document tax
-    with no name is never taken for a default."""
+    tax (by name, as _tax_name_key) already on the document is left off a new line; a document
+    tax with no name is never taken for a default."""
     th = TAX_REGIMES["TH"]["taxes"]
     vat = default_line_taxes(th, "invoice", doc_taxes=None)
     added = default_line_taxes(th, "invoice", doc_taxes=[_LEVY])
@@ -154,11 +154,24 @@ def test_a_document_wide_levy_leaves_an_unrelated_default_on_a_new_line():
     lines = [{"quantity": 1, "unit_price": 100.0, "taxes": vat}, {"quantity": 1, "unit_price": 100.0, "taxes": added}]
     assert _money([_LEVY], lines) == (24.0, 224.0)
     assert default_line_taxes(th, "invoice", doc_taxes=[{**_LEVY, "code": " vat 7% ", "rate": 7.0}]) == []
-    assert [t["code"] for t in default_line_taxes(th, "invoice", doc_taxes=[{**_LEVY, "code": "VAT 7%"}])] == ["VAT 7%"]
-    assert [t["code"] for t in default_line_taxes(
-        th, "invoice", doc_taxes=[{**_LEVY, "code": "VAT 7%", "rate": 7.0, "is_compound": True}])] == ["VAT 7%"]
     assert [t["code"] for t in default_line_taxes(th, "invoice", doc_taxes=[{**_LEVY, "code": "", "rate": 7.0}])] == [
         "VAT 7%"]
+
+
+@pytest.mark.parametrize("change", [{"rate": 8.0}, {"is_compound": True}, {"rate": "8"}], ids=["rate", "compound", "text"])
+def test_a_tax_changed_in_settings_is_still_the_tax_a_document_charges(change):
+    """A draft with a $100 line and VAT 7% charged as a whole; the company then changes VAT 7% to
+    8% (or to compound) under the same name. A $100 line added to the draft takes no VAT of its
+    own: the document's VAT 7% covers it, $14, total $214 (not $222). A tax is the same tax by its
+    name alone; its rate and calculation are what it holds, not what it is."""
+    th = [{**tax, **change} if tax["name"] == "VAT 7%" else tax for tax in TAX_REGIMES["TH"]["taxes"]]
+    whole = [{"code": "VAT 7%", "rate": 7.0, "amount": 0, "order": 0, "is_compound": False, "label": ""}]
+    added = default_line_taxes(th, "invoice", doc_taxes=whole)
+    lines = [{"quantity": 1, "unit_price": 100.0, "taxes": []}, {"quantity": 1, "unit_price": 100.0, "taxes": added}]
+    assert _money(whole, lines) == (14.0, 214.0)
+    assert added == []
+    assert tax_key({"name": " vat 7% ", **change}) == tax_key(whole[0]) == "vat 7%"
+    assert tax_key({"code": "", "rate": 7.0}) is None
 
 
 def test_a_new_line_takes_the_companys_calculation_order():

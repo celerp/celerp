@@ -10,7 +10,8 @@ document editor's item picker.
 - A line takes every default tax of the company, never only the first: a company set up before
   IGST became the India default holds CGST 9% and SGST 9% both as defaults, 18% in all.
 - A draft taxed as a whole (document taxes) leaves off a new line only the defaults the
-  document already charges, so no tax is charged twice and none is left out.
+  document already charges, so no tax is charged twice and none is left out. A tax is the same
+  tax by its name: one whose rate or calculation changed in settings since is still left off.
 - A stored tax entry the editor cannot read is kept on every save: an edit is refused naming
   it, and removing it on the page lets the next save through.
 """
@@ -181,13 +182,19 @@ _COMPOUND_AFTER_VAT = [
 
 
 def _add_line(path: str, page, ui_server, company, ui, token: str, doc_id: str, item: dict) -> None:
-    """Add `item` to the draft by `path`: from items, send to, scan, or the editor's line picker."""
+    """Add `item` to the draft by `path`: from items, send to (a purchase order's reorder line for
+    "reorder"), scan, the editor's line picker, or the editor's empty new line ("add_line", $100)."""
     if path == "from_items":
         r = ui.post("/docs/from-items/add", data={"selected": [item["id"]], "target_id": doc_id})
         assert r.status_code == 204, r.text
-    elif path == "send_to":
-        r = ui.post("/api/items/send-to", data={"selected": [item["id"]], "send_to_doc_type": "invoice",
-                                                "send_to_target": doc_id})
+    elif path in ("send_to", "reorder"):
+        if path == "reorder":
+            r = company.patch(f"/items/{item['id']}", json={"fields_changed": {"reorder_qty": {
+                "old": item.get("reorder_qty"), "new": 1}}})
+            assert r.status_code == 200, r.text
+        r = ui.post("/api/items/send-to", data={
+            "selected": [item["id"]], "send_to_target": doc_id,
+            "send_to_doc_type": "purchase_order" if path == "reorder" else "invoice"})
         assert r.status_code == 204, r.text
     elif path == "scan":
         r = company.post(f"/docs/{doc_id}/scan", json={"barcode": item["sku"]})
@@ -200,7 +207,15 @@ def _add_line(path: str, page, ui_server, company, ui, token: str, doc_id: str, 
             ctx.route("**/health/system", lambda route: route.fulfill(json={"overall": "ok"}))
             tab = ctx.new_page()
             tab.goto(f"{ui_server}/docs/{doc_id}", wait_until="domcontentloaded")
-            _picker_add(tab, item["sku"])
+            if path == "add_line":
+                tab.wait_for_selector("#doc-total", timeout=8000)
+                tab.evaluate("celerpAddLine()")
+                price = tab.locator("table.doc-lines tbody tr").last.locator('[data-name="unit_price"]')
+                price.fill("100")
+                price.dispatch_event("input")
+                price.dispatch_event("blur")
+            else:
+                _picker_add(tab, item["sku"])
             _saved(company, doc_id, lines + 1)
         finally:
             ctx.close()
@@ -231,6 +246,34 @@ def test_a_document_wide_levy_leaves_vat_on_a_line_added_next_to_it(page, api_se
     assert [_codes(line) for line in doc["line_items"]] == [["VAT 7%"], ["VAT 7%"]]
     assert [tax["code"] for tax in doc["doc_taxes"]] == ["Levy 5%"]
     assert (float(doc["subtotal"]), float(doc["total"])) == (200.0, 224.0)
+
+
+@pytest.mark.parametrize("change", [{"rate": 8.0}, {"is_compound": True}], ids=["rate", "compound"])
+@pytest.mark.parametrize("path", ["from_items", "send_to", "reorder", "scan", "picker", "add_line"])
+def test_a_tax_changed_in_settings_is_not_charged_again_on_a_draft_that_holds_it(page, api_server, ui_server, api,
+                                                                                 path, change):
+    """A draft with a $100 line and VAT 7% charged as a whole; the company then changes VAT 7% to
+    8% (or to compound) under the same name. A $100 line added to the draft takes no VAT of its
+    own: the document's VAT 7% covers it, $14, total $214 (not $222 with VAT on the line again)."""
+    with _demo_company(api_server, ui_server, api, "TH") as (company, ui, token, items):
+        doc_type = "purchase_order" if path == "reorder" else "invoice"
+        r = company.post("/docs", json={
+            "doc_type": doc_type, "status": "draft", "doc_taxes": [_VAT_WHOLE],
+            "line_items": [{"description": items[0]["name"], "entity_id": items[0]["id"], "quantity": 1,
+                            "unit_price": 100.0}]})
+        assert r.status_code in (200, 201), r.text
+        doc_id = r.json()["id"]
+        for kind in ("taxes", "purchasing-taxes"):
+            taxes = [{**tax, **change} if tax["name"] == "VAT 7%" else tax
+                     for tax in company.get(f"/companies/me/{kind}").json()]
+            assert any(tax["name"] == "VAT 7%" and tax["is_default"] for tax in taxes), taxes
+            r = company.patch(f"/companies/me/{kind}", json={"taxes": taxes})
+            assert r.status_code == 200, r.text
+        _add_line(path, page, ui_server, company, ui, token, doc_id, items[1])
+        doc = _each_line_at_100(company, doc_id)
+    assert [_codes(line) for line in doc["line_items"]] == [[], []]
+    assert [(tax["code"], float(tax["rate"])) for tax in doc["doc_taxes"]] == [("VAT 7%", 7.0)]
+    assert (float(doc["subtotal"]), float(doc["total"])) == (200.0, 214.0)
 
 
 @pytest.mark.parametrize("path", ["from_items", "picker"])
