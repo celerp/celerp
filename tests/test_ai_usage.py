@@ -376,3 +376,24 @@ async def test_module_query_is_counted(session, monkeypatch):
         await ai_query(query="hello", company_id=str(company_id), session_token="session-1", db_session=session)
     rows = (await session.execute(select(AIUsage).where(AIUsage.company_id == company_id))).scalars().all()
     assert [(r.user_id, r.credits) for r in rows] == [(user_id, 1)]
+
+
+async def test_refusal_after_a_charged_turn_is_counted(client, owner, monkeypatch):
+    """The service charges a question's first turn and then refuses the continuation:
+    the charged credit is counted on the conversation and the one-off paths alike."""
+    token, _, _ = owner
+    tool_turn = ModelResult(
+        message={"role": "assistant", "content": "", "tool_calls": [
+            {"id": "c1", "type": "function", "function": {"name": "no_such_tool", "arguments": "{}"}}]},
+        model_used="test-model", usage={"credits": 1}, reservation_id="r", remaining=10)
+    refusal = {"code": "quota_exceeded", "message": "No questions left this month."}
+    _relay(monkeypatch, [tool_turn, HTTPException(status_code=402, detail=refusal),
+                         tool_turn, HTTPException(status_code=402, detail=refusal)])
+    conv = await _conversation(client, token)
+    r = await _ask(client, token, conv, uuid.uuid4())
+    assert r.status_code == 402, r.text
+    assert _counts((await _usage(client, token)).json()["users"]) == [(1, 1)]
+
+    r = await client.post("/ai/query", headers={"Authorization": f"Bearer {token}"}, json={"query": "customer?"})
+    assert r.status_code == 402, r.text
+    assert _counts((await _usage(client, token)).json()["users"]) == [(2, 2)]
