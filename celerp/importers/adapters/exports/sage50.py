@@ -62,8 +62,8 @@ CURRENCY_QUESTION = "currency"
 EMPLOYEE = "Employee"
 STOCK = "Stock item quantity on hand"
 UNASSIGNED_TAX = "Invoice with its sales tax on one line"
-# A distribution's Tax Type, and its Invoice/CM Distribution: 0 is a tax distribution. Which tax
-# types are taxable is set in each company's own item defaults, which Sage 50 does not export.
+# A distribution's Tax Type: 0 is a tax distribution. Which of the others are taxable is set in
+# each company's own item defaults, which Sage 50 does not export.
 TAX_DISTRIBUTION = "0"
 # Sage 50 accepts at most this many distribution lines on one transaction.
 MAX_DISTRIBUTIONS = 560
@@ -85,16 +85,19 @@ def _journal(kind: str, label: str, columns: set[str], area: str) -> Layout:
 
 CHART = Layout("chart", "Chart of Accounts List", frozenset({"account id", "account description", "account type"}),
                menu=_template("General Ledger", "Chart of Accounts List"))
-CUSTOMERS = Layout("customers", "Customer List", frozenset({"customer id", "customer name"}),
+# The lists carry Inactive, which no journal does, so a journal short of a column is never read as a list.
+CUSTOMERS = Layout("customers", "Customer List", frozenset({"customer id", "customer name", "inactive"}),
                    menu=_template("Accounts Receivable", "Customer List"), optional=True)
-VENDORS = Layout("vendors", "Vendor List", frozenset({"vendor id", "vendor name"}),
+VENDORS = Layout("vendors", "Vendor List", frozenset({"vendor id", "vendor name", "inactive"}),
                  menu=_template("Accounts Payable", "Vendor List"), optional=True)
 ITEMS = Layout("items", "Inventory Item List", frozenset({"item id", "item description"}),
                menu=_template("Inventory", "Item List"), optional=True)
 EMPLOYEES = Layout("employees", "Employee List", frozenset({"employee id", "employee name"}),
                    menu=_template("Payroll", "Employee List"), optional=True)
 GENERAL = _journal("general", "General Journal", {"reference"}, "General Ledger")
-SALES = _journal("sales", "Sales Journal", {"customer id", "invoice/cm #", "accounts receivable account"},
+# The Sales Journal needs its Tax Type: it alone tells a tax distribution from freight, both of
+# which Sage 50 writes as Invoice/CM Distribution 0.
+SALES = _journal("sales", "Sales Journal", {"customer id", "invoice/cm #", "accounts receivable account", "tax type"},
                  "Accounts Receivable")
 RECEIPTS = _journal("receipts", "Cash Receipts Journal", {"customer id", "reference", "cash account", "cash amount"},
                     "Accounts Receivable")
@@ -389,10 +392,8 @@ class _Reader:
                     distributions.append(GLLine(account, posted, None, description))
                     kind = tb.value(row, "tax type")
                     agency = tb.value(row, "sales tax agency")
-                    # Tax Type 0 marks a tax distribution: a sold line names its tax agency too. A file
-                    # without tax types marks one as the agency's line outside the invoice's own lines.
-                    if sales and (kind == TAX_DISTRIBUTION or (not kind and agency and normalize(
-                            tb.value(row, "invoice/cm distribution")) == TAX_DISTRIBUTION)):
+                    # Tax Type 0 marks a tax distribution: a sold line names its tax agency too.
+                    if sales and kind == TAX_DISTRIBUTION:
                         # A tax distribution names its agency; one that does not is the customer's tax code's.
                         agency = agency or tb.value(first, "sales tax id") or description or "--"
                         taxes[agency] += -sign * posted

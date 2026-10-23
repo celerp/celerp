@@ -297,6 +297,23 @@ def test_the_documented_sales_tax_agency_heading_keeps_sales_tax():
     assert {a.code: a.control for a in manifest.bundle.accounts}["2310"] == "tax"
 
 
+def test_a_sales_journal_without_tax_types_is_refused_rather_than_guessing_tax_from_freight(tmp_path):
+    """Sage 50 writes freight and sales tax both as Invoice/CM Distribution 0; only the Tax Type
+    tells them apart, so a Sales Journal exported without it is refused by name."""
+    from celerp.importers.adapters.exports import sage50
+
+    sales = (
+        "Customer ID,Customer Name,Invoice/CM #,Credit Memo,Date,Accounts Receivable Account,"
+        "Number of Distributions,Invoice/CM Distribution,Description,G/L Account,Amount,Sales Tax Agency\r\n"
+        "C1,First Customer,1001,FALSE,01/10/25,1100,3,1,Goods,4000,-100.00,AGENCY\r\n"
+        "C1,First Customer,1001,FALSE,01/10/25,1100,3,0,Freight,4100,-15.00,AGENCY\r\n"
+        "C1,First Customer,1001,FALSE,01/10/25,1100,3,0,Sales tax,2310,-10.00,AGENCY\r\n")
+    files = [(n, (sales if n == "SALES.CSV" else d).encode("cp1252")) for n, d in PUBLISHED.items()]
+    message = _refusal(tmp_path, files)
+    assert t("migration.err_export_lacks_column", name="SALES.CSV", label="Sales Journal", columns="tax type",
+             menu=sage50.SALES.menu) in message
+
+
 def test_taxable_and_exempt_lines_keep_their_tax_unassigned_and_one_tax_type_shares_it():
     scan, manifest, _ = _published()
     docs = {d.ref: d for d in manifest.bundle.documents}
