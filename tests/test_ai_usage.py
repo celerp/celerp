@@ -417,6 +417,31 @@ async def test_module_query_is_counted(session, monkeypatch):
     assert [(r.user_id, r.credits) for r in rows] == [(user_id, 1)]
 
 
+async def test_module_query_lost_answer_is_asked_again_and_counted_once(session, monkeypatch):
+    """A module's query whose answer was lost is asked again once under the same id
+    and answered, charged once; one that fails for another reason is not asked again."""
+    from celerp.modules.api import ai_query
+    from test_helpers import seed_member
+
+    monkeypatch.setattr("celerp.session_gate.get_session_token", lambda: "session-1")
+    sent = _relay(monkeypatch, [
+        RelayError("outcome_unknown", "lost", status=503, credits=1),
+        _answer(credits=0),
+        RelayError("service_unavailable", "down", status=503),
+    ])
+    company_id, user_id = await seed_member(session)
+    async with signed_request(session, company_id, user_id):
+        answered = await ai_query(query="hello", company_id=str(company_id), session_token="session-1",
+                                  db_session=session)
+        failed = await ai_query(query="again", company_id=str(company_id), session_token="session-1",
+                                db_session=session)
+    assert answered["answer"] == "Open Contacts and choose New."
+    assert failed["answer"] == ""
+    assert len(sent) == 3 and sent[0] == sent[1] and sent[2] not in (None, sent[0])
+    rows = (await session.execute(select(AIUsage).where(AIUsage.company_id == company_id))).scalars().all()
+    assert [(r.operation_id, r.credits) for r in rows] == [(sent[0], 1)]
+
+
 async def test_refusal_after_a_charged_turn_is_counted(client, owner, monkeypatch):
     """The service charges a question's first turn and then refuses the continuation:
     the charged credit is counted on the conversation and the one-off paths alike."""

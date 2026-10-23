@@ -181,7 +181,7 @@ async def test_batch_all_success(session, db_factory, company, user):
     job = await create_batch_job(session, company.id, user.id, "analyze", file_ids)
     await session.commit()
 
-    with patch("celerp.ai.batch.call_llm", new_callable=AsyncMock, return_value=_model_result("Extracted data")):
+    with patch("celerp.ai.service.complete", new_callable=AsyncMock, return_value=_model_result("Extracted data")):
         with patch("celerp.notifications.service.deliver"):
             await run_batch(job.id, company.id, user.id, "analyze", file_ids, db_factory)
 
@@ -211,7 +211,7 @@ async def test_batch_partial_failure(session, db_factory, company, user):
     job = await create_batch_job(session, company.id, user.id, "analyze", file_ids)
     await session.commit()
 
-    with patch("celerp.ai.batch.call_llm", side_effect=_mock_llm):
+    with patch("celerp.ai.service.complete", side_effect=_mock_llm):
         with patch("celerp.notifications.service.deliver"):
             await run_batch(job.id, company.id, user.id, "analyze", file_ids, db_factory)
 
@@ -228,7 +228,7 @@ async def test_batch_total_failure(session, db_factory, company, user):
     job = await create_batch_job(session, company.id, user.id, "analyze", file_ids)
     await session.commit()
 
-    with patch("celerp.ai.batch.call_llm", new_callable=AsyncMock, side_effect=RuntimeError("All fail")):
+    with patch("celerp.ai.service.complete", new_callable=AsyncMock, side_effect=RuntimeError("All fail")):
         with patch("celerp.notifications.service.deliver"):
             await run_batch(job.id, company.id, user.id, "analyze", file_ids, db_factory)
 
@@ -249,7 +249,7 @@ async def test_batch_creates_notification_on_complete(session, db_factory, compa
     await session.commit()
 
     mock_create_notif = AsyncMock()
-    with patch("celerp.ai.batch.call_llm", new_callable=AsyncMock, return_value=_model_result("Done")):
+    with patch("celerp.ai.service.complete", new_callable=AsyncMock, return_value=_model_result("Done")):
         with patch("celerp.notifications.service.deliver"):
             with patch("celerp.notifications.service.create", mock_create_notif):
                 await run_batch(job.id, company.id, user.id, "analyze", file_ids, db_factory)
@@ -275,7 +275,7 @@ async def test_batch_progress_callback(session, db_factory, company, user):
     async def on_progress(job_id, completed, failed, total, result):
         progress_events.append((completed, failed, total))
 
-    with patch("celerp.ai.batch.call_llm", new_callable=AsyncMock, return_value=_model_result("Done")):
+    with patch("celerp.ai.service.complete", new_callable=AsyncMock, return_value=_model_result("Done")):
         with patch("celerp.notifications.service.deliver"):
             await run_batch(
                 job.id, company.id, user.id, "analyze", file_ids, db_factory,
@@ -350,7 +350,7 @@ async def test_batch_credits_from_relay_usage(session, db_factory, company, user
             raise RelayError("busy", "The AI service is temporarily busy.", status=503)
         return _model_result("ok", credits=2)
 
-    with patch("celerp.ai.batch.call_llm", side_effect=_mock_llm):
+    with patch("celerp.ai.service.complete", side_effect=_mock_llm):
         with patch("celerp.notifications.service.deliver"):
             await run_batch(job.id, company.id, user.id, "analyze", file_ids, db_factory)
 
@@ -368,7 +368,7 @@ async def test_batch_result_carries_extraction(session, db_factory, company, use
     await session.commit()
 
     answer = 'Here it is:\n```json\n{"vendor_name": "Shop", "total": 12.5, "line_items": []}\n```'
-    with patch("celerp.ai.batch.call_llm", new_callable=AsyncMock, return_value=_model_result(answer)):
+    with patch("celerp.ai.service.complete", new_callable=AsyncMock, return_value=_model_result(answer)):
         with patch("celerp.notifications.service.deliver"):
             await run_batch(job.id, company.id, user.id, "", file_ids, db_factory)
 
@@ -393,7 +393,7 @@ async def test_batch_total_failure_records_error(session, db_factory, company, u
     job = await create_batch_job(session, company.id, user.id, "analyze", file_ids)
     await session.commit()
 
-    with patch("celerp.ai.batch.call_llm", new_callable=AsyncMock, side_effect=asyncio.TimeoutError()):
+    with patch("celerp.ai.service.complete", new_callable=AsyncMock, side_effect=asyncio.TimeoutError()):
         with patch("celerp.notifications.service.deliver"):
             await run_batch(job.id, company.id, user.id, "analyze", file_ids, db_factory)
 
@@ -435,7 +435,7 @@ async def test_batch_on_progress_failure_handled(session, db_factory, company, u
     async def failing_progress(*args):
         raise RuntimeError("progress callback exploded")
 
-    with patch("celerp.ai.batch.call_llm", new_callable=AsyncMock, return_value=_model_result("Done")):
+    with patch("celerp.ai.service.complete", new_callable=AsyncMock, return_value=_model_result("Done")):
         with patch("celerp.notifications.service.deliver"):
             await run_batch(
                 job.id, company.id, user.id, "analyze", file_ids, db_factory,
@@ -455,7 +455,7 @@ async def test_batch_notification_failure_handled(session, db_factory, company, 
     job = await create_batch_job(session, company.id, user.id, "analyze", file_ids)
     await session.commit()
 
-    with patch("celerp.ai.batch.call_llm", new_callable=AsyncMock, return_value=_model_result("Done")):
+    with patch("celerp.ai.service.complete", new_callable=AsyncMock, return_value=_model_result("Done")):
         with patch("celerp.notifications.service.create", new_callable=AsyncMock, side_effect=RuntimeError("notification error")):
             await run_batch(
                 job.id, company.id, user.id, "analyze", file_ids, db_factory,
@@ -467,34 +467,41 @@ async def test_batch_notification_failure_handled(session, db_factory, company, 
 
 
 @pytest.mark.asyncio
-async def test_batch_records_every_charged_file_under_the_job(session, db_factory, company, user):
-    """A file whose answer was lost is charged like an answered one; a file the
-    service never read is not. The usage record names every charge by the job."""
+async def test_batch_lost_answer_is_asked_again_under_the_files_id(session, db_factory, company, user):
+    """Each file is asked under an id of its own within the job. A file whose answer
+    was lost is asked again once under that id and read, charged once; a file the
+    service could not read is not asked again and not charged. The usage record
+    names every charge by the job."""
     from sqlalchemy import select
     from celerp.models.ai import AIUsage
 
     file_ids = _create_test_files(company.id, user.id, 3)
+    job = await create_batch_job(session, company.id, user.id, "analyze", file_ids)
+    await session.commit()
+    file_of = {uuid.uuid5(job.id, fid): fid for fid in file_ids}
     replies = {
-        "receipt_0.jpg": _model_result("Extracted", credits=1),
-        "receipt_1.jpg": RelayError("outcome_unknown", "lost", status=503, credits=1),
-        "receipt_2.jpg": RelayError("service_unavailable", "down", status=503),
+        file_ids[0]: [_model_result("Extracted", credits=1)],
+        file_ids[1]: [RelayError("outcome_unknown", "lost", status=503, credits=1),
+                      _model_result("Extracted", credits=0)],
+        file_ids[2]: [RelayError("service_unavailable", "down", status=503)],
     }
+    asked: list = []
 
-    async def _mock_llm(model, system, prompt, *, files):
-        reply = replies[files[0]["filename"]]
+    async def _complete(messages, *, operation_id=None, **_kw):
+        asked.append(file_of[operation_id])
+        reply = replies[file_of[operation_id]].pop(0)
         if isinstance(reply, Exception):
             raise reply
         return reply
 
-    job = await create_batch_job(session, company.id, user.id, "analyze", file_ids)
-    await session.commit()
-    with patch("celerp.ai.batch.call_llm", side_effect=_mock_llm):
+    with patch("celerp.ai.service.complete", side_effect=_complete):
         with patch("celerp.notifications.service.deliver"):
             await run_batch(job.id, company.id, user.id, "analyze", file_ids, db_factory)
 
+    assert sorted(asked) == sorted([file_ids[0], file_ids[1], file_ids[1], file_ids[2]])
     async with db_factory() as s:
         updated = await s.get(AIBatchJob, job.id)
-        assert (updated.completed_files, updated.failed_files, updated.credits_consumed) == (1, 2, 2)
+        assert (updated.completed_files, updated.failed_files, updated.credits_consumed) == (2, 1, 2)
         usage = (await s.execute(select(AIUsage))).scalars().all()
     assert sorted(u.credits for u in usage) == [1, 1]
     assert {(u.operation_id, u.company_id, u.user_id) for u in usage} == {(job.id, company.id, user.id)}

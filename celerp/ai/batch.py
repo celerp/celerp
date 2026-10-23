@@ -32,8 +32,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.ai.files import load_file_for_llm
-from celerp.ai.llm import RelayError, call_llm
-from celerp.ai.models import BULK_EXTRACTION
+from celerp.ai.llm import RelayError
+from celerp.ai.service import _RunTally, ask_unattended
 from celerp.ai.usage import record_usage
 from celerp.models.ai import AIBatchJob
 from ui.i18n import t
@@ -42,7 +42,7 @@ log = logging.getLogger(__name__)
 
 # Keep file decoding/base64 residency aligned with the transport's process-wide
 # model-call concurrency. A larger batch semaphore only lets extra 10 MB files sit
-# expanded in memory while call_llm waits on its own three-call gate.
+# expanded in memory while their model calls wait on the transport's three-call gate.
 BATCH_CONCURRENCY = 3
 MAX_BATCH_FILES = 100
 
@@ -126,8 +126,11 @@ async def _process_single_file(
     company_id: uuid.UUID,
     user_id: uuid.UUID,
     semaphore: asyncio.Semaphore,
+    job_id: uuid.UUID,
 ) -> dict:
     """Read one file through the model. Never raises; the result dict carries the outcome.
+
+    The file is asked under an id of its own within the job (see ask_unattended).
 
     File loading/base64 encoding happens inside the concurrency bound so a large
     batch cannot hold every encoded attachment in memory at once.
@@ -147,8 +150,12 @@ async def _process_single_file(
         files = [file]
         prompt = f"{query}\n\nRead the attached document." if query else "Read the attached document."
 
+        tally = _RunTally()
         try:
-            result = await call_llm(BULK_EXTRACTION, _BATCH_SYSTEM_PROMPT, prompt, files=files)
+            result = await ask_unattended(
+                _BATCH_SYSTEM_PROMPT, prompt, files=files,
+                operation_id=uuid.uuid5(job_id, file_id), tally=tally,
+            )
         except Exception as exc:
             log.warning("Batch file %s failed: %s", file_id, exc)
             return {
@@ -157,7 +164,7 @@ async def _process_single_file(
                 "status": "error",
                 "error": _file_error(exc),
                 # A file whose answer was lost is still charged.
-                "credits": exc.credits if isinstance(exc, RelayError) else 0,
+                "credits": tally.credits,
             }
 
     answer = result.message.get("content") or ""
@@ -167,7 +174,7 @@ async def _process_single_file(
         "status": "success",
         "answer": answer,
         "extraction": parse_extraction(answer),
-        "credits": int(result.usage.get("credits") or 0),
+        "credits": tally.credits,
     }
 
 
@@ -236,7 +243,7 @@ async def run_batch(
             await session.commit()
 
     tasks = [
-        _process_single_file(fid, query, company_id, user_id, semaphore)
+        _process_single_file(fid, query, company_id, user_id, semaphore, job_id)
         for fid in file_ids
     ]
 

@@ -110,16 +110,18 @@ async def ai_query(
     from celerp.ai.service import AIResponse, run_query
     from celerp.ai.usage import record_usage_now
 
+    operation_id = uuid.uuid4()
     result: AIResponse = await run_query(
         query=query,
         session=db_session,
         company_id=caller.company_id,
         user_id=caller.user.id,
+        operation_id=operation_id,
     )
     # The charge is recorded on its own, leaving the module's request session as it was.
     await record_usage_now(
         db_session.bind, company_id=caller.company_id, user_id=caller.user.id,
-        operation_id=uuid.uuid4(), credits=result.credits,
+        operation_id=operation_id, credits=result.credits,
     )
     return {
         "answer": result.answer,

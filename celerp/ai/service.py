@@ -27,7 +27,7 @@ import httpx
 from fastapi import HTTPException
 
 from celerp.ai.files import load_file_for_llm
-from celerp.ai.llm import MODEL_CALL_TIMEOUT_S, RelayError, _build_user_content, call_llm, complete
+from celerp.ai.llm import MODEL_CALL_TIMEOUT_S, ModelResult, RelayError, _build_user_content, complete
 from celerp.ai.models import select_model
 from celerp.ai.tools import (
     AGENT_RESULT_MAX_BYTES,
@@ -282,12 +282,15 @@ async def run_query(
     file_ids: list[str] | None = None,
     history: list[dict[str, str]] | None = None,
     user_id: uuid.UUID | None = None,
+    *,
+    operation_id: uuid.UUID,
 ) -> AIResponse:
     """Run a text-only AI completion. Returns AIResponse - raises only the relay refusals llm.complete raises.
 
     Serves legacy/module callers such as celerp.modules.api.ai_query: company
     memory plus any uploaded files, no ERP tools. The HTTP /ai/query route uses
     ``run_agent(..., read_only=True)`` for canonical ERP grounding.
+    ``operation_id`` names the question; see ask_unattended.
     """
     from celerp.ai.memory import get_memory
 
@@ -298,23 +301,26 @@ async def run_query(
     memory = await get_memory(session, company_id)
     user_message = f"<user_query>\n{query}\n</user_query>"
 
+    tally = _RunTally()
     try:
         files = _load_files(file_ids, company_id, user_id)
         reply = await asyncio.wait_for(
-            call_llm(model, _SYSTEM_PROMPT + _memory_block(memory), user_message, files=files, history=history),
+            ask_unattended(
+                _SYSTEM_PROMPT + _memory_block(memory), user_message,
+                operation_id=operation_id, tally=tally, files=files, history=history,
+            ),
             timeout=AGENT_RUN_TIMEOUT_S,
         )
         result = AIResponse(
             answer=reply.message.get("content") or "", model_used=model, tools_called=[],
-            credits=int((reply.usage or {}).get("credits") or 0),
+            credits=tally.credits,
         )
     except HTTPException:
         raise
     except Exception as exc:
         log.error("AI query failed: %s", exc)
         result = AIResponse(
-            answer="", model_used=model, tools_called=[], error=_user_error(exc),
-            credits=exc.credits if isinstance(exc, RelayError) else 0,
+            answer="", model_used=model, tools_called=[], error=_user_error(exc), credits=tally.credits,
         )
     _log_query(company_id, user_id, model, [], file_count, t0, result.error)
     return result
@@ -575,20 +581,21 @@ async def _agent_loop(
 
 async def _model_turn(
     messages: list[dict],
-    tools: list[dict],
+    tools: list[dict] | None,
     *,
     reservation_id: str | None,
     operation_id: uuid.UUID | None,
     tally: _RunTally,
+    **request,
 ):
-    """One model call. Every charge it reports is added to ``tally`` before
-    anything else happens, including the charge of a call whose answer was lost.
-    A first attempt that is still running is waited for and asked again under the
+    """One model call; ``request`` carries any further fields of the call. Every
+    charge it reports is added to ``tally`` before anything else happens,
+    including the charge of a call whose answer was lost. A first attempt that is still running is waited for and asked again under the
     same id; the run's own time limit bounds the waiting."""
     while True:
         try:
             result = await complete(
-                messages, tools=tools, reservation_id=reservation_id, operation_id=operation_id,
+                messages, tools=tools, reservation_id=reservation_id, operation_id=operation_id, **request,
             )
         except RelayError as exc:
             tally.credits += exc.credits
@@ -598,6 +605,37 @@ async def _model_turn(
             continue
         tally.credits += int((result.usage or {}).get("credits") or 0)
         return result
+
+
+# The service may have charged the question, but its answer never arrived.
+_LOST_ANSWER = frozenset({"outcome_unknown", "timeout"})
+
+
+async def ask_unattended(
+    system: str,
+    user_text: str,
+    *,
+    operation_id: uuid.UUID,
+    tally: _RunTally,
+    files: list[dict] | None = None,
+    history: list[dict[str, str]] | None = None,
+) -> ModelResult:
+    """One text question with nobody to press Ask again: a module's query, or one
+    file of a reading job. It is sent under ``operation_id``, as a conversation
+    question's first turn is, and a lost answer is asked again once under that id,
+    which the service does not charge twice. Charges are added to ``tally``."""
+    messages: list[dict] = [{"role": "system", "content": system}, *(history or []),
+                            {"role": "user", "content": _build_user_content(user_text, files)}]
+    file_count = len(files) if files else 0
+    hints = {"query": user_text[:500], "file_count": file_count, "is_batch": file_count > 1}
+    turn = dict(reservation_id=None, operation_id=operation_id, tally=tally, hints=hints)
+    try:
+        return await _model_turn(messages, None, **turn)
+    except (RelayError, asyncio.TimeoutError, httpx.TimeoutException) as exc:
+        if _error_code(exc) not in _LOST_ANSWER:
+            raise
+        log.info("AI answer lost; asking again under operation %s", operation_id)
+        return await _model_turn(messages, None, **turn)
 
 
 def _cite(tally: _RunTally, name: str, arguments: dict, tool_result: dict) -> None:

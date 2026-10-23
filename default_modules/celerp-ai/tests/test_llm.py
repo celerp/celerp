@@ -11,6 +11,7 @@ from the recorded relay fixtures.
 from __future__ import annotations
 
 import json
+import uuid
 import os
 
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
@@ -22,7 +23,8 @@ from fastapi import HTTPException
 
 from celerp.ai import llm as llm_mod
 from celerp.ai.files import XLSX_CONTENT_TYPE
-from celerp.ai.llm import ModelResult, RelayError, _build_user_content, call_llm, complete
+from celerp.ai.llm import ModelResult, RelayError, _build_user_content, complete
+from celerp.ai.service import _RunTally, ask_unattended
 
 from _fixtures import synthetic_response
 
@@ -351,39 +353,41 @@ async def test_complete_gateway_error(relay):
     assert (ei.value.code, ei.value.status) == ("gateway_error", 500)
 
 
-# -- call_llm ---------------------------------------------------------------
+# -- ask_unattended ---------------------------------------------------------
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_call_llm_returns_content(relay):
+async def test_ask_unattended_returns_content(relay):
     route = respx.post(f"{_RELAY}/ai/complete").mock(
         return_value=httpx.Response(200, json=synthetic_response("text_completion")))
-    result = await call_llm("advisory-model", "system", "how many items")
+    operation = uuid.uuid4()
+    result = await ask_unattended("system", "how many items", operation_id=operation, tally=_RunTally())
     assert result.message["content"].startswith("You currently have 42 items")
     assert result.usage
     body = json.loads(route.calls.last.request.content)
     assert body["messages"][0]["role"] == "system"
     assert body["hints"]["file_count"] == 0
-    assert "tools" not in body
+    assert body["operation_id"] == str(operation)
+    assert "tools" not in body and "reservation_id" not in body
 
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_call_llm_quota_exceeded_raises_402(relay):
+async def test_ask_unattended_quota_exceeded_raises_402(relay):
     respx.post(f"{_RELAY}/ai/complete").mock(
         return_value=httpx.Response(402, json=synthetic_response("error_402")))
     with pytest.raises(HTTPException) as ei:
-        await call_llm("m", "s", "u")
+        await ask_unattended("s", "u", operation_id=uuid.uuid4(), tally=_RunTally())
     assert ei.value.status_code == 402
 
 
 @pytest.mark.asyncio
-async def test_call_llm_no_session(monkeypatch):
+async def test_ask_unattended_no_session(monkeypatch):
     from celerp.config import settings
     monkeypatch.setattr(llm_mod, "relay_session_headers", lambda: {"X-Session-Token": ""})
     monkeypatch.setattr(settings, "cloud_disconnected", True)
     with pytest.raises(RelayError) as ei:
-        await call_llm("m", "s", "u")
+        await ask_unattended("s", "u", operation_id=uuid.uuid4(), tally=_RunTally())
     assert ei.value.code == "no_session"
 
 
