@@ -1422,6 +1422,8 @@ async def test_mark_reconciled_needs_a_booked_draft(client):
     pytest.param(lambda d: d["line_items"][0].update(unit_price="NaN"), id="line-nan"),
     pytest.param(lambda d: d.update(shipping="Infinity"), id="shipping-inf"),
     pytest.param(lambda d: d.update(doc_taxes=[{"code": "VAT", "rate": 7, "order": "NaN"}]), id="tax-order-nan"),
+    pytest.param(lambda d: d["line_items"][0].update(taxes=[{"code": "VAT", "rate": 7, "order": "NaN"}]),
+                 id="line-tax-order-nan"),
     pytest.param(lambda d: d.update(discount=float("-inf")), id="discount-neg-inf"),
 ])
 async def test_non_finite_number_is_rejected(client, patch_doc):

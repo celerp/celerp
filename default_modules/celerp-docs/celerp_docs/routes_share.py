@@ -174,23 +174,31 @@ def _sanitize_taxes(raw) -> list[TaxApplication]:
     return out
 
 
+def _public_tax(tax) -> dict | str:
+    """One tax a bundle carries. A number that is not finite is refused as such (_num) before
+    anything else; an entry that is not a tax a total can be computed from (computable_tax)
+    leaves as its text (tax_text), so the recipient is told about it rather than given totals
+    without it or at another rate."""
+    if not isinstance(tax, dict):
+        return tax_text(tax)
+    rate, amount, order = _num(tax.get("rate")), _num(tax.get("amount")), _num(tax.get("order"))
+    if not computable_tax(tax):
+        return tax_text(tax)
+    return {
+        "code": str(tax.get("code") or "")[:64],
+        "rate": rate,
+        "amount": amount,
+        "order": int(order),
+        "is_compound": bool(tax.get("is_compound")),
+        "label": str(tax.get("label") or "")[:64],
+    }
+
+
 def _public_taxes(raw) -> list:
-    """The taxes a bundle carries. An entry that is not a tax a total can be computed from
-    (computable_tax) leaves as its text (tax_text), so the recipient is told about it rather
-    than given totals without it or at another rate."""
+    """The taxes a bundle carries (_public_tax)."""
     if raw is None:
         return []
-    return [
-        {
-            "code": str(tax.get("code") or "")[:64],
-            "rate": _num(tax.get("rate")),
-            "amount": _num(tax.get("amount")),
-            "order": int(_num(tax.get("order"))),
-            "is_compound": bool(tax.get("is_compound")),
-            "label": str(tax.get("label") or "")[:64],
-        } if computable_tax(tax) else tax_text(tax)
-        for tax in (raw if isinstance(raw, list) else [raw])[:20]
-    ]
+    return [_public_tax(tax) for tax in (raw if isinstance(raw, list) else [raw])[:20]]
 
 
 def _public_bundle_doc(doc: dict) -> dict:
