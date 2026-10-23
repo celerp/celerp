@@ -655,6 +655,18 @@
         "value",
         "where"
       ]
+    },
+    "migration.sage50_waiting_note": {
+      "en": "These purchases were received before their vendor bills, which Sage 50 keeps apart from bills ready to pay. What each posted is imported as a journal entry, so every account ends at Sage 50's balance, but not as a bill. A full history import cannot run: import from a cutover date after their bills were entered.",
+      "params": []
+    },
+    "migration.sage50_refund_note": {
+      "en": "These refunds were applied to a credit memo, which Celerp settles only from its own side's receipts and payments. Each refund is imported as a journal entry on its customer or vendor, so every balance ends at Sage 50's, but its credit memo stays open. A full history import cannot run: import from a cutover date after them.",
+      "params": []
+    },
+    "migration.sage50_unread_note": {
+      "en": "These transactions fill a Sage 50 field Celerp does not read, so it cannot tell what they are. What each posted is imported as a journal entry, so every account ends at Sage 50's balance. A full history import cannot run: import from a cutover date after them.",
+      "params": []
     }
   }
 }

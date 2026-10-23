@@ -32,10 +32,14 @@ A transaction's own fields decide what it is, never a guess, so a template that 
 out is refused, and the rows of one transaction must agree on them: a quote posts nothing and is
 not imported; a customer's or vendor's beginning balance is kept outside the general ledger,
 whose beginning balances the trial balance carries, so it posts nothing here either; a
-transaction voided, or holding back retainage, is imported as the journal it posted, not as
-an invoice, purchase, receipt or payment. Each is listed in the coverage, and the last three
-keep a full history import from running. A prepayment, a receipt applied to no invoice, stays
-on the customer as credit.
+transaction voided, holding back retainage, or a purchase still waiting on its vendor's bill, is
+imported as the journal it posted, not as an invoice, purchase, receipt or payment. A refund (a
+vendor's refund received, a refund paid to a customer) is the journal it posted on its own
+counterparty. Every column a journal can export is either read by name or known to change
+nothing the books hold (KNOWN); a transaction filling any other is the journal it posted too.
+Each is listed in the coverage, and all but the quote and an unapplied refund keep a full
+history import from running. A prepayment, a receipt applied to no invoice, stays on the
+customer as credit.
 
 A trial balance dated before the first transaction holds the books' beginning balances
 and is carried as one journal on that day. Templates Sage 50 can leave empty (a business
@@ -46,11 +50,11 @@ of one included. One not uploaded is listed in the coverage with what it means.
 
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from celerp.importers.adapters.base import ArtifactSet, MappingQuestion, MigrationDecisions, ScanError
 from celerp.importers.adapters.exports import steps
@@ -77,6 +81,10 @@ QUOTE = "Quote"
 BEGINNING = "Customer or vendor beginning balance"
 VOIDED = "Voided transaction"
 RETAINAGE = "Invoice or purchase with retainage"
+WAITING = "Purchase waiting on its vendor bill"
+REFUND = "Refund applied to a credit memo"
+# A transaction filling a column the import does not read, as the coverage lists it: journal, column.
+UNREAD = "{} transaction with {}"
 # The journal one of those is carried as, as the coverage lists it.
 CARRIED = "{} (journal)"
 # A distribution's Tax Type, 0 to 27: 0 is a tax distribution, and 27 freight or retainage, as its
@@ -128,7 +136,10 @@ GENERAL = _journal("general", "General Journal", {"reference"}, "General Ledger"
 # without one is refused, never read on a default. That is what each transaction is (Credit Memo,
 # Quote, Beginning Balance Transaction, and Voided by Transaction on the two journals whose
 # templates export it), what it applies to or pays (Apply to Invoice Number, Invoice Paid), and
-# what each line is (the Sales Journal's Tax Type, which alone tells a tax distribution from
+# whether a purchase still waits on its vendor's bill (Waiting on Bill), whose money a receipt or
+# payment is (a Cash Receipts Journal's Vendor Receipt is a vendor's refund, a Cash Disbursements
+# Journal's Customer Payment a refund paid to a customer), what each line is (the Sales Journal's
+# Tax Type, which alone tells a tax distribution from
 # freight, both written as Invoice/CM Distribution 0; the Purchase Journal's Row Type, which marks
 # retainage withheld). The Sales Journal's Retain Percent is asked for only when a Tax Type 27
 # line is there, the one kind of line Sage 50 lets withhold retainage. A field a journal's
@@ -139,24 +150,60 @@ SALES = _journal("sales", "Sales Journal", {"customer id", "invoice/cm #", "acco
                                             "date due", "credit memo", "quote", "beginning balance transaction",
                                             VOIDED_BY, "apply to invoice number"}, "Accounts Receivable")
 RECEIPTS = _journal("receipts", "Cash Receipts Journal", {"customer id", "reference", "cash account", "cash amount",
-                                                          "invoice paid"}, "Accounts Receivable")
+                                                          "invoice paid", "vendor receipt"}, "Accounts Receivable")
 PURCHASES = _journal("purchases", "Purchase Journal", {"vendor id", "invoice/cm #", "accounts payable account",
                                                        "date due", "credit memo", "beginning balance transaction",
-                                                       "apply to invoice number", "row type"}, "Accounts Payable")
+                                                       "apply to invoice number", "row type", "waiting on bill"},
+                     "Accounts Payable")
 PAYMENTS = _journal("payments", "Cash Disbursements Journal", {"vendor id", "check number", "cash account",
-                                                               "cash amount", VOIDED_BY, "invoice paid"},
-                    "Accounts Payable")
+                                                               "cash amount", VOIDED_BY, "invoice paid",
+                                                               "customer payment"}, "Accounts Payable")
 # The fields every distribution row of a transaction repeats, which must agree: a row Sage 50
 # leaves one of them blank on takes the transaction's value.
 SHARED = {
     SALES.kind: ("credit memo", "quote", "beginning balance transaction", VOIDED_BY, "date due",
                  "apply to invoice number", "accounts receivable account", "accounts receivable amount",
                  "sales tax id"),
-    PURCHASES.kind: ("credit memo", "beginning balance transaction", "date due", "apply to invoice number",
-                     "accounts payable account", "accounts payable amount"),
-    RECEIPTS.kind: ("cash account", "cash amount", "discount account"),
-    PAYMENTS.kind: (VOIDED_BY, "cash account", "cash amount", "discount account"),
+    PURCHASES.kind: ("credit memo", "beginning balance transaction", "waiting on bill", "date due",
+                     "apply to invoice number", "accounts payable account", "accounts payable amount"),
+    RECEIPTS.kind: ("vendor receipt", "cash account", "cash amount", "discount account"),
+    PAYMENTS.kind: (VOIDED_BY, "customer payment", "cash account", "cash amount", "discount account"),
     GENERAL.kind: (),
+}
+# Every column a journal's template can export, as the import takes it. Each field the reader
+# acts on is named in its layout or read by name below; the rest are the fields Sage 50 documents
+# that change nothing the books hold: names, addresses and shipping, notes, terms offered, the
+# documents a transaction came from (quotes, orders, proposals), job costing, units and the
+# transaction's own numbering. A drop shipment and a reimbursable expense post as any other
+# sale, purchase or expense. A transaction that fills any column outside this list, with
+# anything but blank, FALSE or zero, means something the import cannot tell, so it is carried as
+# the journal it posted and listed by that column, and keeps a full history import from running.
+_DESCRIPTIVE = {"customer name", "vendor name", "description", "quantity", "item id", "unit price", "serial number",
+                "upc / sku", "weight", "stocking quantity", "stocking unit price", "u/m id", "u/m no. of stocking units",
+                "job id", "transaction period", "transaction number", "recur number", "recur frequency",
+                "date clear in bank rec", "date cleared in bank rec", "gl date cleared in bank rec",
+                "ar date cleared in bank rec", "ap date cleared in bank rec", "internal note", "note", "memo",
+                "used for reimbursable expense", "consolidated transaction"}
+_SHIPPING = {"ship to name", "ship to address-line one", "ship to address-line two", "ship to city", "ship to state",
+             "ship to zipcode", "ship to zip", "ship to country", "ship via", "ship date", "ship by", "drop ship",
+             "customer po", "customer so #", "customer invoice #", "displayed terms", "discount amount",
+             "discount date", "note prints after line items", "statement note", "stmt note prints before ref",
+             "invoice note", "sales representative id", "return authorization", "po number", "po distribution",
+             "applied to purchase order", "apply to sales order", "apply to proposal", "so/proposal number",
+             "so/proposal distribution", "quote #", "quote good thru date", "invoice/cm distribution",
+             "apply to invoice distribution"}
+KNOWN = {
+    GENERAL.kind: GENERAL.columns | {"description"} | _DESCRIPTIVE,
+    SALES.kind: SALES.columns | {"accounts receivable amount", "sales tax id", "sales tax agency", "retain percent"}
+                | _DESCRIPTIVE | _SHIPPING,
+    PURCHASES.kind: PURCHASES.columns | {"accounts payable amount", "retain percent"} | _DESCRIPTIVE | _SHIPPING,
+    RECEIPTS.kind: RECEIPTS.columns | {"vendor id", "customer name", "receipt number", "deposit ticket id",
+                                       "payment method", "discount account", "discount amount", "tax type",
+                                       "sales tax agency", "prepayment", "credit card"} | _DESCRIPTIVE,
+    PAYMENTS.kind: PAYMENTS.columns | {"customer id", "payment method", "discount account", "discount amount",
+                                       "prepayment", "remit to name", "remit to address-line one",
+                                       "remit to address-line two", "remit to city", "remit to state",
+                                       "remit to zip", "remit to country"} | _DESCRIPTIVE,
 }
 TRIAL_BALANCE = Layout("trial_balance", "General Ledger Trial Balance",
                        frozenset({"account id", "account description", "debit amt", "credit amt"}),
@@ -213,6 +260,8 @@ ORDER = {"G": 0, "S": 1, "P": 2, "R": 3, "D": 4}
 @dataclass
 class SageBook(Book):
     absent: tuple[str, ...] = ()                # kinds of the journals not uploaded
+    # UNREAD label -> transactions filling a column the import does not read, carried as their journals
+    unread: Counter = field(default_factory=Counter)
 
 
 def _flag(tb: Table, row: dict[str, str], column: str, where: str) -> bool:
@@ -229,6 +278,17 @@ def _tax_type(tb: Table, row: dict[str, str], where: str) -> int:
     if not value.isdigit() or int(value) not in TAX_TYPES:
         raise ScanError(t("migration.err_sage50_tax_type", where=where, value=value))
     return int(value)
+
+
+def _ordinary(value: str) -> bool:
+    """Whether a field holds nothing a transaction is told apart by: blank, FALSE or zero."""
+    text = normalize(value).replace(",", "")
+    if text in ("", "false", "no"):
+        return True
+    try:
+        return Decimal(text) == 0
+    except InvalidOperation:
+        return False
 
 
 def _row_type(tb: Table, row: dict[str, str], where: str) -> str:
@@ -546,19 +606,28 @@ class _Reader:
                              number, contact, posted, invoice=number, document=key)
 
     def unsupported(self, tb: Table, rows: list[dict[str, str]], where: str) -> str:
-        """The coverage label of a transaction Celerp carries only as the journal it posted: one a
-        later transaction voided, where its journal states that; or one holding back retainage,
-        as each journal states it: a Sales Journal line with a Retain Percent (a Tax Type 27 line
-        without one is freight), a Purchase Journal line of Row Type 11 withholding an amount.
-        Counted; "" for any other."""
+        """The coverage label of a transaction Celerp carries only as the journal it posted, counted;
+        "" for any other: one a later transaction voided, where its journal states that; one
+        holding back retainage, as each journal states it (a Sales Journal line with a Retain
+        Percent, a Tax Type 27 line without one being freight; a Purchase Journal line of Row Type
+        11 withholding an amount); a purchase still waiting on its vendor's bill; and one filling a
+        column the import does not read (KNOWN)."""
         if VOIDED_BY in tb.layout.columns and tb.value(rows[0], VOIDED_BY):
             label = VOIDED
         elif any(amount(tb.value(row, "retain percent"), where) or (
                 _row_type(tb, row, where) == RETAINAGE_ROW and amount(tb.value(row, "amount"), where))
                 for row in rows):
             label = RETAINAGE
+        elif "waiting on bill" in tb.layout.columns and _flag(tb, rows[0], "waiting on bill", where):
+            label = WAITING
         else:
-            return ""
+            unread = next((c for c in tb.header if c and c not in KNOWN[tb.layout.kind]
+                           for row in rows if not _ordinary(tb.value(row, c))), "")
+            if not unread:
+                return ""
+            label = UNREAD.format(tb.layout.label, unread)
+            self.book.unread[label] += 1
+            return label
         self.book.skipped[label] += 1
         return label
 
@@ -616,20 +685,25 @@ class _Reader:
         receivable or payable account. A receipt applied to no invoice (a prepayment) stays on
         the customer as credit."""
         party, reference = ("customer id", "reference") if sales else ("vendor id", "check number")
+        other, refund_flag = ("vendor id", "vendor receipt") if sales else ("customer id", "customer payment")
         discount_sign = 1 if sales else -1
         for tb in of(self.tables, layout):
             for where, rows in _transactions(tb, (party, reference, "date")):
                 first = rows[0]
-                contact = self.contact(tb.value(first, party), sales, layout.label)
+                # A refund's money is the other side's: a vendor's refund received, a customer's paid back.
+                refund = _flag(tb, first, refund_flag, where)
+                side = sales != refund                  # True: a customer's money
+                ident = (tb.value(first, other) or tb.value(first, party)) if refund else tb.value(first, party)
+                contact = self.contact(ident, side, layout.label)
                 lines = [GLLine(self.account(tb.value(first, "cash account")), money(tb.value(first, "cash amount"), where),
                                 None, "")]
                 settles: dict[str, Decimal | None] = defaultdict(lambda: ZERO)
                 for row in rows:
                     posted = money(tb.value(row, "amount"), where)
                     paid = tb.value(row, "invoice paid")
-                    doc = find_document(self.book, sales, paid, contact) if paid and contact else None
+                    doc = find_document(self.book, side, paid, contact) if paid and contact else None
                     account = tb.value(row, "g/l account") or (
-                        self.party_accounts[doc.key] if doc is not None else self.carried.get((sales, paid, contact), ""))
+                        self.party_accounts[doc.key] if doc is not None else self.carried.get((side, paid, contact), ""))
                     lines.append(GLLine(self.account(account), posted, None, tb.value(row, "description")))
                     discount = money(tb.value(row, "discount amount"), where)
                     if discount:
@@ -638,7 +712,11 @@ class _Reader:
                     if doc is not None:
                         settles[doc.key] += -discount_sign * posted
                 _balanced(where, layout.label, lines)
-                if self.unsupported(tb, rows, where):
+                if refund and any(tb.value(row, "invoice paid") for row in rows):
+                    # Celerp settles a document only from its own side's receipt or payment: a refund
+                    # applied to a credit memo is carried as the journal it posted.
+                    self.book.skipped[REFUND] += 1
+                if self.unsupported(tb, rows, where) or refund:
                     settles.clear()
                 settles = {k: v for k, v in settles.items() if v}
                 kind = ("receivable payment" if sales else "payable payment") if settles else \
@@ -654,6 +732,7 @@ class _Reader:
                 lines = [GLLine(self.account(tb.value(r, "g/l account")), money(tb.value(r, "amount"), where), None,
                                 tb.value(r, "description")) for r in rows]
                 _balanced(where, GENERAL.label, lines)
+                self.unsupported(tb, rows, where)       # already the journal it posted: only listed
                 lines = [ln for ln in lines if ln.amount]
                 banks = all(self.book.accounts.get(ln.account) and self.book.accounts[ln.account].control == "bank"
                             for ln in lines)

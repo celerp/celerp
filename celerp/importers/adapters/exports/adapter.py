@@ -174,11 +174,14 @@ class Sage50Adapter(ExportSetAdapter):
                sage50.UNASSIGNED_TAX: CoverageClass.MAPPED_WITH_LOSS, sage50.QUOTE: CoverageClass.UNSUPPORTED_NONFINANCIAL,
                sage50.BEGINNING: CoverageClass.UNSUPPORTED_FINANCIAL_BLOCKER,
                sage50.VOIDED: CoverageClass.UNSUPPORTED_FINANCIAL_BLOCKER,
-               sage50.RETAINAGE: CoverageClass.UNSUPPORTED_FINANCIAL_BLOCKER}
+               sage50.RETAINAGE: CoverageClass.UNSUPPORTED_FINANCIAL_BLOCKER,
+               sage50.WAITING: CoverageClass.UNSUPPORTED_FINANCIAL_BLOCKER,
+               sage50.REFUND: CoverageClass.UNSUPPORTED_FINANCIAL_BLOCKER}
     notes = {sage50.EMPLOYEE: "migration.sage50_employee_note", sage50.STOCK: "migration.sage50_stock_note",
              sage50.UNASSIGNED_TAX: "migration.sage50_tax_unassigned_note", sage50.QUOTE: "migration.sage50_quote_note",
              sage50.BEGINNING: "migration.sage50_beginning_note", sage50.VOIDED: "migration.sage50_voided_note",
-             sage50.RETAINAGE: "migration.sage50_retainage_note"}
+             sage50.RETAINAGE: "migration.sage50_retainage_note", sage50.WAITING: "migration.sage50_waiting_note",
+             sage50.REFUND: "migration.sage50_refund_note"}
     matches = staticmethod(sage50.matches)
     check_files = staticmethod(sage50.check)
 
@@ -195,13 +198,18 @@ class Sage50Adapter(ExportSetAdapter):
         return (sage50.question(book.base or None),)
 
     def _coverage(self, ledger: Ledger) -> list[CIFCoverageEntry]:
-        """The shared coverage, and each journal not uploaded with what leaving it out means: a full
-        history import cannot run without it, a cutover import carries the balances at its date."""
+        """The shared coverage; each journal not uploaded with what leaving it out means (a full
+        history import cannot run without it, a cutover import carries the balances at its date);
+        and the transactions filling a column the import does not read, by journal and column."""
         absent = [CIFCoverageEntry(source_type=sage50.ABSENT.format(layout.label), count=0,
                                    coverage_class=CoverageClass.UNSUPPORTED_FINANCIAL_BLOCKER,
                                    note=t(sage50.ABSENT_NOTES[layout.kind]))
                   for layout in sage50.JOURNALS if layout.kind in ledger.book.absent]
-        return sorted(super()._coverage(ledger) + absent, key=lambda r: r.source_type)
+        unread = [CIFCoverageEntry(source_type=label, count=count,
+                                   coverage_class=CoverageClass.UNSUPPORTED_FINANCIAL_BLOCKER,
+                                   note=t("migration.sage50_unread_note"))
+                  for label, count in ledger.book.unread.items()]
+        return sorted(super()._coverage(ledger) + absent + unread, key=lambda r: r.source_type)
 
     def build_manifest(self, artifacts: ArtifactSet, decisions: MigrationDecisions) -> CIFImportManifest:
         sage50.chosen_currency(decisions)
