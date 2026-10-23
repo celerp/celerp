@@ -2398,20 +2398,32 @@ async def test_first_sync_import_is_undoable(use_test_session, monkeypatch):
             200, json=[
                 {"id": 1, "sku": "MATCH-1", "name": "Store name", "regular_price": "99.00"},
                 {"id": 2, "sku": "NEW-1", "name": "New in store", "regular_price": "5.00",
-                 "manage_stock": True, "stock_quantity": 3},
+                 "manage_stock": True, "stock_quantity": 3,
+                 "images": [{"id": 31, "src": "https://cdn.example.com/new.jpg", "name": "new"}]},
             ]))
+        respx.get("https://cdn.example.com/new.jpg").mock(return_value=httpx.Response(
+            200, content=b"img", headers={"content-type": "image/jpeg"}))
+        monkeypatch.setattr("celerp.services.outbound_url.validate_public_base_url",
+                            AsyncMock(side_effect=lambda value, **_kw: value))
+        monkeypatch.setattr("celerp.services.attachments.store_upload", AsyncMock(return_value={
+            "id": "pulled1", "filename": "new", "mime": "image/jpeg", "size": 3,
+            "url": f"/static/attachments/{cid}/pulled1.jpg"}))
         results = await run_first_sync(WooCommerceConnector(), ctx)
 
     assert [r.entity for r in results] and all(r.ok for r in results), results
     await session.refresh(batch)
     created = [e for e in batch.entity_ids]
     assert len(created) == 1 and (await item_state(session, cid, created[0]))["sku"] == "NEW-1"
+    assert [f["id"] for f in (await item_state(session, cid, created[0]))["files"]] == ["pulled1"]
     assert (await item_state(session, cid, "item:match"))["name"] == "Store name"
 
     owner = SimpleNamespace(id=user_id)
+    deleted = AsyncMock()
+    monkeypatch.setattr("celerp.services.attachments.delete_stored_file", deleted)
     out = await undo_import_batch(str(batch.id), cid, owner, None, None, session)
     assert out == {"ok": True, "removed": 1}
     assert await item_state(session, cid, created[0]) == {}
+    deleted.assert_awaited_once_with(str(cid), "pulled1", "image/jpeg")
 
     out = await undo_first_sync_links("woocommerce", str(cid), owner, None, session)
     assert out["undone"] == 1

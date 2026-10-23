@@ -196,8 +196,9 @@ async def test_a_shop_image_pulled_while_the_item_is_deleted_leaves_no_file(comm
     async def _pull():
         async with maker(committed_engine)() as s:
             try:
-                return await download_and_emit_file(s, str(cid), lot, None, "https://shop.example/a.png",
-                                                    "a.png", "product_images", True)
+                return await download_and_emit_file(s, str(cid), lot, "https://shop.example/a.png",
+                                                    "a.png", "product_images", True,
+                                                    platform="woocommerce", store="https://shop.example")
             except HTTPException as exc:
                 return exc
 

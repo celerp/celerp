@@ -885,6 +885,18 @@
     "connectors.err_no_links_to_undo": {
       "en": "There are no first sync links left to undo.",
       "params": []
+    },
+    "connectors.connect_lapsed": {
+      "en": "Sync paused: Celerp Connect has ended. Renew Connect to resume {service} syncing; nothing is lost.",
+      "params": [
+        "service"
+      ]
+    },
+    "connectors.connect_lapsed_title": {
+      "en": "{service} sync paused",
+      "params": [
+        "service"
+      ]
     }
   }
 }

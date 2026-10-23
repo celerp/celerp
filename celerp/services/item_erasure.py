@@ -41,21 +41,32 @@ _LABEL_KEYS = ("doc_number", "sku", "name")
 
 
 async def depended_on(session: AsyncSession, company_id, needles: dict[str, list[str]], *,
-                      besides=()) -> set[str]:
+                      besides=(), own_files: dict[str, set[str]] | None = None) -> set[str]:
     """The ids in ``needles`` something else depends on: another record mentions them
-    (outside the records in ``besides``), or a file is kept on them."""
+    (outside the records in ``besides``), or a file is kept on them other than the ones
+    in ``own_files``, which the caller removes with the item."""
     return set(await _mentions(session, company_id, needles, besides=besides)) | await holding_files(
-        session, company_id, needles)
+        session, company_id, needles, own_files=own_files)
 
 
-async def holding_files(session: AsyncSession, company_id, entity_ids) -> set[str]:
-    """The given ids that keep a file."""
+def _keeps_file(state: dict, own: set[str]) -> bool:
+    if state.get("attachments"):
+        return True
+    if any(f.get("id") not in own for f in state.get("files") or []):
+        return True
+    return bool(state.get("preview_image_id")) and state["preview_image_id"] not in own
+
+
+async def holding_files(session: AsyncSession, company_id, entity_ids, *,
+                        own_files: dict[str, set[str]] | None = None) -> set[str]:
+    """The given ids that keep a file, besides the ones in ``own_files``."""
+    own_files = own_files or {}
     ordered = sorted(set(entity_ids))
     found: set[str] = set()
     for start in range(0, len(ordered), _CHUNK):
         states = await session.execute(sa.select(Projection.entity_id, Projection.state).where(
             Projection.company_id == company_id, Projection.entity_id.in_(ordered[start:start + _CHUNK])))
-        found |= {eid for eid, state in states if any((state or {}).get(k) for k in _FILE_KEYS)}
+        found |= {eid for eid, state in states if _keeps_file(state or {}, own_files.get(eid, set()))}
     return found
 
 

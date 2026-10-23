@@ -23,9 +23,15 @@ def _is_image_mime(mime: str) -> bool:
     return mime.startswith("image/")
 
 
-def _file_already_stored(files: list[dict], url: str) -> bool:
-    """Check whether a remote URL is already present in the item's files list."""
-    return any(f.get("url") == url for f in files)
+def _already_pulled(files: list[dict], platform: str, remote: dict) -> bool:
+    """Whether the item already holds this platform file: the same image id from the
+    same store, or the same address when the platform gives no id."""
+    key = "id" if remote.get("id") else "src"
+    return any(
+        (f.get("remote") or {}).get(platform, {}).get(key) == remote[key]
+        and (f.get("remote") or {}).get(platform, {}).get("store") == remote.get("store")
+        for f in files
+    )
 
 
 def build_platform_image_payload(files: list[dict]) -> dict:
@@ -69,29 +75,38 @@ async def download_and_emit_file(
     session,
     company_id: str,
     entity_id: str,
-    actor_id: str,
     url: str,
     filename: str,
     tag: str,
     is_hero: bool,
-) -> bool:
-    """Download a remote file URL, store it, and attach it to the item.
+    *,
+    platform: str,
+    store: str | None,
+    remote_id=None,
+) -> str | None:
+    """Download a platform file, store it, and attach it to the item, recording where it
+    came from (its platform image id and store) on the attachment.
 
-    Returns True if stored successfully, False if download failed.
-    Skips if URL already stored (idempotent).
+    Returns the attachment's ledger key, or None when nothing was attached: the item
+    already holds this file (a pull is idempotent), or the download or storing failed.
     """
+    from celerp.services.field_fingerprints import fingerprint
+
     from celerp.models.projections import Projection
     from celerp.services.attachments import attach_file, store_upload
     from fastapi import UploadFile
     from starlette.datastructures import Headers
 
     # Idempotency: check current state
-    row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
+    row = await session.get(
+        Projection, {"company_id": company_id, "entity_id": entity_id}, populate_existing=True
+    )
     if row is None:
-        return False
+        return None
     existing_files: list[dict] = row.state.get("files") or []
-    if _file_already_stored(existing_files, url):
-        return False  # already have this URL
+    remote = {"id": str(remote_id) if remote_id not in (None, "") else None, "src": url, "store": store}
+    if _already_pulled(existing_files, platform, remote):
+        return None
 
     try:
         from celerp.services.outbound_url import fetch_public_bytes
@@ -110,7 +125,7 @@ async def download_and_emit_file(
             content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
     except Exception as exc:
         log.warning("connector: failed to download %s: %s", url, exc)
-        return False
+        return None
 
     import io
     upload = UploadFile(
@@ -122,8 +137,10 @@ async def download_and_emit_file(
         meta = await store_upload(company_id, upload)
     except Exception as exc:
         log.warning("connector: failed to store %s: %s", filename, exc)
-        return False
+        return None
 
-    await attach_file(session, company_id, "item", entity_id, meta, actor_id, source="connector",
-                      document_tag=tag, is_hero=is_hero)
-    return True
+    key = f"connector-file:{platform}:{entity_id}:{fingerprint(remote)}"
+    await attach_file(session, company_id, "item", entity_id, meta, None, source="connector",
+                      idempotency_key=key, document_tag=tag, is_hero=is_hero,
+                      remote={platform: remote})
+    return key

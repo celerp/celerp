@@ -6507,5 +6507,7 @@
   "connectors.err_conflict_gone": "This product is no longer waiting on a choice. Refresh the page to see the current list.",
   "connectors.err_first_sync_done": "First sync already done.",
   "connectors.first_sync_batch": "{service} first sync",
-  "connectors.err_no_links_to_undo": "There are no first sync links left to undo."
+  "connectors.err_no_links_to_undo": "There are no first sync links left to undo.",
+  "connectors.connect_lapsed": "Sync paused: Celerp Connect has ended. Renew Connect to resume {service} syncing; nothing is lost.",
+  "connectors.connect_lapsed_title": "{service} sync paused"
 }

@@ -681,6 +681,8 @@ def _apply_item_event(state: dict, event_type: str, data: dict) -> dict:
             "uploaded_at": data.get("uploaded_at"),
             "is_hero": bool(data.get("is_hero", False)),
         }
+        if data.get("remote"):
+            entry["remote"] = data["remote"]
         if entry["is_hero"]:
             for f in current["files"]:
                 f["is_hero"] = False

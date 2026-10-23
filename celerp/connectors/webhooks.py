@@ -71,7 +71,7 @@ async def handle_webhook(
             ConnectorOwnershipError,
             lock_connector_operation,
         )
-        from celerp.connectors.relay_token import fetch_context
+        from celerp.connectors.relay_token import ConnectRequired, fetch_context
         from celerp.db import get_session_ctx
 
         try:
@@ -108,7 +108,7 @@ async def handle_webhook(
                     current_ctx, event.payload or {}
                 )
                 await guard_session.commit()
-        except ConnectorOwnershipError:
+        except (ConnectorOwnershipError, ConnectRequired):
             return
         log.info(
             "webhook: processed targeted WooCommerce product deletion for %s",
@@ -144,7 +144,7 @@ async def dispatch_woocommerce_webhook(
     import sqlalchemy as sa
 
     from celerp.connectors.ownership import lock_connector_key
-    from celerp.connectors.relay_token import fetch_context
+    from celerp.connectors.relay_token import ConnectRequired, fetch_context
     from celerp.db import get_session_ctx
     from celerp.models.connector_config import ConnectorConfig
 
@@ -198,7 +198,11 @@ async def dispatch_woocommerce_webhook(
             ):
                 continue
 
-            ctx = await fetch_context(company_id, "woocommerce")
+            try:
+                ctx = await fetch_context(company_id, "woocommerce")
+            except ConnectRequired:
+                # Syncing is paused until Connect is renewed; the delivery is accepted.
+                return True
             if ctx is None:
                 continue
             expected_store_handle = ctx.store_handle

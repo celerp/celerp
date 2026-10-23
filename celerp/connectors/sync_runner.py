@@ -20,7 +20,7 @@ from celerp.connectors.base import (
     entity_allowed,
 )
 from celerp.connectors.ownership import ConnectorStoreChangedError
-from celerp.connectors.relay_token import ConnectorUpgradeRequired
+from celerp.connectors.relay_token import ConnectorUpgradeRequired, ConnectRequired
 from celerp.models.sync_run import SyncRun
 
 log = logging.getLogger(__name__)
@@ -153,7 +153,8 @@ async def run_first_sync(connector: ConnectorBase, ctx: ConnectorContext) -> lis
                     config.first_sync_undo = {**config.first_sync_undo, "batch_id": None}
             elif batch is not None:
                 batch.entity_ids = [*batch.entity_ids, *(eid for eid, _ in record.created)]
-                batch.idempotency_keys = [*batch.idempotency_keys, *(key for _, key in record.created)]
+                batch.idempotency_keys = [*batch.idempotency_keys, *(key for _, key in record.created),
+                                          *record.files]
                 batch.row_count = len(batch.entity_ids)
         await session.commit()
     return results
@@ -518,7 +519,7 @@ async def run_sync(
                             options["first_sync"] = first_sync
                         result = await sync_method(current_ctx, since=since, **options)
                 await guard_session.commit()
-    except (ConnectorStoreChangedError, ConnectorUpgradeRequired) as exc:
+    except (ConnectorStoreChangedError, ConnectorUpgradeRequired, ConnectRequired) as exc:
         result = SyncResult(entity=entity, direction=effective_direction, errors=[str(exc)])
     except NotImplementedError:
         result = SyncResult(

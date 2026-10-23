@@ -745,6 +745,7 @@ def _connector_detail_body(
     if config is not None and config.first_sync_at is None:
         sync_btn = _first_sync_link(cid, lang)
     return Div(
+        _connect_lapsed_notice(cid, config, lang),
         Div(sync_btn, disconnect_btn, cls="connector-action-area"),
         Div(id=f"connector-disconnect-result-{cid}"),
         Div(*config_rows, cls="connector-connected-details"),
@@ -753,6 +754,20 @@ def _connector_detail_body(
         P(A(t("connectors.view_synced"), href=f"/inventory?source={cid}",
             cls="btn btn--sm btn--outline"), cls="connector-synced-link"),
         cls="settings-card",
+    )
+
+
+def _connect_lapsed_notice(cid: str, config, lang: str) -> FT:
+    """While Celerp Connect has ended a store connection is paused: say so, and how to
+    resume it, where it cannot be missed."""
+    if config is None or getattr(config, "connect_lapsed_at", None) is None:
+        return Span()
+    from ui.components.cloud_gate import commercial_cta
+    href, label = commercial_cta("subscribe", "cloud", t("btn.get_connect", lang), lang)
+    return Div(
+        P(t("connectors.connect_lapsed", lang, service=get_connector(cid).display_name)),
+        A(label, href=href, target="_blank", cls="btn btn--sm btn--primary"),
+        cls="flash flash--warning connector-entitlement-cta",
     )
 
 
@@ -844,6 +859,7 @@ def _connector_card(
     connected_details = Span()
     if connected:
         sync_info = _last_sync_info(last_run, attention, href=f"/settings/connectors/{cid}")
+        paused = _connect_lapsed_notice(cid, config, lang)
         dir_row = _entity_direction_rows(cid, config.entity_directions if config else {}, lang)
         freq_row = _frequency_select(cid, frequency, lang) if category == ConnectorCategory.ACCOUNTING.value else Span()
         connected_details = Div(
@@ -852,6 +868,7 @@ def _connector_card(
                 Div(sync_info, id=f"connector-sync-info-{cid}", cls="connector-meta-value"),
                 cls="connector-meta-row",
             ),
+            paused,
             dir_row,
             freq_row,
             cls="connector-connected-details",

@@ -1073,6 +1073,8 @@ class ExternalImportRecord:
     created: list[tuple[str, str]] = field(default_factory=list)
     linked: list[dict] = field(default_factory=list)
     conflicts: list[dict] = field(default_factory=list)
+    # Ledger keys of the files pulled onto the items it created.
+    files: list[str] = field(default_factory=list)
 
 
 async def upsert_external_product(

@@ -76,12 +76,14 @@ class SyncResponse(BaseModel):
 
 
 async def _connector_context(company_id: str, connector_name: str, **kwargs):
-    from celerp.connectors.relay_token import ConnectorUpgradeRequired, fetch_context
+    from celerp.connectors.relay_token import ConnectorUpgradeRequired, ConnectRequired, fetch_context
 
     try:
         return await fetch_context(company_id, connector_name, **kwargs)
     except ConnectorUpgradeRequired as exc:
         raise HTTPException(status_code=426, detail=str(exc)) from exc
+    except ConnectRequired as exc:
+        raise HTTPException(status_code=402, detail=str(exc)) from exc
 
 
 async def _ready_config(session: AsyncSession, company_id, connector):

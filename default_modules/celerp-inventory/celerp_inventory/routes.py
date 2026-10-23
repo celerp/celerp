@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import logging
 import json
 import re
 import uuid
@@ -5119,15 +5120,21 @@ async def undo_import_batch(
             "entity_ids": unexpected,
         })
 
-    # Only what the import itself wrote may be on the items: their creation, and the
-    # inventory account the import's own entry booked them into.
+    # Only what the import itself wrote may be on the items: their creation (with the
+    # files a store's first sync pulled onto them), and the inventory account the
+    # import's own entry booked them into.
     created_by_import = set(batch.idempotency_keys or [])
     booked_by_import: set[str] = set()
+    # Files the import attached itself go with their items: {entity id: {file id: mime}}.
+    own_files: dict[str, dict[str, str]] = {}
     modified = {eid for eid, row in rows.items() if row.entity_type != "item"}
-    for eid, event_type, key, meta in (await session.execute(
-        select(LedgerEntry.entity_id, LedgerEntry.event_type, LedgerEntry.idempotency_key, LedgerEntry.metadata_)
+    for eid, event_type, key, meta, data in (await session.execute(
+        select(LedgerEntry.entity_id, LedgerEntry.event_type, LedgerEntry.idempotency_key, LedgerEntry.metadata_,
+               LedgerEntry.data)
         .where(LedgerEntry.company_id == company_id, LedgerEntry.entity_id.in_(entity_ids)))).all():
-        if event_type == "item.created" and key in created_by_import:
+        if key in created_by_import:
+            if event_type == "item.file.attached":
+                own_files.setdefault(eid, {})[(data or {}).get("file_id")] = (data or {}).get("mime", "")
             continue
         if event_type == RECORDED and (meta or {}).get("recorded_by") == "opening stock":
             booked_by_import.add(eid)
@@ -5136,7 +5143,8 @@ async def undo_import_batch(
     modified |= {eid for eid, row in rows.items()
                  if (row.state or {}).get(LOT_ACCOUNT_FIELD) and eid not in booked_by_import}
     modified |= await depended_on(session, company_id, {e: [e] for e in entity_ids},
-                                  besides=[e.entity_id for e in entries])
+                                  besides=[e.entity_id for e in entries],
+                                  own_files={e: set(files) for e, files in own_files.items()})
     if modified:
         raise HTTPException(
             status_code=409,
@@ -5159,6 +5167,14 @@ async def undo_import_batch(
     batch.undone_at = datetime.now(_tz.utc)
     batch.undone_by = user.id
     await session.commit()
+    from celerp.services.attachments import delete_stored_file
+    for files in own_files.values():
+        for file_id, mime in files.items():
+            try:
+                await delete_stored_file(str(company_id), file_id, mime)
+            except Exception:
+                logging.getLogger(__name__).warning(
+                    "could not delete stored file %s of an undone import", file_id)
 
     return {
         "ok": True,

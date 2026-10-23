@@ -10,7 +10,7 @@ import pytest
 from celerp.connectors.images import (
     build_platform_image_payload,
     build_platform_cert_payload,
-    _file_already_stored,
+    _already_pulled,
 )
 
 
@@ -91,14 +91,35 @@ class TestBuildPlatformCertPayload:
         assert "url" in entry
 
 
-class TestFileAlreadyStored:
-    def test_url_present(self):
-        files = [{"url": "/static/img.jpg", "id": "f1"}]
-        assert _file_already_stored(files, "/static/img.jpg") is True
+class TestAlreadyPulled:
+    """A pulled file is recognised by its platform image id from the same store, or by
+    its address when the platform gives no id; never by the local storage address."""
 
-    def test_url_absent(self):
-        files = [{"url": "/static/img.jpg", "id": "f1"}]
-        assert _file_already_stored(files, "/static/other.jpg") is False
+    STORE = "https://shop.example.com"
 
-    def test_empty(self):
-        assert _file_already_stored([], "/static/img.jpg") is False
+    def _file(self, **remote):
+        return {"url": "/static/attachments/c/f1.jpg", "id": "f1",
+                "remote": {"woocommerce": {"store": self.STORE, **remote}}}
+
+    def test_same_image_id(self):
+        files = [self._file(id="11", src="https://cdn.example.com/a.jpg")]
+        assert _already_pulled(files, "woocommerce", {"id": "11", "src": "https://cdn.example.com/a-1.jpg",
+                                                      "store": self.STORE})
+
+    def test_other_image_id(self):
+        files = [self._file(id="11", src="https://cdn.example.com/a.jpg")]
+        assert not _already_pulled(files, "woocommerce", {"id": "12", "src": "https://cdn.example.com/a.jpg",
+                                                          "store": self.STORE})
+
+    def test_same_id_from_another_store(self):
+        files = [self._file(id="11", src="https://cdn.example.com/a.jpg")]
+        assert not _already_pulled(files, "woocommerce", {"id": "11", "src": "x", "store": "https://other.example.com"})
+
+    def test_no_id_matches_the_address(self):
+        files = [self._file(id=None, src="https://cdn.example.com/c.pdf")]
+        assert _already_pulled(files, "woocommerce", {"id": None, "src": "https://cdn.example.com/c.pdf",
+                                                      "store": self.STORE})
+
+    def test_local_files_are_not_pulled_files(self):
+        assert not _already_pulled([{"url": "https://cdn.example.com/a.jpg", "id": "f1"}], "woocommerce",
+                                   {"id": None, "src": "https://cdn.example.com/a.jpg", "store": self.STORE})

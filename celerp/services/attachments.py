@@ -677,8 +677,10 @@ async def attach_file(
     is_hero: bool | None = None,
     description: str | None = None,
     metadata_: dict | None = None,
+    remote: dict | None = None,
 ):
     """Attach a stored file (``meta`` from store_file) to one contact, document or item.
+    ``remote`` records the platform file it was pulled from ({platform: {id, src, store}}).
 
     Returns the ledger entry of the file-attached event. When the attachment is refused
     (the record is gone), the stored file is deleted again (discarded_if_refused)."""
@@ -696,6 +698,8 @@ async def attach_file(
     }
     if is_hero is not None:
         data["is_hero"] = is_hero
+    if remote is not None:
+        data["remote"] = remote
     async with discarded_if_refused(company_id, meta):
         return await emit_event(
             session,

@@ -95,12 +95,12 @@ async def check_and_run_daily_syncs(
 
         log.info("daily_scheduler: running %s", config.connector)
 
-        from celerp.connectors.relay_token import ConnectorUpgradeRequired
+        from celerp.connectors.relay_token import ConnectorUpgradeRequired, ConnectRequired
 
         try:
             ctx = await token_fetcher(company_id, config.connector)
-        except ConnectorUpgradeRequired as exc:
-            # Stays due, so the sync runs at the first check after the update.
+        except (ConnectorUpgradeRequired, ConnectRequired) as exc:
+            # Stays due, so the sync runs at the first check after the update or renewal.
             log.warning("daily_scheduler: %s not synced: %s", config.connector, exc)
             continue
         except Exception as exc:

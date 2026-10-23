@@ -368,7 +368,7 @@ class WooCommerceConnector(ConnectorBase):
                             "meta_data": product.get("meta_data", []),
                         }
                         try:
-                            await self._pull_product_files(ctx, files, entity_id)
+                            await self._pull_product_files(ctx, files, entity_id, first_sync)
                         except Exception as img_exc:
                             log.warning("woocommerce file pull failed for item %s: %s", entity_id, img_exc)
                 continue
@@ -386,7 +386,7 @@ class WooCommerceConnector(ConnectorBase):
             )
             if entity_id:
                 try:
-                    await self._pull_product_files(ctx, product, entity_id)
+                    await self._pull_product_files(ctx, product, entity_id, first_sync)
                 except Exception as img_exc:
                     log.warning("woocommerce file pull failed for item %s: %s", entity_id, img_exc)
 
@@ -454,8 +454,13 @@ class WooCommerceConnector(ConnectorBase):
                 await session.commit()
         return changed
 
-    async def _pull_product_files(self, ctx: ConnectorContext, product: dict[str, Any], entity_id: str) -> None:
-        """Pull images and certificate metafields onto an already-resolved item."""
+    async def _pull_product_files(
+        self, ctx: ConnectorContext, product: dict[str, Any], entity_id: str,
+        first_sync: FirstSync | None = None,
+    ) -> None:
+        """Pull images and certificate metafields onto an already-resolved item. Each
+        image is pulled once, recognised by its WooCommerce image id. The files a first
+        sync pulls onto an item it created join its import, so its undo removes them."""
         from celerp.db import get_session_ctx as get_async_session
         from celerp.models.projections import Projection
         from celerp.connectors.images import download_and_emit_file, _CERT_TAGS
@@ -468,15 +473,19 @@ class WooCommerceConnector(ConnectorBase):
             )
             if row is None or row.entity_type != "item":
                 return
+            created = first_sync is not None and any(
+                eid == entity_id for eid, _ in first_sync.record.created)
+            keys: list[str | None] = []
             for i, img in enumerate(images):
                 src = img.get("src")
                 if not src:
                     continue
-                await download_and_emit_file(
-                    session, ctx.company_id, row.entity_id, "system", src,
+                keys.append(await download_and_emit_file(
+                    session, ctx.company_id, row.entity_id, src,
                     img.get("name") or f"product-{i}.jpg",
                     "product_images", is_hero=(i == 0),
-                )
+                    platform=self.name, store=ctx.store_handle, remote_id=img.get("id"),
+                ))
             meta = {m["key"]: m["value"] for m in meta_data if m.get("key")}
             for tag_key in _CERT_TAGS:
                 raw = meta.get(tag_key)
@@ -486,13 +495,16 @@ class WooCommerceConnector(ConnectorBase):
                     certs = json.loads(raw) if isinstance(raw, str) else raw
                     for cert in (certs if isinstance(certs, list) else []):
                         if cert.get("url"):
-                            await download_and_emit_file(
-                                session, ctx.company_id, row.entity_id, "system",
+                            keys.append(await download_and_emit_file(
+                                session, ctx.company_id, row.entity_id,
                                 cert["url"], cert.get("name", "cert.pdf"),
                                 tag_key, is_hero=False,
-                            )
+                                platform=self.name, store=ctx.store_handle,
+                            ))
                 except Exception as exc:
                     log.warning("woocommerce: failed to pull cert metafield %s: %s", tag_key, exc)
+            if created:
+                first_sync.record.files += [key for key in keys if key]
             await session.commit()
 
 

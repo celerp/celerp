@@ -177,8 +177,9 @@ class ShopifyConnector(ConnectorBase):
                     continue
                 fname = img.get("alt") or f"product-{img.get('id', '')}.jpg"
                 await download_and_emit_file(
-                    session, ctx.company_id, entity_id,
-                    "system", src, fname, "product_images", is_hero=(img.get("position", 99) == 1)
+                    session, ctx.company_id, entity_id, src, fname, "product_images",
+                    is_hero=(img.get("position", 99) == 1),
+                    platform=self.name, store=ctx.store_handle, remote_id=img.get("id"),
                 )
             await session.commit()
 
