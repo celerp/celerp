@@ -777,9 +777,9 @@ jobs:
             kill -9 "$APP_PID" 2>/dev/null || true
             exit 1
           fi
-          # Quit it as a user does, and wait for its servers to stop.
-          API_PORT="$(cat "$PORT_FILE")"
-          API=$(lsof -tiTCP:"$API_PORT" -sTCP:LISTEN | head -1)
+          # Quit it as a user does, and wait for its servers to stop. The restart moved
+          # the API to the port the app publishes; the next launch is on $API_PORT again.
+          API=$(lsof -tiTCP:"$(cat "$PORT_FILE")" -sTCP:LISTEN | head -1)
           kill "$(ps -o ppid= -p "$API" | tr -d ' ')"
           DEADLINE=$(( $(date +%s) + 60 ))
           while kill -0 "$APP_PID" 2>/dev/null && [ "$(date +%s)" -lt "$DEADLINE" ]; do sleep 1; done
