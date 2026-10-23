@@ -9,7 +9,8 @@ import shutil
 from pathlib import Path
 
 from conftest_support import (
-    is_own_test_config, provision_worker_db, resolve_worker_config, resolve_worker_data_dir, worker_label)
+    is_own_test_config, provision_worker_db, resolve_worker_config, resolve_worker_data_dir, skip_relay_check_in,
+    worker_label)
 
 # Must be set before celerp.config is imported (JWT guard fires at module load).
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
@@ -1005,10 +1006,6 @@ def no_connection_off_this_machine(monkeypatch):
 
 @pytest.fixture
 def relay_not_called_at_boot(no_connection_off_this_machine, monkeypatch):
-    """Boot without checking in with the relay, with or without a relay token. A test
-    that wants the check-in patches it again itself."""
-    from unittest.mock import AsyncMock
-    import celerp.main as main_mod
-
-    monkeypatch.setattr(main_mod, "_try_sync_existing_entitlement", AsyncMock())
-    monkeypatch.setattr(main_mod, "_try_auto_activate", AsyncMock())
+    """Boot without checking in with the relay (skip_relay_check_in). A test that wants the
+    check-in patches it again itself."""
+    skip_relay_check_in(monkeypatch.setattr)

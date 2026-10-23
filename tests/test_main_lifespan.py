@@ -352,7 +352,6 @@ async def test_shutdown_leaves_no_connection_in_a_transaction(monkeypatch):
         await session.execute(text("SELECT pg_sleep(30)"))
 
     monkeypatch.setattr(payments, "report_recoveries", _report_recoveries_in_flight)
-    monkeypatch.setattr(main_mod, "_try_auto_activate", AsyncMock())
 
     saved_token, saved_public = settings.gateway_token, settings.celerp_public_url
     settings.gateway_token = ""
@@ -540,7 +539,6 @@ async def test_shutdown_stops_migration_runs(monkeypatch):
             raise
 
     monkeypatch.setattr(migrations, "run_migration", _run)
-    monkeypatch.setattr(main_mod, "_try_auto_activate", AsyncMock())
     saved_token, saved_public = settings.gateway_token, settings.celerp_public_url
     settings.gateway_token = ""
     settings.celerp_public_url = None

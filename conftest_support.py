@@ -114,3 +114,16 @@ def provision_worker_db(url: str, worker: str) -> str:
         conn.close()
     return urlunsplit(parts._replace(path=f"/{worker_db}")).replace(
         "postgresql://", "postgresql+asyncpg://")
+
+
+def skip_relay_check_in(set_attr=setattr) -> None:
+    """Boot the API without checking in with the relay, with or without a relay token: both
+    boot-time check-ins do nothing. *set_attr* is ``monkeypatch.setattr`` in a test (undone
+    after it) or ``setattr`` in a child process that boots the app."""
+    import celerp.main as main_mod
+
+    async def _skipped(*_args, **_kwargs) -> None:
+        return None
+
+    for name in ("_try_auto_activate", "_try_sync_existing_entitlement"):
+        set_attr(main_mod, name, _skipped)

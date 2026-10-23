@@ -20,6 +20,7 @@ import pytest
 from sqlalchemy import select, text
 
 import pre366
+from conftest_support import skip_relay_check_in
 from test_i18n_posting_refusals import _catalog, shown_in
 from celerp.models.company import Company
 from celerp.models.ledger import LedgerEntry
@@ -94,7 +95,7 @@ async def _start(monkeypatch) -> None:
     monkeypatch.setattr("celerp.modules.loader.demoted_first_party", lambda *a, **k: [])
     monkeypatch.setattr("celerp.gateway.bootstrap.associate_partner_deployment", AsyncMock())
     monkeypatch.setattr("celerp.connectors.outbound_queue.adopt_legacy_connector_configs", AsyncMock())
-    monkeypatch.setattr(main_mod, "_try_auto_activate", AsyncMock())
+    skip_relay_check_in(monkeypatch.setattr)
     monkeypatch.setattr("celerp.gateway.shutdown", AsyncMock())
     for target in _STARTUP_LOOPS:
         monkeypatch.setattr(target, lambda *a, **k: asyncio.sleep(0))
