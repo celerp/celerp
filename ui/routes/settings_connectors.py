@@ -26,7 +26,6 @@ from celerp.connectors.base import (
     INBOUND_ENTITIES, OUTBOUND_ENTITIES, ConnectorCategory, SyncFrequency,
 )
 from celerp.connectors.ownership import PRODUCT_CHANNEL_PLATFORMS
-from celerp.connectors.registry import get as get_connector
 from celerp.connectors.sync_runner import CONNECTOR_RESET_ENTITY
 
 log = logging.getLogger(__name__)
@@ -333,6 +332,13 @@ def _request_company_id(request: Request) -> str:
     if not company_id:
         raise RuntimeError(t("error.company_unavailable"))
     return str(company_id)
+
+
+def get_connector(platform: str):
+    """The connector registered as ``platform``; imported where used, as the registry is
+    protected."""
+    from celerp.connectors.registry import get
+    return get(platform)
 
 
 async def _get_connector_config(company_id: str, connector: str):

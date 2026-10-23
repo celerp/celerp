@@ -9,6 +9,7 @@ every action swaps it in place. Publishing an item whose SKU the store already h
 first, in the block itself, before the store product is linked."""
 from __future__ import annotations
 
+import asyncio
 import re
 from urllib.parse import quote
 
@@ -128,11 +129,15 @@ def _bulk_confirmation(platform: str, asks: list[dict]) -> FT:
 
 def setup_routes(app) -> None:
 
-    async def _block(token: str, entity_id: str, channel: dict, role: str, **kw) -> FT:
-        item, company = await api.get_item(token, entity_id), await api.get_company(token)
+    async def _item_block(token: str, entity_id: str, channel: dict, role: str, **kw) -> tuple[dict, FT]:
+        """The item as it stands now, and its block for ``channel``."""
+        item, company = await asyncio.gather(api.get_item(token, entity_id), api.get_company(token))
         state = (item.get("_channel_state") or {}).get(str(channel.get("id"))) or {}
-        return channel_block(entity_id, channel, state,
-                             can_write=can_write_channel(channel, company.get("settings") or {}, role), **kw)
+        return item, channel_block(entity_id, channel, state,
+                                   can_write=can_write_channel(channel, company.get("settings") or {}, role), **kw)
+
+    async def _block(token: str, entity_id: str, channel: dict, role: str, **kw) -> FT:
+        return (await _item_block(token, entity_id, channel, role, **kw))[1]
 
     @app.get("/api/items/{entity_id}/channel/{platform}")
     async def item_channel_block(request: Request, entity_id: str, platform: str):
@@ -217,8 +222,7 @@ def setup_routes(app) -> None:
             return RedirectResponse(item_href, status_code=302)
         lang = get_lang(request)
         try:
-            block = await _block(token, entity_id, channel, _get_role(request))
-            item = await api.get_item(token, entity_id)
+            item, block = await _item_block(token, entity_id, channel, _get_role(request))
         except APIError as e:
             if e.status_code == 404:
                 return RedirectResponse("/inventory", status_code=302)

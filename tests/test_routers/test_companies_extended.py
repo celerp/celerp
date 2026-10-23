@@ -8,6 +8,7 @@ Targets: locations PATCH, BOM CRUD, taxes batch import, payment terms batch impo
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import os
 import uuid as _uuid
 
@@ -335,7 +336,8 @@ async def test_connector_sync_success(client, session, patch_session_token):
     company_id = (await client.get("/companies/me", headers=base_headers)).json()["id"]
     from celerp.models.connector_config import ConnectorConfig
     session.add(ConnectorConfig(
-        company_id=str(company_id), connector="shopify", direction="both"
+        company_id=str(company_id), connector="shopify",
+        first_sync_at=datetime.now(timezone.utc),
     ))
     await session.commit()
 

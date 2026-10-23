@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import uuid
 
 import pytest
@@ -777,7 +778,8 @@ async def test_connector_sync_not_implemented(client, session, patch_connector_s
     company_id = (await client.get("/companies/me", headers=headers)).json()["id"]
     from celerp.models.connector_config import ConnectorConfig
     session.add(ConnectorConfig(
-        company_id=str(company_id), connector="shopify", direction="both"
+        company_id=str(company_id), connector="shopify",
+        first_sync_at=datetime.now(timezone.utc),
     ))
     await session.commit()
 
@@ -812,7 +814,8 @@ async def test_connector_sync_generic_exception(client, session, patch_connector
     company_id = (await client.get("/companies/me", headers=headers)).json()["id"]
     from celerp.models.connector_config import ConnectorConfig
     session.add(ConnectorConfig(
-        company_id=str(company_id), connector="shopify", direction="both"
+        company_id=str(company_id), connector="shopify",
+        first_sync_at=datetime.now(timezone.utc),
     ))
     await session.commit()
 
@@ -847,7 +850,8 @@ async def test_connector_sync_contacts(client, session, patch_connector_session_
     company_id = (await client.get("/companies/me", headers=headers)).json()["id"]
     from celerp.models.connector_config import ConnectorConfig
     session.add(ConnectorConfig(
-        company_id=str(company_id), connector="shopify", direction="both"
+        company_id=str(company_id), connector="shopify",
+        first_sync_at=datetime.now(timezone.utc),
     ))
     await session.commit()
 

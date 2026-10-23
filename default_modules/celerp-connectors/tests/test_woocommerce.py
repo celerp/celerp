@@ -529,9 +529,6 @@ async def test_sync_orders_incremental(woo, ctx, mock_upsert_order):
     assert "modified_after" in str(route.calls[0].request.url)
 
 
-# -- sync_contacts --
-
-
 # -- sync_inventory_out --
 
 @pytest.mark.asyncio

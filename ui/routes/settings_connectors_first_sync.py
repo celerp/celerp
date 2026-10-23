@@ -16,12 +16,16 @@ from starlette.responses import RedirectResponse, Response
 from ui.components.activity import fmt_price, relative_time
 from ui.i18n import get_lang, refusal_text, t
 
-from celerp.connectors.registry import get as get_connector
 
 # The preview's tables, in the order its tabs show them.
 _SHOW = ("matches", "new", "no-sku", "problems", "publish", "orders")
 _SHOW_KEY = {"matches": "matches", "new": "new", "no-sku": "no_sku", "problems": "problems",
              "publish": "to_publish", "orders": "orders"}
+
+
+def get_connector(platform: str):
+    from ui.routes.settings_connectors import get_connector as connector
+    return connector(platform)
 
 
 def _cell(value) -> str:

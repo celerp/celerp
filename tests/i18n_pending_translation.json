@@ -869,7 +869,7 @@
       "params": []
     },
     "connectors.err_conflict_gone": {
-      "en": "This product is no longer waiting on a choice. Refresh the page to see the current list.",
+      "en": "This product is no longer waiting on a choice, so nothing was changed. It may have been settled already.",
       "params": []
     },
     "connectors.err_first_sync_done": {
@@ -1293,6 +1293,10 @@
     },
     "connectors.item_action_shopify": {
       "en": "Shopify",
+      "params": []
+    },
+    "connectors.err_unpublish_shopify": {
+      "en": "Celerp cannot unpublish a Shopify product. Use Stop to stop pushing it to Shopify.",
       "params": []
     }
   }

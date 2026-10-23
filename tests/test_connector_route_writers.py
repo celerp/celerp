@@ -46,13 +46,14 @@ def connect_session(monkeypatch):
     monkeypatch.setattr(state, "_session_token", SESSION_TOKEN)
 
 
-async def test_sync_plan_runs_the_shared_sync_runner_with_the_stored_direction(client, session, connect_session):
-    from celerp.connectors.base import SyncDirection
+async def test_sync_plan_runs_the_shared_sync_runner(client, session, connect_session):
+    from datetime import datetime, timezone
+
     from celerp.models.connector_config import ConnectorConfig
 
     h, cid = await _register(client)
     session.add(ConnectorConfig(company_id=cid, connector="woocommerce",
-                                direction=SyncDirection.INBOUND.value))
+                                first_sync_at=datetime.now(timezone.utc)))
     await session.commit()
     ctx = object()
     runner = AsyncMock()
@@ -68,7 +69,8 @@ async def test_sync_plan_runs_the_shared_sync_runner_with_the_stored_direction(c
     assert runner.await_count == 1
     connector, passed_ctx = runner.await_args.args
     assert connector.name == "woocommerce" and passed_ctx is ctx
-    assert runner.await_args.kwargs == {"direction": SyncDirection.INBOUND}
+    # The runner reads the connection's own directions; the route passes none.
+    assert runner.await_args.kwargs == {}
 
 
 async def test_sync_plan_refuses_a_channel_that_is_not_connected(client, connect_session):

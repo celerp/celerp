@@ -6504,7 +6504,7 @@
   "connectors.conflict_kept_store": "Now uses the {service} values. Edit the item to change them back.",
   "connectors.conflict_kept_celerp": "Keeps the Celerp values. They are sent to {service} at the next sync when products go out.",
   "connectors.err_conflict_choice": "Choose to keep the store's values or Celerp's.",
-  "connectors.err_conflict_gone": "This product is no longer waiting on a choice. Refresh the page to see the current list.",
+  "connectors.err_conflict_gone": "This product is no longer waiting on a choice, so nothing was changed. It may have been settled already.",
   "connectors.err_first_sync_done": "First sync already done.",
   "connectors.first_sync_batch": "{service} first sync",
   "connectors.err_no_links_to_undo": "There are no first sync links left to undo.",
@@ -6588,5 +6588,6 @@
   "connectors.bulk_shopify_resume": "Push to Shopify",
   "connectors.bulk_shopify_stop": "Stop pushing to Shopify",
   "connectors.item_action_woocommerce": "WooCommerce",
-  "connectors.item_action_shopify": "Shopify"
+  "connectors.item_action_shopify": "Shopify",
+  "connectors.err_unpublish_shopify": "Celerp cannot unpublish a Shopify product. Use Stop to stop pushing it to Shopify."
 }

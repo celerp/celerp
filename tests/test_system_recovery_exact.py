@@ -1119,12 +1119,14 @@ async def _connect_three(engine) -> str:
     from sqlalchemy import text
     user = await owner(engine)
     cid = await company(engine, user, "Alpha Trading", "alpha", settings={"enabled_modules": ["celerp-inventory"]})
+    from celerp.connectors.registry import get as connector_for
     async with engine.begin() as conn:
         for connector in ("shopify", "woocommerce", "quickbooks"):
             await conn.execute(text(
-                "INSERT INTO connector_configs (company_id, connector, direction, sync_frequency, "
-                "daily_sync_hour, webhook_ids_json) VALUES (:c, :n, 'both', 'realtime', 2, :w)"),
-                {"c": str(cid), "n": connector, "w": '["w1", "w2"]' if connector == "woocommerce" else "[]"})
+                "INSERT INTO connector_configs (company_id, connector, entity_directions, sync_frequency, "
+                "daily_sync_hour, webhook_ids_json) VALUES (:c, :n, CAST(:d AS json), 'realtime', 2, :w)"),
+                {"c": str(cid), "n": connector, "d": json.dumps(connector_for(connector).default_directions),
+                 "w": '["w1", "w2"]' if connector == "woocommerce" else "[]"})
     return str(cid)
 
 
