@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: LicenseRef-Proprietary
 """A document's taxes (``doc_taxes``) and a line's taxes (``taxes``) are a list of tax
 objects or absent. Every write refuses any other shape with the tax error and stores
-nothing: the document edit, the list edit and its line pages, and an import. Every
+nothing: the document edit, the list create, edit and its line pages, and every import. Every
 page, printout and money recompute that reads taxes reads a stored value of another shape as
 no taxes rather than failing."""
 from __future__ import annotations
@@ -112,6 +112,32 @@ async def test_an_import_refuses_taxes_of_another_shape(client, session, field):
         "idempotency_key": uuid.uuid4().hex, "data": data})
     assert _refused(r), r.text
     assert (await client.get(f"/docs/{eid}", headers=auth["headers"])).status_code == 404
+
+
+def _list_record(line: dict) -> dict:
+    return {"entity_id": f"list:IMP-{uuid.uuid4().hex[:8]}", "event_type": "list.created", "source": "csv",
+            "idempotency_key": uuid.uuid4().hex,
+            "data": {"list_type": "quotation", "status": "draft", "line_items": [line]}}
+
+
+@pytest.mark.parametrize("writer", ["create", "import", "import_batch"])
+async def test_every_list_write_refuses_line_taxes_of_another_shape(client, session, writer):
+    auth = await _auth_company(session)
+    line = {"description": "S", "quantity": 1, "unit_price": 100.0, "taxes": "x"}
+    if writer == "create":
+        r = await client.post("/lists", headers=auth["headers"], json={"list_type": "quotation", "line_items": [line]})
+        assert _refused(r), r.text
+        return
+    rec = _list_record(line)
+    if writer == "import":
+        r = await client.post("/lists/import", headers=auth["headers"], json=rec)
+        assert _refused(r), r.text
+    else:
+        r = await client.post("/lists/import/batch", headers=auth["headers"], json={"records": [rec]})
+        assert r.status_code == 200, r.text
+        assert r.json()["created"] == 0
+        assert any(t("documents.err_tax_invalid") in e for e in r.json()["errors"]), r.json()
+    assert (await client.get(f"/lists/{rec['entity_id']}", headers=auth["headers"])).status_code == 404
 
 
 @pytest.mark.parametrize("where", ["doc_taxes", "taxes"])

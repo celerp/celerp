@@ -8527,6 +8527,7 @@ async def create_list(
     if (done := await _replay()) is not None:
         return done
     require_currency_code(payload.currency)
+    refuse_malformed_taxes({"line_items": payload.line_items})
     # The contact first, as every contact-reference writer takes it (its lock takes the
     # company lock, then the contact row).
     contact = await _lock_selected_contact(session, company_id, settings, role, payload.contact_id or "")
@@ -9565,6 +9566,7 @@ async def import_list(
         ))
     role, settings = await locked_authority(session, company_id, user.id, ("edit_documents", "import_export_data"))
     _assert_list_import_permissions(settings, role, body.data)
+    refuse_malformed_taxes(body.data)
 
     replay = await find_event_by_idempotency(session, company_id, body.idempotency_key)
     if replay is not None:
@@ -9697,6 +9699,7 @@ async def batch_import_lists(
             skipped += 1
             continue
         try:
+            refuse_malformed_taxes(rec.data)
             await _lock_imported_contact(session, company_id, "list", rec.data)
             await _assert_import_number_free(session, company_id, "list", rec.data)
             entry = await emit_event(
