@@ -572,7 +572,8 @@ async def _resolve_share_contact(session: AsyncSession, company_id, state: dict)
 async def _enrich_share_lines(session: AsyncSession, company_id, state: dict) -> str:
     """Source pieces/weight (and the weight's unit) from each line's item for
     the shared view - the DB-side mirror of the UI print enrichment. Shipping
-    documents also backfill HS code / country of origin from the item. When the
+    documents also backfill HS code / country of origin from the item, and an issued
+    one reads each item as it was at Issue (shipping.issued_item). When the
     company shows barcodes on lines, every doc type backfills barcodes onto
     lines saved before barcode stamping.
 
@@ -581,7 +582,8 @@ async def _enrich_share_lines(session: AsyncSession, company_id, state: dict) ->
     from celerp.models.company import Company
     from celerp.services.line_measures import (
         LINE_IDENTIFIER_MODES, identifier_backfill, item_measure_meta, resolve_line_measures)
-    from celerp.services.shipping import SHIPPING_LIST_TYPE, customs_backfill, line_gross_weight, reads_item_customs
+    from celerp.services.shipping import (
+        SHIPPING_LIST_TYPE, customs_backfill, issued_item, line_gross_weight, reads_item_customs)
     from celerp.services.units import DEFAULT_UNITS, build_unit_map
     company = await session.get(Company, company_id)
     settings = (company.settings or {}) if company else {}
@@ -599,20 +601,23 @@ async def _enrich_share_lines(session: AsyncSession, company_id, state: dict) ->
         eid = li.get("entity_id") or li.get("item_id")
         if not eid:
             continue
-        irow = await session.get(Projection, (company_id, eid))
-        if irow is None or irow.entity_type != "item":
-            continue
+        item = issued_item(li, state)
+        if item is None:
+            irow = await session.get(Projection, (company_id, eid))
+            if irow is None or irow.entity_type != "item":
+                continue
+            item = irow.state or {}
         if ident_mode != "sku":
-            identifier_backfill(li, irow.state or {})
+            identifier_backfill(li, item)
         if not invoice_layout:
             continue
-        meta = item_measure_meta(irow.state or {}, umap)
+        meta = item_measure_meta(item, umap)
         li["pieces"], li["weight"], li["weight_unit"], _, _ = resolve_line_measures(li, item_meta=meta)
         if is_shipping:
             if read_item_codes:
-                customs_backfill(li, irow.state or {})
+                customs_backfill(li, item)
             li["gross_weight"], li["gross_weight_unit"] = line_gross_weight(
-                li, irow.state or {}, bool(meta.get("qty_is_weight")))
+                li, item, bool(meta.get("qty_is_weight")))
     return ident_mode
 
 

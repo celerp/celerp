@@ -2085,7 +2085,8 @@ def setup_routes(app):
         measures, and lines created before the PCS/WEIGHT feature don't store them
         (notably the weight unit). Shipping documents additionally backfill each
         line's HS code / country of origin from its catalog item - the item is the
-        durable home of customs data, the line only overrides. When the company
+        durable home of customs data, the line only overrides - and an issued one reads
+        each item as it was at Issue (shipping.issued_item). When the company
         shows barcodes on lines, every doc type also backfills barcodes onto lines
         saved before barcode stamping. No-op otherwise for non-invoice types."""
         _needs_ident = line_identifier_mode != "sku"
@@ -2094,7 +2095,8 @@ def setup_routes(app):
             return
         import asyncio as _aio
         from celerp.services.line_measures import resolve_line_measures
-        from celerp.services.shipping import SHIPPING_LIST_TYPE, customs_backfill, line_gross_weight, reads_item_customs
+        from celerp.services.shipping import (
+            SHIPPING_LIST_TYPE, customs_backfill, issued_item, line_gross_weight, reads_item_customs)
         _is_shipping = doc.get("list_type") == SHIPPING_LIST_TYPE
         _read_item_codes = reads_item_customs(doc)
         try:
@@ -2106,10 +2108,12 @@ def setup_routes(app):
             eid = li.get("entity_id") or li.get("item_id")
             if not eid:
                 return
-            try:
-                item = await api.get_item(token, eid)
-            except Exception:
-                return
+            item = issued_item(li, doc)
+            if item is None:
+                try:
+                    item = await api.get_item(token, eid)
+                except Exception:
+                    return
             if _needs_ident:
                 identifier_backfill(li, item)
             if not _invoice_layout:

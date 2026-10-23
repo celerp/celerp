@@ -166,16 +166,21 @@ async def _marker(session) -> str | None:
 
 
 async def _issued_by_an_earlier_release(client, auth, session, item_id: str) -> str:
-    """An issued shipping document as an earlier release stored it: its lines carry no codes."""
+    """An issued shipping document as an earlier release stored it."""
     ship = await _list(client, auth, "shipping_doc", item_id)
     await _issue(client, auth, ship)
+    await _as_an_earlier_release_stored_it(session, auth, ship)
+    return ship
+
+
+async def _as_an_earlier_release_stored_it(session, auth, ship: str) -> None:
+    """Strip what Issue saves today: an earlier release saved no codes and no item on the lines."""
     session.expire_all()
     row = await session.get(Projection, (auth["company_id"], ship))
-    lines = [{k: v for k, v in li.items() if k not in ("hs_code", "country_of_origin")}
+    lines = [{k: v for k, v in li.items() if k not in ("hs_code", "country_of_origin", "item_at_issue")}
              for li in row.state["line_items"]]
     row.state = {**{k: v for k, v in row.state.items() if k != "customs_saved"}, "line_items": lines}
     await session.commit()
-    return ship
 
 
 async def _printed_by_an_earlier_release(session, auth, entity_id: str, item_id: str) -> dict:
@@ -354,3 +359,109 @@ async def test_one_rule_says_when_a_printout_reads_the_items_codes(state, reads)
     readers = sorted(str(path.relative_to(root)) for top in ("celerp", "default_modules", "ui")
                      for path in (root / top).rglob("*.py") if 'get("customs_saved")' in path.read_text())
     assert readers == ["celerp/services/shipping.py", "default_modules/celerp-docs/celerp_docs/customs_freeze.py"]
+
+
+async def _weighed_item(client, auth) -> str:
+    """A lot of 5 bowls sold by the piece: the lot weighs 3 kg and each packed bowl 2 kg."""
+    r = await client.post("/items", headers=auth["headers"], json={
+        "sku": f"CF-{uuid.uuid4().hex[:6]}", "name": "Teak bowl", "quantity": 5.0, "sell_by": "piece",
+        "category": "Raw", "status": "available", "hs_code": "1234", "country_of_origin": "TH",
+        "weight": 3.0, "weight_unit": "kg", "gross_weight": 2.0, "gross_weight_unit": "kg",
+        "barcode": str(uuid.uuid4().int)[:12]})
+    assert r.status_code == 200, r.text
+    return r.json()["id"]
+
+
+async def _whole_lot_list(client, auth, item_id: str) -> str:
+    r = await client.post("/lists", headers=auth["headers"], json={
+        "list_type": "shipping_doc", "contact_name": "Buyer",
+        "line_items": [{**_line(item_id), "quantity": 5, "line_total": 200.0}]})
+    assert r.status_code == 200, r.text
+    return r.json()["id"]
+
+
+async def _show_barcodes(session, auth) -> None:
+    from celerp.services.company_lock import locked_company
+
+    company = await locked_company(session, auth["company_id"])
+    company.settings = {**(company.settings or {}), "line_item_identifier": "barcode"}
+    await session.commit()
+
+
+async def _reweigh_and_relabel(client, auth, item_id: str) -> None:
+    """Every item field a shipping document prints, changed after Issue."""
+    old = (await client.get(f"/items/{item_id}", headers=auth["headers"])).json()
+    r = await client.patch(f"/items/{item_id}", headers=auth["headers"], json={"fields_changed": {
+        "gross_weight": {"old": 2.0, "new": 7.5}, "weight": {"old": 3.0, "new": 9.0},
+        "weight_unit": {"old": "kg", "new": "lb"}, "barcode": {"old": old.get("barcode"), "new": "8800000000017"}}})
+    assert r.status_code == 200, r.text
+
+
+def _printed(line: dict) -> tuple:
+    return line.get("gross_weight"), line.get("gross_weight_unit"), line.get("weight"), line.get("weight_unit"), line.get("barcode")
+
+
+async def _page_meta(client, auth, entity_id: str, item_id: str) -> tuple:
+    r = await client.get(f"/lists/{entity_id}/page", headers=auth["headers"])
+    assert r.status_code == 200, r.text
+    meta = r.json()["item_meta"][item_id]
+    return meta.get("gross_weight"), meta.get("weight"), meta.get("weight_unit"), meta.get("quantity"), meta.get("barcode")
+
+
+async def test_issued_shipping_doc_keeps_the_weights_and_barcode_it_was_issued_with(client, auth, session):
+    """Gross weight, the whole-lot weight and the barcode an issued shipping document shows are the
+    item's as it was at Issue, on the share page and the detail page, however the item changes later."""
+    await _show_barcodes(session, auth)
+    item_id = await _weighed_item(client, auth)
+    ship = await _whole_lot_list(client, auth, item_id)
+    await _issue(client, auth, ship)
+    shared = _printed((await _shared_lines(session, auth, ship))[0])
+    page = await _page_meta(client, auth, ship, item_id)
+    assert shared[:4] == (10.0, "kg", 3.0, "kg") and shared[4]
+
+    await _reweigh_and_relabel(client, auth, item_id)
+    assert _printed((await _shared_lines(session, auth, ship))[0]) == shared
+    assert await _page_meta(client, auth, ship, item_id) == page
+
+
+async def test_print_view_of_issued_shipping_doc_keeps_the_gross_weight_it_was_issued_with(client, auth, ui_client):
+    item_id = await _weighed_item(client, auth)
+    ship = await _whole_lot_list(client, auth, item_id)
+    await _issue(client, auth, ship)
+    await _reweigh_and_relabel(client, auth, item_id)
+    stored = (await client.get(f"/lists/{ship}", headers=auth["headers"])).json()
+    live = (await client.get(f"/items/{item_id}", headers=auth["headers"])).json()
+
+    ui_client.cookies.update(_authed())
+    with patch("ui.api_client.get_list", new=AsyncMock(return_value=stored)), \
+         patch("ui.api_client.get_item", new=AsyncMock(return_value=live)):
+        r = await ui_client.get(f"/lists/{ship}/print?layout=commercial_invoice")
+    assert r.status_code == 200, r.text
+    assert "37.5" not in r.text   # 5 x the item's new 7.5 kg
+    assert "10 kg" in r.text or "10.0 kg" in r.text
+
+
+async def test_reissue_after_revert_to_draft_takes_the_item_as_it_is_then(client, auth, session):
+    item_id = await _weighed_item(client, auth)
+    ship = await _whole_lot_list(client, auth, item_id)
+    await _issue(client, auth, ship)
+    await _reweigh_and_relabel(client, auth, item_id)
+    r = await client.post(f"/lists/{ship}/revert-to-draft", headers=auth["headers"])
+    assert r.status_code == 200, r.text
+    await _issue(client, auth, ship)
+
+    assert _printed((await _shared_lines(session, auth, ship))[0])[:2] == (37.5, "kg")
+
+
+async def test_startup_saves_the_weights_an_earlier_release_printed(client, auth, session):
+    await _reset_marker(session)
+    item_id = await _weighed_item(client, auth)
+    ship = await _whole_lot_list(client, auth, item_id)
+    await _issue(client, auth, ship)
+    await _as_an_earlier_release_stored_it(session, auth, ship)
+    printed = _printed((await _shared_lines(session, auth, ship))[0])
+    assert printed[:2] == (10.0, "kg")
+
+    await _start(session)
+    await _reweigh_and_relabel(client, auth, item_id)
+    assert _printed((await _shared_lines(session, auth, ship))[0]) == printed

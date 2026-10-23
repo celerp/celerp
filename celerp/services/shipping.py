@@ -62,10 +62,31 @@ def line_gross_weight(line: dict, item_state: dict, qty_is_weight: bool) -> tupl
 
 
 def reads_item_customs(state: dict) -> bool:
-    """Whether a document's printout and share view read customs codes from its items
-    (customs_backfill): a draft does, and so does an issued one whose codes were never saved
-    on its lines (``customs_saved``)."""
+    """Whether a document's printout, share view and detail page read its items as they are now
+    (customs codes via customs_backfill, weights, measures, barcode): a draft does, and so does an
+    issued one whose lines were never saved with their items (``customs_saved``)."""
     return state.get("status") == DRAFT or not state.get("customs_saved")
+
+
+# The item fields an issued customs document shows, saved on each linked line at Issue
+# (``item_at_issue``): customs codes, the per-unit gross weight, the lot's measures the
+# whole-lot fallback reads, and the barcode.
+ITEM_AT_ISSUE = "item_at_issue"
+_ITEM_AT_ISSUE_FIELDS = ("hs_code", "country_of_origin", "gross_weight", "gross_weight_unit", "sell_by",
+                         "quantity", "pieces", "weight", "weight_unit", "barcode")
+
+
+def item_at_issue(item_state: dict) -> dict:
+    """What an issued customs document keeps of a line's item, attributes lifted to the top
+    level the way the item reads flatten them (a core field is never overridden)."""
+    attributes = item_state.get("attributes") or {}
+    return {k: item_state.get(k, attributes.get(k)) for k in _ITEM_AT_ISSUE_FIELDS}
+
+
+def issued_item(line: dict, state: dict) -> dict | None:
+    """The item a line of ``state`` shows when the document keeps the item as it was at Issue,
+    else None: the caller reads the item as it is now."""
+    return None if reads_item_customs(state) else line.get(ITEM_AT_ISSUE)
 
 
 def customs_backfill(line: dict, item_state: dict) -> None:

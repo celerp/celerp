@@ -78,7 +78,8 @@ from celerp.services.list_behavior import (
     DRAFT, FINALIZED, CLOSED, VOID, DEFAULT_LIST_TYPE, LIST_TYPES, SCAN_RUNS_FIELD, SUPPLIER_DOC_TYPES, ScanBehavior,
     behavior, scan_behavior, terminal_action, is_money_list,
 )
-from celerp.services.shipping import INCOTERMS_2020, REASONS_FOR_EXPORT, customs_backfill
+from celerp.services.shipping import (
+    INCOTERMS_2020, ITEM_AT_ISSUE, REASONS_FOR_EXPORT, customs_backfill, issued_item, item_at_issue)
 from celerp.schemas.numbers import FiniteFloat
 from ui.i18n import doc_type_label, t
 
@@ -8477,6 +8478,11 @@ async def get_list_page(
     header["id"] = entity_id
     header["version"] = head.version
     item_meta = await _page_item_meta(session, company_id, items)
+    for li in items:
+        saved = issued_item(li, header)
+        eid = li.get("item_id") or li.get("entity_id")
+        if saved is not None and eid:
+            item_meta[eid] = {**item_meta.get(eid, {}), **saved, "id": eid}
     return {"list": header, "items": items, "total": total, "version": head.version,
             "item_meta": item_meta, "line_holds": await _line_holds(session, company_id, entity_id)}
 
@@ -12204,9 +12210,10 @@ _AUDIT_IDENTITY_FIELDS = ("sku", "name", "barcode")
 
 async def customs_snapshot(session: AsyncSession, company_id: str, lines: list[dict]) -> dict:
     """The fields an issued customs document saves: copies of ``lines`` with each linked line's
-    customs codes (HS code, country of origin) filled from its item where the line has none, and
-    ``customs_saved``. A document keeps these, so a later change to the item never reaches what
-    was already issued; one without ``customs_saved`` still reads its items' codes, never blank."""
+    customs codes (HS code, country of origin) filled from its item where the line has none, the
+    item as it is now (``item_at_issue``, replacing any earlier one), and ``customs_saved``. A
+    document keeps these, so a later change to the item never reaches what was already issued;
+    one without ``customs_saved`` still reads its items, never blank."""
     frozen = []
     for line in lines or []:
         line = dict(line)
@@ -12214,6 +12221,7 @@ async def customs_snapshot(session: AsyncSession, company_id: str, lines: list[d
         item = await session.get(Projection, {"company_id": company_id, "entity_id": key}) if key else None
         if item is not None and item.entity_type == "item":
             customs_backfill(line, item.state or {})
+            line[ITEM_AT_ISSUE] = item_at_issue(item.state or {})
         frozen.append(line)
     return {"line_items": frozen, "customs_saved": True}
 

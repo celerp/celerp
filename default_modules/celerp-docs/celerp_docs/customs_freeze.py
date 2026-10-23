@@ -1,14 +1,14 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: MIT
 
-"""One-time save of customs codes on shipping documents issued by an earlier release.
+"""One-time save of the item details on shipping documents issued by an earlier release.
 
-Issue now copies each line's HS code and country of origin from its item
-(routes.customs_snapshot), so later item edits never reach an issued document. An earlier
-release saved none: its issued documents printed the item's current codes. This pass gives each
-of them the codes it prints today, so nothing on paper changes, and tells each company once. Until
-a list is saved (``customs_saved``) its print and share read the item's codes, so a list this pass
-could not save never prints blank.
+Issue now copies each line's HS code and country of origin from its item and saves the item as it
+is (weights, measures, barcode; routes.customs_snapshot), so later item edits never reach an
+issued document. An earlier release saved none: its issued documents printed the item as it is
+now. This pass gives each of them what it prints today, so nothing on paper changes, and tells
+each company once. Until a list is saved (``customs_saved``) its print and share read the item, so
+a list this pass could not save never prints blank.
 
 Runs at startup, gated by a marker so it runs once per database. A company staged for a
 migration is skipped. Each list is saved in its own savepoint: a list that fails is rolled back
@@ -31,7 +31,7 @@ _NOTICE = "notice.customs_freeze"
 
 
 async def freeze_issued_customs_lists(session: AsyncSession) -> dict:
-    """Save the customs codes on every issued customs list that lacks them. Caller commits."""
+    """Save the item details on every issued customs list that lacks them. Caller commits."""
     from celerp.migrations._data_reconcile import get_meta, set_meta
     from celerp.models.projections import Projection
     from celerp.notifications.service import notify_once
@@ -76,7 +76,7 @@ async def freeze_issued_customs_lists(session: AsyncSession) -> dict:
                 )
         except Exception:
             failed += 1
-            log.exception("Could not save customs codes on issued list %s", entity_id)
+            log.exception("Could not save item details on issued list %s", entity_id)
             continue
         if saved["line_items"] != lines:
             frozen[company_id] = frozen.get(company_id, 0) + 1
@@ -90,7 +90,7 @@ async def freeze_issued_customs_lists(session: AsyncSession) -> dict:
     total = sum(frozen.values())
     waiting = sum(staged.values())
     if total or failed or waiting:
-        log.info("Saved customs codes on %d issued list(s); %d failed, %d company(ies) staged for a migration%s",
+        log.info("Saved item details on %d issued list(s); %d failed, %d company(ies) staged for a migration%s",
                  total, failed, waiting, " (marker left unset; the next start retries)" if failed or waiting else "")
     return {"frozen": total, "failed": failed, "staged": waiting}
 
@@ -99,4 +99,4 @@ async def customs_freeze_hook(*, session: AsyncSession) -> None:
     try:
         await freeze_issued_customs_lists(session)
     except Exception:
-        log.exception("Saving customs codes on issued lists failed; the next start retries")
+        log.exception("Saving item details on issued lists failed; the next start retries")
