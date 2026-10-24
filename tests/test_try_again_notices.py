@@ -215,6 +215,9 @@ def test_a_long_notice_is_checked_in_time_proportional_to_its_length(module_cata
     cut = " ".join(re.sub(r"[Ss]elect Try again", "", _filled(t(k, "en")))
                    for k in en if re.search(r"[Ss]elect Try again", en[k]))
     notice = cut * 4
+    # Build and compile the pattern first, which happens once per process, so the time below
+    # is the matching alone.
+    assert not _says_try_again("en", "")
     started = time.perf_counter()
     assert not _says_try_again("en", notice)
     assert time.perf_counter() - started < 1
