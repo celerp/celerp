@@ -6510,6 +6510,7 @@
   "ai.err_outcome_unknown": "لم يصل رد Celerp AI. أعد طرح السؤال للحصول عليه، وسيُحتسب السؤال مرة واحدة فقط.",
   "ai.err_question_expired": "لم يعد من الممكن متابعة هذا السؤال. أرسله مجددًا بوصفه سؤالًا جديدًا.",
   "ai.err_question_in_progress": "لا يزال Celerp AI يجيب عن هذا السؤال. انتظر قليلًا ثم أعد طرحه.",
+  "ai.err_operation_conflict": "This question was already sent and cannot be sent again. Press Send to ask it as a new question; it counts as one more question.",
   "ai.ask_again": "إعادة السؤال",
   "ai.free_terms": "يمكن إرفاق ملف واحد بكل سؤال مجاني. وقد تتوقف خدمة الذكاء الاصطناعي المجانية حتى الشهر التالي عند بلوغ ميزانية الاستخدام المجاني الشهرية."
 }

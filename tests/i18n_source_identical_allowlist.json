@@ -1,6 +1,7 @@
 {
   "am": [
     "account.email_placeholder",
+    "ai.err_operation_conflict",
     "btn.u00d7",
     "chip.ar",
     "cloud.plan_ai_name",
@@ -195,6 +196,7 @@
   ],
   "ar": [
     "account.email_placeholder",
+    "ai.err_operation_conflict",
     "btn.u00d7",
     "cloud.plan_ai_name",
     "cloud.plan_cloud_name",
@@ -378,6 +380,7 @@
   "de": [
     "acct.source_system",
     "acct.tab_journal",
+    "ai.err_operation_conflict",
     "attr.form",
     "attr.format",
     "attr.material",
@@ -632,6 +635,7 @@
     "account.plan",
     "acct.source_manual",
     "activity.total_change",
+    "ai.err_operation_conflict",
     "attr.color",
     "attr.director",
     "attr.material",
@@ -858,6 +862,7 @@
     "acct.tab_journal",
     "activity.document",
     "activity.m_pcs",
+    "ai.err_operation_conflict",
     "attr.appellation_aoc",
     "attr.composition",
     "attr.concentration",
@@ -1127,6 +1132,7 @@
     "activity.m_pcs",
     "activity.m_wt",
     "activity.total_change",
+    "ai.err_operation_conflict",
     "attr.diameter_mm",
     "attr.format",
     "attr.gender",
@@ -1373,6 +1379,7 @@
     "th.total"
   ],
   "it": [
+    "ai.err_operation_conflict",
     "attr.volume_l",
     "btn.u00d7",
     "category.tablet",
@@ -1597,6 +1604,7 @@
   ],
   "ja": [
     "account.email_placeholder",
+    "ai.err_operation_conflict",
     "attr.cpu",
     "attr.os",
     "btn.u00d7",
@@ -1790,6 +1798,7 @@
   "pt": [
     "acct.source_manual",
     "activity.total_change",
+    "ai.err_operation_conflict",
     "attr.material",
     "attr.megapixels",
     "attr.metal",
@@ -2026,6 +2035,7 @@
   ],
   "th": [
     "account.email_placeholder",
+    "ai.err_operation_conflict",
     "btn.u00d7",
     "cloud.plan_ai_name",
     "cloud.plan_cloud_name",
@@ -2215,6 +2225,7 @@
     "th.sku"
   ],
   "vi": [
+    "ai.err_operation_conflict",
     "btn.u00d7",
     "cloud.plan_ai_name",
     "cloud.plan_cloud_name",

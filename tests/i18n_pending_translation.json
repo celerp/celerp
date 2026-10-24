@@ -692,6 +692,10 @@
         "paid",
         "where"
       ]
+    },
+    "ai.err_operation_conflict": {
+      "en": "This question was already sent and cannot be sent again. Press Send to ask it as a new question; it counts as one more question.",
+      "params": []
     }
   }
 }

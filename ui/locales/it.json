@@ -6510,6 +6510,7 @@
   "ai.err_outcome_unknown": "La risposta di Celerp AI non è arrivata. Chiedi di nuovo per ottenerla: la domanda viene conteggiata una sola volta.",
   "ai.err_question_expired": "Non è più possibile proseguire questa domanda. Inviala nuovamente come una nuova domanda.",
   "ai.err_question_in_progress": "Celerp AI sta ancora rispondendo a questa domanda. Attendi un momento e riprova.",
+  "ai.err_operation_conflict": "This question was already sent and cannot be sent again. Press Send to ask it as a new question; it counts as one more question.",
   "ai.ask_again": "Chiedi di nuovo",
   "ai.free_terms": "Ogni domanda gratuita può includere un file. L'AI gratuita può essere sospesa fino al mese successivo quando si raggiunge il budget mensile di utilizzo gratuito."
 }

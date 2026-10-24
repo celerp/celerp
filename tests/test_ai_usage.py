@@ -265,28 +265,105 @@ async def test_answered_question_returns_its_answer_without_asking(client, owner
     assert len(await _messages(client, token, conv)) == 2
     assert _counts((await _usage(client, token)).json()["users"]) == [(1, 1)]
 
-    # The same id with different text is a new question under a new id.
-    _relay(monkeypatch, [_answer()])
-    other = (await _ask(client, token, conv, question, query="customer?")).json()
-    assert other["message_id"] != str(question) and other["asked_again"] is False
+
+
+def _refused_as_operation_conflict(r) -> None:
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"]["code"] == "operation_conflict"
+
+
+async def test_delayed_repeat_after_a_later_question_returns_the_first_answer(client, owner, monkeypatch):
+    """Question A is answered under id X, then question B is asked. A delayed copy of
+    the send of A under X arrives: it returns A's answer without asking the AI service
+    again, and nothing is added or charged."""
+    token, _, _ = owner
+    sent = _relay(monkeypatch, [_answer("Answer A"), _answer("Answer B")])
+    conv = await _conversation(client, token)
+    x, y = uuid.uuid4(), uuid.uuid4()
+    assert (await _ask(client, token, conv, x, query="question A")).status_code == 200
+    assert (await _ask(client, token, conv, y, query="question B")).status_code == 200
+
+    late = await _ask(client, token, conv, x, query="question A")
+    assert late.status_code == 200, late.text
+    assert (late.json()["answer"], late.json()["message_id"], late.json()["asked_again"]) == (
+        "Answer A", str(x), True)
+    assert sent == [x, y]
+    assert len(await _messages(client, token, conv)) == 4
     assert _counts((await _usage(client, token)).json()["users"]) == [(2, 2)]
 
 
-async def test_expired_question_is_asked_as_a_new_question(client, owner, monkeypatch):
+@pytest.mark.parametrize("change", ["text", "files", "conversation"])
+async def test_question_id_reused_for_another_question_is_refused(client, owner, monkeypatch, change):
+    """An id already naming a question is never given to a different one: other text,
+    other files or another conversation under it is refused, and nothing is asked,
+    stored or charged."""
     token, _, _ = owner
-    sent = _relay(monkeypatch, [
-        RelayError("operation_expired", "expired", status=409),
-        _answer(),
-    ])
+    sent = _relay(monkeypatch, [_answer()])
+    conv = await _conversation(client, token)
+    question = uuid.uuid4()
+    assert (await _ask(client, token, conv, question)).status_code == 200
+
+    if change == "text":
+        r = await _ask(client, token, conv, question, query="customer?")
+    elif change == "conversation":
+        r = await _ask(client, token, await _conversation(client, token), question)
+    else:
+        upload = await client.post("/ai/upload", headers={"Authorization": f"Bearer {token}"},
+                                   files={"files": ("rows.csv", b"a,b\n1,2\n", "text/csv")})
+        assert upload.status_code == 201, upload.text
+        r = await client.post(
+            f"/ai/conversations/{conv}/query", headers={"Authorization": f"Bearer {token}"},
+            json={"query": "supplier?", "operation_id": str(question),
+                  "file_ids": upload.json()["file_ids"]},
+        )
+    _refused_as_operation_conflict(r)
+    assert sent == [question]
+    assert len(await _messages(client, token, conv)) == 2
+    assert _counts((await _usage(client, token)).json()["users"]) == [(1, 1)]
+
+
+@pytest.mark.parametrize("code", ["operation_expired", "operation_mismatch"])
+async def test_question_id_the_service_will_not_take_again_is_refused(client, owner, monkeypatch, code):
+    """After the AI service refuses an id for good, sending it again is refused with a
+    conflict asking for a new question; it is never asked again under a substituted id."""
+    token, _, _ = owner
+    sent = _relay(monkeypatch, [RelayError(code, "refused", status=409)])
     conv = await _conversation(client, token)
     question = uuid.uuid4()
     first = (await _ask(client, token, conv, question)).json()
-    assert (first["error_code"], first["retryable"]) == ("operation_expired", False)
+    assert (first["error_code"], first["retryable"]) == (code, False)
 
-    again = (await _ask(client, token, conv, question)).json()
-    assert again["asked_again"] is False and again["message_id"] != str(question)
-    assert sent == [question, uuid.UUID(again["message_id"])]
-    assert [m["role"] for m in await _messages(client, token, conv)] == ["user", "assistant", "user", "assistant"]
+    _refused_as_operation_conflict(await _ask(client, token, conv, question))
+    assert sent == [question]
+    assert [m["role"] for m in await _messages(client, token, conv)] == ["user", "assistant"]
+
+
+async def test_failed_question_followed_by_another_is_not_asked_again(client, owner, monkeypatch):
+    """A question that failed and was followed by a later question is closed: a delayed
+    send of it is refused, never run after the later question."""
+    token, _, _ = owner
+    sent = _relay(monkeypatch, [RelayError("service_unavailable", "down", status=503), _answer("Answer B")])
+    conv = await _conversation(client, token)
+    x, y = uuid.uuid4(), uuid.uuid4()
+    assert (await _ask(client, token, conv, x, query="question A")).json()["retryable"] is True
+    assert (await _ask(client, token, conv, y, query="question B")).status_code == 200
+
+    _refused_as_operation_conflict(await _ask(client, token, conv, x, query="question A"))
+    assert sent == [x, y]
+    assert len(await _messages(client, token, conv)) == 4
+
+
+async def test_question_without_an_id_is_a_new_question(client, owner, monkeypatch):
+    """A caller that sends no id still gets an answer, under an id the app chooses."""
+    token, _, _ = owner
+    sent = _relay(monkeypatch, [_answer(), _answer()])
+    conv = await _conversation(client, token)
+    for _ in range(2):
+        r = await client.post(f"/ai/conversations/{conv}/query",
+                              headers={"Authorization": f"Bearer {token}"}, json={"query": "supplier?"})
+        assert r.status_code == 200 and r.json()["asked_again"] is False, r.text
+    assert len(set(sent)) == 2
+    assert len(await _messages(client, token, conv)) == 4
 
 
 async def test_refusal_is_kept_in_the_thread(client, owner, monkeypatch):

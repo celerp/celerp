@@ -6510,6 +6510,7 @@
   "ai.err_outcome_unknown": "คำตอบจาก Celerp AI ไม่มาถึง โปรดถามอีกครั้งเพื่อรับคำตอบ โดยระบบจะนับคำถามนี้เพียงครั้งเดียว",
   "ai.err_question_expired": "ไม่สามารถดำเนินคำถามนี้ต่อได้แล้ว โปรดส่งอีกครั้งเป็นคำถามใหม่",
   "ai.err_question_in_progress": "Celerp AI ยังตอบคำถามนี้ไม่เสร็จ โปรดรอสักครู่แล้วถามอีกครั้ง",
+  "ai.err_operation_conflict": "This question was already sent and cannot be sent again. Press Send to ask it as a new question; it counts as one more question.",
   "ai.ask_again": "ถามอีกครั้ง",
   "ai.free_terms": "คำถามฟรีแต่ละครั้งแนบไฟล์ได้หนึ่งไฟล์ AI ฟรีอาจหยุดให้บริการชั่วคราวจนถึงเดือนถัดไปเมื่อใช้งบประมาณการใช้งานฟรีประจำเดือนครบแล้ว"
 }

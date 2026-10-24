@@ -6510,6 +6510,7 @@
   "ai.err_outcome_unknown": "Jawaban Celerp AI tidak sampai. Tanyakan lagi untuk mendapatkannya: pertanyaan hanya dihitung satu kali.",
   "ai.err_question_expired": "Pertanyaan ini tidak dapat dilanjutkan lagi. Kirim ulang sebagai pertanyaan baru.",
   "ai.err_question_in_progress": "Celerp AI masih menjawab pertanyaan ini. Tunggu sebentar, lalu tanyakan lagi.",
+  "ai.err_operation_conflict": "This question was already sent and cannot be sent again. Press Send to ask it as a new question; it counts as one more question.",
   "ai.ask_again": "Tanyakan lagi",
   "ai.free_terms": "Setiap pertanyaan gratis boleh menyertakan satu berkas. AI gratis dapat dijeda hingga bulan berikutnya saat anggaran penggunaan gratis bulanan tercapai."
 }

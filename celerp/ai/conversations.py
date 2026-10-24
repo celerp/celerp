@@ -376,9 +376,13 @@ def message_error(tools_called: list | None) -> bool:
     return message_failure(tools_called) is not None
 
 
-# After these failures the question id cannot be used again, so sending the
-# same question once more asks it as a new question.
-_NEW_QUESTION_AFTER = frozenset({"operation_expired", "operation_mismatch"})
+# After these failures the AI service will not take the question id again.
+_CLOSED_AFTER = frozenset({"operation_expired", "operation_mismatch"})
+
+
+class QuestionIdConflict(Exception):
+    """The question id already names a question this send cannot be: another question,
+    another conversation, or one that can no longer be asked under it."""
 
 
 async def find_question(
@@ -388,31 +392,38 @@ async def find_question(
     query: str,
     file_ids: list[str] | None,
 ) -> tuple[AIMessage | None, AIMessage | None]:
-    """The user message a question is being asked again as, and the answer it already has.
+    """The user message ``question_id`` names, and the answer it already has.
 
-    The question is asked again when ``question_id`` is the conversation's latest
-    user message and it holds the same text and files. Its answer is the first
-    reply after it that is not a failure; None while every reply failed. (None,
-    None) means a new question.
+    An id is never given to a different question. (None, None) when nothing holds the
+    id yet: a new question. Otherwise the id must name a user message of this
+    conversation with the same text and files, else ``QuestionIdConflict``. Its answer
+    is the first reply after it, before the next question, that is not a failure; a
+    question with an answer returns it however many questions came after. Without an
+    answer the question is asked again only while it is the conversation's latest and
+    the AI service still takes its id; otherwise ``QuestionIdConflict``.
     """
     asked = await session.get(AIMessage, question_id)
+    if asked is None:
+        return None, None
     if (
-        asked is None or asked.conversation_id != conversation_id or asked.role != "user"
+        asked.conversation_id != conversation_id or asked.role != "user"
         or asked.content != query or (asked.file_ids or None) != (file_ids or None)
     ):
-        return None, None
+        raise QuestionIdConflict
     later = (await session.execute(
         select(AIMessage)
         .where(AIMessage.conversation_id == conversation_id, AIMessage.created_at > asked.created_at)
         .order_by(AIMessage.created_at)
     )).scalars().all()
-    if any(m.role == "user" for m in later):
-        return None, None
-    for reply in later:
+    next_question = next((n for n, m in enumerate(later) if m.role == "user"), len(later))
+    replies = later[:next_question]
+    for reply in replies:
         if not message_error(reply.tools_called):
             return asked, reply
-    if later and (message_failure(later[-1].tools_called) or {}).get("code") in _NEW_QUESTION_AFTER:
-        return None, None
+    if next_question < len(later) or (
+        replies and (message_failure(replies[-1].tools_called) or {}).get("code") in _CLOSED_AFTER
+    ):
+        raise QuestionIdConflict
     return asked, None
 
 

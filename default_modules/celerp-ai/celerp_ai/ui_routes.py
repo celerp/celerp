@@ -435,6 +435,11 @@ def setup_ui_routes(app) -> None:
         file_ids = [fid.strip() for fid in file_ids_str.split(",")] if file_ids_str else None
         document_mode = "receipts" if form.get("document_mode") == "receipts" else "chat"
         operation_id = (form.get("operation_id") or "").strip()
+        # The composer's id names the question it was sent with; a question the user
+        # changed since is a new question, so it gets a new id.
+        question = _question_key(query, file_ids)
+        if form.get("operation_question") not in (None, "", question):
+            operation_id = str(uuid.uuid4())
 
         if not query and not file_ids:
             return _msg_bubble("ai", t("ai.chat_prompt_empty", lang))
@@ -448,15 +453,17 @@ def setup_ui_routes(app) -> None:
 
         # The composer keeps the question on every outcome but a confirmed answer
         # or a started reading job, and holds the question's id, so sending it
-        # again asks the same question instead of a new one.
-        def _reply(parts: tuple, *, done: bool, question_id: str, asked_again: bool = False) -> HTMLResponse:
+        # again asks the same question instead of a new one. A question id of None
+        # (one the API will not take again) gives the composer a new id.
+        def _reply(parts: tuple, *, done: bool, question_id: str | None, asked_again: bool = False) -> HTMLResponse:
             if asked_again:
                 parts = tuple(p for p in parts if p is not user_bubble)
             headers = {"HX-Push-Url": f"/ai?conversation={conversation_id}"}
             if done:
                 headers["X-AI-Clear-Composer"] = "1"
+            kept = not done and question_id is not None
             oob = (
-                _operation_input(str(uuid.uuid4()) if done else question_id, oob=True),
+                *_operation_input(question_id if kept else str(uuid.uuid4()), question if kept else "", oob=True),
                 Input(type="hidden", name="conversation_id", id="ai-conversation-id",
                       value=conversation_id, hx_swap_oob="true"),
                 Div(id="ai-history", hx_swap_oob="true",
@@ -491,7 +498,9 @@ def setup_ui_routes(app) -> None:
                 raise
             data = e.data if isinstance(e.data, dict) else {}
             failure = await _refusal_reply(token, e, user_bubble, query, lang)
-            return _reply(failure, done=False, question_id=str(data.get("message_id") or operation_id),
+            closed = e.status == 409 and _api_error_code(e) == "operation_conflict"
+            return _reply(failure, done=False,
+                          question_id=None if closed else str(data.get("message_id") or operation_id),
                           asked_again=bool(data.get("asked_again")))
 
         question_id = str(result.get("message_id") or operation_id)
@@ -981,11 +990,20 @@ def _msg_bubble(role: str, text: str, *, error: bool = False, help_pages: list[s
     return Div(text, *_help_sources(help_pages, lang), *([extra] if extra is not None else []), cls=cls)
 
 
-def _operation_input(question_id: str, *, oob: bool = False) -> FT:
-    """The composer's question id: sending the same question again with it asks the
-    AI service the same question rather than a new one."""
-    return Input(type="hidden", name="operation_id", id="ai-operation-id", value=question_id,
-                 **({"hx_swap_oob": "true"} if oob else {}))
+def _question_key(query: str, file_ids: list[str] | None) -> str:
+    """The text and files of a question, as the composer records the question its id names."""
+    return json.dumps([query, file_ids or []], ensure_ascii=False)
+
+
+def _operation_input(question_id: str, question: str = "", *, oob: bool = False) -> tuple[FT, FT]:
+    """The composer's question id and the question it was sent with ("" before it is
+    sent): sending the same question again with it asks the AI service the same
+    question rather than a new one."""
+    swap = {"hx_swap_oob": "true"} if oob else {}
+    return (
+        Input(type="hidden", name="operation_id", id="ai-operation-id", value=question_id, **swap),
+        Input(type="hidden", name="operation_question", id="ai-operation-question", value=question, **swap),
+    )
 
 
 def _ask_again(conversation_id: str, question_id: str, query: str, file_ids: list[str] | None,
@@ -1842,7 +1860,7 @@ def _chat_view(
                     id="ai-conversation-id",
                     value=conversation_id,
                 ),
-                _operation_input(str(uuid.uuid4())),
+                *_operation_input(str(uuid.uuid4())),
                 # Text input row
                 Div(
                     Input(

@@ -6510,6 +6510,7 @@
   "ai.err_outcome_unknown": "Không nhận được câu trả lời của Celerp AI. Hãy hỏi lại để nhận câu trả lời: câu hỏi chỉ được tính một lần.",
   "ai.err_question_expired": "Không thể tiếp tục câu hỏi này nữa. Hãy gửi lại thành câu hỏi mới.",
   "ai.err_question_in_progress": "Celerp AI vẫn đang trả lời câu hỏi này. Hãy đợi một lát rồi hỏi lại.",
+  "ai.err_operation_conflict": "This question was already sent and cannot be sent again. Press Send to ask it as a new question; it counts as one more question.",
   "ai.ask_again": "Hỏi lại",
   "ai.free_terms": "Mỗi câu hỏi miễn phí có thể đính kèm một tệp. AI miễn phí có thể tạm dừng đến tháng sau khi đạt giới hạn ngân sách sử dụng miễn phí hằng tháng."
 }

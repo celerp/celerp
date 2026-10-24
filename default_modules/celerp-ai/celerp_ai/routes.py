@@ -81,7 +81,8 @@ settings_router = APIRouter(
 
 _OPERATION_ID_DESCRIPTION = (
     "The question's id, chosen by the caller (a UUID). Send the same id with the same "
-    "question to ask it again after a failure: a question is charged at most once."
+    "question to ask it again after a failure: a question is charged at most once. The id "
+    "is never replaced; an id already used for another question is refused."
 )
 
 
@@ -189,6 +190,16 @@ def _answering(question_id: uuid.UUID):
 
 def _conflict(code: str, message: str) -> HTTPException:
     return HTTPException(status_code=409, detail={"code": code, "message": message})
+
+
+async def _find_question(session: AsyncSession, conversation_id: uuid.UUID, question_id: uuid.UUID,
+                         body: "ConversationQueryRequest"):
+    """``find_question`` for this send, its id conflict refused as ``operation_conflict``."""
+    from celerp.ai.conversations import QuestionIdConflict, find_question
+    try:
+        return await find_question(session, conversation_id, question_id, body.query, body.file_ids)
+    except QuestionIdConflict:
+        raise _conflict("operation_conflict", t("ai.err_operation_conflict")) from None
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -731,12 +742,13 @@ async def query_in_conversation(
     changes come back as pending actions to confirm. A failed or refused run is
     stored as an assistant message so the thread keeps its history.
 
-    ``operation_id`` names the question and becomes the id of its user message.
-    Sent again with the same text and files while it is the conversation's
-    latest question, it asks that question again instead of adding a new one:
-    a question that already has an answer returns it, and one whose run failed
-    runs again, charged at most once in all. Sent again while its first send is
-    still being answered, it is refused as in progress.
+    ``operation_id`` names the question and becomes the id of its user message; it
+    is never replaced. Sent again with the same text and files it never adds a new
+    question: a question that already has an answer returns it, and the latest one
+    whose run failed runs again, charged at most once in all. Sent again while its
+    first send is still being answered, it is refused as in progress. An id that
+    names another question, or one that can no longer be asked, is refused as
+    ``operation_conflict``: a new question needs a new id.
     """
     from sqlalchemy.exc import IntegrityError
 
@@ -745,7 +757,6 @@ async def query_in_conversation(
         add_message,
         build_history_context,
         failure_record,
-        find_question,
         get_conversation,
         get_messages,
         help_record,
@@ -753,7 +764,6 @@ async def query_in_conversation(
     )
     from celerp.ai.memory import get_memory
     from celerp.ai.service import AgentRefusal, AgentResult, run_agent
-    from celerp.models.ai import AIMessage
     conv = await get_conversation(session, conversation_id, company_id, user.id)
     if conv is None:
         raise HTTPException(status_code=404, detail=t("ai.err_conversation_not_found"))
@@ -762,19 +772,12 @@ async def query_in_conversation(
     if body.document_mode == "receipts" and (not body.file_ids or kinds != {"document"}):
         raise HTTPException(status_code=400, detail=t("ai.err_receipt_type"))
 
-    asked, answered = (None, None)
-    if body.operation_id is not None:
-        asked, answered = await find_question(
-            session, conversation_id, body.operation_id, body.query, body.file_ids,
-        )
-    if asked is None:
-        taken = body.operation_id is None or await session.get(AIMessage, body.operation_id) is not None
-        question_id = uuid.uuid4() if taken else body.operation_id
-    else:
-        question_id = asked.id
+    # A caller that sends no id gets a new question; it is not promised a single charge.
+    question_id = body.operation_id or uuid.uuid4()
+    asked, answered = await _find_question(session, conversation_id, question_id, body)
     # A send holds its question before it stores it and releases it after the answer is
     # stored, so a repeat that read the question too early to see it is refused here.
-    _refuse_if_answering(body.operation_id)
+    _refuse_if_answering(question_id)
 
     if body.document_mode == "receipts":
         # A reading job takes its question's id, so sending the question again
@@ -808,9 +811,7 @@ async def query_in_conversation(
     with _answering(question_id):
         if asked is not None:
             # The first send may have stored its answer since the read above.
-            answered = (await find_question(
-                session, conversation_id, body.operation_id, body.query, body.file_ids,
-            ))[1]
+            answered = (await _find_question(session, conversation_id, question_id, body))[1]
             if answered is not None:
                 return _answer_response(answered, question_id=question_id, asked_again=True)
         # Assemble the read-only context, then commit so the session is quiescent

@@ -6510,6 +6510,7 @@
   "ai.err_outcome_unknown": "የCelerp AI መልስ አልደረሰም። መልሱን ለማግኘት እንደገና ይጠይቁ፤ ጥያቄው አንድ ጊዜ ብቻ ይቆጠራል።",
   "ai.err_question_expired": "ይህን ጥያቄ ከእንግዲህ መቀጠል አይቻልም። እንደ አዲስ ጥያቄ እንደገና ይላኩት።",
   "ai.err_question_in_progress": "Celerp AI አሁንም ለዚህ ጥያቄ ምላሽ እየሰጠ ነው። ትንሽ ይጠብቁና እንደገና ይጠይቁ።",
+  "ai.err_operation_conflict": "This question was already sent and cannot be sent again. Press Send to ask it as a new question; it counts as one more question.",
   "ai.ask_again": "እንደገና ይጠይቁ",
   "ai.free_terms": "እያንዳንዱ ነፃ ጥያቄ አንድ ፋይል ሊያካትት ይችላል። ወርሃዊው የነፃ አጠቃቀም በጀት ሲያልቅ ነፃ AI እስከ ቀጣዩ ወር ሊታገድ ይችላል።"
 }
