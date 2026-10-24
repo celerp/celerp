@@ -977,13 +977,16 @@ def docs_running(monkeypatch):
     monkeypatch.setattr(loader, "_loaded", [*loader._loaded, {"name": "celerp-docs", "version": "1.0.0"}])
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def no_connection_off_this_machine(monkeypatch):
-    """Fail a test that opens a connection to any host but this machine or the test
-    database: a boot task left unstubbed would otherwise reach the live relay, and its
-    socket outlives the test."""
+    """Refuse, and fail the test for, any connection to a host but this machine or the
+    test database. Code left unstubbed would otherwise reach the live relay, and its
+    socket outlives the test and fails a later one; refused, it takes its offline path.
+    Yields the connections refused so far, for a test about the guard itself."""
+    import errno
     import ipaddress
     import socket
+    import traceback
     from sqlalchemy.engine import make_url
     from celerp.config import settings
 
@@ -997,17 +1000,35 @@ def no_connection_off_this_machine(monkeypatch):
         except (TypeError, ValueError, IndexError):
             return False
 
-    def _recording(real):
+    def _refusing(real, refuse):
         def _connect(sock, address):
-            if _off_machine(address):
-                reached.append(address)
-            return real(sock, address)
+            if not _off_machine(address):
+                return real(sock, address)
+            # Where it was opened from, so the failure names the code to stub.
+            reached.append((address, "".join(traceback.format_stack(limit=25))))
+            return refuse(address)
         return _connect
 
-    monkeypatch.setattr(socket.socket, "connect", _recording(socket.socket.connect))
-    monkeypatch.setattr(socket.socket, "connect_ex", _recording(socket.socket.connect_ex))
-    yield
-    assert not reached, f"connected off this machine: {reached}"
+    def _raise(address):
+        raise ConnectionRefusedError(errno.ECONNREFUSED, f"tests do not connect off this machine: {address}")
+
+    monkeypatch.setattr(socket.socket, "connect", _refusing(socket.socket.connect, _raise))
+    monkeypatch.setattr(socket.socket, "connect_ex", _refusing(socket.socket.connect_ex, lambda _: errno.ECONNREFUSED))
+    yield reached
+    assert not reached, "connected off this machine:\n" + "\n".join(f"{a} from\n{stack}" for a, stack in reached)
+
+
+@pytest.fixture(autouse=True)
+def account_methods_offline(monkeypatch):
+    """Answer the screens' account-methods request as the API does when the relay is
+    unreachable. Opening a document refreshes the free-send quota from it in a task that
+    outlives the test. A test about the answer patches it again itself."""
+    import ui.api_client as api
+
+    async def _offline(token):
+        return {"google": False, "free_email_quota": 0, "google_start_url": ""}
+
+    monkeypatch.setattr(api, "account_methods", _offline)
 
 
 @pytest.fixture
