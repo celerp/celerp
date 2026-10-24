@@ -611,8 +611,8 @@ async def test_a_change_to_modules_meeting_the_companys_other_work_is_told_to_re
         factory, request_factory, committed_engine, path):
     """Other work of company A holds A's record for longer than the request lock timeout
     while A's modules are changed (a module turned on, a business type, a preset, the CLI):
-    the change is refused within a second, a 409 that says to try again and reads as that
-    sentence outside a request, never a server error, and company B's work that asked to
+    the change is refused within a second, a 409 that says to try again, never a server
+    error, and company B's work that asked to
     start meanwhile is written. A's settings are unchanged, and the change goes ahead once
     A's work is done."""
     a, b = await _company(factory), await _company(factory)
@@ -634,8 +634,47 @@ async def test_a_change_to_modules_meeting_the_companys_other_work_is_told_to_re
     assert busy.value.status_code == 409
     assert busy.value.detail["message_key"] == "modules.company_busy"
     assert busy.value.detail["params"] == {}
-    assert str(busy.value) == busy.value.detail["message"]
     assert got == ["written"] * 3
     assert await _settings(factory, a) == before
     await asyncio.wait_for(change(), 15)
     assert await _settings(factory, a) != before
+
+
+_COMPANY_LOCKS = {"locked_company", "lock_company", "lock_company_for_deletion", "hold_company_modules",
+                  "hold_company"}
+
+
+def _call_name(node) -> str | None:
+    func = getattr(node, "func", None)
+    return getattr(func, "id", None) or getattr(func, "attr", None)
+
+
+async def test_every_change_to_modules_takes_its_company_locks_through_the_one_helper():
+    """Every function that holds the module-state boundary takes its company locks through
+    take_company_locks, and changes a company's settings only after it, so none of them
+    waits on a company past the cap or changes settings it never locked."""
+    import ast
+    from test_helpers import REPO_ROOT
+
+    sources = [*REPO_ROOT.glob("celerp/**/*.py"), *REPO_ROOT.glob("default_modules/*/*/**/*.py")]
+    holders, stray = [], []
+    for path in sources:
+        if "tests" in path.parts:
+            continue
+        for fn in ast.walk(ast.parse(path.read_text())):
+            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) or not any(
+                    _call_name(n) == "hold_module_state" for n in ast.walk(fn)):
+                continue
+            holders.append(fn.name)
+            helper = [n for n in ast.walk(fn) if _call_name(n) == "take_company_locks"]
+            inside = {id(x) for call in helper for x in ast.walk(call)}
+            for node in ast.walk(fn):
+                name = node.id if isinstance(node, ast.Name) else getattr(node, "attr", None)
+                if name in _COMPANY_LOCKS and id(node) not in inside:
+                    stray.append(f"{path.relative_to(REPO_ROOT)}:{node.lineno} {fn.name} takes {name} itself")
+                if (isinstance(node, ast.Assign) and not helper and any(
+                        isinstance(t, ast.Attribute) and t.attr == "settings" for t in node.targets)):
+                    stray.append(f"{path.relative_to(REPO_ROOT)}:{node.lineno} {fn.name} changes settings unlocked")
+    assert {"enable_module", "disable_module", "restore_company", "set_business_type",
+            "enable_starter_modules", "apply_preset", "_enable_for_every_company"} <= set(holders), holders
+    assert not stray, stray

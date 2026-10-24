@@ -95,13 +95,16 @@ class TestDocListState:
              patch("ui.api_client.get_doc_summary", new=summary):
             r = await ui_client.get("/docs?type=invoice&preset=custom&from=2026-01-01&to=2026-03-31")
         assert r.status_code == 200
-        params = summary.call_args.args[1]
-        assert params == {"doc_type": "invoice", "date_from": "2026-01-01", "date_to": "2026-03-31"}, params
+        cards, chips = (c.args[1] for c in summary.call_args_list)
+        window = {"doc_type": "invoice", "date_from": "2026-01-01", "date_to": "2026-03-31"}
+        assert cards == window, cards
+        assert chips == window | {"all_issued": "1"}, chips
 
     @pytest.mark.asyncio
     async def test_doc_summary_follows_search_and_contact(self, ui_client):
-        """The status cards summarise the rows the list shows: the search term and the
-        contact filter travel to the summary, the status filter and page never do."""
+        """The status cards split the rows the list's narrowing filters select: the search term
+        and the contact filter travel to their summary, the status filter and page never do.
+        The chips total the rows the list shows, so the status filter travels to theirs."""
         summary = AsyncMock(return_value=_SUMMARY)
         ui_client.cookies.update(_cookies())
         with patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)), \
@@ -109,9 +112,9 @@ class TestDocListState:
              patch("ui.api_client.get_doc_summary", new=summary):
             r = await ui_client.get("/docs?type=invoice&q=ruby&contact_id=c:9&status=paid&page=2")
         assert r.status_code == 200
-        params = summary.call_args.args[1]
-        assert params.get("q") == "ruby" and params.get("contact_id") == "c:9", params
-        assert "status" not in params and "page" not in params and "limit" not in params, params
+        cards, chips = (c.args[1] for c in summary.call_args_list)
+        assert cards == {"doc_type": "invoice", "q": "ruby", "contact_id": "c:9"}, cards
+        assert chips == cards | {"status": "paid"}, chips
 
     @pytest.mark.asyncio
     async def test_doc_list_default_card_active(self, ui_client):

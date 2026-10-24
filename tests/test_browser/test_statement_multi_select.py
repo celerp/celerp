@@ -128,8 +128,12 @@ def test_the_open_list_follows_the_field_when_content_loads_above_it(page, state
 
 def test_the_open_list_follows_the_field_when_a_notice_shows_above_it(page, statement_url):
     """The system health notice is shown by script once its check answers, which can be
-    after the list opened. Nothing is swapped in, but the field still moves down."""
-    _open_picker(page, statement_url)
+    after the list opened. Nothing is swapped in, but the field still moves down. The list
+    is opened once the page has settled, so no later page update places it by chance."""
+    page.goto(statement_url, wait_until="load")
+    page.wait_for_timeout(2000)
+    page.locator(".combobox-wrap[data-multiple] .combobox-input").first.click()
+    page.wait_for_selector(".combobox-list.open", timeout=3000)
     offset = page.evaluate(_LIST_OFFSET)
     page.evaluate("""(() => {
         const b = document.getElementById('sys-health-banner');

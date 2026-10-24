@@ -1684,9 +1684,14 @@ def module_install(names: tuple[str, ...]) -> None:
     ensure_database(cfg)
     from celerp.migrations.compatibility import mutating_scope
     db_url = cfg["database"]["url"]
+    from celerp.modules.boundary import CompanyBusy
     try:
         with mutating_scope(_sync_url(db_url)) as held, held.write_window():
             companies = asyncio.run(_enable_for_every_company(db_url, list(names)))
+    except CompanyBusy:
+        click.echo("Other work for one of your companies is still being saved, so the modules were "
+                   "not turned on for any company. Try again in a minute.", err=True)
+        sys.exit(1)
     except Exception as exc:
         click.echo(f"Error: {exc}", err=True)
         sys.exit(1)

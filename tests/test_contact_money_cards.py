@@ -199,6 +199,32 @@ async def test_each_contact_money_card_shows_the_figure_of_the_list_it_opens(own
     assert cards["Outstanding"] == fmt_money(1000.0, None), cards
 
 
+async def test_the_chips_over_a_filtered_contact_list_total_only_the_rows_it_shows(owner_ui, monkeypatch):
+    """The Outstanding card opens the contact's invoices awaiting payment. The chips above that
+    list follow its filters, like the status cards, so they total those invoices only and not
+    the contact's paid one, while the status cards still split the contact's invoices."""
+    contact = await _demo_contact(owner_ui, monkeypatch)
+    api = owner_ui.api
+    await _invoice(api, contact, 500.0, steps=("finalize", "send", "pay"))
+    partly = await _invoice(api, contact, 1000.0)
+    await _pay(api, partly, 300.0, _day())
+    unpaid = await _invoice(api, contact, 200.0)
+
+    r = await owner_ui.get(f"/contacts/{contact['id']}")
+    assert r.status_code == 200, r.text
+    page = await owner_ui.get(_card_links(r.text)["Outstanding"])
+    assert page.status_code == 200, page.text
+    rows = set(re.findall(r'href="/docs/([^"/?]+)"', page.text))
+    assert {partly, unpaid} <= rows, rows
+    chips = _summary_chips(page.text)
+    assert chips["Invoices"] == "2", chips
+    assert chips["Billed"] == fmt_money(1200.0, None), chips
+    assert chips["Paid"] == fmt_money(300.0, None), chips
+    assert chips["AR"] == fmt_money(900.0, None), chips
+    cards = _list_cards(page.text)
+    assert cards["Paid"] == re.sub(r"[^\d.,-]", "", fmt_money(500.0, None)), cards
+
+
 def _summary_chips(html: str) -> dict[str, str]:
     """Each summary chip above a document list, label to the figure it states."""
     return {label.strip(): value.strip() for label, value in re.findall(

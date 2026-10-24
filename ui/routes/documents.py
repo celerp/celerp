@@ -511,8 +511,13 @@ def _page_number(request: Request) -> int:
 
 
 # The summary cards count the set the list's narrowing filters select, split by status, so a
-# status filter never travels to the summary and neither does the page.
+# status filter never travels to the summary and neither does the page. The chips above a
+# document list are not split by status, so they total the rows the list shows: the narrowing
+# filters and the status filters both travel to theirs.
 _DOC_SUMMARY_KEYS = ("doc_type", "q", "contact_id", "ids", "date_from", "date_to", "accounting_sync")
+_DOC_CHIP_KEYS = _DOC_SUMMARY_KEYS + (
+    "status", "status_in", "exclude_status", "all_issued", "overdue_only", "unfulfilled_only",
+    "not_restocked", "not_stocked", "converted_to_type")
 _LIST_SUMMARY_KEYS = ("list_type", "q", "date_from", "date_to")
 
 
@@ -657,17 +662,19 @@ async def _list_page_dates(request: Request, state: dict[str, str], company: dic
 
 
 async def _doc_results(token: str, state: dict[str, str], date_from: str, date_to: str,
-                       page: int, per_page: int) -> tuple[list[dict], int, dict]:
-    """(docs on the page, filtered total, summary) for a document list state."""
+                       page: int, per_page: int) -> tuple[list[dict], int, dict, dict]:
+    """(docs on the page, filtered total, status card summary, chip summary) for a document
+    list state."""
     import asyncio as _asyncio
     params = _doc_api_params(state, date_from, date_to, limit=per_page, offset=(page - 1) * per_page)
-    docs_resp, summary = await _asyncio.gather(
+    docs_resp, summary, chips = await _asyncio.gather(
         api.list_docs(token, params),
         api.get_doc_summary(token, _summary_params(params, _DOC_SUMMARY_KEYS)),
+        api.get_doc_summary(token, _summary_params(params, _DOC_CHIP_KEYS)),
     )
     docs = docs_resp.get("items", []) if isinstance(docs_resp, dict) else docs_resp
     total = docs_resp.get("total", len(docs)) if isinstance(docs_resp, dict) else len(docs)
-    return docs, total, summary if isinstance(summary, dict) else {}
+    return docs, total, *(x if isinstance(x, dict) else {} for x in (summary, chips))
 
 
 _ACCOUNTING_SYNC_CHOICES = (
@@ -697,7 +704,7 @@ def _accounting_sync_filter(state: dict[str, str]) -> FT:
 
 
 def _docs_content(state: dict[str, str], docs: list[dict], total_count: int, summary: dict,
-                  page: int, per_page: int, currency: str | None, lang: str) -> FT:
+                  chips: dict, page: int, per_page: int, currency: str | None, lang: str) -> FT:
     """Summary, status cards, table and pager for a document list state: the page embeds it
     and the live search replaces it, so all four always describe the same result set."""
     doc_type = state.get("type", "")
@@ -706,7 +713,7 @@ def _docs_content(state: dict[str, str], docs: list[dict], total_count: int, sum
     cards_base_url = "/docs?" + urlencode({"type": doc_type, **{k: v for k, v in state.items() if k not in _DOC_STATUS_KEYS and k != "type"}})
     return Div(
         _accounting_sync_filter(state),
-        _summary_bar(summary, doc_type, currency, lang),
+        _summary_bar(chips, doc_type, currency, lang),
         _doc_status_cards(docs, status, summary, currency, doc_type=doc_type, lang=lang,
                           status_in=state.get("status_in", ""), overdue_only=bool(state.get("overdue_only")),
                           unfulfilled_only=bool(state.get("unfulfilled_only")),
@@ -1595,11 +1602,11 @@ def setup_routes(app):
         is_drafts_view = view == "drafts" or status == "draft"
         has_status_filter = any(state.get(k) for k in _DOC_STATUS_KEYS)
         try:
-            docs, total_count, summary = await _doc_results(token, state, date_from, date_to, page, per_page)
+            docs, total_count, summary, chips = await _doc_results(token, state, date_from, date_to, page, per_page)
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
-            docs, total_count, summary = [], 0, {}
+            docs, total_count, summary, chips = [], 0, {}, {}
         draft_count = summary.get("draft_count", 0)
 
         # The date bar keeps the filters when it switches the dates.
@@ -1644,7 +1651,7 @@ def setup_routes(app):
             ),
             _doc_type_intro(doc_type),
             date_bar,
-            _docs_content(state, docs, total_count, summary, page, per_page, currency, lang),
+            _docs_content(state, docs, total_count, summary, chips, page, per_page, currency, lang),
             title=page_title(section_label_key),
             nav_active=_doc_nav_key(doc_type),
             lang=lang,
@@ -1662,15 +1669,15 @@ def setup_routes(app):
         date_from, date_to, preset = await _doc_list_dates(request, state, company)
         per_page = per_page_value(state.get("per_page"), _PER_PAGE)
         try:
-            docs, total_count, summary = await _doc_results(token, state, date_from, date_to, page, per_page)
+            docs, total_count, summary, chips = await _doc_results(token, state, date_from, date_to, page, per_page)
         except APIError as e:
             if e.status == 401:
                 raise
-            docs, total_count, summary = [], 0, {}
+            docs, total_count, summary, chips = [], 0, {}, {}
         lang = get_lang(request)
         can_export = role_has_permission(company.get("settings") or {}, _get_role(request), "import_export_data")
         return search_results(
-            _docs_content(state, docs, total_count, summary, page, per_page, company.get("currency") or None, lang),
+            _docs_content(state, docs, total_count, summary, chips, page, per_page, company.get("currency") or None, lang),
             "/docs?" + _state_query(state),
             *_search_controls("docs", state, date_from, date_to, preset, can_export, lang, oob=True),
         )
@@ -10635,11 +10642,13 @@ def _summary_bar(summary: dict, doc_type: str = "", currency: str | None = None,
     # Totals leave out documents that cannot be valued in the company currency; say how many.
     unvalued = summary.get("unvalued_count") or 0
     unvalued_chip = Span(t("chip.not_in_totals", lang, n=unvalued), cls="val-chip val-chip--alert") if unvalued else None
+    # The summary covers the rows the list shows, so a list of one type counts every row of it,
+    # drafts and voids included where the list shows them. The money chips total issued invoices.
+    rows = (summary.get("total_count") or 0) + (summary.get("draft_count") or 0)
     # Only show invoice-specific metrics when viewing invoices or all types
     if doc_type and doc_type != "invoice":
-        count = summary.get(f"{doc_type}_count", summary.get("total_count", 0))
         return Div(
-            Span(t("documents.doc_type_count", type=doc_type_label(doc_type), count=count), cls="val-chip"),
+            Span(t("documents.doc_type_count", type=doc_type_label(doc_type), count=rows), cls="val-chip"),
             unvalued_chip,
             cls="valuation-bar",
         )
@@ -10647,7 +10656,7 @@ def _summary_bar(summary: dict, doc_type: str = "", currency: str | None = None,
         Span(f"{t('chip.ar', lang)}: {fmt_money(float(summary.get('ar_outstanding', 0) or 0), currency)}", cls="val-chip val-chip--alert"),
         Span(f"{t('chip.billed', lang)}: {fmt_money(float(summary.get('ar_total', 0) or 0), currency)}", cls="val-chip"),
         Span(f"{t('chip.paid', lang)}: {fmt_money(float(summary.get('ar_paid', 0) or 0), currency)}", cls="val-chip"),
-        Span(f"{t('chip.invoices', lang)}: {summary.get('invoice_count', 0)}", cls="val-chip"),
+        Span(f"{t('chip.invoices', lang)}: {rows if doc_type else summary.get('invoice_count', 0)}", cls="val-chip"),
         unvalued_chip,
         cls="valuation-bar",
     )

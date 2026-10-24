@@ -3248,7 +3248,7 @@ async def allocations_naming_lot(session, company_id, lot_id: str) -> dict[tuple
         _select(LedgerEntry.entity_id, LedgerEntry.metadata_).where(
             LedgerEntry.company_id == company_id,
             LedgerEntry.event_type == "acc.journal_entry.created",
-            cast(LedgerEntry.metadata_, Text).like(f"%{lot_id}%"),
+            cast(LedgerEntry.metadata_, Text).contains(lot_id, autoescape=True),
         )
     )).all()
     moved = await _cost_moves(session, company_id, from_jes={je_id for je_id, _m in rows})

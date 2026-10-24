@@ -201,6 +201,56 @@ async def test_an_install_that_registered_and_never_enabled_a_module_starts_curr
     assert _enabled(cfg) == {"celerp-inventory"}
 
 
+async def test_a_company_with_its_own_module_list_gets_the_starter_modules_at_the_next_start(
+        client, session, monkeypatch, tmp_path):
+    """A company holding starter records that chose its own modules without them has the
+    starter modules added to its own list at the first start, is told so, and the step is
+    not run again."""
+    from celerp.models.notification import Notification
+    from celerp.modules.registry import company_modules
+    from celerp.services.company_lock import locked_company
+
+    _without(monkeypatch, *_STARTERS)
+    _installed(monkeypatch, tmp_path, ["celerp-docs"])
+    old = await _registered_on_older_release(session)
+    company = await locked_company(session, old["company_id"])
+    company.settings = {**company.settings, "enabled_modules": ["celerp-docs"]}
+    await session.commit()
+
+    await _start(monkeypatch)
+
+    assert _STARTERS <= company_modules(await _company_settings(session, old["company_id"]))
+    assert len((await session.execute(select(Notification).where(
+        Notification.company_id == old["company_id"], Notification.title == "Inventory and Contacts were turned on",
+    ))).scalars().all()) == 1
+    marker = (await session.execute(text("SELECT value FROM instance_meta WHERE key = :k"), {"k": _MARKER})).scalar()
+    assert marker == "done"
+
+
+async def test_a_start_that_fails_before_its_commit_leaves_the_installations_modules_as_they_were(
+        client, session, monkeypatch, tmp_path):
+    """Nothing is turned on that no company was told about: the config file is written only
+    once the notices are committed, and the next start tries again."""
+    from celerp.models.notification import Notification
+
+    _without(monkeypatch, *_STARTERS)
+    cfg = _installed(monkeypatch, tmp_path, [])
+    old = await _registered_on_older_release(session)
+
+    async def _fails(*_a, **_k):
+        raise RuntimeError("the notice could not be saved")
+
+    with patch("celerp.notifications.service.create", _fails):
+        await _start(monkeypatch)
+
+    assert _enabled(cfg) == set()
+    session.expire_all()
+    assert not (await session.execute(select(Notification).where(
+        Notification.company_id == old["company_id"]))).scalars().all()
+    await _start(monkeypatch)
+    assert _STARTERS <= _enabled(cfg)
+
+
 async def test_starter_records_never_turn_on_a_module_that_holds_other_records(
         client, session, monkeypatch, tmp_path):
     """Records of a module that is not enabled (a manufacturing run) still hold the start

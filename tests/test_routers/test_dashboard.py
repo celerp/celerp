@@ -133,3 +133,23 @@ async def test_dashboard_activity_recent_events(client):
     assert len(acts) >= 1
     assert any(a["entity_id"] == entity_id for a in acts)
     assert all({"ts", "event_type", "entity_id", "entity_type", "actor_name"}.issubset(a.keys()) for a in acts)
+
+
+@pytest.mark.asyncio
+async def test_activity_search_matches_a_wildcard_character_as_itself(client):
+    """A % or _ in the activity search is the character itself, so it finds only the
+    entries that hold it, never every entry."""
+    token = await _register(client)
+    marked = (await client.post("/items", headers=_h(token), json={
+        "sku": "TEN%_OFF", "name": "Ten off", "quantity": 1, "sell_by": "piece"})).json()["id"]
+    await client.post("/items", headers=_h(token), json={"sku": "PLAIN-1", "name": "Plain", "quantity": 1, "sell_by": "piece"})
+
+    async def found(q: str) -> set[str]:
+        r = await client.get("/dashboard/activity/search", params={"q": q}, headers=_h(token))
+        assert r.status_code == 200, r.text
+        return {a["entity_id"] for a in r.json()["activities"]}
+
+    assert await found("%") == {marked}
+    assert await found("ten%_") == {marked}
+    assert await found("ten_") == set()
+    assert await found("PLAIN") and marked not in await found("PLAIN")

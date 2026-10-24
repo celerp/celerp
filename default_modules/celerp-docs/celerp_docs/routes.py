@@ -1271,9 +1271,9 @@ async def get_doc_summary(
     company_id: str = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Counts and totals for the document list, over the same filters as list_docs (type, search,
-    contact, ids, date window) so the cards over a filtered list count the rows the list shows.
-    The status filters are ignored: the cards split the filtered set by status.
+    """Counts and totals for the document list, over the same filters as list_docs, so the
+    figures over a filtered list count the rows the list shows. A caller that splits the set
+    by status (the status cards) leaves the status filters out of what it sends.
 
     Totals are in the company currency (``_doc_base_amounts``). A document that cannot be valued
     there is left out of every total and counted in ``unvalued_count``. ``open_credit_total`` is
@@ -1282,8 +1282,7 @@ async def get_doc_summary(
     today = (await company_today(session, company_id)).isoformat()
     company = await session.get(Company, company_id)
     base_currency = (company.settings or {}).get("currency", "USD") if company else "USD"
-    summary_where = _doc_sql_where(company_id, _dc_replace(filters, status=None, status_in=None, exclude_status=None, all_issued=False))
-    rows = (await session.execute(select(Projection).where(*summary_where))).scalars().all()
+    rows = (await session.execute(select(Projection).where(*_doc_sql_where(company_id, filters)))).scalars().all()
     totals = dict.fromkeys((
         "ar_gross", "ar_paid", "ar_outstanding", "awaiting_payment", "overdue", "paid", "sent",
         "draft", "void", "memo", "unfulfilled", "open_credit",
@@ -8190,12 +8189,12 @@ def _list_converted(target_type: str | None = None) -> list:
 
 def _list_search_where(q: str):
     """SQL predicate for the free-text list search over the reference, the shown customer and
-    the contact id."""
-    ql = f"%{q.lower()}%"
+    the contact id. A % or _ in the search is matched as itself, not as a wildcard."""
+    ql = q.lower()
     return _sa.or_(
-        _func.lower(Projection.state["ref_id"].as_string()).like(ql),
-        _func.lower(_list_customer()).like(ql),
-        _func.lower(Projection.state["contact_id"].as_string()).like(ql),
+        _func.lower(Projection.state["ref_id"].as_string()).contains(ql, autoescape=True),
+        _func.lower(_list_customer()).contains(ql, autoescape=True),
+        _func.lower(Projection.state["contact_id"].as_string()).contains(ql, autoescape=True),
     )
 
 

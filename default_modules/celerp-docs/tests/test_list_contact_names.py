@@ -111,3 +111,20 @@ async def test_a_search_finds_a_document_by_the_contact_name_it_shows(client, se
     assert await found("\\") == ["doc:50%_off\\x"]
     assert await found("by_id") == []
     assert await found("50%off") == []
+
+
+async def test_the_list_search_matches_a_wildcard_character_as_itself(client, session):
+    """A % or _ in the list search is the character itself, never a wildcard."""
+    headers, company_id = await _company(client)
+    for list_id, ref in (("list:marked", "PL-50%_OFF"), ("list:plain", "PL-5000")):
+        await _seed(session, company_id, list_id, "list", {"ref_id": ref, "status": "draft", "line_items": []})
+
+    async def found(q: str) -> list[str]:
+        r = await client.get("/lists", params={"q": q}, headers=headers)
+        assert r.status_code == 200, r.text
+        return sorted(d["id"] for d in r.json()["items"])
+
+    assert await found("PL-50") == ["list:marked", "list:plain"]
+    assert await found("%") == ["list:marked"]
+    assert await found("_") == ["list:marked"]
+    assert await found("pl-5_") == []

@@ -112,16 +112,13 @@ class CompanyBusy(HTTPException):
     """A 409: a change to modules met the company's other work still holding the company's
     locks past the brief wait (take_company_locks), so it did not go ahead, and can be
     tried again. Which work holds them is not known here (it may be in another process),
-    so it names none. Outside a request it reads as that one sentence (the CLI)."""
+    so it names none."""
 
     def __init__(self) -> None:
         super().__init__(status_code=409, detail=refusal(
             "modules.company_busy",
             "Other work for your company is still being saved, so this change did not go ahead. "
             "Try again in a minute."))
-
-    def __str__(self) -> str:
-        return self.detail["message"]
 
 
 async def take_company_locks(session, *locks: Callable[[], Awaitable[Any]]) -> list[Any]:
