@@ -9417,9 +9417,16 @@ async def convert_list(
             actor_id=user.id, location_id=None, source="reservation",
             idempotency_key=str(uuid.uuid4()), metadata_={"doc_id": new_doc_id},
         )
+    # A list holds its header tax as a rate (``tax``) beside the amount (``tax_amount``); a
+    # document holds the rate as ``tax_rate`` and the amount as ``tax``. So no list money is
+    # copied: the document's money is worked out from its lines by the document rule
+    # (money_from_lines), as for any document created.
     new_data = {k: v for k, v in state.items()
                 if k not in {"status", "result", "entity_type", "list_type", "finalized_at", "sent_at", "accepted_at",
-                             SCAN_RUNS_FIELD}}
+                             SCAN_RUNS_FIELD, "tax", "tax_amount", "subtotal", "discount_amount", "total"}}
+    if state.get("tax"):
+        new_data["tax_rate"] = state["tax"]
+    new_data = money_from_lines(new_data, state.get("currency"))
     new_data.update({"doc_type": payload.target_type, "ref_id": ref, "source_list_id": entity_id, "status": "draft"})
     await emit_event(
         session, company_id=company_id, entity_id=new_doc_id, entity_type="doc",
