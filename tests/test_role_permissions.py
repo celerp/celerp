@@ -830,7 +830,7 @@ async def test_save_doc_lines_surfaces_permission_error(client, session):
                       "subtotal": 150.0, "tax": 0, "total": 150.0,
                       "expected_version": await doc_version(client, ctx["admin_h"], doc_id)},
             )
-    assert r.status_code == 400, r.text
+    assert r.status_code == 403, r.text
     assert missing_permission_text("set_sales_doc_prices") in r.json()["error"]
 
 
