@@ -126,6 +126,19 @@ def test_the_open_list_follows_the_field_when_content_loads_above_it(page, state
     page.wait_for_function(f"Math.abs({_LIST_OFFSET} - {offset}) < 1", timeout=3000)
 
 
+def test_the_open_list_follows_the_field_when_a_notice_shows_above_it(page, statement_url):
+    """The system health notice is shown by script once its check answers, which can be
+    after the list opened. Nothing is swapped in, but the field still moves down."""
+    _open_picker(page, statement_url)
+    offset = page.evaluate(_LIST_OFFSET)
+    page.evaluate("""(() => {
+        const b = document.getElementById('sys-health-banner');
+        b.querySelector('.sys-health-banner__msg').textContent = 'Disk space is low.';
+        b.style.display = 'flex';
+    })()""")
+    page.wait_for_function(f"Math.abs({_LIST_OFFSET} - {offset}) < 1", timeout=3000)
+
+
 def test_a_pick_keeps_the_list_open_when_the_list_moves_under_the_pointer(page, statement_url):
     """Content that lands above the form while the list is open moves the field at once,
     before the list follows. A pick then places the list under its field mid-click, so the
