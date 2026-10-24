@@ -32,7 +32,12 @@ class _FakeSession:
     def __init__(self, rows):
         self.rows = rows
 
-    async def execute(self, _):
+    async def execute(self, stmt):
+        if len(stmt.selected_columns) == 2:
+            # Aging: each document's state with the name it shows. No contact rows here, so
+            # the name is the one the document holds (party_name_sql's fallback).
+            return _Res([(p.state, p.state.get("contact_name") or p.state.get("customer_name")
+                          or p.state.get("supplier_name")) for p in self.rows if p.entity_type == "doc"])
         return _Res(self.rows)
 
 

@@ -18,7 +18,6 @@ from celerp.services.money import round_money, to_decimal
 # non-empty older key. A stored 0 is a value, not a gap.
 DOC_FIELD_FALLBACKS: dict[str, tuple[str, ...]] = {
     "doc_number": ("ref", "ref_id"),
-    "contact_name": ("contact_id", "contact_external_id"),
     "issue_date": ("created_at",),
     "due_date": ("payment_due_date",),
     "total": ("total_amount",),

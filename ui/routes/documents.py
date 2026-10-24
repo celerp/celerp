@@ -1427,17 +1427,13 @@ async def _company_doc_taxes(token: str, doc_type: str) -> list[dict]:
 
 
 def _send_to_option_list(items: list[dict], kind: str) -> FT:
-    """Render the searchable option list for send-to-modal (docs, lists, or memos)."""
+    """Render the searchable option list for send-to-modal (docs or lists)."""
     if not items:
         return Div(P(t("doc.no_results"), cls="send-to-empty"), id="send-to-options")
     rows = []
     for d in items:
         eid = d.get("id") or d.get("entity_id", "")
-        if kind == "memo":
-            ref = d.get("memo_number") or eid.split(":")[-1][:8]
-            contact = d.get("contact_name") or d.get("customer_name") or ""
-            label = t("documents.memo_ref", ref=ref)
-        elif kind == "list":
+        if kind == "list":
             ref = d.get("ref_id") or eid.split(":")[-1][:8]
             contact = d.get("contact_name") or ""
             label = t("documents.list_ref", ref=ref)
@@ -1467,7 +1463,7 @@ def _send_to_modal(
     hidden_items: list[FT],
     kind: str,
 ) -> FT:
-    """Unified send-to modal: create new draft or add to existing doc/list/memo."""
+    """Unified send-to modal: create new draft or add to existing doc or list."""
     return Div(
         Div(
             H3(t("documents.send_to", target=type_label), cls="modal-title"),
@@ -3727,7 +3723,7 @@ celerpUpdateBulkAlloc();
             eid = d.get("entity_id") or d.get("id", "")
             doc_number = d.get("doc_number") or d.get("ref_id") or eid
             doc_type = d.get("doc_type", "")
-            contact_name = d.get("contact_name") or d.get("contact_id") or ""
+            contact_name = d.get("contact_name") or ""
             contact_id = d.get("contact_id") or ""
             doc_currency = d.get("currency") or currency
             for p in (d.get("payments") or []):
@@ -10650,6 +10646,7 @@ def _summary_bar(summary: dict, doc_type: str = "", currency: str | None = None,
     return Div(
         Span(f"{t('chip.ar', lang)}: {fmt_money(float(summary.get('ar_outstanding', 0) or 0), currency)}", cls="val-chip val-chip--alert"),
         Span(f"{t('chip.billed', lang)}: {fmt_money(float(summary.get('ar_total', 0) or 0), currency)}", cls="val-chip"),
+        Span(f"{t('label.paid', lang)}: {fmt_money(float(summary.get('ar_paid', 0) or 0), currency)}", cls="val-chip"),
         Span(f"{t('chip.invoices', lang)}: {summary.get('invoice_count', 0)}", cls="val-chip"),
         unvalued_chip,
         cls="valuation-bar",

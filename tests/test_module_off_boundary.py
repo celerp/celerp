@@ -260,6 +260,35 @@ async def test_a_payment_whose_company_turns_documents_off_after_it_was_admitted
     assert len(await _paid_with(client, tok, eid)) == 1
 
 
+@pytest.mark.asyncio
+async def test_a_payment_that_meets_a_module_change_in_progress_is_retried_never_kept_as_refused(
+        client, session, payments_on, monkeypatch):
+    """The payment's write meets a turn-off holding the company's module settings past the
+    request lock timeout (ModuleBusy): the payment is not acknowledged, so it is delivered
+    again, and it is never kept among the unmatched as an invoice that refused it. The
+    next delivery records it once."""
+    import celerp_docs.routes_payments as routes_payments
+    from celerp.modules.boundary import ModuleBusy
+    mark_running(monkeypatch, "celerp-docs")
+    tok = await _register(client)
+    eid, _ = await _payable_invoice(client, tok)
+    payload = _delivery(tok, eid)
+    real = routes_payments.record_stripe_payment
+
+    async def busy(*args, **kwargs):
+        raise ModuleBusy("celerp-docs")
+
+    monkeypatch.setattr(routes_payments, "record_stripe_payment", busy)
+    assert await _acked(payload) is False
+    assert await _unmatched(session) == 0
+    assert await _paid_with(client, tok, eid) == []
+
+    monkeypatch.setattr(routes_payments, "record_stripe_payment", real)
+    assert await _acked(payload) is True
+    assert len(await _paid_with(client, tok, eid)) == 1
+    assert await _unmatched(session) == 0
+
+
 async def _recorded_elsewhere(client, tok: str, eid: str) -> dict:
     """A payment whose company is gone, recorded by a person on the invoice *eid*: the
     deliveries for it that follow still name the gone company. Returns them."""

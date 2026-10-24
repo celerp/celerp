@@ -15,7 +15,7 @@ from typing import Any
 
 from celerp.connectors.base import ConnectorContext, SyncDirection, entity_allowed
 from celerp.connectors.sync_runner import run_sync
-from celerp.modules.boundary import ModuleOff
+from celerp.modules.boundary import ModuleRefused
 import celerp.connectors as connector_registry
 
 log = logging.getLogger(__name__)
@@ -112,7 +112,7 @@ async def handle_webhook(
                 await guard_session.commit()
         except ConnectorOwnershipError:
             return
-        except ModuleOff:
+        except ModuleRefused:
             # Refused before anything changed. The product sync below records the
             # refusal on the store's sync history, and once Inventory runs the daily
             # reconcile pass finds the product the store no longer returns.

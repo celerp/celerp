@@ -11,7 +11,7 @@ from urllib.parse import quote
 
 import httpx
 
-from celerp.capacity import REQUEST_DB_POOL_SIZE
+from celerp.capacity import MODULE_SETTLE_SECONDS, REQUEST_DB_POOL_SIZE
 from celerp.services.auth import CALLER_HEADER, CONNECT_HEADER, connect_caller, is_loopback
 from celerp.services.company_settings import BOOKS_KEYS, GENERAL
 from celerp.tax_regimes import doc_side
@@ -3374,8 +3374,10 @@ async def enable_module(token: str, module_name: str) -> dict:
 
 
 async def disable_module(token: str, module_name: str) -> dict:
-    """POST /companies/me/modules/{name}/disable — disable a module (admin only)."""
-    async with _api_client(token) as c:
+    """POST /companies/me/modules/{name}/disable — disable a module (admin only). The
+    turn-off can wait MODULE_SETTLE_SECONDS for the company's running work in the module,
+    so this waits longer than that and always gets its outcome."""
+    async with _api_client(token, timeout=MODULE_SETTLE_SECONDS + 30) as c:
         result = _raise(await c.post(f"/companies/me/modules/{module_name}/disable")).json()
     _invalidate_inventory_metadata()
     return result

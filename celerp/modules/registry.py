@@ -87,7 +87,7 @@ def uses_module(company_settings: dict[str, Any] | None, module_name: str | None
     return module_name in get_enabled(company_settings)
 
 
-async def hold_module_state(session) -> None:
+async def hold_module_state(session, *, bounded: bool = False) -> None:
     """Hold the module-state boundary until *session*'s transaction ends.
 
     Every change to which modules a company uses takes it before it checks the
@@ -95,13 +95,18 @@ async def hold_module_state(session) -> None:
     its data takes it before its in-use check and holds it until the folder is gone
     or the tables are dropped. So a check never goes stale before the change it
     allows: a module is never removed while a company comes to use it. A holder can
-    run as long as a company restore, so the wait has no time limit.
+    run as long as a company restore, so the wait has no time limit, unless
+    *bounded*: then it gives up at the request lock timeout (a lock-timeout database
+    error), for a caller that must answer within a known time (turning a module off).
 
     Celerp runs on Postgres, embedded or external. Another dialect (SQLite in unit
     tests) has no advisory locks and serves one request at a time there, so this is
     a no-op on it."""
     from sqlalchemy import text
     if session.get_bind().dialect.name != "postgresql":
+        return
+    if bounded:
+        await session.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": _MODULE_STATE_LOCK_KEY})
         return
     await session.execute(text("SET LOCAL lock_timeout = 0"))
     await session.execute(text("SET LOCAL statement_timeout = 0"))
@@ -115,27 +120,47 @@ async def share_module_state(session) -> None:
 
     Work that uses a company's modules is admitted under it (boundary.module_use):
     holders never wait for each other, and a change to which modules a company uses
-    (hold_module_state) waits for every holder and is waited for by them, so the
-    admission reads settings no change is part way through. A no-op off Postgres, as
-    hold_module_state is."""
+    (hold_module_state) waits for every holder and is waited for by them, up to the
+    request lock timeout (a lock-timeout database error), so the admission reads
+    settings no change is part way through. A no-op off Postgres, as hold_module_state is."""
     from sqlalchemy import text
     if session.get_bind().dialect.name != "postgresql":
         return
     await session.execute(text("SELECT pg_advisory_xact_lock_shared(:k)"), {"k": _MODULE_STATE_LOCK_KEY})
 
 
-async def _company_module_lock(session, company_id, mode: str) -> None:
+async def _named_lock(session, key: str, mode: str) -> None:
     from sqlalchemy import text
     if session.get_bind().dialect.name != "postgresql":
         return
-    await session.execute(text(f"SELECT {mode}(hashtextextended(:k, 0))"),
-                          {"k": f"module-use:{company_id}"})
+    await session.execute(text(f"SELECT {mode}(hashtextextended(:k, 0))"), {"k": key})
+
+
+async def _company_module_lock(session, company_id, mode: str) -> None:
+    await _named_lock(session, f"module-use:{company_id}", mode)
+
+
+async def hold_module_gate(session, company_id, module_name: str) -> None:
+    """Keep new work in *module_name* for *company_id* from being admitted until
+    *session*'s transaction ends (share_module_gate). Taken by turning that module off
+    while it waits for the work already admitted, so other modules and other companies
+    are never held up by it. First in the lock order, before the module-state boundary."""
+    await _named_lock(session, f"module-gate:{company_id}:{module_name}", "pg_advisory_xact_lock")
+
+
+async def share_module_gate(session, company_id, module_name: str) -> None:
+    """Hold, until *session*'s transaction ends, *module_name* for *company_id* as it is:
+    admission of work in it (boundary.module_use) takes this before the module-state
+    boundary, so it never reads the settings while that module is being turned off for
+    that company. Holders never wait for each other."""
+    await _named_lock(session, f"module-gate:{company_id}:{module_name}", "pg_advisory_xact_lock_shared")
 
 
 async def hold_company_modules(session, company_id) -> None:
     """Keep the module work of *company_id* from writing until *session*'s transaction
     ends, waiting for the writes already made (share_company_modules). Taken by turning
-    a module off, after the module-state boundary and before the company lock."""
+    a module off, after the module-state boundary and before the company lock. The wait
+    gives up at the request lock timeout (a lock-timeout database error)."""
     await _company_module_lock(session, company_id, "pg_advisory_xact_lock")
 
 

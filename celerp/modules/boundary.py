@@ -13,35 +13,42 @@ error part way through. Two states are refused, each in its own words:
 
 The decision holds for the whole of the work, never only at its start:
 
-- admission (``module_use``) judges the company's settings under the module-state
-  boundary in shared mode, and counts the work as running before letting go of it;
-- turning a module off takes that boundary, then waits for the company's running
-  work to finish (``settle_module_use``), so nothing admitted before it, a request
-  to a store included, happens after it;
+- admission (``module_use``) judges the company's settings under the gate of each
+  module it needs for that company and the module-state boundary, both in shared
+  mode, and counts the work as running in each of those modules before letting go;
+- turning a module off takes that module's gate for the company, then waits for the
+  company's running work in that module to finish (``settle_module_use``), so nothing
+  admitted before it, a request to a store included, happens after it. Other modules
+  and other companies are never held up by the wait;
 - every write the work makes judges the settings again, holding them as they are
   (company_lock.judge_module_writes, from events.engine.emit_event and
   company_lock.lock_company), so a change committed elsewhere is never written past,
   and the work ends refused even when it caught the refusal.
 
-Lock order: the module-state boundary, then the company's module settings, then the
-company, then its rows. Admission ends before the work starts, so the boundary is
-never held across a request to another system."""
+Work that meets one of these locks held for longer than the request lock timeout is
+refused with ModuleBusy, a 409 that says to try again, never a server error.
+
+Lock order: the company's module gates, then the module-state boundary, then the
+company's module settings, then the company, then its rows. Admission ends before the
+work starts, so no lock is held across a request to another system."""
 from __future__ import annotations
 
 import asyncio
 import functools
 import inspect
 from collections import Counter
-from contextlib import asynccontextmanager, nullcontext
+from contextlib import asynccontextmanager, contextmanager, nullcontext
 from contextvars import ContextVar
 from typing import Any, Callable, Mapping
 
 from fastapi import HTTPException
+from sqlalchemy.exc import DBAPIError
 
 from celerp.accounting_roles import refusal
-from celerp.db import get_session_ctx
+from celerp.capacity import MODULE_SETTLE_SECONDS
+from celerp.db import get_session_ctx, sqlstate
 from celerp.modules.loader import is_running, module_label
-from celerp.modules.registry import share_module_state, uses_module
+from celerp.modules.registry import share_module_gate, share_module_state, uses_module
 
 # The companies whose module use the running work was admitted for, each with the
 # modules it relies on; every write the work makes judges them again (judge_writes).
@@ -49,28 +56,62 @@ _IN_USE: ContextVar[dict[str, frozenset[str]]] = ContextVar("celerp_module_use",
 # The refusals the running work's writes met (refuse_writes), shared by nested work: a
 # caller that catches one and carries on still ends refused, never as if it had written.
 _REFUSALS: ContextVar[list[Exception] | None] = ContextVar("celerp_module_refusals", default=None)
-# Admitted work running in this process, per company (module_use, settle_module_use).
-_RUNNING: Counter[str] = Counter()
-# How long turning a module off waits for the company's running work to finish.
-SETTLE_SECONDS = 30.0
+# Admitted work running in this process, per company and module (module_use,
+# settle_module_use).
+_RUNNING: Counter[tuple[str, str]] = Counter()
+# The Postgres SQLSTATE of a lock wait that gave up at the request lock timeout.
+LOCK_TIMEOUT = "55P03"
 
 
-class ModuleOff(HTTPException):
-    """A 403 naming the module. Outside a request it still reads as that one sentence,
-    so a sync run or a delivery log shows the same message."""
+class ModuleRefused(HTTPException):
+    """Work in a module that did not go ahead, naming the module. Outside a request it
+    still reads as that one sentence, so a sync run or a delivery log shows the same
+    message. A caller that records a refusal as final catches this, not a bare
+    HTTPException, so a busy refusal is retried and never recorded as final."""
+
+    def __init__(self, pkg_name: str, status_code: int, detail: dict, headers: dict | None = None) -> None:
+        self.module = pkg_name
+        super().__init__(status_code=status_code, detail=detail, headers=headers)
+
+    def __str__(self) -> str:
+        return self.detail["message"]
+
+
+class ModuleOff(ModuleRefused):
+    """A 403: the company cannot use the module."""
 
     def __init__(self, pkg_name: str, *, starting: bool = False) -> None:
-        self.module = pkg_name
         label = module_label(pkg_name)
         detail = (refusal("modules.starts_after_restart",
                           f"The {label} module starts after Celerp restarts.", module=label)
                   if starting else
                   refusal("modules.off_for_company",
                           f"The {label} module is turned off for your company.", module=label))
-        super().__init__(status_code=403, detail=detail)
+        super().__init__(pkg_name, 403, detail)
 
-    def __str__(self) -> str:
-        return self.detail["message"]
+
+class ModuleBusy(ModuleRefused):
+    """A 409 with Retry-After: the work met a change to modules in progress (a lock held
+    past the request lock timeout), so it did not go ahead, and can be tried again."""
+
+    def __init__(self, pkg_name: str) -> None:
+        label = module_label(pkg_name)
+        super().__init__(pkg_name, 409, refusal(
+            "modules.use_busy",
+            f"Modules are being changed right now, so this {label} work did not go ahead. Try again in a minute.",
+            module=label), headers={"Retry-After": str(int(MODULE_SETTLE_SECONDS))})
+
+
+@contextmanager
+def refused_past_lock_timeout(refused: HTTPException):
+    """Raise *refused* in place of a lock wait in the block that gave up at the request
+    lock timeout; any other database error goes on as it is."""
+    try:
+        yield
+    except DBAPIError as exc:
+        if sqlstate(exc) != LOCK_TIMEOUT:
+            raise
+        raise refused from None
 
 
 def require_company_uses(settings: dict | None, *pkg_names: str) -> None:
@@ -140,26 +181,35 @@ async def module_use(company_id, *pkg_names: str):
     """Run the block as work inside *pkg_names* for *company_id*: refused with ModuleOff,
     before anything is done, while that company cannot use any of them (``require_on``)
     or when no company is named, since whether a module runs in this process says
-    nothing about who may use it. Work already admitted for the company is judged
-    without waiting for the module-state boundary, which a change turning a module off
-    holds while it waits for that same work."""
+    nothing about who may use it; refused with ModuleBusy while one of them is being
+    turned off for the company, or modules are being changed, past the request lock
+    timeout. The modules work already admitted for the company relies on are judged
+    without waiting, since a change turning one of them off waits for that same work;
+    the module-state boundary is likewise taken only by the company's outermost work."""
     cid = str(company_id or "")
     if not cid:
         raise ModuleOff(pkg_names[0])
     outer = _IN_USE.get()
-    counted = False
+    fresh = sorted(set(pkg_names) - outer.get(cid, frozenset()))
+    counted: list[tuple[str, str]] = []
     token = _IN_USE.set(outer)
     refusals = _REFUSALS.get()
     refusals_token = _REFUSALS.set([]) if refusals is None else None
     try:
-        if cid in outer:
-            require_on(await company_settings(cid), *pkg_names)
-        else:
+        if fresh:
             async with get_session_ctx() as session:
-                await share_module_state(session)
+                for name in fresh:
+                    with refused_past_lock_timeout(ModuleBusy(name)):
+                        await share_module_gate(session, cid, name)
+                if cid not in outer:
+                    with refused_past_lock_timeout(ModuleBusy(fresh[0])):
+                        await share_module_state(session)
                 require_on(await company_settings(cid), *pkg_names)
-                _RUNNING[cid] += 1
-                counted = True
+                for name in fresh:
+                    _RUNNING[cid, name] += 1
+                    counted.append((cid, name))
+        else:
+            require_on(await company_settings(cid), *pkg_names)
         judge_writes(cid, *pkg_names)
         yield
         if refused := _REFUSALS.get():
@@ -168,27 +218,32 @@ async def module_use(company_id, *pkg_names: str):
         _IN_USE.reset(token)
         if refusals_token is not None:
             _REFUSALS.reset(refusals_token)
-        if counted:
-            _RUNNING[cid] -= 1
-            if not _RUNNING[cid]:
-                del _RUNNING[cid]
+        for key in counted:
+            _RUNNING[key] -= 1
+            if not _RUNNING[key]:
+                del _RUNNING[key]
 
 
 async def settle_module_use(company_id, pkg_name: str) -> None:
-    """For a caller about to turn *pkg_name* off for *company_id*, holding the module-state
-    boundary (registry.hold_module_state): wait for the company's work admitted before it
-    to finish. 409 when some is still running after SETTLE_SECONDS."""
-    cid = str(company_id)
-    deadline = asyncio.get_running_loop().time() + SETTLE_SECONDS
-    while _RUNNING.get(cid):
+    """For a caller about to turn *pkg_name* off for *company_id*, holding its gate
+    (registry.hold_module_gate): wait for the company's work in *pkg_name* admitted before
+    it to finish. 409 when some is still running after MODULE_SETTLE_SECONDS."""
+    key = (str(company_id), pkg_name)
+    deadline = asyncio.get_running_loop().time() + MODULE_SETTLE_SECONDS
+    while _RUNNING.get(key):
         if asyncio.get_running_loop().time() >= deadline:
-            label = module_label(pkg_name)
-            raise HTTPException(status_code=409, detail=refusal(
-                "modules.turn_off_busy",
-                f"The {label} module is still finishing work for your company, such as a store sync or a payment. "
-                "Try again in a minute.",
-                module=label))
+            raise turn_off_busy(pkg_name)
         await asyncio.sleep(0.05)
+
+
+def turn_off_busy(pkg_name: str) -> HTTPException:
+    """The 409 for turning *pkg_name* off while the company's work in it is still running."""
+    label = module_label(pkg_name)
+    return HTTPException(status_code=409, detail=refusal(
+        "modules.turn_off_busy",
+        f"The {label} module is still finishing work for your company, such as a store sync or a payment. "
+        "Try again in a minute.",
+        module=label))
 
 
 def needs_modules(*pkg_names: str, company: Callable[..., Any] = context_company):

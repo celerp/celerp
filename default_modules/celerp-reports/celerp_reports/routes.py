@@ -21,7 +21,7 @@ from celerp.services.doc_balance import (
     canonical_doc_type, doc_value, is_awaiting_payment, is_open_credit, is_owed, outstanding_balance,
 )
 from celerp.services.permissions import require_permission
-from celerp_contacts.references import contact_snapshot
+from celerp_contacts.references import party_name_sql
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -90,26 +90,20 @@ async def _aging(session: AsyncSession, company_id: uuid.UUID, *, party: str, de
     open credit of ``credit_types`` has left, by days since it was issued. A party shows by its
     contact's name, else the name the document holds, else "--". ``unlinked`` is the (id, name)
     of documents that name no party."""
-    rows = (await session.execute(select(Projection).where(
-        Projection.company_id == company_id, Projection.entity_type.in_(("doc", "contact"))))).scalars().all()
-    contact_names = {row.entity_id: contact_snapshot(row.state)["contact_name"]
-                     for row in rows if row.entity_type == "contact"}
+    rows = (await session.execute(select(Projection.state, party_name_sql(party=party)).where(
+        Projection.company_id == company_id, Projection.entity_type == "doc"))).all()
 
     today = await company_today(session, company_id)
     buckets: dict[str, dict[str, Decimal]] = defaultdict(lambda: {key: Decimal(0) for key, _ in _BUCKETS})
     names: dict[str, str] = {}
 
-    for row in rows:
-        if row.entity_type != "doc":
-            continue
-        state = row.state
+    for state, shown in rows:
         amount = _aged_balance(state, debit_types, credit_types)
         if amount is None:
             continue
         party_id = state.get("contact_id") or state.get(f"{party}_id")
         if party_id:
-            names[party_id] = (contact_names.get(party_id) or state.get("contact_name")
-                               or state.get(f"{party}_name") or EMPTY)
+            names[party_id] = shown or EMPTY
         else:
             party_id, names[unlinked[0]] = unlinked
         dated = doc_value(state, "issue_date") if amount < 0 else (doc_value(state, "due_date") or state.get(due_fallback))

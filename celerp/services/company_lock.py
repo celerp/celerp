@@ -59,9 +59,12 @@ async def judge_module_writes(session: AsyncSession, company_id) -> None:
     a module may have been turned off since. Before its first write to the company in a
     transaction, the work holds the company's module settings (share_company_modules,
     which turning a module off waits for and holds through its commit) and judges the
-    modules it relies on against them as committed now. A refusal is kept until the
+    modules it relies on against them as committed now. A refusal, ModuleBusy when a
+    turn-off holds the settings past the request lock timeout, is kept until the
     transaction ends, as an authority refusal is. Nothing outside module work."""
-    from celerp.modules.boundary import modules_in_use, refuse_writes, require_on
+    from celerp.modules.boundary import (
+        ModuleBusy, ModuleRefused, modules_in_use, refuse_writes, refused_past_lock_timeout, require_on,
+    )
     from celerp.modules.registry import share_company_modules
 
     names = modules_in_use(company_id)
@@ -71,13 +74,14 @@ async def judge_module_writes(session: AsyncSession, company_id) -> None:
     done = judged.get(str(company_id), frozenset())
     if names <= done:
         return
-    if not done:
-        await share_company_modules(session, company_id)
-    judged[str(company_id)] = done | names
-    row = (await session.execute(select(Company.settings).where(Company.id == company_id))).first()
     try:
+        if not done:
+            with refused_past_lock_timeout(ModuleBusy(min(names))):
+                await share_company_modules(session, company_id)
+        judged[str(company_id)] = done | names
+        row = (await session.execute(select(Company.settings).where(Company.id == company_id))).first()
         require_on(None if row is None else dict(row[0] or {}), *sorted(names))
-    except Exception as exc:
+    except ModuleRefused as exc:
         session.info[_REFUSED] = exc
         refuse_writes(exc)
         raise

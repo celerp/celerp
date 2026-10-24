@@ -21,7 +21,7 @@ from decimal import Decimal
 from sqlalchemy import delete, func, select
 
 from celerp.models.payment_closure import PaymentClosure, PaymentRecovery, UnmatchedPayment, UnmatchedRefund
-from celerp.modules.boundary import ModuleOff, judge_writes, needs_modules, require_company_uses
+from celerp.modules.boundary import ModuleRefused, judge_writes, needs_modules, require_company_uses
 from celerp.services.money import round_money, to_decimal
 from ui.i18n import t
 
@@ -304,7 +304,7 @@ async def receive_payment(payload: dict) -> bool:
                 await session.commit()  # already recorded: only the unmatched row goes
                 return True
             except HTTPException as exc:
-                if exc.status_code >= 500 or isinstance(exc, ModuleOff):
+                if exc.status_code >= 500 or isinstance(exc, ModuleRefused):
                     raise
                 await session.rollback()
                 log.error("Invoice %s refused online payment %s: %s", entity_id, reference, exc.detail)
@@ -561,7 +561,7 @@ async def _apply_refund(session, cid, entity_id: str, refund: dict, *, recorded:
                 transition=refund["transition"], reference=refund["reference"], amount_minor=refund["amount_minor"],
                 currency=refund["currency"], occurred_at=refund["occurred_at"], context=refund["context"])
     except HTTPException as exc:
-        if exc.status_code >= 500 or isinstance(exc, ModuleOff):
+        if exc.status_code >= 500 or isinstance(exc, ModuleRefused):
             raise
         log.error("Invoice %s refused refund %s (%s %s): %s", entity_id, refund["refund_id"],
                   refund["transition"], refund["cycle"], exc.detail)
@@ -788,7 +788,7 @@ async def record_unmatched_payment(session, company_id: uuid.UUID, reference: st
                                     paid_at=kept.paid_at or kept.received_at, context=books, managed=True,
                                     idempotency_key=f"{reference}:{uuid.uuid4().hex}")
     except (ValueError, HTTPException) as exc:
-        if isinstance(exc, HTTPException) and (exc.status_code >= 500 or isinstance(exc, ModuleOff)):
+        if isinstance(exc, HTTPException) and (exc.status_code >= 500 or isinstance(exc, ModuleRefused)):
             raise
         log.error("Invoice %s refused unmatched payment %s: %s", entity_id, reference,
                   getattr(exc, "detail", exc))

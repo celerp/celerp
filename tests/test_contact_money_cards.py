@@ -190,8 +190,19 @@ async def test_each_contact_money_card_shows_the_figure_of_the_list_it_opens(own
     assert _list_cards(page.text)["All Issued"] == cards["Total Invoiced"], (links["Total Paid"], cards)
     for doc_id in (paid, partly, abroad, unpaid):
         assert doc_id in page.text, (doc_id, links["Total Paid"])
+    # The list it opens states the paid total beside what was billed and is still owed.
+    chips = _summary_chips(page.text)
+    assert chips["Paid"] == cards["Total Paid"], (chips, cards)
+    assert chips["Billed"] == cards["Total Invoiced"], (chips, cards)
+    assert chips["AR"] == cards["Outstanding"], (chips, cards)
     assert cards["Total Invoiced"] == fmt_money(1900.0, None), cards
     assert cards["Outstanding"] == fmt_money(1000.0, None), cards
+
+
+def _summary_chips(html: str) -> dict[str, str]:
+    """Each summary chip above a document list, label to the figure it states."""
+    return {label.strip(): value.strip() for label, value in re.findall(
+        r'class="val-chip(?: val-chip--alert)?">([^:<]+): ([^<]*)<', html)}
 
 
 def _sublabel(html: str, label: str) -> str | None:
