@@ -11,6 +11,7 @@ from __future__ import annotations
 import uuid
 
 import pytest
+from test_helpers import doc_version
 
 
 # ---------------------------------------------------------------------------
@@ -144,7 +145,7 @@ async def test_patch_doc_rejects_fractional_piece_on_line_item(client, session):
     patch = await client.patch(
         f"/docs/{doc_id}",
         headers=h,
-        json={"fields_changed": {"line_items": {"new": [_line(qty=0.5, sell_by="piece")]}}},
+        json={"expected_version": await doc_version(client, h, doc_id), "fields_changed": {"line_items": {"new": [_line(qty=0.5, sell_by="piece")]}}},
     )
     assert patch.status_code == 422, patch.text
     assert "0.5" in patch.json()["detail"]["message"]
@@ -163,7 +164,7 @@ async def test_patch_doc_allows_valid_piece_quantity(client, session):
     patch = await client.patch(
         f"/docs/{doc_id}",
         headers=h,
-        json={"fields_changed": {"line_items": {"new": [_line(qty=5.0, sell_by="piece")]}}},
+        json={"expected_version": await doc_version(client, h, doc_id), "fields_changed": {"line_items": {"new": [_line(qty=5.0, sell_by="piece")]}}},
     )
     assert patch.status_code == 200, patch.text
 

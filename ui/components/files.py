@@ -63,15 +63,12 @@ if(!window.celerpFilesFetch){
   window.celerpFilesFetch=function(sid,url,opts,refresh){
     var sec=document.getElementById('files-section-'+sid);
     var scope=sec&&sec.closest('[hx-headers]');
-    // Carry the headers the page sets for its htmx requests, as an htmx request would.
-    var headers=Object.assign({'HX-Request':'true'},scope?JSON.parse(scope.getAttribute('hx-headers')):{});
+    // Carry the headers the page sets for its htmx requests; celerpFetch makes it an htmx request.
+    var headers=scope?JSON.parse(scope.getAttribute('hx-headers')):{};
     opts.headers=headers;
-    // The sign-in redirect the app answers an htmx request with: follow it, as htmx does.
-    function go(r){var to=r.headers.get('HX-Redirect');if(to)location.href=to;return !!to;}
-    return fetch(url,opts)
-      .then(function(r){return go(r)||!(r.ok&&refresh)?r:fetch(refresh,{headers:headers});})
+    return celerpFetch(url,opts)
+      .then(function(r){return !(r.ok&&refresh)?r:celerpFetch(refresh,{headers:headers});})
       .then(function(r){return r.text().then(function(body){
-        if(go(r)) return;
         if(!r.ok){window.celerpFilesNotice(sid,r.headers.get('Content-Type'),body);return;}
         var cur=document.getElementById('files-section-'+sid);
         if(!cur){location.reload();return;}

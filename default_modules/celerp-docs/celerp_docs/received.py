@@ -38,6 +38,8 @@ from celerp.services.auth import get_current_company_id, get_current_role, get_c
 from celerp.services.company_lock import lock_company
 from celerp.services.money import round_money, to_decimal
 from celerp.services.permissions import get_current_company_settings, require_permission
+from celerp.tax_regimes import tax_entries
+from celerp_docs.doc_money import line_tax_definition
 from celerp_docs.doc_projections import _recalc_list_totals
 from ui.i18n import t
 
@@ -327,9 +329,14 @@ _BILL_FIELDS = ("issue_date", "due_date", "payment_terms")
 
 def _tax_rate(taxes) -> float | None:
     """A list line carries one tax rate; the sender's line taxes collapse to their sum."""
-    if not isinstance(taxes, list) or not taxes:
-        return None
-    return sum(float(t.get("rate") or 0) for t in taxes if isinstance(t, dict)) or None
+    return sum(float(t.get("rate") or 0) for t in tax_entries(taxes)) or None
+
+
+def _line_tax_rate(line: dict) -> float | None:
+    """The one rate a list line takes from the sender's line, read by line_tax_definition: the
+    sum of its taxes, else its ``tax_rate``."""
+    entries, rate = line_tax_definition(line)
+    return _tax_rate(entries) if entries else float(rate) or None
 
 
 def _lines(document: dict, kind: str) -> list[dict]:
@@ -338,7 +345,7 @@ def _lines(document: dict, kind: str) -> list[dict]:
     for li in document.get("line_items") or []:
         line = {k: li[k] for k in fields if li.get(k) is not None}
         if kind == "list":
-            rate = li.get("tax_rate") or _tax_rate(li.get("taxes"))
+            rate = _line_tax_rate(li)
             if rate:
                 line["tax_rate"] = rate
         out.append(line)
@@ -380,8 +387,8 @@ def unrepresentable(document: dict, target: BookTarget) -> str | None:
     if target.kind != "list":
         return None
     currency = document.get("currency")
-    doc_taxes = document.get("doc_taxes") or []
-    line_taxes = [t for li in document.get("line_items") or [] for t in li.get("taxes") or []]
+    doc_taxes = tax_entries(document.get("doc_taxes"))
+    line_taxes = [t for li in document.get("line_items") or [] for t in tax_entries(li.get("taxes"))]
     if _money(document.get("shipping"), currency):
         return "A quotation has no shipping charge, so this document cannot become one without changing its total."
     if any(t.get("is_compound") for t in (*doc_taxes, *line_taxes)):

@@ -90,12 +90,32 @@ def test_shipment_values_name_the_bad_value():
         _validate_shipment_values({"reason_for_export": "nap"})
 
 
-def test_damaged_tax_says_where_to_fix_it():
-    from celerp_docs.doc_money import _recompute_tax_applications
+@pytest.mark.parametrize(("entries", "named"), [(["bad"], "bad"), ([{"code": "VAT", "rate": "seven"}], "VAT")])
+def test_damaged_tax_says_which_tax_and_where_to_fix_it(entries, named):
+    from celerp_docs.doc_money import document_money
 
+    line = {"quantity": 1, "unit_price": 100}
     with pytest.raises(HTTPException) as exc:
-        _recompute_tax_applications(["bad"], 100, "USD")
-    assert exc.value.detail == t("documents.err_tax_invalid", "en")
+        document_money({"doc_taxes": entries}, [line], "USD", keep_unrated_tax=True)
+    assert exc.value.detail == t("documents.err_tax_unreadable", "en", tax=named)
+
+
+@pytest.mark.parametrize(("stored", "key", "steps"), [
+    (None, "documents.err_tax_unreadable", ()),
+    ({"status": "draft"}, "documents.err_tax_unreadable", ()),
+    ({"doc_type": "invoice", "status": "final"}, "documents.err_tax_unreadable_issued", ("revert",))])
+def test_damaged_tax_on_a_document_past_draft_names_the_way_back_to_draft(stored, key, steps):
+    """The status of the document as stored decides the message: a draft's taxes can be edited,
+    any other's only after Revert to Draft."""
+    from celerp_docs.doc_money import document_money
+
+    line = {"quantity": 1, "unit_price": 100}
+    with pytest.raises(HTTPException) as exc:
+        document_money({"doc_taxes": ["bad"], "status": "draft"}, [line], "USD", keep_unrated_tax=True,
+                       stored=stored)
+    from test_tax_refusal_draft_route import route
+
+    assert exc.value.detail == t(key, "en", tax="bad", route=route(*steps, locale="en"))
 
 
 def test_online_payment_pause_is_translated():

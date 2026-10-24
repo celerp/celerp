@@ -32,6 +32,7 @@ from reportlab.pdfgen import canvas as _rl_canvas
 
 from celerp.output.branding import BRAND_TEXT as _BRAND_TEXT, brand_url as _brand_url
 from celerp.output.document_context import prepare_document_output
+from celerp.tax_regimes import tax_entries
 
 # DejaVu Sans (Unicode-capable - supports currency symbols like ฿, ₹, €, etc.) ships
 # in fonts/ so PDFs render on every platform, not only where the OS provides it.
@@ -376,7 +377,7 @@ def generate_document_pdf(doc: dict[str, Any], company: dict[str, Any] | None = 
         line_total = float(li.get("line_total") or 0) or discounted
         unit = str(li.get("unit") or li.get("unit_name") or li.get("uom") or "-")
         # Render multi-tax codes if present, else fall back to legacy tax_rate
-        li_taxes = li.get("taxes") or []
+        li_taxes = tax_entries(li.get("taxes"))
         if li_taxes:
             tax_str = " + ".join(
                 f"{t.get('label') or t.get('code') or 'Tax'} {float(t.get('rate', 0)):.1f}%"
@@ -439,7 +440,7 @@ def generate_document_pdf(doc: dict[str, Any], company: dict[str, Any] | None = 
     if discount_amount:
         totals_data.append([Paragraph("Discount", s["total_label"]),
                             Paragraph("-" + _fmt_money(discount_amount, currency), s["total_value"])])
-    doc_taxes = doc.get("doc_taxes") or []
+    doc_taxes = tax_entries(doc.get("doc_taxes"))
     if doc_taxes:
         for dt in doc_taxes:
             label = dt.get("label") or f"{dt.get('code', 'Tax')} ({float(dt.get('rate', 0)):.1f}%)"

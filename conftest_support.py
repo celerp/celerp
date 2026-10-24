@@ -10,9 +10,24 @@ from __future__ import annotations
 
 import os
 import tempfile
+import uuid
+from collections.abc import MutableMapping
 
 _CONFIG_PREFIX = "celerp-test-config-"
 _DATA_PREFIX = "celerp-test-data-"
+_RUN_VAR = "CELERP_TEST_RUN"
+
+
+def worker_label(environ: MutableMapping[str, str]) -> str:
+    """This process's name in its test run: the run, then the xdist worker ("main" outside one).
+
+    The controller's conftest runs first and records a fresh run id in *environ*; its
+    workers inherit that environment, so every worker of one run shares the run id and
+    two runs on one machine at once never do. A label by worker alone was the same
+    "gw1" in both runs, so their per-worker files were one file.
+    """
+    run = environ.setdefault(_RUN_VAR, uuid.uuid4().hex[:12])
+    return f"{run}-{environ.get('PYTEST_XDIST_WORKER', 'main')}"
 
 
 def _is_own(path: str | None, prefix: str, tmpdir: str | None) -> bool:
@@ -99,3 +114,16 @@ def provision_worker_db(url: str, worker: str) -> str:
         conn.close()
     return urlunsplit(parts._replace(path=f"/{worker_db}")).replace(
         "postgresql://", "postgresql+asyncpg://")
+
+
+def skip_relay_check_in(set_attr=setattr) -> None:
+    """Boot the API without checking in with the relay, with or without a relay token: both
+    boot-time check-ins do nothing. *set_attr* is ``monkeypatch.setattr`` in a test (undone
+    after it) or ``setattr`` in a child process that boots the app."""
+    import celerp.main as main_mod
+
+    async def _skipped(*_args, **_kwargs) -> None:
+        return None
+
+    for name in ("_try_auto_activate", "_try_sync_existing_entitlement"):
+        set_attr(main_mod, name, _skipped)

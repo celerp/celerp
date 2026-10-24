@@ -81,6 +81,8 @@ async def write(args):
 
 if path == "api":
     import celerp.main as app_main
+    from conftest_support import skip_relay_check_in
+    skip_relay_check_in()
     async def run():
         async with app_main.lifespan(app_main.app):
             await asyncio.to_thread(hold, asyncio.get_running_loop())
@@ -435,14 +437,24 @@ def _fence_backends(url: str, version: str) -> list[int]:
         engine.dispose()
 
 
+def _fence_holder(url: str, version: str) -> int:
+    """The one backend holding *version*'s session fence lock. pg_locks and pg_stat_activity
+    are read at different moments, so a guarded transaction that commits between them shows
+    as a second idle holder for that instant: wait for a single one."""
+    deadline = time.monotonic() + 10
+    while len(pids := _fence_backends(url, version)) != 1:
+        assert time.monotonic() < deadline, pids
+        time.sleep(0.1)
+    return pids[0]
+
+
 def _kill_fence_backend(url: str, version: str) -> None:
     """End only the holder's fence session; the process and its pool stay up."""
-    pids = _fence_backends(url, version)
-    assert len(pids) == 1, pids
+    pid = _fence_holder(url, version)
     engine = sa.create_engine(sync_url(url), poolclass=NullPool)
     try:
         with engine.connect() as conn:
-            assert conn.execute(sa.text("SELECT pg_terminate_backend(:p)"), {"p": pids[0]}).scalar()
+            assert conn.execute(sa.text("SELECT pg_terminate_backend(:p)"), {"p": pid}).scalar()
     finally:
         engine.dispose()
     deadline = time.monotonic() + 10
@@ -522,7 +534,7 @@ def test_a_lost_fence_is_taken_again_before_the_next_write(scratch, tmp_path, ho
         assert _reply(old, 0) == "WROTE", _output(old)
         assert snapshot(url)["sentinel"] == [(1, f"written-by-{OLDER}")]
         # The fence is held again, so a newer version is kept out as before.
-        assert len(_fence_backends(url, OLDER)) == 1
+        _fence_holder(url, OLDER)
         before = snapshot(url)
         code, out = _run(NEWER, "migrate", url, tmp_path / "new", wait=2)
         assert code == 1, out

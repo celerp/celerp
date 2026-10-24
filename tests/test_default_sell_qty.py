@@ -27,6 +27,7 @@ from test_inventory_transform import _transform_payload
 from test_receipt_accounting import _doc, _finalize, _parcels, _receive, _return
 from test_supplier_credit_note import _trial_balance
 from test_supplier_return_settles_bill import supplier_credits
+from test_helpers import doc_version
 
 LOCALES = Path(__file__).resolve().parent.parent / "ui" / "locales"
 
@@ -345,7 +346,7 @@ async def test_a_subscription_blocking_fewer_decimals_says_to_cancel_it_and_set_
     assert await _carat_decimals(client, auth) == 3
     # An active or paused template's lines cannot be edited, so the refusal never says to change them.
     line = {**(await _state(session, auth, sub))["line_items"][0], "quantity": 0.27}
-    r = await client.patch(f"/docs/{sub}", headers=auth["headers"], json={
+    r = await client.patch(f"/docs/{sub}", headers=auth["headers"], json={"expected_version": await doc_version(client, auth["headers"], sub), 
         "fields_changed": {"line_items": {"old": None, "new": [line]}}})
     assert r.status_code == 409, r.text
 
@@ -642,7 +643,8 @@ async def _new_subscription(client, session, auth, doc_type: str, qty: float) ->
             "unit": "carat", "unit_price": 10}
     for fields in ({"contact_id": "customer:1", "start_date": "2026-01-01"}, {"line_items": [line]}):
         r = await client.patch(f"/docs/{sub}", headers=auth["headers"], json={
-            "fields_changed": {key: {"old": None, "new": value} for key, value in fields.items()}})
+            "fields_changed": {key: {"old": None, "new": value} for key, value in fields.items()},
+            "expected_version": await doc_version(client, auth["headers"], sub)})
         assert r.status_code == 200, r.text
     assert (await client.post(f"/subscriptions/{sub}/activate", headers=auth["headers"])).status_code == 200
     assert not (await _state(session, auth, sub)).get("name")

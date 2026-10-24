@@ -768,19 +768,20 @@ def test_labels_print_doc_sku_lookup_uses_id_field():
 
 
 def test_draft_line_row_template_has_checkbox():
-    """_li_empty_row (the <template> for new draft rows) must include a checkbox td
-    so the li-bulk-toolbar can select new rows just like existing ones."""
-    import re, inspect
-    import ui.routes.documents as _doc_mod
-    src = inspect.getsource(_doc_mod)
-    # Find _li_empty_row function body
-    match = re.search(r'def _li_empty_row\(\)(.*?)return Tr\(\*cells\)', src, re.DOTALL)
-    assert match, "_li_empty_row not found in documents.py"
-    body = match.group(1)
-    assert "col-checkbox li-checkbox-cell" in body, (
-        "_li_empty_row must prepend a col-checkbox td so new rows can be bulk-selected"
-    )
-    assert "li-select" in body, "Checkbox must have class li-select for bulk toolbar JS"
+    """The <template> a draft editor clones for a new row carries a checkbox cell, so the
+    li-bulk-toolbar can select new rows just like existing ones."""
+    import re
+    from fasthtml.common import to_xml
+    from ui.routes import documents
+
+    page = to_xml(documents._doc_detail({"id": "doc:x", "doc_type": "invoice", "status": "draft",
+                                         "line_items": []}))
+    tpl = page[page.index('id="line-row-tpl"'):]
+    tpl = tpl[:tpl.index("</template>")]
+    cell = re.search(r'<td class="col-checkbox li-checkbox-cell"[^>]*>(.*?)</td>', tpl, re.DOTALL)
+    assert cell, "a new draft row must start with a col-checkbox cell so it can be bulk-selected"
+    assert re.search(r'<input[^>]*class="li-select"', cell.group(1)), (
+        "the checkbox must have class li-select for the bulk toolbar JS")
 
 
 def test_celerp_fill_row_description_always_overwrites():

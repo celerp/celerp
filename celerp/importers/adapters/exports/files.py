@@ -111,7 +111,7 @@ def _members(name: str, path: Path) -> list[tuple[str, bytes]]:
                          and not i.filename.split("/")[-1].startswith(".") and "__MACOSX" not in i.filename]
                 if len(infos) > MAX_MEMBERS or sum(i.file_size for i in infos) > LIMITS.uncompressed:
                     raise ScanError(t("migration.err_export_archive_too_large", name=name))
-                return [(f"{name}: {i.filename.split('/')[-1]}", archive.read(i)) for i in infos]
+                return [(f"{name}: {i.filename.split('/')[-1]}", tabular.read_zip_member(archive, i)) for i in infos]
         except tabular.ZIP_ERRORS as exc:
             raise ScanError(t("migration.err_export_unreadable", name=name)) from exc
 

@@ -1076,6 +1076,9 @@ async def finalize(session: AsyncSession, run: MigrationRun, posting_accounts: d
             write_period_lock(company, run.source_lock_date.isoformat(), run.created_by_user_id)
         company.is_active = True
         company.is_migration_staged = False
+        # Startup skipped the company while staged; tell it now rather than at the next boot.
+        from celerp.services.tax_seed_notice import reconcile_tax_seed_notices
+        await reconcile_tax_seed_notices(session, run.company_id, company.settings)
         if report["blockers"]:
             report["reviewed_differences"] = {"by": reviewed_by.name or reviewed_by.email,
                                               "at": datetime.now(timezone.utc).isoformat()}

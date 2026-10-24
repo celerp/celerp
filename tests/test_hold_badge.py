@@ -12,6 +12,7 @@ import pytest
 from fasthtml.common import to_xml
 
 from line_actions_support import doc, h, line, line_ids, lot, quotation, state  # noqa: F401
+from test_helpers import doc_version
 
 _L0 = "11111111-1111-4111-8111-111111111111"
 
@@ -32,7 +33,7 @@ async def test_a_document_reports_what_each_line_holds_after_a_quantity_edit(cli
     assert (await client.post(f"/docs/{d}/revert-to-draft", headers=h, json={})).status_code == 200
     lines = [dict(li) for li in (await state(client, h, d))["line_items"]]
     lines[0]["quantity"] = 6
-    r = await client.patch(f"/docs/{d}", headers=h, json={"fields_changed": {"line_items": {"new": lines}}})
+    r = await client.patch(f"/docs/{d}", headers=h, json={"expected_version": await doc_version(client, h, d), "fields_changed": {"line_items": {"new": lines}}})
     assert r.status_code == 200, r.text
     got = await state(client, h, d)
     assert got["line_holds"] == {l0: 4.0}

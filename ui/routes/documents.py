@@ -34,7 +34,8 @@ from celerp.services.business_time import business_today
 from celerp.services.doc_balance import awaiting_status_param, is_awaiting_payment, is_owed, outstanding_balance
 from celerp.services.money import to_decimal, to_stored_float, round_money, currency_dp, rate_dp
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, line_price_list, resolve_price
-from celerp.tax_regimes import default_tax, taxes_for
+from celerp.tax_regimes import (default_line_taxes, holds_tax, legacy_line_taxes, line_tax, line_tax_unset,
+                                matching_tax, set_new_line_taxes, tax_entries, tax_text, taxes_for, unreadable_tax)
 from celerp.services.payment_terms import due_date_for_terms
 from celerp.services.permissions import missing_permission_text, role_has_permission
 from ui.components.import_access import can_import_documents
@@ -1255,8 +1256,20 @@ def _form_version(form) -> int | None:
     return int(raw) if raw.isdigit() else None
 
 
-async def _line_items_from_inventory(token: str, entity_ids: list[str], price_list: str = DEFAULT_PRICE_LIST_NAME) -> list[dict]:
-    """Fetch inventory items and build doc/list line items."""
+async def _new_line_taxes(token: str, doc_type: str | None, doc: dict | None) -> list[dict] | None:
+    """The taxes a new line on a document of this type starts with (see default_line_taxes; `doc` is
+    the target document when appending, None for a new one; None where the user sets them); none for
+    a list. A failed read raises, so no line is added without its tax."""
+    if not doc_type or doc_type == "list":
+        return []
+    return default_line_taxes(await api.get_document_taxes(token, doc_type), doc_type, doc=doc)
+
+
+async def _line_items_from_inventory(token: str, entity_ids: list[str], price_list: str = DEFAULT_PRICE_LIST_NAME,
+                                     doc_type: str | None = None, doc: dict | None = None) -> list[dict]:
+    """Fetch inventory items and build doc/list line items; a document's lines start with its default
+    taxes (see _new_line_taxes; pass the target `doc` when appending)."""
+    line_taxes = await _new_line_taxes(token, doc_type, doc)
     line_items = []
     for eid in entity_ids:
         try:
@@ -1270,7 +1283,7 @@ async def _line_items_from_inventory(token: str, entity_ids: list[str], price_li
         qty = float(item.get("quantity", 1)) if float(item.get("quantity", 1)) > 0 else 1
         desc = f"{sku} - {name}" if sku else name
 
-        line_items.append({
+        line = {
             "description": desc,
             "quantity": qty,
             "unit_price": unit_price,
@@ -1282,7 +1295,9 @@ async def _line_items_from_inventory(token: str, entity_ids: list[str], price_li
             "entity_id": eid,
             "allow_splitting": splitting_allowed(item),
             "item_quantity": item.get("quantity"),
-        })
+        }
+        set_new_line_taxes(line, line_taxes)
+        line_items.append(line)
     return line_items
 
 
@@ -1350,12 +1365,15 @@ def _reorder_po_line(item: dict, unit_decimals: int | None = None) -> dict:
     }
 
 
-async def _reorder_lines_from_inventory(token: str, entity_ids: list[str]) -> list[dict]:
+async def _reorder_lines_from_inventory(token: str, entity_ids: list[str], doc_type: str | None = None,
+                                        doc: dict | None = None) -> list[dict]:
     """Fetch inventory items and build purchase-order reorder lines (see _reorder_po_line).
 
     Loads the company unit map once so each line's qty is ceil'd to its purchase
-    unit's precision.
+    unit's precision. With a doc_type, each line starts with that document's default taxes
+    (see _new_line_taxes; pass the target `doc` when appending).
     """
+    line_taxes = await _new_line_taxes(token, doc_type, doc)
     try:
         unit_map = build_unit_map(await api.get_units(token))
     except Exception:
@@ -1368,7 +1386,9 @@ async def _reorder_lines_from_inventory(token: str, entity_ids: list[str]) -> li
             continue
         pu = item.get("purchase_unit") or item.get("sell_by") or "piece"
         decimals = (unit_map.get(pu) or {}).get("decimals")
-        lines.append(_reorder_po_line(item, unit_decimals=decimals))
+        line = _reorder_po_line(item, unit_decimals=decimals)
+        set_new_line_taxes(line, line_taxes)
+        lines.append(line)
     return lines
 
 
@@ -1411,19 +1431,6 @@ async def _po_line_suggestions(token: str, doc: dict) -> dict[str, str]:
         if q:
             out[eid] = f"{q:g}"
     return out
-
-
-async def _company_doc_taxes(token: str, doc_type: str) -> list[dict]:
-    """The company's rated taxes for this document type's side, as doc_taxes dicts for a new document."""
-    try:
-        taxes = await api.get_document_taxes(token, doc_type)
-    except Exception:
-        return []
-    return [
-        {"code": tax.get("name", "Tax"), "rate": float(tax.get("rate", 0)), "order": i, "is_compound": bool(tax.get("is_compound"))}
-        for i, tax in enumerate(taxes_for(taxes, doc_type))
-        if tax.get("rate")
-    ]
 
 
 def _send_to_option_list(items: list[dict], kind: str) -> FT:
@@ -1602,7 +1609,7 @@ def setup_routes(app):
             docs, total_count, summary = await _doc_results(token, state, date_from, date_to, page, per_page)
         except APIError as e:
             if e.status == 401:
-                return RedirectResponse("/login", status_code=302)
+                raise
             docs, total_count, summary = [], 0, {}
         draft_count = summary.get("draft_count", 0)
 
@@ -1686,7 +1693,6 @@ def setup_routes(app):
             return RedirectResponse("/login", status_code=302)
         # The export is the list the user is looking at, in full: every filter and the
         # date window travel; the page does not.
-        from starlette.responses import Response
 
         from ui.streaming import ClosingStreamingResponse
         state = _doc_list_state(request)
@@ -1697,10 +1703,7 @@ def setup_routes(app):
                 token, _doc_api_params(state, date_from, date_to, limit=None),
             )
         except APIError as e:
-            if e.status == 401:
-                return RedirectResponse("/login", status_code=302)
-            # A failed export is an error page, never a downloaded file that says "error".
-            return Response(content=error_message(e), status_code=e.status, media_type="text/plain")
+            return api.refusal_response(e)
         out_headers = {"Content-Disposition": "attachment; filename=documents.csv"}
         if "content-length" in headers:
             out_headers["Content-Length"] = headers["content-length"]
@@ -1718,8 +1721,7 @@ def setup_routes(app):
             entity_id = result.get("entity_id") or result.get("id", "")
         except APIError as e:
             if e.status == 401:
-                from starlette.responses import Response as _R
-                return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+                raise
             from starlette.responses import Response as _R
             detail = error_message(e)
             return _R(
@@ -1762,14 +1764,12 @@ def setup_routes(app):
         entity_ids = [v.strip() for v in form.getlist("selected") if v.strip()]
         if not entity_ids:
             return Div(P(t("flash.no_items_selected"), cls="flash flash--warning"), id="modal-container")
-        line_items = await _line_items_from_inventory(token, entity_ids)
-        doc_taxes = await _company_doc_taxes(token, "invoice")
         try:
+            line_items = await _line_items_from_inventory(token, entity_ids, doc_type="invoice")
             result = await api.create_doc(token, {
                 "doc_type": "invoice",
                 "status": "draft",
                 "line_items": line_items,
-                "doc_taxes": doc_taxes,
             })
             doc_id = result.get("entity_id") or result.get("id", "")
         except APIError as e:
@@ -1788,17 +1788,11 @@ def setup_routes(app):
         target_id = str(form.get("target_id", "")).strip()
         if not entity_ids or not target_id:
             return Div(P(t("label.no_items_or_target_selected"), cls="flash flash--warning"), id="modal-container")
-        new_lines = await _line_items_from_inventory(token, entity_ids)
         try:
             doc = await api.get_doc(token, target_id)
-            existing_lines = doc.get("line_items") or []
-            combined = existing_lines + new_lines
-            subtotal = sum(l.get("quantity", 0) * l.get("unit_price", 0) for l in combined)
-            await api.patch_doc(token, target_id, {
-                "line_items": combined,
-                "subtotal": subtotal,
-                "total": subtotal,
-            })
+            new_lines = await _line_items_from_inventory(token, entity_ids, doc_type=doc.get("doc_type"), doc=doc)
+            await api.patch_doc(token, target_id, {"line_items": (doc.get("line_items") or []) + new_lines},
+                                expected_version=doc.get("version"))
         except APIError as e:
             return Div(P(error_message(e), cls="flash flash--error"), id="modal-container")
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{target_id}"})
@@ -1923,9 +1917,7 @@ def setup_routes(app):
         try:
             doc = await api.get_doc(token, entity_id)
         except APIError as e:
-            if e.status == 401:
-                return RedirectResponse("/login", status_code=302)
-            return _Resp(content=error_message(e), status_code=e.status)
+            return api.refusal_response(e)
         line_items = doc.get("line_items") or []
         doc_ref = (doc.get("ref_id") or doc.get("doc_number") or entity_id).replace(" ", "_")
 
@@ -1988,6 +1980,15 @@ def setup_routes(app):
 
         if "sku" not in col_map.values() and "description" not in col_map.values():
             return _J({"error": t("doc.csv_missing_sku_or_description")}, status_code=400)
+
+        # A row with no tax of its own is a new line like any other (_new_line_taxes).
+        try:
+            doc = await api.get_doc(token, entity_id)
+            new_taxes = await _new_line_taxes(token, doc.get("doc_type"), doc)
+        except APIError as e:
+            if e.status == 401:
+                raise
+            return _J({"error": error_message(e)}, status_code=e.status)
 
         # Parse rows
         new_lines: list[dict] = []
@@ -2056,8 +2057,6 @@ def setup_routes(app):
                 "unit": unit or catalog_item.get("sell_by") or "",
                 "unit_price": unit_price if unit_price is not None else resolve_price(catalog_item, price_list) if catalog_item else 0,
                 "discount_pct": discount_pct,
-                "tax_code": tax_code,
-                "tax_rate": tax_rate,
                 "hs_code": hs_code or catalog_item.get("hs_code") or "",
                 "account_code": account_code,
                 "entity_id": catalog_item.get("entity_id") or "",
@@ -2065,26 +2064,22 @@ def setup_routes(app):
                 "item_quantity": catalog_item.get("quantity"),
                 "ambiguous": row_ambiguous,
             }
+            if mapped_row.get("tax_code") or mapped_row.get("tax_rate"):
+                line.update(tax_code=tax_code, tax_rate=tax_rate)
+            else:
+                set_new_line_taxes(line, new_taxes)
             new_lines.append(line)
 
         if not new_lines:
             return _J({"error": t("doc.csv_no_valid_rows")}, status_code=400)
 
-        # Append to existing line items
+        # Appended to the lines as they stand; the server recalculates the money.
         try:
-            doc = await api.get_doc(token, entity_id)
-            existing = doc.get("line_items") or []
-            combined = existing + new_lines
-            subtotal = sum(
-                float(l.get("quantity", 0)) * float(l.get("unit_price", 0)) * (1 - float(l.get("discount_pct", 0)) / 100)
-                for l in combined
-            )
-            await api.patch_doc(token, entity_id, {
-                "line_items": combined,
-                "subtotal": subtotal,
-                "total": subtotal,
-            })
+            await api.patch_doc(token, entity_id, {"line_items": (doc.get("line_items") or []) + new_lines},
+                                expected_version=doc.get("version"))
         except APIError as e:
+            if e.status == 401:
+                raise
             return _J({"error": error_message(e)}, status_code=e.status)
 
         return _J({"ok": True, "imported": len(new_lines)})
@@ -2095,7 +2090,8 @@ def setup_routes(app):
         measures, and lines created before the PCS/WEIGHT feature don't store them
         (notably the weight unit). Shipping documents additionally backfill each
         line's HS code / country of origin from its catalog item - the item is the
-        durable home of customs data, the line only overrides. When the company
+        durable home of customs data, the line only overrides - and an issued one reads
+        each item as it was at Issue (shipping.issued_item). When the company
         shows barcodes on lines, every doc type also backfills barcodes onto lines
         saved before barcode stamping. No-op otherwise for non-invoice types."""
         _needs_ident = line_identifier_mode != "sku"
@@ -2104,7 +2100,8 @@ def setup_routes(app):
             return
         import asyncio as _aio
         from celerp.services.line_measures import resolve_line_measures
-        from celerp.services.shipping import SHIPPING_LIST_TYPE, customs_backfill, line_gross_weight
+        from celerp.services.shipping import (
+            SHIPPING_LIST_TYPE, backfill_item_customs, issued_item, line_gross_weight)
         _is_shipping = doc.get("list_type") == SHIPPING_LIST_TYPE
         try:
             _umap = build_unit_map(await api.get_units(token))
@@ -2115,10 +2112,12 @@ def setup_routes(app):
             eid = li.get("entity_id") or li.get("item_id")
             if not eid:
                 return
-            try:
-                item = await api.get_item(token, eid)
-            except Exception:
-                return
+            item = issued_item(li, doc)
+            if item is None:
+                try:
+                    item = await api.get_item(token, eid)
+                except Exception:
+                    return
             if _needs_ident:
                 identifier_backfill(li, item)
             if not _invoice_layout:
@@ -2126,7 +2125,7 @@ def setup_routes(app):
             meta = item_measure_meta(item, _umap)
             li["pieces"], li["weight"], li["weight_unit"], _, _ = resolve_line_measures(li, item_meta=meta)
             if _is_shipping:
-                customs_backfill(li, item)
+                backfill_item_customs(li, item, doc)
                 # Net weight = the line's actual weight (above); gross adds the item's packaging.
                 li["gross_weight"], li["gross_weight_unit"] = line_gross_weight(
                     li, item, bool(meta.get("qty_is_weight")))
@@ -2157,7 +2156,7 @@ def setup_routes(app):
             lst = await api.get_list(token, entity_id)
         except APIError as e:
             if e.status == 401:
-                return RedirectResponse("/login", status_code=302)
+                raise
             return _HR(to_xml(P(error_message(e))), status_code=e.status)
         layout = request.query_params.get("layout") or None
         lst.setdefault("doc_type", "list")
@@ -2199,7 +2198,7 @@ def setup_routes(app):
             doc = await api.get_doc(token, entity_id)
         except APIError as e:
             if e.status == 401:
-                return RedirectResponse("/login", status_code=302)
+                raise
             from starlette.responses import HTMLResponse as _HR
             return _HR(to_xml(P(error_message(e))), status_code=e.status)
         # Inject company fields
@@ -2372,7 +2371,7 @@ celerpUpdateBulkAlloc();
             doc = await api.get_doc(token, entity_id)
         except (APIError, Exception) as e:
             if isinstance(e, APIError) and e.status == 401:
-                return RedirectResponse("/login", status_code=302)
+                raise
             if isinstance(e, APIError) and e.status == 404:
                 from starlette.responses import HTMLResponse as _HR
                 return _HR(f"<h2>{t('documents.document_not_found')}</h2><p><a href='/docs'>{t('documents.back_to_documents')}</a></p>", status_code=404)
@@ -2986,7 +2985,7 @@ celerpUpdateBulkAlloc();
             if not (0 <= idx < len(line_items)):
                 return _action_error(t("documents.line_item_not_found"))
             line_items[idx] = {**line_items[idx], field: value}
-            await api.patch_doc(token, entity_id, {"line_items": line_items})
+            await api.patch_doc(token, entity_id, {"line_items": line_items}, expected_version=doc.get("version"))
         except APIError as e:
             return _action_error(error_message(e))
         display_value = value
@@ -3176,23 +3175,44 @@ celerpUpdateBulkAlloc();
             body = await request.json()
         except Exception:
             return JSONResponse({"error": "Invalid JSON"}, status_code=400)
-        # The lines and the header discount are inputs; the API computes the document's
-        # subtotal, discount amount, taxes and total from them.
+        # The version the page read: the API refuses the save if the document moved since.
+        expected_version = body.get("expected_version")
+        if expected_version is not None and type(expected_version) is not int:
+            return JSONResponse({"error": "Invalid expected_version"}, status_code=400)
+        # The lines, the header discount and the document taxes are inputs; the API computes the
+        # document's subtotal, discount amount, taxes and total from them.
         patch_data = {"line_items": body.get("line_items", [])}
         # Always sent (0 clears it) so removing a discount sticks.
         if "discount" in body:
             patch_data["discount"] = float(body.get("discount") or 0)
             patch_data["discount_type"] = body.get("discount_type") or "flat"
+        # An empty list clears them, so removing the last document tax sticks.
+        if "doc_taxes" in body:
+            patch_data["doc_taxes"] = body["doc_taxes"]
         try:
-            result = await api.patch_doc(token, entity_id, patch_data)
+            result = await api.patch_doc(token, entity_id, patch_data, expected_version=expected_version)
         except APIError as e:
+            if e.status == 401:
+                raise
+            # Saved from an older copy: the page keeps the user's rows and offers Try again.
+            if isinstance(e.data, dict) and e.data.get("code") == "stale_version":
+                return JSONResponse({"code": "stale_version", "error": error_message(e)}, status_code=409)
             payload = {"error": error_message(e)}
             # Foreign-reserved rejection: pass the structured conflict list through
             # so the page can open the resolution modal instead of the inline error.
             if isinstance(e.data, dict) and e.data.get("conflicts"):
                 payload["reserved_conflicts"] = e.data["conflicts"]
-            return JSONResponse(payload, status_code=400)
-        return JSONResponse({"ok": True, "version": result.get("version")})
+            return JSONResponse(payload, status_code=e.status)
+        saved = {"ok": True, "version": result.get("version")}
+        # The page shows the taxes, subtotal, discount, total and outstanding the API just computed,
+        # never its own copy.
+        try:
+            doc = await api.get_doc(token, entity_id)
+        except APIError as e:
+            if e.status == 401:
+                raise
+            return JSONResponse({**saved, "error": error_message(e)})
+        return JSONResponse({**saved, "money": _doc_money(doc)})
 
     async def _proxy_reprice(request: Request, entity_id: str, reprice_fn):
         """Transport-only Web UI adapter; all repricing semantics live in celerp-docs."""
@@ -3213,6 +3233,8 @@ celerpUpdateBulkAlloc();
         try:
             result = await reprice_fn(token, entity_id, price_list, expected_version)
         except APIError as e:
+            if e.status == 401:
+                raise
             return JSONResponse({"error": error_message(e)}, status_code=e.status or 400)
         return JSONResponse(result)
 
@@ -3228,6 +3250,7 @@ celerpUpdateBulkAlloc();
     @app.post("/docs/{entity_id}/action/{action}")
     async def doc_action(request: Request, entity_id: str, action: str):
         from starlette.responses import Response as _R
+        from celerp_docs.doc_money import uncomputable_tax, unreadable_tax_refusal
         token = _token(request)
         if not token:
             return _R("", status_code=401, headers={"HX-Redirect": "/login"})
@@ -3284,7 +3307,10 @@ celerpUpdateBulkAlloc();
                 return _R("", status_code=204, headers={"HX-Redirect": f"/docs?type={doc_type}"})
             elif action == "create-credit-note":
                 # Fetch source invoice and pre-populate CN with its line items (negated quantities)
+                # and its taxes: one it cannot carry is refused by name, never left off the note.
                 source = await api.get_doc(token, entity_id)
+                if (named := uncomputable_tax(source)) is not None:
+                    return _action_error(unreadable_tax_refusal(named, source).detail)
                 line_items = [
                     {k: v for k, v in li.items() if k not in ("id", "line_total")}
                     for li in (source.get("line_items") or [])
@@ -3294,6 +3320,7 @@ celerpUpdateBulkAlloc();
                     "original_doc_id": entity_id,
                     "contact_id": source.get("contact_id"),
                     "line_items": line_items,
+                    "doc_taxes": source.get("doc_taxes") or [],
                     "subtotal": source.get("subtotal") or 0,
                     "tax": source.get("tax") or 0,
                     "total": source.get("total") or 0,
@@ -3303,8 +3330,11 @@ celerpUpdateBulkAlloc();
                 return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{cn_id}"})
             elif action == "create-supplier-credit-note":
                 # A draft supplier credit note against this bill, for a price or charge the
-                # supplier gives back. Goods go back through Return items, so no lines are copied.
+                # supplier gives back, taxed as the bill is taxed as a whole. Goods go back
+                # through Return items, so no lines are copied.
                 source = await api.get_doc(token, entity_id)
+                if (named := uncomputable_tax({"doc_taxes": source.get("doc_taxes")})) is not None:
+                    return _action_error(unreadable_tax_refusal(named, source).detail)
                 result = await api.create_doc(token, {
                     "doc_type": "debit_note",
                     "original_doc_id": entity_id,
@@ -3312,6 +3342,7 @@ celerpUpdateBulkAlloc();
                     "currency": source.get("currency"),
                     "conversion_rate": source.get("conversion_rate"),
                     "line_items": [],
+                    "doc_taxes": source.get("doc_taxes") or [],
                 })
                 note_id = result.get("entity_id") or result.get("id", "")
                 return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{note_id}"})
@@ -3327,7 +3358,7 @@ celerpUpdateBulkAlloc();
                 return _R("", status_code=400)
         except APIError as e:
             if e.status == 401:
-                return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+                raise
             # Return error inline
             return _action_error(error_message(e))
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
@@ -3363,7 +3394,7 @@ celerpUpdateBulkAlloc();
             })
         except APIError as e:
             if e.status == 401:
-                return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+                raise
             return _action_error(error_message(e))
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
 
@@ -3379,7 +3410,7 @@ celerpUpdateBulkAlloc();
             target_id = result.get("target_doc_id", entity_id)
         except APIError as e:
             if e.status == 401:
-                return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+                raise
             return _action_error(error_message(e))
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{target_id}"})
 
@@ -3412,7 +3443,7 @@ celerpUpdateBulkAlloc();
             result = await api.receive_po(token, entity_id, data)
         except APIError as e:
             if e.status == 401:
-                return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+                raise
             return _action_error(error_message(e))
         summary = _receive_summary(result.get("line_counts"))
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}",
@@ -3455,7 +3486,7 @@ celerpUpdateBulkAlloc();
                                                                **submitted_operation_key(form)})
         except APIError as e:
             if e.status == 401:
-                return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+                raise
             # A line whose lots the server cannot pick for it opens its lot list.
             data = e.data if isinstance(e.data, dict) else {}
             line = (data.get("params") or {}).get("line")
@@ -3481,7 +3512,7 @@ celerpUpdateBulkAlloc();
             await api.undo_receive_goods(token, entity_id)
         except APIError as e:
             if e.status == 401:
-                return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+                raise
             return _action_error(error_message(e))
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}",
                                                 **toast_header(t("documents.receipt_undone"), "info")})
@@ -3513,7 +3544,7 @@ celerpUpdateBulkAlloc();
             })
         except APIError as e:
             if e.status == 401:
-                return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+                raise
             return _action_error(error_message(e))
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
 
@@ -3532,7 +3563,7 @@ celerpUpdateBulkAlloc();
             await api.void_payment(token, entity_id, payment_index, void_reason, **submitted_operation_key(form))
         except APIError as e:
             if e.status == 401:
-                return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+                raise
             return _action_error(error_message(e))
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
 
@@ -3548,7 +3579,7 @@ celerpUpdateBulkAlloc();
             await api.delete_payment(token, entity_id, payment_index, **submitted_operation_key(form))
         except APIError as e:
             if e.status == 401:
-                return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+                raise
             return _action_error(error_message(e))
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
 
@@ -3565,7 +3596,7 @@ celerpUpdateBulkAlloc();
             await apply(token, entity_id, target_doc_id, amount, date, **submitted_operation_key(form))
         except APIError as e:
             if e.status == 401:
-                return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+                raise
             return _action_error(error_message(e))
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
 
@@ -3594,7 +3625,7 @@ celerpUpdateBulkAlloc();
                                          **submitted_operation_key(form))
         except APIError as e:
             if e.status == 401:
-                return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+                raise
             return _action_error(error_message(e))
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
 
@@ -3660,7 +3691,7 @@ celerpUpdateBulkAlloc();
             await api.bulk_accounting_sync(token, doc_ids, flag == "1", operation_id)
         except APIError as exc:
             if exc.status == 401:
-                return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+                raise
             return _action_error(error_message(exc))
         return _R("", status_code=204, headers={"HX-Refresh": "true"})
 
@@ -3683,7 +3714,7 @@ celerpUpdateBulkAlloc();
                                             **submitted_operation_key(form))
         except APIError as e:
             if e.status == 401:
-                return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+                raise
             return _action_error(error_message(e))
         # A doc concurrently closed, already paid, or shrunk under its row lock is skipped
         # by the API, not paid. Report every skipped doc by name and reason so the user is
@@ -3718,7 +3749,7 @@ celerpUpdateBulkAlloc();
             all_docs = docs_resp.get("items", []) if isinstance(docs_resp, dict) else docs_resp
         except APIError as e:
             if e.status == 401:
-                return RedirectResponse("/login", status_code=302)
+                raise
             all_docs = []
 
         # Build flat payment list from all docs
@@ -3992,7 +4023,7 @@ celerpUpdateBulkAlloc();
             return _action_error(str(exc))
         except APIError as e:
             if e.status == 401:
-                return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+                raise
             return _action_error(error_message(e))
         # Goods another invoice named: say whose, and that it can no longer ship them, in a
         # notice that stays until it is closed.
@@ -4084,7 +4115,7 @@ celerpUpdateBulkAlloc();
             await api.receive_return(token, entity_id, items, **submitted_operation_key(form))
         except APIError as e:
             if e.status == 401:
-                return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+                raise
             return _action_error(error_message(e))
         try:
             doc = await api.get_doc(token, entity_id)
@@ -4103,7 +4134,7 @@ celerpUpdateBulkAlloc();
             await api.undo_receive_return(token, entity_id)
         except APIError as e:
             if e.status == 401:
-                return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+                raise
             return _action_error(error_message(e))
         try:
             doc = await api.get_doc(token, entity_id)
@@ -4280,7 +4311,7 @@ celerpUpdateBulkAlloc();
             lists, filtered_total, summary = await _list_results(token, state, date_from, date_to, page, per_page)
         except APIError as e:
             if e.status == 401:
-                return RedirectResponse("/login", status_code=302)
+                raise
             lists, summary, filtered_total = [], {}, 0
         lang = get_lang(request)
         _role = _get_role(request)
@@ -4326,7 +4357,7 @@ celerpUpdateBulkAlloc();
             return RedirectResponse(f"/lists/{result.get('entity_id') or result.get('id', '')}", status_code=302)
         except APIError as e:
             if e.status == 401:
-                return RedirectResponse("/login", status_code=302)
+                raise
             return RedirectResponse("/lists", status_code=302)
 
     @app.post("/lists/new")
@@ -4363,7 +4394,6 @@ celerpUpdateBulkAlloc();
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
-        from starlette.responses import Response
 
         from ui.streaming import ClosingStreamingResponse
         state = _list_page_state(request)
@@ -4374,9 +4404,7 @@ celerpUpdateBulkAlloc();
                 token, _list_api_params(state, date_from, date_to, limit=None),
             )
         except APIError as e:
-            if e.status == 401:
-                return RedirectResponse("/login", status_code=302)
-            return Response(content=error_message(e), status_code=e.status, media_type="text/plain")
+            return api.refusal_response(e)
         out_headers = {"Content-Disposition": "attachment; filename=lists.csv"}
         if "content-length" in headers:
             out_headers["Content-Length"] = headers["content-length"]
@@ -4396,7 +4424,7 @@ celerpUpdateBulkAlloc();
             entity_id = result.get("entity_id") or result.get("id", "")
         except APIError as e:
             logger.warning("API error on create_blank_list: %s", e.detail)
-            return _R("", status_code=500)
+            return api.refusal_response(e)
         return _R("", status_code=204, headers={"HX-Redirect": f"/lists/{entity_id}"})
 
     @app.post("/lists/from-items")
@@ -4549,7 +4577,7 @@ celerpUpdateBulkAlloc();
             resp = await api.get_list_page(token, entity_id, offset=_line_offset, limit=_line_limit)
         except APIError as e:
             if e.status == 401:
-                return RedirectResponse("/login", status_code=302)
+                raise
             if e.status == 404:
                 from starlette.responses import HTMLResponse as _HR
                 return _HR(f"<h2>{t('documents.list_not_found')}</h2><p><a href='/lists'>{t('documents.back_to_lists')}</a></p>", status_code=404)
@@ -4604,6 +4632,11 @@ celerpUpdateBulkAlloc();
         # maps stay empty and the lines render from their stored values.
         item_meta_map, item_status_map, item_status_doc_map = _enrich_line_meta(
             lst.get("line_items", []), resp.get("item_meta"), _co_settings, _ident_mode)
+        from celerp.services.shipping import backfill_item_customs
+        for _li in lst["line_items"]:
+            _item = (resp.get("item_meta") or {}).get(_li.get("item_id") or _li.get("entity_id") or "")
+            if _item:
+                backfill_item_customs(_li, _item, lst)
 
         ref = lst.get("ref_id") or entity_id
         status_label = _list_status_label(lst)
@@ -4797,12 +4830,22 @@ celerpUpdateBulkAlloc();
             # merged array, so off-page rows are never disturbed and a shorter page truncates.
             result = await api.patch_list_line_page(token, entity_id, page, offset, original_count, expected_version)
         except APIError as e:
+            if e.status == 401:
+                raise
             # A stale expected_version means someone else saved this list first; surface it
             # structurally (code, not English text) so the page can prompt a reload.
             if e.status == 409:
                 return JSONResponse({"code": "stale_version", "error": error_message(e)}, status_code=409)
-            return JSONResponse({"error": error_message(e)}, status_code=400)
-        return JSONResponse({"ok": True, "version": result.get("version")})
+            return JSONResponse({"error": error_message(e)}, status_code=e.status)
+        saved = {"ok": True, "version": result.get("version")}
+        # As on a document: the page shows the money the API just computed, never its own copy.
+        try:
+            lst = await api.get_list(token, entity_id)
+        except APIError as e:
+            if e.status == 401:
+                raise
+            return JSONResponse({**saved, "error": error_message(e)})
+        return JSONResponse({**saved, "money": _doc_money({"doc_type": "list", **lst})})
 
     @app.post("/lists/{entity_id}/action/{action}")
     async def list_action(request: Request, entity_id: str, action: str):
@@ -4858,7 +4901,7 @@ celerpUpdateBulkAlloc();
                 return _R("", status_code=400)
         except APIError as e:
             if e.status == 401:
-                return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+                raise
             return _action_error(error_message(e))
         return _R("", status_code=204, headers={"HX-Redirect": f"/lists/{entity_id}"})
 
@@ -4969,6 +5012,8 @@ celerpUpdateBulkAlloc();
         try:
             res = await api.scan_codes(token, kind, entity_id, barcode, price_list, run_key)
         except APIError as e:
+            if e.status == 401:
+                raise
             # A RECORD-LEVEL rejection (closed/void, a finalized record that refuses scanning, or a
             # spent scan run key reused for a different batch, which carries the current version).
             # The scan bar branches on the structured body: a machine `code` (e.g. scan_run_conflict)
@@ -5021,7 +5066,7 @@ celerpUpdateBulkAlloc();
         try:
             await api.set_scanned(token, entity_id, ids or None, scanned)
         except APIError as e:
-            return _R(error_message(e), status_code=e.status or 400)
+            return api.refusal_response(e)
         return HTMLResponse(to_xml(await _audit_line_tbody(token, entity_id, *_line_window(form))))
 
     @app.post("/lists/{entity_id}/line/{item_id}")
@@ -6568,10 +6613,34 @@ async def doc_detail_connectors(company: dict) -> set[str]:
 
 def _line_tax_rate(li: dict) -> float:
     """A line's tax rate: the sum of its taxes' rates, or its tax_rate when it has none."""
-    stored = [tx for tx in (li.get("taxes") or []) if isinstance(tx, dict)]
+    stored = tax_entries(li.get("taxes"))
     if stored:
         return sum(float(tx.get("rate", 0) or 0) for tx in stored)
     return float(li.get("tax_rate", 0) or 0)
+
+
+def _tax_label(tax: dict) -> str:
+    """A tax as the line's tax choice names it: its code (a company tax's name), rate in brackets."""
+    name = tax.get("code") or tax.get("name") or tax.get("label") or t("documents.tax")
+    return f"{name} ({float(tax.get('rate', 0) or 0)}%)"
+
+
+def _held_taxes(value) -> list:
+    """A stored ``doc_taxes`` or line ``taxes`` value as the list the editor shows and sends back
+    as it is: every entry, one it cannot read included, so a save never drops it."""
+    if value is None:
+        return []
+    return value if isinstance(value, list) else [value]
+
+
+def _held_tax_label(tax) -> str:
+    """An entry of _held_taxes as the editor names it: a tax as _tax_label, anything else as its text."""
+    return _tax_label(tax) if isinstance(tax, dict) else tax_text(tax)
+
+
+def _tax_option_value(tax: dict) -> str:
+    """The tax choice's option value for a company tax (``name``) or an applied one (``code``)."""
+    return f"{tax.get('code') or tax.get('name') or ''}|{float(tax.get('rate', 0) or 0)}"
 
 
 def _line_account_picker(chart_accounts: list | None, value: str) -> FT:
@@ -6586,6 +6655,87 @@ def _line_account_picker(chart_accounts: list | None, value: str) -> FT:
         allow_custom=True,
         onchange="celerpAutoSave()",
     )
+
+
+def _stored_doc_tax_rows(doc: dict, currency: str | None, can_edit: bool) -> FT:
+    """The document-level taxes stored on a document, each with the amount the API computed for
+    it. The page adds these amounts to its live total and never recomputes them. On an editable
+    draft each row can be removed, and the rows' state rides along with the next line save. An
+    entry that is not a tax shows by its text with no amount ("--"), so it can be removed."""
+    doc_taxes = _held_taxes(doc.get("doc_taxes"))
+    rows = []
+    for i, dtax in enumerate(doc_taxes):
+        readable = isinstance(dtax, dict)
+        amount = float(dtax.get("amount") or 0) if readable else 0.0
+        name = (dtax.get("code") or t("documents.tax")) if readable else tax_text(dtax)
+        remove = (Button("×", type="button", cls="btn-disc-edit", title=t("btn.remove"),
+                         aria_label=t("documents.remove_doc_tax"), onclick=f"celerpRemoveDocTax({i})")
+                  if can_edit else "")
+        rows.append(Div(
+            Span(remove, Span(f"{name}:", cls="total-label"), cls="total-final-left"),
+            Span(fmt_money(amount, currency) if readable else "--", cls="total-value"),
+            cls="total-row", data_amount=f"{amount}", data_doc_tax_index=str(i)))
+    state = (Input(type="hidden", id="doc-taxes-state", value=_json.dumps(doc_taxes))
+             if can_edit and doc_taxes else "")
+    return Div(*rows, state, id="doc-stored-tax-rows")
+
+
+def _doc_tax_rows(doc: dict, currency: str, can_edit: bool) -> tuple[FT, FT]:
+    """The tax rows of a document's totals, from the amounts the API stored: one row per tax on
+    the lines (#doc-tax-rows) and the document-level taxes (#doc-stored-tax-rows). The page renders
+    them and every line save puts them back in place, so the rows always hold the saved figures."""
+    tax_amount = float(doc.get("tax_amount") if doc.get("tax_amount") is not None else doc.get("tax") or 0)
+    line_items = doc.get("line_items") or []
+    code_totals: dict[str, dict] = {}  # key -> {label, amount}
+
+    def _add_tax(key: str, label: str, amount) -> None:
+        code_totals.setdefault(key, {"label": label, "amount": 0.0})["amount"] += float(amount or 0)
+
+    for li in line_items:
+        for item in tax_entries(li.get("taxes")):
+            code = item.get("code") or ""
+            rate = float(item.get("rate", 0) or 0)
+            label = f"{code} ({rate:g}%)" if code else f"{item.get('label') or t('documents.tax')} ({rate:g}%)"
+            _add_tax(code or f"custom_{rate}", label, item.get("amount"))
+    stored_tax_rows = _stored_doc_tax_rows(doc, currency, can_edit)
+    stored_tax = sum(float(d.get("amount") or 0) for d in tax_entries(doc.get("doc_taxes")))
+    # A document tax that cannot be read keeps its rows, so it can be removed.
+    if (abs(sum(v["amount"] for v in code_totals.values()) + stored_tax - tax_amount) > 0.005
+            and unreadable_tax(doc.get("doc_taxes")) is None):
+        # The stored breakdown does not account for the stored tax (a line or header rate with no
+        # per-line amounts): show the stored tax as one row, labelled with its rate when single.
+        rates = {float(li.get("tax_rate") or 0) for li in line_items if float(li.get("tax_rate") or 0)}
+        label = f"{t('documents.tax')} ({next(iter(rates)):g}%)" if len(rates) == 1 else t("documents.tax")
+        code_totals = {"tax": {"label": label, "amount": tax_amount}} if tax_amount else {}
+        stored_tax_rows = Div(id="doc-stored-tax-rows")
+    line_tax_rows = Div(*(Div(Span(f"{v['label']}:", cls="total-label"),
+                              Span(fmt_money(v["amount"], currency), cls="total-value"), cls="total-row")
+                          for v in code_totals.values()), id="doc-tax-rows")
+    return line_tax_rows, stored_tax_rows
+
+
+def _doc_money(doc: dict) -> dict:
+    """The stored money a document editor puts in place of its own figures after a line save
+    (_celerpShowStoredMoney): the tax rows as HTML, the other figures formatted. A shipping
+    document's total is its declared value, the subtotal, as its page shows it."""
+    currency = doc.get("currency") or "USD"
+    doc_type = doc.get("doc_type") or ""
+    customs = _list_column_policy(doc_type, (doc.get("list_type") or "") if doc_type == "list" else "")["customs"]
+    total = doc.get("total_amount") if doc.get("total_amount") is not None else doc.get("total")
+    line_tax_rows, stored_tax_rows = _doc_tax_rows(doc, currency, doc.get("status") == "draft")
+    return {"tax_rows_html": to_xml(line_tax_rows), "stored_tax_rows_html": to_xml(stored_tax_rows),
+            "subtotal": fmt_money(float(doc.get("subtotal") or 0), currency),
+            "discount": f"-{fmt_money(float(doc.get('discount_amount') or 0), currency)}",
+            "total": fmt_money(float((doc.get("subtotal") if customs else total) or 0), currency),
+            "outstanding": fmt_money(float(_outstanding_value(doc) or 0), currency)}
+
+
+def _outstanding_value(doc: dict):
+    """The amount still owed that a document page shows, or None when the document carries none."""
+    for key in ("outstanding_balance", "amount_outstanding"):
+        if doc.get(key) is not None:
+            return doc[key]
+    return None
 
 
 def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", settings: dict | None = None, item_categories: dict | None = None, notes: list | None = None, company_currency: str = "USD", suppress_doc_actions: bool = False, extra_left_actions: list | None = None, extra_right_actions: list | None = None, suppress_pdf: bool = False, free_send_offer: bool = False, email_used: int = 0, email_quota: int = 0, email_resets_on: str | None = None, share_enabled: bool = False, share_active: bool = False, payments_on: bool = False, item_status_map: dict | None = None, item_status_doc_map: dict | None = None, item_meta_map: dict | None = None, chart_accounts: list | None = None, contact_shipping_addresses: list | None = None, line_suggestions: dict | None = None, line_identifier_mode: str = "sku", relay_error: bool = False, line_offset: int = 0, line_total: int | None = None, line_limit: int = 100,
@@ -6679,7 +6829,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
     due_date_value = _pick("due_date", "payment_due_date")
     total_value = _pick("total_amount", "total")
     tax_value = _pick("tax_amount", "tax")
-    outstanding_value = _pick("outstanding_balance", "amount_outstanding")
+    outstanding_value = _outstanding_value(doc)
     subtotal_value = _pick("subtotal")
     discount_value = _pick("discount_amount") or 0
     currency = doc.get("currency") or "USD"
@@ -7350,8 +7500,6 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             )
 
         _taxes_list = taxes_for(company_taxes or [], doc_type)
-        _default_tax = default_tax(_taxes_list, doc_type)
-        _default_tax_value = f"{_default_tax.get('name', '')}|{float(_default_tax.get('rate', 0))}" if _default_tax else "|0"
 
         def _tax_select(li: dict | None = None) -> FT:
             """Build tax <select> + hidden custom-rate input + hidden label for a line item.
@@ -7360,10 +7508,19 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             only when it has none). Stored taxes also ride along in a hidden input, and the
             client sends them back unchanged while the tax choice is unchanged, so a save
             never rewrites taxes the user did not touch. Taxes no configured tax matches,
-            two or more on one line included, show as a single option naming them all.
+            two or more on one line included, show as a single option naming them all, as
+            does a line holding an entry that is not a tax (sent back as it is, so the save
+            is refused naming it until the line's tax is picked again).
+
+            Each configured tax's option carries the tax as a line holds it (line_tax), so a
+            pick saves its calculation order and compounding. The "--" choice (hidden otherwise)
+            shows a line whose tax the user sets (line_tax_unset, default_line_taxes).
             """
             li = li or {}
-            stored = [tx for tx in (li.get("taxes") or []) if isinstance(tx, dict)]
+            unset = line_tax_unset(li)
+            held = _held_taxes(li.get("taxes"))
+            stored = tax_entries(held)
+            unreadable = len(stored) != len(held)
             current_rate = _line_tax_rate(li)
             if len(stored) == 1:
                 current_code = stored[0].get("code", "") or ""
@@ -7376,17 +7533,16 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             selected_val = "|0"
             is_custom = False
             stored_option = None
-            match = None if len(stored) > 1 else next((
-                tax for tax in _taxes_list
-                if float(tax.get("rate", 0)) == current_rate
-                and (tax.get("name", "") == current_code if current_code else current_rate != 0)), None)
+            match = None if len(stored) > 1 or unreadable else matching_tax(_taxes_list, current_code, current_rate)
+            if match is None and not held and current_code:
+                # A line saved with only a rate, under a name no company tax has, shows by that
+                # name as the new-line rule reads it (legacy_line_taxes), never as a nameless rate.
+                held = legacy_line_taxes(li, _taxes_list, doc_type) or []
             if match is not None:
-                selected_val = f"{match.get('name', '')}|{float(match.get('rate', 0))}"
-            elif stored:
+                selected_val = _tax_option_value(match)
+            elif held:
                 # Taxes no configured tax matches show as they are, named, never as Custom.
-                current_label = " + ".join(
-                    f"{tx.get('code') or tx.get('label') or t('documents.tax')} ({float(tx.get('rate', 0) or 0)}%)"
-                    for tx in stored)
+                current_label = " + ".join(_held_tax_label(tx) for tx in held)
                 selected_val = "|stored"
                 stored_option = Option(current_label, value=selected_val, selected=True,
                                        data_rate=str(current_rate))
@@ -7394,14 +7550,15 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 selected_val = "|custom"
                 is_custom = True
 
-            options = [Option(t("doc.no_tax"), value="|0", selected=(selected_val == "|0"))]
+            options = [Option(t("doc.no_tax"), value="|0", selected=(selected_val == "|0" and not unset)),
+                       Option("--", value="|unset", selected=unset, hidden=not unset,
+                              title=t("documents.line_tax_unset"))]
             if stored_option is not None:
                 options.append(stored_option)
             for tax in _taxes_list:
-                tcode = tax.get("name", "")
-                trate = float(tax.get("rate", 0))
-                val = f"{tcode}|{trate}"
-                options.append(Option(f"{tcode} ({trate}%)", value=val, selected=(selected_val == val)))
+                val = _tax_option_value(tax)
+                options.append(Option(_tax_label(tax), value=val, selected=(selected_val == val),
+                                      data_tax=_json.dumps(line_tax(tax))))
             options.append(Option(t("doc.custom"), value="|custom", selected=is_custom))
 
             custom_input = Input(
@@ -7410,11 +7567,12 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 cls="cell-input cell-input--xs",
                 style=("display:inline-block;" if is_custom else "display:none;"),
             )
-            stored_input = (Input(type="hidden", value=_json.dumps(stored), data_name="taxes_json")
-                            if stored else "")
+            stored_input = (Input(type="hidden", value=_json.dumps(held), data_name="taxes_json")
+                            if held else "")
             return Div(
                 Select(*options, data_name="tax_select",
-                       data_orig=selected_val, data_orig_rate=str(current_rate),
+                       data_orig="|unset" if unset else selected_val, data_orig_rate=str(current_rate),
+                       title=t("documents.line_tax_unset") if unset else None,
                        cls="cell-input cell-input--select cell-input--xs",
                        onchange="celerpTaxChange(this)",
                        onblur="celerpAutoSave()"),
@@ -7649,7 +7807,10 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             _row_cls = "data-row--adjusted" if adjusted else ("data-row--audited" if audited else "")
             return Tr(*cells, cls=_row_cls) if _row_cls else Tr(*cells)
 
-        def _li_empty_row() -> FT:
+        def _li_empty_row(target: dict | None) -> FT:
+            """An empty line row starting with the taxes default_line_taxes gives a new line on
+            `target` ("--" where the user sets them)."""
+            _new_taxes = default_line_taxes(_taxes_list, doc_type, doc=target)
             _show_category = doc_type in ("bill", "purchase_order", "consignment_in")
             _show_receive_as = doc_type in ("bill", "purchase_order", "consignment_in")
             _cats = item_categories or {}
@@ -7718,7 +7879,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 Td(Input(type="number", value="0", step="0.01", data_name="discount_pct",
                          oninput="celerpFieldEdited(this)", onblur="celerpAutoSave()",
                          cls="cell-input cell-input--xs"), cls="col-disc"),
-                Td(_tax_select(), cls="col-tax"),
+                Td(_tax_select({"taxes": _new_taxes}), cls="col-tax"),
             ])
             if doc_type in ("purchase_order", "bill"):
                 cells.append(Td(_line_account_picker(chart_accounts, ""), cls="col-account"))
@@ -7750,7 +7911,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
 
         rows = [_li_editable_row(li, i) for i, li in enumerate(line_items)]
         if not rows:
-            rows = [_li_empty_row()]
+            rows = [_li_empty_row(doc)]
 
         is_invoice_layout = doc_type in _INVOICE_LAYOUT_DOC_TYPES
         # Single-level header. Invoice-layout docs (invoice / consignment-out / list) carry
@@ -7815,7 +7976,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
   function handleFile(file) {{
     var fd = new FormData(); fd.append('file', file);
     dz.classList.add('ai-dropzone--over');
-    fetch('/docs/{entity_id}/files', {{method:'POST',body:fd}})
+    celerpFetch('/docs/{entity_id}/files', {{method:'POST',body:fd}})
       .then(function(r) {{ dz.classList.remove('ai-dropzone--over'); }})
       .catch(function() {{ dz.classList.remove('ai-dropzone--over'); }});
   }}
@@ -7851,7 +8012,10 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         lines_section = Div(
             *_ai_dropzone,
             _csv_import_el,
-            Template(_li_empty_row(), id="line-row-tpl"),
+            # The added-row template carries the company defaults; while the page's draft charges a
+            # tax as a whole, celerpAddLine gives the line the other lines' taxes instead
+            # (_celerpApplyDefaultTaxes), which a removal on the page can change live.
+            Template(_li_empty_row(None), id="line-row-tpl"),
             Div(
                 Span("📷", cls="scan-bar-icon"),
                 Input(type="text", id="scan-bar-input", placeholder=_scan_placeholder,
@@ -7896,6 +8060,8 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 ),
                 cls="table-scroll-wrap",
             ),
+            # The Indian seed's default: say plainly what IGST is for, beside the lines that take it.
+            (P(t("documents.igst_note"), cls="form-hint") if holds_tax(_taxes_list, "IGST 18%") else None),
             (_list_line_pager(entity_id, line_offset, line_limit,
                               line_total if line_total is not None else len(line_items),
                               save_first=can_edit_lines) if is_list else None),
@@ -7973,7 +8139,6 @@ window._CELERP_LINE_LIMIT = {int(line_limit)};
    a longer one inserts; after each save it becomes the count just written. */
 window._CELERP_ORIGINAL_COUNT = {len(line_items)};
 window._CELERP_TAXES = {_json.dumps(_taxes_list)};
-window._CELERP_DEFAULT_TAX = {repr(_default_tax_value)};
 /* Currency precision: amounts use _CELERP_CDP decimals, unit prices may use up to _CELERP_RDP. */
 window._CELERP_CDP = {currency_dp(currency)};
 /* Shipping is part of the document total; the editor's live total adds it like the stored one. */
@@ -8135,7 +8300,7 @@ function _celerpPickerStatus(text) {{
                 const fd = new URLSearchParams({{barcode: raw, run_key: pendingRunKey,
                     offset: _CELERP_LINE_OFFSET, limit: _CELERP_LINE_LIMIT}});
                 if (plSelect) fd.append('price_list', plSelect.value);
-                const resp = await fetch(_CELERP_BASE + _CELERP_EID + '/scan', {{method: 'POST', body: fd}});
+                const resp = await celerpFetch(_CELERP_BASE + _CELERP_EID + '/scan', {{method: 'POST', body: fd}});
                 if (!resp.ok) {{
                     // Branch on the structured code, never on message text.
                     let code = null, detail = null, version = null;
@@ -8393,7 +8558,8 @@ function celerpFillRow(row, data) {{
             linkEl.onclick = (e) => e.preventDefault();
         }}
     }}
-    // Set tax dropdown: use item tax_code/tax_rate, fall back to company default
+    // Set tax dropdown: the item's tax_code/tax_rate, else the company defaults the added-row
+    // template carries; a tax the document already charges as a whole is left off either way.
     const taxSel = row.querySelector('[data-name="tax_select"]');
     if (taxSel) {{
         let matched = false;
@@ -8409,8 +8575,13 @@ function celerpFillRow(row, data) {{
                 }}
             }}
         }}
-        if (!matched) taxSel.value = _CELERP_DEFAULT_TAX;
-        celerpTaxChange(taxSel);
+        if (matched && !_celerpDocTaxed()) {{
+            celerpTaxChange(taxSel);
+        }} else {{
+            const cell = document.getElementById('line-row-tpl').content.querySelector('.col-tax').cloneNode(true);
+            taxSel.closest('.col-tax').replaceWith(cell);
+            _celerpApplyDefaultTaxes(cell);
+        }}
     }}
 """ + ("""    // Item status column (status-column pages only): populate with the rest of the
     // row, same markup as the server-rendered cell (see _item_status_badge_cell),
@@ -8466,7 +8637,7 @@ async function celerpAcSearch(input, field) {{
     clearTimeout(_celerpAcTimer);
     _celerpAcTimer = setTimeout(async () => {{
         const pl = _celerpPriceListParam();
-        const resp = await fetch('/docs/catalog-search?q=' + encodeURIComponent(q) + pl + _celerpDocTypeParam() + _celerpHolderParam(input.closest('tr')));
+        const resp = await celerpFetch('/docs/catalog-search?q=' + encodeURIComponent(q) + pl + _celerpDocTypeParam() + _celerpHolderParam(input.closest('tr')));
         if (!resp.ok) {{ list.style.display = 'none'; _celerpPickerStatus(await _celerpPickerError(resp)); return; }}
         const items = await resp.json();
         list.innerHTML = '';
@@ -8512,18 +8683,21 @@ async function celerpAcSearch(input, field) {{
         }});
         list.appendChild(custom);
         list.style.display = 'block';
-        // Reposition to fixed so it escapes overflow:auto scroll containers
-        const rect = wrap.getBoundingClientRect();
-        list.style.position = 'fixed';
-        list.style.left = rect.left + 'px';
-        list.style.width = rect.width + 'px';
-        list.style.zIndex = '9999';
-        // A fixed list cannot be scrolled to: open it above the input when it
-        // does not fit below and there is more room above.
-        const below = window.innerHeight - rect.bottom;
-        const h = list.offsetHeight;
-        list.style.top = (h > below && rect.top > below ? rect.top - Math.min(h, rect.top) : rect.bottom) + 'px';
+        _celerpAcPlace(list, wrap);
+        followAnchor(list, wrap, () => _celerpAcPlace(list, wrap));
     }}, 250);
+}}
+// Fixed to the window so it escapes overflow:auto scroll containers. A fixed list cannot be
+// scrolled to: open it above the field when it does not fit below and there is more room above.
+function _celerpAcPlace(list, wrap) {{
+    const rect = wrap.getBoundingClientRect();
+    list.style.position = 'fixed';
+    list.style.left = rect.left + 'px';
+    list.style.width = rect.width + 'px';
+    list.style.zIndex = '9999';
+    const below = window.innerHeight - rect.bottom;
+    const h = list.offsetHeight;
+    list.style.top = (h > below && rect.top > below ? rect.top - Math.min(h, rect.top) : rect.bottom) + 'px';
 }}
 function celerpAcBlur(input) {{
     const list = input.parentElement.querySelector('.catalog-ac-list');
@@ -8540,7 +8714,7 @@ function celerpAcBlur(input) {{
         if (row && eidEl && !eidEl.value && input.value.trim()) {{
             const sku = input.value.trim();
             const pl = _celerpPriceListParam();
-            fetch('/docs/catalog-search?q=' + encodeURIComponent(sku) + pl + _celerpDocTypeParam() + _celerpHolderParam(row))
+            celerpFetch('/docs/catalog-search?q=' + encodeURIComponent(sku) + pl + _celerpDocTypeParam() + _celerpHolderParam(row))
               .then(async r => {{
                 if (!r.ok) {{ _celerpPickerStatus(await _celerpPickerError(r)); return []; }}
                 return r.json();
@@ -8644,12 +8818,23 @@ function _celerpTaxRate(row) {{
         return parseFloat(row.querySelector('[data-name="tax_rate_custom"]')?.value || 0);
     }}
     if (sel.value === '|stored') return parseFloat(sel.selectedOptions[0].dataset.rate || 0);
-    return parseFloat(sel.value.split('|')[1] || 0);
+    return parseFloat(sel.value.split('|')[1]) || 0;  // "--" (|unset) charges nothing
 }}
 function _celerpTaxCode(row) {{
     const sel = row.querySelector('[data-name="tax_select"]');
     if (!sel || sel.value === '|custom' || sel.value === '|0' || sel.value === '|stored') return '';
     return sel.value.split('|')[0];
+}}
+function _celerpLineTaxes(row) {{
+    // The taxes a line row saves: null while its tax is still for the user to set ("--"), its
+    // stored taxes while its tax choice is unchanged, else the picked company tax as the company
+    // saved it (its option's data-tax), else a custom rate.
+    if (row.querySelector('[data-name="tax_select"]')?.value === '|unset') return null;
+    const rate = _celerpTaxRate(row);
+    const picked = row.querySelector('[data-name="tax_select"]')?.selectedOptions[0]?.dataset.tax;
+    const label = row.querySelector('[data-name="tax_label"]')?.value || '';
+    return _celerpStoredTaxes(row, rate) || (picked ? [JSON.parse(picked)]
+        : rate !== 0 ? [{{code: '', rate: rate, amount: 0, order: 0, is_compound: false, label: label}}] : []);
 }}
 function _celerpStoredTaxes(row, rate) {{
     // The line's stored taxes while its tax choice is unchanged, else null. Sending them
@@ -8697,13 +8882,8 @@ function celerpAddLine() {{
     _celerpHadLines = true;  // once a line exists, emptying the table later must persist
     const tpl = document.getElementById('line-row-tpl').content.cloneNode(true);
     const row = tpl.querySelector('tr') || tpl.children[0];
-    if (row) {{
-        const taxSel = row.querySelector('[data-name="tax_select"]');
-        if (taxSel && _CELERP_DEFAULT_TAX) {{
-            taxSel.value = _CELERP_DEFAULT_TAX;
-            celerpTaxChange(taxSel);
-        }}
-    }}
+    const taxCell = row && row.querySelector('.col-tax');
+    if (taxCell) _celerpApplyDefaultTaxes(taxCell);
     const tbody = document.getElementById('{line_body_id}');
     tbody.appendChild(tpl);
     // Re-init comboboxes in the newly-added row (cloneNode bypasses htmx:afterSettle)
@@ -8721,6 +8901,13 @@ function celerpSyncQtyMeasure(qtyEl) {{
     if (target) target.value = qtyEl.value;
 }}
 function celerpUpdateTotals() {{
+    // The figures below are the page's estimate until the lines save: keep the stored ones to put
+    // back if the edit is abandoned, and mark the panel as an estimate.
+    const _panel = _celerpTotalPanel();
+    if (_panel && !_panel.classList.contains('total-panel--pending')) {{
+        window._celerpStoredMoney = _celerpMoneyOn(document);
+        _panel.classList.add('total-panel--pending');
+    }}
     const _cur = {repr(currency)};
     function _fmt(n) {{
         try {{ return new Intl.NumberFormat('en-US', {{style:'currency',currency:_cur}}).format(n); }}
@@ -8845,11 +9032,93 @@ function celerpUpdateTotals() {{
             taxContainer.appendChild(row);
         }});
         const totEl = document.getElementById('doc-total');
-        if (totEl) totEl.textContent = _fmt(_hd.taxable + totalTax + _CELERP_SHIPPING);
+        if (totEl) totEl.textContent = _fmt(_hd.taxable + totalTax + _celerpStoredTax() + _CELERP_SHIPPING);
     }} else {{
         const totEl = document.getElementById('doc-total');
-        if (totEl) totEl.textContent = _fmt(_hd.taxable + _CELERP_SHIPPING);
+        if (totEl) totEl.textContent = _fmt(_hd.taxable + _celerpStoredTax() + _CELERP_SHIPPING);
     }}
+}}
+// Document-level taxes keep the amounts the server last computed (#doc-stored-tax-rows); the
+// page never recomputes them: each line save, and each install of the stored lines, swaps in the
+// server's rows (_celerpShowStoredMoney).
+function _celerpStoredTax() {{
+    let sum = 0;
+    document.querySelectorAll('#doc-stored-tax-rows [data-amount]').forEach(r => {{
+        sum += parseFloat(r.dataset.amount) || 0;
+    }});
+    return sum;
+}}
+function _celerpDocTaxed() {{
+    // Whether the draft charges a tax as a whole: a document tax not removed on this page.
+    const st = document.getElementById('doc-taxes-state');
+    return !!st && JSON.parse(st.value || '[]').some(tax => tax != null);
+}}
+function _celerpLineTaxesKey(row) {{
+    // What a row's taxes charge, as line_tax_key (celerp/tax_regimes.py) compares them; 'null'
+    // for a line whose tax is still to be set.
+    const taxes = _celerpLineTaxes(row);
+    return taxes === null ? 'null' : JSON.stringify(taxes.map(x => [x.code ?? null, +x.rate || 0, +x.order || 0,
+                                                                   !!x.is_compound, x.label || '']));
+}}
+function _celerpApplyDefaultTaxes(cell) {{
+    // A new line's taxes, by default_line_taxes' rule (celerp/tax_regimes.py) on the page as it
+    // stands: the cell comes with the company defaults; while the draft charges a tax as a whole,
+    // the line takes instead the taxes the other lines all carry, copied whole, or "--" for the
+    // user to set when they differ, are themselves still to be set, or there are none.
+    const sel = cell.querySelector('[data-name="tax_select"]');
+    if (!sel) return;
+    if (_celerpDocTaxed()) {{
+        const own = cell.closest('tr');
+        const lines = [...document.querySelectorAll('#{line_body_id} tr')]
+            .filter(r => r !== own && _celerpRowHasContent(r));
+        let json = cell.querySelector('[data-name="taxes_json"]');
+        if (!json) {{
+            json = document.createElement('input');
+            json.type = 'hidden';
+            json.dataset.name = 'taxes_json';
+            sel.parentElement.appendChild(json);
+        }}
+        const keys = new Set(lines.map(_celerpLineTaxesKey));
+        if (keys.size !== 1 || keys.has('null')) {{
+            const unset = sel.querySelector('option[value="|unset"]');
+            unset.hidden = false;
+            sel.value = '|unset';
+            sel.title = unset.title;
+            json.value = '[]';
+        }} else {{
+            const taxes = _celerpLineTaxes(lines[0]).map(x => ({{...x, amount: 0}}));
+            json.value = JSON.stringify(taxes);
+            if (!taxes.length) {{
+                sel.value = '|0';
+            }} else {{
+                let opt = sel.querySelector('option[value="|stored"]');
+                if (!opt) {{
+                    opt = document.createElement('option');
+                    opt.value = '|stored';
+                    sel.insertBefore(opt, sel.options[2]);
+                }}
+                opt.textContent = lines[0].querySelector('[data-name="tax_select"]').selectedOptions[0].text;
+                opt.dataset.rate = String(_celerpTaxRate(lines[0]));
+                sel.value = '|stored';
+            }}
+        }}
+        // The copy is what the line holds, so a save sends it as it is (_celerpStoredTaxes).
+        sel.dataset.orig = sel.value;
+        sel.dataset.origRate = String(_celerpTaxRate(cell));
+    }}
+    celerpTaxChange(sel);
+}}
+function celerpRemoveDocTax(i) {{
+    const st = document.getElementById('doc-taxes-state');
+    if (!st) return;
+    // The slot is emptied, not spliced, so the other rows keep their indices until the save
+    // brings the server's rows back.
+    const taxes = JSON.parse(st.value || '[]');
+    taxes[i] = null;
+    st.value = JSON.stringify(taxes);
+    document.querySelector('#doc-stored-tax-rows [data-doc-tax-index="' + i + '"]')?.remove();
+    celerpUpdateTotals();
+    celerpAutoSave();
 }}
 // Header-discount helpers. State lives in hidden inputs (#doc-discount-value/#doc-discount-type),
 // seeded from the doc and edited via the pencil popover next to the Total.
@@ -8996,11 +9265,9 @@ function _celerpCollectLines() {{
         const price = parseFloat(row.querySelector('[data-name="unit_price"]')?.value || 0);
         const discPct = parseFloat(row.querySelector('[data-name="discount_pct"]')?.value || 0);
         const rate = _celerpTaxRate(row);
-        const code = _celerpTaxCode(row);
         const hsCode = row.querySelector('[data-name="hs_code"]')?.value || null;
         const countryOfOrigin = row.querySelector('[data-name="country_of_origin"]')?.value || null;
         const entityId = row.querySelector('[data-name="entity_id"]')?.value || null;
-        const taxLabel = row.querySelector('[data-name="tax_label"]')?.value || '';
         const categoryEl = row.querySelector('[data-name="category"]');
         const category = categoryEl ? (categoryEl.tagName === 'SELECT' ? (categoryEl.value || null) : (categoryEl.value || categoryEl.textContent || '').trim() || null) : null;
         const receiveAsEl = row.querySelector('[data-name="receive_as"]');
@@ -9028,10 +9295,8 @@ function _celerpCollectLines() {{
             }}
             const lineTotalEl = row.querySelector('.line-total');
             const discounted = lineTotalEl ? (parseFloat(lineTotalEl.value) || 0) : qty * price * (1 - discPct / 100);
-            const taxList = _celerpStoredTaxes(row, rate)
-                || (rate !== 0 ? [{{code: code, rate: rate, amount: 0, order: 0, is_compound: false, label: taxLabel}}] : []);
             lines.push({{line_id: _celerpRowLineId(row), description: desc || '', sku: sku || '', quantity: qty, unit,
-                         unit_price: price, discount_pct: discPct, tax_rate: rate, taxes: taxList,
+                         unit_price: price, discount_pct: discPct, tax_rate: rate, taxes: _celerpLineTaxes(row),
                          line_total: discounted, hs_code: hsCode || undefined,
                          country_of_origin: countryOfOrigin || undefined,
                          entity_id: entityId || undefined,
@@ -9053,7 +9318,7 @@ function _celerpCollectLines() {{
    a submission run against stale rows. */
 async function _celerpFetchLineBody() {{
     // The page being viewed, not location.href: in-place paging never changes the URL.
-    const page = await fetch(_CELERP_BASE + _CELERP_EID + '?offset=' + _CELERP_LINE_OFFSET
+    const page = await celerpFetch(_CELERP_BASE + _CELERP_EID + '?offset=' + _CELERP_LINE_OFFSET
         + '&limit=' + _CELERP_LINE_LIMIT);
     const doc = new DOMParser().parseFromString(await page.text(), 'text/html');
     return doc.getElementById('{line_body_id}');
@@ -9075,10 +9340,43 @@ function _celerpMarkScanned(scroll) {{
     }});
     if (scroll && first) first.scrollIntoView({{block: 'nearest'}});
 }}
+/* The money the server stored (tax rows, subtotal, discount, total, outstanding), put in place of
+   the page's estimate. Every successful save and every path that installs stored lines takes the
+   stored money with them, so the figures beside the lines always belong to them and only an
+   estimate is ever marked as one. */
+function _celerpTotalPanel() {{
+    const totEl = document.getElementById('doc-total');
+    return totEl ? totEl.closest('.total-panel') : null;
+}}
+function _celerpMoneyOn(root) {{
+    const html = id => {{ const el = root.getElementById(id); return el ? el.outerHTML : null; }};
+    const text = id => {{ const el = root.getElementById(id); return el ? el.textContent : null; }};
+    return {{tax_rows_html: html('doc-tax-rows'), stored_tax_rows_html: html('doc-stored-tax-rows'),
+             subtotal: text('doc-subtotal'), discount: text('doc-header-discount'),
+             total: text('doc-total'), outstanding: text('doc-outstanding')}};
+}}
+function _celerpShowStoredMoney(money) {{
+    ['doc-tax-rows', 'doc-stored-tax-rows'].forEach(id => {{
+        const el = document.getElementById(id);
+        const html = money[id === 'doc-tax-rows' ? 'tax_rows_html' : 'stored_tax_rows_html'];
+        if (el && html != null) el.outerHTML = html;
+    }});
+    [['doc-subtotal', 'subtotal'], ['doc-header-discount', 'discount'], ['doc-total', 'total'],
+     ['doc-outstanding', 'outstanding']].forEach(([id, key]) => {{
+        const el = document.getElementById(id);
+        if (el && money[key]) el.textContent = money[key];
+    }});
+    const panel = _celerpTotalPanel();
+    if (panel) panel.classList.remove('total-panel--pending');
+    window._celerpStoredMoney = money;
+}}
 async function _celerpInstallLineBody(html, version) {{
+    let page = null;
+    const revision = window._celerpLineRevision;
     if (!html) {{
         const fresh = await _celerpFetchLineBody();
         html = fresh ? fresh.outerHTML : '';
+        page = fresh ? fresh.ownerDocument : null;
     }}
     const tbody = document.getElementById('{line_body_id}');
     if (!tbody || !html) return false;
@@ -9092,6 +9390,9 @@ async function _celerpInstallLineBody(html, version) {{
     // The installed rows are the stored window now, so the next save replaces exactly them.
     if (swapped.dataset.lineCount != null) _CELERP_ORIGINAL_COUNT = Number(swapped.dataset.lineCount);
     celerpUpdateTotals();
+    // An edit made while the page was fetched (a document tax removed) stays: its own save
+    // brings the server's figures.
+    if (page && revision === window._celerpLineRevision) _celerpShowStoredMoney(_celerpMoneyOn(page));
     _celerpMarkScanned(false);
     _celerpHadLines = true;
     if (version != null) _celerpEntityVersion = version;
@@ -9140,16 +9441,18 @@ async function _celerpRefreshHeldBadges() {{
     }}
     const hd = _celerpHeaderDiscount(lines.reduce((s, l) => s + l.line_total, 0));
     const statusEl = document.getElementById('save-status');
+    const _docTaxesState = document.getElementById('doc-taxes-state');
     // Send the current page's rows, the stored offset they occupy, and the length of the
     // stored window this page loaded. The server REPLACES positions [offset, offset+original_count)
     // with the submitted rows (a shorter page truncates deleted rows, a longer one inserts) and
     // recomputes totals from the full merged array, so off-page rows are never touched by a page save.
-    const resp = await fetch(_CELERP_BASE + _CELERP_EID + '/lines', {{
+    const resp = await celerpFetch(_CELERP_BASE + _CELERP_EID + '/lines', {{
         method: 'POST', headers: {{'Content-Type': 'application/json'}},
-        body: JSON.stringify({{line_items: lines, offset: _CELERP_LINE_OFFSET,
+        body: JSON.stringify(Object.assign({{line_items: lines, offset: _CELERP_LINE_OFFSET,
             original_count: _CELERP_ORIGINAL_COUNT,
             discount: hd.value, discount_type: hd.type,
-            expected_version: _celerpEntityVersion}})
+            expected_version: _celerpEntityVersion}},
+            _docTaxesState ? {{doc_taxes: JSON.parse(_docTaxesState.value || '[]').filter(x => x !== null)}} : {{}}))
     }});
     if (resp.ok) {{
         // A newer edit may have happened while this request was in flight. Only
@@ -9160,6 +9463,9 @@ async function _celerpRefreshHeldBadges() {{
         try {{
             const data = await resp.json();
             if (data && data.version != null) _celerpEntityVersion = data.version;
+            // The server's money for what was just saved, unless a newer edit is already pending
+            // (its own save brings fresher figures).
+            if (data && data.money && revision === window._celerpLineRevision) _celerpShowStoredMoney(data.money);
         }} catch (_e) {{}}
         // The rows just written become this page's stored window, so a follow-up save
         // in the same view replaces the new window length, not the original one.
@@ -9232,8 +9538,14 @@ async function celerpPageNav(url) {{
 /* Foreign-reserved save rejection: resolution dialog instead of the inline error.
    A native dialog element, so ESC closes it; closing keeps the rows so the user can
    open the reserving document (linked per line) to release the stock, then save again.
-   "Remove from draft" deletes the conflicted rows and re-saves clean. */
+   "Remove from draft" deletes the conflicted rows and re-saves clean.
+   A refusal can arrive for a save sent before the user removed those rows; it names only
+   the rows still on the page, and none left means no dialog (the save after the removal
+   is already queued). */
 function _celerpShowReservedConflicts(conflicts) {{
+    const onPage = new Set(Array.from(document.querySelectorAll('#{line_body_id} [data-name="entity_id"]'), i => i.value));
+    conflicts = conflicts.filter(c => !c.entity_id || onPage.has(c.entity_id));
+    if (!conflicts.length) return;
     document.getElementById('reserved-conflict-modal')?.remove();
     const dlg = document.createElement('dialog');
     dlg.id = 'reserved-conflict-modal';
@@ -9333,6 +9645,7 @@ if (!window._celerpLineKeysBound) {{
         if (field.dataset.committed != null && field.value !== field.dataset.committed) {{
             field.value = field.dataset.committed;
             celerpUpdateTotals();
+            if (!_celerpLinesDirty() && window._celerpStoredMoney) _celerpShowStoredMoney(window._celerpStoredMoney);
         }}
         _celerpQuietBlur(field);
     }}, true);
@@ -9417,7 +9730,7 @@ async function celerpReprice(priceList) {{
         }}
         const body = {{price_list: priceList, expected_version: _celerpEntityVersion}};
         try {{
-            const resp = await fetch(_CELERP_BASE + _CELERP_EID + '/reprice', {{
+            const resp = await celerpFetch(_CELERP_BASE + _CELERP_EID + '/reprice', {{
                 method: 'POST', headers: {{'Content-Type': 'application/json'}},
                 body: JSON.stringify(body)
             }});
@@ -9462,7 +9775,7 @@ async function celerpCsvImport(input, entityId) {{
     const plSelect = document.getElementById('doc-price-list');
     if (plSelect) formData.append('price_list', plSelect.value);
     try {{
-        const resp = await fetch(_CELERP_BASE + entityId + '/items/csv', {{
+        const resp = await celerpFetch(_CELERP_BASE + entityId + '/items/csv', {{
             method: 'POST', body: formData
         }});
         const data = await resp.json();
@@ -9558,7 +9871,7 @@ async function celerpCsvImport(input, entityId) {{
     fd.append('offset', window._CELERP_LINE_OFFSET); fd.append('limit', window._CELERP_LINE_LIMIT);
     ids.forEach(function(id){{ fd.append('selected', id); }});
     try{{
-      var resp=await fetch('/lists/{entity_id}/set-scanned', {{method:'POST', body:fd}});
+      var resp=await celerpFetch('/lists/{entity_id}/set-scanned', {{method:'POST', body:fd}});
       var html=await resp.text();
       if(resp.ok){{
         var tbody=document.getElementById('{line_body_id}');
@@ -10023,34 +10336,10 @@ async function celerpCsvImport(input, entityId) {{
     total_amount = (float(total_value) if total_value not in (None, "")
                     else subtotal - discount + tax_amount + shipping)
 
-    # Per-code tax rows from the stored tax amounts on the lines and the document.
-    code_totals: dict[str, dict] = {}  # key -> {label, amount}
-
-    def _add_tax(key: str, label: str, amount) -> None:
-        code_totals.setdefault(key, {"label": label, "amount": 0.0})["amount"] += float(amount or 0)
-
-    for li in line_items:
-        for item in li.get("taxes") or []:
-            code = item.get("code") or ""
-            rate = float(item.get("rate", 0) or 0)
-            label = f"{code} ({rate:g}%)" if code else f"{item.get('label') or t('documents.tax')} ({rate:g}%)"
-            _add_tax(code or f"custom_{rate}", label, item.get("amount"))
-    for dtax in doc.get("doc_taxes") or []:
-        code = dtax.get("code") or t("documents.tax")
-        _add_tax(code, code, dtax.get("amount"))
-    if abs(sum(v["amount"] for v in code_totals.values()) - tax_amount) > 0.005:
-        # The stored breakdown does not account for the stored tax (a line or header rate with no
-        # per-line amounts): show the stored tax as one row, labelled with its rate when single.
-        rates = {float(li.get("tax_rate") or 0) for li in line_items if float(li.get("tax_rate") or 0)}
-        label = f"{t('documents.tax')} ({next(iter(rates)):g}%)" if len(rates) == 1 else t("documents.tax")
-        code_totals = {"tax": {"label": label, "amount": tax_amount}} if tax_amount else {}
-
-    tax_rows = [
-        Div(Span(f"{v['label']}:", cls="total-label"),
-            Span(fmt_money(v["amount"], currency), cls="total-value"),
-            cls="total-row")
-        for v in code_totals.values()
-    ]
+    line_tax_rows, stored_tax_rows = _doc_tax_rows(doc, currency, can_edit_lines)
+    # Shown while the panel holds the page's own estimate (celerpUpdateTotals), until a save brings
+    # the stored figures back.
+    _totals_pending_note = Div(t("documents.totals_pending"), cls="total-pending-note")
 
     # Header-discount affordance: a faint pencil by the Total opens a small editor. Only on a draft
     # of an eligible money doc (sales + supplier order/bill); the discount row itself shows whenever
@@ -10071,7 +10360,8 @@ async function celerpCsvImport(input, entityId) {{
         Div(Span(_disc_label, cls="total-label"),
             Span(f"-{fmt_money(discount, currency)}", id="doc-header-discount", cls="total-value"),
             id="doc-header-discount-row", cls="total-row") if discount > 0.005 else "",
-        Div(*tax_rows, id="doc-tax-rows"),
+        line_tax_rows,
+        stored_tax_rows,
         Div(Span(t("doc.shipping"), cls="total-label"),
             Span(fmt_money(shipping, currency), id="doc-shipping", cls="total-value"),
             cls="total-row") if shipping else "",
@@ -10122,6 +10412,7 @@ async function celerpCsvImport(input, entityId) {{
                 id="discount-popover", cls="disc-popover",
             ),
         ] if _can_discount else []),
+        _totals_pending_note,
         cls="total-panel",
     )
     # No-money types (production_order, transfer, audit) carry no totals panel.
@@ -10136,6 +10427,7 @@ async function celerpCsvImport(input, entityId) {{
             Div(Span(f'{t("doc.total_declared_value")} ({currency}):', cls="total-label total-label--final"),
                 Span(fmt_money(float(subtotal_value or 0), currency), id="doc-total", cls="total-value total-value--final"),
                 cls="total-row total-row--final"),
+            _totals_pending_note,
             cls="total-panel",
         )
 
@@ -10173,7 +10465,7 @@ async function celerpCsvImport(input, entityId) {{
             _rate_display = str(_rate_val) if _rate_val else "--"
             _contact_rows.append(Div(Div(t("label.conversion_rate"), cls="form-label"), _cell("conversion_rate", _rate_display), cls="form-group"))
         if not is_list and outstanding_value is not None:
-            _contact_rows.append(Div(Div(t("doc.outstanding"), cls="form-label"), Span(fmt_money(float(outstanding_value or 0), currency), cls="meta-value"), cls="form-group"))
+            _contact_rows.append(Div(Div(t("doc.outstanding"), cls="form-label"), Span(fmt_money(float(outstanding_value or 0), currency), id="doc-outstanding", cls="meta-value"), cls="form-group"))
 
     _is_sub_template = doc_type in ("subscription_invoice", "subscription_po")
 

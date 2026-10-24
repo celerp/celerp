@@ -398,6 +398,31 @@ async def _credit_note_settled(s, company_id) -> bool:
     return bool(notes) and all(float(state.get("credited") or 0) == 40.0 for state in notes)
 
 
+async def _shipping_doc_issued_by_earlier_release(s, company_id) -> None:
+    """An issued shipping document as an earlier release stored it: its line links an item
+    with customs codes but carries none itself."""
+    from celerp.events.engine import emit_event
+
+    item, ship = f"item:{uuid.uuid4().hex}", f"list:{uuid.uuid4().hex}"
+    for entity_id, entity_type, data in (
+            (item, "item", {"sku": f"CF-{item[-6:]}", "name": "Teak bowl", "quantity": 5.0, "sell_by": "piece",
+                            "hs_code": "4419", "country_of_origin": "TH"}),
+            (ship, "list", {"list_type": "shipping_doc", "status": "finalized", "contact_name": "Buyer",
+                            "line_items": [{"name": "Teak bowl", "quantity": 1, "item_id": item}]})):
+        await emit_event(s, company_id=company_id, entity_id=entity_id, entity_type=entity_type,
+                         event_type=f"{entity_type}.created", data=data, actor_id=None, location_id=None,
+                         source="test", idempotency_key=f"test:{entity_type}.created:{entity_id}", metadata_={})
+
+
+async def _shipping_doc_codes_saved(s, company_id) -> bool:
+    from celerp.models.projections import Projection
+
+    rows = (await s.execute(select(Projection.state).where(
+        Projection.company_id == company_id, Projection.entity_type == "list"))).scalars().all()
+    lines = [li for state in rows for li in state.get("line_items") or []]
+    return bool(lines) and all(li.get("hs_code") == "4419" for li in lines)
+
+
 # Each backfill, with what makes a company need it and whether the backfill reached it.
 LIFECYCLE_BACKFILLS = {
     "celerp_accounting.routes:backfill_chart_of_accounts_hook": (_drop_chart, _has_chart),
@@ -410,6 +435,8 @@ LIFECYCLE_BACKFILLS = {
     "celerp_docs.imported_cutover:imported_cutover_hook": (_bill_imported_by_earlier_release, _imported_bill_corrected),
     "celerp_docs.legacy_credit_notes:legacy_credit_notes_hook": (_credit_note_issued_by_earlier_release,
                                                                  _credit_note_settled),
+    "celerp_docs.customs_freeze:customs_freeze_hook": (_shipping_doc_issued_by_earlier_release,
+                                                       _shipping_doc_codes_saved),
 }
 # Needs a staged company cannot have: only the migration writes to it, and it never
 # emits doc.shared_import, which nothing but imports from before Received wrote.
