@@ -81,6 +81,14 @@ def doc_value(state: dict, field: str):
     return value
 
 
+def settled_on(state: dict) -> str | None:
+    """The day (ISO date) of a document's last active payment: the latest ``payment_date`` among
+    its payments that were not voided or deleted. None when it has none."""
+    days = [str(p["payment_date"])[:10] for p in state.get("payments") or []
+            if p.get("status", "active") == "active" and p.get("payment_date")]
+    return max(days, default=None)
+
+
 def outstanding_balance(state: dict) -> Decimal | None:
     """What a document still owes: its recorded balance, else its total when no balance is
     recorded, else 0. None when the value is not a number, so it is never counted as 0."""

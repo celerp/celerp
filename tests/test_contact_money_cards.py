@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import importlib.util
 import re
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -28,9 +29,19 @@ async def _ok(r):
     return r.json()
 
 
-async def _invoice(api, contact: dict, total: float, *, steps=("finalize", "send"), **extra) -> str:
-    """An invoice for ``contact`` issued today, taken through ``steps`` as a user would."""
-    today = business_today(None).isoformat()
+def _day(days_ago: int = 0) -> str:
+    return (business_today(None) - timedelta(days=days_ago)).isoformat()
+
+
+async def _pay(api, doc_id: str, amount: float, day: str) -> None:
+    await _ok(await api.post(f"/docs/{doc_id}/payment", json={
+        "amount": amount, "method": "cash", "payment_date": day, "bank_account": "1111"}))
+
+
+async def _invoice(api, contact: dict, total: float, *, steps=("finalize", "send"), issued: int = 0, **extra) -> str:
+    """An invoice for ``contact`` issued ``issued`` days ago (today by default), taken through
+    ``steps`` as a user would."""
+    today = _day(issued)
     doc = await _ok(await api.post("/docs", json={
         "doc_type": "invoice", "contact_id": contact["id"], "contact_name": contact["name"],
         "date": today, "issue_date": today, "due_date": today,
@@ -38,8 +49,7 @@ async def _invoice(api, contact: dict, total: float, *, steps=("finalize", "send
         "total": total, **extra}))
     for step in steps:
         if step == "pay":
-            await _ok(await api.post(f"/docs/{doc['id']}/payment", json={
-                "amount": total, "method": "cash", "payment_date": today, "bank_account": "1111"}))
+            await _pay(api, doc["id"], total, today)
         elif step == "void":
             await _ok(await api.post(f"/docs/{doc['id']}/void", json={}))
         else:
@@ -53,16 +63,27 @@ def _cards(html: str) -> dict[str, str]:
         r'class="financial-card-label">\s*<span>([^<]+)</span>.*?class="financial-card-value">([^<]*)<', html, re.S)}
 
 
-async def test_contact_cards_and_documents_show_the_contact_s_invoices(owner_ui, monkeypatch):
+async def _demo_contact(owner_ui, monkeypatch) -> dict:
+    """A new customer in the demo company (its items, contacts and invoices on other customers)."""
     mark_running(monkeypatch, "celerp-docs")
     api = owner_ui.api
-    # The demo company: its items, contacts and invoices on other customers.
     tok = api.headers["Authorization"].split(" ", 1)[1]
     await seed_demo.seed_items(api, tok)
     contacts = await seed_demo.seed_contacts(api, tok)
     await seed_demo.seed_docs(api, tok, contacts, "invoice", 6)
     contact = await _ok(await api.post("/crm/contacts", json={"name": "Card Customer", "contact_type": "customer"}))
-    contact = {"id": contact["id"], "name": "Card Customer"}
+    return {"id": contact["id"], "name": "Card Customer"}
+
+
+async def _contact_cards(owner_ui, contact: dict) -> dict[str, str]:
+    r = await owner_ui.get(f"/contacts/{contact['id']}")
+    assert r.status_code == 200, r.text
+    return _cards(r.text)
+
+
+async def test_contact_cards_and_documents_show_the_contact_s_invoices(owner_ui, monkeypatch):
+    contact = await _demo_contact(owner_ui, monkeypatch)
+    api = owner_ui.api
     currency = (await _ok(await api.get("/companies/me"))).get("currency") or "USD"
     foreign = "EUR" if currency != "EUR" else "GBP"
 
@@ -93,3 +114,33 @@ async def test_contact_cards_and_documents_show_the_contact_s_invoices(owner_ui,
                        (200.0, currency), (100.0, foreign)):
         shown = format_value(total, "money", cur)
         assert f'cell--number">{shown}</td>' in r.text, shown
+
+
+async def test_avg_days_to_pay_counts_to_each_paid_invoice_s_last_active_payment(owner_ui, monkeypatch):
+    contact = await _demo_contact(owner_ui, monkeypatch)
+    api = owner_ui.api
+    # Issued 30 days ago, paid in two parts 25 and 10 days ago: 20 days to pay. A payment voided
+    # 2 days ago no longer settles it.
+    split = await _invoice(api, contact, 300.0, issued=30)
+    await _pay(api, split, 300.0, _day(2))
+    await _ok(await api.post(f"/docs/{split}/void-payment", json={"payment_index": 0, "refund_date": _day(2)}))
+    await _pay(api, split, 100.0, _day(25))
+    await _pay(api, split, 200.0, _day(10))
+    # Issued 40 days ago, paid 30 days ago: 10 days to pay.
+    once = await _invoice(api, contact, 100.0, issued=40)
+    await _pay(api, once, 100.0, _day(30))
+    # Still open, so it has not been paid and does not count.
+    part = await _invoice(api, contact, 100.0, issued=50)
+    await _pay(api, part, 50.0, _day(45))
+    for doc_id in (split, once):
+        assert (await _ok(await api.get(f"/docs/{doc_id}")))["status"] == "paid"
+
+    cards = await _contact_cards(owner_ui, contact)
+    assert cards["Avg Days to Pay"] == "15d", cards
+
+
+async def test_avg_days_to_pay_is_empty_without_a_paid_invoice(owner_ui, monkeypatch):
+    contact = await _demo_contact(owner_ui, monkeypatch)
+    await _invoice(owner_ui.api, contact, 100.0, issued=5)
+    cards = await _contact_cards(owner_ui, contact)
+    assert cards["Avg Days to Pay"] == "--", cards

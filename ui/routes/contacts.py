@@ -6,7 +6,7 @@ from __future__ import annotations
 import asyncio as _asyncio
 import json as _json
 import logging
-from datetime import datetime, timezone as _tz
+from datetime import date, datetime, timezone as _tz
 from urllib.parse import quote_plus as _quote_plus, urlencode
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -23,7 +23,7 @@ from ui.components.shell import base_shell, info_tip, page_header, page_title
 from ui.components.table import search_bar, search_results, pagination, per_page_value, EMPTY, breadcrumbs, status_cards, empty_state_cta, fmt_money, format_value, add_new_option, data_table, column_manager
 from ui.components.notes import notes_tab as _shared_notes_tab, note_edit_form as _shared_note_edit_form
 from ui.components.files import files_error, files_error_block, files_section as _shared_files_section, files_session_expired, linked_files, _DOCUMENT_TAGS
-from celerp.services.doc_balance import awaiting_status_param
+from celerp.services.doc_balance import awaiting_status_param, doc_value, settled_on
 from celerp.services.currencies import KNOWN_CURRENCY_CODES
 from ui.components.currency import currency_combobox_td
 from ui.components.phone import phone_input_td, phone_head_items as _phone_head_items
@@ -279,14 +279,14 @@ def _financial_summary(docs: list[dict], contact_id: str = "", invoice_totals: d
 
     invoices = [d for d in docs if d.get("doc_type") == "invoice"]
 
-    # Avg days to pay (all-time, not just YTD)
+    # Avg days to pay (all-time, not just YTD): from issue to the last active payment of each
+    # paid invoice.
     days = []
     for d in invoices:
-        if d.get("status") == "paid" and d.get("paid_date") and d.get("issue_date"):
+        paid_on, issued_on = settled_on(d), doc_value(d, "issue_date")
+        if d.get("status") == "paid" and paid_on and issued_on:
             try:
-                paid_dt = datetime.fromisoformat(str(d["paid_date"])[:10])
-                issue_dt = datetime.fromisoformat(str(d["issue_date"])[:10])
-                days.append((paid_dt - issue_dt).days)
+                days.append((date.fromisoformat(paid_on) - date.fromisoformat(str(issued_on)[:10])).days)
             except (ValueError, TypeError):
                 pass
     avg_dtp = f"{sum(days) // len(days)}d" if days else EMPTY
