@@ -326,19 +326,18 @@ async def record_credits(
     message: AIMessage,
     credits: int,
     *,
+    known: bool,
     company_id: uuid.UUID,
     user_id: uuid.UUID,
 ) -> None:
-    """Add the credits a run was charged to the user message that asked the question,
-    and to the usage record, under the message's id. A run of the same question asked
-    again adds what that run was charged, which is 0 once the question was charged."""
-    if credits <= 0:
-        return
-    await session.execute(
-        update(AIMessage).where(AIMessage.id == message.id)
-        .values(credits_used=AIMessage.credits_used + credits)
-    )
-    record_usage(session, company_id=company_id, user_id=user_id, operation_id=message.id, credits=credits)
+    """Record what a run of the question in ``message`` was charged, on the message and
+    in the usage record under the message's id (celerp.ai.usage.record_usage): the
+    question's whole charge when the service named it (``known``), else the credits
+    this run's replies added."""
+    total = credits if known else AIMessage.credits_used + credits
+    await session.execute(update(AIMessage).where(AIMessage.id == message.id).values(credits_used=total))
+    await record_usage(session, company_id=company_id, user_id=user_id, operation_id=message.id,
+                       credits=credits, known=known)
 
 
 # -- Tool-call record helpers ------------------------------------------------

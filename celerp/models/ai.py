@@ -115,12 +115,16 @@ class AIBatchJob(Base):
 
 
 class AIUsage(Base):
-    """One charge the AI service reported for a question: the credits of an answer,
-    or of a question whose outcome is unknown. A question is named by its
-    ``operation_id`` (the user message, the batch job, or the one-off request), so a
-    question charged in several parts counts once."""
+    """One question the AI service was asked, named by its ``operation_id`` (the user
+    message, one file of a reading job, or the one-off request), with what the service
+    charged for it. The row is written before the question leaves, and stays
+    ``pending`` until the service has named the whole charge (in a reply, or in the
+    operation's status read by celerp.ai.usage.reconcile_usage)."""
 
     __tablename__ = "ai_usage"
+    __table_args__ = (
+        sa.UniqueConstraint("company_id", "user_id", "operation_id", name="uq_ai_usage_operation"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         sa.Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4,
@@ -133,6 +137,7 @@ class AIUsage(Base):
     )
     operation_id: Mapped[uuid.UUID] = mapped_column(sa.Uuid(as_uuid=True), nullable=False)
     credits: Mapped[int] = mapped_column(Integer, nullable=False)
+    pending: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),

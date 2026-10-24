@@ -222,6 +222,7 @@ async def ai_query(
     from celerp.ai.usage import record_usage
     memory = await get_memory(session, company_id)
     operation_id = body.operation_id or uuid.uuid4()
+    await record_usage(session, company_id=company_id, user_id=user.id, operation_id=operation_id)
     await session.commit()
     try:
         result: AgentResult = await run_agent(
@@ -239,12 +240,12 @@ async def ai_query(
             read_only=True,
         )
     except AgentRefusal as refusal:
-        record_usage(session, company_id=company_id, user_id=user.id, operation_id=operation_id,
-                     credits=refusal.credits)
+        await record_usage(session, company_id=company_id, user_id=user.id, operation_id=operation_id,
+                           credits=refusal.credits, known=refusal.charge_known)
         await session.commit()
         raise
-    record_usage(session, company_id=company_id, user_id=user.id, operation_id=operation_id,
-                 credits=result.credits)
+    await record_usage(session, company_id=company_id, user_id=user.id, operation_id=operation_id,
+                       credits=result.credits, known=result.charge_known)
     await session.commit()
     if result.error:
         raise HTTPException(status_code=502, detail=result.error)
@@ -769,6 +770,7 @@ async def query_in_conversation(
     )
     from celerp.ai.memory import get_memory
     from celerp.ai.service import AgentRefusal, AgentResult, run_agent
+    from celerp.ai.usage import record_usage
     conv = await get_conversation(session, conversation_id, company_id, user.id)
     if conv is None:
         raise HTTPException(status_code=404, detail=t("ai.err_conversation_not_found"))
@@ -831,6 +833,7 @@ async def query_in_conversation(
             user_msg = asked or await add_message(
                 session, conversation_id, "user", body.query, file_ids=body.file_ids, message_id=question_id,
             )
+            await record_usage(session, company_id=company_id, user_id=user.id, operation_id=question_id)
             await session.commit()
         except IntegrityError:
             await session.rollback()
@@ -854,7 +857,8 @@ async def query_in_conversation(
             # The refusal is stored with the credits charged before it, so a reloaded
             # thread explains it; the question's id lets it be sent again.
             detail = refusal.detail if isinstance(refusal.detail, dict) else {"message": str(refusal.detail)}
-            await record_credits(session, user_msg, refusal.credits, company_id=company_id, user_id=user.id)
+            await record_credits(session, user_msg, refusal.credits, known=refusal.charge_known,
+                                 company_id=company_id, user_id=user.id)
             await add_message(
                 session, conversation_id, "assistant", str(detail.get("message") or ""),
                 tools_called=[failure_record(detail.get("code"), status=refusal.status_code, refusal=detail)],
@@ -865,7 +869,8 @@ async def query_in_conversation(
                 detail={**detail, "message_id": str(question_id), "asked_again": asked is not None},
             ) from refusal
 
-        await record_credits(session, user_msg, result.credits, company_id=company_id, user_id=user.id)
+        await record_credits(session, user_msg, result.credits, known=result.charge_known,
+                             company_id=company_id, user_id=user.id)
         if result.error:
             tools_called = [*result.tools_called, failure_record(result.error_code)]
         else:
@@ -1651,17 +1656,21 @@ async def usage_stats(
 ) -> dict:
     """Per-user AI questions in the period: the company's current calendar month, or all time.
 
-    Read from the usage record, which holds every charge the AI service reported:
-    a question counts once however many charges it took. Returns ``period``
+    Read from the usage record, one row per question with what the AI service charged
+    for it, after settling the company's pending questions from the service
+    (celerp.ai.usage.reconcile_usage). A question counts when it was charged. Returns ``period``
     {kind, start} (start is the ISO month start, null for all time) and ``users``,
     a list of {user_id, user_name, query_count, credits_used, last_query_at} with
     the latest question first.
     """
     from datetime import datetime
     from sqlalchemy import func, select
+    from celerp.ai.usage import reconcile_usage
     from celerp.models.ai import AIUsage
     from celerp.models.company import User
     from celerp.services.business_time import business_timezone, business_today
+
+    await reconcile_usage(session, company_id)
 
     tz = company_settings.get("timezone")
     today = business_today(tz)
@@ -1671,11 +1680,12 @@ async def usage_stats(
     rows = (await session.execute(
         select(
             AIUsage.user_id,
-            func.count(func.distinct(AIUsage.operation_id)).label("query_count"),
+            func.count().label("query_count"),
             func.sum(AIUsage.credits).label("credits_used"),
             func.max(AIUsage.created_at).label("last_query_at"),
         )
-        .where(AIUsage.company_id == company_id, *([AIUsage.created_at >= since] if since else []))
+        .where(AIUsage.company_id == company_id, AIUsage.credits > 0,
+               *([AIUsage.created_at >= since] if since else []))
         .group_by(AIUsage.user_id)
     )).all()
     metrics: dict = {

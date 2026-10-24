@@ -32,6 +32,9 @@ _semaphore = asyncio.Semaphore(_MAX_CONCURRENT)
 # One model call may run this long; the agent run budget in celerp.ai.service
 # is wider so that several calls fit inside one run.
 MODEL_CALL_TIMEOUT_S = 90.0
+# An operation status read is a small lookup.
+STATUS_TIMEOUT_S = 10.0
+OPERATION_STATES = frozenset({"charged", "in_progress", "not_charged", "none"})
 
 
 class RelayError(RuntimeError):
@@ -54,12 +57,13 @@ class RelayError(RuntimeError):
 
     def __init__(
         self, code: str, message: str, *, status: int | None = None,
-        credits: int = 0, retry_after: float | None = None,
+        credits: int = 0, retry_after: float | None = None, operation_credits: int | None = None,
     ) -> None:
         super().__init__(message)
         self.code = code
         self.status = status
         self.credits = credits
+        self.operation_credits = operation_credits
         self.retry_after = retry_after
 
 
@@ -70,6 +74,9 @@ class ModelResult:
     usage: dict
     reservation_id: str | None
     remaining: int | None
+    # A first turn's whole charge for its operation, named by the service on every
+    # reply to it (a retry included); None from a service that does not name it.
+    operation_credits: int | None = None
 
 
 # Refusals the caller shows as their own states, raised as an HTTPException
@@ -168,6 +175,49 @@ def _build_user_content(
     return parts
 
 
+async def _relay_request(method: str, path: str, *, json: dict | None = None,
+                         timeout: float = MODEL_CALL_TIMEOUT_S) -> httpx.Response:
+    """One AI service call with the session headers, or with the install's account
+    key when there is no Connect session (a free account)."""
+    headers = relay_session_headers()
+    if headers.get("X-Session-Token"):
+        async with _semaphore:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                return await client.request(method, f"{relay_http_url()}{path}", headers=headers, json=json)
+    from celerp.config import settings
+    if settings.cloud_disconnected:
+        raise RelayError("no_session", "The AI service is not available - signed out of Celerp Connect.")
+    from celerp.services.cloud_entitlement import authenticated_request
+    async with _semaphore:
+        resp = await authenticated_request(method, path, json=json, total_s=timeout)
+    if resp is None:
+        raise RelayError("no_account", "The AI service is not available - no Celerp account.")
+    return resp
+
+
+def _count(value) -> int | None:
+    """A credit count the service reported, or None when it reported none."""
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
+async def operation_status(operation_id: uuid.UUID) -> dict | None:
+    """What the service charged for one question this install asked, read only:
+    {operation_id, state, outcome, credits, charged_at}, state one of ``charged``,
+    ``in_progress``, ``not_charged`` and ``none``. None from an older service that
+    keeps no operation status. Raises RelayError, or httpx errors, when the service
+    cannot be asked or does not answer as described."""
+    resp = await _relay_request("GET", f"/ai/operations/{operation_id}", timeout=STATUS_TIMEOUT_S)
+    if resp.status_code == 404:
+        return None
+    if resp.status_code != 200:
+        raise RelayError("gateway_error", f"LLM gateway error {resp.status_code}", status=resp.status_code)
+    status = resp.json()
+    if (not isinstance(status, dict) or status.get("operation_id") != str(operation_id)
+            or status.get("state") not in OPERATION_STATES or _count(status.get("credits")) is None):
+        raise RelayError("unexpected_reply", "The AI service returned an unexpected reply.", status=200)
+    return status
+
+
 async def complete(
     messages: list[dict],
     *,
@@ -209,21 +259,7 @@ async def complete(
     if operation_id is not None:
         body["operation_id"] = str(operation_id)
 
-    headers = relay_session_headers()
-    if headers.get("X-Session-Token"):
-        async with _semaphore:
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                resp = await client.post(f"{relay_http_url()}/ai/complete", headers=headers, json=body)
-    else:
-        # No Connect session: a free account asks with the install's own key.
-        from celerp.config import settings
-        if settings.cloud_disconnected:
-            raise RelayError("no_session", "The AI service is not available - signed out of Celerp Connect.")
-        from celerp.services.cloud_entitlement import authenticated_request
-        async with _semaphore:
-            resp = await authenticated_request("POST", "/ai/complete", json=body, total_s=timeout)
-        if resp is None:
-            raise RelayError("no_account", "The AI service is not available - no Celerp account.")
+    resp = await _relay_request("POST", "/ai/complete", json=body, timeout=timeout)
 
     if resp.status_code == 200:
         data = resp.json()
@@ -236,6 +272,7 @@ async def complete(
             usage=data.get("usage") or {},
             reservation_id=data.get("reservation_id"),
             remaining=data.get("remaining"),
+            operation_credits=_count(data.get("operation_credits")),
         )
 
     detail = _error_detail(resp)
@@ -264,6 +301,7 @@ async def complete(
             status=resp.status_code,
             credits=int(detail.get("credits") or 0) if known == "outcome_unknown" else 0,
             retry_after=_retry_after(resp, detail) if known == "operation_in_progress" else None,
+            operation_credits=_count(detail.get("operation_credits")),
         )
 
     raise RelayError(

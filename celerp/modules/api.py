@@ -111,6 +111,10 @@ async def ai_query(
     from celerp.ai.usage import record_usage_now
 
     operation_id = uuid.uuid4()
+    usage = dict(company_id=caller.company_id, user_id=caller.user.id, operation_id=operation_id)
+    # Its row is written before the question leaves, so a charge whose reply never
+    # arrives is still found (celerp.ai.usage.reconcile_usage).
+    await record_usage_now(db_session.bind, **usage)
     result: AIResponse = await run_query(
         query=query,
         session=db_session,
@@ -119,10 +123,7 @@ async def ai_query(
         operation_id=operation_id,
     )
     # The charge is recorded on its own, leaving the module's request session as it was.
-    await record_usage_now(
-        db_session.bind, company_id=caller.company_id, user_id=caller.user.id,
-        operation_id=operation_id, credits=result.credits,
-    )
+    await record_usage_now(db_session.bind, credits=result.credits, known=result.charge_known, **usage)
     return {
         "answer": result.answer,
         "model_used": result.model_used,

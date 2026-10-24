@@ -275,7 +275,7 @@ async def test_ask_unattended_with_history():
 
     captured = {}
 
-    async def mock_post(url, json=None, **kw):
+    async def mock_request(method, url, json=None, **kw):
         captured["messages"] = json["messages"]
         resp = MagicMock()
         resp.status_code = 200
@@ -284,7 +284,7 @@ async def test_ask_unattended_with_history():
 
     with patch("celerp.ai.llm.relay_session_headers", return_value={"X-Session-Token": "s", "X-Instance-ID": "i"}):
         with patch("celerp.ai.llm.relay_http_url", return_value="https://relay"):
-            with patch("httpx.AsyncClient.post", side_effect=mock_post):
+            with patch("httpx.AsyncClient.request", side_effect=mock_request):
                 result = await ask_unattended(
                     "system prompt", "user question", operation_id=uuid.uuid4(), tally=RunTally(),
                     history=[{"role": "user", "content": "prior"}, {"role": "assistant", "content": "reply"}],

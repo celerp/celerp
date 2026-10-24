@@ -197,7 +197,10 @@ def test_peer_downgrade_preserves_persisted_records(table):
 def test_ai_charges_from_before_the_usage_record_are_carried_over():
     """The assistant's tables are created at startup, so a database that has started the
     app holds them before the usage record exists; each charged question and receipts
-    job becomes one usage row, and nothing that was not charged does."""
+    job becomes one final usage row, and nothing that was not charged does."""
+    from alembic import command
+
+    from celerp.alembic_config import build_alembic_config
     from celerp.models.base import Base
 
     ai = [Base.metadata.tables[t] for t in ("ai_conversations", "ai_messages", "ai_batch_jobs")]
@@ -231,13 +234,17 @@ def test_ai_charges_from_before_the_usage_record_are_carried_over():
                     {"id": ids["idle"], "company_id": ids["company"], "user_id": ids["user"], "status": "failed",
                      "total_files": 1, "credits_consumed": 0, "query": "q", "file_ids": []},
                 ])
-            upgrade_to(sync_url, head_rev())
-            with eng.connect() as conn:
-                rows = set(conn.execute(text(
-                    "SELECT operation_id, company_id, user_id, credits FROM ai_usage")).all())
+            carried = []
+            for _ in range(2):  # carried over again (down, then up): the same rows, once each
+                upgrade_to(sync_url, head_rev())
+                with eng.connect() as conn:
+                    carried.append(conn.execute(text(
+                        "SELECT operation_id, company_id, user_id, credits, pending FROM ai_usage")).all())
+                command.downgrade(build_alembic_config(), "-1")
         finally:
             eng.dispose()
-    assert rows == {(ids["asked"], ids["company"], ids["user"], 2), (ids["job"], ids["company"], ids["user"], 3)}
+    expected = [(ids["asked"], ids["company"], ids["user"], 2, False), (ids["job"], ids["company"], ids["user"], 3, False)]
+    assert [sorted(rows) for rows in carried] == [sorted(expected)] * 2
 
 
 def _without_instance_meta(schema: dict[str, set]) -> dict[str, set]:

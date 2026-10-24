@@ -473,7 +473,7 @@ async def test_batch_lost_answer_is_asked_again_under_the_files_id(session, db_f
     timed out is asked again once under that id and gets the answer the service kept;
     a file whose outcome the service reports unknown keeps its charge and is not asked
     again (that id only ever gets the same outcome); a file the service could not read
-    is not asked again and not charged. The usage record names every charge by the job."""
+    is not asked again and not charged. The usage record holds one row per file's id."""
     from sqlalchemy import select
     from celerp.models.ai import AIUsage
 
@@ -481,9 +481,12 @@ async def test_batch_lost_answer_is_asked_again_under_the_files_id(session, db_f
     job = await create_batch_job(session, company.id, user.id, "analyze", file_ids)
     await session.commit()
     file_of = {uuid.uuid5(job.id, fid): fid for fid in file_ids}
+    # The service's reply to the retry adds nothing and names the file's whole charge.
+    replayed = _model_result("Extracted", credits=0)
+    replayed.operation_credits = 1
     replies = {
         file_ids[0]: [_model_result("Extracted", credits=1)],
-        file_ids[1]: [httpx.ReadTimeout("slow"), _model_result("Extracted", credits=0)],
+        file_ids[1]: [httpx.ReadTimeout("slow"), replayed],
         file_ids[2]: [RelayError("service_unavailable", "down", status=503)],
         file_ids[3]: [RelayError("outcome_unknown", "lost", status=503, credits=1)],
     }
@@ -503,7 +506,8 @@ async def test_batch_lost_answer_is_asked_again_under_the_files_id(session, db_f
     assert sorted(asked) == sorted([file_ids[0], file_ids[1], file_ids[1], file_ids[2], file_ids[3]])
     async with db_factory() as s:
         updated = await s.get(AIBatchJob, job.id)
-        assert (updated.completed_files, updated.failed_files, updated.credits_consumed) == (2, 2, 2)
+        assert (updated.completed_files, updated.failed_files, updated.credits_consumed) == (2, 2, 3)
         usage = (await s.execute(select(AIUsage))).scalars().all()
-    assert sorted(u.credits for u in usage) == [1, 1]
-    assert {(u.operation_id, u.company_id, u.user_id) for u in usage} == {(job.id, company.id, user.id)}
+    assert {file_of[u.operation_id]: u.credits for u in usage} == {
+        file_ids[0]: 1, file_ids[1]: 1, file_ids[2]: 0, file_ids[3]: 1}
+    assert {(u.company_id, u.user_id) for u in usage} == {(company.id, user.id)}

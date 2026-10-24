@@ -70,6 +70,7 @@ class AIResponse:
     tools_called: list[str]
     error: str | None = None
     credits: int = 0             # relay credits the question was charged
+    charge_known: bool = False   # the service named the question's whole charge
 
 
 @dataclass
@@ -92,6 +93,7 @@ class AgentResult:
     credits: int = 0             # relay credits consumed across all model turns
     help_pages: list[str] | None = None  # help pages read for the answer; None when help was not searched
     error_code: str | None = None  # why the run failed; see RETRYABLE_ERRORS
+    charge_known: bool = False   # the service named the question's whole charge
 
 
 @dataclass
@@ -100,9 +102,20 @@ class RunTally:
     fails after a charged turn still reports the credits it was charged."""
     credits: int = 0
     help_pages: list[str] | None = None
+    # The service named the question's whole charge (a first turn's reply does), so
+    # ``credits`` is that charge; otherwise it is what the replies added up to.
+    known: bool = False
+
+    def charge(self, credits: int, operation_credits: int | None) -> None:
+        """Take what one model call reported: the operation's whole charge when the
+        service names it, else the credits the call added."""
+        if operation_credits is None:
+            self.credits += credits
+        else:
+            self.credits, self.known = operation_credits, True
 
     def result(self, **fields) -> AgentResult:
-        return AgentResult(credits=self.credits, help_pages=self.help_pages, **fields)
+        return AgentResult(credits=self.credits, charge_known=self.known, help_pages=self.help_pages, **fields)
 
 
 class AgentRefusal(HTTPException):
@@ -110,9 +123,10 @@ class AgentRefusal(HTTPException):
     charged before it (a free question's first turn is charged, and the relay can
     refuse a continuation), so the caller records them before passing the refusal on."""
 
-    def __init__(self, refusal: HTTPException, credits: int):
+    def __init__(self, refusal: HTTPException, tally: RunTally):
         super().__init__(status_code=refusal.status_code, detail=refusal.detail, headers=refusal.headers)
-        self.credits = credits
+        self.credits = tally.credits
+        self.charge_known = tally.known
 
 
 # -- Error mapping ----------------------------------------------------------
@@ -319,7 +333,7 @@ async def run_query(
         )
         result = AIResponse(
             answer=reply.message.get("content") or "", model_used=model, tools_called=[],
-            credits=tally.credits,
+            credits=tally.credits, charge_known=tally.known,
         )
     except HTTPException:
         raise
@@ -327,6 +341,7 @@ async def run_query(
         log.error("AI query failed: %s", exc)
         result = AIResponse(
             answer="", model_used=model, tools_called=[], error=_user_error(exc), credits=tally.credits,
+            charge_known=tally.known,
         )
     _log_query(company_id, user_id, model, [], file_count, t0, result.error)
     return result
@@ -410,7 +425,7 @@ async def run_agent(
         _log_query(company_id, user_id, result.model_used, result.tools_called, len(file_ids or []), t0, result.error)
         return result
     except HTTPException as exc:
-        raise AgentRefusal(exc, tally.credits) from exc
+        raise AgentRefusal(exc, tally) from exc
     except Exception as exc:
         if not isinstance(exc, (asyncio.TimeoutError, _SessionExpired)):
             log.error("AI agent run failed: %s", exc)
@@ -604,12 +619,12 @@ async def _model_turn(
                 messages, tools=tools, reservation_id=reservation_id, operation_id=operation_id, **request,
             )
         except RelayError as exc:
-            tally.credits += exc.credits
+            tally.charge(exc.credits, exc.operation_credits)
             if exc.code != "operation_in_progress":
                 raise
             await asyncio.sleep(min(exc.retry_after or 1.0, MAX_IN_PROGRESS_WAIT_S))
             continue
-        tally.credits += int((result.usage or {}).get("credits") or 0)
+        tally.charge(int((result.usage or {}).get("credits") or 0), result.operation_credits)
         return result
 
 

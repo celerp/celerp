@@ -120,6 +120,11 @@ def _file_error(exc: BaseException) -> str:
     return "This file could not be read. Check that it is a clear image or PDF and resend it."
 
 
+def file_operation_id(job_id: uuid.UUID, file_id: str) -> uuid.UUID:
+    """The operation id one file of a reading job is asked under."""
+    return uuid.uuid5(job_id, file_id)
+
+
 async def _process_single_file(
     file_id: str,
     query: str,
@@ -154,7 +159,7 @@ async def _process_single_file(
         try:
             result = await ask_unattended(
                 _BATCH_SYSTEM_PROMPT, prompt, files=files,
-                operation_id=uuid.uuid5(job_id, file_id), tally=tally,
+                operation_id=file_operation_id(job_id, file_id), tally=tally,
             )
         except Exception as exc:
             log.warning("Batch file %s failed: %s", file_id, exc)
@@ -165,6 +170,7 @@ async def _process_single_file(
                 "error": _file_error(exc),
                 # A file whose answer was lost is still charged.
                 "credits": tally.credits,
+                "charge_known": tally.known,
             }
 
     answer = result.message.get("content") or ""
@@ -175,6 +181,7 @@ async def _process_single_file(
         "answer": answer,
         "extraction": parse_extraction(answer),
         "credits": tally.credits,
+        "charge_known": tally.known,
     }
 
 
@@ -240,6 +247,11 @@ async def run_batch(
             conversation_id = job.conversation_id
             job.status = "running"
             session.add(job)
+            # Each file is its own question to the service; its row is written before
+            # it leaves (celerp.ai.usage.reconcile_usage finds a lost charge).
+            for fid in dict.fromkeys(file_ids):
+                await record_usage(session, company_id=company_id, user_id=user_id,
+                                   operation_id=file_operation_id(job_id, fid))
             await session.commit()
 
     tasks = [
@@ -249,6 +261,7 @@ async def run_batch(
 
     for coro in asyncio.as_completed(tasks):
         result = await coro
+        known = result.pop("charge_known", False)
         results.append(result)
 
         if result["status"] == "success":
@@ -272,8 +285,9 @@ async def run_batch(
                 job.failed_files = failed
                 job.credits_consumed = credits
                 session.add(job)
-                record_usage(session, company_id=company_id, user_id=user_id, operation_id=job_id,
-                             credits=result.get("credits", 0))
+                await record_usage(session, company_id=company_id, user_id=user_id,
+                                   operation_id=file_operation_id(job_id, result["file_id"]),
+                                   credits=result.get("credits", 0), known=known)
                 await session.commit()
 
         if on_progress:

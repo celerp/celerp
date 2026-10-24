@@ -47,7 +47,7 @@ async def _question(session, company_id, user_id, *, credits: int, when: datetim
                         created_at=when or datetime.now(timezone.utc))
     session.add(message)
     await session.flush()
-    await record_credits(session, message, credits, company_id=company_id, user_id=user_id)
+    await record_credits(session, message, credits, known=True, company_id=company_id, user_id=user_id)
     if when is not None:
         await session.flush()
         for row in (await session.execute(select(AIUsage).where(AIUsage.operation_id == message.id))).scalars():
@@ -69,7 +69,7 @@ def _relay(monkeypatch, replies: list) -> list:
     async def _complete(messages, *, tools=None, reservation_id=None, operation_id=None, **_kw):
         sent.append(operation_id)
         reply = replies.pop(0)
-        if isinstance(reply, Exception):
+        if isinstance(reply, BaseException):
             raise reply
         return reply
 
@@ -119,9 +119,9 @@ async def test_usage_counts_only_charged_questions(client, session, owner):
     rows = (await _usage(client, token)).json()["users"]
     assert _counts(rows) == [(1, 1)]
 
-    # A question charged in several parts counts once.
+    # A question charged in several parts counts once: a later run's credits add.
     second = await _question(session, company_id, user_id, credits=2)
-    await record_credits(session, second, 1, company_id=company_id, user_id=user_id)
+    await record_credits(session, second, 1, known=False, company_id=company_id, user_id=user_id)
     await session.commit()
     rows = (await _usage(client, token)).json()["users"]
     assert _counts(rows) == [(2, 4)]
@@ -543,7 +543,7 @@ async def test_module_query_is_counted(session, monkeypatch):
 
     monkeypatch.setattr("celerp.session_gate.get_session_token", lambda: "session-1")
     monkeypatch.setattr("celerp.ai.service.run_query", AsyncMock(return_value=SimpleNamespace(
-        answer="ok", model_used="test", tools_called=[], credits=1)))
+        answer="ok", model_used="test", tools_called=[], credits=1, charge_known=False)))
     company_id, user_id = await seed_member(session)
     async with signed_request(session, company_id, user_id):
         await ai_query(query="hello", company_id=str(company_id), session_token="session-1", db_session=session)
@@ -577,8 +577,9 @@ async def test_module_query_timed_out_is_asked_again_once_and_unknown_is_not(ses
     assert unknown["answer"] == "" and failed["answer"] == ""
     assert len(sent) == 4 and sent[0] == sent[1] and len({sent[1], sent[2], sent[3]}) == 3
     rows = (await session.execute(select(AIUsage).where(AIUsage.company_id == company_id))).scalars().all()
+    # Every question has its row from before it left; the failed one was charged nothing.
     assert sorted((str(r.operation_id), r.credits) for r in rows) == sorted(
-        [(str(sent[0]), 1), (str(sent[2]), 1)])
+        [(str(sent[0]), 1), (str(sent[2]), 1), (str(sent[3]), 0)])
 
 
 async def test_refusal_after_a_charged_turn_is_counted(client, owner, monkeypatch):
