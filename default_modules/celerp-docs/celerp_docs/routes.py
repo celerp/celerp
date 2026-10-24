@@ -5021,6 +5021,7 @@ async def record_receipt(session: AsyncSession, company_id, row: Projection, pay
     Shared by the receive route and an import that records its goods now."""
     from celerp.services import auto_je
 
+    refuse_unset_line_tax(row.state.get("line_items"), row.state, receiving=True)
     entity_id = row.entity_id
     doc_type = row.state.get("doc_type")
     location_uuid = await require_company_location(session, company_id, payload.location_id)

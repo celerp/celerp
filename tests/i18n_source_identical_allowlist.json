@@ -218,7 +218,8 @@
     "documents.err_tax_unreadable_issued",
     "documents.err_tax_unreadable_shared",
     "documents.err_line_tax_unset",
-    "documents.err_line_tax_unset_issued"
+    "documents.err_line_tax_unset_issued",
+    "documents.err_line_tax_unset_receive"
   ],
   "ar": [
     "account.email_placeholder",
@@ -427,7 +428,8 @@
     "documents.err_tax_unreadable_issued",
     "documents.err_tax_unreadable_shared",
     "documents.err_line_tax_unset",
-    "documents.err_line_tax_unset_issued"
+    "documents.err_line_tax_unset_issued",
+    "documents.err_line_tax_unset_receive"
   ],
   "de": [
     "acct.source_system",
@@ -707,7 +709,8 @@
     "documents.err_tax_unreadable_issued",
     "documents.err_tax_unreadable_shared",
     "documents.err_line_tax_unset",
-    "documents.err_line_tax_unset_issued"
+    "documents.err_line_tax_unset_issued",
+    "documents.err_line_tax_unset_receive"
   ],
   "es": [
     "account.plan",
@@ -960,7 +963,8 @@
     "documents.err_tax_unreadable_issued",
     "documents.err_tax_unreadable_shared",
     "documents.err_line_tax_unset",
-    "documents.err_line_tax_unset_issued"
+    "documents.err_line_tax_unset_issued",
+    "documents.err_line_tax_unset_receive"
   ],
   "fr": [
     "acct.tab_journal",
@@ -1254,7 +1258,8 @@
     "documents.err_tax_unreadable_issued",
     "documents.err_tax_unreadable_shared",
     "documents.err_line_tax_unset",
-    "documents.err_line_tax_unset_issued"
+    "documents.err_line_tax_unset_issued",
+    "documents.err_line_tax_unset_receive"
   ],
   "id": [
     "acct.source_manual",
@@ -1532,7 +1537,8 @@
     "documents.err_tax_unreadable_issued",
     "documents.err_tax_unreadable_shared",
     "documents.err_line_tax_unset",
-    "documents.err_line_tax_unset_issued"
+    "documents.err_line_tax_unset_issued",
+    "documents.err_line_tax_unset_receive"
   ],
   "it": [
     "attr.volume_l",
@@ -1782,7 +1788,8 @@
     "documents.err_tax_unreadable_issued",
     "documents.err_tax_unreadable_shared",
     "documents.err_line_tax_unset",
-    "documents.err_line_tax_unset_issued"
+    "documents.err_line_tax_unset_issued",
+    "documents.err_line_tax_unset_receive"
   ],
   "ja": [
     "account.email_placeholder",
@@ -2001,7 +2008,8 @@
     "documents.err_tax_unreadable_issued",
     "documents.err_tax_unreadable_shared",
     "documents.err_line_tax_unset",
-    "documents.err_line_tax_unset_issued"
+    "documents.err_line_tax_unset_issued",
+    "documents.err_line_tax_unset_receive"
   ],
   "pt": [
     "acct.source_manual",
@@ -2265,7 +2273,8 @@
     "documents.err_tax_unreadable_issued",
     "documents.err_tax_unreadable_shared",
     "documents.err_line_tax_unset",
-    "documents.err_line_tax_unset_issued"
+    "documents.err_line_tax_unset_issued",
+    "documents.err_line_tax_unset_receive"
   ],
   "th": [
     "account.email_placeholder",
@@ -2482,7 +2491,8 @@
     "documents.err_tax_unreadable_issued",
     "documents.err_tax_unreadable_shared",
     "documents.err_line_tax_unset",
-    "documents.err_line_tax_unset_issued"
+    "documents.err_line_tax_unset_issued",
+    "documents.err_line_tax_unset_receive"
   ],
   "vi": [
     "btn.u00d7",
@@ -2703,6 +2713,7 @@
     "documents.err_tax_unreadable_issued",
     "documents.err_tax_unreadable_shared",
     "documents.err_line_tax_unset",
-    "documents.err_line_tax_unset_issued"
+    "documents.err_line_tax_unset_issued",
+    "documents.err_line_tax_unset_receive"
   ]
 }

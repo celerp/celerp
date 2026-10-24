@@ -32,14 +32,17 @@ def unreadable_tax_refusal(tax: str, state: dict | None = None) -> HTTPException
     return HTTPException(status_code=422, detail=t(key, tax=tax))
 
 
-def refuse_unset_line_tax(lines, state: dict | None = None, numbers: list[int] | None = None) -> None:
-    """Refuse (422, naming the line) issuing *lines* while one's tax is still for the user to set
-    (line_tax_unset): it would be charged none. Each line is numbered by its position, or by
+def refuse_unset_line_tax(lines, state: dict | None = None, numbers: list[int] | None = None, *,
+                          receiving: bool = False) -> None:
+    """Refuse (422, naming the line) issuing *lines*, or *receiving* goods on them, while one's tax
+    is still for the user to set (line_tax_unset): it would be charged none, and a receipt takes a
+    draft past the point where the tax can be chosen. Each line is numbered by its position, or by
     *numbers* (counted from 0) when they are a selection of the document's lines. On a document
     *state* past draft the message names the way back to one, as unreadable_tax_refusal does."""
     for i, line in enumerate(lines or []):
         if isinstance(line, dict) and line_tax_unset(line):
-            key = "documents.err_line_tax_unset_issued" if _past_draft(state) else "documents.err_line_tax_unset"
+            key = ("documents.err_line_tax_unset_issued" if _past_draft(state)
+                   else "documents.err_line_tax_unset_receive" if receiving else "documents.err_line_tax_unset")
             raise HTTPException(status_code=422, detail=t(key, line=(numbers[i] if numbers else i) + 1))
 
 
