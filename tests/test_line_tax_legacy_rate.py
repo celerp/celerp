@@ -132,3 +132,15 @@ async def test_the_editor_shows_a_line_saved_with_a_rate_as_the_new_line_reads_i
             rate = float(sel.parent.select_one('[data-name="tax_rate_custom"]')["value"])
             shown.append([{"code": "", "rate": rate, "amount": 0, "order": 0, "is_compound": False, "label": ""}])
     assert shown == [legacy_line_taxes(line, _TH, "invoice") for line in lines]
+
+
+@pytest.mark.parametrize("line", [_legacy(7, "VAT 7%"), _modern([_VAT])], ids=["rate-only", "taxes-list"])
+def test_every_reader_of_a_lines_tax_reads_a_line_saved_with_only_a_rate(line):
+    """Class guard: each reader of what a line charges outside the money itself (the activity
+    feed, a document becoming a quotation list) reads a rate-only line as the same line holding
+    the tax as a list, as document_money charges it."""
+    from celerp_docs.received import _lines
+    from ui.components.activity import _line_effective_tax
+
+    assert _line_effective_tax({**line, "line_total": 100.0}) == (7.0, 7.0)
+    assert _lines({"line_items": [line]}, "list")[0]["tax_rate"] == 7
