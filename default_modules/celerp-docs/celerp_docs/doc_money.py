@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from fastapi import HTTPException
 
+from celerp.services.list_behavior import FINALIZED
 from celerp.services.money import round_money, to_decimal, to_stored_float
 from celerp.tax_regimes import line_tax_unset, tax_entries, tax_text, unreadable_tax
 from celerp_docs.doc_constants import (DRAFT_REVERT_RETURNED, DRAFT_REVERT_STATUSES, INBOUND_DOC_TYPES,
@@ -33,8 +34,11 @@ def draft_route(state: dict) -> list[str]:
     Payments and credit notes go first, then received goods by Return Goods and lines out on
     memo or sold by Set as available. A purchase order that received goods never reverts, so
     it is voided and made again; a bill made from an order may only revert into the order,
-    which is then voided. A status Revert to Draft never takes leaves only a new document."""
+    which is then voided. A status Revert to Draft never takes leaves only a new document; a
+    list reverts only from finalized."""
     doc_type, status = state.get("doc_type", ""), state.get("status")
+    if state.get("entity_type") == "list":
+        return ["documents.tax_route_revert" if status == FINALIZED else "documents.tax_route_new"]
     inbound = doc_type in INBOUND_DOC_TYPES
     paid = bool(to_decimal(state.get("amount_paid") or 0)) or to_decimal(state.get("credited") or 0) > 0
     received = bool(state.get("received_items"))

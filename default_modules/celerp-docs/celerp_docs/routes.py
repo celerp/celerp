@@ -2172,12 +2172,12 @@ async def mark_doc_sent(session: AsyncSession, company_id, entity_id: str, user,
         raise HTTPException(status_code=409, detail="Cannot send a closed memo; reopen it first.")
     if not (row.state.get("line_items") or []):
         raise HTTPException(status_code=422, detail="Add at least one line item before sending this document.")
-    if row.state.get("status") == "draft":  # sending a draft issues it
-        refuse_unset_line_tax(row.state["line_items"])
     from celerp_docs.doc_constants import NO_SEND_DOC_TYPES
     doc_type = row.state.get("doc_type", "")
     if doc_type in NO_SEND_DOC_TYPES:
         raise HTTPException(status_code=409, detail=t("documents.err_send_type"))
+    if row.state.get("status") == "draft":  # sending a draft issues it
+        refuse_unset_line_tax(row.state["line_items"])
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.sent",
         data=payload.model_dump(exclude_none=True), actor_id=user.id, location_id=None, source=source,
@@ -13461,6 +13461,10 @@ async def change_list_type(
     if status not in (DRAFT, FINALIZED):
         raise HTTPException(status_code=409,
                             detail=t("documents.err_list_type_locked"))
+    if status == FINALIZED:
+        # A write-off finalizes without Issue's check, so a finalized list may still hold a "--"
+        # line that a re-type would issue.
+        refuse_unset_line_tax(state.get("line_items"), state)
     fields: dict = {"list_type": new_type}
     if new_type == "audit" and status == FINALIZED:
         lines = [dict(l) for l in (state.get("line_items") or [])]
