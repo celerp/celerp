@@ -226,6 +226,8 @@ def _register_tax_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str, r
         try:
             taxes = await getattr(api, gname)(token)
         except APIError as e:
+            if e.status == 401:
+                raise
             return P(str(e.detail), cls="cell-error")
         return taxes[idx] if idx < len(taxes) else {}
 
@@ -311,6 +313,8 @@ def _register_tax_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str, r
                 await getattr(api, pname)(token, taxes)
                 taxes = await getattr(api, gname)(token)
             except APIError as e:
+                if e.status == 401:
+                    raise
                 return P(str(e.detail), cls="cell-error")
             tax = taxes[idx] if idx < len(taxes) else {}
             return _tax_display_cell(idx, field, tax, prefix=pfx)

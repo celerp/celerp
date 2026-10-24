@@ -1609,7 +1609,7 @@ def setup_routes(app):
             docs, total_count, summary = await _doc_results(token, state, date_from, date_to, page, per_page)
         except APIError as e:
             if e.status == 401:
-                return RedirectResponse("/login", status_code=302)
+                raise
             docs, total_count, summary = [], 0, {}
         draft_count = summary.get("draft_count", 0)
 
@@ -1721,8 +1721,7 @@ def setup_routes(app):
             entity_id = result.get("entity_id") or result.get("id", "")
         except APIError as e:
             if e.status == 401:
-                from starlette.responses import Response as _R
-                return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+                raise
             from starlette.responses import Response as _R
             detail = error_message(e)
             return _R(
@@ -1987,6 +1986,8 @@ def setup_routes(app):
             doc = await api.get_doc(token, entity_id)
             new_taxes = await _new_line_taxes(token, doc.get("doc_type"), doc)
         except APIError as e:
+            if e.status == 401:
+                raise
             return _J({"error": error_message(e)}, status_code=e.status)
 
         # Parse rows
@@ -2077,6 +2078,8 @@ def setup_routes(app):
             await api.patch_doc(token, entity_id, {"line_items": (doc.get("line_items") or []) + new_lines},
                                 expected_version=doc.get("version"))
         except APIError as e:
+            if e.status == 401:
+                raise
             return _J({"error": error_message(e)}, status_code=e.status)
 
         return _J({"ok": True, "imported": len(new_lines)})
@@ -2155,7 +2158,7 @@ def setup_routes(app):
             lst = await api.get_list(token, entity_id)
         except APIError as e:
             if e.status == 401:
-                return RedirectResponse("/login", status_code=302)
+                raise
             return _HR(to_xml(P(error_message(e))), status_code=e.status)
         layout = request.query_params.get("layout") or None
         lst.setdefault("doc_type", "list")
@@ -2197,7 +2200,7 @@ def setup_routes(app):
             doc = await api.get_doc(token, entity_id)
         except APIError as e:
             if e.status == 401:
-                return RedirectResponse("/login", status_code=302)
+                raise
             from starlette.responses import HTMLResponse as _HR
             return _HR(to_xml(P(error_message(e))), status_code=e.status)
         # Inject company fields
@@ -2370,7 +2373,7 @@ celerpUpdateBulkAlloc();
             doc = await api.get_doc(token, entity_id)
         except (APIError, Exception) as e:
             if isinstance(e, APIError) and e.status == 401:
-                return RedirectResponse("/login", status_code=302)
+                raise
             if isinstance(e, APIError) and e.status == 404:
                 from starlette.responses import HTMLResponse as _HR
                 return _HR(f"<h2>{t('documents.document_not_found')}</h2><p><a href='/docs'>{t('documents.back_to_documents')}</a></p>", status_code=404)
@@ -3191,6 +3194,8 @@ celerpUpdateBulkAlloc();
         try:
             result = await api.patch_doc(token, entity_id, patch_data, expected_version=expected_version)
         except APIError as e:
+            if e.status == 401:
+                raise
             # Saved from an older copy: the page keeps the user's rows and offers Try again.
             if isinstance(e.data, dict) and e.data.get("code") == "stale_version":
                 return JSONResponse({"code": "stale_version", "error": error_message(e)}, status_code=409)
@@ -3199,12 +3204,14 @@ celerpUpdateBulkAlloc();
             # so the page can open the resolution modal instead of the inline error.
             if isinstance(e.data, dict) and e.data.get("conflicts"):
                 payload["reserved_conflicts"] = e.data["conflicts"]
-            return JSONResponse(payload, status_code=400)
+            return JSONResponse(payload, status_code=e.status)
         saved = {"ok": True, "version": result.get("version")}
         # The page shows the document taxes, total and outstanding the API just computed, never its own copy.
         try:
             doc = await api.get_doc(token, entity_id)
         except APIError as e:
+            if e.status == 401:
+                raise
             return JSONResponse({**saved, "error": error_message(e)})
         currency = doc.get("currency") or "USD"
         return JSONResponse({**saved,
@@ -3231,6 +3238,8 @@ celerpUpdateBulkAlloc();
         try:
             result = await reprice_fn(token, entity_id, price_list, expected_version)
         except APIError as e:
+            if e.status == 401:
+                raise
             return JSONResponse({"error": error_message(e)}, status_code=e.status or 400)
         return JSONResponse(result)
 
@@ -3354,7 +3363,7 @@ celerpUpdateBulkAlloc();
                 return _R("", status_code=400)
         except APIError as e:
             if e.status == 401:
-                return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+                raise
             # Return error inline
             return _action_error(error_message(e))
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
@@ -3390,7 +3399,7 @@ celerpUpdateBulkAlloc();
             })
         except APIError as e:
             if e.status == 401:
-                return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+                raise
             return _action_error(error_message(e))
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
 
@@ -3406,7 +3415,7 @@ celerpUpdateBulkAlloc();
             target_id = result.get("target_doc_id", entity_id)
         except APIError as e:
             if e.status == 401:
-                return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+                raise
             return _action_error(error_message(e))
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{target_id}"})
 
@@ -3439,7 +3448,7 @@ celerpUpdateBulkAlloc();
             result = await api.receive_po(token, entity_id, data)
         except APIError as e:
             if e.status == 401:
-                return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+                raise
             return _action_error(error_message(e))
         summary = _receive_summary(result.get("line_counts"))
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}",
@@ -3482,7 +3491,7 @@ celerpUpdateBulkAlloc();
                                                                **submitted_operation_key(form)})
         except APIError as e:
             if e.status == 401:
-                return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+                raise
             # A line whose lots the server cannot pick for it opens its lot list.
             data = e.data if isinstance(e.data, dict) else {}
             line = (data.get("params") or {}).get("line")
@@ -3508,7 +3517,7 @@ celerpUpdateBulkAlloc();
             await api.undo_receive_goods(token, entity_id)
         except APIError as e:
             if e.status == 401:
-                return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+                raise
             return _action_error(error_message(e))
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}",
                                                 **toast_header(t("documents.receipt_undone"), "info")})
@@ -3540,7 +3549,7 @@ celerpUpdateBulkAlloc();
             })
         except APIError as e:
             if e.status == 401:
-                return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+                raise
             return _action_error(error_message(e))
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
 
@@ -3559,7 +3568,7 @@ celerpUpdateBulkAlloc();
             await api.void_payment(token, entity_id, payment_index, void_reason, **submitted_operation_key(form))
         except APIError as e:
             if e.status == 401:
-                return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+                raise
             return _action_error(error_message(e))
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
 
@@ -3575,7 +3584,7 @@ celerpUpdateBulkAlloc();
             await api.delete_payment(token, entity_id, payment_index, **submitted_operation_key(form))
         except APIError as e:
             if e.status == 401:
-                return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+                raise
             return _action_error(error_message(e))
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
 
@@ -3592,7 +3601,7 @@ celerpUpdateBulkAlloc();
             await apply(token, entity_id, target_doc_id, amount, date, **submitted_operation_key(form))
         except APIError as e:
             if e.status == 401:
-                return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+                raise
             return _action_error(error_message(e))
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
 
@@ -3621,7 +3630,7 @@ celerpUpdateBulkAlloc();
                                          **submitted_operation_key(form))
         except APIError as e:
             if e.status == 401:
-                return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+                raise
             return _action_error(error_message(e))
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
 
@@ -3687,7 +3696,7 @@ celerpUpdateBulkAlloc();
             await api.bulk_accounting_sync(token, doc_ids, flag == "1", operation_id)
         except APIError as exc:
             if exc.status == 401:
-                return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+                raise
             return _action_error(error_message(exc))
         return _R("", status_code=204, headers={"HX-Refresh": "true"})
 
@@ -3710,7 +3719,7 @@ celerpUpdateBulkAlloc();
                                             **submitted_operation_key(form))
         except APIError as e:
             if e.status == 401:
-                return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+                raise
             return _action_error(error_message(e))
         # A doc concurrently closed, already paid, or shrunk under its row lock is skipped
         # by the API, not paid. Report every skipped doc by name and reason so the user is
@@ -3745,7 +3754,7 @@ celerpUpdateBulkAlloc();
             all_docs = docs_resp.get("items", []) if isinstance(docs_resp, dict) else docs_resp
         except APIError as e:
             if e.status == 401:
-                return RedirectResponse("/login", status_code=302)
+                raise
             all_docs = []
 
         # Build flat payment list from all docs
@@ -4019,7 +4028,7 @@ celerpUpdateBulkAlloc();
             return _action_error(str(exc))
         except APIError as e:
             if e.status == 401:
-                return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+                raise
             return _action_error(error_message(e))
         # Goods another invoice named: say whose, and that it can no longer ship them, in a
         # notice that stays until it is closed.
@@ -4111,7 +4120,7 @@ celerpUpdateBulkAlloc();
             await api.receive_return(token, entity_id, items, **submitted_operation_key(form))
         except APIError as e:
             if e.status == 401:
-                return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+                raise
             return _action_error(error_message(e))
         try:
             doc = await api.get_doc(token, entity_id)
@@ -4130,7 +4139,7 @@ celerpUpdateBulkAlloc();
             await api.undo_receive_return(token, entity_id)
         except APIError as e:
             if e.status == 401:
-                return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+                raise
             return _action_error(error_message(e))
         try:
             doc = await api.get_doc(token, entity_id)
@@ -4307,7 +4316,7 @@ celerpUpdateBulkAlloc();
             lists, filtered_total, summary = await _list_results(token, state, date_from, date_to, page, per_page)
         except APIError as e:
             if e.status == 401:
-                return RedirectResponse("/login", status_code=302)
+                raise
             lists, summary, filtered_total = [], {}, 0
         lang = get_lang(request)
         _role = _get_role(request)
@@ -4353,7 +4362,7 @@ celerpUpdateBulkAlloc();
             return RedirectResponse(f"/lists/{result.get('entity_id') or result.get('id', '')}", status_code=302)
         except APIError as e:
             if e.status == 401:
-                return RedirectResponse("/login", status_code=302)
+                raise
             return RedirectResponse("/lists", status_code=302)
 
     @app.post("/lists/new")
@@ -4573,7 +4582,7 @@ celerpUpdateBulkAlloc();
             resp = await api.get_list_page(token, entity_id, offset=_line_offset, limit=_line_limit)
         except APIError as e:
             if e.status == 401:
-                return RedirectResponse("/login", status_code=302)
+                raise
             if e.status == 404:
                 from starlette.responses import HTMLResponse as _HR
                 return _HR(f"<h2>{t('documents.list_not_found')}</h2><p><a href='/lists'>{t('documents.back_to_lists')}</a></p>", status_code=404)
@@ -4821,11 +4830,13 @@ celerpUpdateBulkAlloc();
             # merged array, so off-page rows are never disturbed and a shorter page truncates.
             result = await api.patch_list_line_page(token, entity_id, page, offset, original_count, expected_version)
         except APIError as e:
+            if e.status == 401:
+                raise
             # A stale expected_version means someone else saved this list first; surface it
             # structurally (code, not English text) so the page can prompt a reload.
             if e.status == 409:
                 return JSONResponse({"code": "stale_version", "error": error_message(e)}, status_code=409)
-            return JSONResponse({"error": error_message(e)}, status_code=400)
+            return JSONResponse({"error": error_message(e)}, status_code=e.status)
         return JSONResponse({"ok": True, "version": result.get("version")})
 
     @app.post("/lists/{entity_id}/action/{action}")
@@ -4882,7 +4893,7 @@ celerpUpdateBulkAlloc();
                 return _R("", status_code=400)
         except APIError as e:
             if e.status == 401:
-                return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+                raise
             return _action_error(error_message(e))
         return _R("", status_code=204, headers={"HX-Redirect": f"/lists/{entity_id}"})
 
@@ -4993,6 +5004,8 @@ celerpUpdateBulkAlloc();
         try:
             res = await api.scan_codes(token, kind, entity_id, barcode, price_list, run_key)
         except APIError as e:
+            if e.status == 401:
+                raise
             # A RECORD-LEVEL rejection (closed/void, a finalized record that refuses scanning, or a
             # spent scan run key reused for a different batch, which carries the current version).
             # The scan bar branches on the structured body: a machine `code` (e.g. scan_run_conflict)
@@ -7905,7 +7918,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
   function handleFile(file) {{
     var fd = new FormData(); fd.append('file', file);
     dz.classList.add('ai-dropzone--over');
-    fetch('/docs/{entity_id}/files', {{method:'POST',body:fd}})
+    celerpFetch('/docs/{entity_id}/files', {{method:'POST',body:fd}})
       .then(function(r) {{ dz.classList.remove('ai-dropzone--over'); }})
       .catch(function() {{ dz.classList.remove('ai-dropzone--over'); }});
   }}
@@ -8229,7 +8242,7 @@ function _celerpPickerStatus(text) {{
                 const fd = new URLSearchParams({{barcode: raw, run_key: pendingRunKey,
                     offset: _CELERP_LINE_OFFSET, limit: _CELERP_LINE_LIMIT}});
                 if (plSelect) fd.append('price_list', plSelect.value);
-                const resp = await fetch(_CELERP_BASE + _CELERP_EID + '/scan', {{method: 'POST', body: fd}});
+                const resp = await celerpFetch(_CELERP_BASE + _CELERP_EID + '/scan', {{method: 'POST', body: fd}});
                 if (!resp.ok) {{
                     // Branch on the structured code, never on message text.
                     let code = null, detail = null, version = null;
@@ -8566,7 +8579,7 @@ async function celerpAcSearch(input, field) {{
     clearTimeout(_celerpAcTimer);
     _celerpAcTimer = setTimeout(async () => {{
         const pl = _celerpPriceListParam();
-        const resp = await fetch('/docs/catalog-search?q=' + encodeURIComponent(q) + pl + _celerpDocTypeParam() + _celerpHolderParam(input.closest('tr')));
+        const resp = await celerpFetch('/docs/catalog-search?q=' + encodeURIComponent(q) + pl + _celerpDocTypeParam() + _celerpHolderParam(input.closest('tr')));
         if (!resp.ok) {{ list.style.display = 'none'; _celerpPickerStatus(await _celerpPickerError(resp)); return; }}
         const items = await resp.json();
         list.innerHTML = '';
@@ -8643,7 +8656,7 @@ function celerpAcBlur(input) {{
         if (row && eidEl && !eidEl.value && input.value.trim()) {{
             const sku = input.value.trim();
             const pl = _celerpPriceListParam();
-            fetch('/docs/catalog-search?q=' + encodeURIComponent(sku) + pl + _celerpDocTypeParam() + _celerpHolderParam(row))
+            celerpFetch('/docs/catalog-search?q=' + encodeURIComponent(sku) + pl + _celerpDocTypeParam() + _celerpHolderParam(row))
               .then(async r => {{
                 if (!r.ok) {{ _celerpPickerStatus(await _celerpPickerError(r)); return []; }}
                 return r.json();
@@ -9240,7 +9253,7 @@ function _celerpCollectLines() {{
    a submission run against stale rows. */
 async function _celerpFetchLineBody() {{
     // The page being viewed, not location.href: in-place paging never changes the URL.
-    const page = await fetch(_CELERP_BASE + _CELERP_EID + '?offset=' + _CELERP_LINE_OFFSET
+    const page = await celerpFetch(_CELERP_BASE + _CELERP_EID + '?offset=' + _CELERP_LINE_OFFSET
         + '&limit=' + _CELERP_LINE_LIMIT);
     const doc = new DOMParser().parseFromString(await page.text(), 'text/html');
     return doc.getElementById('{line_body_id}');
@@ -9355,7 +9368,7 @@ async function _celerpRefreshHeldBadges() {{
     // stored window this page loaded. The server REPLACES positions [offset, offset+original_count)
     // with the submitted rows (a shorter page truncates deleted rows, a longer one inserts) and
     // recomputes totals from the full merged array, so off-page rows are never touched by a page save.
-    const resp = await fetch(_CELERP_BASE + _CELERP_EID + '/lines', {{
+    const resp = await celerpFetch(_CELERP_BASE + _CELERP_EID + '/lines', {{
         method: 'POST', headers: {{'Content-Type': 'application/json'}},
         body: JSON.stringify(Object.assign({{line_items: lines, offset: _CELERP_LINE_OFFSET,
             original_count: _CELERP_ORIGINAL_COUNT,
@@ -9634,7 +9647,7 @@ async function celerpReprice(priceList) {{
         }}
         const body = {{price_list: priceList, expected_version: _celerpEntityVersion}};
         try {{
-            const resp = await fetch(_CELERP_BASE + _CELERP_EID + '/reprice', {{
+            const resp = await celerpFetch(_CELERP_BASE + _CELERP_EID + '/reprice', {{
                 method: 'POST', headers: {{'Content-Type': 'application/json'}},
                 body: JSON.stringify(body)
             }});
@@ -9679,7 +9692,7 @@ async function celerpCsvImport(input, entityId) {{
     const plSelect = document.getElementById('doc-price-list');
     if (plSelect) formData.append('price_list', plSelect.value);
     try {{
-        const resp = await fetch(_CELERP_BASE + entityId + '/items/csv', {{
+        const resp = await celerpFetch(_CELERP_BASE + entityId + '/items/csv', {{
             method: 'POST', body: formData
         }});
         const data = await resp.json();
@@ -9775,7 +9788,7 @@ async function celerpCsvImport(input, entityId) {{
     fd.append('offset', window._CELERP_LINE_OFFSET); fd.append('limit', window._CELERP_LINE_LIMIT);
     ids.forEach(function(id){{ fd.append('selected', id); }});
     try{{
-      var resp=await fetch('/lists/{entity_id}/set-scanned', {{method:'POST', body:fd}});
+      var resp=await celerpFetch('/lists/{entity_id}/set-scanned', {{method:'POST', body:fd}});
       var html=await resp.text();
       if(resp.ok){{
         var tbody=document.getElementById('{line_body_id}');

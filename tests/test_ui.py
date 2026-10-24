@@ -4626,7 +4626,7 @@ class TestListsCreateBlank:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("key", ["line.protected_held", "docs.some_other_refusal"])
     async def test_save_lines_refusal_returns_the_translated_reason(self, ui_client, key):
-        """A refused save answers 400 with the translated reason; the page puts the stored lines back
+        """A refused save answers with the refusal's own status and the translated reason; the page puts the stored lines back
         for every refusal (tests/test_browser/test_line_save_refusal.py)."""
         from ui.api_client import _api_error
         detail = {"message_key": key, "message": "Line 1 (W-1) holds reserved stock.", "params": {}}
@@ -4637,7 +4637,7 @@ class TestListsCreateBlank:
                 "/docs/doc:INV-2026-0001/lines",
                 json={"line_items": [], "subtotal": 0, "tax": 0, "total": 0},
             )
-        assert r.status_code == 400
+        assert r.status_code == 409
         assert r.json() == {"error": r.json()["error"]} and r.json()["error"]
 
     @pytest.mark.asyncio
@@ -20983,7 +20983,7 @@ async def test_save_doc_lines_returns_reserved_conflicts(ui_client):
             "/docs/doc:INV-2026-0001/lines",
             json={"line_items": [], "subtotal": 0, "tax": 0, "total": 0},
         )
-    assert r.status_code == 400
+    assert r.status_code == 422
     body = r.json()
     assert "release it there first" in body["error"]
     assert body["reserved_conflicts"] == conflicts

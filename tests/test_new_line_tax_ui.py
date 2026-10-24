@@ -206,7 +206,7 @@ async def test_save_doc_lines_refused_doc_taxes_returns_the_api_error(ui_client)
 
     r = await _save_lines(ui_client, {"line_items": [], "doc_taxes": [{"code": "?", "rate": "x"}]},
                           patch_doc=AsyncMock(side_effect=_patch), get_doc=AsyncMock(return_value=_DRAFT))
-    assert r.status_code == 400
+    assert r.status_code == 422
     assert r.json()["error"] == "This tax isn't valid on this document."
 
 

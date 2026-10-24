@@ -122,6 +122,19 @@ function _copiedFeedback(btn, restoreLabel) {
   btn.textContent = window.__shellI18n.copied;
   setTimeout(function() { btn.textContent = restoreLabel; }, 2000);
 }
+// A request to this app's own routes made as htmx makes one: it says so, with the page it came
+// from, so an ended session is answered with the sign-in redirect, and that redirect is followed.
+// A followed redirect never resolves, so no caller reads it as a saved or refused edit.
+function celerpFetch(url, opts) {
+  opts = Object.assign({}, opts);
+  opts.headers = Object.assign({'HX-Request': 'true', 'HX-Current-URL': location.href}, opts.headers);
+  return fetch(url, opts).then(function(r) {
+    var to = r.headers.get('HX-Redirect');
+    if (!to) return r;
+    location.href = to;
+    return new Promise(function() {});
+  });
+}
 // Post one line action for the chosen rows (their .li-select checkboxes) as ONE request.
 // Each row is named by its line id; a page whose rows do not all carry one names them by
 // item instead, never a mix. ``fields`` are extra [name, value] pairs. The request carries
@@ -135,7 +148,7 @@ async function celerpLineAction(url, rows, fields, key, fallbackMsg) {
   if (key) fd.append('idempotency_key', key);
   var msg = fallbackMsg;
   try {
-    var resp = await fetch(url, {method: 'POST', body: fd});
+    var resp = await celerpFetch(url, {method: 'POST', body: fd});
     var t = null;
     try { t = JSON.parse(resp.headers.get('HX-Trigger') || 'null'); } catch (e) {}
     if (resp.status === 204) {
