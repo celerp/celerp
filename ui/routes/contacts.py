@@ -246,7 +246,7 @@ async def _invoice_totals(token: str, contact_id: str, company: dict) -> dict[st
     draft or void) in the company currency: ``invoiced`` (All issued) and ``paid`` (Paid: the
     invoices paid in full) over this fiscal year to date, ``outstanding`` (Awaiting payment)
     what the invoices awaiting payment still owe. Each is None when the summary could not be
-    read. ``open_credit`` is what the contact's open credit notes still have to apply or refund,
+    read; an ended session (401) is raised, so the page goes to sign-in. ``open_credit`` is what the contact's open credit notes still have to apply or refund,
     shown under Outstanding: the aging report nets it, the awaiting-payment list does not."""
     date_from, date_to = _resolve_preset("this_fy", company)
     scope = {"doc_type": "invoice", "contact_id": contact_id}
@@ -256,7 +256,9 @@ async def _invoice_totals(token: str, contact_id: str, company: dict) -> dict[st
             api.get_doc_summary(token, scope),
             api.get_doc_summary(token, scope | {"doc_type": "credit_note"}),
         )
-    except APIError:
+    except APIError as e:
+        if e.status == 401:
+            raise
         return {"invoiced": None, "paid": None, "outstanding": None, "open_credit": None}
     return {"invoiced": ytd.get("all_issued_total"), "paid": ytd.get("paid_total"),
             "outstanding": open_.get("awaiting_payment_total"), "open_credit": credit.get("open_credit_total")}

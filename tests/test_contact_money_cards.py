@@ -245,6 +245,14 @@ async def test_contact_page_reads_no_money_figures_while_documents_is_off(owner_
     assert summaries == [] and holdings == []
 
 
+async def test_a_session_ending_while_the_cards_load_goes_to_sign_in(owner_ui, monkeypatch):
+    contact = await _demo_contact(owner_ui, monkeypatch)
+    _count_reads(monkeypatch, "get_doc_summary", APIError(401, "Session expired"))
+    r = await owner_ui.get(f"/contacts/{contact['id']}", follow_redirects=False)
+    assert r.status_code in (302, 303), r.status_code
+    assert "/login" in r.headers["location"]
+
+
 async def test_a_failed_summary_read_shows_the_cards_empty(owner_ui, monkeypatch):
     contact = await _demo_contact(owner_ui, monkeypatch)
     _count_reads(monkeypatch, "get_doc_summary", APIError(503, "Unavailable"))
