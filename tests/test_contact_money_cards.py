@@ -14,6 +14,7 @@ import pytest
 
 from celerp.services.business_time import business_today
 from test_helpers import mark_running
+from ui.api_client import APIError
 from ui.components.table import fmt_money, format_value
 
 pytestmark = pytest.mark.asyncio
@@ -218,3 +219,35 @@ async def test_outstanding_shows_the_contact_s_open_credit_under_it(owner_ui, mo
     # Outstanding stays what the awaiting-payment list shows; the open credit is shown under it.
     assert cards["Outstanding"] == fmt_money(250.0, None), cards
     assert _outstanding_sublabel(r.text) == f"Open credit {fmt_money(35.0, None)}"
+
+
+def _count_reads(monkeypatch, name: str, error: APIError | None = None) -> list:
+    """Record each call the UI makes to api.``name``; with ``error``, each one raises it."""
+    import ui.api_client as api_client
+    calls, real = [], getattr(api_client, name)
+
+    async def read(*args, **kwargs):
+        calls.append(args[1:])
+        if error is not None:
+            raise error
+        return await real(*args, **kwargs)
+    monkeypatch.setattr(api_client, name, read)
+    return calls
+
+
+async def test_contact_page_reads_no_money_figures_while_documents_is_off(owner_ui, monkeypatch):
+    contact = await _ok(await owner_ui.api.post("/crm/contacts", json={"name": "No Docs", "contact_type": "customer"}))
+    summaries, holdings = _count_reads(monkeypatch, "get_doc_summary"), _count_reads(monkeypatch, "list_items")
+    r = await owner_ui.get(f"/contacts/{contact['id']}")
+    assert r.status_code == 200, r.text
+    # The cards are hidden, so nothing behind them is read.
+    assert "financial-cards" not in r.text
+    assert summaries == [] and holdings == []
+
+
+async def test_a_failed_summary_read_shows_the_cards_empty(owner_ui, monkeypatch):
+    contact = await _demo_contact(owner_ui, monkeypatch)
+    _count_reads(monkeypatch, "get_doc_summary", APIError(503, "Unavailable"))
+    cards = await _contact_cards(owner_ui, contact)
+    for card in ("Total Invoiced", "Total Paid", "Outstanding"):
+        assert cards[card] == "--", cards

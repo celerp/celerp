@@ -1245,10 +1245,14 @@ def setup_routes(app):
                 return None
             return resp.get("value_total") if isinstance(resp, dict) else None
 
-        on_memo_total, consigned_total, invoice_totals = await _asyncio.gather(
-            _holdings_total("on_memo_to"), _holdings_total("consigned_from"),
-            _invoice_totals(token, contact_id, company),
-        )
+        # The money cards show only while the company can open Documents and its documents
+        # loaded; otherwise nothing behind them is read.
+        on_memo_total = consigned_total = invoice_totals = None
+        if docs_error is None and can_open(company, "celerp-docs"):
+            on_memo_total, consigned_total, invoice_totals = await _asyncio.gather(
+                _holdings_total("on_memo_to"), _holdings_total("consigned_from"),
+                _invoice_totals(token, contact_id, company),
+            )
 
         return await build_contact_detail(contact, docs, vocab, company, request, contact_id=contact_id,
                                           on_memo_total=on_memo_total, consigned_total=consigned_total,
