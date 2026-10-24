@@ -584,7 +584,7 @@ async def _enrich_share_lines(session: AsyncSession, company_id, state: dict) ->
     from celerp.services.line_measures import (
         LINE_IDENTIFIER_MODES, identifier_backfill, item_measure_meta, resolve_line_measures)
     from celerp.services.shipping import (
-        SHIPPING_LIST_TYPE, customs_backfill, issued_item, line_gross_weight, reads_item_customs)
+        SHIPPING_LIST_TYPE, backfill_item_customs, issued_item, line_gross_weight)
     from celerp.services.units import DEFAULT_UNITS, build_unit_map
     company = await session.get(Company, company_id)
     settings = (company.settings or {}) if company else {}
@@ -597,7 +597,6 @@ async def _enrich_share_lines(session: AsyncSession, company_id, state: dict) ->
     units = settings.get("units") or DEFAULT_UNITS
     umap = build_unit_map(units)
     is_shipping = state.get("list_type") == SHIPPING_LIST_TYPE
-    read_item_codes = reads_item_customs(state)
     for li in state.get("line_items") or []:
         eid = li.get("entity_id") or li.get("item_id")
         if not eid:
@@ -615,8 +614,7 @@ async def _enrich_share_lines(session: AsyncSession, company_id, state: dict) ->
         meta = item_measure_meta(item, umap)
         li["pieces"], li["weight"], li["weight_unit"], _, _ = resolve_line_measures(li, item_meta=meta)
         if is_shipping:
-            if read_item_codes:
-                customs_backfill(li, item)
+            backfill_item_customs(li, item, state)
             li["gross_weight"], li["gross_weight_unit"] = line_gross_weight(
                 li, item, bool(meta.get("qty_is_weight")))
     return ident_mode

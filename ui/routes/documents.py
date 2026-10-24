@@ -2101,9 +2101,8 @@ def setup_routes(app):
         import asyncio as _aio
         from celerp.services.line_measures import resolve_line_measures
         from celerp.services.shipping import (
-            SHIPPING_LIST_TYPE, customs_backfill, issued_item, line_gross_weight, reads_item_customs)
+            SHIPPING_LIST_TYPE, backfill_item_customs, issued_item, line_gross_weight)
         _is_shipping = doc.get("list_type") == SHIPPING_LIST_TYPE
-        _read_item_codes = reads_item_customs(doc)
         try:
             _umap = build_unit_map(await api.get_units(token))
         except Exception:
@@ -2126,8 +2125,7 @@ def setup_routes(app):
             meta = item_measure_meta(item, _umap)
             li["pieces"], li["weight"], li["weight_unit"], _, _ = resolve_line_measures(li, item_meta=meta)
             if _is_shipping:
-                if _read_item_codes:
-                    customs_backfill(li, item)
+                backfill_item_customs(li, item, doc)
                 # Net weight = the line's actual weight (above); gross adds the item's packaging.
                 li["gross_weight"], li["gross_weight_unit"] = line_gross_weight(
                     li, item, bool(meta.get("qty_is_weight")))
@@ -4634,6 +4632,11 @@ celerpUpdateBulkAlloc();
         # maps stay empty and the lines render from their stored values.
         item_meta_map, item_status_map, item_status_doc_map = _enrich_line_meta(
             lst.get("line_items", []), resp.get("item_meta"), _co_settings, _ident_mode)
+        from celerp.services.shipping import backfill_item_customs
+        for _li in lst["line_items"]:
+            _item = (resp.get("item_meta") or {}).get(_li.get("item_id") or _li.get("entity_id") or "")
+            if _item:
+                backfill_item_customs(_li, _item, lst)
 
         ref = lst.get("ref_id") or entity_id
         status_label = _list_status_label(lst)

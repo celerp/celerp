@@ -107,6 +107,13 @@ def customs_backfill(line: dict, item_state: dict) -> None:
                 line[key] = v
 
 
+def backfill_item_customs(line: dict, item_state: dict, state: dict) -> None:
+    """customs_backfill on a line of a shipping list *state* that reads its items' customs codes
+    (reads_item_customs). The one rule its page, printout and share view show them by."""
+    if state.get("list_type") == SHIPPING_LIST_TYPE and reads_item_customs(state):
+        customs_backfill(line, item_state)
+
+
 # Country names for the export/destination pickers (English short names - customs
 # paperwork is filed in English). Rendered as a searchable datalist, so any
 # free-text value still saves; this list only powers the type-ahead.

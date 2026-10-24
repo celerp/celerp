@@ -17,7 +17,8 @@ from celerp.models.ledger import LedgerEntry
 from celerp.models.notification import Notification
 from celerp.models.projections import Projection
 
-from test_ui import _authed, ui_client  # noqa: F401  (ui_client is a fixture)
+from test_ui import (_authed, _list_page_stub, _mock_category_schemas, _mock_column_prefs,  # noqa: F401  (fixtures)
+                     _mock_get_company, _mock_get_locations, _mock_get_modules, ui_client)
 
 pytestmark = pytest.mark.asyncio
 
@@ -106,6 +107,40 @@ async def test_print_view_of_issued_shipping_doc_does_not_take_later_item_edits(
         r = await ui_client.get("/lists/list:SHIP-1/print?layout=commercial_invoice")
     assert r.status_code == 200, r.text
     assert ("9999" in r.text) is shown
+
+
+@pytest.mark.parametrize("saved, shown", [(True, False), (False, True)])
+@pytest.mark.usefixtures("_mock_get_company", "_mock_category_schemas", "_mock_column_prefs", "_mock_get_locations",
+                         "_mock_get_modules")
+async def test_detail_page_of_a_shipping_doc_shows_the_codes_its_printout_shows(ui_client, saved, shown):
+    """The page of an issued shipping list reads a line's customs codes by the rule its printout
+    and share view do (backfill_item_customs): from the item until they are saved, never blank."""
+    stored = {"entity_id": "list:SHIP-1", "ref_id": "SHIP-1", "list_type": "shipping_doc", "status": "finalized",
+              **({"customs_saved": True} if saved else {}),
+              "line_items": [{"name": "Teak bowl", "quantity": 1, "item_id": "item:bowl"}]}
+    stub = _list_page_stub(stored)
+    page = stub.side_effect
+
+    async def _page(*args, **kwargs):
+        return {**await page(*args, **kwargs),
+                "item_meta": {"item:bowl": {"id": "item:bowl", "hs_code": "4419.90", "country_of_origin": "TH"}}}
+
+    ui_client.cookies.update(_authed())
+    with patch("ui.api_client.get_list_page", create=True, new=AsyncMock(side_effect=_page)):
+        r = await ui_client.get("/lists/list:SHIP-1")
+    assert r.status_code == 200, r.text
+    assert ("4419.90" in r.text) is shown
+
+
+async def test_every_reader_of_a_shipping_docs_lines_fills_the_items_codes_by_one_rule():
+    """Class guard: outside the rule itself and what Issue saves, nothing calls customs_backfill,
+    so no page, printout or share view of a shipping document decides it another way."""
+    root = Path(__file__).resolve().parent.parent
+    allowed = {root / "celerp" / "services" / "shipping.py",
+               root / "default_modules" / "celerp-docs" / "celerp_docs" / "routes.py"}
+    callers = {path for top in ("celerp", "ui", "default_modules") for path in (root / top).rglob("*.py")
+               if "customs_backfill(" in path.read_text()}
+    assert callers <= allowed, sorted(str(p.relative_to(root)) for p in callers - allowed)
 
 
 async def test_retype_to_customs_type_freezes(client, auth):
