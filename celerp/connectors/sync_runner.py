@@ -20,7 +20,7 @@ from celerp.connectors.base import (
 )
 from celerp.connectors.ownership import ConnectorStoreChangedError
 from celerp.connectors.relay_token import ConnectorUpgradeRequired
-from celerp.modules.boundary import ModuleRefused
+from celerp.modules.boundary import ModuleBusy, ModuleRefused
 from celerp.models.sync_run import SyncRun
 
 log = logging.getLogger(__name__)
@@ -438,7 +438,8 @@ async def run_sync(
                         result = await sync_method(current_ctx, since=since, **options)
                 await guard_session.commit()
     except (ConnectorStoreChangedError, ConnectorUpgradeRequired, ModuleRefused) as exc:
-        result = SyncResult(entity=entity, direction=effective_direction, errors=[str(exc)])
+        result = SyncResult(entity=entity, direction=effective_direction, errors=[str(exc)],
+                            busy=isinstance(exc, ModuleBusy))
     except NotImplementedError:
         result = SyncResult(
             entity=entity,

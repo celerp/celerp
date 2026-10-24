@@ -12,6 +12,8 @@ not acknowledged, and once Documents is on it is recorded exactly once."""
 
 from __future__ import annotations
 
+import asyncio
+
 import ast
 import json
 import subprocess
@@ -504,6 +506,84 @@ async def test_a_deleted_store_product_with_inventory_on_is_handled_alone(client
     monkeypatch.setattr("celerp.connectors.woocommerce.WooCommerceConnector.handle_product_deleted", handled)
     history, _ = await _product_deleted(monkeypatch, _company_id(tok))
     assert history == [] and handled.await_count == 1
+
+
+async def _order_webhook(monkeypatch, company_id: str, store):
+    """A WooCommerce order-updated delivery for a connected store whose orders *store*
+    answers, handled with every later attempt it leads to: the store's sync history."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    import celerp.connectors as connector_registry
+    from celerp.connectors import sync_runner, webhooks
+    from celerp.connectors.base import ConnectorContext, SyncDirection
+    from celerp.connectors.woocommerce import WooCommerceConnector
+
+    history = []
+
+    async def finish(run_id, company_id, connector, entity, result, started, ended, status):
+        history.append({"entity": entity, "errors": result.errors, "status": status})
+    ctx = ConnectorContext(company_id=company_id, access_token="t", store_handle="https://shop.test")
+    monkeypatch.setattr(sync_runner, "_begin_run", AsyncMock(return_value="run-1"))
+    monkeypatch.setattr(sync_runner, "_finish_run", finish)
+    monkeypatch.setattr(sync_runner, "_last_success_watermark", AsyncMock(return_value=None))
+    monkeypatch.setattr("celerp.connectors.ownership.lock_connector_operation",
+                        AsyncMock(return_value=SimpleNamespace(id="config-1", webhook_secret="s", direction="both")))
+    monkeypatch.setattr("celerp.connectors.ownership.bind_connector_store", AsyncMock())
+    monkeypatch.setattr("celerp.connectors.relay_token.fetch_context", AsyncMock(return_value=ctx))
+    monkeypatch.setattr(webhooks, "MODULE_SETTLE_SECONDS", 0, raising=False)
+    woo = WooCommerceConnector()
+    monkeypatch.setattr(woo, "_paginate", store)
+    monkeypatch.setattr(connector_registry, "get", lambda name: woo)
+    await webhooks.handle_webhook(webhooks.WebhookEvent(platform="woocommerce", topic="order.updated"),
+                                  ctx, SyncDirection.BOTH)
+    retrying = getattr(webhooks, "_RETRYING", set())
+    while retrying:
+        await asyncio.gather(*list(retrying))
+    return history
+
+
+def _busy_then(answers: int):
+    """The store's orders, after a sync that met a change to Documents in progress *answers* times."""
+    from unittest.mock import AsyncMock
+    from celerp.modules.boundary import ModuleBusy
+    return AsyncMock(side_effect=[ModuleBusy("celerp-docs")] * answers + [[]])
+
+
+@pytest.mark.asyncio
+async def test_an_order_webhook_refused_while_modules_change_is_handled_again(client, monkeypatch):
+    """A store sends a webhook once and is never asked again, so one refused as busy is
+    handled again after the wait the refusal names, and the order is pulled then."""
+    from celerp.modules.boundary import ModuleBusy
+    mark_running(monkeypatch, "celerp-docs")
+    tok = await _register(client)
+    store = _busy_then(1)
+    history = await _order_webhook(monkeypatch, _company_id(tok), store)
+    assert history == [{"entity": "orders", "errors": [str(ModuleBusy("celerp-docs"))], "status": "failed"},
+                       {"entity": "orders", "errors": None, "status": "success"}]
+    assert store.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_an_order_webhook_refused_while_modules_keep_changing_is_left_to_the_scheduled_sync(
+        client, monkeypatch):
+    """Still busy every time: handled again a bounded number of times, each failed run kept
+    on the store's history (the watermark stays, so the next scheduled sync pulls it)."""
+    from celerp.connectors import webhooks
+    mark_running(monkeypatch, "celerp-docs")
+    tok = await _register(client)
+    history = await _order_webhook(monkeypatch, _company_id(tok), _busy_then(10))
+    assert [run["status"] for run in history] == ["failed"] * (1 + getattr(webhooks, "_BUSY_RETRIES", 3))
+
+
+@pytest.mark.asyncio
+async def test_an_order_webhook_for_a_company_that_turned_documents_off_is_not_handled_again(
+        client, monkeypatch):
+    """Turned off is final until the company turns it back on: recorded once, never retried."""
+    mark_running(monkeypatch, "celerp-docs")
+    tok = await _register(client)
+    await _documents(client, tok, "disable")
+    history = await _order_webhook(monkeypatch, _company_id(tok), _not_fetched())
+    assert history == [{"entity": "orders", "errors": [_OFF.format("Documents")], "status": "failed"}]
 
 
 # ── Choosing a deposit account ───────────────────────────────────────────────

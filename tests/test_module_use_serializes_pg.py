@@ -446,3 +446,129 @@ async def test_a_write_meeting_a_turn_off_part_way_through_for_too_long_is_told_
     assert len(caught) == 1 and caught[0].detail["message_key"] == "modules.use_busy"
     assert await _written(factory, cid) == 0
     assert await _docs_on(factory, cid)
+
+
+async def _holding_module_state(engine) -> None:
+    """Wait until turning a module off holds the module-state boundary, which every
+    admission on the installation waits for."""
+    from celerp.modules.registry import _MODULE_STATE_LOCK_KEY
+    key = _MODULE_STATE_LOCK_KEY & 0xFFFFFFFFFFFFFFFF
+    for _ in range(400):
+        async with engine.connect() as conn:
+            if (await conn.execute(text(
+                    "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND granted "
+                    "AND mode = 'ExclusiveLock' AND classid = :hi AND objid = :lo"),
+                    {"hi": key >> 32, "lo": key & 0xFFFFFFFF})).scalar_one():
+                return
+        await asyncio.sleep(0.01)
+    raise AssertionError("turning the module off never held the module-state boundary")
+
+
+async def _another_companys_work(factory, cid) -> str:
+    """Documents work for *cid* asking to start now: "written", or the refusal it met."""
+    from celerp.modules.boundary import ModuleRefused
+    admitted, release = asyncio.Event(), asyncio.Event()
+    release.set()
+    try:
+        await asyncio.wait_for(_work(factory, cid, admitted, release)(), 15)
+    except ModuleRefused as exc:
+        return type(exc).__name__
+    return "written"
+
+
+async def _hold_company(s, cid, lock: str) -> None:
+    """Hold *cid*'s *lock* in *s* as running work does: its record, as work outside any
+    module holds it (lock_company), or its module settings, as module work that wrote does."""
+    from celerp.modules.registry import share_company_modules
+    if lock == "record":
+        await s.execute(select(Company.id).where(Company.id == cid).with_for_update(key_share=True))
+    else:
+        await share_company_modules(s, cid)
+
+
+async def _turn_off_meeting(factory, request_factory, committed_engine, a, b, *locks: str):
+    """Turn Documents off for *a* while other work of *a* holds *locks* (released in turn,
+    the first after 2.5s): the change's refusal and what three works of *b* that asked to
+    start while the change held the module-state boundary met."""
+    holders = [factory() for _ in locks]
+    sessions = [await h.__aenter__() for h in holders]
+    try:
+        for s, lock in zip(sessions, locks):
+            await _hold_company(s, a, lock)
+        change = asyncio.create_task(_disable(request_factory, a))
+        await _holding_module_state(committed_engine)
+        others = [asyncio.create_task(_another_companys_work(factory, b)) for _ in range(3)]
+        await asyncio.sleep(2.5)
+        await sessions[0].rollback()
+        with pytest.raises(HTTPException) as busy:
+            await asyncio.wait_for(change, 15)
+        return busy.value, await asyncio.gather(*others)
+    finally:
+        for h in reversed(holders):
+            await h.__aexit__(None, None, None)
+
+
+@pytest.mark.parametrize("locks", [("record",), ("module_settings",), ("module_settings", "record")])
+async def test_a_turn_off_meeting_the_companys_other_work_is_told_to_retry_and_holds_up_no_other_company(
+        factory, request_factory, committed_engine, locks):
+    """Other work of company A holds A's record or module settings (or one after the
+    other) for longer than the request lock timeout while A turns Documents off: the
+    change is refused within a second of each wait, a 409 that says to try again, never a
+    server error, and company B's work that asked to start meanwhile is written, never
+    refused. Documents stays on for A, and turning it off goes ahead once A's work is done."""
+    a, b = await _company(factory), await _company(factory)
+    busy, others = await _turn_off_meeting(factory, request_factory, committed_engine, a, b, *locks)
+
+    assert busy.status_code == 409
+    assert busy.detail["message_key"] == "modules.company_busy"
+    assert busy.detail["params"] == {"module": "Documents"}
+    assert others == ["written"] * 3
+    assert await _written(factory, b) == 3
+    assert await _docs_on(factory, a) and await _docs_on(factory, b)
+    assert (await _disable(request_factory, a))["enabled"] is False
+
+
+async def test_a_turn_off_meeting_the_companys_other_work_briefly_goes_ahead(factory, request_factory):
+    """Work outside any module holds the company's record for less than a second: turning
+    Documents off waits for it and goes ahead."""
+    cid = await _company(factory)
+    async with factory() as holder:
+        await _hold_company(holder, cid, "record")
+        change = asyncio.create_task(_disable(request_factory, cid))
+        await asyncio.sleep(0.3)
+        await holder.rollback()
+        assert (await asyncio.wait_for(change, 15))["enabled"] is False
+    assert not await _docs_on(factory, cid)
+
+
+async def test_a_turn_off_meeting_another_modules_work_names_that_module(
+        factory, request_factory, monkeypatch):
+    """Inventory work of the company has written and is still running while Documents is
+    turned off: the refusal names Inventory, the work that is still finishing, and
+    Documents stays on."""
+    from celerp.modules.boundary import needs_modules
+    inventory = "celerp-inventory"
+    mark_running(monkeypatch, inventory)
+    cid = await _company(factory)
+    wrote, release = asyncio.Event(), asyncio.Event()
+
+    @needs_modules(inventory, company=lambda: str(cid))
+    async def run():
+        async with factory() as s:
+            await _write(s, cid)
+            wrote.set()
+            await release.wait()
+            await s.commit()
+
+    work = asyncio.create_task(run())
+    await asyncio.wait_for(wrote.wait(), 10)
+    try:
+        with pytest.raises(HTTPException) as busy:
+            await asyncio.wait_for(_disable(request_factory, cid), 15)
+    finally:
+        release.set()
+        await asyncio.wait_for(work, 15)
+    assert busy.value.status_code == 409
+    assert busy.value.detail["message_key"] == "modules.turn_off_busy"
+    assert busy.value.detail["params"] == {"module": "Inventory"}
+    assert await _docs_on(factory, cid) and await _written(factory, cid) == 1

@@ -19,7 +19,9 @@ The decision holds for the whole of the work, never only at its start:
 - turning a module off takes that module's gate for the company, then waits for the
   company's running work in that module to finish (``settle_module_use``), so nothing
   admitted before it, a request to a store included, happens after it. Other modules
-  and other companies are never held up by the wait;
+  and other companies are never held up by the wait, and while it holds the
+  module-state boundary it waits on the company's own locks only briefly
+  (registry.briefly_waiting), so no other company's work is refused for it;
 - every write the work makes judges the settings again, holding them as they are
   (company_lock.judge_module_writes, from events.engine.emit_event and
   company_lock.lock_company), so a change committed elsewhere is never written past,
@@ -242,6 +244,23 @@ def turn_off_busy(pkg_name: str) -> HTTPException:
     return HTTPException(status_code=409, detail=refusal(
         "modules.turn_off_busy",
         f"The {label} module is still finishing work for your company, such as a store sync or a payment. "
+        "Try again in a minute.",
+        module=label))
+
+
+def company_work_busy(company_id, pkg_name: str) -> HTTPException:
+    """The 409 for turning *pkg_name* off while the company's other work still holds its
+    module settings or its record. Taken before the wait: no work is admitted while a
+    turn-off holds the module-state boundary, so the company's work running in this
+    process then is what can hold them. It names that work's module, or, when none runs
+    here (work outside any module, or in another process), the company's work in general."""
+    running = sorted(name for cid, name in _RUNNING if cid == str(company_id) and name != pkg_name)
+    if running:
+        return turn_off_busy(running[0])
+    label = module_label(pkg_name)
+    return HTTPException(status_code=409, detail=refusal(
+        "modules.company_busy",
+        f"Other work for your company is still being saved, so the {label} module was not turned off. "
         "Try again in a minute.",
         module=label))
 

@@ -692,6 +692,16 @@
         "paid",
         "where"
       ]
+    },
+    "chip.paid": {
+      "en": "Paid",
+      "params": []
+    },
+    "modules.company_busy": {
+      "en": "Other work for your company is still being saved, so the {module} module was not turned off. Try again in a minute.",
+      "params": [
+        "module"
+      ]
     }
   }
 }

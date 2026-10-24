@@ -13,6 +13,7 @@ modules already loaded takes effect immediately.
 from __future__ import annotations
 
 import logging
+from contextlib import asynccontextmanager
 from typing import Any
 
 log = logging.getLogger(__name__)
@@ -62,6 +63,10 @@ def set_enabled(company_settings: dict[str, Any], enabled: set[str]) -> dict[str
 
 # Advisory-lock key of the one module-state boundary (hold_module_state).
 _MODULE_STATE_LOCK_KEY = 0x43454C4552500002
+# How long turning a module off waits on the company's own locks while it holds the
+# module-state boundary (briefly_waiting): well inside the request lock timeout every
+# admission on the installation waits for that boundary with.
+_WAIT_UNDER_BOUNDARY_MS = 1000
 
 
 class ModuleStillNeeded(ValueError):
@@ -129,6 +134,22 @@ async def share_module_state(session) -> None:
     await session.execute(text("SELECT pg_advisory_xact_lock_shared(:k)"), {"k": _MODULE_STATE_LOCK_KEY})
 
 
+@asynccontextmanager
+async def briefly_waiting(session):
+    """Run the block's lock waits with a lock timeout of _WAIT_UNDER_BOUNDARY_MS, then the
+    session's own again. For waits taken while holding the module-state boundary, so the
+    boundary is never held for as long as another company's work waits for it. A wait that
+    gives up raises the lock-timeout database error and leaves the transaction to be rolled
+    back. A no-op off Postgres, as hold_module_state is."""
+    from sqlalchemy import text
+    postgres = session.get_bind().dialect.name == "postgresql"
+    if postgres:
+        await session.execute(text(f"SET LOCAL lock_timeout = {_WAIT_UNDER_BOUNDARY_MS}"))
+    yield
+    if postgres:
+        await session.execute(text("SET LOCAL lock_timeout TO DEFAULT"))
+
+
 async def _named_lock(session, key: str, mode: str) -> None:
     from sqlalchemy import text
     if session.get_bind().dialect.name != "postgresql":
@@ -159,8 +180,8 @@ async def share_module_gate(session, company_id, module_name: str) -> None:
 async def hold_company_modules(session, company_id) -> None:
     """Keep the module work of *company_id* from writing until *session*'s transaction
     ends, waiting for the writes already made (share_company_modules). Taken by turning
-    a module off, after the module-state boundary and before the company lock. The wait
-    gives up at the request lock timeout (a lock-timeout database error)."""
+    a module off, after the module-state boundary and before the company lock, waiting
+    briefly (briefly_waiting)."""
     await _company_module_lock(session, company_id, "pg_advisory_xact_lock")
 
 

@@ -10646,7 +10646,7 @@ def _summary_bar(summary: dict, doc_type: str = "", currency: str | None = None,
     return Div(
         Span(f"{t('chip.ar', lang)}: {fmt_money(float(summary.get('ar_outstanding', 0) or 0), currency)}", cls="val-chip val-chip--alert"),
         Span(f"{t('chip.billed', lang)}: {fmt_money(float(summary.get('ar_total', 0) or 0), currency)}", cls="val-chip"),
-        Span(f"{t('label.paid', lang)}: {fmt_money(float(summary.get('ar_paid', 0) or 0), currency)}", cls="val-chip"),
+        Span(f"{t('chip.paid', lang)}: {fmt_money(float(summary.get('ar_paid', 0) or 0), currency)}", cls="val-chip"),
         Span(f"{t('chip.invoices', lang)}: {summary.get('invoice_count', 0)}", cls="val-chip"),
         unvalued_chip,
         cls="valuation-bar",

@@ -1937,11 +1937,11 @@ async def disable_module(
     """Turn a module off for this company. Other companies keep using it. Refused for a
     module built into Celerp, which is always on."""
     from celerp.accounting_roles import refusal
-    from celerp.modules.boundary import refused_past_lock_timeout, settle_module_use, turn_off_busy
+    from celerp.modules.boundary import company_work_busy, refused_past_lock_timeout, settle_module_use
     from celerp.modules.loader import is_core_folded, module_label
     from celerp.modules.registry import (
-        ModuleStillNeeded, commit_with_load_set, disable_for_company, get_enabled, hold_company_modules,
-        hold_module_gate, hold_module_state,
+        ModuleStillNeeded, briefly_waiting, commit_with_load_set, disable_for_company, get_enabled,
+        hold_company_modules, hold_module_gate, hold_module_state,
     )
     from celerp.services.turn_off_preflight import outstanding
 
@@ -1961,9 +1961,12 @@ async def disable_module(
     await settle_module_use(company_id, module_name)
     with refused_past_lock_timeout(changing):
         await hold_module_state(session, bounded=True)
-    with refused_past_lock_timeout(turn_off_busy(module_name)):
-        await hold_company_modules(session, company_id)
-    company = await locked_company(session, company_id)
+    # Every admission on the installation now waits for this change, so the company's own
+    # locks are waited for only briefly: the lock order keeps the boundary first.
+    with refused_past_lock_timeout(company_work_busy(company_id, module_name)):
+        async with briefly_waiting(session):
+            await hold_company_modules(session, company_id)
+            company = await locked_company(session, company_id)
     if not company:
         raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
     blocking = (await outstanding(session, company_id, module_name))["blocking"]

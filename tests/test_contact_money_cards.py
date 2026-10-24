@@ -282,3 +282,17 @@ async def test_a_failed_summary_read_shows_the_cards_empty(owner_ui, monkeypatch
     cards = await _contact_cards(owner_ui, contact)
     for card in ("Total Invoiced", "Total Paid", "Outstanding"):
         assert cards[card] == "--", cards
+
+
+async def test_the_paid_summary_chip_has_its_own_wording(monkeypatch):
+    """The Paid chip reads the chip key, like Billed and Invoices beside it, so a language
+    can word the short chip apart from the Paid label on a document."""
+    from fasthtml.common import to_xml
+    import ui.i18n as i18n
+    from ui.routes.documents import _summary_bar
+
+    load = i18n._cached_load
+    monkeypatch.setattr(i18n, "_cached_load", lambda lang: {**load(lang), "chip.paid": "Settled"})
+    chips = _summary_chips(to_xml(_summary_bar({"ar_paid": 75, "ar_total": 100}, currency="USD")))
+    assert chips["Settled"] == fmt_money(75.0, "USD"), chips
+    assert "Paid" not in chips, chips
