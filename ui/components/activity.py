@@ -16,6 +16,7 @@ from decimal import Decimal, InvalidOperation
 from fasthtml.common import *
 from celerp.services.field_schema import DEFAULT_ITEM_SCHEMA, cost_columns
 from celerp.services.list_behavior import SCAN_RUNS_FIELD, SUPPLIER_DOC_TYPES
+from celerp.services.money import to_decimal
 from celerp.services.pricing import PRICE_LISTS_FALLBACK
 from celerp.services.units import line_receive_kind
 from celerp.tax_regimes import tax_entries
@@ -630,18 +631,19 @@ def _discount_change_summary(fields_changed: dict, currency: str | None):
     return ", ".join(parts), _DISCOUNT_CONSUMED
 
 
-def _line_effective_tax(li: dict) -> tuple[float, float]:
-    """(rate_percent, tax_amount) for a line. Reads the legacy per-line ``tax_rate`` or the
-    structured ``taxes`` list (summed rates); amount is ``line_total × rate / 100``, the formula
-    a list charges a line's rate with (see doc_money.list_line_tax)."""
+def _line_effective_tax(li: dict, currency: str | None) -> tuple[float, float]:
+    """(rate_percent, tax_amount) for a line, read as a list charges it (doc_money.list_line_tax
+    on its ``line_total``): the summed rates of its ``taxes`` and their amounts, compound
+    included, else its legacy per-line ``tax_rate``."""
+    from celerp_docs.doc_money import line_tax_definition, list_line_tax
+
     try:
-        rate = float(li.get("tax_rate") or 0)
-        if not rate:
-            rate = sum(float(tx.get("rate") or 0) for tx in tax_entries(li.get("taxes")))
-        line_total = float(li.get("line_total") or 0)
-    except (TypeError, ValueError):
+        entries, rate = line_tax_definition(li)
+        amount = list_line_tax(dict(li), to_decimal(li.get("line_total") or 0), currency)
+        rate = sum((to_decimal(tx.get("rate") or 0) for tx in entries), rate)
+    except (TypeError, ValueError, InvalidOperation):
         return 0.0, 0.0
-    return rate, line_total * rate / 100
+    return float(rate), float(amount)
 
 
 def _line_tax_change_summary(fields_changed: dict, currency: str | None):
@@ -670,8 +672,8 @@ def _line_tax_change_summary(fields_changed: dict, currency: str | None):
         prev = old_by.get(_key(li))
         if prev is None:  # added lines are reported by the line_items add/remove diff
             continue
-        o_rate, o_amt = _line_effective_tax(prev)
-        n_rate, n_amt = _line_effective_tax(li)
+        o_rate, o_amt = _line_effective_tax(prev, currency)
+        n_rate, n_amt = _line_effective_tax(li, currency)
         if o_rate == n_rate:
             continue
         name = li.get("sku") or li.get("name") or ""

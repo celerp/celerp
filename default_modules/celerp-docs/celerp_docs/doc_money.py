@@ -8,6 +8,8 @@ reduced base. This is the same rule the document editor applies on screen.
 """
 from __future__ import annotations
 
+from decimal import Decimal
+
 from fastapi import HTTPException
 
 from celerp.services.list_behavior import FINALIZED
@@ -114,19 +116,35 @@ def _recompute_tax_applications(entries: list, base, currency: str):
         (to_decimal(item.amount) for item in resolved), to_decimal(0))
 
 
-def list_line_tax(line: dict, amount, currency: str):
-    """The tax on a list line of this *amount*: its ``tax_rate`` as lists have always charged
-    it, else its ``taxes`` by the rule documents use (_recompute_tax_applications), their
-    amounts written onto the line. A list taxes each line on its own amount and takes its
-    header discount off the total. Every list write refuses a tax that cannot be computed
-    (refuse_malformed_taxes); one an older version stored is charged nothing, as it always was,
-    so recomputing a list never fails on it."""
-    rate = to_decimal(line.get("tax_rate", 0) or 0)
-    if rate:
-        return amount * rate / 100
+def line_tax_definition(line: dict) -> tuple[list[dict], Decimal]:
+    """What a line's tax is charged from, by the one rule every reader of it follows: its
+    ``taxes`` when they hold a tax a total can be computed from (computable_tax), else its
+    ``tax_rate``, as an older version and a CSV import store a line's tax. The list editor saves
+    the sum of the taxes' rates beside them, so that rate is never charged over them. Returns
+    (taxes, 0) or ([], rate); ([], 0) is a line with no tax, and a 0% tax is a tax."""
     entries = [entry for entry in tax_entries(line.get("taxes")) if computable_tax(entry)]
+    if entries:
+        return entries, to_decimal(0)
+    return [], to_decimal(line.get("tax_rate", 0) or 0)
+
+
+def line_has_tax(line: dict) -> bool:
+    """Whether a line has a tax of its own (line_tax_definition), so a header rate is not
+    charged on it."""
+    entries, rate = line_tax_definition(line)
+    return bool(entries or rate)
+
+
+def list_line_tax(line: dict, amount, currency: str):
+    """The tax on a list line of this *amount* (line_tax_definition): its ``taxes`` by the rule
+    documents use (_recompute_tax_applications), their amounts written onto the line, else its
+    ``tax_rate`` as lists have always charged it, unrounded until the list's total. A list taxes
+    each line on its own amount and takes its header discount off the total. Every list write
+    refuses a tax that cannot be computed (refuse_malformed_taxes); one an older version stored
+    is not charged, so recomputing a list never fails on it."""
+    entries, rate = line_tax_definition(line)
     if not entries:
-        return to_decimal(0)
+        return amount * rate / 100
     line["taxes"], tax = _recompute_tax_applications(entries, amount, currency)
     return tax
 
@@ -175,8 +193,7 @@ def _has_rate(state: dict) -> bool:
     document tax or a header ``tax_rate``."""
     if tax_entries(state.get("doc_taxes")) or to_decimal(state.get("tax_rate", 0) or 0):
         return True
-    return any(isinstance(line, dict) and (tax_entries(line.get("taxes")) or to_decimal(line.get("tax_rate", 0) or 0))
-               for line in state.get("line_items") or [])
+    return any(isinstance(line, dict) and line_has_tax(line) for line in state.get("line_items") or [])
 
 
 def document_money(state: dict, lines: list[dict], currency: str, *, keep_unrated_tax: bool,
@@ -214,15 +231,13 @@ def document_money(state: dict, lines: list[dict], currency: str, *, keep_unrate
         if not isinstance(line, dict):
             continue
         base = _line_amount(line) * ratio
-        line_taxes = tax_entries(line.get("taxes"))
+        line_taxes, rate = line_tax_definition(line)
         if line_taxes:
             resolved, amount = _recompute_tax_applications(line_taxes, base, currency)
             line["taxes"] = resolved
             line_tax_total += amount
             has_line_tax = True
-            continue
-        rate = to_decimal(line.get("tax_rate", 0) or 0)
-        if rate:
+        elif rate:
             line_tax_total += round_money(base * rate / 100, currency)
             has_line_tax = True
 

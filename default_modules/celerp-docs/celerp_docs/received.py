@@ -39,6 +39,7 @@ from celerp.services.company_lock import lock_company
 from celerp.services.money import round_money, to_decimal
 from celerp.services.permissions import get_current_company_settings, require_permission
 from celerp.tax_regimes import tax_entries
+from celerp_docs.doc_money import line_tax_definition
 from celerp_docs.doc_projections import _recalc_list_totals
 from ui.i18n import t
 
@@ -331,13 +332,20 @@ def _tax_rate(taxes) -> float | None:
     return sum(float(t.get("rate") or 0) for t in tax_entries(taxes)) or None
 
 
+def _line_tax_rate(line: dict) -> float | None:
+    """The one rate a list line takes from the sender's line, read by line_tax_definition: the
+    sum of its taxes, else its ``tax_rate``."""
+    entries, rate = line_tax_definition(line)
+    return _tax_rate(entries) if entries else float(rate) or None
+
+
 def _lines(document: dict, kind: str) -> list[dict]:
     fields = _LIST_LINE_FIELDS if kind == "list" else _DOC_LINE_FIELDS
     out = []
     for li in document.get("line_items") or []:
         line = {k: li[k] for k in fields if li.get(k) is not None}
         if kind == "list":
-            rate = li.get("tax_rate") or _tax_rate(li.get("taxes"))
+            rate = _line_tax_rate(li)
             if rate:
                 line["tax_rate"] = rate
         out.append(line)

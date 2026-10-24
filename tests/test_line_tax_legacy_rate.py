@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from celerp.services.money import to_decimal
 from celerp.tax_regimes import TAX_REGIMES, default_line_taxes, line_tax
 from test_new_line_tax_ui import _post, _taxes
 from test_ui import _authed, _mock_get_company, _mock_get_modules, ui_client  # noqa: F401  (fixtures)
@@ -142,5 +143,26 @@ def test_every_reader_of_a_lines_tax_reads_a_line_saved_with_only_a_rate(line):
     from celerp_docs.received import _lines
     from ui.components.activity import _line_effective_tax
 
-    assert _line_effective_tax({**line, "line_total": 100.0}) == (7.0, 7.0)
+    assert _line_effective_tax({**line, "line_total": 100.0}, "USD") == (7.0, 7.0)
     assert _lines({"line_items": [line]}, "list")[0]["tax_rate"] == 7
+
+
+@pytest.mark.parametrize("currency, tax", [("USD", 15.5), ("JPY", 16), ("KWD", 15.5)])
+def test_every_reader_of_a_lines_tax_reads_its_taxes_list_before_its_rate(currency, tax):
+    """Class guard: a line holding a taxes list beside a ``tax_rate`` (the list editor saves the
+    summed rate, an older version may hold a stale one) is read by its taxes everywhere: what a
+    list and a document charge it, the activity feed, a document becoming a quotation list and
+    the editor's rate. 10% then 5% compound on 100."""
+    from celerp_docs.doc_money import document_money, list_line_tax
+    from celerp_docs.received import _lines
+    from ui.components.activity import _line_effective_tax
+    from ui.routes.documents import _line_tax_rate
+
+    compound = [{"code": "T1", "rate": 10.0, "amount": 0, "order": 0, "is_compound": False, "label": ""},
+                {"code": "T2", "rate": 5.0, "amount": 0, "order": 1, "is_compound": True, "label": ""}]
+    line = {**_modern(compound), "tax_rate": 7, "line_total": 100.0}
+    assert list_line_tax(dict(line), to_decimal(100), currency) == pytest.approx(tax)
+    assert document_money({}, [dict(line)], currency, keep_unrated_tax=True)["tax"] == pytest.approx(tax)
+    assert _line_effective_tax(dict(line), currency) == (15.0, pytest.approx(tax))
+    assert _lines({"line_items": [line]}, "list")[0]["tax_rate"] == 15
+    assert _line_tax_rate(line) == 15
