@@ -47,6 +47,46 @@ def external_link_for_state(state: dict, platform: str) -> dict:
     return _legacy_external_link(platform, str(state.get("idempotency_key") or ""))
 
 
+async def woocommerce_order_anchor_ids(session: AsyncSession, company_id, doc) -> list[str]:
+    """The catalog products one WooCommerce order touches, through the unit a
+    line is bound to or, on an unbound line, the catalog product it names."""
+    from celerp_inventory.services import resolve_catalog_anchor_for_item
+
+    anchors: list[str] = []
+    for li in (doc.state or {}).get("line_items", []):
+        item_id = li.get("item_id") or li.get("entity_id") or li.get("catalog_item_id")
+        if not item_id:
+            continue
+        try:
+            anchor = await resolve_catalog_anchor_for_item(session, company_id, item_id)
+        except ValueError:
+            continue
+        if anchor.entity_id not in anchors:
+            anchors.append(anchor.entity_id)
+    return anchors
+
+
+async def woocommerce_products_awaiting_reconciliation(session: AsyncSession, company_id) -> set[str]:
+    """Catalog products on any WooCommerce order still waiting for a person to
+    reconcile it. Outbound stock sync stays paused for each of them. Reads the
+    imported orders' records only, so it needs Inventory but not Documents."""
+    cid = uuid.UUID(str(company_id))
+    open_docs = (await session.execute(
+        sa.select(Projection).where(
+            Projection.company_id == cid,
+            Projection.entity_type == "doc",
+            Projection.entity_id.like("doc:woocommerce:order:%"),
+            sa.func.coalesce(
+                Projection.state["woocommerce_reconciliation_required"].as_string(), ""
+            ) != "",
+        )
+    )).scalars().all()
+    anchors: set[str] = set()
+    for open_doc in open_docs:
+        anchors.update(await woocommerce_order_anchor_ids(session, cid, open_doc))
+    return anchors
+
+
 async def refuse_while_links_cannot_detach(session: AsyncSession, company_id, platform: str) -> None:
     """Refuse, naming Inventory, while the company's items still link to *platform*
     products and this process has not started Inventory to turn them into history.

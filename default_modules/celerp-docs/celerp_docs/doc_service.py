@@ -285,61 +285,20 @@ async def _lock_woocommerce_order(session, cid, order_id: str) -> None:
 WOOCOMMERCE_ORDER_GONE = "gone"
 
 
-async def _woocommerce_order_anchor_ids(session, cid, doc) -> list[str]:
-    """The catalog products one WooCommerce order touches, through the unit a
-    line is bound to or, on an unbound line, the catalog product it names."""
-    from celerp_inventory.services import resolve_catalog_anchor_for_item
-
-    anchors: list[str] = []
-    for li in (doc.state or {}).get("line_items", []):
-        item_id = li.get("item_id") or li.get("entity_id") or li.get("catalog_item_id")
-        if not item_id:
-            continue
-        try:
-            anchor = await resolve_catalog_anchor_for_item(session, cid, item_id)
-        except ValueError:
-            continue
-        if anchor.entity_id not in anchors:
-            anchors.append(anchor.entity_id)
-    return anchors
-
-
-async def woocommerce_products_awaiting_reconciliation(session, company_id) -> set[str]:
-    """Catalog products on any WooCommerce order still waiting for a person to
-    reconcile it. Outbound stock sync stays paused for each of them."""
-    import uuid
-
-    from sqlalchemy import func, select
-
-    from celerp.models.projections import Projection
-
-    cid = uuid.UUID(str(company_id))
-    open_docs = (await session.execute(
-        select(Projection).where(
-            Projection.company_id == cid,
-            Projection.entity_type == "doc",
-            Projection.entity_id.like("doc:woocommerce:order:%"),
-            func.coalesce(
-                Projection.state["woocommerce_reconciliation_required"].as_string(), ""
-            ) != "",
-        )
-    )).scalars().all()
-    anchors: set[str] = set()
-    for open_doc in open_docs:
-        anchors.update(await _woocommerce_order_anchor_ids(session, cid, open_doc))
-    return anchors
-
-
 async def _set_woocommerce_order_stock_paused(session, cid, doc, paused: bool) -> None:
     """Pause outbound stock sync for the linked products on one order
     (``paused``), or resume it for those no other open reconciliation still
     touches. Paused while a person reconciles a refund, so Celerp stock never
     overwrites a restock the merchant chose in WooCommerce."""
-    from celerp.connectors.product_links import external_link_for_state
+    from celerp.connectors.product_links import (
+        external_link_for_state,
+        woocommerce_order_anchor_ids,
+        woocommerce_products_awaiting_reconciliation,
+    )
     from celerp_inventory.services import set_external_link_state
     from celerp.models.projections import Projection
 
-    anchors = await _woocommerce_order_anchor_ids(session, cid, doc)
+    anchors = await woocommerce_order_anchor_ids(session, cid, doc)
     held = set(anchors) if paused else await woocommerce_products_awaiting_reconciliation(session, cid)
     for anchor_id in anchors:
         anchor = await session.get(Projection, {"company_id": cid, "entity_id": anchor_id})

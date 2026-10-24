@@ -768,6 +768,9 @@ _REVIEWED: dict[tuple[str, str], str] = {
     ("celerp/connectors/product_links.py", "detach_product_links"):
         "imports Inventory only while it runs in this process, after "
         "refuse_while_links_cannot_detach has judged the company",
+    ("celerp/connectors/product_links.py", "woocommerce_order_anchor_ids"):
+        "reached from WooCommerce item sync, marked needs_modules for Inventory, and from "
+        "Documents, which needs Inventory",
     ("celerp/migrations/env.py", "<module>"):
         "registers each module's tables for schema migrations, skipping a module that is not there",
     ("celerp/services/auto_je.py", "doc_lot_pool"):

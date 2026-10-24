@@ -459,14 +459,17 @@ class WooCommerceConnector(ConnectorBase):
             await session.commit()
 
 
-    @needs_modules("celerp-docs", "celerp-inventory")
+    @needs_modules("celerp-inventory")
     async def ensure_product_link(self, ctx: ConnectorContext, entity_id: str, actor_id=None) -> str:
         """Enable one item, linking or creating a simple WooCommerce product safely."""
         from decimal import Decimal
         from celerp.db import SessionLocal as AsyncSessionLocal
         from celerp.models.connector_config import ConnectorConfig
         from sqlalchemy import select
-        from celerp.connectors.product_links import external_link_for_state
+        from celerp.connectors.product_links import (
+            external_link_for_state,
+            woocommerce_products_awaiting_reconciliation,
+        )
         from celerp_inventory.services import (
             aggregate_sellable_quantity_for_anchor,
             resolve_catalog_anchor_for_item,
@@ -561,8 +564,6 @@ class WooCommerceConnector(ConnectorBase):
         new_link = {"product_id": str(remote["id"]), "sync_enabled": True,
                     "remote_deleted": False, "manage_stock": remote.get("manage_stock")}
         async with AsyncSessionLocal() as session:
-            from celerp_docs.doc_service import woocommerce_products_awaiting_reconciliation
-
             new_link["inventory_sync_paused"] = anchor_id in (
                 await woocommerce_products_awaiting_reconciliation(session, ctx.company_id)
             )
