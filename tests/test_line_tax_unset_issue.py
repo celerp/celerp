@@ -18,6 +18,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.orm.attributes import flag_modified
 
+from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from test_consignment_in_sale import _consign
 from test_money_stock_and_contact_invariants import _auth_company
@@ -77,6 +78,15 @@ async def test_a_purchase_order_with_a_line_whose_tax_is_unset_is_not_issued(cli
     assert _refused(r), r.text
     po = await _get(client, auth, doc_id)
     assert po["status"] == "draft" and not po.get("converted_to")
+
+
+async def test_the_created_event_keeps_a_line_whose_tax_is_unset_apart_from_no_tax(client, session):
+    auth = await _auth_company(session)
+    doc_id = await _doc(client, auth)
+    entry = (await session.execute(select(LedgerEntry).where(
+        LedgerEntry.entity_id == doc_id, LedgerEntry.event_type == "doc.created"))).scalar_one()
+    lines = entry.data["line_items"]
+    assert lines[0]["taxes"] == [] and "taxes" in lines[1] and lines[1]["taxes"] is None
 
 
 async def test_list_finalize_refuses_a_line_whose_tax_is_unset(client, session):
