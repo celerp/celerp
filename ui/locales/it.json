@@ -2339,6 +2339,7 @@
   "contacts.total_invoiced": "Totale fatturato",
   "contacts.total_paid": "Totale pagato",
   "contacts.year_to_date": "Da inizio anno",
+  "contacts.paid_year_to_date": "Year To Date, Part Payments Included",
   "contacts.avg_days_to_pay": "Giorni medi di pagamento",
   "contacts.open_credit": "Credito disponibile {amount}",
   "contacts.out_to_customer": "Spedizione al cliente",

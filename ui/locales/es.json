@@ -2338,6 +2338,7 @@
   "contacts.total_invoiced": "Total facturado",
   "contacts.total_paid": "Total pagado",
   "contacts.year_to_date": "Acumulado del año",
+  "contacts.paid_year_to_date": "Year To Date, Part Payments Included",
   "contacts.avg_days_to_pay": "Plazo medio de pago",
   "contacts.open_credit": "Crédito pendiente {amount}",
   "contacts.out_to_customer": "Enviado al cliente",

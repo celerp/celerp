@@ -2338,6 +2338,7 @@
   "contacts.total_invoiced": "إجمالي الفواتير",
   "contacts.total_paid": "إجمالي المبلغ المدفوع",
   "contacts.year_to_date": "منذ بداية العام",
+  "contacts.paid_year_to_date": "Year To Date, Part Payments Included",
   "contacts.avg_days_to_pay": "متوسط أيام السداد",
   "contacts.open_credit": "رصيد دائن غير مستخدم {amount}",
   "contacts.out_to_customer": "إلى العميل",

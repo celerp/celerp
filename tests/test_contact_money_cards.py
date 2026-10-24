@@ -163,30 +163,42 @@ def _list_cards(html: str) -> dict[str, str]:
 async def test_each_contact_money_card_shows_the_figure_of_the_list_it_opens(owner_ui, monkeypatch):
     contact = await _demo_contact(owner_ui, monkeypatch)
     api = owner_ui.api
-    await _invoice(api, contact, 500.0, steps=("finalize", "send", "pay"))
+    currency = (await _ok(await api.get("/companies/me"))).get("currency") or "USD"
+    foreign = "EUR" if currency != "EUR" else "GBP"
+    paid = await _invoice(api, contact, 500.0, steps=("finalize", "send", "pay"))
     partly = await _invoice(api, contact, 1000.0)
     await _pay(api, partly, 300.0, _day())
-    await _invoice(api, contact, 200.0)
+    # A foreign-currency invoice at rate 2, part paid: 200 invoiced, 100 paid, 100 owed.
+    abroad = await _invoice(api, contact, 100.0, currency=foreign, conversion_rate=2)
+    await _pay(api, abroad, 50.0, _day())
+    unpaid = await _invoice(api, contact, 200.0)
 
     r = await owner_ui.get(f"/contacts/{contact['id']}")
     assert r.status_code == 200, r.text
     cards, links = _cards(r.text), _card_links(r.text)
     # The card each one opens on the invoice list, which counts the same invoices.
-    for card, list_card in (("Total Invoiced", "All Issued"), ("Total Paid", "Paid"),
-                            ("Outstanding", "Awaiting Payment")):
+    for card, list_card in (("Total Invoiced", "All Issued"), ("Outstanding", "Awaiting Payment")):
         page = await owner_ui.get(links[card])
         assert page.status_code == 200, page.text
         assert _list_cards(page.text)[list_card] == cards[card], (card, links[card], cards)
-    # The paid invoice is paid; the part payment on the open one is still awaited.
-    assert cards["Total Paid"] == fmt_money(500.0, None), cards
-    assert cards["Outstanding"] == fmt_money(900.0, None), cards
+    # Total Paid is every payment on this year's issued invoices, part payments included, and
+    # opens those invoices: each one paid, in full or in part, is on the list it opens.
+    assert cards["Total Paid"] == fmt_money(900.0, None), cards
+    assert _sublabel(r.text, "Total Paid") == "Year To Date, Part Payments Included"
+    page = await owner_ui.get(links["Total Paid"])
+    assert page.status_code == 200, page.text
+    assert _list_cards(page.text)["All Issued"] == cards["Total Invoiced"], (links["Total Paid"], cards)
+    for doc_id in (paid, partly, abroad, unpaid):
+        assert doc_id in page.text, (doc_id, links["Total Paid"])
+    assert cards["Total Invoiced"] == fmt_money(1900.0, None), cards
+    assert cards["Outstanding"] == fmt_money(1000.0, None), cards
 
 
-def _outstanding_sublabel(html: str) -> str | None:
-    """The small line under the Outstanding card's label, or None when it has none."""
-    m = re.search(r'class="financial-card-label">\s*<span>Outstanding</span>\s*'
+def _sublabel(html: str, label: str) -> str | None:
+    """The small line under a money card's label, or None when it has none."""
+    m = re.search(rf'class="financial-card-label">\s*<span>{re.escape(label)}</span>\s*'
                   r'(?:<span class="financial-card-sublabel">([^<]*)</span>)?', html)
-    assert m, "no Outstanding card"
+    assert m, f"no {label} card"
     return m.group(1)
 
 
@@ -197,7 +209,7 @@ async def test_outstanding_shows_the_contact_s_open_credit_under_it(owner_ui, mo
     foreign = "EUR" if currency != "EUR" else "GBP"
     await _invoice(api, contact, 250.0)
     r = await owner_ui.get(f"/contacts/{contact['id']}")
-    assert _outstanding_sublabel(r.text) is None
+    assert _sublabel(r.text, "Outstanding") is None
 
     async def credit_note(total: float, **extra) -> None:
         cn = await _ok(await api.post("/docs", json={
@@ -218,7 +230,7 @@ async def test_outstanding_shows_the_contact_s_open_credit_under_it(owner_ui, mo
     cards = _cards(r.text)
     # Outstanding stays what the awaiting-payment list shows; the open credit is shown under it.
     assert cards["Outstanding"] == fmt_money(250.0, None), cards
-    assert _outstanding_sublabel(r.text) == f"Open credit {fmt_money(35.0, None)}"
+    assert _sublabel(r.text, "Outstanding") == f"Open credit {fmt_money(35.0, None)}"
 
 
 def _count_reads(monkeypatch, name: str, error: APIError | None = None) -> list:

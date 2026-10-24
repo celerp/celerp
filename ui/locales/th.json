@@ -2338,6 +2338,7 @@
   "contacts.total_invoiced": "ยอดออกใบแจ้งหนี้รวม",
   "contacts.total_paid": "ยอดชำระรวม",
   "contacts.year_to_date": "ตั้งแต่ต้นปี (YTD)",
+  "contacts.paid_year_to_date": "Year To Date, Part Payments Included",
   "contacts.avg_days_to_pay": "จำนวนวันชำระเงินเฉลี่ย",
   "contacts.open_credit": "ยอดเครดิตคงเหลือที่ยังไม่ได้ใช้ {amount}",
   "contacts.out_to_customer": "ส่งออกให้ลูกค้าแล้ว",

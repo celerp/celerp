@@ -2338,6 +2338,7 @@
   "contacts.total_invoiced": "請求総額",
   "contacts.total_paid": "支払総額",
   "contacts.year_to_date": "年初来累計",
+  "contacts.paid_year_to_date": "Year To Date, Part Payments Included",
   "contacts.avg_days_to_pay": "平均支払日数",
   "contacts.open_credit": "未処理のクレジット残高 {amount}",
   "contacts.out_to_customer": "顧客への出荷",

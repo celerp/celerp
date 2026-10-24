@@ -2339,6 +2339,7 @@
   "contacts.total_invoiced": "Total facturé",
   "contacts.total_paid": "Total payé",
   "contacts.year_to_date": "Cumul annuel",
+  "contacts.paid_year_to_date": "Year To Date, Part Payments Included",
   "contacts.avg_days_to_pay": "Délai moyen de paiement",
   "contacts.open_credit": "Crédit disponible non utilisé : {amount}",
   "contacts.out_to_customer": "Expédié au client",

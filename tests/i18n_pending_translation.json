@@ -698,6 +698,10 @@
       "params": [
         "module"
       ]
+    },
+    "contacts.paid_year_to_date": {
+      "en": "Year To Date, Part Payments Included",
+      "params": []
     }
   }
 }

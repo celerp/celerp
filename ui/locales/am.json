@@ -2506,6 +2506,7 @@
   "contacts.total_invoiced": "ጠቅላላ የክፍያ መጠየቂያ ደረሰኝ",
   "contacts.total_paid": "ጠቅላላ የተከፈለበት",
   "contacts.year_to_date": "ከአመት እስከ ዛሬ",
+  "contacts.paid_year_to_date": "Year To Date, Part Payments Included",
   "contacts.avg_days_to_pay": "የሚከፈልባቸው አማካይ ቀናት",
   "contacts.open_credit": "ያልተጠቀመ ክሬዲት {amount}",
   "contacts.out_to_customer": "ወደ ደንበኛ ወጥቷል",

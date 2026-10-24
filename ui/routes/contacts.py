@@ -243,9 +243,9 @@ def _settings_card(c: dict) -> FT:
 async def _invoice_totals(token: str, contact_id: str, company: dict) -> dict[str, float | None]:
     """The contact's invoice money cards, from the document summary the invoice list's cards use,
     so each card shows the figure of the list card it opens, over the same invoices (issued, not
-    draft or void) in the company currency: ``invoiced`` (All issued) and ``paid`` (Paid: the
-    invoices paid in full) over this fiscal year to date, ``outstanding`` (Awaiting payment)
-    what the invoices awaiting payment still owe. Each is None when the summary could not be
+    draft or void) in the company currency: ``invoiced`` (All issued) and ``paid`` (every payment
+    on those invoices, part payments included) over this fiscal year to date, ``outstanding``
+    (Awaiting payment) what the invoices awaiting payment still owe. Each is None when the summary could not be
     read; an ended session (401) is raised, so the page goes to sign-in. ``open_credit`` is what the contact's open credit notes still have to apply or refund,
     shown under Outstanding: the aging report nets it, the awaiting-payment list does not."""
     date_from, date_to = _resolve_preset("this_fy", company)
@@ -260,7 +260,7 @@ async def _invoice_totals(token: str, contact_id: str, company: dict) -> dict[st
         if e.status == 401:
             raise
         return {"invoiced": None, "paid": None, "outstanding": None, "open_credit": None}
-    return {"invoiced": ytd.get("all_issued_total"), "paid": ytd.get("paid_total"),
+    return {"invoiced": ytd.get("all_issued_total"), "paid": ytd.get("ar_paid"),
             "outstanding": open_.get("awaiting_payment_total"), "open_credit": credit.get("open_credit_total")}
 
 
@@ -326,8 +326,8 @@ def _financial_summary(docs: list[dict], contact_id: str = "", invoice_totals: d
     return Div(
         _card(t("contacts.total_invoiced"), _money("invoiced"), sub_label=t("contacts.year_to_date"),
               href=f"/docs?type=invoice{contact_filter}{ytd_filter}" if contact_id else ""),
-        _card(t("contacts.total_paid"), _money("paid"), sub_label=t("contacts.year_to_date"),
-              href=f"/docs?type=invoice&status=paid{contact_filter}{ytd_filter}" if contact_id else ""),
+        _card(t("contacts.total_paid"), _money("paid"), sub_label=t("contacts.paid_year_to_date"),
+              href=f"/docs?type=invoice&all_issued=1{contact_filter}{ytd_filter}" if contact_id else ""),
         _card(t("th.outstanding"), _money("outstanding"),
               sub_label=t("contacts.open_credit", amount=_money("open_credit")) if totals.get("open_credit") else "",
               href=(f"/docs?type=invoice&status_in={awaiting_status_param('invoice')}{contact_filter}&preset=all"
