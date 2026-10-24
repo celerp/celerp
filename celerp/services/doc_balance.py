@@ -82,9 +82,14 @@ def doc_value(state: dict, field: str):
 
 
 def doc_tax(state: dict):
-    """The tax a document shows: ``tax_amount`` (the stored line-tax calculation), else ``tax``
-    (what the document calculation stores), else 0."""
-    return state.get("tax_amount") or state.get("tax") or 0
+    """The tax amount a document shows. A list stores it as ``tax_amount`` and its header tax
+    rate (a percentage) as ``tax``; every other document stores the amount as ``tax``. A stored
+    0 is a value, and a list with no stored amount shows 0 rather than its rate."""
+    if "tax_amount" in state and state["tax_amount"] is not None:
+        return state["tax_amount"]
+    if "list" in (state.get("doc_type"), state.get("entity_type")):
+        return 0
+    return state.get("tax") or 0
 
 
 def settled_on(state: dict) -> str | None:

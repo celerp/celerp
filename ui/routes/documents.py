@@ -31,7 +31,7 @@ from ui.components.shell import base_shell, page_header, toast_header, page_titl
 from ui.security import not_permitted_redirect
 from ui.components.table import search_bar, search_results, EMPTY, pagination, per_page_value, server_pager, searchable_select, breadcrumbs, status_cards, empty_state_cta, fmt_money, fmt_rate, format_value, currency_symbol, unwrap_address, col_resize_script, bank_account_options as _bank_account_options, display_cell, editable_cell, display_enum, display_unit, doc_href
 from celerp.services.business_time import business_today
-from celerp.services.doc_balance import awaiting_status_param, doc_value, is_awaiting_payment, is_owed, outstanding_balance
+from celerp.services.doc_balance import awaiting_status_param, doc_tax, doc_value, is_awaiting_payment, is_owed, outstanding_balance
 from celerp.services.record_quantities import FULFILLABLE_STATUSES, RECEIVABLE_STATUSES
 from celerp.services.money import to_decimal, to_stored_float, round_money, currency_dp, rate_dp
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, line_price_list, resolve_price
@@ -6678,7 +6678,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
     issue_date_value = _pick("issue_date", "created_at")
     due_date_value = _pick("due_date", "payment_due_date")
     total_value = doc_value(doc, "total")
-    tax_value = _pick("tax_amount", "tax")
+    tax_value = doc_tax(doc)
     outstanding_value = doc_value(doc, "amount_outstanding")
     subtotal_value = _pick("subtotal")
     discount_value = _pick("discount_amount") or 0
