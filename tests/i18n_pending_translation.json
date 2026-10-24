@@ -692,26 +692,6 @@
         "paid",
         "where"
       ]
-    },
-    "modules.starts_after_restart": {
-      "en": "The {module} module starts after Celerp restarts.",
-      "params": [
-        "module"
-      ]
-    },
-    "modules.starts_after_restart_title": {
-      "en": "Module not started yet",
-      "params": []
-    },
-    "modules.ask_admin_to_restart": {
-      "en": "Ask an administrator to restart Celerp.",
-      "params": []
-    },
-    "contacts.open_credit": {
-      "en": "Open credit {amount}",
-      "params": [
-        "amount"
-      ]
     }
   }
 }
