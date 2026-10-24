@@ -821,10 +821,6 @@ async def _lock_external_identity_namespace(
     )
 
 
-def _like_escape(value: str) -> str:
-    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-
-
 def _external_identity_candidates(cid: uuid.UUID, platform: str, product_id: str):
     """Rows that may carry one external product identity: an explicit link or
     a legacy connector idempotency key. Callers decide with the exact Python
@@ -838,7 +834,7 @@ def _external_identity_candidates(cid: uuid.UUID, platform: str, product_id: str
             Projection.state.op("->")("external_links").op("->")(platform)
             .op("->>")("product_id") == product_id,
             idem == prefix,
-            idem.like(_like_escape(prefix) + ":%", escape="\\"),
+            idem.startswith(f"{prefix}:", autoescape=True),
         ),
     )
 
@@ -1566,9 +1562,8 @@ def _sku_narrowing(keys: set[str]) -> list | None:
     aliases_text = Projection.state.op("->>")("_catalog_sku_aliases")
     clauses = [sku_text.op("!~")(_ASCII_ONLY), aliases_text.op("!~")(_ASCII_ONLY)]
     for key in sorted(keys):
-        pattern = f"%{_like_escape(key)}%"
-        clauses.append(func.lower(sku_text).like(pattern, escape="\\"))
-        clauses.append(func.lower(aliases_text).like(pattern, escape="\\"))
+        clauses.append(func.lower(sku_text).contains(key, autoescape=True))
+        clauses.append(func.lower(aliases_text).contains(key, autoescape=True))
     return clauses
 
 

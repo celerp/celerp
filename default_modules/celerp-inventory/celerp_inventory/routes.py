@@ -5111,7 +5111,7 @@ async def undo_import_batch(
     rows = await lock_projections(session, company_id, entity_ids)
     entries = (await session.execute(select(Projection).where(
         Projection.company_id == company_id,
-        Projection.entity_id.startswith(f"je:auto:opening-stock:{batch.id}:")))).scalars().all()
+        Projection.entity_id.startswith(f"je:auto:opening-stock:{batch.id}:", autoescape=True)))).scalars().all()
     unexpected = sorted(e.entity_id for e in entries if (e.state or {}).get("status") != "posted")
     if unexpected:
         raise HTTPException(status_code=409, detail={

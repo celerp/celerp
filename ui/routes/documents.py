@@ -510,14 +510,11 @@ def _page_number(request: Request) -> int:
         return 1
 
 
-# The summary cards count the set the list's narrowing filters select, split by status, so a
-# status filter never travels to the summary and neither does the page. The chips above a
-# document list are not split by status, so they total the rows the list shows: the narrowing
-# filters and the status filters both travel to theirs.
-_DOC_SUMMARY_KEYS = ("doc_type", "q", "contact_id", "ids", "date_from", "date_to", "accounting_sync")
-_DOC_CHIP_KEYS = _DOC_SUMMARY_KEYS + (
-    "status", "status_in", "exclude_status", "all_issued", "overdue_only", "unfulfilled_only",
-    "not_restocked", "not_stocked", "converted_to_type")
+# The document summary takes every filter of the list and none of its paging or order: its
+# figures (the chips) total the rows the list shows, and its ``cards`` count the set the
+# status cards split, which the API selects by leaving the status filters out. The list
+# summary cards are split by status, so only the narrowing filters travel to theirs.
+_DOC_PAGE_KEYS = ("limit", "offset", "sort", "dir")
 _LIST_SUMMARY_KEYS = ("list_type", "q", "date_from", "date_to")
 
 
@@ -667,14 +664,14 @@ async def _doc_results(token: str, state: dict[str, str], date_from: str, date_t
     list state."""
     import asyncio as _asyncio
     params = _doc_api_params(state, date_from, date_to, limit=per_page, offset=(page - 1) * per_page)
-    docs_resp, summary, chips = await _asyncio.gather(
+    docs_resp, chips = await _asyncio.gather(
         api.list_docs(token, params),
-        api.get_doc_summary(token, _summary_params(params, _DOC_SUMMARY_KEYS)),
-        api.get_doc_summary(token, _summary_params(params, _DOC_CHIP_KEYS)),
+        api.get_doc_summary(token, {k: v for k, v in params.items() if k not in _DOC_PAGE_KEYS}),
     )
     docs = docs_resp.get("items", []) if isinstance(docs_resp, dict) else docs_resp
     total = docs_resp.get("total", len(docs)) if isinstance(docs_resp, dict) else len(docs)
-    return docs, total, *(x if isinstance(x, dict) else {} for x in (summary, chips))
+    chips = chips if isinstance(chips, dict) else {}
+    return docs, total, chips.get("cards") or {}, chips
 
 
 _ACCOUNTING_SYNC_CHOICES = (
@@ -5242,7 +5239,7 @@ def _doc_table(
     if is_drafts_view and sort == "date":
         sort = "updated"
 
-    def _th(label: str, key: str) -> FT:
+    def _th(label: str, key: str, cls: str | None = None) -> FT:
         next_dir = "asc" if (sort == key and sort_dir == "desc") else "desc"
         marker = " ▲" if (sort == key and sort_dir == "asc") else (" ▼" if sort == key else "")
 
@@ -5250,7 +5247,7 @@ def _doc_table(
         params["sort"] = key
         params["dir"] = next_dir
         href = f"/docs?{urlencode({k: v for k, v in params.items() if v not in (None, '', [])})}"
-        return Th(A(f"{label}{marker}", href=href, cls="sort-link"))
+        return Th(A(f"{label}{marker}", href=href, cls="sort-link"), cls=cls)
 
     def _row(d: dict) -> FT:
         eid = d.get("entity_id") or d.get("id", "")
@@ -5452,7 +5449,7 @@ def _doc_table(
                 *checkbox_th,
                 _th(t("th.number"), "number"), _th(t("th.type"), "type"), _th(t("th.contact"), "contact"), _th(t("th.date"), "date"),
                 _th(t("documents.th_last_updated"), "updated") if is_drafts_view else _th(t("documents.th_due"), "due"),
-                *([] if no_money else [_th(t("th.total"), "total"), _th(t("th.outstanding"), "outstanding")]),
+                *([] if no_money else [_th(t("th.total"), "total", "cell--number"), _th(t("th.outstanding"), "outstanding", "cell--number")]),
                 _th(t("th.status"), "status"),
                 Th(t("documents.accounting_sync")),
             )),
@@ -10649,6 +10646,16 @@ def _summary_bar(summary: dict, doc_type: str = "", currency: str | None = None,
     if doc_type and doc_type != "invoice":
         return Div(
             Span(t("documents.doc_type_count", type=doc_type_label(doc_type), count=rows), cls="val-chip"),
+            unvalued_chip,
+            cls="valuation-bar",
+        )
+    # Invoices that are all drafts or voids have no receivable, billing or payment: the bar
+    # states their count and what they total, as their status card does.
+    if doc_type and rows and not summary.get("invoice_count"):
+        unissued = float(summary.get("draft_total") or 0) + float(summary.get("void_total") or 0)
+        return Div(
+            Span(f"{t('chip.invoices', lang)}: {rows}", cls="val-chip"),
+            Span(f"{t('chip.total', lang)}: {fmt_money(unissued, currency)}", cls="val-chip"),
             unvalued_chip,
             cls="valuation-bar",
         )

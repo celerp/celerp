@@ -24,7 +24,7 @@ _NOTICE_BODY = ("This company's starter items and its own contact, created when 
                 "Modules page.")
 # The keys registration's starter records are written under (demo.seed_demo_items,
 # demo.seed_self_contacts, and the two self-contacts of releases before those were one).
-_STARTER_RECORD_KEYS = ("demo:item:%", "reg:contact:%")
+_STARTER_RECORD_PREFIXES = ("demo:item:", "reg:contact:")
 
 
 async def enable_starter_modules(session: AsyncSession) -> None:
@@ -32,9 +32,11 @@ async def enable_starter_modules(session: AsyncSession) -> None:
     is registered yet or a company holds starter records, and tell each such company when
     that turned them on. A company that lists no modules of its own uses the installation's
     list, so the modules are added there; a company with its own list has them added to it.
-    The notices and the companies' lists commit first and the config file is written only
-    after that, so a start that fails before the commit leaves the installation's modules
-    as they were, tells no company anything, and the next start tries again."""
+    It all happens in one transaction under the module-state boundary, so no other module
+    change lands in between: the installation's list is read, the config file is written, and
+    only then do the companies' lists, the notices and the done marker commit. A write that
+    fails leaves everything as it was and the next start tries again; a commit that fails puts
+    the file back as it was read."""
     import functools
 
     from celerp.config import read_config, replace_enabled_modules
@@ -53,7 +55,7 @@ async def enable_starter_modules(session: AsyncSession) -> None:
         return
     await hold_module_state(session)
     holder_ids = list((await session.execute(select(LedgerEntry.company_id).where(
-        or_(*(LedgerEntry.idempotency_key.like(k) for k in _STARTER_RECORD_KEYS))).distinct())).scalars())
+        or_(*(LedgerEntry.idempotency_key.startswith(k, autoescape=True) for k in _STARTER_RECORD_PREFIXES))).distinct())).scalars())
     holders = [c for c in await take_company_locks(
         session, *(functools.partial(locked_company, session, cid) for cid in sorted(holder_ids, key=str)))
         if c is not None]
@@ -74,10 +76,13 @@ async def enable_starter_modules(session: AsyncSession) -> None:
                      action_url="/modules", priority="high",
                      i18n={"title": "notice.starter_modules_on.title", "body": "notice.starter_modules_on.body"})
     await conn.run_sync(lambda c: set_meta(c, STARTER_MODULES_KEY, "done"))
-    await session.commit()
     if add_to_installation:
-        await hold_module_state(session)
         await asyncio.to_thread(replace_enabled_modules, installed + list(STARTER_MODULES))
+    try:
+        await session.commit()
+    except BaseException:
+        if add_to_installation:
+            await asyncio.to_thread(replace_enabled_modules, installed)
+        raise
     if own_lists:
         await commit_with_load_set(session)
-    await session.commit()

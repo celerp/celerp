@@ -534,13 +534,13 @@ async def bind_connector_store(session: AsyncSession, company_id, connector, ctx
         )).all())
 
     # Orders and invoices prove the store best, then customers, then products.
-    prefix = f"{connector.name}:%"
+    prefix = f"{connector.name}:"
     samples = (
-        await sample(Projection.entity_id.like(f"doc:{prefix}"))
-        or await sample(Projection.entity_id.like(f"contact:{prefix}"))
+        await sample(Projection.entity_id.startswith(f"doc:{prefix}", autoescape=True))
+        or await sample(Projection.entity_id.startswith(f"contact:{prefix}", autoescape=True))
         or await sample(
             Projection.entity_type == "item",
-            Projection.state["idempotency_key"].as_string().like(prefix),
+            Projection.state["idempotency_key"].as_string().startswith(prefix, autoescape=True),
         )
     )
     if samples:

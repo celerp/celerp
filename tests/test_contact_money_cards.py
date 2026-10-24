@@ -322,3 +322,31 @@ async def test_the_paid_summary_chip_has_its_own_wording(monkeypatch):
     chips = _summary_chips(to_xml(_summary_bar({"ar_paid": 75, "ar_total": 100}, currency="USD")))
     assert chips["Settled"] == fmt_money(75.0, "USD"), chips
     assert "Paid" not in chips, chips
+
+
+@pytest.mark.parametrize("status", ["draft", "void"])
+async def test_a_view_of_unissued_invoices_states_their_total_not_empty_money(status):
+    """Drafts or voids alone hold no receivable, billing or payment, so the bar shows their
+    count and what they total, never those money chips at 0.00 beside a count."""
+    from fasthtml.common import to_xml
+    from ui.routes.documents import _summary_bar
+
+    summary = {"total_count": 0 if status == "draft" else 2, "draft_count": 2 if status == "draft" else 0,
+               "invoice_count": 0, f"{status}_total": 150.0, "count_by_status": {status: 2}}
+    chips = _summary_chips(to_xml(_summary_bar(summary, "invoice", currency="USD")))
+    assert chips == {"Invoices": "2", "Total": fmt_money(150.0, "USD")}, chips
+    # A view with issued invoices keeps its money chips.
+    issued = _summary_chips(to_xml(_summary_bar({"total_count": 1, "invoice_count": 1, "ar_total": 40.0}, "invoice", currency="USD")))
+    assert issued["Billed"] == fmt_money(40.0, "USD"), issued
+
+
+async def test_money_headers_sit_over_their_figures(owner_ui, monkeypatch):
+    """A money column's header is right-aligned over its right-aligned figures, on the document
+    list and on a contact's documents."""
+    contact = await _demo_contact(owner_ui, monkeypatch)
+    await _invoice(owner_ui.api, contact, 10.0)
+    for url, labels in ((f"/contacts/{contact['id']}", ("Total",)), ("/docs?type=invoice", ("Total", "Outstanding"))):
+        r = await owner_ui.get(url)
+        assert r.status_code == 200, r.text
+        for label in labels:
+            assert re.search(rf'<th class="cell--number">\s*(?:<a [^>]*>\s*)?{label}\b', r.text), (url, label)

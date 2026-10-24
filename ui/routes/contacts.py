@@ -520,7 +520,7 @@ def _documents_tab(docs: list[dict], contact: dict | None = None, contact_id: st
                 cls="data-row",
             ))
         docs_section = Table(
-            Thead(Tr(Th(t("th.doc")), Th(t("th.doc_type")), Th(t("th.date")), Th(t("th.total")), Th(t("th.status")))),
+            Thead(Tr(Th(t("th.doc")), Th(t("th.doc_type")), Th(t("th.date")), Th(t("th.total"), cls="cell--number"), Th(t("th.status")))),
             Tbody(*rows),
             cls="data-table sticky-head",
         )

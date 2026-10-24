@@ -9,7 +9,7 @@ import hashlib
 import json
 import math
 import uuid
-from dataclasses import asdict, dataclass, replace as _dc_replace
+from dataclasses import asdict, dataclass, fields as _dc_fields, replace as _dc_replace
 from datetime import datetime, timezone, date as _date
 from decimal import Decimal
 from collections.abc import Awaitable, Callable, Iterable
@@ -1009,7 +1009,7 @@ _DOC_NUMERIC_SORT_FIELDS = frozenset({"total", "amount_outstanding"})
 def _doc_sql_where(company_id: str, f: DocListFilters) -> list:
     """The SQL WHERE for ``f`` (company scope included): every filter the DB can evaluate. The
     multi-field filters (overdue_only, unfulfilled_only, not_restocked, not_stocked) are not
-    here; query_docs applies them in Python, and the summary ignores them by design."""
+    here; they run row by row (``_doc_filter``), and ``_doc_list_filter`` pairs the two."""
     id_list = [x.strip() for x in f.ids.split(",") if x.strip()] if f.ids else []
     if len(id_list) > MAX_IDS_FILTER:
         raise HTTPException(status_code=422, detail=t("documents.err_too_many_ids", max=MAX_IDS_FILTER))
@@ -1129,6 +1129,20 @@ async def _doc_filter(session: AsyncSession, company_id: str, f: DocListFilters)
     return (lambda x: all(c(x) for c in checks)) if checks else None
 
 
+async def _doc_list_filter(session: AsyncSession, company_id: str, f: DocListFilters):
+    """The list's filter step for ``f``: its SQL WHERE (``_doc_sql_where``) and the row-by-row
+    predicate over displayed rows (``_doc_filter``, None when no such filter is set). The list,
+    its CSV export and its summary all select their rows through this, so they cannot drift."""
+    return _doc_sql_where(company_id, f), await _doc_filter(session, company_id, f)
+
+
+# The filters the status cards split the list by. The cards count the set the other filters
+# select; the summary's own figures count the rows the list shows, every filter applied.
+_DOC_SPLIT_FILTERS = ("status", "status_in", "exclude_status", "all_issued", "overdue_only",
+                      "unfulfilled_only", "not_restocked", "not_stocked", "converted_to_type")
+_DOC_FILTER_DEFAULTS = {fl.name: fl.default for fl in _dc_fields(DocListFilters)}
+
+
 def _doc_base_amounts(state: dict, fields: tuple[str, ...], base_currency: str) -> dict[str, Decimal] | None:
     """``fields`` of a document (``doc_value``; missing is 0, and ``amount_outstanding`` is what
     it still owes, ``outstanding_balance``) in the company currency, each rounded at its
@@ -1185,9 +1199,8 @@ async def query_docs(session: AsyncSession, company_id: str, f: DocListFilters, 
     the index passes its page."""
     # Every single-field filter is in the SQL WHERE. The multi-field filters (``_doc_filter``) run
     # in Python over the SQL-ordered rows, so both paths share one ORDER BY.
-    base_where = _doc_sql_where(company_id, f)
+    base_where, keep = await _doc_list_filter(session, company_id, f)
     order_by = _doc_sql_order(_doc_sort_field(f), f.dir == "desc")
-    keep = await _doc_filter(session, company_id, f)
 
     if keep is not None:
         rows = (await session.execute(select(Projection, party_name_sql()).where(*base_where).order_by(*order_by))).all()
@@ -1271,9 +1284,10 @@ async def get_doc_summary(
     company_id: str = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Counts and totals for the document list, over the same filters as list_docs, so the
-    figures over a filtered list count the rows the list shows. A caller that splits the set
-    by status (the status cards) leaves the status filters out of what it sends.
+    """Counts and totals for the document list. The figures count the rows the list shows for
+    the same filters (``_doc_list_filter``); ``cards`` holds the same figures for the set the
+    status cards split, which is those filters without the ones the cards split by
+    (``_DOC_SPLIT_FILTERS``). One read of the rows serves both.
 
     Totals are in the company currency (``_doc_base_amounts``). A document that cannot be valued
     there is left out of every total and counted in ``unvalued_count``. ``open_credit_total`` is
@@ -1282,7 +1296,23 @@ async def get_doc_summary(
     today = (await company_today(session, company_id)).isoformat()
     company = await session.get(Company, company_id)
     base_currency = (company.settings or {}).get("currency", "USD") if company else "USD"
-    rows = (await session.execute(select(Projection).where(*_doc_sql_where(company_id, filters)))).scalars().all()
+    cards_f = _dc_replace(filters, **{k: _DOC_FILTER_DEFAULTS[k] for k in _DOC_SPLIT_FILTERS})
+    where, keep = await _doc_list_filter(session, company_id, filters)
+    card_where, card_keep = await _doc_list_filter(session, company_id, cards_f)
+    rows = (await session.execute(
+        select(Projection.state, _sa.and_(*where).label("listed")).where(*card_where))).all()
+
+    def kept(state: dict, test) -> bool:
+        return test is None or test(_doc_display(state))
+
+    summary = _doc_summary([s for s, listed in rows if listed and kept(s, keep)], today, base_currency)
+    if cards_f == filters:
+        return summary | {"cards": summary}
+    return summary | {"cards": _doc_summary([s for s, _l in rows if kept(s, card_keep)], today, base_currency)}
+
+
+def _doc_summary(states: list[dict], today: str, base_currency: str) -> dict:
+    """The counts and totals of ``get_doc_summary`` over the documents ``states``."""
     totals = dict.fromkeys((
         "ar_gross", "ar_paid", "ar_outstanding", "awaiting_payment", "overdue", "paid", "sent",
         "draft", "void", "memo", "unfulfilled", "open_credit",
@@ -1301,8 +1331,7 @@ async def get_doc_summary(
         if amounts is not None:
             totals[key] += amounts[field]
 
-    for row in rows:
-        state = row.state
+    for state in states:
         st = state.get("status", "")
         count_by_status[st] = count_by_status.get(st, 0) + 1
         dt = state.get("doc_type")
@@ -3533,20 +3562,19 @@ async def _posted_journal_entries(session: AsyncSession, company_id: str, entity
 
     Entries are found by the id every automatic posting is minted with,
     `je:auto:{doc_id}:{op}` (`celerp/services/auto_je.py`), the same prefix match
-    payment recording uses below. `_` and `%` are escaped so a document id
-    carrying either cannot widen the match. This finds entries posted FOR the
+    payment recording uses below. The match escapes `_` and `%`, so a document id
+    carrying either cannot widen it. This finds entries posted FOR the
     document, which is not the same as every entry that mentions it: a credit
     note applied to an invoice posts under the invoice's id, and is unreachable
     here by design, because applying a credit note requires finalising it and a
     finalised document is refused a line earlier.
     """
-    prefix = entity_id.replace("\\", "\\\\").replace("_", r"\_").replace("%", r"\%")
     rows = await session.execute(
         select(Projection.entity_id)
         .where(
             Projection.company_id == company_id,
             Projection.entity_type == "journal_entry",
-            Projection.entity_id.like(f"je:auto:{prefix}:%", escape="\\"),
+            Projection.entity_id.startswith(f"je:auto:{entity_id}:", autoescape=True),
         )
         .order_by(Projection.entity_id)
     )
@@ -4349,7 +4377,7 @@ async def delete_payment(
         _pay_rows = (await session.execute(
             _sa.select(Projection).where(
                 Projection.company_id == company_id,
-                Projection.entity_id.like(f"je:auto:{entity_id}:pay:%"),
+                Projection.entity_id.startswith(f"je:auto:{entity_id}:pay:", autoescape=True),
             )
         )).scalars().all()
         _owners = [c for c in _pay_rows if _owns(c.state)]
@@ -8033,9 +8061,8 @@ async def export_docs_csv(
     """The document list as CSV: the same filters, order and displayed values as the index, every
     matching row (no page), and the columns the screen asked for via ``cols``."""
     out_cols = resolve_export_cols(cols, _DOC_EXPORT_COLS, _DOC_EXPORT_COLS)
-    base_where = _doc_sql_where(company_id, filters)
+    base_where, keep = await _doc_list_filter(session, company_id, filters)
     order_by = _doc_sql_order(_doc_sort_field(filters), filters.dir == "desc")
-    keep = await _doc_filter(session, company_id, filters)
     # Read only the state keys the exported columns and the row filters need, never whole documents.
     fields = {c for c in out_cols if c not in ("entity_id", "contact_name")} | (set(_DOC_FILTER_KEYS) if keep else set())
     keys = sorted(fields | {k for field in fields for k in DOC_FIELD_FALLBACKS.get(field, ())})
@@ -13374,7 +13401,8 @@ async def undo_write_off(
     adjustment_ids = (await session.execute(select(Projection.entity_id).where(
         Projection.company_id == company_id,
         Projection.entity_type == "journal_entry",
-        Projection.entity_id.like(f"je:auto:{entity_id}:cost:%:writeoff_cost:0"),
+        Projection.entity_id.startswith(f"je:auto:{entity_id}:cost:", autoescape=True),
+        Projection.entity_id.endswith(":writeoff_cost:0", autoescape=True),
     ).order_by(Projection.entity_id))).scalars().all()
     for adjustment_id in adjustment_ids:
         derived_id = adjustment_id.removeprefix("je:auto:").removesuffix(":writeoff_cost:0")

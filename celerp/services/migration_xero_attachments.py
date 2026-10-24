@@ -204,7 +204,7 @@ async def discarded_cloud_id(session: AsyncSession, run_id: uuid.UUID) -> str | 
 async def _attached_any(session: AsyncSession, run_id: uuid.UUID) -> bool:
     """Whether a file fetched for this migration was attached."""
     return await session.scalar(select(LedgerEntry.id).where(
-        LedgerEntry.idempotency_key.like(_idempotency_key(run_id, "%"))).limit(1)) is not None
+        LedgerEntry.idempotency_key.startswith(_idempotency_key(run_id, ""), autoescape=True)).limit(1)) is not None
 
 
 def _xero_date(doc: dict) -> str | None:

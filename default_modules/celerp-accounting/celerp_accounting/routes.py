@@ -4896,7 +4896,7 @@ async def close_fiscal_year(
         1 for k in (await session.execute(
             select(LedgerEntry.idempotency_key).where(
                 LedgerEntry.company_id == company_id,
-                LedgerEntry.idempotency_key.like(f"je:{year_end}:fiscal.close%"),
+                LedgerEntry.idempotency_key.startswith(f"je:{year_end}:fiscal.close", autoescape=True),
             )
         )).scalars().all()
         if k.endswith(":c")

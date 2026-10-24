@@ -431,7 +431,7 @@ async def list_imported_woocommerce_order_ids(company_id: str) -> list[str]:
             select(Projection.entity_id).where(
                 Projection.company_id == uuid.UUID(str(company_id)),
                 Projection.entity_type == "doc",
-                Projection.entity_id.like(f"{prefix}%"),
+                Projection.entity_id.startswith(prefix, autoescape=True),
                 func.coalesce(Projection.state["status"].as_string(), "") != "void",
             )
         )).scalars().all()

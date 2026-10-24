@@ -3285,7 +3285,7 @@ async def _repricings(session, company_id) -> dict[tuple[str, str], dict[int, fl
         _select(LedgerEntry.metadata_).where(
             LedgerEntry.company_id == company_id,
             LedgerEntry.entity_type == "item",
-            cast(LedgerEntry.metadata_, Text).like("%cogs_repriced%"),
+            cast(LedgerEntry.metadata_, Text).contains("cogs_repriced", autoescape=True),
         )
     )).scalars().all()
     out: dict[tuple[str, str], dict[int, float]] = {}
