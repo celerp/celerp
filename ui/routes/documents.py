@@ -34,8 +34,8 @@ from celerp.services.business_time import business_today
 from celerp.services.doc_balance import awaiting_status_param, is_awaiting_payment, is_owed, outstanding_balance
 from celerp.services.money import to_decimal, to_stored_float, round_money, currency_dp, rate_dp
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, line_price_list, resolve_price
-from celerp.tax_regimes import (default_line_taxes, holds_tax, line_tax, line_tax_unset, set_new_line_taxes,
-                                tax_entries, tax_text, taxes_for, unreadable_tax)
+from celerp.tax_regimes import (default_line_taxes, holds_tax, legacy_line_taxes, line_tax, line_tax_unset,
+                                matching_tax, set_new_line_taxes, tax_entries, tax_text, taxes_for, unreadable_tax)
 from celerp.services.payment_terms import due_date_for_terms
 from celerp.services.permissions import missing_permission_text, role_has_permission
 from ui.components.import_access import can_import_documents
@@ -7462,10 +7462,11 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             selected_val = "|0"
             is_custom = False
             stored_option = None
-            match = None if len(stored) > 1 or unreadable else next((
-                tax for tax in _taxes_list
-                if float(tax.get("rate", 0)) == current_rate
-                and (tax.get("name", "") == current_code if current_code else current_rate != 0)), None)
+            match = None if len(stored) > 1 or unreadable else matching_tax(_taxes_list, current_code, current_rate)
+            if match is None and not held and current_code:
+                # A line saved with only a rate, under a name no company tax has, shows by that
+                # name as the new-line rule reads it (legacy_line_taxes), never as a nameless rate.
+                held = legacy_line_taxes(li, _taxes_list, doc_type) or []
             if match is not None:
                 selected_val = _tax_option_value(match)
             elif held:

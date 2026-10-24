@@ -297,19 +297,46 @@ def default_line_taxes(taxes: list[dict], doc_type: str | None, *, doc: dict | N
     rate that is not zero, in list order (a company may hold two, such as CGST 9% and SGST 9%),
     each as line_tax builds it. On a draft that already charges a tax as a whole, its taxation
     stands: a new line takes the taxes its lines all carry (as line_tax_key), copied whole, never
-    a company default. When they differ or there are none, None: the line carries no tax of its
-    own until the user sets one (the editor shows "--"); so does a line whose tax is itself still
-    to be set. Nothing is matched by name, so a tax renamed or changed in settings since is never
+    a company default; a line saved with only a rate carries what legacy_line_taxes reads. When
+    they differ or there are none, None: the line carries no tax of its own until the user sets one
+    (the editor shows "--"); so does a line whose tax is itself still to be set or can't be read.
+    Stored taxes are never matched by name, so a tax renamed or changed in settings since is never
     charged next to the one the document holds. The editor mirrors this live
     (_celerpApplyDefaultTaxes in ui/routes/documents.py)."""
     if doc and tax_entries(doc.get("doc_taxes")):
         lines = [line for line in doc.get("line_items") or [] if isinstance(line, dict)]
-        keys = {None if line_tax_unset(line) else line_tax_key(line.get("taxes")) for line in lines}
-        if len(keys) != 1 or None in keys:
+        carried = [None if line_tax_unset(line) else tax_entries(line.get("taxes"))
+                   or legacy_line_taxes(line, taxes, doc_type) for line in lines]
+        if not carried or None in carried or len({line_tax_key(each) for each in carried}) != 1:
             return None
-        return [{**tax, "amount": 0} for tax in tax_entries(lines[0].get("taxes"))]
+        return [{**tax, "amount": 0} for tax in carried[0]]
     return [line_tax(tax) for tax in taxes_for(taxes, doc_type)
             if tax.get("is_default") and float(tax.get("rate") or 0)]
+
+
+def matching_tax(taxes: list[dict], code: str, rate: float) -> dict | None:
+    """The company tax a line charging *rate* under *code* is: the first in *taxes* at that rate
+    named *code*, or with no code the first at that rate when it is not zero."""
+    return next((tax for tax in taxes if float(tax.get("rate") or 0) == rate
+                 and (tax.get("name", "") == code if code else rate != 0)), None)
+
+
+def legacy_line_taxes(line: dict, taxes: list[dict], doc_type: str | None) -> list[dict] | None:
+    """The taxes a line with no taxes list charges through its ``tax_rate`` (and ``tax_code``),
+    as an older version and a CSV import with tax columns store them, and as the editor shows
+    them: the company tax it matches (matching_tax) as line_tax builds it, else its own code and
+    rate. No tax at a zero rate; None when the rate can't be read."""
+    try:
+        rate = float(line.get("tax_rate") or 0)
+    except (TypeError, ValueError):
+        return None
+    if not rate:
+        return []
+    code = line.get("tax_code") or ""
+    match = matching_tax(taxes_for(taxes, doc_type), code, rate)
+    if match is not None:
+        return [line_tax(match)]
+    return [{"code": code, "rate": rate, "amount": 0, "order": 0, "is_compound": False, "label": ""}]
 
 
 def set_new_line_taxes(line: dict, taxes: list[dict] | None) -> None:
