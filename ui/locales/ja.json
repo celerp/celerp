@@ -3582,7 +3582,7 @@
   "modules.off_for_company": "{module} モジュールはあなたの会社では無効になっています。",
   "modules.turn_off_busy": "{module}モジュールでは、店舗データの同期や支払い処理など、会社の処理がまだ完了していません。1分後にもう一度お試しください。",
   "modules.change_busy": "別のモジュール変更が進行中のため、{module}モジュールは無効化されませんでした。1分後にもう一度お試しください。",
-  "modules.company_busy": "Other work for your company is still being saved, so the {module} module was not turned off. Try again in a minute.",
+  "modules.company_busy": "Other work for your company is still being saved, so this change did not go ahead. Try again in a minute.",
   "modules.use_busy": "現在モジュールの構成を変更中のため、{module}の処理は実行されませんでした。1分後にもう一度お試しください。",
   "modules.off_for_company_title": "モジュールは無効です",
   "modules.starts_after_restart": "{module}モジュールはCelerpの再起動後に起動します。",

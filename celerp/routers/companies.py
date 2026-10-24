@@ -1903,6 +1903,7 @@ async def enable_module(
 ) -> dict:
     """Turn a module on for this company, with the modules it needs. Refused
     for a name that is not an installed module."""
+    from celerp.modules.boundary import take_company_locks
     from celerp.modules.registry import (
         commit_with_load_set, enable_for_company, get_enabled, hold_module_state, is_installed, restart_needed,
     )
@@ -1910,7 +1911,7 @@ async def enable_module(
     await hold_module_state(session)
     if not is_installed(module_name):
         raise HTTPException(status_code=404, detail=t("company.err_module_not_found"))
-    company = await locked_company(session, company_id)
+    [company] = await take_company_locks(session, lambda: locked_company(session, company_id))
     if not company:
         raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
     company.settings, also_enabled = enable_for_company(company.settings, module_name)
@@ -1937,10 +1938,10 @@ async def disable_module(
     """Turn a module off for this company. Other companies keep using it. Refused for a
     module built into Celerp, which is always on."""
     from celerp.accounting_roles import refusal
-    from celerp.modules.boundary import company_work_busy, refused_past_lock_timeout, settle_module_use
+    from celerp.modules.boundary import refused_past_lock_timeout, settle_module_use, take_company_locks
     from celerp.modules.loader import is_core_folded, module_label
     from celerp.modules.registry import (
-        ModuleStillNeeded, briefly_waiting, commit_with_load_set, disable_for_company, get_enabled,
+        ModuleStillNeeded, commit_with_load_set, disable_for_company, get_enabled,
         hold_company_modules, hold_module_gate, hold_module_state,
     )
     from celerp.services.turn_off_preflight import outstanding
@@ -1961,12 +1962,8 @@ async def disable_module(
     await settle_module_use(company_id, module_name)
     with refused_past_lock_timeout(changing):
         await hold_module_state(session, bounded=True)
-    # Every admission on the installation now waits for this change, so the company's own
-    # locks are waited for only briefly: the lock order keeps the boundary first.
-    with refused_past_lock_timeout(company_work_busy(company_id, module_name)):
-        async with briefly_waiting(session):
-            await hold_company_modules(session, company_id)
-            company = await locked_company(session, company_id)
+    _, company = await take_company_locks(
+        session, lambda: hold_company_modules(session, company_id), lambda: locked_company(session, company_id))
     if not company:
         raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
     blocking = (await outstanding(session, company_id, module_name))["blocking"]

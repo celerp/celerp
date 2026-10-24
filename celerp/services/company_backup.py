@@ -64,6 +64,7 @@ from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, User
 from celerp.modules.importer import TABLE_NAME, InstalledModules, installed_modules
 from celerp.modules import requirements
+from celerp.modules.boundary import take_company_locks
 from celerp.modules.loader import module_label
 from celerp.modules.registry import commit_with_load_set, company_modules, hold_module_state, set_enabled
 from celerp.services import attachments, bootstrap, company_lifecycle
@@ -1680,12 +1681,17 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
             # Before any lock that waits, so a restore started twice is refused at once.
             await _claim(session, backup_id, source)
             if replacing is not None:
-                # As a company reset takes them: before any other lock on the company.
+                # As a company reset takes it: before any other lock on the company.
                 from celerp.connectors.ownership import lock_connector_maintenance
                 await lock_connector_maintenance(session)
-                if not await lock_company_for_deletion(session, replacing.company_id):
-                    raise BackupError(404, t("error.company_unavailable") + _NOT_REPLACED)
             await hold_module_state(session)
+            if replacing is not None:
+                # The company's lock after the module-state boundary, as every change to
+                # modules takes them, so a module turned on meanwhile waits, never deadlocks.
+                [found] = await take_company_locks(
+                    session, lambda: lock_company_for_deletion(session, replacing.company_id))
+                if not found:
+                    raise BackupError(404, t("error.company_unavailable") + _NOT_REPLACED)
             checked = await check_backup(session, backup)
             if mode == "bootstrap":
                 await _wait_for(session, bootstrap.lock_bootstrap)  # any other first-owner setup

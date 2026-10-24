@@ -32,10 +32,11 @@ def doc_q_clause(q: str | None):
     if not terms:
         return None
     # The name the list shows (party_name_sql) as well as the stored fields, so a
-    # document that holds only its contact's id is found by that contact's name.
+    # document that holds only its contact's id is found by that contact's name. Each
+    # term is matched as typed: a % or _ in it is that character, never a wildcard.
     searched = [Projection.state[f].as_string() for f in _SEARCH_FIELDS] + [party_name_sql()]
     term_clauses = [
-        _sa.or_(*[_sa.func.lower(field).like(f"%{term}%") for field in searched])
+        _sa.or_(*[_sa.func.lower(field).contains(term, autoescape=True) for field in searched])
         for term in terms
     ]
     return _sa.or_(*term_clauses)

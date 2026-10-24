@@ -530,13 +530,13 @@ async def _order_webhook(monkeypatch, company_id: str, store):
                         AsyncMock(return_value=SimpleNamespace(id="config-1", webhook_secret="s", direction="both")))
     monkeypatch.setattr("celerp.connectors.ownership.bind_connector_store", AsyncMock())
     monkeypatch.setattr("celerp.connectors.relay_token.fetch_context", AsyncMock(return_value=ctx))
-    monkeypatch.setattr(webhooks, "MODULE_SETTLE_SECONDS", 0, raising=False)
+    monkeypatch.setattr(webhooks, "MODULE_SETTLE_SECONDS", 0)
     woo = WooCommerceConnector()
     monkeypatch.setattr(woo, "_paginate", store)
     monkeypatch.setattr(connector_registry, "get", lambda name: woo)
     await webhooks.handle_webhook(webhooks.WebhookEvent(platform="woocommerce", topic="order.updated"),
                                   ctx, SyncDirection.BOTH)
-    retrying = getattr(webhooks, "_RETRYING", set())
+    retrying = webhooks._RETRYING
     while retrying:
         await asyncio.gather(*list(retrying))
     return history
@@ -572,7 +572,7 @@ async def test_an_order_webhook_refused_while_modules_keep_changing_is_left_to_t
     mark_running(monkeypatch, "celerp-docs")
     tok = await _register(client)
     history = await _order_webhook(monkeypatch, _company_id(tok), _busy_then(10))
-    assert [run["status"] for run in history] == ["failed"] * (1 + getattr(webhooks, "_BUSY_RETRIES", 3))
+    assert [run["status"] for run in history] == ["failed"] * (1 + webhooks._BUSY_RETRIES)
 
 
 @pytest.mark.asyncio

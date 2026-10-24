@@ -3582,7 +3582,7 @@
   "modules.off_for_company": "Modul {module} dinonaktifkan untuk perusahaan Anda.",
   "modules.turn_off_busy": "Modul {module} masih menyelesaikan pekerjaan untuk perusahaan Anda, seperti sinkronisasi toko atau pembayaran. Coba lagi dalam satu menit.",
   "modules.change_busy": "Perubahan modul lain sedang berlangsung, sehingga modul {module} tidak dinonaktifkan. Coba lagi dalam satu menit.",
-  "modules.company_busy": "Other work for your company is still being saved, so the {module} module was not turned off. Try again in a minute.",
+  "modules.company_busy": "Other work for your company is still being saved, so this change did not go ahead. Try again in a minute.",
   "modules.use_busy": "Modul sedang diubah, sehingga operasi {module} ini tidak dijalankan. Coba lagi dalam satu menit.",
   "modules.off_for_company_title": "Modul dinonaktifkan",
   "modules.starts_after_restart": "Modul {module} akan dimulai setelah Celerp dimulai ulang.",

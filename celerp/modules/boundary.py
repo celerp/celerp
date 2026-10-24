@@ -21,7 +21,7 @@ The decision holds for the whole of the work, never only at its start:
   admitted before it, a request to a store included, happens after it. Other modules
   and other companies are never held up by the wait, and while it holds the
   module-state boundary it waits on the company's own locks only briefly
-  (registry.briefly_waiting), so no other company's work is refused for it;
+  (take_company_locks), so no other company's work is refused for it;
 - every write the work makes judges the settings again, holding them as they are
   (company_lock.judge_module_writes, from events.engine.emit_event and
   company_lock.lock_company), so a change committed elsewhere is never written past,
@@ -41,7 +41,7 @@ import inspect
 from collections import Counter
 from contextlib import asynccontextmanager, contextmanager, nullcontext
 from contextvars import ContextVar
-from typing import Any, Callable, Mapping
+from typing import Any, Awaitable, Callable, Mapping
 
 from fastapi import HTTPException
 from sqlalchemy.exc import DBAPIError
@@ -63,6 +63,10 @@ _REFUSALS: ContextVar[list[Exception] | None] = ContextVar("celerp_module_refusa
 _RUNNING: Counter[tuple[str, str]] = Counter()
 # The Postgres SQLSTATE of a lock wait that gave up at the request lock timeout.
 LOCK_TIMEOUT = "55P03"
+# How long a change to modules waits, in all, on the locks of the companies it changes
+# while it holds the module-state boundary (take_company_locks): well inside the request
+# lock timeout every admission on the installation waits for that boundary with.
+_WAIT_UNDER_BOUNDARY_MS = 1000
 
 
 class ModuleRefused(HTTPException):
@@ -102,6 +106,48 @@ class ModuleBusy(ModuleRefused):
             "modules.use_busy",
             f"Modules are being changed right now, so this {label} work did not go ahead. Try again in a minute.",
             module=label), headers={"Retry-After": str(int(MODULE_SETTLE_SECONDS))})
+
+
+class CompanyBusy(HTTPException):
+    """A 409: a change to modules met the company's other work still holding the company's
+    locks past the brief wait (take_company_locks), so it did not go ahead, and can be
+    tried again. Which work holds them is not known here (it may be in another process),
+    so it names none. Outside a request it reads as that one sentence (the CLI)."""
+
+    def __init__(self) -> None:
+        super().__init__(status_code=409, detail=refusal(
+            "modules.company_busy",
+            "Other work for your company is still being saved, so this change did not go ahead. "
+            "Try again in a minute."))
+
+    def __str__(self) -> str:
+        return self.detail["message"]
+
+
+async def take_company_locks(session, *locks: Callable[[], Awaitable[Any]]) -> list[Any]:
+    """Take *locks* (each a call taking one company lock in *session*) in turn while
+    *session* holds the module-state boundary, waiting on them for _WAIT_UNDER_BOUNDARY_MS
+    in all; their results. Every admission on the installation waits for that boundary, so
+    no other company's work is held up past that wait, which is well inside the request
+    lock timeout. Past it raises CompanyBusy and leaves the transaction to be rolled back;
+    otherwise the session is back on its own lock timeout. The one way a change to modules
+    takes company locks, in the lock order: the boundary first. Off Postgres (no lock
+    waits) the locks are just taken."""
+    from sqlalchemy import text
+    if session.get_bind().dialect.name != "postgresql":
+        return [await lock() for lock in locks]
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _WAIT_UNDER_BOUNDARY_MS / 1000
+    taken = []
+    with refused_past_lock_timeout(CompanyBusy()):
+        for lock in locks:
+            left = int((deadline - loop.time()) * 1000)
+            if left < 1:
+                raise CompanyBusy()
+            await session.execute(text(f"SET LOCAL lock_timeout = {left}"))
+            taken.append(await lock())
+    await session.execute(text("SET LOCAL lock_timeout TO DEFAULT"))
+    return taken
 
 
 @contextmanager
@@ -244,23 +290,6 @@ def turn_off_busy(pkg_name: str) -> HTTPException:
     return HTTPException(status_code=409, detail=refusal(
         "modules.turn_off_busy",
         f"The {label} module is still finishing work for your company, such as a store sync or a payment. "
-        "Try again in a minute.",
-        module=label))
-
-
-def company_work_busy(company_id, pkg_name: str) -> HTTPException:
-    """The 409 for turning *pkg_name* off while the company's other work still holds its
-    module settings or its record. Taken before the wait: no work is admitted while a
-    turn-off holds the module-state boundary, so the company's work running in this
-    process then is what can hold them. It names that work's module, or, when none runs
-    here (work outside any module, or in another process), the company's work in general."""
-    running = sorted(name for cid, name in _RUNNING if cid == str(company_id) and name != pkg_name)
-    if running:
-        return turn_off_busy(running[0])
-    label = module_label(pkg_name)
-    return HTTPException(status_code=409, detail=refusal(
-        "modules.company_busy",
-        f"Other work for your company is still being saved, so the {label} module was not turned off. "
         "Try again in a minute.",
         module=label))
 

@@ -3583,7 +3583,7 @@
   "modules.off_for_company": "Le module {module} est désactivé pour votre entreprise.",
   "modules.turn_off_busy": "Le module {module} termine encore des opérations pour votre entreprise, comme la synchronisation d’une boutique ou un paiement. Réessayez dans une minute.",
   "modules.change_busy": "Une autre modification des modules est en cours. Le module {module} n’a donc pas été désactivé. Réessayez dans une minute.",
-  "modules.company_busy": "Other work for your company is still being saved, so the {module} module was not turned off. Try again in a minute.",
+  "modules.company_busy": "Other work for your company is still being saved, so this change did not go ahead. Try again in a minute.",
   "modules.use_busy": "Les modules sont en cours de modification. Cette opération du module {module} n’a donc pas été exécutée. Réessayez dans une minute.",
   "modules.off_for_company_title": "Module désactivé",
   "modules.starts_after_restart": "Le module {module} démarrera après le redémarrage de Celerp.",

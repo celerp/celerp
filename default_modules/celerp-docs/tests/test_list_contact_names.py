@@ -72,8 +72,9 @@ async def test_the_list_sort_and_export_name_the_contact_never_its_id(client, se
 
 async def test_a_search_finds_a_document_by_the_contact_name_it_shows(client, session):
     """Searching the list, or global search, for the name a document shows finds it, even when
-    the document holds only its contact's id; the stored fields still match, and another
-    company's contact of the same id is never searched."""
+    the document holds only its contact's id; the stored fields still match, another
+    company's contact of the same id is never searched, and a wildcard character is
+    searched for as itself."""
     from celerp_docs.search import global_search
 
     from celerp.models.company import Company
@@ -89,6 +90,7 @@ async def test_a_search_finds_a_document_by_the_contact_name_it_shows(client, se
     await _invoice(session, company_id, "doc:by-id", contact_id=known)
     await _invoice(session, company_id, "doc:stale-name", contact_id=renamed, contact_name="Aaron Old Name")
     await _invoice(session, company_id, "doc:elsewhere", contact_id=elsewhere)
+    await _invoice(session, company_id, "doc:50%_off\\x", contact_id=known)
 
     async def found(q: str) -> list[str]:
         r = await client.get("/docs", params={"doc_type": "invoice", "q": q}, headers=headers)
@@ -97,9 +99,15 @@ async def test_a_search_finds_a_document_by_the_contact_name_it_shows(client, se
         assert sorted(d["id"] for d in (await global_search(session, str(company_id), "owner", q, 20))["items"]) == listed
         return listed
 
-    assert await found("Harbour") == ["doc:by-id"]
-    assert await found("harbour, zephyr") == ["doc:by-id", "doc:stale-name"]
+    assert await found("Harbour") == ["doc:50%_off\\x", "doc:by-id"]
+    assert await found("harbour, zephyr") == ["doc:50%_off\\x", "doc:by-id", "doc:stale-name"]
     assert await found("Aaron Old") == ["doc:stale-name"]
     assert await found("doc:by") == ["doc:by-id"]
     assert await found("Secret Customer") == []
     assert await found("O'Brien\" %") == []
+    # A wildcard or the escape character in the search is the character itself.
+    assert await found("%") == ["doc:50%_off\\x"]
+    assert await found("_") == ["doc:50%_off\\x"]
+    assert await found("\\") == ["doc:50%_off\\x"]
+    assert await found("by_id") == []
+    assert await found("50%off") == []

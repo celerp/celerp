@@ -521,7 +521,7 @@ async def test_a_turn_off_meeting_the_companys_other_work_is_told_to_retry_and_h
 
     assert busy.status_code == 409
     assert busy.detail["message_key"] == "modules.company_busy"
-    assert busy.detail["params"] == {"module": "Documents"}
+    assert busy.detail["params"] == {}
     assert others == ["written"] * 3
     assert await _written(factory, b) == 3
     assert await _docs_on(factory, a) and await _docs_on(factory, b)
@@ -541,11 +541,11 @@ async def test_a_turn_off_meeting_the_companys_other_work_briefly_goes_ahead(fac
     assert not await _docs_on(factory, cid)
 
 
-async def test_a_turn_off_meeting_another_modules_work_names_that_module(
+async def test_a_turn_off_meeting_another_modules_work_is_told_the_companys_work_is_being_saved(
         factory, request_factory, monkeypatch):
     """Inventory work of the company has written and is still running while Documents is
-    turned off: the refusal names Inventory, the work that is still finishing, and
-    Documents stays on."""
+    turned off: the refusal says the company's other work is still being saved, without
+    guessing which module's work that is, and Documents stays on."""
     from celerp.modules.boundary import needs_modules
     inventory = "celerp-inventory"
     mark_running(monkeypatch, inventory)
@@ -569,6 +569,73 @@ async def test_a_turn_off_meeting_another_modules_work_names_that_module(
         release.set()
         await asyncio.wait_for(work, 15)
     assert busy.value.status_code == 409
-    assert busy.value.detail["message_key"] == "modules.turn_off_busy"
-    assert busy.value.detail["params"] == {"module": "Inventory"}
+    assert busy.value.detail["message_key"] == "modules.company_busy"
+    assert busy.value.detail["params"] == {}
     assert await _docs_on(factory, cid) and await _written(factory, cid) == 1
+
+
+def _turning_on(path: str, request_factory, committed_engine, cid):
+    """A change that takes the module-state boundary and then the company's record: turning
+    Documents on, setting a business type, adding a preset, or the CLI turning Documents
+    on for every company."""
+    async def module():
+        from celerp.routers.companies import enable_module
+        async with request_factory() as s:
+            return await enable_module(DOCS, company_id=cid, session=s)
+
+    async def business_type():
+        from celerp.services.business_type import set_business_type
+        async with request_factory() as s:
+            return await set_business_type(s, cid, uuid.uuid4(), "gemstones")
+
+    async def preset():
+        from celerp_verticals.routes import _build_router
+        apply_preset = next(r.endpoint for r in _build_router().routes if r.path == "/me/apply-preset")
+        async with request_factory() as s:
+            return await apply_preset(vertical="gemstones", company_id=cid, session=s)
+
+    async def cli():
+        from celerp.cli import _enable_for_every_company
+        return await _enable_for_every_company(committed_engine.url.render_as_string(hide_password=False), [DOCS])
+
+    return {"module": module, "business_type": business_type, "preset": preset, "cli": cli}[path]
+
+
+async def _settings(factory, cid) -> dict:
+    async with factory() as s:
+        return dict((await s.get(Company, cid)).settings or {})
+
+
+@pytest.mark.parametrize("path", ["module", "business_type", "preset", "cli"])
+async def test_a_change_to_modules_meeting_the_companys_other_work_is_told_to_retry_and_holds_up_no_other_company(
+        factory, request_factory, committed_engine, path):
+    """Other work of company A holds A's record for longer than the request lock timeout
+    while A's modules are changed (a module turned on, a business type, a preset, the CLI):
+    the change is refused within a second, a 409 that says to try again and reads as that
+    sentence outside a request, never a server error, and company B's work that asked to
+    start meanwhile is written. A's settings are unchanged, and the change goes ahead once
+    A's work is done."""
+    a, b = await _company(factory), await _company(factory)
+    await _disable(request_factory, a)
+    before = await _settings(factory, a)
+    change = _turning_on(path, request_factory, committed_engine, a)
+    async with factory() as holder:
+        await _hold_company(holder, a, "record")
+        changing = asyncio.create_task(change())
+        await _holding_module_state(committed_engine)
+        others = [asyncio.create_task(_another_companys_work(factory, b)) for _ in range(3)]
+        try:
+            with pytest.raises(HTTPException) as busy:
+                await asyncio.wait_for(changing, 15)
+        finally:
+            got = await asyncio.gather(*others)
+            await holder.rollback()
+
+    assert busy.value.status_code == 409
+    assert busy.value.detail["message_key"] == "modules.company_busy"
+    assert busy.value.detail["params"] == {}
+    assert str(busy.value) == busy.value.detail["message"]
+    assert got == ["written"] * 3
+    assert await _settings(factory, a) == before
+    await asyncio.wait_for(change(), 15)
+    assert await _settings(factory, a) != before
