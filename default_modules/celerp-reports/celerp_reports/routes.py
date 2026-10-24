@@ -14,12 +14,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
 from celerp.models.projections import Projection
+from celerp.output.doc_print import EMPTY
 from celerp.services.auth import get_current_company_id, get_current_user
 from celerp.services.business_time import company_today
 from celerp.services.doc_balance import (
     canonical_doc_type, doc_value, is_awaiting_payment, is_open_credit, is_owed, outstanding_balance,
 )
 from celerp.services.permissions import require_permission
+from celerp_contacts.references import contact_snapshot
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -85,23 +87,29 @@ async def _aging(session: AsyncSession, company_id: uuid.UUID, *, party: str, de
                  credit_types: tuple[str, ...], due_fallback: str, unlinked: tuple[str, str]) -> dict:
     """Aging buckets per ``party`` (customer or supplier): what each document of ``debit_types``
     still owes, by days past its due date (``due_fallback`` when it has none), less what each
-    open credit of ``credit_types`` has left, by days since it was issued. ``unlinked`` is the
-    (id, name) of documents that name no party."""
+    open credit of ``credit_types`` has left, by days since it was issued. A party shows by its
+    contact's name, else the name the document holds, else "--". ``unlinked`` is the (id, name)
+    of documents that name no party."""
     rows = (await session.execute(select(Projection).where(
-        Projection.company_id == company_id, Projection.entity_type == "doc"))).scalars().all()
+        Projection.company_id == company_id, Projection.entity_type.in_(("doc", "contact"))))).scalars().all()
+    contact_names = {row.entity_id: contact_snapshot(row.state)["contact_name"]
+                     for row in rows if row.entity_type == "contact"}
 
     today = await company_today(session, company_id)
     buckets: dict[str, dict[str, Decimal]] = defaultdict(lambda: {key: Decimal(0) for key, _ in _BUCKETS})
     names: dict[str, str] = {}
 
     for row in rows:
+        if row.entity_type != "doc":
+            continue
         state = row.state
         amount = _aged_balance(state, debit_types, credit_types)
         if amount is None:
             continue
         party_id = state.get("contact_id") or state.get(f"{party}_id")
         if party_id:
-            names[party_id] = state.get("contact_name") or state.get(f"{party}_name") or party_id
+            names[party_id] = (contact_names.get(party_id) or state.get("contact_name")
+                               or state.get(f"{party}_name") or EMPTY)
         else:
             party_id, names[unlinked[0]] = unlinked
         dated = doc_value(state, "issue_date") if amount < 0 else (doc_value(state, "due_date") or state.get(due_fallback))
