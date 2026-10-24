@@ -4516,6 +4516,7 @@
   "documents.err_customer_and_lines": "Không thể đổi khách hàng và các dòng hàng trong cùng một lần lưu. Hãy lưu thay đổi khách hàng trước, sau đó sửa các dòng.",
   "documents.err_doc_changed": "Người khác đã sửa chứng từ này trong lúc bạn đang sửa. Hãy chọn Thử lại để xem thay đổi của họ, rồi thực hiện lại thay đổi của bạn.",
   "documents.err_doc_stale": "Select Try again to open the latest copy of this document, then make your line changes again.",
+  "documents.totals_pending": "Not saved yet: these totals are an estimate until your changes save.",
   "documents.err_list_changed": "Người khác đã sửa danh sách này trong lúc bạn đang sửa. Hãy chọn Thử lại để xem thay đổi của họ, rồi thực hiện lại thay đổi của bạn.",
   "documents.err_doc_changed_reprice": "Người khác đã sửa chứng từ này trong lúc bạn đang làm. Hãy chọn Thử lại, rồi tính lại giá.",
   "documents.err_list_changed_reprice": "Người khác đã sửa danh sách này trong lúc bạn đang làm. Hãy chọn Thử lại, rồi tính lại giá.",

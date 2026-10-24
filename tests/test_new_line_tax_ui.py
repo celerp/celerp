@@ -185,8 +185,8 @@ async def test_save_doc_lines_forwards_doc_taxes(ui_client):
     assert patch_doc.call_args[0][2]["doc_taxes"] == _DRAFT["doc_taxes"]
     out = r.json()
     assert out["ok"] is True and out["version"] == 5
-    assert "VAT 7%" in out["stored_tax_rows_html"] and 'data-doc-tax-index="0"' in out["stored_tax_rows_html"]
-    assert "107" in out["total"]
+    assert "VAT 7%" in out["money"]["stored_tax_rows_html"] and 'data-doc-tax-index="0"' in out["money"]["stored_tax_rows_html"]
+    assert "107" in out["money"]["total"]
 
     r = await _save_lines(ui_client, {"line_items": _DRAFT["line_items"], "doc_taxes": []},
                           patch_doc=patch_doc, get_doc=AsyncMock(return_value={**_DRAFT, "doc_taxes": []}))
@@ -196,6 +196,21 @@ async def test_save_doc_lines_forwards_doc_taxes(ui_client):
     await _save_lines(ui_client, {"line_items": _DRAFT["line_items"]},
                       patch_doc=patch_doc, get_doc=AsyncMock(return_value=_DRAFT))
     assert "doc_taxes" not in patch_doc.call_args[0][2]
+
+
+@pytest.mark.parametrize("list_type,total", [("quotation", "107"), ("shipping_doc", "100")])
+async def test_save_list_lines_returns_the_stored_money(ui_client, list_type, total):
+    """A list save brings back the money the API stored, as a document save does, so the panel
+    never keeps its own estimate. A shipping document's total is its declared value."""
+    stored = {**_DRAFT, "entity_id": "list:Q-1", "doc_type": "list", "list_type": list_type}
+    ui_client.cookies.update(_authed())
+    with patch("ui.api_client.patch_list_line_page", new=AsyncMock(return_value={"version": 5})), \
+            patch("ui.api_client.get_list", new=AsyncMock(return_value=stored)):
+        r = await ui_client.post("/lists/list:Q-1/lines", json={"line_items": [], "expected_version": 4})
+    assert r.status_code == 200, r.text
+    money = r.json()["money"]
+    assert total in money["total"] and "100" in money["subtotal"]
+    assert "VAT 7%" in money["stored_tax_rows_html"]
 
 
 async def test_save_doc_lines_refused_doc_taxes_returns_the_api_error(ui_client):
@@ -216,6 +231,15 @@ async def test_save_doc_lines_reread_failure_reports_the_error(ui_client):
                           get_doc=AsyncMock(side_effect=APIError(503, "The document could not be read.")))
     assert r.status_code == 200, r.text
     assert r.json() == {"ok": True, "version": 5, "error": "The document could not be read."}
+
+
+async def test_save_list_lines_reread_failure_reports_the_error(ui_client):
+    ui_client.cookies.update(_authed())
+    with patch("ui.api_client.patch_list_line_page", new=AsyncMock(return_value={"version": 5})), \
+            patch("ui.api_client.get_list", new=AsyncMock(side_effect=APIError(503, "The list could not be read."))):
+        r = await ui_client.post("/lists/list:Q-1/lines", json={"line_items": [], "expected_version": 4})
+    assert r.status_code == 200, r.text
+    assert r.json() == {"ok": True, "version": 5, "error": "The list could not be read."}
 
 
 _LEVY_WHOLE = [{"code": "Levy 5%", "rate": 5.0, "amount": 0, "order": 0, "is_compound": False, "label": ""}]

@@ -4516,6 +4516,7 @@
   "documents.err_customer_and_lines": "ደንበኛውና የዕቃ መስመሮቹ በአንድ ማስቀመጥ ሊቀየሩ አይችሉም። መጀመሪያ የደንበኛውን ለውጥ ያስቀምጡ፣ ከዚያ መስመሮቹን ያስተካክሉ።",
   "documents.err_doc_changed": "እርስዎ እያስተካከሉ ሳለ ሌላ ሰው ይህን ሰነድ ቀይሯል። የእነሱን ለውጦች ለማየት እንደገና ሞክር ይምረጡና የእርስዎን እንደገና ያድርጉ።",
   "documents.err_doc_stale": "Select Try again to open the latest copy of this document, then make your line changes again.",
+  "documents.totals_pending": "Not saved yet: these totals are an estimate until your changes save.",
   "documents.err_list_changed": "እርስዎ እያስተካከሉ ሳለ ሌላ ሰው ይህን ዝርዝር ቀይሯል። የእነሱን ለውጦች ለማየት እንደገና ሞክር ይምረጡና የእርስዎን እንደገና ያድርጉ።",
   "documents.err_doc_changed_reprice": "እርስዎ እየሠሩ ሳለ ሌላ ሰው ይህን ሰነድ ቀይሯል። እንደገና ሞክር ይምረጡና ዋጋዎቹን እንደገና ያስሉ።",
   "documents.err_list_changed_reprice": "እርስዎ እየሠሩ ሳለ ሌላ ሰው ይህን ዝርዝር ቀይሯል። እንደገና ሞክር ይምረጡና ዋጋዎቹን እንደገና ያስሉ።",

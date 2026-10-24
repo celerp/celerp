@@ -4649,7 +4649,8 @@ class TestListsCreateBlank:
         submitted page's length when the body omits it) and expected_version the 6th."""
         mock = AsyncMock(return_value={"event_id": 42, "version": 42})
         ui_client.cookies.update(_authed())
-        with patch("ui.api_client.patch_list_line_page", create=True, new=mock):
+        with patch("ui.api_client.patch_list_line_page", create=True, new=mock), \
+                patch("ui.api_client.get_list", new=AsyncMock(return_value={"entity_id": "list:WO-1", "line_items": []})):
             r = await ui_client.post(
                 "/lists/list:WO-1/lines",
                 json={"line_items": [], "subtotal": 0, "tax": 0, "total": 0, "expected_version": 7},

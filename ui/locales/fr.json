@@ -4516,6 +4516,7 @@
   "documents.err_customer_and_lines": "Le client et les lignes ne peuvent pas être modifiés en un seul enregistrement. Enregistrez d'abord le changement de client, puis modifiez les lignes.",
   "documents.err_doc_changed": "Quelqu'un d'autre a modifié ce document pendant votre saisie. Sélectionnez « Réessayer » pour voir leurs modifications, puis refaites les vôtres.",
   "documents.err_doc_stale": "Select Try again to open the latest copy of this document, then make your line changes again.",
+  "documents.totals_pending": "Not saved yet: these totals are an estimate until your changes save.",
   "documents.err_list_changed": "Quelqu'un d'autre a modifié cette liste pendant votre saisie. Sélectionnez « Réessayer » pour voir leurs modifications, puis refaites les vôtres.",
   "documents.err_doc_changed_reprice": "Quelqu'un d'autre a modifié ce document pendant que vous travailliez. Sélectionnez « Réessayer », puis recalculez les prix.",
   "documents.err_list_changed_reprice": "Quelqu'un d'autre a modifié cette liste pendant que vous travailliez. Sélectionnez « Réessayer », puis recalculez les prix.",

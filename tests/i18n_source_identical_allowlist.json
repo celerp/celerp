@@ -227,7 +227,8 @@
     "documents.tax_route_void",
     "documents.tax_route_void_order",
     "documents.tax_route_new",
-    "documents.err_doc_stale"
+    "documents.err_doc_stale",
+    "documents.totals_pending"
   ],
   "ar": [
     "account.email_placeholder",
@@ -445,7 +446,8 @@
     "documents.tax_route_void",
     "documents.tax_route_void_order",
     "documents.tax_route_new",
-    "documents.err_doc_stale"
+    "documents.err_doc_stale",
+    "documents.totals_pending"
   ],
   "de": [
     "acct.source_system",
@@ -734,7 +736,8 @@
     "documents.tax_route_void",
     "documents.tax_route_void_order",
     "documents.tax_route_new",
-    "documents.err_doc_stale"
+    "documents.err_doc_stale",
+    "documents.totals_pending"
   ],
   "es": [
     "account.plan",
@@ -996,7 +999,8 @@
     "documents.tax_route_void",
     "documents.tax_route_void_order",
     "documents.tax_route_new",
-    "documents.err_doc_stale"
+    "documents.err_doc_stale",
+    "documents.totals_pending"
   ],
   "fr": [
     "acct.tab_journal",
@@ -1299,7 +1303,8 @@
     "documents.tax_route_void",
     "documents.tax_route_void_order",
     "documents.tax_route_new",
-    "documents.err_doc_stale"
+    "documents.err_doc_stale",
+    "documents.totals_pending"
   ],
   "id": [
     "acct.source_manual",
@@ -1586,7 +1591,8 @@
     "documents.tax_route_void",
     "documents.tax_route_void_order",
     "documents.tax_route_new",
-    "documents.err_doc_stale"
+    "documents.err_doc_stale",
+    "documents.totals_pending"
   ],
   "it": [
     "attr.volume_l",
@@ -1845,7 +1851,8 @@
     "documents.tax_route_void",
     "documents.tax_route_void_order",
     "documents.tax_route_new",
-    "documents.err_doc_stale"
+    "documents.err_doc_stale",
+    "documents.totals_pending"
   ],
   "ja": [
     "account.email_placeholder",
@@ -2073,7 +2080,8 @@
     "documents.tax_route_void",
     "documents.tax_route_void_order",
     "documents.tax_route_new",
-    "documents.err_doc_stale"
+    "documents.err_doc_stale",
+    "documents.totals_pending"
   ],
   "pt": [
     "acct.source_manual",
@@ -2346,7 +2354,8 @@
     "documents.tax_route_void",
     "documents.tax_route_void_order",
     "documents.tax_route_new",
-    "documents.err_doc_stale"
+    "documents.err_doc_stale",
+    "documents.totals_pending"
   ],
   "th": [
     "account.email_placeholder",
@@ -2572,7 +2581,8 @@
     "documents.tax_route_void",
     "documents.tax_route_void_order",
     "documents.tax_route_new",
-    "documents.err_doc_stale"
+    "documents.err_doc_stale",
+    "documents.totals_pending"
   ],
   "vi": [
     "btn.u00d7",
@@ -2802,6 +2812,7 @@
     "documents.tax_route_void",
     "documents.tax_route_void_order",
     "documents.tax_route_new",
-    "documents.err_doc_stale"
+    "documents.err_doc_stale",
+    "documents.totals_pending"
   ]
 }

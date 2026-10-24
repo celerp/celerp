@@ -4516,6 +4516,7 @@
   "documents.err_customer_and_lines": "เปลี่ยนลูกค้าและรายการสินค้าในการบันทึกครั้งเดียวไม่ได้ บันทึกการเปลี่ยนลูกค้าก่อน แล้วค่อยแก้บรรทัด",
   "documents.err_doc_changed": "มีคนอื่นแก้ไขเอกสารนี้ขณะที่คุณกำลังแก้ไข เลือก ลองอีกครั้ง เพื่อดูการเปลี่ยนแปลงของอีกฝ่าย แล้วทำการเปลี่ยนแปลงของคุณอีกครั้ง",
   "documents.err_doc_stale": "Select Try again to open the latest copy of this document, then make your line changes again.",
+  "documents.totals_pending": "Not saved yet: these totals are an estimate until your changes save.",
   "documents.err_list_changed": "มีคนอื่นแก้ไขรายการนี้ขณะที่คุณกำลังแก้ไข เลือก ลองอีกครั้ง เพื่อดูการเปลี่ยนแปลงของอีกฝ่าย แล้วทำการเปลี่ยนแปลงของคุณอีกครั้ง",
   "documents.err_doc_changed_reprice": "มีคนอื่นแก้ไขเอกสารนี้ขณะที่คุณกำลังทำงาน เลือก ลองอีกครั้ง แล้วคำนวณราคาอีกครั้ง",
   "documents.err_list_changed_reprice": "มีคนอื่นแก้ไขรายการนี้ขณะที่คุณกำลังทำงาน เลือก ลองอีกครั้ง แล้วคำนวณราคาอีกครั้ง",

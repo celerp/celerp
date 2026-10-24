@@ -4516,6 +4516,7 @@
   "documents.err_customer_and_lines": "El cliente y las líneas no se pueden cambiar en un solo guardado. Guarde primero el cambio de cliente y luego edite las líneas.",
   "documents.err_doc_changed": "Otra persona cambió este documento mientras lo editaba. Seleccione Reintentar para ver sus cambios y vuelva a hacer los suyos.",
   "documents.err_doc_stale": "Select Try again to open the latest copy of this document, then make your line changes again.",
+  "documents.totals_pending": "Not saved yet: these totals are an estimate until your changes save.",
   "documents.err_list_changed": "Otra persona cambió esta lista mientras la editaba. Seleccione Reintentar para ver sus cambios y vuelva a hacer los suyos.",
   "documents.err_doc_changed_reprice": "Otra persona cambió este documento mientras trabajaba. Seleccione Reintentar y vuelva a recalcular los precios.",
   "documents.err_list_changed_reprice": "Otra persona cambió esta lista mientras trabajaba. Seleccione Reintentar y vuelva a recalcular los precios.",

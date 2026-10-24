@@ -4516,6 +4516,7 @@
   "documents.err_customer_and_lines": "Pelanggan dan baris barang tidak bisa diubah dalam satu kali simpan. Simpan dulu perubahan pelanggan, lalu edit barisnya.",
   "documents.err_doc_changed": "Orang lain mengubah dokumen ini saat Anda mengeditnya. Pilih Coba lagi untuk melihat perubahan mereka, lalu buat perubahan Anda lagi.",
   "documents.err_doc_stale": "Select Try again to open the latest copy of this document, then make your line changes again.",
+  "documents.totals_pending": "Not saved yet: these totals are an estimate until your changes save.",
   "documents.err_list_changed": "Orang lain mengubah daftar ini saat Anda mengeditnya. Pilih Coba lagi untuk melihat perubahan mereka, lalu buat perubahan Anda lagi.",
   "documents.err_doc_changed_reprice": "Orang lain mengubah dokumen ini saat Anda bekerja. Pilih Coba lagi, lalu hitung ulang harga.",
   "documents.err_list_changed_reprice": "Orang lain mengubah daftar ini saat Anda bekerja. Pilih Coba lagi, lalu hitung ulang harga.",

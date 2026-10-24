@@ -3206,18 +3206,15 @@ celerpUpdateBulkAlloc();
                 payload["reserved_conflicts"] = e.data["conflicts"]
             return JSONResponse(payload, status_code=e.status)
         saved = {"ok": True, "version": result.get("version")}
-        # The page shows the document taxes, total and outstanding the API just computed, never its own copy.
+        # The page shows the taxes, subtotal, discount, total and outstanding the API just computed,
+        # never its own copy.
         try:
             doc = await api.get_doc(token, entity_id)
         except APIError as e:
             if e.status == 401:
                 raise
             return JSONResponse({**saved, "error": error_message(e)})
-        currency = doc.get("currency") or "USD"
-        return JSONResponse({**saved,
-                             "stored_tax_rows_html": to_xml(_stored_doc_tax_rows(doc, currency, doc.get("status") == "draft")),
-                             "total": fmt_money(float(doc.get("total") or 0), currency),
-                             "outstanding": fmt_money(float(_outstanding_value(doc) or 0), currency)})
+        return JSONResponse({**saved, "money": _doc_money(doc)})
 
     async def _proxy_reprice(request: Request, entity_id: str, reprice_fn):
         """Transport-only Web UI adapter; all repricing semantics live in celerp-docs."""
@@ -4837,7 +4834,15 @@ celerpUpdateBulkAlloc();
             if e.status == 409:
                 return JSONResponse({"code": "stale_version", "error": error_message(e)}, status_code=409)
             return JSONResponse({"error": error_message(e)}, status_code=e.status)
-        return JSONResponse({"ok": True, "version": result.get("version")})
+        saved = {"ok": True, "version": result.get("version")}
+        # As on a document: the page shows the money the API just computed, never its own copy.
+        try:
+            lst = await api.get_list(token, entity_id)
+        except APIError as e:
+            if e.status == 401:
+                raise
+            return JSONResponse({**saved, "error": error_message(e)})
+        return JSONResponse({**saved, "money": _doc_money({"doc_type": "list", **lst})})
 
     @app.post("/lists/{entity_id}/action/{action}")
     async def list_action(request: Request, entity_id: str, action: str):
@@ -6670,6 +6675,56 @@ def _stored_doc_tax_rows(doc: dict, currency: str | None, can_edit: bool) -> FT:
     state = (Input(type="hidden", id="doc-taxes-state", value=_json.dumps(doc_taxes))
              if can_edit and doc_taxes else "")
     return Div(*rows, state, id="doc-stored-tax-rows")
+
+
+def _doc_tax_rows(doc: dict, currency: str, can_edit: bool) -> tuple[FT, FT]:
+    """The tax rows of a document's totals, from the amounts the API stored: one row per tax on
+    the lines (#doc-tax-rows) and the document-level taxes (#doc-stored-tax-rows). The page renders
+    them and every line save puts them back in place, so the rows always hold the saved figures."""
+    tax_amount = float(doc.get("tax_amount") if doc.get("tax_amount") is not None else doc.get("tax") or 0)
+    line_items = doc.get("line_items") or []
+    code_totals: dict[str, dict] = {}  # key -> {label, amount}
+
+    def _add_tax(key: str, label: str, amount) -> None:
+        code_totals.setdefault(key, {"label": label, "amount": 0.0})["amount"] += float(amount or 0)
+
+    for li in line_items:
+        for item in tax_entries(li.get("taxes")):
+            code = item.get("code") or ""
+            rate = float(item.get("rate", 0) or 0)
+            label = f"{code} ({rate:g}%)" if code else f"{item.get('label') or t('documents.tax')} ({rate:g}%)"
+            _add_tax(code or f"custom_{rate}", label, item.get("amount"))
+    stored_tax_rows = _stored_doc_tax_rows(doc, currency, can_edit)
+    stored_tax = sum(float(d.get("amount") or 0) for d in tax_entries(doc.get("doc_taxes")))
+    # A document tax that cannot be read keeps its rows, so it can be removed.
+    if (abs(sum(v["amount"] for v in code_totals.values()) + stored_tax - tax_amount) > 0.005
+            and unreadable_tax(doc.get("doc_taxes")) is None):
+        # The stored breakdown does not account for the stored tax (a line or header rate with no
+        # per-line amounts): show the stored tax as one row, labelled with its rate when single.
+        rates = {float(li.get("tax_rate") or 0) for li in line_items if float(li.get("tax_rate") or 0)}
+        label = f"{t('documents.tax')} ({next(iter(rates)):g}%)" if len(rates) == 1 else t("documents.tax")
+        code_totals = {"tax": {"label": label, "amount": tax_amount}} if tax_amount else {}
+        stored_tax_rows = Div(id="doc-stored-tax-rows")
+    line_tax_rows = Div(*(Div(Span(f"{v['label']}:", cls="total-label"),
+                              Span(fmt_money(v["amount"], currency), cls="total-value"), cls="total-row")
+                          for v in code_totals.values()), id="doc-tax-rows")
+    return line_tax_rows, stored_tax_rows
+
+
+def _doc_money(doc: dict) -> dict:
+    """The stored money a document editor puts in place of its own figures after a line save
+    (_celerpShowStoredMoney): the tax rows as HTML, the other figures formatted. A shipping
+    document's total is its declared value, the subtotal, as its page shows it."""
+    currency = doc.get("currency") or "USD"
+    doc_type = doc.get("doc_type") or ""
+    customs = _list_column_policy(doc_type, (doc.get("list_type") or "") if doc_type == "list" else "")["customs"]
+    total = doc.get("total_amount") if doc.get("total_amount") is not None else doc.get("total")
+    line_tax_rows, stored_tax_rows = _doc_tax_rows(doc, currency, doc.get("status") == "draft")
+    return {"tax_rows_html": to_xml(line_tax_rows), "stored_tax_rows_html": to_xml(stored_tax_rows),
+            "subtotal": fmt_money(float(doc.get("subtotal") or 0), currency),
+            "discount": f"-{fmt_money(float(doc.get('discount_amount') or 0), currency)}",
+            "total": fmt_money(float((doc.get("subtotal") if customs else total) or 0), currency),
+            "outstanding": fmt_money(float(_outstanding_value(doc) or 0), currency)}
 
 
 def _outstanding_value(doc: dict):
@@ -8843,6 +8898,13 @@ function celerpSyncQtyMeasure(qtyEl) {{
     if (target) target.value = qtyEl.value;
 }}
 function celerpUpdateTotals() {{
+    // The figures below are the page's estimate until the lines save: keep the stored ones to put
+    // back if the edit is abandoned, and mark the panel as an estimate.
+    const _panel = _celerpTotalPanel();
+    if (_panel && !_panel.classList.contains('total-panel--pending')) {{
+        window._celerpStoredMoney = _celerpMoneyOn(document);
+        _panel.classList.add('total-panel--pending');
+    }}
     const _cur = {repr(currency)};
     function _fmt(n) {{
         try {{ return new Intl.NumberFormat('en-US', {{style:'currency',currency:_cur}}).format(n); }}
@@ -9275,16 +9337,35 @@ function _celerpMarkScanned(scroll) {{
     }});
     if (scroll && first) first.scrollIntoView({{block: 'nearest'}});
 }}
-/* The document taxes, total and outstanding the server stored, put in place of the page's copy.
-   Every path that installs stored lines takes the stored money with them, so the figures beside
-   the lines always belong to them. */
-function _celerpShowStoredMoney(storedTaxRowsHtml, total, outstanding) {{
-    const storedEl = document.getElementById('doc-stored-tax-rows');
-    if (storedEl && storedTaxRowsHtml != null) storedEl.outerHTML = storedTaxRowsHtml;
+/* The money the server stored (tax rows, subtotal, discount, total, outstanding), put in place of
+   the page's estimate. Every successful save and every path that installs stored lines takes the
+   stored money with them, so the figures beside the lines always belong to them and only an
+   estimate is ever marked as one. */
+function _celerpTotalPanel() {{
     const totEl = document.getElementById('doc-total');
-    if (totEl && total) totEl.textContent = total;
-    const owedEl = document.getElementById('doc-outstanding');
-    if (owedEl && outstanding) owedEl.textContent = outstanding;
+    return totEl ? totEl.closest('.total-panel') : null;
+}}
+function _celerpMoneyOn(root) {{
+    const html = id => {{ const el = root.getElementById(id); return el ? el.outerHTML : null; }};
+    const text = id => {{ const el = root.getElementById(id); return el ? el.textContent : null; }};
+    return {{tax_rows_html: html('doc-tax-rows'), stored_tax_rows_html: html('doc-stored-tax-rows'),
+             subtotal: text('doc-subtotal'), discount: text('doc-header-discount'),
+             total: text('doc-total'), outstanding: text('doc-outstanding')}};
+}}
+function _celerpShowStoredMoney(money) {{
+    ['doc-tax-rows', 'doc-stored-tax-rows'].forEach(id => {{
+        const el = document.getElementById(id);
+        const html = money[id === 'doc-tax-rows' ? 'tax_rows_html' : 'stored_tax_rows_html'];
+        if (el && html != null) el.outerHTML = html;
+    }});
+    [['doc-subtotal', 'subtotal'], ['doc-header-discount', 'discount'], ['doc-total', 'total'],
+     ['doc-outstanding', 'outstanding']].forEach(([id, key]) => {{
+        const el = document.getElementById(id);
+        if (el && money[key]) el.textContent = money[key];
+    }});
+    const panel = _celerpTotalPanel();
+    if (panel) panel.classList.remove('total-panel--pending');
+    window._celerpStoredMoney = money;
 }}
 async function _celerpInstallLineBody(html, version) {{
     let page = null;
@@ -9308,13 +9389,7 @@ async function _celerpInstallLineBody(html, version) {{
     celerpUpdateTotals();
     // An edit made while the page was fetched (a document tax removed) stays: its own save
     // brings the server's figures.
-    if (page && revision === window._celerpLineRevision) {{
-        const stored = page.getElementById('doc-stored-tax-rows');
-        const total = page.getElementById('doc-total');
-        const owed = page.getElementById('doc-outstanding');
-        _celerpShowStoredMoney(stored ? stored.outerHTML : null, total && total.textContent,
-                               owed && owed.textContent);
-    }}
+    if (page && revision === window._celerpLineRevision) _celerpShowStoredMoney(_celerpMoneyOn(page));
     _celerpMarkScanned(false);
     _celerpHadLines = true;
     if (version != null) _celerpEntityVersion = version;
@@ -9385,11 +9460,9 @@ async function _celerpRefreshHeldBadges() {{
         try {{
             const data = await resp.json();
             if (data && data.version != null) _celerpEntityVersion = data.version;
-            // The server's document taxes, total and outstanding for what was just saved, unless a newer
-            // edit is already pending (its own save brings fresher figures).
-            if (data && data.stored_tax_rows_html != null && revision === window._celerpLineRevision) {{
-                _celerpShowStoredMoney(data.stored_tax_rows_html, data.total, data.outstanding);
-            }}
+            // The server's money for what was just saved, unless a newer edit is already pending
+            // (its own save brings fresher figures).
+            if (data && data.money && revision === window._celerpLineRevision) _celerpShowStoredMoney(data.money);
         }} catch (_e) {{}}
         // The rows just written become this page's stored window, so a follow-up save
         // in the same view replaces the new window length, not the original one.
@@ -9563,6 +9636,7 @@ if (!window._celerpLineKeysBound) {{
         if (field.dataset.committed != null && field.value !== field.dataset.committed) {{
             field.value = field.dataset.committed;
             celerpUpdateTotals();
+            if (!_celerpLinesDirty() && window._celerpStoredMoney) _celerpShowStoredMoney(window._celerpStoredMoney);
         }}
         _celerpQuietBlur(field);
     }}, true);
@@ -10253,36 +10327,10 @@ async function celerpCsvImport(input, entityId) {{
     total_amount = (float(total_value) if total_value not in (None, "")
                     else subtotal - discount + tax_amount + shipping)
 
-    # Per-code tax rows from the stored tax amounts on the lines and the document.
-    code_totals: dict[str, dict] = {}  # key -> {label, amount}
-
-    def _add_tax(key: str, label: str, amount) -> None:
-        code_totals.setdefault(key, {"label": label, "amount": 0.0})["amount"] += float(amount or 0)
-
-    for li in line_items:
-        for item in tax_entries(li.get("taxes")):
-            code = item.get("code") or ""
-            rate = float(item.get("rate", 0) or 0)
-            label = f"{code} ({rate:g}%)" if code else f"{item.get('label') or t('documents.tax')} ({rate:g}%)"
-            _add_tax(code or f"custom_{rate}", label, item.get("amount"))
-    stored_tax_rows = _stored_doc_tax_rows(doc, currency, can_edit_lines)
-    stored_tax = sum(float(d.get("amount") or 0) for d in tax_entries(doc.get("doc_taxes")))
-    # A document tax that cannot be read keeps its rows, so it can be removed.
-    if (abs(sum(v["amount"] for v in code_totals.values()) + stored_tax - tax_amount) > 0.005
-            and unreadable_tax(doc.get("doc_taxes")) is None):
-        # The stored breakdown does not account for the stored tax (a line or header rate with no
-        # per-line amounts): show the stored tax as one row, labelled with its rate when single.
-        rates = {float(li.get("tax_rate") or 0) for li in line_items if float(li.get("tax_rate") or 0)}
-        label = f"{t('documents.tax')} ({next(iter(rates)):g}%)" if len(rates) == 1 else t("documents.tax")
-        code_totals = {"tax": {"label": label, "amount": tax_amount}} if tax_amount else {}
-        stored_tax_rows = Div(id="doc-stored-tax-rows")
-
-    tax_rows = [
-        Div(Span(f"{v['label']}:", cls="total-label"),
-            Span(fmt_money(v["amount"], currency), cls="total-value"),
-            cls="total-row")
-        for v in code_totals.values()
-    ]
+    line_tax_rows, stored_tax_rows = _doc_tax_rows(doc, currency, can_edit_lines)
+    # Shown while the panel holds the page's own estimate (celerpUpdateTotals), until a save brings
+    # the stored figures back.
+    _totals_pending_note = Div(t("documents.totals_pending"), cls="total-pending-note")
 
     # Header-discount affordance: a faint pencil by the Total opens a small editor. Only on a draft
     # of an eligible money doc (sales + supplier order/bill); the discount row itself shows whenever
@@ -10303,7 +10351,7 @@ async function celerpCsvImport(input, entityId) {{
         Div(Span(_disc_label, cls="total-label"),
             Span(f"-{fmt_money(discount, currency)}", id="doc-header-discount", cls="total-value"),
             id="doc-header-discount-row", cls="total-row") if discount > 0.005 else "",
-        Div(*tax_rows, id="doc-tax-rows"),
+        line_tax_rows,
         stored_tax_rows,
         Div(Span(t("doc.shipping"), cls="total-label"),
             Span(fmt_money(shipping, currency), id="doc-shipping", cls="total-value"),
@@ -10355,6 +10403,7 @@ async function celerpCsvImport(input, entityId) {{
                 id="discount-popover", cls="disc-popover",
             ),
         ] if _can_discount else []),
+        _totals_pending_note,
         cls="total-panel",
     )
     # No-money types (production_order, transfer, audit) carry no totals panel.
@@ -10369,6 +10418,7 @@ async function celerpCsvImport(input, entityId) {{
             Div(Span(f'{t("doc.total_declared_value")} ({currency}):', cls="total-label total-label--final"),
                 Span(fmt_money(float(subtotal_value or 0), currency), id="doc-total", cls="total-value total-value--final"),
                 cls="total-row total-row--final"),
+            _totals_pending_note,
             cls="total-panel",
         )
 
