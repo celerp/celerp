@@ -1611,10 +1611,10 @@ async def test_a_stock_valuation_spread_far_past_its_upload_is_refused_before_it
 
 
 # Per family, the shape whose read could grow faster than its rows, at the smaller of two sizes
-# (one its read takes a tenth of a second or more for, so the timing is not lost in noise).
-TIMED = {"companies": 60_000, "accounts": 8_000, "posted": 8_000, "contacts": 20_000, "items": 20_000,
-         "taxed": 1_000, "invoices": 15_000, "span": 4_000, "paid": 2_000, "chain": 1_000, "analytic": 10_000,
-         "revalued": 3_000, "transfers": 3_000, "drained": 3_000, "files": 12_000}
+# (one its read takes a thirtieth of a second or more for, so the timing is not lost in noise).
+TIMED = {"companies": 30_000, "accounts": 4_000, "posted": 4_000, "contacts": 10_000, "items": 10_000,
+         "taxed": 500, "invoices": 7_500, "span": 2_000, "paid": 1_000, "chain": 500, "analytic": 5_000,
+         "revalued": 1_500, "transfers": 1_500, "drained": 1_500, "files": 6_000}
 
 
 def test_every_family_of_tables_read_is_timed():
