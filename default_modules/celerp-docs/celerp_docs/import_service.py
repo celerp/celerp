@@ -162,7 +162,7 @@ async def _upsert_doc(session, company_id, user, role, settings, rec: DocImportR
     )
     result = await write_doc_patch(
         session, company_id, role, settings, user, rec.entity_id,
-        DocPatch(fields_changed=fields_changed, idempotency_key=upsert_idem),
+        DocPatch(fields_changed=fields_changed, idempotency_key=upsert_idem, expected_version=row.version),
     )
     return "skipped" if result.get("event_id") is None else "updated"
 

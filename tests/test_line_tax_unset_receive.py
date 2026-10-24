@@ -21,6 +21,7 @@ from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from test_money_stock_and_contact_invariants import _auth_company
 from ui.i18n import t
+from test_helpers import doc_version
 
 
 async def _template(client, auth) -> tuple[str, str]:
@@ -91,7 +92,7 @@ async def test_the_refused_receipt_goes_through_once_the_tax_is_chosen(client, s
     lines = (await _state(session, auth, doc_id))["line_items"]
     lines[0]["taxes"] = []
     r = await client.patch(f"/docs/{doc_id}", headers=auth["headers"],
-                           json={"fields_changed": {"line_items": {"new": lines}}})
+                           json={"expected_version": await doc_version(client, auth["headers"], doc_id), "fields_changed": {"line_items": {"new": lines}}})
     assert r.status_code == 200, r.text
     r = await _receive(client, auth, doc_id, received)
     assert r.status_code == 200, r.text

@@ -226,7 +226,8 @@
     "documents.tax_route_revert",
     "documents.tax_route_void",
     "documents.tax_route_void_order",
-    "documents.tax_route_new"
+    "documents.tax_route_new",
+    "documents.err_doc_stale"
   ],
   "ar": [
     "account.email_placeholder",
@@ -443,7 +444,8 @@
     "documents.tax_route_revert",
     "documents.tax_route_void",
     "documents.tax_route_void_order",
-    "documents.tax_route_new"
+    "documents.tax_route_new",
+    "documents.err_doc_stale"
   ],
   "de": [
     "acct.source_system",
@@ -731,7 +733,8 @@
     "documents.tax_route_revert",
     "documents.tax_route_void",
     "documents.tax_route_void_order",
-    "documents.tax_route_new"
+    "documents.tax_route_new",
+    "documents.err_doc_stale"
   ],
   "es": [
     "account.plan",
@@ -992,7 +995,8 @@
     "documents.tax_route_revert",
     "documents.tax_route_void",
     "documents.tax_route_void_order",
-    "documents.tax_route_new"
+    "documents.tax_route_new",
+    "documents.err_doc_stale"
   ],
   "fr": [
     "acct.tab_journal",
@@ -1294,7 +1298,8 @@
     "documents.tax_route_revert",
     "documents.tax_route_void",
     "documents.tax_route_void_order",
-    "documents.tax_route_new"
+    "documents.tax_route_new",
+    "documents.err_doc_stale"
   ],
   "id": [
     "acct.source_manual",
@@ -1580,7 +1585,8 @@
     "documents.tax_route_revert",
     "documents.tax_route_void",
     "documents.tax_route_void_order",
-    "documents.tax_route_new"
+    "documents.tax_route_new",
+    "documents.err_doc_stale"
   ],
   "it": [
     "attr.volume_l",
@@ -1838,7 +1844,8 @@
     "documents.tax_route_revert",
     "documents.tax_route_void",
     "documents.tax_route_void_order",
-    "documents.tax_route_new"
+    "documents.tax_route_new",
+    "documents.err_doc_stale"
   ],
   "ja": [
     "account.email_placeholder",
@@ -2065,7 +2072,8 @@
     "documents.tax_route_revert",
     "documents.tax_route_void",
     "documents.tax_route_void_order",
-    "documents.tax_route_new"
+    "documents.tax_route_new",
+    "documents.err_doc_stale"
   ],
   "pt": [
     "acct.source_manual",
@@ -2337,7 +2345,8 @@
     "documents.tax_route_revert",
     "documents.tax_route_void",
     "documents.tax_route_void_order",
-    "documents.tax_route_new"
+    "documents.tax_route_new",
+    "documents.err_doc_stale"
   ],
   "th": [
     "account.email_placeholder",
@@ -2562,7 +2571,8 @@
     "documents.tax_route_revert",
     "documents.tax_route_void",
     "documents.tax_route_void_order",
-    "documents.tax_route_new"
+    "documents.tax_route_new",
+    "documents.err_doc_stale"
   ],
   "vi": [
     "btn.u00d7",
@@ -2791,6 +2801,7 @@
     "documents.tax_route_revert",
     "documents.tax_route_void",
     "documents.tax_route_void_order",
-    "documents.tax_route_new"
+    "documents.tax_route_new",
+    "documents.err_doc_stale"
   ]
 }

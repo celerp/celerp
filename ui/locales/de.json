@@ -4515,6 +4515,7 @@
   "documents.err_contact_and_lines": "Kontakt und Positionen können nicht in einem Speichervorgang geändert werden. Speichern Sie zuerst die Kontaktänderung und bearbeiten Sie dann die Zeilen.",
   "documents.err_customer_and_lines": "Kunde und Positionen können nicht in einem Speichervorgang geändert werden. Speichern Sie zuerst die Kundenänderung und bearbeiten Sie dann die Zeilen.",
   "documents.err_doc_changed": "Jemand anderes hat dieses Dokument geändert, während Sie es bearbeitet haben. Wählen Sie „Erneut versuchen“, um die Änderungen zu sehen, und nehmen Sie Ihre dann erneut vor.",
+  "documents.err_doc_stale": "Select Try again to open the latest copy of this document, then make your line changes again.",
   "documents.err_list_changed": "Jemand anderes hat diese Liste geändert, während Sie sie bearbeitet haben. Wählen Sie „Erneut versuchen“, um die Änderungen zu sehen, und nehmen Sie Ihre dann erneut vor.",
   "documents.err_doc_changed_reprice": "Jemand anderes hat dieses Dokument geändert, während Sie daran gearbeitet haben. Wählen Sie „Erneut versuchen“ und berechnen Sie die Preise dann erneut.",
   "documents.err_list_changed_reprice": "Jemand anderes hat diese Liste geändert, während Sie daran gearbeitet haben. Wählen Sie „Erneut versuchen“ und berechnen Sie die Preise dann erneut.",

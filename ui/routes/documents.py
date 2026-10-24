@@ -3174,6 +3174,10 @@ celerpUpdateBulkAlloc();
             body = await request.json()
         except Exception:
             return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+        # The version the page read: the API refuses the save if the document moved since.
+        expected_version = body.get("expected_version")
+        if expected_version is not None and type(expected_version) is not int:
+            return JSONResponse({"error": "Invalid expected_version"}, status_code=400)
         # The lines, the header discount and the document taxes are inputs; the API computes the
         # document's subtotal, discount amount, taxes and total from them.
         patch_data = {"line_items": body.get("line_items", [])}
@@ -3185,8 +3189,11 @@ celerpUpdateBulkAlloc();
         if "doc_taxes" in body:
             patch_data["doc_taxes"] = body["doc_taxes"]
         try:
-            result = await api.patch_doc(token, entity_id, patch_data)
+            result = await api.patch_doc(token, entity_id, patch_data, expected_version=expected_version)
         except APIError as e:
+            # Saved from an older copy: the page keeps the user's rows and offers Try again.
+            if isinstance(e.data, dict) and e.data.get("code") == "stale_version":
+                return JSONResponse({"code": "stale_version", "error": error_message(e)}, status_code=409)
             payload = {"error": error_message(e)}
             # Foreign-reserved rejection: pass the structured conflict list through
             # so the page can open the resolution modal instead of the inline error.

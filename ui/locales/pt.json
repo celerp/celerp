@@ -4515,6 +4515,7 @@
   "documents.err_contact_and_lines": "O contato e as linhas não podem ser alterados em um único salvamento. Salve primeiro a mudança de contato e depois edite as linhas.",
   "documents.err_customer_and_lines": "O cliente e as linhas não podem ser alterados em um único salvamento. Salve primeiro a mudança de cliente e depois edite as linhas.",
   "documents.err_doc_changed": "Outra pessoa alterou este documento enquanto você editava. Selecione Tentar novamente para ver as alterações deles e depois refaça as suas.",
+  "documents.err_doc_stale": "Select Try again to open the latest copy of this document, then make your line changes again.",
   "documents.err_list_changed": "Outra pessoa alterou esta lista enquanto você editava. Selecione Tentar novamente para ver as alterações deles e depois refaça as suas.",
   "documents.err_doc_changed_reprice": "Outra pessoa alterou este documento enquanto você trabalhava. Selecione Tentar novamente e depois recalcule os preços.",
   "documents.err_list_changed_reprice": "Outra pessoa alterou esta lista enquanto você trabalhava. Selecione Tentar novamente e depois recalcule os preços.",

@@ -4515,6 +4515,7 @@
   "documents.err_contact_and_lines": "لا يمكن تغيير جهة الاتصال والأسطر في حفظ واحد. احفظ تغيير جهة الاتصال أولًا، ثم عدّل الأسطر.",
   "documents.err_customer_and_lines": "لا يمكن تغيير العميل والأسطر في حفظ واحد. احفظ تغيير العميل أولًا، ثم عدّل الأسطر.",
   "documents.err_doc_changed": "غيّر شخص آخر هذا المستند أثناء تعديلك له. اختر إعادة المحاولة لرؤية تغييراتهم ثم أجرِ تغييراتك مرة أخرى.",
+  "documents.err_doc_stale": "Select Try again to open the latest copy of this document, then make your line changes again.",
   "documents.err_list_changed": "غيّر شخص آخر هذه القائمة أثناء تعديلك لها. اختر إعادة المحاولة لرؤية تغييراتهم ثم أجرِ تغييراتك مرة أخرى.",
   "documents.err_doc_changed_reprice": "غيّر شخص آخر هذا المستند أثناء عملك. اختر إعادة المحاولة ثم أعد حساب الأسعار.",
   "documents.err_list_changed_reprice": "غيّر شخص آخر هذه القائمة أثناء عملك. اختر إعادة المحاولة ثم أعد حساب الأسعار.",

@@ -23,7 +23,7 @@ from sqlalchemy import select
 from unittest.mock import AsyncMock, patch
 
 from celerp.models.projections import Projection
-from test_helpers import make_test_token
+from test_helpers import make_test_token, doc_version
 from test_money_stock_and_contact_invariants import _auth_company
 from test_ui import _mock_get_company  # noqa: F401  (autouse fixture: the company settings)
 
@@ -122,7 +122,7 @@ async def test_line_save_stores_computed_money_not_client_figures(client, sessio
     assert r.status_code == 200, r.text
     doc_id = r.json()["id"]
     # What the editor sends: the lines, the header discount, and stale client totals.
-    r = await client.patch(f"/docs/{doc_id}", headers=auth["headers"], json={"fields_changed": {
+    r = await client.patch(f"/docs/{doc_id}", headers=auth["headers"], json={"expected_version": await doc_version(client, auth["headers"], doc_id), "fields_changed": {
         "line_items": {"new": [{"description": "Service", "quantity": 1, "unit_price": 100.0,
                                 "line_total": 100.0, "tax_rate": 10,
                                 "taxes": [{"code": "", "rate": 10, "amount": 0, "order": 0,
@@ -197,7 +197,8 @@ async def test_a_draft_edit_removing_the_last_rate_stores_no_tax(client, session
     doc_id = r.json()["id"]
     assert (await client.get(f"/docs/{doc_id}", headers=auth["headers"])).json()["tax"] == 5.0
     r = await client.patch(f"/docs/{doc_id}", headers=auth["headers"], json={"fields_changed": {
-        k: {"new": v} for k, v in copy.deepcopy(cleared).items()}})
+        k: {"new": v} for k, v in copy.deepcopy(cleared).items()},
+        "expected_version": await doc_version(client, auth["headers"], doc_id)})
     assert r.status_code == 200, r.text
     doc = (await client.get(f"/docs/{doc_id}", headers=auth["headers"])).json()
     assert (doc["tax"], doc["total"]) == (0.0, 100.0), doc

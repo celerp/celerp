@@ -10,6 +10,7 @@ from __future__ import annotations
 import uuid
 
 import pytest
+from test_helpers import doc_version
 
 
 async def _register(client) -> str:
@@ -35,7 +36,7 @@ async def test_deleting_the_only_line_persists(client):
         "doc_type": "invoice", "line_items": [line], "total": 100})).json()["id"]
 
     r = await client.patch(f"/docs/{doc}", headers=_h(t),
-                           json={"fields_changed": {"line_items": {"old": [line], "new": []}}})
+                           json={"expected_version": await doc_version(client, _h(t), doc), "fields_changed": {"line_items": {"old": [line], "new": []}}})
     assert r.status_code == 200, r.text
 
     # Fresh read: the deletion stuck (before the fix, the line reappeared here).

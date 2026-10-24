@@ -13,6 +13,7 @@ import uuid
 import pytest
 
 from line_actions_support import doc, h, line, line_ids, lot, quotation, set_list_lines, state  # noqa: F401
+from test_helpers import doc_version
 
 
 def _well_formed(ids) -> bool:
@@ -50,7 +51,7 @@ async def test_patch_without_ids_keeps_existing_ids(client, h):
     assert _well_formed(before)
     stripped = [{k: v for k, v in li.items() if k != "line_id"} for li in (await state(client, h, d))["line_items"]]
     stripped[0]["quantity"] = 5
-    r = await client.patch(f"/docs/{d}", headers=h, json={"fields_changed": {"line_items": {"new": stripped}}})
+    r = await client.patch(f"/docs/{d}", headers=h, json={"expected_version": await doc_version(client, h, d), "fields_changed": {"line_items": {"new": stripped}}})
     assert r.status_code == 200, r.text
     assert await line_ids(client, h, d) == before
 
@@ -61,7 +62,7 @@ async def test_inserted_line_gets_new_id_and_others_keep_theirs(client, h):
     before = await line_ids(client, h, d)
     lines = (await state(client, h, d))["line_items"]
     lines.insert(1, line(None, 1, sku="Inserted"))
-    r = await client.patch(f"/docs/{d}", headers=h, json={"fields_changed": {"line_items": {"new": lines}}})
+    r = await client.patch(f"/docs/{d}", headers=h, json={"expected_version": await doc_version(client, h, d), "fields_changed": {"line_items": {"new": lines}}})
     assert r.status_code == 200, r.text
     after = await line_ids(client, h, d)
     assert after[0] == before[0] and after[2] == before[1]
@@ -81,7 +82,7 @@ async def test_duplicate_line_id_refused_and_nothing_written(client, h):
     d = await doc(client, h, [line(None, 1, sku="One"), line(None, 1, sku="Two")], finalize=False)
     lines = (await state(client, h, d))["line_items"]
     lines[1]["line_id"] = lines[0]["line_id"]
-    r = await client.patch(f"/docs/{d}", headers=h, json={"fields_changed": {"line_items": {"new": lines}}})
+    r = await client.patch(f"/docs/{d}", headers=h, json={"expected_version": await doc_version(client, h, d), "fields_changed": {"line_items": {"new": lines}}})
     assert r.status_code == 422, r.text
     assert r.json()["detail"]["message_key"] == "line.duplicate_line_id"
     ids = await line_ids(client, h, d)

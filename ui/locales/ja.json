@@ -4515,6 +4515,7 @@
   "documents.err_contact_and_lines": "連絡先と明細行は 1 回の保存で同時に変更できません。先に連絡先の変更を保存してから、行を編集してください。",
   "documents.err_customer_and_lines": "顧客と明細行は 1 回の保存で同時に変更できません。先に顧客の変更を保存してから、行を編集してください。",
   "documents.err_doc_changed": "編集中に他の人がこの書類を変更しました。「再試行」を選んで相手の変更を確認してから、ご自身の変更をもう一度行ってください。",
+  "documents.err_doc_stale": "Select Try again to open the latest copy of this document, then make your line changes again.",
   "documents.err_list_changed": "編集中に他の人がこのリストを変更しました。「再試行」を選んで相手の変更を確認してから、ご自身の変更をもう一度行ってください。",
   "documents.err_doc_changed_reprice": "作業中に他の人がこの書類を変更しました。「再試行」を選んでから、価格を再計算してください。",
   "documents.err_list_changed_reprice": "作業中に他の人がこのリストを変更しました。「再試行」を選んでから、価格を再計算してください。",

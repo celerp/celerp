@@ -24,6 +24,7 @@ from test_consignment_in_sale import _consign
 from test_money_stock_and_contact_invariants import _auth_company
 from test_tax_refusal_draft_route import route
 from ui.i18n import t
+from test_helpers import doc_version
 
 _LINES = [{"description": "Taxed", "quantity": 1, "unit_price": 100.0, "taxes": []},
           {"description": "Unset", "quantity": 1, "unit_price": 50.0, "taxes": None}]
@@ -57,7 +58,7 @@ async def test_finalize_refuses_a_line_whose_tax_is_unset_until_it_is_chosen(cli
     lines = (await _get(client, auth, doc_id))["line_items"]
     lines[1]["taxes"] = []
     r = await client.patch(f"/docs/{doc_id}", headers=auth["headers"],
-                           json={"fields_changed": {"line_items": {"new": lines}}})
+                           json={"expected_version": await doc_version(client, auth["headers"], doc_id), "fields_changed": {"line_items": {"new": lines}}})
     assert r.status_code == 200, r.text
     r = await client.post(f"/docs/{doc_id}/finalize", headers=auth["headers"])
     assert r.status_code == 200, r.text

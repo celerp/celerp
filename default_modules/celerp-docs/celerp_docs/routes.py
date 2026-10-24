@@ -312,6 +312,12 @@ def _refuse_protected_fields(fields_changed: dict) -> None:
         )
 
 
+def _stale_doc(key: str) -> HTTPException:
+    """A document edit refused because it was made from an older copy; the code lets the page
+    keep the user's rows and offer Try again instead of an ordinary error."""
+    return HTTPException(status_code=409, detail={**refusal(key, t(key)), "code": "stale_version"})
+
+
 def _patch_identity(kind: str, entity_id: str, payload: "DocPatch") -> tuple[str, str | None]:
     digest = _request_digest(kind, entity_id, payload.expected_version, payload.fields_changed)
     if payload.idempotency_key:
@@ -1935,8 +1941,13 @@ async def write_doc_patch(session: AsyncSession, company_id, role: str, settings
     row = await _get_doc(session, company_id, entity_id, for_update=True)
     if (done := await _find_patch_replay(session, company_id, idem_key, "doc.updated", entity_id, digest)) is not None:
         return done
+    # Replacing line_items rewrites the whole array, so a writer that read an older copy would drop
+    # every line change saved since. Every line writer must name the version it read, as for lists;
+    # internal writers pass the version of the row they built the lines from.
+    if isinstance((fields_changed.get("line_items") or {}).get("new"), list) and payload.expected_version is None:
+        raise _stale_doc("documents.err_doc_stale")
     if payload.expected_version is not None and row.version != payload.expected_version:
-        raise HTTPException(status_code=409, detail=t("documents.err_doc_changed"))
+        raise _stale_doc("documents.err_doc_changed")
     if selecting and new_contact_id != (row.state.get("contact_id") or ""):
         await _refuse_fixed_consignor(session, company_id, entity_id, row.state)
         state = row.state

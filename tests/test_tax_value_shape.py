@@ -22,6 +22,7 @@ from test_money_stock_and_contact_invariants import _auth_company
 from test_ui import _authed, _mock_get_company, _mock_get_modules, ui_client  # noqa: F401  (fixtures)
 from test_tax_refusal_draft_route import route
 from ui.i18n import t
+from test_helpers import doc_version
 
 pytestmark = pytest.mark.asyncio
 
@@ -63,7 +64,7 @@ async def test_a_document_edit_refuses_line_taxes_of_another_shape(client, sessi
     doc_id, before = await _draft(client, auth)
     lines = [{**before["line_items"][0], "taxes": bad}]
     r = await client.patch(f"/docs/{doc_id}", headers=auth["headers"],
-                           json={"fields_changed": {"line_items": {"new": lines}}})
+                           json={"expected_version": await doc_version(client, auth["headers"], doc_id), "fields_changed": {"line_items": {"new": lines}}})
     assert _refused(r, named), r.text
     after = (await client.get(f"/docs/{doc_id}", headers=auth["headers"])).json()
     assert _money(after) == _money(before)
@@ -188,7 +189,8 @@ async def test_removing_the_tax_it_cannot_read_lets_the_document_take_the_edit(c
         change = {"doc_taxes": {"new": [_VAT_7]}}
     else:
         change = {"line_items": {"new": [{**before["line_items"][0], "taxes": [_VAT_7]}]}}
-    r = await client.patch(f"/docs/{doc_id}", headers=auth["headers"], json={"fields_changed": change})
+    r = await client.patch(f"/docs/{doc_id}", headers=auth["headers"], json={
+        "fields_changed": change, "expected_version": await doc_version(client, auth["headers"], doc_id)})
     assert r.status_code == 200, r.text
     after = (await client.get(f"/docs/{doc_id}", headers=auth["headers"])).json()
     assert (after["tax"], after["total"]) == (7.0, 107.0)

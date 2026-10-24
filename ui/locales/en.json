@@ -4515,6 +4515,7 @@
   "documents.err_contact_and_lines": "The contact and the line items can't be changed in one save. Save the contact change first, then edit the lines.",
   "documents.err_customer_and_lines": "The customer and the line items can't be changed in one save. Save the customer change first, then edit the lines.",
   "documents.err_doc_changed": "Someone else changed this document while you were editing. Select Try again to see their changes, then make yours again.",
+  "documents.err_doc_stale": "Select Try again to open the latest copy of this document, then make your line changes again.",
   "documents.err_list_changed": "Someone else changed this list while you were editing. Select Try again to see their changes, then make yours again.",
   "documents.err_doc_changed_reprice": "Someone else changed this document while you were working. Select Try again, then recalculate prices again.",
   "documents.err_list_changed_reprice": "Someone else changed this list while you were working. Select Try again, then recalculate prices again.",

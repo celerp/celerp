@@ -199,7 +199,7 @@ async def test_save_doc_lines_forwards_doc_taxes(ui_client):
 
 
 async def test_save_doc_lines_refused_doc_taxes_returns_the_api_error(ui_client):
-    async def _patch(token, entity_id, data):
+    async def _patch(token, entity_id, data, expected_version=None):
         if "doc_taxes" in data:
             raise APIError(422, "This tax isn't valid on this document.")
         return {"version": 5}
@@ -322,7 +322,8 @@ async def test_a_line_field_edit_saves_against_the_version_it_read(ui_client):
 
 async def test_every_rewrite_of_lines_read_from_the_server_names_the_version_it_read():
     """A UI route that reads a document and saves its line_items back from that read passes the
-    version it read, as the list paths do. The editor's own save sends the lines the browser holds."""
+    version it read, as the list paths do. The editor's own save forwards the version the page read
+    (tests/test_doc_line_save_version.py)."""
     import re
     from pathlib import Path
 

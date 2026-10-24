@@ -30,6 +30,7 @@ import httpx
 import psycopg2
 import pytest
 
+from celerp_docs.doc_money import draft_route
 from ui.i18n import t
 
 from .conftest import _API_LIMITS
@@ -231,9 +232,10 @@ def _add_line(path: str, page, ui_server, company, ui, token: str, doc_id: str, 
 
 def _each_line_at_100(company, doc_id: str) -> dict:
     """The draft with every line set to one unit at $100, its taxes kept as they are."""
-    lines = company.get(f"/docs/{doc_id}").json()["line_items"]
-    lines = [{**line, "quantity": 1, "unit_price": 100.0, "line_total": 100.0} for line in lines]
-    r = company.patch(f"/docs/{doc_id}", json={"fields_changed": {"line_items": {"new": lines}}})
+    doc = company.get(f"/docs/{doc_id}").json()
+    lines = [{**line, "quantity": 1, "unit_price": 100.0, "line_total": 100.0} for line in doc["line_items"]]
+    r = company.patch(f"/docs/{doc_id}", json={"fields_changed": {"line_items": {"new": lines}},
+                                              "expected_version": doc["version"]})
     assert r.status_code == 200, r.text
     return company.get(f"/docs/{doc_id}").json()
 
@@ -596,7 +598,8 @@ def test_a_credit_note_is_refused_naming_a_tax_it_cannot_read(api_server, ui_ser
                          [{**_VAT_WHOLE, "amount": 7.0}, levy], 12.0, 112.0)
         r = ui.post(f"/docs/{doc_id}/action/{action}")
         notes = company.get("/docs", params={"doc_type": "credit_note" if doc_type == "invoice" else "debit_note"})
+        route = " ".join(t(key) for key in draft_route(company.get(f"/docs/{doc_id}").json()))
     toast = json.loads(r.headers.get("HX-Trigger") or "{}").get("celerpToast") or {}
     assert toast.get("type") == "error", (r.status_code, r.headers)
-    assert toast.get("message") == t("documents.err_tax_unreadable_issued", tax="Levy 5%"), toast
+    assert toast.get("message") == t("documents.err_tax_unreadable_issued", tax="Levy 5%", route=route), toast
     assert notes.json()["items"] == [], notes.text

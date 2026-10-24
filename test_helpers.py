@@ -201,6 +201,13 @@ async def clear_sample_items(session, company_id) -> None:
     await session.commit()
 
 
+async def doc_version(client, headers: dict, doc_id: str) -> int:
+    """The document's current version: a PATCH that replaces line_items names the version it read."""
+    r = await client.get(f"/docs/{doc_id}", headers=headers)
+    assert r.status_code == 200, r.text
+    return r.json()["version"]
+
+
 async def default_location_id(client, headers: dict) -> str:
     """Return the company's real default (or first) location id.
 

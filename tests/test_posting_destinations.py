@@ -15,7 +15,7 @@ from __future__ import annotations
 import pytest
 
 from migration_support import auth as bearer
-from test_helpers import in_language
+from test_helpers import in_language, doc_version
 from test_posting_roles_race_pg_draft import _company, _race, race  # noqa: F401  (race is a fixture)
 
 HEADER = "6000"  # the seeded chart's expenses header
@@ -123,7 +123,7 @@ async def _with_line_account(client, headers, doc_type: str, code: str) -> str:
         "doc_type": doc_type, "contact_id": "supplier:1", "line_items": [_LINE]})
     assert r.status_code == 200, r.text
     doc = r.json()["id"]
-    r = await client.patch(f"/docs/{doc}", headers=headers, json={
+    r = await client.patch(f"/docs/{doc}", headers=headers, json={"expected_version": await doc_version(client, headers, doc), 
         "fields_changed": {"line_items": {"new": [{**_LINE, "account_code": code}]}}})
     assert r.status_code == 200, r.text
     return doc
@@ -215,7 +215,7 @@ async def test_an_account_picked_for_a_line_of_a_finalized_bill_is_refused(clien
     assert (await client.post(f"/docs/{bill}/finalize", headers=headers)).status_code == 200
     code = await _destination(client, headers, why)
 
-    _refused(await client.patch(f"/docs/{bill}", headers=headers, json={
+    _refused(await client.patch(f"/docs/{bill}", headers=headers, json={"expected_version": await doc_version(client, headers, bill), 
         "fields_changed": {"line_items": {"new": [{**_LINE, "account_code": code}]}}}), why, code)
 
     [line] = (await client.get(f"/docs/{bill}", headers=headers)).json()["line_items"]

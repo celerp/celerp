@@ -15,6 +15,7 @@ import uuid
 import pytest
 
 import celerp_docs.routes as docs_routes
+from test_helpers import doc_version
 
 
 async def _register(client) -> str:
@@ -357,7 +358,7 @@ async def test_patch_doc_free_text_line_ignores_matching_sku(client):
 
     line = {"sku": "PDUP", "name": "Free text PDUP", "description": "Free text PDUP",
             "quantity": 2.5, "unit_price": 4.0}
-    r = await client.patch(f"/docs/{doc_id}", headers=_h(t), json={
+    r = await client.patch(f"/docs/{doc_id}", headers=_h(t), json={"expected_version": await doc_version(client, _h(t), doc_id), 
         "fields_changed": {"line_items": {"old": [], "new": [line]}},
     })
     assert r.status_code == 200, r.text

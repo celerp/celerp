@@ -15,6 +15,7 @@ import pytest
 from sqlalchemy import select
 
 from line_actions_support import doc, h, item, line, line_ids, lot, quotation, set_list_lines, state  # noqa: F401
+from test_helpers import doc_version
 
 pytestmark = pytest.mark.asyncio
 
@@ -219,7 +220,7 @@ async def _patch_draft_qty(client, h, d, qty):
     st = await state(client, h, d)
     lines = [dict(li) for li in st["line_items"]]
     lines[0]["quantity"] = qty
-    r = await client.patch(f"/docs/{d}", headers=h, json={"fields_changed": {"line_items": {"new": lines}}})
+    r = await client.patch(f"/docs/{d}", headers=h, json={"expected_version": await doc_version(client, h, d), "fields_changed": {"line_items": {"new": lines}}})
     assert r.status_code == 200, r.text
     r = await client.post(f"/docs/{d}/finalize", headers=h)
     assert r.status_code == 200, r.text
