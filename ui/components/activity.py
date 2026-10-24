@@ -632,8 +632,8 @@ def _discount_change_summary(fields_changed: dict, currency: str | None):
 
 def _line_effective_tax(li: dict) -> tuple[float, float]:
     """(rate_percent, tax_amount) for a line. Reads the legacy per-line ``tax_rate`` or the
-    structured ``taxes`` list (summed rates); amount is ``line_total × rate / 100`` — the same
-    per-line formula list totals are recomputed with (see doc_projections._recalc_list_totals)."""
+    structured ``taxes`` list (summed rates); amount is ``line_total × rate / 100``, the formula
+    a list charges a line's rate with (see doc_money.list_line_tax)."""
     try:
         rate = float(li.get("tax_rate") or 0)
         if not rate:

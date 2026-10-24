@@ -9,6 +9,7 @@ from decimal import Decimal
 from celerp.services.document_lines import received_line_index
 from celerp.services.money import discount_from_inputs, document_line_amount, round_money, to_decimal, to_stored_float
 from celerp_docs.doc_constants import LEGACY_CONTACT_FIELDS
+from celerp_docs.doc_money import list_line_tax
 
 
 def _fold_legacy_list_contact(state: dict) -> None:
@@ -26,7 +27,8 @@ def _recalc_list_totals(state: dict) -> dict:
     (never raw float) so totals never carry IEEE-754 tails like "346.50000000000006".
     """
     currency = state.get("currency")
-    items = state.get("line_items", [])
+    # Copies: list_line_tax writes tax amounts onto a line, and the lines may be the event's own.
+    items = state["line_items"] = [dict(i) if isinstance(i, dict) else i for i in state.get("line_items") or []]
 
     def _li_amount(i: dict):
         return document_line_amount(i, currency) or to_decimal(0)
@@ -41,9 +43,9 @@ def _recalc_list_totals(state: dict) -> dict:
     state["discount_amount"] = to_stored_float(discount_amount)
 
     taxable = subtotal - discount_amount
-    # Use per-line tax rates if present; fall back to header tax rate.
+    # Use per-line taxes if present (list_line_tax); fall back to header tax rate.
     per_line_tax = sum(
-        (_li_amount(i) * to_decimal(i.get("tax_rate", 0) or 0) / 100 for i in items),
+        (list_line_tax(i, _li_amount(i), currency) for i in items if isinstance(i, dict)),
         to_decimal(0),
     )
     if per_line_tax:

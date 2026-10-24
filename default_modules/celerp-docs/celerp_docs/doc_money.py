@@ -114,6 +114,23 @@ def _recompute_tax_applications(entries: list, base, currency: str):
         (to_decimal(item.amount) for item in resolved), to_decimal(0))
 
 
+def list_line_tax(line: dict, amount, currency: str):
+    """The tax on a list line of this *amount*: its ``tax_rate`` as lists have always charged
+    it, else its ``taxes`` by the rule documents use (_recompute_tax_applications), their
+    amounts written onto the line. A list taxes each line on its own amount and takes its
+    header discount off the total. Every list write refuses a tax that cannot be computed
+    (refuse_malformed_taxes); one an older version stored is charged nothing, as it always was,
+    so recomputing a list never fails on it."""
+    rate = to_decimal(line.get("tax_rate", 0) or 0)
+    if rate:
+        return amount * rate / 100
+    entries = [entry for entry in tax_entries(line.get("taxes")) if computable_tax(entry)]
+    if not entries:
+        return to_decimal(0)
+    line["taxes"], tax = _recompute_tax_applications(entries, amount, currency)
+    return tax
+
+
 def uncomputable_tax(values: dict) -> str | None:
     """The first entry of ``doc_taxes`` or a line's ``taxes`` in *values* that is not a tax a
     total can be computed from (computable_tax), as tax_text, or the whole value when it is not
