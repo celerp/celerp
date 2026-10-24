@@ -5,7 +5,16 @@ from __future__ import annotations
 
 import os
 import shutil
+import sys
+import tempfile
 from pathlib import Path
+
+# Bytecode goes to a cache outside the source tree. Every xdist worker shares the module
+# folders, and loading a module removes the bytecode in its folder and then checks none is
+# left: a worker that imported module code and wrote bytecode there at that moment made
+# another worker's load fail. The processes the tests start use the same cache.
+os.environ.setdefault("PYTHONPYCACHEPREFIX", os.path.join(tempfile.gettempdir(), "celerp-test-pycache"))
+sys.pycache_prefix = sys.pycache_prefix or os.environ["PYTHONPYCACHEPREFIX"]
 
 from conftest_support import (
     is_own_test_config, provision_worker_db, resolve_worker_config, resolve_worker_data_dir)
@@ -448,6 +457,19 @@ def _ensure_slots() -> None:
             register(slot, contrib)
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _one_current_event_loop():
+    """The test thread's current event loop, held for the whole run and closed at its end.
+    pytest-asyncio restores the current loop after each async test, making one the first
+    time it finds none; a plain test that calls asyncio.run() then replaces it, and the
+    dropped loop warns as unclosed in whichever test is running when it is collected."""
+    import asyncio
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    yield
+    loop.close()
+
+
 @pytest.fixture(autouse=True)
 def _reset_hot_path_caches():
     """Bust the in-process drain cache before each test.
@@ -707,6 +729,16 @@ def _refuse_live_database():
 from celerp.models.base import Base
 import celerp.models.marketplace  # noqa: F401,E402 - registers marketplace_configs, as celerp/migrations/env.py does
 
+@pytest.fixture
+def no_relay_check_in(monkeypatch):
+    """A lifespan under test never reaches the real relay: its activation check-in would
+    be cut off mid-connect at shutdown, leaving an open socket for a later test to collect."""
+    from unittest.mock import AsyncMock
+    import celerp.main as main_mod
+    monkeypatch.setattr(main_mod, "_try_auto_activate", AsyncMock())
+    monkeypatch.setattr(main_mod, "_try_sync_existing_entitlement", AsyncMock())
+
+
 # Session-scoped engine: created once, shared across all tests to avoid OOM from
 # 1000+ engine create/dispose cycles when test_ui.py + test_routers/ run together.
 @pytest_asyncio.fixture(scope="session")
@@ -868,6 +900,8 @@ async def client(session: AsyncSession):
     # holding uncommitted - and hangs until the per-test timeout. Route middleware
     # to the same shared session (the patch point middleware.py imports for this
     # purpose) so it joins the one transaction instead of deadlocking against it.
+    # The module boundary reads a company's settings the same way, so it sees the
+    # companies a test registered.
     from contextlib import asynccontextmanager
 
     @asynccontextmanager
@@ -890,6 +924,7 @@ async def client(session: AsyncSession):
     with patch("celerp.gateway.client._client", MagicMock()), \
          patch("celerp.gateway.state.get_session_token", return_value="test-session-token"), \
          patch("celerp.middleware.get_session_ctx", _shared_session_ctx), \
+         patch("celerp.modules.boundary.get_session_ctx", _shared_session_ctx), \
          patch("celerp.db.LifecycleSessionLocal", lifecycle_factory):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             yield c
@@ -959,7 +994,13 @@ def files_unchecked(monkeypatch):
 
 @pytest.fixture
 def docs_running(monkeypatch):
-    """Record Documents as loaded, as it is in an installation that takes online payments.
-    The harness mounts its routes directly, so the loader would otherwise not list it."""
-    from celerp.modules import loader
-    monkeypatch.setattr(loader, "_loaded", [*loader._loaded, {"name": "celerp-docs", "version": "1.0.0"}])
+    """Record Documents as loaded, as it is in an installation that takes online payments."""
+    from test_helpers import mark_running
+    mark_running(monkeypatch, "celerp-docs")
+
+
+@pytest.fixture
+def connector_modules_running(monkeypatch):
+    """Record the modules connectors write into as loaded: Inventory, Documents and Contacts."""
+    from test_helpers import mark_running
+    mark_running(monkeypatch, "celerp-inventory", "celerp-docs", "celerp-contacts")

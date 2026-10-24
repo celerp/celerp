@@ -82,6 +82,7 @@ async def test_sync_plan_refuses_a_channel_that_is_not_connected(client, connect
     assert runner.await_count == 0
 
 
+@pytest.mark.usefixtures("connector_modules_running")
 async def test_store_credentials_claims_the_connector_and_keeps_its_webhook_secret(client, session, connect_session):
     from sqlalchemy import select
 

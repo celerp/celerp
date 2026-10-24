@@ -128,10 +128,14 @@ def test_a_notice_asking_for_action_leads_the_bell_and_stands_out(page, ui_serve
     page.click(".notif-bell-btn")
     items = page.locator("#notif-panel .notif-item")
     expect(items.first).to_contain_text(f"Act {tag}")
-    first = items.first
-    assert "notif-item--high" in (first.get_attribute("class") or "")
-    news = page.locator("#notif-panel .notif-item", has_text=f"News 1 {tag}")
-    assert "notif-item--high" not in (news.get_attribute("class") or "")
-    colour = first.evaluate("el => getComputedStyle(el).borderLeftColor")
-    plain = news.evaluate("el => getComputedStyle(el).borderLeftColor")
-    assert colour != plain, (colour, plain)
+    expect(page.locator("#notif-panel .notif-item", has_text=f"News 1 {tag}")).to_be_visible()
+    # Opening the panel and loading the page each render the list again, so both notices
+    # are read in one step: a read split in two can land on a notice the panel replaced.
+    seen = page.evaluate("""news => {
+        const items = [...document.querySelectorAll('#notif-panel .notif-item')];
+        const read = el => ({high: el.classList.contains('notif-item--high'),
+                             colour: getComputedStyle(el).borderLeftColor});
+        return {first: read(items[0]), news: read(items.find(el => el.textContent.includes(news)))};
+    }""", f"News 1 {tag}")
+    assert seen["first"]["high"] and not seen["news"]["high"], seen
+    assert seen["first"]["colour"] != seen["news"]["colour"], seen

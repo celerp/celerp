@@ -12,8 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.models.projections import Projection
-
-_INCOMPLETE_STATUSES = frozenset({"planned", "in_progress", "on_hold"})
+from celerp.services.record_quantities import INCOMPLETE_RUN_STATUSES
 
 
 def _haystack(order: dict) -> str:
@@ -48,7 +47,7 @@ async def search_orders(
     if status:
         s = status.lower().strip()
         if s == "incomplete":
-            items = [o for o in items if str(o.get("status") or "").lower() in _INCOMPLETE_STATUSES]
+            items = [o for o in items if str(o.get("status") or "").lower() in INCOMPLETE_RUN_STATUSES]
         else:
             items = [o for o in items if str(o.get("status") or "").lower() == s]
     if q:

@@ -392,11 +392,8 @@ async def _check_books_change(session: AsyncSession, company_id, current: dict, 
     # A deposit account: empty is the default account.
     if value is None or (isinstance(value, str) and value == ""):
         return value
-    from celerp.modules.loader import is_running
-    if not is_running("celerp-docs"):
-        raise HTTPException(status_code=422, detail=refusal(
-            "company.deposit_account_needs_docs",
-            "Turn on Documents on the Modules page before choosing a deposit account."))
+    from celerp.modules.boundary import require_on
+    require_on(current, "celerp-docs")
     if not isinstance(value, str):
         raise HTTPException(status_code=422, detail=refusal(
             "company.deposit_account_not_code",
@@ -1794,11 +1791,12 @@ async def list_modules(
         loaded_modules, read_manifest_metadata,
     )
     from celerp.modules.meta import read_meta
-    from celerp.modules.registry import company_modules
+    from celerp.modules.registry import company_modules, dependents
 
     company = await session.get(Company, company_id)
     settings_dict: dict = company.settings or {} if company else {}
     enabled_names = company_modules(settings_dict)
+    needed_by = dependents(settings_dict)
     loaded_by_name: dict[str, dict] = {m["name"]: m for m in loaded_modules()}
     load_errs = load_errors()
     module_dir_raw = os.environ.get("MODULE_DIR", "")
@@ -1859,6 +1857,8 @@ async def list_modules(
                     "table_prefix": manifest_source.get("table_prefix") or None,
                     # A module built into Celerp is on for every company.
                     "enabled": pkg_name in enabled_names or is_core_folded(pkg_name),
+                    # The modules this company uses that need it: Turn off waits for them.
+                    "needed_by": needed_by.get(pkg_name, []),
                     # Core-folded modules (ai/backup/connectors) are wired at app
                     # construction, never in loaded_by_name - is_running() counts them.
                     "running": is_running(pkg_name),
@@ -1936,9 +1936,12 @@ async def disable_module(
 ) -> dict:
     """Turn a module off for this company. Other companies keep using it. Refused for a
     module built into Celerp, which is always on."""
+    from celerp.accounting_roles import refusal
+    from celerp.modules.boundary import refused_past_lock_timeout, settle_module_use, turn_off_busy
     from celerp.modules.loader import is_core_folded, module_label
     from celerp.modules.registry import (
-        ModuleStillNeeded, commit_with_load_set, disable_for_company, get_enabled, hold_module_state,
+        ModuleStillNeeded, commit_with_load_set, disable_for_company, get_enabled, hold_company_modules,
+        hold_module_gate, hold_module_state,
     )
     from celerp.services.turn_off_preflight import outstanding
 
@@ -1946,7 +1949,20 @@ async def disable_module(
         raise HTTPException(status_code=409, detail=(
             f"{module_label(module_name)} is part of Celerp and is always on."))
 
-    await hold_module_state(session)
+    # Each wait is bounded, so the answer always comes within the UI's wait
+    # (api_client.disable_module): turned off, or a 409 that says to try again.
+    label = module_label(module_name)
+    changing = HTTPException(status_code=409, detail=refusal(
+        "modules.change_busy",
+        f"Another change to modules is in progress, so the {label} module was not turned off. "
+        "Try again in a minute.", module=label))
+    with refused_past_lock_timeout(changing):
+        await hold_module_gate(session, company_id, module_name)
+    await settle_module_use(company_id, module_name)
+    with refused_past_lock_timeout(changing):
+        await hold_module_state(session, bounded=True)
+    with refused_past_lock_timeout(turn_off_busy(module_name)):
+        await hold_company_modules(session, company_id)
     company = await locked_company(session, company_id)
     if not company:
         raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
@@ -2488,6 +2504,7 @@ async def deactivate_company(
         lock_connector_maintenance,
         record_connector_reset,
     )
+    from celerp.connectors.product_links import detach_product_links
     from celerp.connectors.remote_state import (
         ConnectorRemoteCleanupError,
         revoke_connector_remote_state,
@@ -2509,12 +2526,12 @@ async def deactivate_company(
     )).all())
     # Product links become history before anything is revoked remotely, so a
     # failure here leaves the company and its connections untouched.
-    import celerp_inventory.services as inventory_services
     for platform in PRODUCT_CHANNEL_PLATFORMS:
         try:
-            await inventory_services.detach_external_links_for_platform(
-                session, company_id_str, platform
-            )
+            await detach_product_links(session, company_id_str, platform)
+        except HTTPException:
+            await session.rollback()
+            raise
         except Exception as exc:
             await session.rollback()
             raise HTTPException(

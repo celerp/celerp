@@ -15,6 +15,8 @@ from fastapi.testclient import TestClient
 from httpx import ASGITransport, AsyncClient
 from ui.i18n import t
 
+pytestmark = pytest.mark.usefixtures("no_relay_check_in")
+
 
 # ── Exception handlers (via the live app) ────────────────────────────────────
 

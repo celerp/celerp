@@ -368,10 +368,17 @@ document.addEventListener('click', function(e) {
       m.style.cssText = '';
     });
   }
-  if (!e.target.closest('.combobox-wrap')) {
+  // A click that began on a list is a pick, even when the list moved before the button
+  // came up and the click lands on what is around it.
+  if (!e.target.closest('.combobox-wrap') && !pressedInCombobox) {
     document.querySelectorAll('.combobox-list.open').forEach(function(l) { l.classList.remove('open'); });
   }
+  pressedInCombobox = false;
 });
+var pressedInCombobox = false;
+document.addEventListener('mousedown', function(e) {
+  pressedInCombobox = !!e.target.closest('.combobox-wrap');
+}, true);
 
 /* Searchable combobox — works with .combobox-wrap > .combobox-input + .combobox-list */
 function initCombobox(wrap) {
@@ -436,6 +443,7 @@ function initCombobox(wrap) {
     list.style.bottom = up ? (vh - r.top + 2) + 'px' : 'auto';
     list.style.left = Math.max(gap, Math.min(r.left, vw - gap - list.offsetWidth)) + 'px';
   }
+  list._place = positionList;
 
   // Lazy — always queries the live DOM so HTMX-swapped options are included.
   function currentOpts() {
@@ -722,10 +730,19 @@ function initCombobox(wrap) {
 document.addEventListener('DOMContentLoaded', function() {
   document.querySelectorAll('.combobox-wrap').forEach(initCombobox);
 });
+/* An open list is position:fixed, so it is placed again whenever the page moves under it
+   (content loading above the field, a scroll, a resize). Left where it was, it would sit
+   away from its field over whatever moved into its place. */
+function placeOpenComboboxes() {
+  document.querySelectorAll('.combobox-list.open').forEach(function(l) { if (l._place) l._place(); });
+}
+window.addEventListener('scroll', placeOpenComboboxes, true);
+window.addEventListener('resize', placeOpenComboboxes);
 /* Re-init after HTMX swaps — search from document to handle outerHTML swaps */
 document.addEventListener('htmx:afterSettle', function(e) {
   var root = (e.detail.elt && e.detail.elt.isConnected) ? e.detail.elt : document;
   root.querySelectorAll('.combobox-wrap').forEach(initCombobox);
+  placeOpenComboboxes();
 });
 
 /* Elements marked data-quiet-error surface their failure state themselves

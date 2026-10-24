@@ -418,3 +418,19 @@ def _reset_event_loop_after_playwright():
     # All browser tests finished. Install a new loop so pytest-asyncio can
     # create its own runner for any tests that follow.
     asyncio.get_event_loop_policy().set_event_loop(asyncio.new_event_loop())
+
+
+@pytest.fixture(scope="module")
+def install():
+    """A new install for this test module, on its own database and ports (fresh_install)."""
+    from .fresh_install import new_install
+
+    with new_install() as fresh:
+        yield fresh
+
+
+@pytest.fixture
+def fresh(install):
+    """The module's new install with no owner yet."""
+    install.ensure_new()
+    return install

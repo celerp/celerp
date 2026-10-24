@@ -1,5 +1,8 @@
 # Install and boot the packaged Windows app as a separate local account, then require
-# a real db:ok from /health/ready and a clean force-quit.
+# a real db:ok from /health/ready and a clean force-quit. Without -Previous or -Demo, the
+# first launch is a new install that must set up a company with every business type, restart
+# exactly when a type needs modules that are not running, and run every module each type
+# needs (smoke_records.py first-run).
 #
 #   -Account standard  a freshly created standard (non-admin) user: how most people run it.
 #   -Account admin     the built-in Administrator. Its token is the full administrator
@@ -230,19 +233,34 @@ function TreeMatches([string]$dir, [string]$what) {
   if ($LASTEXITCODE -ne 0) { Fail "after $what the install folder differs from the build" }
 }
 
-# Every module in the lock is enabled; a bundled module that is missing or fails to load
-# stops startup, so readiness also proves they all load.
+# Every module in the lock is enabled, except on a new install's first launch; a bundled
+# module that is missing or fails to load stops startup, so readiness also proves they all load.
 $enabled = ((Get-Content "..\default_modules\first_party.lock.json" -Raw | ConvertFrom-Json).PSObject.Properties.Name | Sort-Object) -join ","
 Write-Host "smoke: enabling $enabled"
 
+# What the app printed ($boot, its stdout and stderr) and every log in the account's data
+# folder, the server logs from before a restart (*.log.prev) and the database state among them.
+function AppOutput([string]$boot) {
+  Write-Host "===== Electron stdout/stderr ($boot) ====="
+  if (Test-Path $boot) { Get-Content $boot -Tail 200 } else { Write-Host "(no captured output)" }
+  Write-Host "===== boot-relevant files (logs / postgres state) ====="
+  Get-ChildItem -Path $udd -Recurse -EA SilentlyContinue |
+    Where-Object { -not $_.PSIsContainer -and $_.FullName -notmatch '(?i)\\celerp-data\\modules\\' -and
+                   $_.Name -match '(?i)\.log(\.prev)?$|logfile|PG_VERSION|postmaster|\.pid$|migrat|deelevate' } |
+    ForEach-Object { Write-Host "== $($_.FullName) =="; Get-Content $_.FullName -Tail 80 -EA SilentlyContinue }
+}
+
 # Launches the installed app exactly as a user would (default data directory, no
-# --user-data-dir) and waits for db:ok; returns the API port.
-function Launch([string]$exe, [string]$what, [switch]$MustFail) {
+# --user-data-dir) and waits until it is ready: it has published its API port (it does
+# once it has started and handles a restart) and the API answers db:ok. Returns the
+# port. -NewInstall names no modules, so only the ones a new install starts are running.
+function Launch([string]$exe, [string]$what, [switch]$MustFail, [switch]$NewInstall) {
   Get-ChildItem -Path $udd -Recurse -Filter "api-port" -EA SilentlyContinue | Remove-Item -Force
   $boot = Join-Path $pub "celerp-boot.out"
   $run  = Join-Path $pub "celerp-run.cmd"
   Remove-Item $boot -EA SilentlyContinue
-  Wrapper $run "set ELECTRON_ENABLE_LOGGING=1`r`nset ENABLED_MODULES=$enabled`r`n`"$exe`" > `"$boot`" 2>&1"
+  $modules = if ($NewInstall) { "" } else { "set ENABLED_MODULES=$enabled`r`n" }
+  Wrapper $run "set ELECTRON_ENABLE_LOGGING=1`r`n$modules`"$exe`" > `"$boot`" 2>&1"
   Write-Host "smoke: $what, launching $exe as $u (default data dir $udd, output $boot)"
   $watch = [Diagnostics.Stopwatch]::StartNew()
   Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "`"$run`"" -Credential $cred -LoadUserProfile -WorkingDirectory $pub
@@ -268,12 +286,7 @@ function Launch([string]$exe, [string]$what, [switch]$MustFail) {
     if (Test-Path $boot) { Get-Content $boot -Tail 40 }
     return
   }
-  Write-Host "===== Electron stdout/stderr ($boot) ====="
-  if (Test-Path $boot) { Get-Content $boot -Tail 200 } else { Write-Host "(no captured output)" }
-  Write-Host "===== boot-relevant files (logs / postgres state) ====="
-  Get-ChildItem -Path $udd -Recurse -EA SilentlyContinue |
-    Where-Object { -not $_.PSIsContainer -and $_.Name -match '(?i)\.log$|logfile|PG_VERSION|postmaster|\.pid$|migrat|deelevate' } |
-    ForEach-Object { Write-Host "== $($_.FullName) =="; Get-Content $_.FullName -Tail 80 -EA SilentlyContinue }
+  AppOutput $boot
   Fail "$what`: db:ok not reached (port=$port)"
 }
 
@@ -283,8 +296,9 @@ $private = Join-Path $env:ProgramData "Celerp-$sid"
 function Ours([string]$dir) { @(Get-Process Celerp, postgres, python -EA SilentlyContinue | Where-Object { $_.Path -like "$dir\*" -or $_.Path -like "$private\*" }) }
 
 # The app is open: its window, API and database processes run from the install folder (or
-# the private folder) and the API answers with db:ok. Returns those processes, so a later check can tell that
-# exactly these ended.
+# the private folder) and the API answers with db:ok. Returns each process's id, name, start time and path as read
+# now: a Process object reads Path and StartTime through its id when asked, so after Windows reuses the id it would
+# describe the new process, and a later check could not tell that exactly these ended.
 function RunningApp([string]$dir, [string]$port, [string]$what) {
   $procs = @(Ours $dir)
   foreach ($name in "Celerp", "python", "postgres") {
@@ -293,7 +307,7 @@ function RunningApp([string]$dir, [string]$port, [string]$what) {
   $ready = try { (Invoke-WebRequest -UseBasicParsing -TimeoutSec 5 -Uri "http://127.0.0.1:$port/health/ready").Content } catch { "" }
   if ($ready -notmatch '"db"\s*:\s*"ok"') { Fail "$what`: the API on port $port does not answer db:ok" }
   Write-Host "smoke: $what, app running: $(($procs | ForEach-Object { "$($_.Name) $($_.Id)" }) -join ', ')"
-  $procs
+  $procs | ForEach-Object { [pscustomobject]@{ Id = $_.Id; Name = $_.Name; StartTime = $_.StartTime; Path = $_.Path } }
 }
 
 # Force-quits the app: no API or database may stay running (the app's job object ends them).
@@ -342,6 +356,19 @@ if ($Account -eq "admin") {
   if ($child -ne "standard") { Fail "restricted launcher child token state '$child' (want standard)" }
 }
 Write-Host "token states OK for $Account"
+
+# A new install as a user meets it: every business type must set up a company, restart
+# exactly when it needs modules that are not running, and run them (smoke_records.py first-run).
+if (-not $Previous -and -not $Demo) {
+  $port = Launch $exe "new install" -NewInstall
+  $pf = Get-ChildItem -Path $udd -Recurse -Filter "api-port" -EA SilentlyContinue | Select-Object -First 1
+  $firstRun = Join-Path $pub "celerp-first-run.out"
+  python ..\scripts\smoke_records.py first-run $pf.FullName ..\default_modules\celerp-verticals\celerp_verticals\presets > $firstRun
+  $firstRunCode = $LASTEXITCODE
+  Get-Content $firstRun -EA SilentlyContinue | Write-Host
+  if ($firstRunCode -ne 0) { AppOutput (Join-Path $pub "celerp-boot.out"); Fail "setting up a new install: smoke_records.py first-run exited $firstRunCode" }
+  ForceQuit $installDir (Get-Content $pf.FullName -Raw).Trim() "new install"
+}
 
 $port = Launch $exe "first launch"
 Write-Host "boot smoke OK on Windows ($smoke, account $u, port $port)"
@@ -404,7 +431,7 @@ if ($OverRunning) {
   $before = RunningApp $installDir $port "before installing over the running app"
   $installDir = InstallSetup $setup "install over the running app ($($before.Count) app processes)"
   # Windows reuses PIDs, and a process the smoke cannot read reports no StartTime or Path, so a survivor is
-  # the same PID with the same readable start time and the same executable.
+  # the same PID with the same readable start time and the same executable as recorded before the install.
   $left = @($before | Where-Object {
     $p = Get-Process -Id $_.Id -EA SilentlyContinue
     $p -and $null -ne $p.StartTime -and $p.StartTime -eq $_.StartTime -and $p.Path -and $p.Path -eq $_.Path

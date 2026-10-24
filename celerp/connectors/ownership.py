@@ -34,12 +34,15 @@ class ConnectorStoreChangedError(ConnectorOwnershipError):
     """The store differs from the one this company's imported records came from."""
 
 
+# Connectors that publish catalog products, and so carry an item's external links.
+PRODUCT_CHANNEL_PLATFORMS = ("shopify", "woocommerce")
+# Connecting one of them, or choosing which items sync with it, writes links on
+# Inventory's items (boundary.needs_modules_for).
+PRODUCT_CHANNEL_MODULES = {platform: ("celerp-inventory",) for platform in PRODUCT_CHANNEL_PLATFORMS}
+
 # Bounded wait for the exclusive ownership fence. Syncs and webhooks hold the
 # fence shared for as long as their remote calls take; an ownership change
 # waits this long behind them, then reports busy instead of stalling a request.
-# Connectors that publish catalog products, and so carry an item's external links.
-PRODUCT_CHANNEL_PLATFORMS = ("shopify", "woocommerce")
-
 OWNER_LOCK_TIMEOUT_MS = 5000
 _LOCK_NOT_AVAILABLE = "55P03"
 

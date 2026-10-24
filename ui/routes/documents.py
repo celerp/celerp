@@ -31,7 +31,8 @@ from ui.components.shell import base_shell, page_header, toast_header, page_titl
 from ui.security import not_permitted_redirect
 from ui.components.table import search_bar, search_results, EMPTY, pagination, per_page_value, server_pager, searchable_select, breadcrumbs, status_cards, empty_state_cta, fmt_money, fmt_rate, format_value, currency_symbol, unwrap_address, col_resize_script, bank_account_options as _bank_account_options, display_cell, editable_cell, display_enum, display_unit, doc_href
 from celerp.services.business_time import business_today
-from celerp.services.doc_balance import awaiting_status_param, is_awaiting_payment, is_owed, outstanding_balance
+from celerp.services.doc_balance import awaiting_status_param, doc_tax, doc_value, is_awaiting_payment, is_owed, outstanding_balance
+from celerp.services.record_quantities import FULFILLABLE_STATUSES, RECEIVABLE_STATUSES
 from celerp.services.money import to_decimal, to_stored_float, round_money, currency_dp, rate_dp
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, line_price_list, resolve_price
 from celerp.tax_regimes import default_tax, taxes_for
@@ -767,9 +768,8 @@ def _lists_content(state: dict[str, str], lists: list[dict], total_count: int, s
 
 _DOC_TYPES = ["invoice", "purchase_order", "bill", "receipt", "credit_note", "memo", "consignment_in", "list"]
 # Doc types that support per-line inventory item status display (fetch + render).
-# Keep in sync with doc_constants.FULFILLABLE_STATUSES (different package - cannot import directly).
 # Inbound doc types (bill, consignment_in) show item status but use /receive not fulfill-lines.
-_FULFILLABLE_DOC_TYPES: frozenset[str] = frozenset({"memo", "invoice"})
+_FULFILLABLE_DOC_TYPES: frozenset[str] = frozenset(FULFILLABLE_STATUSES)
 # Outbound, item-priced doc types that use the invoice line-table design: a single-level
 # header with PCS/WEIGHT shown inline (and editable) inside the description cell, the unit
 # merged into the quantity cell, and no standalone UNIT/PCS/WEIGHT columns.
@@ -842,7 +842,7 @@ def _doc_line_actions(doc_type: str, status: str) -> _LineActions:
     """Which line actions a document's status allows, read from the maps the API enforces
     so the page never offers an action the API refuses. Inbound doc types (bill,
     consignment_in) are in none of them: they receive through POST /receive."""
-    from celerp_docs.doc_constants import FULFILLABLE_STATUSES, RESERVABLE_DOC_STATUSES, REVERTIBLE_STATUSES
+    from celerp_docs.doc_constants import RESERVABLE_DOC_STATUSES, REVERTIBLE_STATUSES
     return _LineActions(
         fulfil=status in FULFILLABLE_STATUSES.get(doc_type, frozenset()),
         revert=status in REVERTIBLE_STATUSES.get(doc_type, frozenset()),
@@ -1427,17 +1427,13 @@ async def _company_doc_taxes(token: str, doc_type: str) -> list[dict]:
 
 
 def _send_to_option_list(items: list[dict], kind: str) -> FT:
-    """Render the searchable option list for send-to-modal (docs, lists, or memos)."""
+    """Render the searchable option list for send-to-modal (docs or lists)."""
     if not items:
         return Div(P(t("doc.no_results"), cls="send-to-empty"), id="send-to-options")
     rows = []
     for d in items:
         eid = d.get("id") or d.get("entity_id", "")
-        if kind == "memo":
-            ref = d.get("memo_number") or eid.split(":")[-1][:8]
-            contact = d.get("contact_name") or d.get("customer_name") or ""
-            label = t("documents.memo_ref", ref=ref)
-        elif kind == "list":
+        if kind == "list":
             ref = d.get("ref_id") or eid.split(":")[-1][:8]
             contact = d.get("contact_name") or ""
             label = t("documents.list_ref", ref=ref)
@@ -1467,7 +1463,7 @@ def _send_to_modal(
     hidden_items: list[FT],
     kind: str,
 ) -> FT:
-    """Unified send-to modal: create new draft or add to existing doc/list/memo."""
+    """Unified send-to modal: create new draft or add to existing doc or list."""
     return Div(
         Div(
             H3(t("documents.send_to", target=type_label), cls="modal-title"),
@@ -3727,7 +3723,7 @@ celerpUpdateBulkAlloc();
             eid = d.get("entity_id") or d.get("id", "")
             doc_number = d.get("doc_number") or d.get("ref_id") or eid
             doc_type = d.get("doc_type", "")
-            contact_name = d.get("contact_name") or d.get("contact_id") or ""
+            contact_name = d.get("contact_name") or ""
             contact_id = d.get("contact_id") or ""
             doc_currency = d.get("currency") or currency
             for p in (d.get("payments") or []):
@@ -5732,7 +5728,7 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
     # Deleted payments are tombstoned in the doc, not removed; only voided ones
     # stay visible (struck through).
     payments = [p for p in (doc.get("payments") or []) if p.get("status") != "deleted"]
-    total_val = float(doc.get("total") or doc.get("total_amount") or 0)
+    total_val = float(doc_value(doc, "total") or 0)
     amount_paid = float(doc.get("amount_paid") or 0)
     outstanding_d = round_money(outstanding_balance(doc) or 0, currency)
     outstanding = to_stored_float(outstanding_d)
@@ -6677,9 +6673,9 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
     contact_value = _resolve_contact_display(doc, "contact_id")
     issue_date_value = _pick("issue_date", "created_at")
     due_date_value = _pick("due_date", "payment_due_date")
-    total_value = _pick("total_amount", "total")
-    tax_value = _pick("tax_amount", "tax")
-    outstanding_value = _pick("outstanding_balance", "amount_outstanding")
+    total_value = doc_value(doc, "total")
+    tax_value = doc_tax(doc)
+    outstanding_value = doc_value(doc, "amount_outstanding")
     subtotal_value = _pick("subtotal")
     discount_value = _pick("discount_amount") or 0
     currency = doc.get("currency") or "USD"
@@ -9620,7 +9616,6 @@ async function celerpCsvImport(input, entityId) {{
         _fulfillable_status = (_line_acts.fulfil or _line_acts.revert) and _stocked_lines
         # Inbound docs (bill, consignment_in) show Receive Goods / Return Goods in toolbar.
         # They do NOT use fulfill-lines; the toolbar posts to /receive instead.
-        from celerp_docs.doc_constants import RECEIVABLE_STATUSES
         _inbound_receivable = (
             _is_vendor_doc
             and doc_type in ("bill", "consignment_in")
@@ -10622,7 +10617,7 @@ def _doc_status_cards(docs: list[dict], active_status: str, summary: dict | None
         if not api_counts and s in counts:
             counts[s] += 1
         if s in totals:
-            amt = d.get("total_amount") if d.get("total_amount") is not None else d.get("total")
+            amt = d.get("total")
             try:
                 totals[s] += float(amt or 0)
             except (ValueError, TypeError):
@@ -10651,6 +10646,7 @@ def _summary_bar(summary: dict, doc_type: str = "", currency: str | None = None,
     return Div(
         Span(f"{t('chip.ar', lang)}: {fmt_money(float(summary.get('ar_outstanding', 0) or 0), currency)}", cls="val-chip val-chip--alert"),
         Span(f"{t('chip.billed', lang)}: {fmt_money(float(summary.get('ar_total', 0) or 0), currency)}", cls="val-chip"),
+        Span(f"{t('label.paid', lang)}: {fmt_money(float(summary.get('ar_paid', 0) or 0), currency)}", cls="val-chip"),
         Span(f"{t('chip.invoices', lang)}: {summary.get('invoice_count', 0)}", cls="val-chip"),
         unvalued_chip,
         cls="valuation-bar",

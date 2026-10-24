@@ -1611,6 +1611,7 @@ class TestCRMPage:
         assert b"Alice" in r.content
 
     @pytest.mark.asyncio
+    @pytest.mark.usefixtures("docs_running")
     async def test_contact_detail_holdings_cards(self, ui_client):
         """On Memo / Consignment cards show the live holdings value and link to that
         exact filtered inventory list, so the number and the list cannot disagree."""
@@ -1639,11 +1640,12 @@ class TestCRMPage:
         assert b"/inventory?consigned_from=ct:1" in body
 
     @pytest.mark.asyncio
+    @pytest.mark.usefixtures("docs_running")
     async def test_contact_detail_holdings_unavailable_falls_back(self, ui_client):
         """When the holdings figure cannot be fetched the page still renders, and the
         Consignment card falls back to the document-derived total."""
         contact = {**_CONTACTS[0], "contact_type": "vendor"}
-        docs = [{"doc_type": "consignment_in", "status": "received", "total_amount": 900.0}]
+        docs = [{"doc_type": "consignment_in", "status": "received", "total": 900.0}]
         ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_contact", new=AsyncMock(return_value=contact)),
@@ -6511,6 +6513,7 @@ class TestFilesSectionErrorReplies:
         assert r.status_code == 400 and "files-section-" not in r.text
 
 
+@pytest.mark.usefixtures("connector_modules_running")
 class TestCompanyFilesAggregation:
     """The company-wide Files section reads the self-contact, items and documents; a failed read is
     an error reply, never an empty or partial list that would replace the real one."""
@@ -10212,7 +10215,7 @@ class TestModulesUI:
         interpolation path)."""
         deps = [
             {"name": "base-mod", "label": "Base", "version": "1.0", "author": "Celerp",
-             "enabled": True, "running": True},
+             "enabled": True, "running": True, "needed_by": ["child-mod"]},
             {"name": "child-mod", "label": "Child", "version": "1.0", "author": "Celerp",
              "enabled": True, "running": True, "depends_on": ["base-mod"]},
         ]
@@ -10226,6 +10229,9 @@ class TestModulesUI:
             r = await ui_client.get("/modules")
         assert r.status_code == 200
         assert b"Other modules need this one" in r.content and b"Child" in r.content  # tooltip rendered
+        # The API's needed_by decides, so a module it does not list keeps its Turn off.
+        assert r.content.count(b"Other modules need this one") == 1
+        assert b'hx-post="/modules/child-mod/disable"' in r.content
 
     @pytest.mark.asyncio
     async def test_paid_module_license_failure_shows_connect_upsell(self, ui_client):
@@ -11711,6 +11717,7 @@ class TestAuditColumnAlignment:
         assert 'onclick="celerpAddLine()"' not in counting.text
 
 
+@pytest.mark.usefixtures("connector_modules_running")
 class TestCompanyDetailsPage:
     """The Finance > Company Details page is organized like a customer/vendor page: a Contact Info card
     (the company's identity, incl. its email) + a Settings card (currency/timezone/fiscal), the
@@ -11955,6 +11962,7 @@ class TestWebAccessPlansAd:
         assert "cloud-plans" in r.text                    # upgrade ad below
 
 
+@pytest.mark.usefixtures("docs_running")
 class TestPaymentsSettingsPage:
     """The payments page must actually be registered (regression: it was
     imported in ui/app.py but missing from the kernel route tuple, so it
@@ -12153,6 +12161,7 @@ class TestPaymentsSettingsPage:
         assert "/settings/payments/disconnect" in r.text
 
 
+@pytest.mark.usefixtures("connector_modules_running")
 class TestCompanyAllFilesView:
     """The unified Finance > All Files view aggregates company documents, item images and doc
     attachments into one read-only table, each row linking back to its owning entity."""

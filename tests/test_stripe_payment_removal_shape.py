@@ -9,7 +9,7 @@ from migration_support import maker, real_client, real_engine  # noqa: F401
 from test_company_reset_payments import _harbor, _invoice, _pay_by_hand
 from test_stripe_refunds import PAID_AT, BOOKS, _RefundCloud, _deleted_before_upgrade, _doc, _ledger, _paid_invoice
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [pytest.mark.asyncio, pytest.mark.usefixtures("docs_running")]
 
 
 async def _emit(engine, company_id, entity_id, event_type, data, source="api"):

@@ -27,15 +27,15 @@ from celerp.services.company_lock import lock_company
 from celerp.services.line_measures import splitting_allowed
 from ui.i18n import t
 from celerp.services.lot_origin import DELETED
+from celerp.services.record_quantities import FULFILLABLE_STATUSES
 
 # The uniqueness invariant is an OUTBOUND customer-stock rule: a customer-facing
 # invoice or memo must not list the same non-splittable physical lot twice.
 # Inbound and internal documents (bill, consignment_in, novel types) legitimately
-# may, so they are not governed. This mirrors the outbound set the codebase already
-# names in celerp_docs.doc_constants.FULFILLABLE_STATUSES and must stay in lockstep
-# with it. The same two types are the ones that claim stock, so they are also the ones
+# may, so they are not governed: these are the outbound types FULFILLABLE_STATUSES names.
+# The same two types are the ones that claim stock, so they are also the ones
 # that may not newly take an item another record has reserved.
-DOCUMENT_ITEM_UNIQUE_DOC_TYPES: frozenset[str] = frozenset({"invoice", "memo"})
+DOCUMENT_ITEM_UNIQUE_DOC_TYPES: frozenset[str] = frozenset(FULFILLABLE_STATUSES)
 
 
 def _holds_receipt(line: dict, entry: dict, *, in_place: bool = False) -> bool:

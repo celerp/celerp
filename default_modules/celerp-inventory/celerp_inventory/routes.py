@@ -1302,7 +1302,7 @@ async def query_items(
     except ownership.ConnectorOwnershipError:
         _connected = set()
     if f.source:
-        from celerp_inventory.services import external_link_for_state
+        from celerp.connectors.product_links import external_link_for_state
         _platform = f.source.strip().lower()
         result = [
             r for r in result
@@ -4247,7 +4247,8 @@ async def _plan_merge(session: AsyncSession, company_id, payload: MergeBody, set
     source items as read by the caller; the merge passes them locked."""
     from celerp.connectors import ownership, registry
     from celerp.services.auto_je import company_currency, merge_reclassification
-    from celerp_inventory.services import external_link_for_state, normalize_sku
+    from celerp.connectors.product_links import external_link_for_state
+    from celerp_inventory.services import normalize_sku
 
     reject_system_item_fields({"attributes": payload.resolved_attributes or {}})
     reject_price_change(

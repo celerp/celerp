@@ -19,7 +19,7 @@ from starlette.responses import RedirectResponse, Response
 
 import ui.api_client as api
 from celerp.output.document_context import prepare_document_output
-from celerp_docs.doc_constants import template_label
+from celerp.services.record_quantities import template_label
 from ui.components.icons import import_icon
 from ui.components.operation_key import operation_key_vals, submitted_operation_key
 from ui.api_client import APIError

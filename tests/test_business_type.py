@@ -491,3 +491,43 @@ async def test_retry_after_failed_db_step_still_requires_restart(client, monkeyp
     assert r.status_code == 200, r.text
     assert r.json()["restart_required"] is True
     assert (await _settings(client, h))["vertical"] == "gemstones"
+
+
+# Turned off for one company, a module still runs for another; the first company's records keep
+# their meaning, so its units check still counts them. Documents is turned off with every module
+# that needs it.
+_NEED_DOCUMENTS = ("celerp-subscriptions", "celerp-fixed-assets", "celerp-reports",
+                   "celerp-accounting", "celerp-docs")
+
+
+@pytest.mark.asyncio
+async def test_units_check_counts_a_companys_documents_after_it_turns_documents_off(client, monkeypatch):
+    monkeypatch.setenv("MODULE_DIR", str(Path(__file__).resolve().parents[1] / "default_modules"))
+    h = await _owner(client)
+    kg = {"sku": "FLOUR", "name": "Flour", "quantity": 10, "sell_by": "kg", "status": "available"}
+    item = (await client.post("/items", json=kg, headers=h)).json()["id"]
+    r = await client.post("/docs", headers=h, json={"doc_type": "invoice", "contact_id": "customer:1", "line_items": [
+        {"item_id": item, "sku": "FLOUR", "name": "Flour", "quantity": 0.275, "unit": "kg", "unit_price": 10}]})
+    assert r.status_code == 200, r.text
+    invoice = r.json()["id"]
+    r = await client.post("/companies", json={"name": "Other Co"}, headers=h)
+    assert r.status_code == 200, r.text
+    other = {"Authorization": f"Bearer {r.json()['access_token']}"}
+    assert (await client.post("/companies/me/modules/celerp-docs/enable", headers=other)).status_code == 200
+
+    on = {m["name"] for m in (await client.get("/companies/me/modules", headers=h)).json() if m["enabled"]}
+    for name in _NEED_DOCUMENTS:
+        if name in on:
+            r = await client.post(f"/companies/me/modules/{name}/disable", headers=h)
+            assert r.status_code == 200, r.text
+    enabled = [{m["name"]: m["enabled"] for m in (await client.get("/companies/me/modules", headers=x)).json()}
+               for x in (h, other)]
+    assert [e["celerp-docs"] for e in enabled] == [False, True]
+
+    units = (await client.get("/companies/me/units", headers=h)).json()
+    lowered = [{**u, "decimals": 2} if u["name"] == "kg" else u for u in units]
+    r = await client.put("/companies/me/units", json={"units": lowered}, headers=h)
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert detail["message_key"] == "units.precision_lowered_under_quantities", detail
+    assert detail["params"]["examples"] == (await client.get(f"/docs/{invoice}", headers=h)).json()["ref_id"], detail

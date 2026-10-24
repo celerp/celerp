@@ -1332,6 +1332,7 @@ async def test_connector_authorize_url_waits_when_connection_state_is_unknown(cl
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("connector_modules_running")
 async def test_connector_authorize_url_not_connected(client):
     """Returns error when no gateway_token configured."""
     token = await _register(client, "auth-url-notoken")
@@ -1345,6 +1346,7 @@ async def test_connector_authorize_url_not_connected(client):
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("connector_modules_running")
 async def test_connector_authorize_url_shopify_passes_shop(client):
     """Shopify authorize URL request forwards the shop param to the relay."""
     token = await _register(client, "auth-url-shopify")

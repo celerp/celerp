@@ -18,7 +18,6 @@ from celerp.services.money import round_money, to_decimal
 # non-empty older key. A stored 0 is a value, not a gap.
 DOC_FIELD_FALLBACKS: dict[str, tuple[str, ...]] = {
     "doc_number": ("ref", "ref_id"),
-    "contact_name": ("contact_id", "contact_external_id"),
     "issue_date": ("created_at",),
     "due_date": ("payment_due_date",),
     "total": ("total_amount",),
@@ -79,6 +78,25 @@ def doc_value(state: dict, field: str):
     if value in (None, ""):
         value = next((state[k] for k in DOC_FIELD_FALLBACKS.get(field, ()) if state.get(k) not in (None, "")), value)
     return value
+
+
+def doc_tax(state: dict):
+    """The tax amount a document shows. A list stores it as ``tax_amount`` and its header tax
+    rate (a percentage) as ``tax``; every other document stores the amount as ``tax``. A stored
+    0 is a value, and a list with no stored amount shows 0 rather than its rate."""
+    if "tax_amount" in state and state["tax_amount"] is not None:
+        return state["tax_amount"]
+    if "list" in (state.get("doc_type"), state.get("entity_type")):
+        return 0
+    return state.get("tax") or 0
+
+
+def settled_on(state: dict) -> str | None:
+    """The day (ISO date) of a document's last active payment: the latest ``payment_date`` among
+    its payments that were not voided or deleted. None when it has none."""
+    days = [str(p["payment_date"])[:10] for p in state.get("payments") or []
+            if p.get("status", "active") == "active" and p.get("payment_date")]
+    return max(days, default=None)
 
 
 def outstanding_balance(state: dict) -> Decimal | None:

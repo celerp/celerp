@@ -69,10 +69,13 @@ from celerp.services.money import allocate_pro_rata, books_currency, checked_exc
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, coerce_price, get_price_config, is_cost_list_name, line_price_list, price_keys_in, resolve_price
 from celerp.services.terms import resolve_document_terms
 from celerp.services.payment_terms import company_payment_terms, due_date_for_terms
-from celerp_contacts.references import contact_accepts, contact_snapshot, lock_contacts
+from celerp_contacts.references import (
+    contact_accepts, contact_snapshot, lock_contacts, party_name_sql,
+)
 from celerp.output.document_context import prepare_document_output
-from celerp_docs.doc_constants import WRITEOFF_ACCOUNT_TYPES, INBOUND_DOC_TYPES, FULFILLABLE_STATUSES, LEGACY_CONTACT_FIELDS, LIFECYCLE_OWNED_FIELDS, NON_FINANCIAL_DOC_TYPES, RECEIVABLE_STATUSES, RESERVABLE_DOC_STATUSES, REVERTIBLE_STATUSES, SALES_PRICED_DOC_TYPES, SUPPLIER_RETURN_STATUSES, CREDIT_APPLICATION_METHODS, CONVERTIBLE_STATUSES, QUOTATION_SPENT_STATUSES, sent_out_by
-from celerp.services.doc_balance import DOC_FIELD_FALLBACKS, doc_value, is_awaiting_payment, is_overdue_document, is_owed, outstanding_balance
+from celerp_docs.doc_constants import WRITEOFF_ACCOUNT_TYPES, INBOUND_DOC_TYPES, LEGACY_CONTACT_FIELDS, LIFECYCLE_OWNED_FIELDS, NON_FINANCIAL_DOC_TYPES, RESERVABLE_DOC_STATUSES, REVERTIBLE_STATUSES, SALES_PRICED_DOC_TYPES, SUPPLIER_RETURN_STATUSES, CREDIT_APPLICATION_METHODS, CONVERTIBLE_STATUSES
+from celerp.services.record_quantities import FULFILLABLE_STATUSES, QUOTATION_SPENT_STATUSES, RECEIVABLE_STATUSES, sent_out_by
+from celerp.services.doc_balance import DOC_FIELD_FALLBACKS, doc_value, is_awaiting_payment, is_open_credit, is_overdue_document, is_owed, outstanding_balance
 from celerp.services.list_behavior import (
     DRAFT, FINALIZED, CLOSED, VOID, DEFAULT_LIST_TYPE, LIST_TYPES, SCAN_RUNS_FIELD, SUPPLIER_DOC_TYPES, ScanBehavior,
     behavior, scan_behavior, terminal_action, is_money_list,
@@ -1077,6 +1080,8 @@ def _doc_sql_order(field: str, descending: bool) -> list:
     per-page queries, so a row on a page boundary can be skipped (or duplicated) by OFFSET."""
     if field == "_updated_at":
         expr = Projection.updated_at
+    elif field == "contact_name":
+        expr = party_name_sql()
     else:
         values = [
             _func.nullif(Projection.state[k].as_string(), "")
@@ -1096,10 +1101,11 @@ def _doc_display(state: dict) -> dict:
     return state | {field: doc_value(state, field) for field in DOC_FIELD_FALLBACKS}
 
 
-def _doc_row(r: Projection) -> dict:
-    """The list row for a document: its displayed state (``_doc_display``) with ``id`` and
-    ``_updated_at``."""
-    return _doc_display(r.state | {"id": r.entity_id, "_updated_at": r.updated_at.isoformat() if r.updated_at else None})
+def _doc_row(r: Projection, contact_name: str | None) -> dict:
+    """The list row for a document: its displayed state (``_doc_display``) with ``id``,
+    ``_updated_at`` and the ``contact_name`` the list shows (``party_name_sql``)."""
+    return _doc_display(r.state | {"id": r.entity_id, "_updated_at": r.updated_at.isoformat() if r.updated_at else None,
+                                   "contact_name": contact_name})
 
 
 # The state keys the row-by-row filters of ``_doc_filter`` read, before display fallbacks.
@@ -1184,8 +1190,8 @@ async def query_docs(session: AsyncSession, company_id: str, f: DocListFilters, 
     keep = await _doc_filter(session, company_id, f)
 
     if keep is not None:
-        rows = (await session.execute(select(Projection).where(*base_where).order_by(*order_by))).scalars().all()
-        out = [x for x in map(_doc_row, rows) if keep(x)]
+        rows = (await session.execute(select(Projection, party_name_sql()).where(*base_where).order_by(*order_by))).all()
+        out = [x for x in (_doc_row(*row) for row in rows) if keep(x)]
         total = len(out)
         if offset:
             out = out[offset:]
@@ -1198,7 +1204,7 @@ async def query_docs(session: AsyncSession, company_id: str, f: DocListFilters, 
     total = (await session.execute(count_q)).scalar_one()
 
     list_q = (
-        select(Projection)
+        select(Projection, party_name_sql())
         .where(*base_where)
         .order_by(*order_by)
         .offset(offset)
@@ -1206,8 +1212,8 @@ async def query_docs(session: AsyncSession, company_id: str, f: DocListFilters, 
     if limit is not None:
         list_q = list_q.limit(limit)
 
-    rows = (await session.execute(list_q)).scalars().all()
-    return {"items": [_doc_row(r) for r in rows], "total": total}
+    rows = (await session.execute(list_q)).all()
+    return {"items": [_doc_row(*row) for row in rows], "total": total}
 
 
 @router.get("", dependencies=[require_permission("view_documents")], openapi_extra={"x-celerp-agent": True})
@@ -1270,7 +1276,9 @@ async def get_doc_summary(
     The status filters are ignored: the cards split the filtered set by status.
 
     Totals are in the company currency (``_doc_base_amounts``). A document that cannot be valued
-    there is left out of every total and counted in ``unvalued_count``."""
+    there is left out of every total and counted in ``unvalued_count``. ``open_credit_total`` is
+    what the open credit notes and supplier credit notes still have to apply or refund
+    (``is_open_credit``, the rule the aging reports net them by)."""
     today = (await company_today(session, company_id)).isoformat()
     company = await session.get(Company, company_id)
     base_currency = (company.settings or {}).get("currency", "USD") if company else "USD"
@@ -1278,7 +1286,7 @@ async def get_doc_summary(
     rows = (await session.execute(select(Projection).where(*summary_where))).scalars().all()
     totals = dict.fromkeys((
         "ar_gross", "ar_paid", "ar_outstanding", "awaiting_payment", "overdue", "paid", "sent",
-        "draft", "void", "memo", "unfulfilled",
+        "draft", "void", "memo", "unfulfilled", "open_credit",
     ), Decimal(0))
     count_by_status: dict[str, int] = {}
     invoice_count = 0
@@ -1335,6 +1343,11 @@ async def get_doc_summary(
                 if amounts is None:
                     unvalued_count += 1
                 add("memo", amounts, "total")
+            if is_open_credit(state):
+                amounts = _doc_base_amounts(state, ("amount_outstanding",), base_currency)
+                if amounts is None:
+                    unvalued_count += 1
+                add("open_credit", amounts, "amount_outstanding")
             if is_awaiting_payment(dt, st):
                 awaiting_payment_count += 1
             if is_overdue_document(state, today):
@@ -1375,6 +1388,7 @@ async def get_doc_summary(
         "not_stocked_count": not_stocked_count,
         "unvalued_count": unvalued_count,
         "memo_all_total": money["memo"],
+        "open_credit_total": money["open_credit"],
         "count_by_status": count_by_status,
     }
 
@@ -8024,20 +8038,20 @@ async def export_docs_csv(
     order_by = _doc_sql_order(_doc_sort_field(filters), filters.dir == "desc")
     keep = await _doc_filter(session, company_id, filters)
     # Read only the state keys the exported columns and the row filters need, never whole documents.
-    fields = {c for c in out_cols if c != "entity_id"} | (set(_DOC_FILTER_KEYS) if keep else set())
+    fields = {c for c in out_cols if c not in ("entity_id", "contact_name")} | (set(_DOC_FILTER_KEYS) if keep else set())
     keys = sorted(fields | {k for field in fields for k in DOC_FIELD_FALLBACKS.get(field, ())})
 
     async def _rows():
         stmt = (
-            select(Projection.entity_id, *(Projection.state[k] for k in keys))
+            select(Projection.entity_id, party_name_sql(), *(Projection.state[k] for k in keys))
             .where(*base_where)
             .order_by(*order_by)
             .execution_options(yield_per=500)
         )
         result = await session.stream(stmt)
         try:
-            async for entity_id, *values in result:
-                row = _doc_display({k: v for k, v in zip(keys, values) if v is not None})
+            async for entity_id, contact_name, *values in result:
+                row = _doc_display({k: v for k, v in zip(keys, values) if v is not None} | {"contact_name": contact_name})
                 if keep is None or keep(row):
                     yield row | {"entity_id": entity_id}
         finally:

@@ -19,7 +19,7 @@ from migration_support import auth, code_config, real_client, real_engine  # noq
 from test_company_reset_payments import _Cloud, _harbor, _invoice, _paid
 from test_stripe_refunds import _RefundCloud, _deliver_one, _doc, _kept_refunds, _ledger
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [pytest.mark.asyncio, pytest.mark.usefixtures("docs_running")]
 
 PAID_AT = "2026-09-01T09:00:00+00:00"
 
