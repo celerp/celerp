@@ -72,7 +72,7 @@ from celerp.services.terms import resolve_document_terms
 from celerp.services.payment_terms import company_payment_terms, due_date_for_terms
 from celerp_contacts.references import contact_accepts, contact_snapshot, lock_contacts
 from celerp.output.document_context import prepare_document_output
-from celerp_docs.doc_constants import WRITEOFF_ACCOUNT_TYPES, INBOUND_DOC_TYPES, FULFILLABLE_STATUSES, LEGACY_CONTACT_FIELDS, LIFECYCLE_OWNED_FIELDS, NON_FINANCIAL_DOC_TYPES, RECEIVABLE_STATUSES, RESERVABLE_DOC_STATUSES, REVERTIBLE_STATUSES, SALES_PRICED_DOC_TYPES, SUPPLIER_RETURN_STATUSES, CREDIT_APPLICATION_METHODS, CONVERTIBLE_STATUSES, QUOTATION_SPENT_STATUSES, sent_out_by
+from celerp_docs.doc_constants import WRITEOFF_ACCOUNT_TYPES, INBOUND_DOC_TYPES, DRAFT_REVERT_RETURNED, DRAFT_REVERT_STATUSES, INBOUND_DRAFT_REVERT_STATUSES, FULFILLABLE_STATUSES, LEGACY_CONTACT_FIELDS, LIFECYCLE_OWNED_FIELDS, NON_FINANCIAL_DOC_TYPES, RECEIVABLE_STATUSES, RESERVABLE_DOC_STATUSES, REVERTIBLE_STATUSES, SALES_PRICED_DOC_TYPES, SUPPLIER_RETURN_STATUSES, CREDIT_APPLICATION_METHODS, CONVERTIBLE_STATUSES, QUOTATION_SPENT_STATUSES, sent_out_by
 from celerp.services.doc_balance import DOC_FIELD_FALLBACKS, doc_value, is_awaiting_payment, is_overdue_document, is_owed, outstanding_balance
 from celerp.services.list_behavior import (
     DRAFT, FINALIZED, CLOSED, VOID, DEFAULT_LIST_TYPE, LIST_TYPES, SCAN_RUNS_FIELD, SUPPLIER_DOC_TYPES, ScanBehavior,
@@ -3242,11 +3242,7 @@ async def revert_doc_to_draft(entity_id: str, payload: DocRevertBody, company_id
     # Inbound docs (bill, consignment_in) can also revert from received/fulfilled statuses.
     _doc_type = state.get("doc_type", "")
     _is_inbound = _doc_type in INBOUND_DOC_TYPES
-    _REVERTABLE = (
-        {"final", "sent", "awaiting_payment", "received", "partially_received", "fulfilled"}
-        if _is_inbound
-        else {"final", "sent", "awaiting_payment"}
-    )
+    _REVERTABLE = INBOUND_DRAFT_REVERT_STATUSES if _is_inbound else DRAFT_REVERT_STATUSES
     to_order = False
     # A document that sent back everything it received reverts too: a bill whose goods all came
     # in on the purchase order it was made from goes back to the order, which keeps them, and
@@ -3269,7 +3265,7 @@ async def revert_doc_to_draft(entity_id: str, payload: DocRevertBody, company_id
                 "purchase order. To cancel the bill, void it."))
         to_order = on_order is True
     if to_order or emptied:
-        _REVERTABLE = _REVERTABLE | {"partial_returned", "returned"}
+        _REVERTABLE = _REVERTABLE | DRAFT_REVERT_RETURNED
     if previous_status not in _REVERTABLE and not settled_by_credit_only(state):
         raise HTTPException(status_code=409, detail=t("documents.err_revert_status"))
     if float(state.get("amount_paid", 0) or 0) != 0:

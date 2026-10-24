@@ -22,14 +22,15 @@ from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from test_consignment_in_sale import _consign
 from test_money_stock_and_contact_invariants import _auth_company
+from test_tax_refusal_draft_route import route
 from ui.i18n import t
 
 _LINES = [{"description": "Taxed", "quantity": 1, "unit_price": 100.0, "taxes": []},
           {"description": "Unset", "quantity": 1, "unit_price": 50.0, "taxes": None}]
 
 
-def _refused(r, line: int = 2, key: str = "documents.err_line_tax_unset") -> bool:
-    return r.status_code == 422 and r.json().get("detail") == t(key, line=line)
+def _refused(r, line: int = 2, key: str = "documents.err_line_tax_unset", steps: tuple = ()) -> bool:
+    return r.status_code == 422 and r.json().get("detail") == t(key, line=line, route=route(*steps))
 
 
 async def _doc(client, auth, doc_type: str = "invoice", lines: list | None = None) -> str:
@@ -131,7 +132,8 @@ async def test_buying_a_consignment_refuses_a_line_whose_tax_is_unset(client, se
     flag_modified(row, "state")
     await session.commit()
     r = await client.post(f"/docs/{consignment}/convert", headers=auth["headers"])
-    assert _refused(r, line=1, key="documents.err_line_tax_unset_issued"), r.text
+    assert _refused(r, line=1, key="documents.err_line_tax_unset_issued",
+                    steps=("return", "revert")), r.text
     assert not (await _get(client, auth, consignment)).get("converted_to")
 
 

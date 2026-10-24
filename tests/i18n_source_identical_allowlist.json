@@ -219,7 +219,14 @@
     "documents.err_tax_unreadable_shared",
     "documents.err_line_tax_unset",
     "documents.err_line_tax_unset_issued",
-    "documents.err_line_tax_unset_receive"
+    "documents.err_line_tax_unset_receive",
+    "documents.tax_route_payments",
+    "documents.tax_route_return",
+    "documents.tax_route_available",
+    "documents.tax_route_revert",
+    "documents.tax_route_void",
+    "documents.tax_route_void_order",
+    "documents.tax_route_new"
   ],
   "ar": [
     "account.email_placeholder",
@@ -429,7 +436,14 @@
     "documents.err_tax_unreadable_shared",
     "documents.err_line_tax_unset",
     "documents.err_line_tax_unset_issued",
-    "documents.err_line_tax_unset_receive"
+    "documents.err_line_tax_unset_receive",
+    "documents.tax_route_payments",
+    "documents.tax_route_return",
+    "documents.tax_route_available",
+    "documents.tax_route_revert",
+    "documents.tax_route_void",
+    "documents.tax_route_void_order",
+    "documents.tax_route_new"
   ],
   "de": [
     "acct.source_system",
@@ -710,7 +724,14 @@
     "documents.err_tax_unreadable_shared",
     "documents.err_line_tax_unset",
     "documents.err_line_tax_unset_issued",
-    "documents.err_line_tax_unset_receive"
+    "documents.err_line_tax_unset_receive",
+    "documents.tax_route_payments",
+    "documents.tax_route_return",
+    "documents.tax_route_available",
+    "documents.tax_route_revert",
+    "documents.tax_route_void",
+    "documents.tax_route_void_order",
+    "documents.tax_route_new"
   ],
   "es": [
     "account.plan",
@@ -964,7 +985,14 @@
     "documents.err_tax_unreadable_shared",
     "documents.err_line_tax_unset",
     "documents.err_line_tax_unset_issued",
-    "documents.err_line_tax_unset_receive"
+    "documents.err_line_tax_unset_receive",
+    "documents.tax_route_payments",
+    "documents.tax_route_return",
+    "documents.tax_route_available",
+    "documents.tax_route_revert",
+    "documents.tax_route_void",
+    "documents.tax_route_void_order",
+    "documents.tax_route_new"
   ],
   "fr": [
     "acct.tab_journal",
@@ -1259,7 +1287,14 @@
     "documents.err_tax_unreadable_shared",
     "documents.err_line_tax_unset",
     "documents.err_line_tax_unset_issued",
-    "documents.err_line_tax_unset_receive"
+    "documents.err_line_tax_unset_receive",
+    "documents.tax_route_payments",
+    "documents.tax_route_return",
+    "documents.tax_route_available",
+    "documents.tax_route_revert",
+    "documents.tax_route_void",
+    "documents.tax_route_void_order",
+    "documents.tax_route_new"
   ],
   "id": [
     "acct.source_manual",
@@ -1538,7 +1573,14 @@
     "documents.err_tax_unreadable_shared",
     "documents.err_line_tax_unset",
     "documents.err_line_tax_unset_issued",
-    "documents.err_line_tax_unset_receive"
+    "documents.err_line_tax_unset_receive",
+    "documents.tax_route_payments",
+    "documents.tax_route_return",
+    "documents.tax_route_available",
+    "documents.tax_route_revert",
+    "documents.tax_route_void",
+    "documents.tax_route_void_order",
+    "documents.tax_route_new"
   ],
   "it": [
     "attr.volume_l",
@@ -1789,7 +1831,14 @@
     "documents.err_tax_unreadable_shared",
     "documents.err_line_tax_unset",
     "documents.err_line_tax_unset_issued",
-    "documents.err_line_tax_unset_receive"
+    "documents.err_line_tax_unset_receive",
+    "documents.tax_route_payments",
+    "documents.tax_route_return",
+    "documents.tax_route_available",
+    "documents.tax_route_revert",
+    "documents.tax_route_void",
+    "documents.tax_route_void_order",
+    "documents.tax_route_new"
   ],
   "ja": [
     "account.email_placeholder",
@@ -2009,7 +2058,14 @@
     "documents.err_tax_unreadable_shared",
     "documents.err_line_tax_unset",
     "documents.err_line_tax_unset_issued",
-    "documents.err_line_tax_unset_receive"
+    "documents.err_line_tax_unset_receive",
+    "documents.tax_route_payments",
+    "documents.tax_route_return",
+    "documents.tax_route_available",
+    "documents.tax_route_revert",
+    "documents.tax_route_void",
+    "documents.tax_route_void_order",
+    "documents.tax_route_new"
   ],
   "pt": [
     "acct.source_manual",
@@ -2274,7 +2330,14 @@
     "documents.err_tax_unreadable_shared",
     "documents.err_line_tax_unset",
     "documents.err_line_tax_unset_issued",
-    "documents.err_line_tax_unset_receive"
+    "documents.err_line_tax_unset_receive",
+    "documents.tax_route_payments",
+    "documents.tax_route_return",
+    "documents.tax_route_available",
+    "documents.tax_route_revert",
+    "documents.tax_route_void",
+    "documents.tax_route_void_order",
+    "documents.tax_route_new"
   ],
   "th": [
     "account.email_placeholder",
@@ -2492,7 +2555,14 @@
     "documents.err_tax_unreadable_shared",
     "documents.err_line_tax_unset",
     "documents.err_line_tax_unset_issued",
-    "documents.err_line_tax_unset_receive"
+    "documents.err_line_tax_unset_receive",
+    "documents.tax_route_payments",
+    "documents.tax_route_return",
+    "documents.tax_route_available",
+    "documents.tax_route_revert",
+    "documents.tax_route_void",
+    "documents.tax_route_void_order",
+    "documents.tax_route_new"
   ],
   "vi": [
     "btn.u00d7",
@@ -2714,6 +2784,13 @@
     "documents.err_tax_unreadable_shared",
     "documents.err_line_tax_unset",
     "documents.err_line_tax_unset_issued",
-    "documents.err_line_tax_unset_receive"
+    "documents.err_line_tax_unset_receive",
+    "documents.tax_route_payments",
+    "documents.tax_route_return",
+    "documents.tax_route_available",
+    "documents.tax_route_revert",
+    "documents.tax_route_void",
+    "documents.tax_route_void_order",
+    "documents.tax_route_new"
   ]
 }

@@ -12,6 +12,8 @@ from fastapi import HTTPException
 
 from celerp.services.money import round_money, to_decimal, to_stored_float
 from celerp.tax_regimes import line_tax_unset, tax_entries, tax_text, unreadable_tax
+from celerp_docs.doc_constants import (DRAFT_REVERT_RETURNED, DRAFT_REVERT_STATUSES, INBOUND_DOC_TYPES,
+                                      INBOUND_DRAFT_REVERT_STATUSES)
 from celerp_docs.taxes import TaxApplication, compute_tax_amounts
 from ui.i18n import t
 
@@ -25,11 +27,44 @@ def _past_draft(state: dict | None) -> bool:
     return (state or {}).get("status") not in (None, "draft")
 
 
+def draft_route(state: dict) -> list[str]:
+    """The message keys, one sentence per step, of the way a document *state* past draft gets
+    back to a draft, where its taxes can be changed, as Revert to Draft and Void allow it.
+    Payments and credit notes go first, then received goods by Return Goods and lines out on
+    memo or sold by Set as available. A purchase order that received goods never reverts, so
+    it is voided and made again; a bill made from an order may only revert into the order,
+    which is then voided. A status Revert to Draft never takes leaves only a new document."""
+    doc_type, status = state.get("doc_type", ""), state.get("status")
+    inbound = doc_type in INBOUND_DOC_TYPES
+    paid = bool(to_decimal(state.get("amount_paid") or 0)) or to_decimal(state.get("credited") or 0) > 0
+    received = bool(state.get("received_items"))
+    steps = (["documents.tax_route_payments"] if paid else []) + (["documents.tax_route_return"] if received else [])
+    if any(isinstance(fi, dict) and fi.get("item_id") is not None for fi in state.get("fulfilled_items") or []):
+        steps.append("documents.tax_route_available")
+    revertible = (INBOUND_DRAFT_REVERT_STATUSES | (DRAFT_REVERT_RETURNED if received else frozenset())
+                  if inbound else DRAFT_REVERT_STATUSES) | ({"paid", "partial"} if paid else frozenset())
+    if received and doc_type == "purchase_order":
+        last = "documents.tax_route_void"
+    elif received and doc_type == "bill" and state.get("source_po_ref"):
+        last = "documents.tax_route_void_order"
+    elif status in revertible:
+        last = "documents.tax_route_revert"
+    else:
+        last = "documents.tax_route_new"
+    return steps + [last]
+
+
+def _issued_detail(key: str, state: dict, **values) -> str:
+    """A past-draft refusal *key* ending with the way back to a draft (draft_route)."""
+    return t(key, route=" ".join(t(step) for step in draft_route(state)), **values)
+
+
 def unreadable_tax_refusal(tax: str, state: dict | None = None) -> HTTPException:
     """The 422 refusing a tax it cannot read, named. Only a draft's taxes can be changed, so on a
-    document *state* past draft the message names the way back to one."""
-    key = "documents.err_tax_unreadable_issued" if _past_draft(state) else "documents.err_tax_unreadable"
-    return HTTPException(status_code=422, detail=t(key, tax=tax))
+    document *state* past draft the message names the way back to one (draft_route)."""
+    if _past_draft(state):
+        return HTTPException(status_code=422, detail=_issued_detail("documents.err_tax_unreadable_issued", state, tax=tax))
+    return HTTPException(status_code=422, detail=t("documents.err_tax_unreadable", tax=tax))
 
 
 def refuse_unset_line_tax(lines, state: dict | None = None, numbers: list[int] | None = None, *,
@@ -41,9 +76,13 @@ def refuse_unset_line_tax(lines, state: dict | None = None, numbers: list[int] |
     *state* past draft the message names the way back to one, as unreadable_tax_refusal does."""
     for i, line in enumerate(lines or []):
         if isinstance(line, dict) and line_tax_unset(line):
-            key = ("documents.err_line_tax_unset_issued" if _past_draft(state)
-                   else "documents.err_line_tax_unset_receive" if receiving else "documents.err_line_tax_unset")
-            raise HTTPException(status_code=422, detail=t(key, line=(numbers[i] if numbers else i) + 1))
+            number = (numbers[i] if numbers else i) + 1
+            if _past_draft(state):
+                detail = _issued_detail("documents.err_line_tax_unset_issued", state, line=number)
+            else:
+                detail = t("documents.err_line_tax_unset_receive" if receiving else "documents.err_line_tax_unset",
+                           line=number)
+            raise HTTPException(status_code=422, detail=detail)
 
 
 def _definition(entry) -> TaxApplication | None:

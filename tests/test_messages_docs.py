@@ -100,10 +100,11 @@ def test_damaged_tax_says_which_tax_and_where_to_fix_it(entries, named):
     assert exc.value.detail == t("documents.err_tax_unreadable", "en", tax=named)
 
 
-@pytest.mark.parametrize(("stored", "key"), [(None, "documents.err_tax_unreadable"),
-                                             ({"status": "draft"}, "documents.err_tax_unreadable"),
-                                             ({"status": "finalized"}, "documents.err_tax_unreadable_issued")])
-def test_damaged_tax_on_a_document_past_draft_names_the_way_back_to_draft(stored, key):
+@pytest.mark.parametrize(("stored", "key", "steps"), [
+    (None, "documents.err_tax_unreadable", ()),
+    ({"status": "draft"}, "documents.err_tax_unreadable", ()),
+    ({"doc_type": "invoice", "status": "final"}, "documents.err_tax_unreadable_issued", ("revert",))])
+def test_damaged_tax_on_a_document_past_draft_names_the_way_back_to_draft(stored, key, steps):
     """The status of the document as stored decides the message: a draft's taxes can be edited,
     any other's only after Revert to Draft."""
     from celerp_docs.doc_money import document_money
@@ -112,7 +113,9 @@ def test_damaged_tax_on_a_document_past_draft_names_the_way_back_to_draft(stored
     with pytest.raises(HTTPException) as exc:
         document_money({"doc_taxes": ["bad"], "status": "draft"}, [line], "USD", keep_unrated_tax=True,
                        stored=stored)
-    assert exc.value.detail == t(key, "en", tax="bad")
+    from test_tax_refusal_draft_route import route
+
+    assert exc.value.detail == t(key, "en", tax="bad", route=route(*steps, locale="en"))
 
 
 def test_online_payment_pause_is_translated():
