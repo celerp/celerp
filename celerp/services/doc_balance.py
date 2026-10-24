@@ -81,6 +81,12 @@ def doc_value(state: dict, field: str):
     return value
 
 
+def doc_tax(state: dict):
+    """The tax a document shows: ``tax_amount`` (the stored line-tax calculation), else ``tax``
+    (what the document calculation stores), else 0."""
+    return state.get("tax_amount") or state.get("tax") or 0
+
+
 def settled_on(state: dict) -> str | None:
     """The day (ISO date) of a document's last active payment: the latest ``payment_date`` among
     its payments that were not voided or deleted. None when it has none."""

@@ -95,6 +95,25 @@ def test_print_shows_the_stored_figures_with_shipping():
     assert "-$10.00" in totals and "$9.00" in totals and "Shipping" in totals and "$104.00" in totals
 
 
+def _print_totals(doc: dict) -> dict[str, str]:
+    """The print view's totals rows, label to amount."""
+    from celerp.output.doc_print import render_doc_print_html
+    html = render_doc_print_html(doc)
+    block = html[html.index("dp-totals"):]
+    block = block[:block.index("</table>")]
+    return dict(re.findall(r'<td class="label">([^<]+)</td>\s*<td class="amount">([^<]+)</td>', block))
+
+
+def test_print_reads_the_total_and_tax_the_detail_page_and_pdf_read():
+    base = {"doc_type": "invoice", "currency": "USD", "subtotal": 100.0, "line_items": []}
+    # The current keys win over an older one.
+    rows = _print_totals(base | {"total": 107.0, "total_amount": 500.0, "tax_amount": 7.0, "tax": 3.0})
+    assert rows["Total"] == "$107.00" and rows["Tax"] == "$7.00", rows
+    # An imported document carries its total under the older key only.
+    rows = _print_totals(base | {"total_amount": 110.0, "tax": 10.0})
+    assert rows["Total"] == "$110.00" and rows["Tax"] == "$10.00", rows
+
+
 def test_pdf_shows_the_discount_and_shipping_rows():
     from celerp.output import pdf as pdf_mod
     rows: list[str] = []

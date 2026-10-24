@@ -32,7 +32,7 @@ from reportlab.pdfgen import canvas as _rl_canvas
 
 from celerp.output.branding import BRAND_TEXT as _BRAND_TEXT, brand_url as _brand_url
 from celerp.output.document_context import prepare_document_output
-from celerp.services.doc_balance import doc_value
+from celerp.services.doc_balance import doc_tax, doc_value
 
 # DejaVu Sans (Unicode-capable - supports currency symbols like ฿, ₹, €, etc.) ships
 # in fonts/ so PDFs render on every platform, not only where the OS provides it.
@@ -427,7 +427,7 @@ def generate_document_pdf(doc: dict[str, Any], company: dict[str, Any] | None = 
 
     # --- Totals ---
     subtotal = float(doc.get("subtotal") or 0)
-    tax = float(doc.get("tax_amount") or doc.get("tax") or 0)
+    tax = float(doc_tax(doc))
     total = float(doc_value(doc, "total") or 0) or subtotal + tax
     outstanding = float(doc_value(doc, "amount_outstanding") or 0)
 
