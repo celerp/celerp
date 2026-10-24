@@ -66,7 +66,7 @@ from celerp.services.permissions import assert_role_permission, get_current_comp
 from celerp_docs.sequences import next_doc_ref, next_draft_ref, require_doc_type, get_all_sequences, update_sequence, list_sequence_key
 from celerp_docs.search import doc_q_clause
 from celerp.services.units import build_unit_map, default_receive_as, get_company_units, is_non_stock_line, is_pieces_unit, is_weight_unit, line_receive_kind, require_moving_fits_units, validate_line_quantity
-from celerp.services.money import allocate_pro_rata, books_currency, checked_exchange_rate, discount_from_inputs, doc_rate, document_line_unit, require_doc_rate, received_share, round_basis, round_money, round_rate, to_base, to_decimal, to_stored_float
+from celerp.services.money import allocate_pro_rata, books_currency, checked_exchange_rate, discount_from_inputs, doc_rate, document_line_amount, document_line_unit, require_doc_rate, received_share, round_basis, round_money, round_rate, to_base, to_decimal, to_stored_float
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, coerce_price, get_price_config, is_cost_list_name, line_price_list, price_keys_in, resolve_price
 from celerp.services.terms import resolve_document_terms
 from celerp.services.payment_terms import company_payment_terms, due_date_for_terms
@@ -116,6 +116,8 @@ class LineItem(BaseModel):
     quantity: FiniteFloat = 0
     unit: str | None = None
     unit_price: FiniteFloat = 0
+    # The line's own discount, taken off its price (document_line_amount) when no line_total is given.
+    discount_pct: FiniteFloat | None = None
     tax_rate: FiniteFloat | None = None  # deprecated: kept for backward compat; prefer taxes list
     # None: the line's tax is still for the user to set (set_new_line_taxes); it charges nothing.
     taxes: list[TaxApplication] | None = Field(default_factory=list)
@@ -8802,12 +8804,8 @@ async def _reprice_catalog_lines(
 
         new_rate = _catalog_rate(item.state, item.entity_id, price_list, effective_currency, price_config)
         line["unit_price"] = float(new_rate)
-        quantity = to_decimal(line.get("quantity", 0) or 0)
-        discount_pct = to_decimal(line.get("discount_pct", 0) or 0)
-        amount = quantity * new_rate
-        if discount_pct:
-            amount *= to_decimal(1) - discount_pct / 100
-        line["line_total"] = to_stored_float(round_money(amount, effective_currency))
+        line["line_total"] = to_stored_float(
+            document_line_amount({**line, "line_total": None}, effective_currency) or to_decimal(0))
         repriced += 1
         updated_lines.append(line)
 

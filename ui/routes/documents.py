@@ -32,7 +32,7 @@ from ui.security import not_permitted_redirect
 from ui.components.table import search_bar, search_results, EMPTY, pagination, per_page_value, server_pager, searchable_select, breadcrumbs, status_cards, empty_state_cta, fmt_money, fmt_rate, format_value, currency_symbol, unwrap_address, col_resize_script, bank_account_options as _bank_account_options, display_cell, editable_cell, display_enum, display_unit, doc_href
 from celerp.services.business_time import business_today
 from celerp.services.doc_balance import awaiting_status_param, is_awaiting_payment, is_owed, outstanding_balance
-from celerp.services.money import to_decimal, to_stored_float, round_money, currency_dp, rate_dp
+from celerp.services.money import document_line_amount, to_decimal, to_stored_float, round_money, currency_dp, rate_dp
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, line_price_list, resolve_price
 from celerp.tax_regimes import (default_line_taxes, holds_tax, legacy_line_taxes, line_tax, line_tax_unset,
                                 matching_tax, set_new_line_taxes, tax_entries, tax_text, taxes_for, unreadable_tax)
@@ -7442,6 +7442,18 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
 
     # --- Line items section ---
     line_body_id = "line-body"
+    # Compute gross (pre-discount) and net (post-discount) subtotals. Every per-line amount is
+    # rounded to currency precision (the same boundary the stored line_total uses) so a unit price
+    # carrying more than currency-precision decimals (e.g. 15.285) never leaves a sub-cent residue
+    # that surfaces as a phantom "discount". A line's net amount is the one every document total
+    # charges it (document_line_amount).
+    def _li_gross(li: dict) -> float:
+        return to_stored_float(round_money(
+            to_decimal(li.get("quantity", 0) or 0) * to_decimal(li.get("unit_price", 0) or 0), currency))
+
+    def _li_net(li: dict) -> float:
+        return to_stored_float(document_line_amount(li, currency) or to_decimal(0))
+
     if is_editable:
         def _sku_input(val: str = "", entity_id: str = "", barcode: str = "") -> FT:
             eye = _item_link_eye(entity_id)
@@ -7619,8 +7631,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             qty = li.get("quantity", 0)
             price = li.get("unit_price", 0)
             discount_pct = float(li.get("discount_pct") or 0)
-            discounted = float(qty or 0) * float(price or 0) * (1 - discount_pct / 100)
-            line_tot = discounted
+            line_tot = _li_net(li)
             li_entity_id = li.get("entity_id") or li.get("item_id") or ""
             _meta = (item_meta_map or {}).get(li_entity_id) or {}
             _allow_split = splitting_allowed(_meta) if "allow_splitting" in _meta else splitting_allowed(li)
@@ -9969,11 +9980,8 @@ async function celerpCsvImport(input, entityId) {{
 
         def _li_row(li: dict, idx: int = 0) -> FT:
             from celerp_docs.doc_money import line_tax_rate
-            qty = float(li.get("quantity", 0) or 0)
-            price = float(li.get("unit_price", 0) or 0)
             discount_pct = float(li.get("discount_pct") or 0)
-            discounted = qty * price * (1 - discount_pct / 100) if discount_pct else qty * price
-            line_total = float(li.get("line_total", 0) or 0) or discounted
+            line_total = _li_net(li)
             li_eid = li.get("entity_id") or li.get("item_id") or ""
             cells = []
             if _fin_show_bulk:
@@ -10297,23 +10305,6 @@ async function celerpCsvImport(input, entityId) {{
             lines_section = Div(lines_section, id=_list_line_section_id(entity_id))
 
     # --- Totals ---
-    # Compute gross (pre-discount) and net (post-discount) subtotals. Every per-line amount is
-    # rounded to currency precision (the same boundary the stored line_total uses) so a unit price
-    # carrying more than currency-precision decimals (e.g. 15.285) never leaves a sub-cent residue
-    # that surfaces as a phantom "discount".
-    def _li_gross(li: dict) -> float:
-        return to_stored_float(round_money(
-            to_decimal(li.get("quantity", 0) or 0) * to_decimal(li.get("unit_price", 0) or 0), currency))
-
-    def _li_net(li: dict) -> float:
-        # The stored line_total is the source of truth for the discounted amount; fall back to a
-        # rounded qty*price*(1-disc) only when it is absent.
-        lt = li.get("line_total")
-        if lt not in (None, ""):
-            return float(lt or 0)
-        dpct = float(li.get("discount_pct") or 0)
-        g = _li_gross(li)
-        return to_stored_float(round_money(to_decimal(g) * to_decimal(1 - dpct / 100), currency)) if dpct else g
 
     subtotal = float(subtotal_value or 0) or sum(_li_net(li) for li in line_items)
     # A discount only exists where a line actually carries a discount_pct. Summing per discounted

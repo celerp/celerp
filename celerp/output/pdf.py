@@ -367,14 +367,13 @@ def generate_document_pdf(doc: dict[str, Any], company: dict[str, Any] | None = 
         ]]
 
     from celerp.services.line_measures import measure_sublines, qty_label
+    from celerp.services.money import document_line_amount
     from celerp.services.units import build_unit_map as _bum, DEFAULT_UNITS as _DU
     _pdf_umap = _bum(_DU)
     for li in line_items:
-        qty = float(li.get("quantity") or 0)
         price = float(li.get("unit_price") or 0)
         discount_pct = float(li.get("discount_pct") or 0)
-        discounted = qty * price * (1 - discount_pct / 100) if discount_pct else qty * price
-        line_total = float(li.get("line_total") or 0) or discounted
+        line_total = float(document_line_amount(li, currency) or 0)
         unit = str(li.get("unit") or li.get("unit_name") or li.get("uom") or "-")
         # Render multi-tax codes if present, else fall back to legacy tax_rate
         li_taxes = tax_entries(li.get("taxes"))

@@ -90,8 +90,8 @@ async def test_a_line_with_a_rate_and_taxes_is_charged_once(client, session):
 
 
 async def test_line_taxes_count_after_an_edit_and_beside_a_header_discount(client, session):
-    """A line given taxes by an edit is charged them, and a header discount comes off the total
-    as it does for a line's rate (each line is taxed on its own amount)."""
+    """A line given taxes by an edit is charged them, on its amount less the header discount, as a
+    document charges it: 37.02 less 10 is 27.02, taxed 7%."""
     auth = await _demo_company(client, session, "USD")
     r = await client.post("/lists", headers=auth["headers"], json={
         "list_type": "quotation", "currency": "USD", "discount": 10, "discount_type": "flat",
@@ -105,9 +105,9 @@ async def test_line_taxes_count_after_an_edit_and_beside_a_header_discount(clien
                                  "expected_version": lst["version"]})
     assert r.status_code == 200, r.text
     lst = await _list(client, auth, lid)
-    assert lst["tax_amount"] == pytest.approx(2.59)
-    assert lst["total"] == pytest.approx(37.02 - 10 + 2.59)
-    assert lst["line_items"][0]["taxes"][0]["amount"] == pytest.approx(2.59)
+    assert lst["tax_amount"] == pytest.approx(1.89)
+    assert lst["total"] == pytest.approx(37.02 - 10 + 1.89)
+    assert lst["line_items"][0]["taxes"][0]["amount"] == pytest.approx(1.89)
 
 
 # The line the list editor saves (_celerpCollectLines): its taxes, and beside them the sum of
@@ -167,14 +167,17 @@ async def test_an_edit_from_the_editor_recharges_the_taxes_on_the_new_amount(cli
     assert [t["amount"] for t in lst["line_items"][0]["taxes"]] == pytest.approx([20, 11])
 
 
-async def test_rate_only_lines_keep_their_historical_charge(client, session):
-    """Lines with only a ``tax_rate`` are charged as lists always charged them: the sum of each
-    line's amount times its rate, rounded once (0.0035 twice is 0.01, not 0.00)."""
+async def test_rate_only_lines_are_rounded_per_line_as_on_the_invoice(client, session):
+    """Lines with only a ``tax_rate`` are charged as a document charges them, each line's tax
+    rounded on its own (0.0035 twice is 0.00, not 0.01), so the invoice converted from the list
+    totals the same."""
     auth = await _demo_company(client, session, "USD")
     line = {"description": "Service", "quantity": 1, "unit_price": 0.05, "tax_rate": 7}
     lid = await _create(client, auth, "USD", [line, dict(line)])
     lst = await _list(client, auth, lid)
-    assert (lst["tax_amount"], lst["total"]) == (pytest.approx(0.01), pytest.approx(0.11))
+    assert (lst["tax_amount"], lst["total"]) == (pytest.approx(0.0), pytest.approx(0.10))
+    doc = await _invoice_from(client, auth, lid)
+    assert (doc["tax"], doc["total"]) == (lst["tax_amount"], lst["total"])
 
 
 @pytest.mark.parametrize("taxes, tax", [([_tax("Exempt 0%", 0)], 0), ([], 7)])

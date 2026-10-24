@@ -169,4 +169,4 @@ def test_every_reader_of_a_lines_tax_reads_its_taxes_list_before_its_rate(curren
     assert received["tax_amount"] == pytest.approx(tax)
     assert line_tax_rate(line) == 15
     shown = _fields_changed_summary({"line_items": {"old": [{**line, "taxes": []}], "new": [line]}}, currency)
-    assert "Tax 0% → 15%" in shown
+    assert "Tax 7% → 15%" in shown

@@ -42,7 +42,7 @@ from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.models.share import DocShareToken, is_active as share_is_active
 from celerp.services.auth import get_current_company_id, get_current_user
-from celerp.services.money import round_money, to_decimal, to_stored_float
+from celerp.services.money import document_line_amount, round_money, to_decimal, to_stored_float
 from celerp.services.permissions import require_permission
 from celerp.services.outbound_url import validate_public_base_url
 from celerp.output.doc_print import (
@@ -288,11 +288,7 @@ def _sanitize_bundle_doc(doc: dict) -> dict:
     lines: list[dict] = []
     for raw in public.get("line_items") or []:
         line: dict = {k: v for k, v in raw.items() if k in _LINE_STR_FIELDS or k in _LINE_NUM_FIELDS}
-        base = to_decimal(line.get("quantity", 0)) * to_decimal(line.get("unit_price", 0))
-        disc_pct = to_decimal(line.get("discount_pct", 0))
-        if disc_pct:
-            base = base * (to_decimal(1) - disc_pct / 100)
-        line["line_total"] = to_stored_float(round_money(base, currency))
+        line["line_total"] = to_stored_float(document_line_amount(line, currency) or to_decimal(0))
         taxes = _sanitize_taxes(raw.get("taxes"))
         if taxes:
             line["taxes"] = [t.model_dump() for t in taxes]

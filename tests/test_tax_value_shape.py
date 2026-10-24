@@ -262,12 +262,12 @@ async def test_only_the_one_helper_and_the_share_import_choose_an_unreadable_tax
                      "default_modules/celerp-docs/celerp_docs/routes_share.py"], users
 
 
-async def test_a_received_document_takes_only_its_tax_objects_as_a_list_rate():
+async def test_a_received_document_takes_only_its_tax_objects_onto_a_list():
     from celerp_docs.received import managed_fields
 
     doc = {"doc_taxes": ["VAT", *_TAX], "line_items": [{"description": "S", "quantity": 1, "taxes": ["VAT", *_TAX]}]}
     fields = managed_fields(doc, type("Target", (), {"kind": "list", "type": "quotation"})())
-    assert fields["tax"] == 7.0 and fields["line_items"][0]["tax_rate"] == 7.0
+    assert fields["tax"] == 7.0 and fields["line_items"][0]["taxes"] == _TAX
 
 
 @pytest.mark.parametrize("value, named", [

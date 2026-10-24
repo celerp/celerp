@@ -1203,6 +1203,9 @@ def _tax(rate: float, *, compound: bool = False) -> list[dict]:
     pytest.param({"doc_taxes": _tax(7.0), "discount": 15.0}, id="document-tax"),
     pytest.param({"line_items": [{"description": "Widget", "quantity": 2, "unit_price": 100.0,
                                   "taxes": _tax(10.0)}]}, id="line-tax"),
+    pytest.param({"line_items": [{"description": "Widget", "quantity": 2, "unit_price": 100.0,
+                                  "taxes": _tax(5.0, compound=True)}]}, id="compound-line-tax"),
+    pytest.param({"doc_taxes": _tax(5.0, compound=True)}, id="compound-document-tax"),
 ])
 async def test_booked_quotation_keeps_currency_and_total_exactly(client, extra):
     tok = await _token(client)
@@ -1218,21 +1221,18 @@ async def test_booked_quotation_keeps_currency_and_total_exactly(client, extra):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("extra, reason", [
-    pytest.param({"shipping": 25.0}, "no shipping charge", id="shipping"),
-    pytest.param({"doc_taxes": _tax(5.0, compound=True)}, "no compound tax", id="compound-document-tax"),
-    pytest.param({"line_items": [{"description": "Widget", "quantity": 2, "unit_price": 100.0,
-                                  "taxes": _tax(5.0, compound=True)}]}, "no compound tax", id="compound-line-tax"),
+@pytest.mark.parametrize("extra", [
+    pytest.param({"shipping": 25.0}, id="shipping"),
     pytest.param({"doc_taxes": _tax(7.0),
                   "line_items": [{"description": "Widget", "quantity": 2, "unit_price": 100.0,
-                                  "taxes": _tax(10.0)}]}, "not both", id="line-and-document-tax"),
+                                  "taxes": _tax(10.0)}]}, id="line-and-document-tax"),
 ])
-async def test_quotation_that_would_change_the_total_is_not_booked(client, session, extra, reason):
+async def test_quotation_that_would_change_the_total_is_not_booked(client, session, extra):
     tok = await _token(client)
     rid = await _import(client, tok, _bundle(_po(**extra)))
     r = await client.post(f"/docs/received/{rid}/book", headers=_h(tok))
     assert r.status_code == 422
-    assert reason in r.json()["detail"]
+    assert "as a quotation it would total" in r.json()["detail"]
     received = await _received(client, tok, rid)
     assert received["revision_state"] == "unbooked"
     assert received["booked_id"] is None
