@@ -9538,8 +9538,14 @@ async function celerpPageNav(url) {{
 /* Foreign-reserved save rejection: resolution dialog instead of the inline error.
    A native dialog element, so ESC closes it; closing keeps the rows so the user can
    open the reserving document (linked per line) to release the stock, then save again.
-   "Remove from draft" deletes the conflicted rows and re-saves clean. */
+   "Remove from draft" deletes the conflicted rows and re-saves clean.
+   A refusal can arrive for a save sent before the user removed those rows; it names only
+   the rows still on the page, and none left means no dialog (the save after the removal
+   is already queued). */
 function _celerpShowReservedConflicts(conflicts) {{
+    const onPage = new Set(Array.from(document.querySelectorAll('#{line_body_id} [data-name="entity_id"]'), i => i.value));
+    conflicts = conflicts.filter(c => !c.entity_id || onPage.has(c.entity_id));
+    if (!conflicts.length) return;
     document.getElementById('reserved-conflict-modal')?.remove();
     const dlg = document.createElement('dialog');
     dlg.id = 'reserved-conflict-modal';
