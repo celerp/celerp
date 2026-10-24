@@ -2340,6 +2340,7 @@
   "contacts.total_paid": "Total payé",
   "contacts.year_to_date": "Cumul annuel",
   "contacts.avg_days_to_pay": "Délai moyen de paiement",
+  "contacts.open_credit": "Open credit {amount}",
   "contacts.out_to_customer": "Expédié au client",
   "contacts.consignment": "Consignation",
   "contacts.held_from_supplier": "Retenu chez le fournisseur",

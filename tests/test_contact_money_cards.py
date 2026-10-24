@@ -179,3 +179,42 @@ async def test_each_contact_money_card_shows_the_figure_of_the_list_it_opens(own
     # The paid invoice is paid; the part payment on the open one is still awaited.
     assert cards["Total Paid"] == fmt_money(500.0, None), cards
     assert cards["Outstanding"] == fmt_money(900.0, None), cards
+
+
+def _outstanding_sublabel(html: str) -> str | None:
+    """The small line under the Outstanding card's label, or None when it has none."""
+    m = re.search(r'class="financial-card-label">\s*<span>Outstanding</span>\s*'
+                  r'(?:<span class="financial-card-sublabel">([^<]*)</span>)?', html)
+    assert m, "no Outstanding card"
+    return m.group(1)
+
+
+async def test_outstanding_shows_the_contact_s_open_credit_under_it(owner_ui, monkeypatch):
+    contact = await _demo_contact(owner_ui, monkeypatch)
+    api = owner_ui.api
+    currency = (await _ok(await api.get("/companies/me"))).get("currency") or "USD"
+    foreign = "EUR" if currency != "EUR" else "GBP"
+    await _invoice(api, contact, 250.0)
+    r = await owner_ui.get(f"/contacts/{contact['id']}")
+    assert _outstanding_sublabel(r.text) is None
+
+    async def credit_note(total: float, **extra) -> None:
+        cn = await _ok(await api.post("/docs", json={
+            "doc_type": "credit_note", "contact_id": contact["id"], "contact_name": contact["name"],
+            "line_items": [{"name": "Credit", "quantity": 1, "unit_price": total, "line_total": total}],
+            "total": total, **extra}))
+        await _ok(await api.post(f"/docs/{cn['id']}/finalize", json={}))
+
+    # Two credit notes not applied to any invoice, one in a foreign currency at rate 2, and a
+    # draft one, which is no credit yet: 15 + 10 at 2 = 35 open, in the company currency.
+    await credit_note(15.0)
+    await credit_note(10.0, currency=foreign, conversion_rate=2)
+    await _ok(await api.post("/docs", json={
+        "doc_type": "credit_note", "contact_id": contact["id"],
+        "line_items": [{"name": "Credit", "quantity": 1, "unit_price": 40.0, "line_total": 40.0}], "total": 40.0}))
+
+    r = await owner_ui.get(f"/contacts/{contact['id']}")
+    cards = _cards(r.text)
+    # Outstanding stays what the awaiting-payment list shows; the open credit is shown under it.
+    assert cards["Outstanding"] == fmt_money(250.0, None), cards
+    assert _outstanding_sublabel(r.text) == f"Open credit {fmt_money(35.0, None)}"

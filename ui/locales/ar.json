@@ -2339,6 +2339,7 @@
   "contacts.total_paid": "إجمالي المبلغ المدفوع",
   "contacts.year_to_date": "منذ بداية العام",
   "contacts.avg_days_to_pay": "متوسط أيام السداد",
+  "contacts.open_credit": "Open credit {amount}",
   "contacts.out_to_customer": "إلى العميل",
   "contacts.consignment": "شحنة",
   "contacts.held_from_supplier": "محتجز من المورد",

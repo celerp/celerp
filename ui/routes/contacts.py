@@ -246,18 +246,20 @@ async def _invoice_totals(token: str, contact_id: str, company: dict) -> dict[st
     draft or void) in the company currency: ``invoiced`` (All issued) and ``paid`` (Paid: the
     invoices paid in full) over this fiscal year to date, ``outstanding`` (Awaiting payment)
     what the invoices awaiting payment still owe. Each is None when the summary could not be
-    read."""
+    read. ``open_credit`` is what the contact's open credit notes still have to apply or refund,
+    shown under Outstanding: the aging report nets it, the awaiting-payment list does not."""
     date_from, date_to = _resolve_preset("this_fy", company)
     scope = {"doc_type": "invoice", "contact_id": contact_id}
     try:
-        ytd, open_ = await _asyncio.gather(
+        ytd, open_, credit = await _asyncio.gather(
             api.get_doc_summary(token, scope | {"date_from": date_from, "date_to": date_to}),
             api.get_doc_summary(token, scope),
+            api.get_doc_summary(token, scope | {"doc_type": "credit_note"}),
         )
     except APIError:
-        return {"invoiced": None, "paid": None, "outstanding": None}
+        return {"invoiced": None, "paid": None, "outstanding": None, "open_credit": None}
     return {"invoiced": ytd.get("all_issued_total"), "paid": ytd.get("paid_total"),
-            "outstanding": open_.get("awaiting_payment_total")}
+            "outstanding": open_.get("awaiting_payment_total"), "open_credit": credit.get("open_credit_total")}
 
 
 def _financial_summary(docs: list[dict], contact_id: str = "", invoice_totals: dict | None = None,
@@ -325,6 +327,7 @@ def _financial_summary(docs: list[dict], contact_id: str = "", invoice_totals: d
         _card(t("contacts.total_paid"), _money("paid"), sub_label=t("contacts.year_to_date"),
               href=f"/docs?type=invoice&status=paid{contact_filter}{ytd_filter}" if contact_id else ""),
         _card(t("th.outstanding"), _money("outstanding"),
+              sub_label=t("contacts.open_credit", amount=_money("open_credit")) if totals.get("open_credit") else "",
               href=(f"/docs?type=invoice&status_in={awaiting_status_param('invoice')}{contact_filter}&preset=all"
                     if contact_id else "")),
         _card(t("contacts.avg_days_to_pay"), avg_dtp),

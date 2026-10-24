@@ -2339,6 +2339,7 @@
   "contacts.total_paid": "ยอดชำระรวม",
   "contacts.year_to_date": "ตั้งแต่ต้นปี (YTD)",
   "contacts.avg_days_to_pay": "จำนวนวันชำระเงินเฉลี่ย",
+  "contacts.open_credit": "Open credit {amount}",
   "contacts.out_to_customer": "ส่งออกให้ลูกค้าแล้ว",
   "contacts.consignment": "ฝากขาย",
   "contacts.held_from_supplier": "รับฝากจากผู้จำหน่าย",

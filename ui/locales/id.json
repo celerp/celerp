@@ -2339,6 +2339,7 @@
   "contacts.total_paid": "Total yang Telah Dibayar",
   "contacts.year_to_date": "Tahun Ini (YTD)",
   "contacts.avg_days_to_pay": "Rata-rata Hari Pembayaran",
+  "contacts.open_credit": "Open credit {amount}",
   "contacts.out_to_customer": "Dikirim ke pelanggan",
   "contacts.consignment": "Konsinyasi",
   "contacts.held_from_supplier": "Ditahan dari pemasok",

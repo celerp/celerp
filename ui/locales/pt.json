@@ -2339,6 +2339,7 @@
   "contacts.total_paid": "Total pago",
   "contacts.year_to_date": "Acumulado no ano",
   "contacts.avg_days_to_pay": "Média de dias para pagamento",
+  "contacts.open_credit": "Open credit {amount}",
   "contacts.out_to_customer": "Enviado ao cliente",
   "contacts.consignment": "Consignação",
   "contacts.held_from_supplier": "Retido do fornecedor",

@@ -2339,6 +2339,7 @@
   "contacts.total_paid": "支払総額",
   "contacts.year_to_date": "年初来累計",
   "contacts.avg_days_to_pay": "平均支払日数",
+  "contacts.open_credit": "Open credit {amount}",
   "contacts.out_to_customer": "顧客への出荷",
   "contacts.consignment": "委託品",
   "contacts.held_from_supplier": "仕入先からの保留品",

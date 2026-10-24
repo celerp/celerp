@@ -706,6 +706,12 @@
     "modules.ask_admin_to_restart": {
       "en": "Ask an administrator to restart Celerp.",
       "params": []
+    },
+    "contacts.open_credit": {
+      "en": "Open credit {amount}",
+      "params": [
+        "amount"
+      ]
     }
   }
 }

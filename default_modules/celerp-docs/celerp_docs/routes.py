@@ -73,7 +73,7 @@ from celerp_contacts.references import contact_accepts, contact_snapshot, lock_c
 from celerp.output.document_context import prepare_document_output
 from celerp_docs.doc_constants import WRITEOFF_ACCOUNT_TYPES, INBOUND_DOC_TYPES, LEGACY_CONTACT_FIELDS, LIFECYCLE_OWNED_FIELDS, NON_FINANCIAL_DOC_TYPES, RESERVABLE_DOC_STATUSES, REVERTIBLE_STATUSES, SALES_PRICED_DOC_TYPES, SUPPLIER_RETURN_STATUSES, CREDIT_APPLICATION_METHODS, CONVERTIBLE_STATUSES
 from celerp.services.record_quantities import FULFILLABLE_STATUSES, QUOTATION_SPENT_STATUSES, RECEIVABLE_STATUSES, sent_out_by
-from celerp.services.doc_balance import DOC_FIELD_FALLBACKS, doc_value, is_awaiting_payment, is_overdue_document, is_owed, outstanding_balance
+from celerp.services.doc_balance import DOC_FIELD_FALLBACKS, doc_value, is_awaiting_payment, is_open_credit, is_overdue_document, is_owed, outstanding_balance
 from celerp.services.list_behavior import (
     DRAFT, FINALIZED, CLOSED, VOID, DEFAULT_LIST_TYPE, LIST_TYPES, SCAN_RUNS_FIELD, SUPPLIER_DOC_TYPES, ScanBehavior,
     behavior, scan_behavior, terminal_action, is_money_list,
@@ -1271,7 +1271,9 @@ async def get_doc_summary(
     The status filters are ignored: the cards split the filtered set by status.
 
     Totals are in the company currency (``_doc_base_amounts``). A document that cannot be valued
-    there is left out of every total and counted in ``unvalued_count``."""
+    there is left out of every total and counted in ``unvalued_count``. ``open_credit_total`` is
+    what the open credit notes and supplier credit notes still have to apply or refund
+    (``is_open_credit``, the rule the aging reports net them by)."""
     today = (await company_today(session, company_id)).isoformat()
     company = await session.get(Company, company_id)
     base_currency = (company.settings or {}).get("currency", "USD") if company else "USD"
@@ -1279,7 +1281,7 @@ async def get_doc_summary(
     rows = (await session.execute(select(Projection).where(*summary_where))).scalars().all()
     totals = dict.fromkeys((
         "ar_gross", "ar_paid", "ar_outstanding", "awaiting_payment", "overdue", "paid", "sent",
-        "draft", "void", "memo", "unfulfilled",
+        "draft", "void", "memo", "unfulfilled", "open_credit",
     ), Decimal(0))
     count_by_status: dict[str, int] = {}
     invoice_count = 0
@@ -1336,6 +1338,11 @@ async def get_doc_summary(
                 if amounts is None:
                     unvalued_count += 1
                 add("memo", amounts, "total")
+            if is_open_credit(state):
+                amounts = _doc_base_amounts(state, ("amount_outstanding",), base_currency)
+                if amounts is None:
+                    unvalued_count += 1
+                add("open_credit", amounts, "amount_outstanding")
             if is_awaiting_payment(dt, st):
                 awaiting_payment_count += 1
             if is_overdue_document(state, today):
@@ -1376,6 +1383,7 @@ async def get_doc_summary(
         "not_stocked_count": not_stocked_count,
         "unvalued_count": unvalued_count,
         "memo_all_total": money["memo"],
+        "open_credit_total": money["open_credit"],
         "count_by_status": count_by_status,
     }
 

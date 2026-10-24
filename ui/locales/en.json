@@ -2525,6 +2525,7 @@
   "contacts.total_paid": "Total Paid",
   "contacts.year_to_date": "Year To Date",
   "contacts.avg_days_to_pay": "Avg Days to Pay",
+  "contacts.open_credit": "Open credit {amount}",
   "contacts.out_to_customer": "Out to customer",
   "contacts.consignment": "Consignment",
   "contacts.held_from_supplier": "Held from supplier",
