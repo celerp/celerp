@@ -144,3 +144,38 @@ async def test_avg_days_to_pay_is_empty_without_a_paid_invoice(owner_ui, monkeyp
     await _invoice(owner_ui.api, contact, 100.0, issued=5)
     cards = await _contact_cards(owner_ui, contact)
     assert cards["Avg Days to Pay"] == "--", cards
+
+
+def _card_links(html: str) -> dict[str, str]:
+    """Each linked money card's label to the list it opens."""
+    return {label.strip(): href.replace("&amp;", "&") for href, label in re.findall(
+        r'<a href="([^"]+)" class="financial-card financial-card--link">\s*'
+        r'<div class="financial-card-label">\s*<span>([^<]+)</span>', html, re.S)}
+
+
+def _list_cards(html: str) -> dict[str, str]:
+    """Each status card on a document list to the total it shows, in figures only."""
+    return {label.strip(): re.sub(r"[^\d.,-]", "", total) for label, total in re.findall(
+        r'class="status-card-label">([^<]+)</span>.*?class="status-card-total">([^<]*)<', html, re.S)}
+
+
+async def test_each_contact_money_card_shows_the_figure_of_the_list_it_opens(owner_ui, monkeypatch):
+    contact = await _demo_contact(owner_ui, monkeypatch)
+    api = owner_ui.api
+    await _invoice(api, contact, 500.0, steps=("finalize", "send", "pay"))
+    partly = await _invoice(api, contact, 1000.0)
+    await _pay(api, partly, 300.0, _day())
+    await _invoice(api, contact, 200.0)
+
+    r = await owner_ui.get(f"/contacts/{contact['id']}")
+    assert r.status_code == 200, r.text
+    cards, links = _cards(r.text), _card_links(r.text)
+    # The card each one opens on the invoice list, which counts the same invoices.
+    for card, list_card in (("Total Invoiced", "All Issued"), ("Total Paid", "Paid"),
+                            ("Outstanding", "Awaiting Payment")):
+        page = await owner_ui.get(links[card])
+        assert page.status_code == 200, page.text
+        assert _list_cards(page.text)[list_card] == cards[card], (card, links[card], cards)
+    # The paid invoice is paid; the part payment on the open one is still awaited.
+    assert cards["Total Paid"] == fmt_money(500.0, None), cards
+    assert cards["Outstanding"] == fmt_money(900.0, None), cards

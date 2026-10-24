@@ -242,9 +242,11 @@ def _settings_card(c: dict) -> FT:
 
 async def _invoice_totals(token: str, contact_id: str, company: dict) -> dict[str, float | None]:
     """The contact's invoice money cards, from the document summary the invoice list's cards use,
-    so they count the same invoices (issued, not draft or void) in the company currency:
-    ``invoiced`` and ``paid`` over this fiscal year to date, ``outstanding`` what the invoices
-    awaiting payment still owe. Each is None when the summary could not be read."""
+    so each card shows the figure of the list card it opens, over the same invoices (issued, not
+    draft or void) in the company currency: ``invoiced`` (All issued) and ``paid`` (Paid: the
+    invoices paid in full) over this fiscal year to date, ``outstanding`` (Awaiting payment)
+    what the invoices awaiting payment still owe. Each is None when the summary could not be
+    read."""
     date_from, date_to = _resolve_preset("this_fy", company)
     scope = {"doc_type": "invoice", "contact_id": contact_id}
     try:
@@ -254,7 +256,7 @@ async def _invoice_totals(token: str, contact_id: str, company: dict) -> dict[st
         )
     except APIError:
         return {"invoiced": None, "paid": None, "outstanding": None}
-    return {"invoiced": ytd.get("ar_total"), "paid": ytd.get("ar_paid"),
+    return {"invoiced": ytd.get("all_issued_total"), "paid": ytd.get("paid_total"),
             "outstanding": open_.get("awaiting_payment_total")}
 
 
