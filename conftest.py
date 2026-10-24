@@ -5,7 +5,16 @@ from __future__ import annotations
 
 import os
 import shutil
+import sys
+import tempfile
 from pathlib import Path
+
+# Bytecode goes to a cache outside the source tree. Every xdist worker shares the module
+# folders, and loading a module removes the bytecode in its folder and then checks none is
+# left: a worker that imported module code and wrote bytecode there at that moment made
+# another worker's load fail. The processes the tests start use the same cache.
+os.environ.setdefault("PYTHONPYCACHEPREFIX", os.path.join(tempfile.gettempdir(), "celerp-test-pycache"))
+sys.pycache_prefix = sys.pycache_prefix or os.environ["PYTHONPYCACHEPREFIX"]
 
 from conftest_support import (
     is_own_test_config, provision_worker_db, resolve_worker_config, resolve_worker_data_dir)
