@@ -27,8 +27,9 @@ def _escaped(node) -> bool:
 def test_no_search_pattern_leaves_a_value_s_wildcards_live():
     live = []
     for path in _sources():
+        name = path.relative_to(REPO_ROOT)
         for node in ast.walk(ast.parse(path.read_text())):
-            where = f"{path.relative_to(REPO_ROOT)}:{getattr(node, 'lineno', '?')}"
+            where = f"{name}:{getattr(node, 'lineno', '?')}"
             if isinstance(node, ast.JoinedStr):
                 parts = node.values
                 for before, value in zip(parts, parts[1:]):
