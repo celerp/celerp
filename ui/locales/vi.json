@@ -6470,7 +6470,7 @@
   "notice.tax_seed.my-sst-6.title": "Malaysia SST 6% replaced",
   "notice.tax_seed.my-sst-6.body": "SST 6% is no longer in force. Malaysia now charges Sales Tax at 10% or 5% on goods, and Service Tax at 8% or 6% on services. Change the SST 6% row in Settings > Taxes.",
   "notice.customs_freeze.title": "Issued shipping documents keep their item details",
-  "notice.customs_freeze.body": "Your issued shipping documents ({count}) now keep the HS codes, countries of origin, weights, measures and barcodes of their items as they were at Issue, so later changes to the items no longer alter them. The details saved are the ones these documents print today.",
+  "notice.customs_freeze.body": "For shipping documents issued before this update, Celerp has saved the item details currently shown on those documents. Future item changes will no longer change their issued copies. These details may differ from what the items showed when the documents were originally issued.",
   "migration.xero_attachments_later": "Các tệp đính kèm hóa đơn, hóa đơn mua và giấy báo có trong Xero không có trong bản xuất. Khi quá trình nhập hoàn tất, hãy lấy chúng từ Xero trên trang kết quả kiểm tra.",
   "migration.xero_attachments_title": "Tệp đính kèm trong Xero",
   "migration.xero_attachments_hint": "Celerp đăng nhập vào tổ chức Xero của khách hàng, tải xuống các tệp đính kèm từng hóa đơn, hóa đơn mua và giấy báo có đã nhập, rồi đính kèm chúng vào cùng tài liệu tại đây. Celerp chỉ đọc từ Xero và không bao giờ thay đổi gì ở đó.",

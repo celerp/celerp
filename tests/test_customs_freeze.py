@@ -211,6 +211,27 @@ async def _freeze_notices(session, company_id) -> list[Notification]:
     return [n for n in rows if (n.i18n or {}).get("title") == "notice.customs_freeze.title"]
 
 
+_FREEZE_BODY = (
+    "For shipping documents issued before this update, Celerp has saved the item details currently "
+    "shown on those documents. Future item changes will no longer change their issued copies. These "
+    "details may differ from what the items showed when the documents were originally issued.")
+
+
+async def test_freeze_notice_already_shown_reads_the_corrected_text():
+    """A notice stored by an earlier start (with the item count it carried) shows the corrected text:
+    the details saved are what the documents print now, not what they showed at Issue."""
+    import json
+
+    from ui.routes.notifications import _in_reader_language
+
+    stored = {"items": [{"title": "t", "body": "old", "i18n": {
+        "title": "notice.customs_freeze.title", "body": "notice.customs_freeze.body",
+        "params": {"count": 3}}}]}
+    shown = json.loads(_in_reader_language(json.dumps(stored).encode()))["items"][0]
+    assert shown["body"] == _FREEZE_BODY
+    assert "at Issue" not in shown["body"]
+
+
 async def test_startup_freeze_tells_each_affected_company_once(client, auth, session):
     from test_helpers import company_auth
 
@@ -223,7 +244,7 @@ async def test_startup_freeze_tells_each_affected_company_once(client, auth, ses
     await _start(session)
     notices = await _freeze_notices(session, auth["company_id"])
     assert len(notices) == 1
-    assert notices[0].i18n["params"]["count"] == 2
+    assert notices[0].body == _FREEZE_BODY
     assert notices[0].action_url == "/lists"
     assert await _freeze_notices(session, other["company_id"]) == []
 

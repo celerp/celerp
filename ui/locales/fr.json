@@ -6470,7 +6470,7 @@
   "notice.tax_seed.my-sst-6.title": "Malaysia SST 6% replaced",
   "notice.tax_seed.my-sst-6.body": "SST 6% is no longer in force. Malaysia now charges Sales Tax at 10% or 5% on goods, and Service Tax at 8% or 6% on services. Change the SST 6% row in Settings > Taxes.",
   "notice.customs_freeze.title": "Issued shipping documents keep their item details",
-  "notice.customs_freeze.body": "Your issued shipping documents ({count}) now keep the HS codes, countries of origin, weights, measures and barcodes of their items as they were at Issue, so later changes to the items no longer alter them. The details saved are the ones these documents print today.",
+  "notice.customs_freeze.body": "For shipping documents issued before this update, Celerp has saved the item details currently shown on those documents. Future item changes will no longer change their issued copies. These details may differ from what the items showed when the documents were originally issued.",
   "migration.xero_attachments_later": "Les fichiers joints aux factures, factures fournisseurs et avoirs dans Xero ne sont pas dans l'export. Une fois l'importation terminée, récupérez-les depuis Xero sur la page des résultats de vérification.",
   "migration.xero_attachments_title": "Pièces jointes dans Xero",
   "migration.xero_attachments_hint": "Celerp se connecte à l'organisation Xero du client, télécharge les fichiers joints à chaque facture, facture fournisseur et avoir importé, et les joint ici au même document. Il lit seulement depuis Xero et n'y modifie jamais rien.",

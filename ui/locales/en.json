@@ -6469,7 +6469,7 @@
   "notice.tax_seed.my-sst-6.title": "Malaysia SST 6% replaced",
   "notice.tax_seed.my-sst-6.body": "SST 6% is no longer in force. Malaysia now charges Sales Tax at 10% or 5% on goods, and Service Tax at 8% or 6% on services. Change the SST 6% row in Settings > Taxes.",
   "notice.customs_freeze.title": "Issued shipping documents keep their item details",
-  "notice.customs_freeze.body": "Your issued shipping documents ({count}) now keep the HS codes, countries of origin, weights, measures and barcodes of their items as they were at Issue, so later changes to the items no longer alter them. The details saved are the ones these documents print today.",
+  "notice.customs_freeze.body": "For shipping documents issued before this update, Celerp has saved the item details currently shown on those documents. Future item changes will no longer change their issued copies. These details may differ from what the items showed when the documents were originally issued.",
   "account.gate_xero_attachments_benefit": "Sign in with your Celerp account to fetch the attachments from Xero.",
   "migration.xero_attachments_later": "Files attached to invoices, bills and credit notes in Xero are not in the export. Once the import finishes, fetch them from Xero on the check results page.",
   "migration.xero_attachments_title": "Attachments in Xero",

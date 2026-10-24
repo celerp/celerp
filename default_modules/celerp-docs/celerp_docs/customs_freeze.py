@@ -81,10 +81,10 @@ async def freeze_issued_customs_lists(session: AsyncSession) -> dict:
         if saved["line_items"] != lines:
             frozen[company_id] = frozen.get(company_id, 0) + 1
 
-    for company_id, count in frozen.items():
+    for company_id in frozen:
         await notify_once(session, company_id, "system", t(f"{_NOTICE}.title", "en"),
-                          t(f"{_NOTICE}.body", "en", count=count), action_url="/lists",
-                          i18n={"title": f"{_NOTICE}.title", "body": f"{_NOTICE}.body", "params": {"count": count}})
+                          t(f"{_NOTICE}.body", "en"), action_url="/lists",
+                          i18n={"title": f"{_NOTICE}.title", "body": f"{_NOTICE}.body"})
     if not failed and not any(staged.values()):
         await conn.run_sync(lambda c: set_meta(c, CUSTOMS_FREEZE_KEY, "done"))
     total = sum(frozen.values())

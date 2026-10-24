@@ -6470,7 +6470,7 @@
   "notice.tax_seed.my-sst-6.title": "Malaysia SST 6% replaced",
   "notice.tax_seed.my-sst-6.body": "SST 6% is no longer in force. Malaysia now charges Sales Tax at 10% or 5% on goods, and Service Tax at 8% or 6% on services. Change the SST 6% row in Settings > Taxes.",
   "notice.customs_freeze.title": "Issued shipping documents keep their item details",
-  "notice.customs_freeze.body": "Your issued shipping documents ({count}) now keep the HS codes, countries of origin, weights, measures and barcodes of their items as they were at Issue, so later changes to the items no longer alter them. The details saved are the ones these documents print today.",
+  "notice.customs_freeze.body": "For shipping documents issued before this update, Celerp has saved the item details currently shown on those documents. Future item changes will no longer change their issued copies. These details may differ from what the items showed when the documents were originally issued.",
   "migration.xero_attachments_later": "Xeroで請求書、仕入請求書、クレジットノートに添付されたファイルはエクスポートに含まれません。インポートが完了したら、確認結果のページでXeroから取得してください。",
   "migration.xero_attachments_title": "Xeroの添付ファイル",
   "migration.xero_attachments_hint": "CelerpはクライアントのXero組織にサインインし、インポートされた各請求書、仕入請求書、クレジットノートに添付されたファイルをダウンロードして、ここで同じドキュメントに添付します。Xeroからは読み取るだけで、Xero側を変更することはありません。",
