@@ -631,28 +631,13 @@ def _discount_change_summary(fields_changed: dict, currency: str | None):
     return ", ".join(parts), _DISCOUNT_CONSUMED
 
 
-def _line_effective_tax(li: dict, currency: str | None) -> tuple[float, float]:
-    """(rate_percent, tax_amount) for a line, read as a list charges it (doc_money.list_line_tax
-    on its ``line_total``): the summed rates of its ``taxes`` and their amounts, compound
-    included, else its legacy per-line ``tax_rate``."""
-    from celerp_docs.doc_money import line_tax_definition, list_line_tax
-
-    try:
-        entries, rate = line_tax_definition(li)
-        amount = list_line_tax(dict(li), to_decimal(li.get("line_total") or 0), currency)
-        rate = sum((to_decimal(tx.get("rate") or 0) for tx in entries), rate)
-    except (TypeError, ValueError, InvalidOperation):
-        return 0.0, 0.0
-    return float(rate), float(amount)
-
-
 def _line_tax_change_summary(fields_changed: dict, currency: str | None):
-    """Per-item tax-rate changes from a line_items diff, e.g.
-    'DEMO-AUTO-007 Tax 0% → 7% (0.00 → 503.44)'.
+    """Per-item tax-rate changes from a line_items diff, then the tax the document charges as
+    it was recalculated, once, e.g. 'DEMO-AUTO-007 Tax 0% → 7%, Tax: $0.00 → $453.10'. A line's
+    own amount is never worked out again here: the document's discount and rounding decide it.
 
-    Returns (parts, consumed). When any per-line tax change is shown we consume the
-    document-level ``tax`` scalar so the history doesn't also dump a bare, item-less
-    "Tax: 0.00 → 503.44" for the same change.
+    Returns (parts, consumed). When any per-line tax change is shown the tax amount (``tax`` on a
+    document, ``tax_amount`` on a list) is consumed so the history doesn't also dump it bare.
     """
     change = fields_changed.get("line_items")
     if not isinstance(change, dict):
@@ -664,6 +649,14 @@ def _line_tax_change_summary(fields_changed: dict, currency: str | None):
     def _key(li):
         return li.get("entity_id") or li.get("item_id") or li.get("sku") or li.get("name") or ""
 
+    from celerp_docs.doc_money import line_tax_rate
+
+    def _rate(li) -> Decimal | None:
+        try:
+            return line_tax_rate(li)
+        except (TypeError, ValueError, InvalidOperation):
+            return None
+
     old_by = {_key(li): li for li in old if isinstance(li, dict)}
     parts: list[str] = []
     for li in new:
@@ -672,17 +665,19 @@ def _line_tax_change_summary(fields_changed: dict, currency: str | None):
         prev = old_by.get(_key(li))
         if prev is None:  # added lines are reported by the line_items add/remove diff
             continue
-        o_rate, o_amt = _line_effective_tax(prev, currency)
-        n_rate, n_amt = _line_effective_tax(li, currency)
-        if o_rate == n_rate:
+        o_rate, n_rate = _rate(prev), _rate(li)
+        if o_rate == n_rate or None in (o_rate, n_rate):
             continue
         name = li.get("sku") or li.get("name") or ""
         label = f"{name} " if name else ""
-        parts.append(
-            f"{label}{t('activity.tax')} {o_rate:g}% → {n_rate:g}% "
-            f"({fmt_price(o_amt, 'tax', currency)} → {fmt_price(n_amt, 'tax', currency)})"
-        )
-    return parts, (frozenset({"tax"}) if parts else frozenset())
+        parts.append(f"{label}{t('activity.tax')} {float(o_rate):g}% → {float(n_rate):g}%")
+    if not parts:
+        return [], frozenset()
+    scalar = "tax_amount" if "tax_amount" in fields_changed else "tax"
+    o_tax, n_tax = _change_old_new(fields_changed.get(scalar) or {})
+    if o_tax is not None and n_tax is not None and o_tax != n_tax:
+        parts.append(f"{t('activity.tax')}: {fmt_price(o_tax, 'tax', currency)} → {fmt_price(n_tax, 'tax', currency)}")
+    return parts, frozenset({"tax", "tax_amount"})
 
 
 def _doc_tax_change_summary(fields_changed: dict, currency: str | None, show_total: bool):

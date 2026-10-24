@@ -191,7 +191,10 @@
     "settings.tab_cloud_relay",
     "setup.cloud",
     "th.position",
-    "th.sku"
+    "th.sku",
+    "documents.err_received_list_total",
+    "notice.list_tax_rule.title",
+    "notice.list_tax_rule.body"
   ],
   "ar": [
     "account.email_placeholder",
@@ -373,7 +376,10 @@
     "settings.tab_cloud_relay",
     "setup.cloud",
     "th.position",
-    "th.sku"
+    "th.sku",
+    "documents.err_received_list_total",
+    "notice.list_tax_rule.title",
+    "notice.list_tax_rule.body"
   ],
   "de": [
     "acct.source_system",
@@ -626,7 +632,10 @@
     "th.sku",
     "th.status",
     "th.text",
-    "th.version"
+    "th.version",
+    "documents.err_received_list_total",
+    "notice.list_tax_rule.title",
+    "notice.list_tax_rule.body"
   ],
   "es": [
     "account.plan",
@@ -852,7 +861,10 @@
     "th.factor",
     "th.position",
     "th.sku",
-    "th.total"
+    "th.total",
+    "documents.err_received_list_total",
+    "notice.list_tax_rule.title",
+    "notice.list_tax_rule.body"
   ],
   "fr": [
     "acct.tab_journal",
@@ -1119,7 +1131,10 @@
     "th.sku",
     "th.source",
     "th.total",
-    "th.version"
+    "th.version",
+    "documents.err_received_list_total",
+    "notice.list_tax_rule.title",
+    "notice.list_tax_rule.body"
   ],
   "id": [
     "acct.source_manual",
@@ -1370,7 +1385,10 @@
     "th.ref",
     "th.sku",
     "th.status",
-    "th.total"
+    "th.total",
+    "documents.err_received_list_total",
+    "notice.list_tax_rule.title",
+    "notice.list_tax_rule.body"
   ],
   "it": [
     "attr.volume_l",
@@ -1593,7 +1611,10 @@
     "th.memo",
     "th.output",
     "th.position",
-    "th.sku"
+    "th.sku",
+    "documents.err_received_list_total",
+    "notice.list_tax_rule.title",
+    "notice.list_tax_rule.body"
   ],
   "ja": [
     "account.email_placeholder",
@@ -1785,7 +1806,10 @@
     "settings.tab_cloud_relay",
     "setup.cloud",
     "th.position",
-    "th.sku"
+    "th.sku",
+    "documents.err_received_list_total",
+    "notice.list_tax_rule.title",
+    "notice.list_tax_rule.body"
   ],
   "pt": [
     "acct.source_manual",
@@ -2022,7 +2046,10 @@
     "th.sku",
     "th.skuitem",
     "th.status",
-    "th.total"
+    "th.total",
+    "documents.err_received_list_total",
+    "notice.list_tax_rule.title",
+    "notice.list_tax_rule.body"
   ],
   "th": [
     "account.email_placeholder",
@@ -2212,7 +2239,10 @@
     "settings.tab_cloud_relay",
     "setup.cloud",
     "th.position",
-    "th.sku"
+    "th.sku",
+    "documents.err_received_list_total",
+    "notice.list_tax_rule.title",
+    "notice.list_tax_rule.body"
   ],
   "vi": [
     "btn.u00d7",
@@ -2406,6 +2436,9 @@
     "settings.tab_cloud_relay",
     "setup.cloud",
     "th.position",
-    "th.sku"
+    "th.sku",
+    "documents.err_received_list_total",
+    "notice.list_tax_rule.title",
+    "notice.list_tax_rule.body"
   ]
 }

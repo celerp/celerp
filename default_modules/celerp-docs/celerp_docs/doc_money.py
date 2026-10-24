@@ -4,7 +4,8 @@
 
 The header discount (flat or a percentage of the subtotal) reduces the taxable
 base, and every tax, per line or on the whole document, is computed on that
-reduced base. This is the same rule the document editor applies on screen.
+reduced base. This is the same rule the document editor applies on screen, and
+lists (quotations) follow it too (list_money).
 """
 from __future__ import annotations
 
@@ -13,7 +14,7 @@ from decimal import Decimal
 from fastapi import HTTPException
 
 from celerp.services.list_behavior import FINALIZED
-from celerp.services.money import round_money, to_decimal, to_stored_float
+from celerp.services.money import discount_from_inputs, document_line_amount, round_money, to_decimal, to_stored_float
 from celerp.tax_regimes import line_tax_unset, tax_entries, tax_text, unreadable_tax
 from celerp_docs.doc_constants import (DRAFT_REVERT_RETURNED, DRAFT_REVERT_STATUSES, INBOUND_DOC_TYPES,
                                       INBOUND_DRAFT_REVERT_STATUSES)
@@ -135,18 +136,11 @@ def line_has_tax(line: dict) -> bool:
     return bool(entries or rate)
 
 
-def list_line_tax(line: dict, amount, currency: str):
-    """The tax on a list line of this *amount* (line_tax_definition): its ``taxes`` by the rule
-    documents use (_recompute_tax_applications), their amounts written onto the line, else its
-    ``tax_rate`` as lists have always charged it, unrounded until the list's total. A list taxes
-    each line on its own amount and takes its header discount off the total. Every list write
-    refuses a tax that cannot be computed (refuse_malformed_taxes); one an older version stored
-    is not charged, so recomputing a list never fails on it."""
+def line_tax_rate(line: dict) -> Decimal:
+    """The rate a line is taxed at, as its tax choice shows it: the sum of its taxes' rates
+    (line_tax_definition), else its ``tax_rate``."""
     entries, rate = line_tax_definition(line)
-    if not entries:
-        return amount * rate / 100
-    line["taxes"], tax = _recompute_tax_applications(entries, amount, currency)
-    return tax
+    return sum((to_decimal(entry.get("rate") or 0) for entry in entries), rate)
 
 
 def uncomputable_tax(values: dict) -> str | None:
@@ -178,14 +172,10 @@ def refuse_malformed_taxes(values: dict, state: dict | None = None) -> None:
         raise unreadable_tax_refusal(named, state)
 
 
-def _line_amount(line: dict):
-    value = line.get("line_total")
-    if value not in (None, ""):
-        return to_decimal(value or 0)
-    return (
-        to_decimal(line.get("quantity", 0) or 0)
-        * to_decimal(line.get("unit_price", 0) or 0)
-    )
+def _line_amount(line: dict, currency: str) -> Decimal:
+    """A line's amount (document_line_amount: its own total, else quantity times its price less
+    its discount_pct); a line with no price is 0."""
+    return document_line_amount(line, currency) or to_decimal(0)
 
 
 def _has_rate(state: dict) -> bool:
@@ -212,8 +202,28 @@ def document_money(state: dict, lines: list[dict], currency: str, *, keep_unrate
     """
     refuse_malformed_taxes({"doc_taxes": state.get("doc_taxes"), "line_items": lines},
                            stored if stored is not None else state)
+    return _derived_money(state, lines, currency, keep_unrated_tax=keep_unrated_tax, stored=stored)
+
+
+def list_money(state: dict, lines: list[dict], currency: str) -> dict:
+    """A list's subtotal, discount_amount, tax_amount and total by the document rule
+    (document_money): its header ``tax`` is the rate a document holds as ``tax_rate``, and a list
+    has no document taxes or shipping. A tax an older version stored that cannot be computed is
+    not charged (line_tax_definition), so recomputing a list never fails on it; every list write
+    refuses one (refuse_malformed_taxes)."""
+    if discount_from_inputs(state, 0, currency) is None:
+        raise ValueError("Discount must be a number")
+    inputs = {"discount": state.get("discount"), "discount_type": state.get("discount_type"),
+              "tax_rate": state.get("tax")}
+    money = _derived_money(inputs, lines, currency, keep_unrated_tax=True, stored=None)
+    return {"subtotal": money["subtotal"], "discount_amount": money["discount_amount"],
+            "tax_amount": money["tax"], "total": money["total"]}
+
+
+def _derived_money(state: dict, lines: list[dict], currency: str, *, keep_unrated_tax: bool,
+                   stored: dict | None) -> dict:
     subtotal = round_money(
-        sum((_line_amount(line) for line in lines if isinstance(line, dict)), to_decimal(0)),
+        sum((_line_amount(line, currency) for line in lines if isinstance(line, dict)), to_decimal(0)),
         currency,
     )
     discount = max(to_decimal(0), to_decimal(state.get("discount", 0) or 0))
@@ -230,7 +240,7 @@ def document_money(state: dict, lines: list[dict], currency: str, *, keep_unrate
     for line in lines:
         if not isinstance(line, dict):
             continue
-        base = _line_amount(line) * ratio
+        base = _line_amount(line, currency) * ratio
         line_taxes, rate = line_tax_definition(line)
         if line_taxes:
             resolved, amount = _recompute_tax_applications(line_taxes, base, currency)
@@ -277,6 +287,6 @@ def money_from_lines(data: dict, currency: str) -> dict:
     line's total (its own, or quantity times unit price) and the document's subtotal,
     discount, taxes and total (document_money). The one rule for a document created in the
     app and a draft imported without totals."""
-    lines = [{**line, "line_total": to_stored_float(round_money(_line_amount(line), currency))}
+    lines = [{**line, "line_total": to_stored_float(_line_amount(line, currency))}
              for line in data.get("line_items") or [] if isinstance(line, dict)]
     return {**data, **document_money(data, lines, currency, keep_unrated_tax=True), "line_items": lines}

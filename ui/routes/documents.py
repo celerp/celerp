@@ -6611,14 +6611,6 @@ async def doc_detail_connectors(company: dict) -> set[str]:
         str(company.get("id") or ""), required_connectors("doc_detail_actions", "doc_detail_badges"))
 
 
-def _line_tax_rate(li: dict) -> float:
-    """A line's tax rate: the sum of its taxes' rates, or its tax_rate when it has none."""
-    stored = tax_entries(li.get("taxes"))
-    if stored:
-        return sum(float(tx.get("rate", 0) or 0) for tx in stored)
-    return float(li.get("tax_rate", 0) or 0)
-
-
 def _tax_label(tax: dict) -> str:
     """A tax as the line's tax choice names it: its code (a company tax's name), rate in brackets."""
     name = tax.get("code") or tax.get("name") or tax.get("label") or t("documents.tax")
@@ -7521,7 +7513,8 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             held = _held_taxes(li.get("taxes"))
             stored = tax_entries(held)
             unreadable = len(stored) != len(held)
-            current_rate = _line_tax_rate(li)
+            from celerp_docs.doc_money import line_tax_rate
+            current_rate = float(line_tax_rate(li))
             if len(stored) == 1:
                 current_code = stored[0].get("code", "") or ""
                 current_label = stored[0].get("label", "") or ""
@@ -9975,6 +9968,7 @@ async function celerpCsvImport(input, entityId) {{
         }
 
         def _li_row(li: dict, idx: int = 0) -> FT:
+            from celerp_docs.doc_money import line_tax_rate
             qty = float(li.get("quantity", 0) or 0)
             price = float(li.get("unit_price", 0) or 0)
             discount_pct = float(li.get("discount_pct") or 0)
@@ -10068,7 +10062,7 @@ async function celerpCsvImport(input, entityId) {{
                 Td(qty_label({**li, "unit": display_unit(li.get("unit") or li.get("sell_by"))}), _return_qty, cls="col-qty"),
                 Td(fmt_rate(li.get("unit_price"), currency), cls="cell--number col-unit-price"),
                 Td(f"{discount_pct:.1f}%" if discount_pct else "--", cls="col-disc"),
-                Td(format_value(_line_tax_rate(li) or None), cls="col-tax"),
+                Td(format_value(float(line_tax_rate(li)) or None), cls="col-tax"),
             ])
             if doc_type in ("purchase_order", "bill"):
                 acct_code = li.get("account_code") or ""

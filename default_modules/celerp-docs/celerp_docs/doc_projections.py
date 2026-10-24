@@ -7,9 +7,9 @@ from copy import deepcopy
 from decimal import Decimal
 
 from celerp.services.document_lines import received_line_index
-from celerp.services.money import discount_from_inputs, document_line_amount, round_money, to_decimal, to_stored_float
+from celerp.services.money import round_money, to_decimal, to_stored_float
 from celerp_docs.doc_constants import LEGACY_CONTACT_FIELDS
-from celerp_docs.doc_money import line_has_tax, list_line_tax
+from celerp_docs.doc_money import list_money
 
 
 def _fold_legacy_list_contact(state: dict) -> None:
@@ -21,39 +21,11 @@ def _fold_legacy_list_contact(state: dict) -> None:
 
 
 def _recalc_list_totals(state: dict) -> dict:
-    """Recompute subtotal, discount_amount, tax_amount, total from line_items + header fields.
-
-    All monetary results are computed with Decimal and rounded to the list's currency precision
-    (never raw float) so totals never carry IEEE-754 tails like "346.50000000000006".
-    """
-    currency = state.get("currency")
-    # Copies: list_line_tax writes tax amounts onto a line, and the lines may be the event's own.
+    """Recompute subtotal, discount_amount, tax_amount and total from line_items and the header
+    inputs, by the rule every document follows (doc_money.list_money)."""
+    # Copies: the money writes tax amounts onto a line, and the lines may be the event's own.
     items = state["line_items"] = [dict(i) if isinstance(i, dict) else i for i in state.get("line_items") or []]
-
-    def _li_amount(i: dict):
-        return document_line_amount(i, currency) or to_decimal(0)
-
-    subtotal = round_money(sum((_li_amount(i) for i in items), to_decimal(0)), currency)
-    state["subtotal"] = to_stored_float(subtotal)
-
-    # Always from the inputs: the stored discount_amount is this function's own previous output.
-    discount_amount = discount_from_inputs(state, subtotal, currency)
-    if discount_amount is None:
-        raise ValueError("Discount must be a number")
-    state["discount_amount"] = to_stored_float(discount_amount)
-
-    taxable = subtotal - discount_amount
-    # The lines' own taxes (list_line_tax) once any line has one, 0% included, as on a document;
-    # else the header tax rate.
-    lines = [i for i in items if isinstance(i, dict)]
-    if any(line_has_tax(i) for i in lines):
-        tax_amount = round_money(sum((list_line_tax(i, _li_amount(i), currency) for i in lines), to_decimal(0)),
-                                 currency)
-    else:
-        tax_rate = to_decimal(state.get("tax", 0) or 0)
-        tax_amount = round_money(taxable * tax_rate / 100, currency)
-    state["tax_amount"] = to_stored_float(tax_amount)
-    state["total"] = to_stored_float(round_money(taxable + tax_amount, currency))
+    state.update(list_money(state, [i for i in items if isinstance(i, dict)], state.get("currency")))
     return state
 
 

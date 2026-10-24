@@ -231,3 +231,44 @@ async def test_importing_a_retired_tax_row_raises_its_notice_at_once(client, pat
     r = await client.post(path, headers=h, json={"records": [_record(sst)]})
     assert r.status_code == 200 and r.json()["created"] == 1, r.text
     assert await _bell(client, h) == {"my-sst-6"}
+
+
+async def _list_notice(session, company_id) -> Notification | None:
+    session.expire_all()
+    rows = (await session.execute(select(Notification).where(Notification.company_id == company_id))).scalars().all()
+    return next((n for n in rows if (n.i18n or {}).get("title") == "notice.list_tax_rule.title"), None)
+
+
+async def test_quotations_saved_under_the_earlier_tax_rule_are_told_and_never_changed(client, session):
+    """A quotation an earlier version saved taxed its lines before the header discount. Its stored
+    totals are the company's record, so the startup pass only reads them: it names the quotations
+    the document rule would total differently, leaves them as they are, and clears the notice once
+    each has been saved again."""
+    from celerp.models.projections import Projection
+    from test_tax_acceptance_matrix import _demo_company
+
+    auth, _ = await _demo_company(client, session, "USD")
+    r = await client.post("/lists", headers=auth["headers"], json={
+        "list_type": "quotation", "currency": "USD", "discount": 10, "discount_type": "flat",
+        "line_items": [{"description": "Service", "quantity": 1, "unit_price": 100,
+                        "taxes": [{"code": "VAT 10%", "rate": 10, "order": 0, "is_compound": False, "label": ""}]}]})
+    assert r.status_code == 200, r.text
+    lst = r.json()["id"]
+    row = await session.get(Projection, (auth["company_id"], lst))
+    earlier = {**row.state, "tax_amount": 10.0, "total": 100.0}  # as the earlier list rule saved it
+    row.state = earlier
+    await session.commit()
+
+    await _run(session)
+    await _run(session)
+    notice = await _list_notice(session, auth["company_id"])
+    assert notice is not None and notice.action_url == "/lists"
+    assert notice.i18n["params"] == {"count": 1, "refs": earlier["ref_id"]}
+    session.expire_all()
+    assert (await session.get(Projection, (auth["company_id"], lst))).state == earlier
+
+    r = await client.patch(f"/lists/{lst}", headers=auth["headers"], json={
+        "fields_changed": {"notes": {"old": None, "new": "Saved again"}}})
+    assert r.status_code == 200, r.text
+    await _run(session)
+    assert await _list_notice(session, auth["company_id"]) is None

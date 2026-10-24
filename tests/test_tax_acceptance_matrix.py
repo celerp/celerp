@@ -355,19 +355,38 @@ async def test_a_quotation_taxed_on_the_whole_list_converts_to_an_invoice_chargi
         _expected_roles("invoice", 39.61, 2.59))
 
 
-async def test_a_discounted_quotation_converts_to_an_invoice_taxed_by_the_document_rule(client, session):
-    """A list taxes each line on its own amount and takes its discount off the total; the
-    invoice it converts to is what is issued, so it taxes the discounted amount as every
-    document does: 10% off 37.02 leaves 33.32, and VAT 7% on that is 2.33."""
-    auth, _ = await _demo_company(client, session, "USD")
+_VAT10 = [_tax("VAT 10%", 10)]
+# case -> currency, header discount, lines, (subtotal, discount, tax, total) worked by hand: the header
+# discount comes off before tax and each line's tax is rounded on its own, as on every document.
+QUOTE_CASES = {
+    "usd_header_pct": ("USD", {"discount": 1, "discount_type": "percentage"},
+                       [{"quantity": 1, "unit_price": 100, "taxes": _VAT10}], (100, 1, 9.90, 108.90)),
+    "usd_header_flat_rate_only": ("USD", {"discount": 10, "discount_type": "flat"},
+                                  [{"quantity": 1, "unit_price": 100, "tax_rate": 10}], (100, 10, 9, 99)),
+    "jpy_header_pct": ("JPY", {"discount": 10, "discount_type": "percentage"},
+                       [{"quantity": 3, "unit_price": 2345, "taxes": _VAT10}], (7035, 704, 633, 6964)),
+    "kwd_header_flat": ("KWD", {"discount": 1.111, "discount_type": "flat"},
+                        [{"quantity": 1, "unit_price": 98.765, "taxes": _VAT10}], (98.765, 1.111, 9.765, 107.419)),
+    "jpy_rate_only_per_line": ("JPY", {}, [{"quantity": 1, "unit_price": 15, "tax_rate": 10}] * 3, (45, 0, 6, 51)),
+    "usd_line_discount_pct": ("USD", {}, [{"quantity": 1, "unit_price": 100, "discount_pct": 10, "taxes": _VAT10}],
+                              (90, 0, 9, 99)),
+}
+
+
+@pytest.mark.parametrize("case", sorted(QUOTE_CASES))
+async def test_a_quotation_totals_as_the_invoice_it_converts_to(client, session, case):
+    """A quotation's money follows the document rule: the invoice made from it carries the same
+    subtotal, discount, tax and total, and books exactly that."""
+    currency, header, lines, expected = QUOTE_CASES[case]
+    auth, _ = await _demo_company(client, session, currency)
     r = await client.post("/lists", headers=auth["headers"], json={
-        "list_type": "quotation", "currency": "USD", "discount": 10, "discount_type": "percentage",
-        "line_items": [{"description": "Service", "quantity": 3, "unit_price": 12.34, "taxes": VAT}]})
+        "list_type": "quotation", "currency": currency, **header,
+        "line_items": [{"description": f"Service {i}", **line} for i, line in enumerate(lines)]})
     assert r.status_code == 200, r.text
     lst = r.json()["id"]
     quotation = await _get(client, auth, "lists", lst)
-    assert (quotation["discount_amount"], quotation["tax_amount"], quotation["total"]) == (
-        pytest.approx(3.70), pytest.approx(2.59), pytest.approx(35.91))
+    assert (quotation["subtotal"], quotation["discount_amount"], quotation["tax_amount"], quotation["total"]) == (
+        pytest.approx(expected[0]), pytest.approx(expected[1]), pytest.approx(expected[2]), pytest.approx(expected[3]))
     assert (await _post(client, auth, f"/lists/{lst}/finalize")).status_code == 200
     before = await _books(session, auth)
     r = await _post(client, auth, f"/lists/{lst}/convert", {"target_type": "invoice"})
@@ -375,11 +394,52 @@ async def test_a_discounted_quotation_converts_to_an_invoice_taxed_by_the_docume
     inv = r.json()["target_doc_id"]
     invoice = await _get(client, auth, "docs", inv)
     assert (invoice["subtotal"], invoice["discount_amount"], invoice["tax"], invoice["total"]) == (
-        pytest.approx(37.02), pytest.approx(3.70), pytest.approx(2.33), pytest.approx(35.65))
+        quotation["subtotal"], quotation["discount_amount"], quotation["tax_amount"], quotation["total"])
     assert (await _post(client, auth, f"/docs/{inv}/finalize")).status_code == 200
     moved = _moved(before[0], (await _books(session, auth))[0])
     assert {k: moved.get(k) for k in ("receivable", "tax_output")} == pytest.approx(
-        {"receivable": 35.65, "tax_output": -2.33})
+        {"receivable": expected[3], "tax_output": -expected[2]})
+
+
+async def test_a_line_discount_is_charged_the_same_through_every_way_in(client, session):
+    """Class guard: a line given a discount_pct and no line_total (as the API and a CSV import send it)
+    is one amount everywhere: a list created and edited, a document created, edited and imported,
+    and the invoice a quotation converts to. 3 x 12.34 less 10% is 33.32."""
+    auth, contacts = await _demo_company(client, session, "USD")
+    line = {"description": "Service", "quantity": 3, "unit_price": 12.34, "discount_pct": 10}
+    amounts = {}
+    r = await client.post("/lists", headers=auth["headers"], json={
+        "list_type": "quotation", "currency": "USD", "line_items": [line]})
+    assert r.status_code == 200, r.text
+    lst = r.json()["id"]
+    created = await _get(client, auth, "lists", lst)
+    amounts["list create"] = created["subtotal"]
+    r = await client.patch(f"/lists/{lst}", headers=auth["headers"], json={
+        "expected_version": created["version"],
+        "fields_changed": {"line_items": {"new": [line, {**line, "description": "Second"}]}}})
+    assert r.status_code == 200, r.text
+    amounts["list edit"] = (await _get(client, auth, "lists", lst))["subtotal"] / 2
+    r = await client.post("/docs", headers=auth["headers"], json={
+        "doc_type": "invoice", "currency": "USD", "contact_id": _contact(contacts, "invoice"), "line_items": [line]})
+    assert r.status_code == 200, r.text
+    doc = r.json()["id"]
+    created = await _get(client, auth, "docs", doc)
+    amounts["document create"] = created["subtotal"]
+    r = await client.patch(f"/docs/{doc}", headers=auth["headers"], json={
+        "expected_version": created["version"],
+        "fields_changed": {"line_items": {"new": [line, {**line, "description": "Second"}]}}})
+    assert r.status_code == 200, r.text
+    amounts["document edit"] = (await _get(client, auth, "docs", doc))["subtotal"] / 2
+    r = await client.post("/docs/import", headers=auth["headers"], json={
+        "entity_id": "doc:IMP-disc", "event_type": "doc.created", "source": "csv", "idempotency_key": "doc:IMP-disc",
+        "data": {"doc_type": "invoice", "status": "draft", "currency": "USD", "line_items": [line]}})
+    assert r.status_code == 200, r.text
+    amounts["document import"] = (await _get(client, auth, "docs", "doc:IMP-disc"))["subtotal"]
+    assert (await _post(client, auth, f"/lists/{lst}/finalize")).status_code == 200
+    r = await _post(client, auth, f"/lists/{lst}/convert", {"target_type": "invoice"})
+    assert r.status_code == 200, r.text
+    amounts["conversion"] = (await _get(client, auth, "docs", r.json()["target_doc_id"]))["subtotal"] / 2
+    assert amounts == {way: pytest.approx(33.32) for way in amounts}
 
 
 @pytest.mark.parametrize("state", ["one", "two", "legacy_rate", "compound"])

@@ -8,6 +8,10 @@ migration finishes. A company's taxes are its own, so this only reads them: each
 entry is one notice, told once, linking to a tax list that still holds it; an entry the company
 has since fixed has its notice removed, so a notice that stands is always still true. A company
 staged for a migration is left as it is until its migration finishes.
+
+The same pass tells a company which of its quotations still hold totals an earlier version
+worked out by the old list rule (tax before the header discount, rate-only lines rounded once),
+which the document rule now gives them; their stored totals are left as they are.
 """
 from __future__ import annotations
 
@@ -17,8 +21,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.models.company import Company
+from celerp.models.projections import Projection
 from celerp.notifications import service as notification_service
+from celerp.services.list_behavior import DRAFT, FINALIZED, is_money_list
 from celerp.services.migrations import is_company_migration_staged
+from celerp.services.money import round_money
 from celerp.tax_regimes import RETIRED_SEED_ROWS, retired_seed_rows
 from ui.i18n import t
 
@@ -47,6 +54,40 @@ async def reconcile_tax_seed_notices(session: AsyncSession, company_id, settings
             i18n={"title": f"{key}.title", "body": f"{key}.body", "params": {}})
 
 
+_LIST_NOTICE = "notice.list_tax_rule"
+_LIST_TOTALS = ("subtotal", "discount_amount", "tax_amount", "total")
+
+
+def _list_totals_differ(state: dict) -> bool:
+    """Whether a list's stored totals are not what the document rule gives its lines."""
+    from celerp_docs.doc_projections import _recalc_list_totals
+
+    currency = state.get("currency")
+    try:
+        derived = _recalc_list_totals({**state})
+    except (ArithmeticError, TypeError, ValueError):
+        return False
+    return any(round_money(state.get(k) or 0, currency) != round_money(derived[k], currency) for k in _LIST_TOTALS)
+
+
+async def reconcile_list_tax_notice(session: AsyncSession, company_id) -> None:
+    """Tell the company which of its open lists (draft or issued) hold totals the document rule
+    would change, by number; reads only, and clears the notice once none does. Caller commits."""
+    title = t(f"{_LIST_NOTICE}.title", "en")
+    rows = (await session.execute(select(Projection.state).where(
+        Projection.company_id == company_id, Projection.entity_type == "list",
+        Projection.state["status"].as_string().in_((DRAFT, FINALIZED))))).scalars().all()
+    refs = sorted(str(s.get("ref_id") or "") for s in rows
+                  if is_money_list(s.get("list_type")) and _list_totals_differ(s))
+    if not refs:
+        await notification_service.clear_standing(session, company_id, _CATEGORY, title)
+        return
+    params = {"count": len(refs), "refs": ", ".join(refs)}
+    await notification_service.notify_standing(
+        session, company_id, _CATEGORY, title, t(f"{_LIST_NOTICE}.body", "en", **params), action_url="/lists",
+        i18n={"title": f"{_LIST_NOTICE}.title", "body": f"{_LIST_NOTICE}.body", "params": params})
+
+
 async def run_tax_seed_notice(session: AsyncSession) -> None:
     """Bring every company's retired-seed notices up to date. Each company is its own step: one
     that fails is logged and left for a later start, and every other company is still told.
@@ -55,5 +96,7 @@ async def run_tax_seed_notice(session: AsyncSession) -> None:
         try:
             async with session.begin_nested():
                 await reconcile_tax_seed_notices(session, company_id, settings)
+                if not await is_company_migration_staged(session, company_id):
+                    await reconcile_list_tax_notice(session, company_id)
         except Exception:
             log.exception("Could not bring the tax seed notices of company %s up to date", company_id)

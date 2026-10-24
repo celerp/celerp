@@ -328,15 +328,9 @@ _BILL_FIELDS = ("issue_date", "due_date", "payment_terms")
 
 
 def _tax_rate(taxes) -> float | None:
-    """A list line carries one tax rate; the sender's line taxes collapse to their sum."""
+    """A list holds its tax on the whole list as one header rate; the sender's document taxes
+    collapse to their sum."""
     return sum(float(t.get("rate") or 0) for t in tax_entries(taxes)) or None
-
-
-def _line_tax_rate(line: dict) -> float | None:
-    """The one rate a list line takes from the sender's line, read by line_tax_definition: the
-    sum of its taxes, else its ``tax_rate``."""
-    entries, rate = line_tax_definition(line)
-    return _tax_rate(entries) if entries else float(rate) or None
 
 
 def _lines(document: dict, kind: str) -> list[dict]:
@@ -345,9 +339,11 @@ def _lines(document: dict, kind: str) -> list[dict]:
     for li in document.get("line_items") or []:
         line = {k: li[k] for k in fields if li.get(k) is not None}
         if kind == "list":
-            rate = _line_tax_rate(li)
-            if rate:
-                line["tax_rate"] = rate
+            entries, rate = line_tax_definition(li)
+            if entries:
+                line["taxes"] = entries
+            elif rate:
+                line["tax_rate"] = float(rate)
         out.append(line)
     return out
 
@@ -381,27 +377,18 @@ def unrepresentable(document: dict, target: BookTarget) -> str | None:
     """Why a draft of this target cannot carry the document's money exactly, or None.
 
     A document keeps the sender's amounts as they are. A quotation list
-    recomputes its own total from its lines, one discount and simple tax rates,
-    so a revision it cannot hold without changing the total is refused rather
-    than booked or applied with different money."""
+    recomputes its own total from its lines, its discount and its taxes by the
+    document rule, with no shipping and no document taxes beyond one header
+    rate, so a revision it would total differently is refused rather than booked
+    or applied with different money."""
     if target.kind != "list":
         return None
     currency = document.get("currency")
-    doc_taxes = tax_entries(document.get("doc_taxes"))
-    line_taxes = [t for li in document.get("line_items") or [] for t in tax_entries(li.get("taxes"))]
-    if _money(document.get("shipping"), currency):
-        return "A quotation has no shipping charge, so this document cannot become one without changing its total."
-    if any(t.get("is_compound") for t in (*doc_taxes, *line_taxes)):
-        return "A quotation has no compound tax, so this document cannot become one without changing its total."
-    if doc_taxes and line_taxes:
-        return (
-            "A quotation taxes either each line or the whole document, not both, "
-            "so this document cannot become one without changing its total."
-        )
-    totals = _recalc_list_totals(dict(managed_fields(document, target)))
-    if _money(totals["total"], currency) != _money(document.get("total"), currency):
-        return "A quotation would total this document differently, so it cannot become one without changing its total."
-    return None
+    total = _money(document.get("total"), currency)
+    list_total = _money(_recalc_list_totals(dict(managed_fields(document, target)))["total"], currency)
+    if list_total == total:
+        return None
+    return t("documents.err_received_list_total", total=str(total), list_total=str(list_total))
 
 
 def _fits(state: dict, booked: dict, target: Projection) -> bool:

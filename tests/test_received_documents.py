@@ -1542,3 +1542,43 @@ async def test_legacy_import_queued_for_a_connected_platform_stays_a_document(cl
 
     doc = await session.get(Projection, {"company_id": company_id, "entity_id": queued})
     assert doc is not None and doc.entity_type == "doc"
+
+
+_T1 = {"code": "T1", "rate": 10.0, "amount": 10.0, "order": 0, "is_compound": False, "label": ""}
+_T2 = {"code": "T2", "rate": 5.0, "amount": 5.5, "order": 1, "is_compound": True, "label": ""}
+# case -> the sender's line and header, and its money (subtotal, discount, tax, total)
+_LIST_BOOKABLE = {
+    "compound": ({"taxes": [_T1, _T2]}, {}, (100.0, 0.0, 15.5, 115.5)),
+    "header_discount": ({"taxes": [{**_T1, "amount": 9.0}]}, {"discount": 10, "discount_type": "flat"},
+                        (100.0, 10.0, 9.0, 99.0)),
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", sorted(_LIST_BOOKABLE))
+async def test_a_received_order_books_as_a_quotation_with_its_own_money(client, case):
+    """A quotation holds compound line taxes and a header discount taken off before tax, as a
+    document does, so a received purchase order carrying them books as a quotation of the same
+    total."""
+    line, header, (subtotal, discount, tax, total) = _LIST_BOOKABLE[case]
+    tok = await _token(client)
+    doc = _doc(doc_type="purchase_order", number="PO-3")
+    doc["line_items"] = [{**doc["line_items"][0], "quantity": 1, "unit_price": 100.0, "line_total": 100.0, **line}]
+    doc.update(header, subtotal=subtotal, discount_amount=discount, tax=tax, total=total)
+    rid = await _import(client, tok, _bundle(doc))
+    made = await _target(client, tok, await _book(client, tok, rid))
+    assert (made["subtotal"], made["discount_amount"], made["tax_amount"], made["total"]) == (
+        subtotal, discount, tax, total)
+
+
+@pytest.mark.asyncio
+async def test_a_received_order_a_quotation_cannot_total_is_refused_naming_both_totals(client):
+    """A quotation has no shipping, so a received order charging it cannot become one without
+    changing its total: booking is refused, in the reader's language, naming both totals."""
+    tok = await _token(client)
+    doc = _doc(doc_type="purchase_order", number="PO-4")
+    doc.update(shipping=5.0, subtotal=200.0, tax=0.0, total=205.0)
+    rid = await _import(client, tok, _bundle(doc))
+    r = await client.post(f"/docs/received/{rid}/book", headers=_h(tok))
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"] == t("documents.err_received_list_total", total="205.00", list_total="200.00")
