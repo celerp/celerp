@@ -68,3 +68,38 @@ async def test_the_list_sort_and_export_name_the_contact_never_its_id(client, se
     assert {row["entity_id"]: row["contact_name"] or None for row in rows} == shown
     assert [row["contact_name"] for row in rows] == ["", "", "Harbour Supply Co", "Walk-in Buyer", "Zephyr Trading"]
     assert not any(str(v).startswith("contact:") for row in rows for k, v in row.items() if k == "contact_name")
+
+
+async def test_a_search_finds_a_document_by_the_contact_name_it_shows(client, session):
+    """Searching the list, or global search, for the name a document shows finds it, even when
+    the document holds only its contact's id; the stored fields still match, and another
+    company's contact of the same id is never searched."""
+    from celerp_docs.search import global_search
+
+    from celerp.models.company import Company
+
+    headers, company_id = await _company(client)
+    other_company = uuid.uuid4()
+    session.add(Company(id=other_company, name="Other Co", slug=f"other-{other_company.hex[:8]}", settings={}))
+    await session.commit()
+    known, renamed, elsewhere = (f"contact:{uuid.uuid4()}" for _ in range(3))
+    await _seed(session, company_id, known, "contact", {"name": "Harbour Supply Co", "contact_type": "customer"})
+    await _seed(session, company_id, renamed, "contact", {"name": "Zephyr Trading", "contact_type": "customer"})
+    await _seed(session, other_company, elsewhere, "contact", {"name": "Secret Customer Other", "contact_type": "customer"})
+    await _invoice(session, company_id, "doc:by-id", contact_id=known)
+    await _invoice(session, company_id, "doc:stale-name", contact_id=renamed, contact_name="Aaron Old Name")
+    await _invoice(session, company_id, "doc:elsewhere", contact_id=elsewhere)
+
+    async def found(q: str) -> list[str]:
+        r = await client.get("/docs", params={"doc_type": "invoice", "q": q}, headers=headers)
+        assert r.status_code == 200, r.text
+        listed = sorted(d["id"] for d in r.json()["items"])
+        assert sorted(d["id"] for d in (await global_search(session, str(company_id), "owner", q, 20))["items"]) == listed
+        return listed
+
+    assert await found("Harbour") == ["doc:by-id"]
+    assert await found("harbour, zephyr") == ["doc:by-id", "doc:stale-name"]
+    assert await found("Aaron Old") == ["doc:stale-name"]
+    assert await found("doc:by") == ["doc:by-id"]
+    assert await found("Secret Customer") == []
+    assert await found("O'Brien\" %") == []
