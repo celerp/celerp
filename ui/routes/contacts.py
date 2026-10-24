@@ -23,14 +23,14 @@ from ui.components.shell import base_shell, info_tip, page_header, page_title
 from ui.components.table import search_bar, search_results, pagination, per_page_value, EMPTY, breadcrumbs, status_cards, empty_state_cta, fmt_money, format_value, add_new_option, data_table, column_manager
 from ui.components.notes import notes_tab as _shared_notes_tab, note_edit_form as _shared_note_edit_form
 from ui.components.files import files_error, files_error_block, files_section as _shared_files_section, files_session_expired, linked_files, _DOCUMENT_TAGS
-from celerp.services.business_time import business_today
+from celerp.services.doc_balance import awaiting_status_param
 from celerp.services.currencies import KNOWN_CURRENCY_CODES
 from ui.components.currency import currency_combobox_td
 from ui.components.phone import phone_input_td, phone_head_items as _phone_head_items
 from ui.config import get_token as _token, get_role as _get_role
 from celerp.services.permissions import role_has_permission
 from ui.i18n import t, get_lang
-from ui.routes.reports import _date_filter_bar, _get_company, _parse_dates
+from ui.routes.reports import _date_filter_bar, _get_company, _parse_dates, _resolve_preset
 
 logger = logging.getLogger(__name__)
 
@@ -240,10 +240,30 @@ def _settings_card(c: dict) -> FT:
     )
 
 
-def _financial_summary(docs: list[dict], contact_id: str = "", company: dict | None = None,
-                       consigned_total: float | None = None, on_memo_total: float | None = None) -> FT:
-    """Compute and render financial summary cards from contact docs.
+async def _invoice_totals(token: str, contact_id: str, company: dict) -> dict[str, float | None]:
+    """The contact's invoice money cards, from the document summary the invoice list's cards use,
+    so they count the same invoices (issued, not draft or void) in the company currency:
+    ``invoiced`` and ``paid`` over this fiscal year to date, ``outstanding`` what the invoices
+    awaiting payment still owe. Each is None when the summary could not be read."""
+    date_from, date_to = _resolve_preset("this_fy", company)
+    scope = {"doc_type": "invoice", "contact_id": contact_id}
+    try:
+        ytd, open_ = await _asyncio.gather(
+            api.get_doc_summary(token, scope | {"date_from": date_from, "date_to": date_to}),
+            api.get_doc_summary(token, scope),
+        )
+    except APIError:
+        return {"invoiced": None, "paid": None, "outstanding": None}
+    return {"invoiced": ytd.get("ar_total"), "paid": ytd.get("ar_paid"),
+            "outstanding": open_.get("awaiting_payment_total")}
 
+
+def _financial_summary(docs: list[dict], contact_id: str = "", invoice_totals: dict | None = None,
+                       consigned_total: float | None = None, on_memo_total: float | None = None) -> FT:
+    """Render the financial summary cards for a contact.
+
+    invoice_totals holds the Total invoiced, Total paid and Outstanding figures
+    (``_invoice_totals``); a missing figure shows as EMPTY, never as 0.00.
     consigned_total / on_memo_total are the live value of goods currently held on
     consignment from this supplier (at cost) and currently out on memo to this customer
     (at the price they were quoted). Both come from the contact-scoped holdings filter,
@@ -251,19 +271,13 @@ def _financial_summary(docs: list[dict], contact_id: str = "", company: dict | N
     figure was unavailable (e.g. the caller could not reach the API, or costs are
     hidden from this role), and the card falls back to the document-derived total.
     """
-    from ui.routes.reports import _fy_start
-    company = company or {}
-    today = business_today(company.get("timezone"))
-    # Reuse the canonical parser: it falls back to Jan 1 on a malformed
-    # fiscal_year_start (e.g. "01" with no day) instead of crashing the page.
-    fy_start = _fy_start(company.get("fiscal_year_start") or "01-01", today)
-    fy_start_str = fy_start.isoformat()
+    totals = invoice_totals or {}
+
+    def _money(key: str) -> str:
+        value = totals.get(key)
+        return fmt_money(value, None) if value is not None else EMPTY
 
     invoices = [d for d in docs if d.get("doc_type") == "invoice"]
-    ytd_invoices = [d for d in invoices if (d.get("issue_date") or "") >= fy_start_str]
-    total_invoiced = sum(float(d.get("total_amount") or 0) for d in ytd_invoices)
-    total_paid = sum(float(d.get("amount_paid") or 0) for d in ytd_invoices)
-    outstanding = total_invoiced - total_paid
 
     # Avg days to pay (all-time, not just YTD)
     days = []
@@ -283,7 +297,7 @@ def _financial_summary(docs: list[dict], contact_id: str = "", company: dict | N
     if consigned_total is None:
         consignment_docs = [d for d in docs if d.get("doc_type") == "consignment_in"]
         total_consigned = sum(
-            float(d.get("total_amount") or 0) for d in consignment_docs
+            float(d.get("total") or 0) for d in consignment_docs
             if d.get("status") not in ("void", "converted")
         )
     else:
@@ -300,16 +314,17 @@ def _financial_summary(docs: list[dict], contact_id: str = "", company: dict | N
             return A(*content, href=href, cls="financial-card financial-card--link")
         return Div(*content, cls="financial-card")
 
-    ytd_filter = f"&from_date={fy_start_str}&to_date={today.isoformat()}"
+    ytd_filter = "&preset=this_fy"
     contact_filter = f"&contact_id={contact_id}" if contact_id else ""
 
     return Div(
-        _card(t("contacts.total_invoiced"), fmt_money(total_invoiced, None), sub_label=t("contacts.year_to_date"),
+        _card(t("contacts.total_invoiced"), _money("invoiced"), sub_label=t("contacts.year_to_date"),
               href=f"/docs?type=invoice{contact_filter}{ytd_filter}" if contact_id else ""),
-        _card(t("contacts.total_paid"), fmt_money(total_paid, None), sub_label=t("contacts.year_to_date"),
+        _card(t("contacts.total_paid"), _money("paid"), sub_label=t("contacts.year_to_date"),
               href=f"/docs?type=invoice&status=paid{contact_filter}{ytd_filter}" if contact_id else ""),
-        _card(t("th.outstanding"), fmt_money(outstanding, None),
-              href=f"/docs?type=invoice&status=awaiting_payment{contact_filter}" if contact_id else ""),
+        _card(t("th.outstanding"), _money("outstanding"),
+              href=(f"/docs?type=invoice&status_in={awaiting_status_param('invoice')}{contact_filter}&preset=all"
+                    if contact_id else "")),
         _card(t("contacts.avg_days_to_pay"), avg_dtp),
         # An unavailable figure shows as EMPTY rather than 0.00, which would wrongly read
         # as "this customer is holding nothing of ours".
@@ -493,7 +508,7 @@ def _documents_tab(docs: list[dict], contact: dict | None = None, contact_id: st
                 Td(A(format_value(doc_num), href=f"/docs/{doc_id}", cls="table-link")),
                 Td(format_value(d.get("doc_type"), "badge", domain="doc_type")),
                 Td(format_value(str(d.get("issue_date") or "")[:10] or None)),
-                Td(format_value(d.get("total_amount"), "money"), cls="cell--number"),
+                Td(format_value(d.get("total"), "money", d.get("currency")), cls="cell--number"),
                 Td(format_value(d.get("status"), "badge", domain="doc_status")),
                 cls="data-row",
             ))
@@ -811,6 +826,7 @@ async def build_contact_detail(contact: dict, docs: list, vocab: list, company: 
                          title: str | None = None,
                          consigned_total: float | None = None,
                          on_memo_total: float | None = None,
+                         invoice_totals: dict | None = None,
                          docs_error: FT | None = None) -> FT:
     """Shared assembly for the contact detail page. The Company Details page reuses this verbatim with
     show_financials=False / show_delete=False / show_contact_addresses=False (the company is its own
@@ -877,7 +893,7 @@ async def build_contact_detail(contact: dict, docs: list, vocab: list, company: 
         autofocus_script,
         action_bar,
         delete_btn,
-        *([_financial_summary(docs, contact_id=cid, company=company,
+        *([_financial_summary(docs, contact_id=cid, invoice_totals=invoice_totals,
                               consigned_total=consigned_total, on_memo_total=on_memo_total)]
           if show_financials and docs_on and docs_error is None else []),
         Div(
@@ -1224,13 +1240,14 @@ def setup_routes(app):
                 return None
             return resp.get("value_total") if isinstance(resp, dict) else None
 
-        on_memo_total, consigned_total = await _asyncio.gather(
+        on_memo_total, consigned_total, invoice_totals = await _asyncio.gather(
             _holdings_total("on_memo_to"), _holdings_total("consigned_from"),
+            _invoice_totals(token, contact_id, company),
         )
 
         return await build_contact_detail(contact, docs, vocab, company, request, contact_id=contact_id,
                                           on_memo_total=on_memo_total, consigned_total=consigned_total,
-                                          docs_error=docs_error)
+                                          invoice_totals=invoice_totals, docs_error=docs_error)
 
     # ── Company Details (Finance) ─────────────────────────────────────────
     # The company is its own customer+vendor self-contact, so this page is the same contact-detail

@@ -1645,7 +1645,7 @@ class TestCRMPage:
         """When the holdings figure cannot be fetched the page still renders, and the
         Consignment card falls back to the document-derived total."""
         contact = {**_CONTACTS[0], "contact_type": "vendor"}
-        docs = [{"doc_type": "consignment_in", "status": "received", "total_amount": 900.0}]
+        docs = [{"doc_type": "consignment_in", "status": "received", "total": 900.0}]
         ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_contact", new=AsyncMock(return_value=contact)),

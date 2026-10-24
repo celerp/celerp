@@ -31,7 +31,7 @@ from ui.components.shell import base_shell, page_header, toast_header, page_titl
 from ui.security import not_permitted_redirect
 from ui.components.table import search_bar, search_results, EMPTY, pagination, per_page_value, server_pager, searchable_select, breadcrumbs, status_cards, empty_state_cta, fmt_money, fmt_rate, format_value, currency_symbol, unwrap_address, col_resize_script, bank_account_options as _bank_account_options, display_cell, editable_cell, display_enum, display_unit, doc_href
 from celerp.services.business_time import business_today
-from celerp.services.doc_balance import awaiting_status_param, is_awaiting_payment, is_owed, outstanding_balance
+from celerp.services.doc_balance import awaiting_status_param, doc_value, is_awaiting_payment, is_owed, outstanding_balance
 from celerp.services.record_quantities import FULFILLABLE_STATUSES, RECEIVABLE_STATUSES
 from celerp.services.money import to_decimal, to_stored_float, round_money, currency_dp, rate_dp
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, line_price_list, resolve_price
@@ -5732,7 +5732,7 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
     # Deleted payments are tombstoned in the doc, not removed; only voided ones
     # stay visible (struck through).
     payments = [p for p in (doc.get("payments") or []) if p.get("status") != "deleted"]
-    total_val = float(doc.get("total") or doc.get("total_amount") or 0)
+    total_val = float(doc_value(doc, "total") or 0)
     amount_paid = float(doc.get("amount_paid") or 0)
     outstanding_d = round_money(outstanding_balance(doc) or 0, currency)
     outstanding = to_stored_float(outstanding_d)
@@ -6677,9 +6677,9 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
     contact_value = _resolve_contact_display(doc, "contact_id")
     issue_date_value = _pick("issue_date", "created_at")
     due_date_value = _pick("due_date", "payment_due_date")
-    total_value = _pick("total_amount", "total")
+    total_value = doc_value(doc, "total")
     tax_value = _pick("tax_amount", "tax")
-    outstanding_value = _pick("outstanding_balance", "amount_outstanding")
+    outstanding_value = doc_value(doc, "amount_outstanding")
     subtotal_value = _pick("subtotal")
     discount_value = _pick("discount_amount") or 0
     currency = doc.get("currency") or "USD"
@@ -10621,7 +10621,7 @@ def _doc_status_cards(docs: list[dict], active_status: str, summary: dict | None
         if not api_counts and s in counts:
             counts[s] += 1
         if s in totals:
-            amt = d.get("total_amount") if d.get("total_amount") is not None else d.get("total")
+            amt = d.get("total")
             try:
                 totals[s] += float(amt or 0)
             except (ValueError, TypeError):
