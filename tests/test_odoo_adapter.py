@@ -1622,22 +1622,23 @@ def test_every_family_of_tables_read_is_timed():
 
 
 @pytest.mark.parametrize("shape", TIMED)
-def test_reading_four_times_the_rows_takes_about_four_times_as_long(tmp_path, monkeypatch, shape):
+def test_reading_eight_times_the_rows_takes_about_eight_times_as_long(tmp_path, monkeypatch, shape):
     """Reading a book takes time in proportion to it, whatever its tables hold: no step looks
     through every record of a kind for each record (each journal found every document, each
     revaluation every holding, each line every account, each hop along a chain of settlements
     every settlement). The chain is read at a cutover, where what one settlement carries
-    carries the documents it links. Four times the rows within eight times the time: in
-    proportion it is four, in the square of them sixteen, and eight is halfway between them
-    (a busy machine stretches the larger read more, its caches shared). The fastest of three
+    carries the documents it links. Eight times the rows within 22 times the time: in
+    proportion it is eight, in the square of them 64, and 22 is halfway between them. A busy
+    machine stretches the larger read up to twice as much as the smaller, its caches shared,
+    so the sizes are far enough apart for that to stay clear of both. The fastest of three
     reads of each, in CPU time, read in turn."""
     decisions = MigrationDecisions(mode=CIFMode.CUTOVER, cutover_date=CUTOVER) if shape == "chain" else FULL
     paths = []
-    for n in (TIMED[shape], 4 * TIMED[shape]):
+    for n in (TIMED[shape], 8 * TIMED[shape]):
         paths.append(_shaped(tmp_path / f"{shape}-{n}.zip", monkeypatch, shape, n))
         monkeypatch.undo()
     small, large = fastest_cpu_seconds(*(lambda path=path: _read_whole(path, decisions) for path in paths))
-    assert large < 8 * small, (small, large)
+    assert large < 22 * small, (small, large)
 
 
 @pytest.mark.asyncio
