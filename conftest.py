@@ -129,6 +129,20 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.orm import sessionmaker
 
 
+def pytest_configure(config):
+    """Mark the main thread's event loop as explicitly unset.
+
+    pytest-asyncio saves and restores ``asyncio.get_event_loop()`` around each async
+    test; with no loop set that call creates one nobody closes, and the first sync
+    test calling ``asyncio.run()`` drops it unclosed. Once a loop has been set (here,
+    to None) the call raises instead of creating one. Guard:
+    tests/test_event_loop_hygiene.py.
+    """
+    import asyncio
+
+    asyncio.set_event_loop(None)
+
+
 def pytest_unconfigure(config):
     """Stop the throwaway Postgres container at the end of the session."""
     global _PG_CONTAINER
