@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 
+import httpx
 import pytest
 
 from fastapi import HTTPException
@@ -225,12 +226,12 @@ async def test_usage_refused_without_manage_users(client, session, owner):
     assert r.status_code == 403, r.text
 
 
-async def test_lost_answer_counts_once_and_asking_again_gets_it(client, owner, monkeypatch):
-    """A question whose answer was lost is charged; asking it again under the same
-    question id costs nothing more and does not add a second question."""
+async def test_timed_out_question_asked_again_gets_its_answer(client, owner, monkeypatch):
+    """A question whose answer did not arrive in time is asked again under the same
+    question id: the service returns the answer it kept and does not add a question."""
     token, _, _ = owner
     sent = _relay(monkeypatch, [
-        RelayError("outcome_unknown", "lost", status=503, credits=1),
+        httpx.ReadTimeout("slow"),
         _answer(credits=0),
     ])
     conv = await _conversation(client, token)
@@ -239,18 +240,16 @@ async def test_lost_answer_counts_once_and_asking_again_gets_it(client, owner, m
     first = await _ask(client, token, conv, question)
     assert first.status_code == 200, first.text
     body = first.json()
-    assert (body["error_code"], body["retryable"], body["message_id"], body["asked_again"]) == (
-        "outcome_unknown", True, str(question), False)
-    assert _counts((await _usage(client, token)).json()["users"]) == [(1, 1)]
+    assert (body["error_code"], body["retryable"], body["new_question"], body["message_id"],
+            body["asked_again"]) == ("timeout", True, False, str(question), False)
 
     again = (await _ask(client, token, conv, question)).json()
     assert (again["answer"], again["message_id"], again["asked_again"]) == (
         "Open Contacts and choose New.", str(question), True)
     assert sent == [question, question]
-    assert _counts((await _usage(client, token)).json()["users"]) == [(1, 1)]
     thread = await _messages(client, token, conv)
     assert [m["role"] for m in thread] == ["user", "assistant", "assistant"]
-    assert thread[0]["id"] == str(question) and thread[0]["credits_used"] == 1
+    assert thread[0]["id"] == str(question)
 
 
 async def test_answered_question_returns_its_answer_without_asking(client, owner, monkeypatch):
@@ -322,16 +321,17 @@ async def test_question_id_reused_for_another_question_is_refused(client, owner,
     assert _counts((await _usage(client, token)).json()["users"]) == [(1, 1)]
 
 
-@pytest.mark.parametrize("code", ["operation_expired", "operation_mismatch"])
+@pytest.mark.parametrize("code", ["outcome_unknown", "operation_expired", "operation_mismatch"])
 async def test_question_id_the_service_will_not_take_again_is_refused(client, owner, monkeypatch, code):
-    """After the AI service refuses an id for good, sending it again is refused with a
-    conflict asking for a new question; it is never asked again under a substituted id."""
+    """After the AI service refuses an id for good, or reports its outcome unknown (final
+    for that id), sending it again is refused with a conflict asking for a new question
+    without calling the service; it is never asked again under a substituted id."""
     token, _, _ = owner
     sent = _relay(monkeypatch, [RelayError(code, "refused", status=409)])
     conv = await _conversation(client, token)
     question = uuid.uuid4()
     first = (await _ask(client, token, conv, question)).json()
-    assert (first["error_code"], first["retryable"]) == (code, False)
+    assert (first["error_code"], first["retryable"], first["new_question"]) == (code, False, True)
 
     _refused_as_operation_conflict(await _ask(client, token, conv, question))
     assert sent == [question]
@@ -551,29 +551,34 @@ async def test_module_query_is_counted(session, monkeypatch):
     assert [(r.user_id, r.credits) for r in rows] == [(user_id, 1)]
 
 
-async def test_module_query_lost_answer_is_asked_again_and_counted_once(session, monkeypatch):
-    """A module's query whose answer was lost is asked again once under the same id
-    and answered, charged once; one that fails for another reason is not asked again."""
+async def test_module_query_timed_out_is_asked_again_once_and_unknown_is_not(session, monkeypatch):
+    """A module's query whose answer timed out is asked again once under the same id and
+    answered; one whose outcome the service reports unknown, or that fails for another
+    reason, is not asked again (the service would only report the same outcome)."""
     from celerp.modules.api import ai_query
     from test_helpers import seed_member
 
     monkeypatch.setattr("celerp.session_gate.get_session_token", lambda: "session-1")
     sent = _relay(monkeypatch, [
+        httpx.ReadTimeout("slow"),
+        _answer(credits=1),
         RelayError("outcome_unknown", "lost", status=503, credits=1),
-        _answer(credits=0),
         RelayError("service_unavailable", "down", status=503),
     ])
     company_id, user_id = await seed_member(session)
     async with signed_request(session, company_id, user_id):
         answered = await ai_query(query="hello", company_id=str(company_id), session_token="session-1",
                                   db_session=session)
+        unknown = await ai_query(query="lost", company_id=str(company_id), session_token="session-1",
+                                 db_session=session)
         failed = await ai_query(query="again", company_id=str(company_id), session_token="session-1",
                                 db_session=session)
     assert answered["answer"] == "Open Contacts and choose New."
-    assert failed["answer"] == ""
-    assert len(sent) == 3 and sent[0] == sent[1] and sent[2] not in (None, sent[0])
+    assert unknown["answer"] == "" and failed["answer"] == ""
+    assert len(sent) == 4 and sent[0] == sent[1] and len({sent[1], sent[2], sent[3]}) == 3
     rows = (await session.execute(select(AIUsage).where(AIUsage.company_id == company_id))).scalars().all()
-    assert [(r.operation_id, r.credits) for r in rows] == [(sent[0], 1)]
+    assert sorted((str(r.operation_id), r.credits) for r in rows) == sorted(
+        [(str(sent[0]), 1), (str(sent[2]), 1)])
 
 
 async def test_refusal_after_a_charged_turn_is_counted(client, owner, monkeypatch):

@@ -6507,10 +6507,12 @@
   "ai.plan_lifetime_credits": "Bao gồm {n} truy vấn AI trọn đời",
   "ai.plan_monthly_credits": "{n} AI truy vấn mỗi tháng",
   "help.core_section": "Kiến thức cơ bản về Celerp",
-  "ai.err_outcome_unknown": "Không nhận được câu trả lời của Celerp AI. Hãy hỏi lại để nhận câu trả lời: câu hỏi chỉ được tính một lần.",
+  "ai.err_outcome_unknown": "Celerp AI's answer to this question was lost and can't be recovered. You can ask it as a new question, which counts as one more question.",
   "ai.err_question_expired": "Không thể tiếp tục câu hỏi này nữa. Hãy gửi lại thành câu hỏi mới.",
   "ai.err_question_in_progress": "Celerp AI vẫn đang trả lời câu hỏi này. Hãy đợi một lát rồi hỏi lại.",
   "ai.err_operation_conflict": "This question was already sent and cannot be sent again. Press Send to ask it as a new question; it counts as one more question.",
+  "ai.err_operation_mismatch": "This question can't be sent again because its context has changed since it was first sent. You can ask it as a new question, which counts as one more question.",
   "ai.ask_again": "Hỏi lại",
+  "ai.ask_as_new": "Ask as a new question",
   "ai.free_terms": "Mỗi câu hỏi miễn phí có thể đính kèm một tệp. AI miễn phí có thể tạm dừng đến tháng sau khi đạt giới hạn ngân sách sử dụng miễn phí hằng tháng."
 }

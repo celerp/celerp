@@ -125,17 +125,23 @@ _RELAY_ERROR_KEY = {
     "gateway_error": "ai.err_unavailable",
     "outcome_unknown": "ai.err_outcome_unknown",
     "operation_expired": "ai.err_question_expired",
+    "operation_mismatch": "ai.err_operation_mismatch",
 }
 _BUSY_TEXT = "The AI service is temporarily busy. Please try again in a moment."
 _UNEXPECTED_TEXT = "An unexpected error occurred. Please try again."
 _TOO_MUCH_DATA_TEXT = "Too much data was returned; ask a narrower question."
 
 # Failures after which the same question can be asked again under the same
-# question id: no answer came back, and asking again is charged at most once.
+# question id: no answer came back, and asking again is charged at most once (an
+# answer the service kept is returned, not asked for again).
 RETRYABLE_ERRORS = frozenset({
-    "outcome_unknown", "service_unavailable", "busy", "operation_in_progress",
+    "service_unavailable", "busy", "operation_in_progress",
     "continuation_expired", "unexpected_reply", "gateway_error", "timeout",
 })
+# Failures after which the service will not take the question id again: the outcome
+# of its first send is unknown (final for that id), the id expired, or the question
+# was sent with different content. Only a new question, under a new id, can follow.
+NEW_QUESTION_ERRORS = frozenset({"outcome_unknown", "operation_expired", "operation_mismatch"})
 
 
 class _SessionExpired(Exception):
@@ -607,8 +613,6 @@ async def _model_turn(
         return result
 
 
-# The service may have charged the question, but its answer never arrived.
-_LOST_ANSWER = frozenset({"outcome_unknown", "timeout"})
 
 
 async def ask_unattended(
@@ -622,8 +626,10 @@ async def ask_unattended(
 ) -> ModelResult:
     """One text question with nobody to press Ask again: a module's query, or one
     file of a reading job. It is sent under ``operation_id``, as a conversation
-    question's first turn is, and a lost answer is asked again once under that id,
-    which the service does not charge twice. Charges are added to ``tally``."""
+    question's first turn is, and an answer that timed out is asked again once under
+    that id, which returns the answer the service kept without charging twice. An
+    unknown outcome is not asked again: the service reports it again for that id.
+    Charges are added to ``tally``."""
     messages: list[dict] = [{"role": "system", "content": system}, *(history or []),
                             {"role": "user", "content": _build_user_content(user_text, files)}]
     file_count = len(files) if files else 0
@@ -632,9 +638,9 @@ async def ask_unattended(
     try:
         return await _model_turn(messages, None, **turn)
     except (RelayError, asyncio.TimeoutError, httpx.TimeoutException) as exc:
-        if _error_code(exc) not in _LOST_ANSWER:
+        if _error_code(exc) != "timeout":
             raise
-        log.info("AI answer lost; asking again under operation %s", operation_id)
+        log.info("AI answer timed out; asking again under operation %s", operation_id)
         return await _model_turn(messages, None, **turn)
 
 

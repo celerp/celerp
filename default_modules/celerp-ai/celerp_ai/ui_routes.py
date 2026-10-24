@@ -517,9 +517,12 @@ def setup_ui_routes(app) -> None:
 
         error = result.get("error")
         if error:
-            again = _ask_again(conversation_id, question_id, query, file_ids, lang) if result.get("retryable") else None
+            again = _failure_action(result, conversation_id, question_id, query, file_ids, lang)
             parts = (user_bubble, _msg_bubble("ai", error, error=True, extra=again))
-            return _reply(parts, done=False, question_id=question_id, asked_again=asked_again)
+            # After a failure the service will not take this id again, the composer
+            # gets a new id so pressing Send asks a new question.
+            return _reply(parts, done=False, question_id=None if result.get("new_question") else question_id,
+                          asked_again=asked_again)
 
         actions = result.get("pending_actions") or []
         message_id = str(actions[0].get("message_id", "")) if actions else ""
@@ -1009,8 +1012,29 @@ def _operation_input(question_id: str, question: str = "", *, oob: bool = False)
 def _ask_again(conversation_id: str, question_id: str, query: str, file_ids: list[str] | None,
                lang: str) -> FT:
     """Ask a question that failed once more, as the same question."""
+    return _resend(conversation_id, question_id, query, file_ids, t("ai.ask_again", lang), "ai-msg__again")
+
+
+def _ask_as_new(conversation_id: str, query: str, file_ids: list[str] | None, lang: str) -> FT:
+    """Ask a question the AI service will not take again as a new question, under a new
+    id; the reply above it says this counts as one more question."""
+    return _resend(conversation_id, str(uuid.uuid4()), query, file_ids, t("ai.ask_as_new", lang), "ai-msg__new")
+
+
+def _failure_action(result: dict, conversation_id: str, question_id: str, query: str,
+                    file_ids: list[str] | None, lang: str) -> FT | None:
+    """The button under a failed reply: ask again, ask as a new question, or none."""
+    if result.get("retryable"):
+        return _ask_again(conversation_id, question_id, query, file_ids, lang)
+    if result.get("new_question"):
+        return _ask_as_new(conversation_id, query, file_ids, lang)
+    return None
+
+
+def _resend(conversation_id: str, question_id: str, query: str, file_ids: list[str] | None,
+            label: str, cls: str) -> FT:
     return Button(
-        t("ai.ask_again", lang), type="button", cls="btn btn--secondary btn--sm ai-msg__again",
+        label, type="button", cls=f"btn btn--secondary btn--sm {cls}",
         hx_post="/ai/chat", hx_target="#ai-messages", hx_swap="beforeend",
         hx_vals=json.dumps({
             "query": query, "file_ids": ",".join(file_ids or []),
@@ -1728,8 +1752,8 @@ def _thread(messages: list[dict], jobs: list[dict], conversation_id: str, lang: 
     entries = [("message", m) for m in messages] + [("job", j) for j in jobs]
     entries.sort(key=lambda entry: str(entry[1].get("created_at") or ""))
     out: list[FT] = []
-    # Only the thread's last reply, when it is a failure worth retrying, offers to ask
-    # the question before it again.
+    # Only the thread's last reply, when it is a failure, offers to ask the question
+    # before it again or as a new question.
     last = messages[-1] if messages else None
     asked: dict | None = None
     for kind, entry in entries:
@@ -1744,9 +1768,9 @@ def _thread(messages: list[dict], jobs: list[dict], conversation_id: str, lang: 
             if explained is not None:
                 text, error = explained
         again = None
-        if entry is last and error and entry.get("retryable") and asked is not None:
-            again = _ask_again(conversation_id, str(asked.get("id", "")), asked.get("content") or "",
-                               asked.get("file_ids"), lang)
+        if entry is last and error and asked is not None:
+            again = _failure_action(entry, conversation_id, str(asked.get("id", "")),
+                                    asked.get("content") or "", asked.get("file_ids"), lang)
         out.append(_msg_bubble("user" if role == "user" else "ai", text, error=error,
                                help_pages=entry.get("help_pages"), lang=lang, extra=again))
         if role == "user":

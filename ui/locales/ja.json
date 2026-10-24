@@ -6507,10 +6507,12 @@
   "ai.plan_lifetime_credits": "{n} の有効期間 AI クエリが含まれています",
   "ai.plan_monthly_credits": "毎月 {n} AI クエリ",
   "help.core_section": "Celerpの基本",
-  "ai.err_outcome_unknown": "Celerp AIの回答が届きませんでした。再度質問すると回答を取得できます。この質問は1回分としてのみ数えられます。",
+  "ai.err_outcome_unknown": "Celerp AI's answer to this question was lost and can't be recovered. You can ask it as a new question, which counts as one more question.",
   "ai.err_question_expired": "この質問はもう続行できません。新しい質問として再送信してください。",
   "ai.err_question_in_progress": "Celerp AIはまだこの質問に回答中です。少し待ってから、もう一度質問してください。",
   "ai.err_operation_conflict": "This question was already sent and cannot be sent again. Press Send to ask it as a new question; it counts as one more question.",
+  "ai.err_operation_mismatch": "This question can't be sent again because its context has changed since it was first sent. You can ask it as a new question, which counts as one more question.",
   "ai.ask_again": "もう一度質問",
+  "ai.ask_as_new": "Ask as a new question",
   "ai.free_terms": "無料の質問には毎回1ファイルまで添付できます。月間の無料利用予算に達した場合、無料AIは翌月まで一時停止されることがあります。"
 }

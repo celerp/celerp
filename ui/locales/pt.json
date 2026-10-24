@@ -6507,10 +6507,12 @@
   "ai.plan_lifetime_credits": "{n} consultas AI vitalícias incluídas",
   "ai.plan_monthly_credits": "{n} consultas AI todos os meses",
   "help.core_section": "Noções básicas do Celerp",
-  "ai.err_outcome_unknown": "A resposta do Celerp AI não chegou. Pergunte novamente para recebê-la: a pergunta é contabilizada apenas uma vez.",
+  "ai.err_outcome_unknown": "Celerp AI's answer to this question was lost and can't be recovered. You can ask it as a new question, which counts as one more question.",
   "ai.err_question_expired": "Esta pergunta não pode mais ser continuada. Envie-a novamente como uma nova pergunta.",
   "ai.err_question_in_progress": "O Celerp AI ainda está respondendo a esta pergunta. Aguarde um momento e pergunte novamente.",
   "ai.err_operation_conflict": "This question was already sent and cannot be sent again. Press Send to ask it as a new question; it counts as one more question.",
+  "ai.err_operation_mismatch": "This question can't be sent again because its context has changed since it was first sent. You can ask it as a new question, which counts as one more question.",
   "ai.ask_again": "Perguntar novamente",
+  "ai.ask_as_new": "Ask as a new question",
   "ai.free_terms": "Cada pergunta gratuita pode incluir um arquivo. A IA gratuita pode ficar suspensa até o mês seguinte se o orçamento mensal de uso gratuito for atingido."
 }

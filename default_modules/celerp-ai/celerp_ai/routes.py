@@ -99,7 +99,8 @@ class QueryResponse(BaseModel):
     pending_actions: list[dict] = []
     error: str | None = None
     error_code: str | None = None
-    retryable: bool = False
+    retryable: bool = False         # ask again under the same question id
+    new_question: bool = False      # only a new question, under a new id, can follow
     help_pages: list[str] | None = None
     message_id: str | None = None   # the question's id in its conversation
     asked_again: bool = False       # the question was already in the conversation
@@ -475,6 +476,7 @@ class MessageOut(BaseModel):
     error: bool = False
     error_code: str | None = None
     retryable: bool = False
+    new_question: bool = False
     refusal: dict | None = None         # the AI service's refusal, for a refused question
     refusal_status: int | None = None
     help_pages: list[str] | None = None
@@ -515,17 +517,21 @@ class ConversationDetail(ConversationOut):
     jobs: list[BatchJobOut] = []
 
 
+def _failure_next(code: str | None) -> dict:
+    """What can follow a failed question: asking it again under its id, or a new question."""
+    from celerp.ai.service import NEW_QUESTION_ERRORS, RETRYABLE_ERRORS
+    return {"retryable": code in RETRYABLE_ERRORS, "new_question": code in NEW_QUESTION_ERRORS}
+
+
 def _message_out(m) -> MessageOut:
     from celerp.ai.conversations import help_pages, message_failure, pending_actions, tool_names
-    from celerp.ai.service import RETRYABLE_ERRORS
     failure = message_failure(m.tools_called) or {}
     return MessageOut(
         id=m.id, role=m.role, content=m.content,
         model_used=m.model_used, tools_called=tool_names(m.tools_called),
         pending_actions=[{**r, "message_id": str(m.id)} for r in pending_actions(m.tools_called)],
         file_ids=m.file_ids, credits_used=m.credits_used,
-        error=bool(failure), error_code=failure.get("code"),
-        retryable=failure.get("code") in RETRYABLE_ERRORS,
+        error=bool(failure), error_code=failure.get("code"), **_failure_next(failure.get("code")),
         refusal=failure.get("refusal"), refusal_status=failure.get("status"),
         help_pages=help_pages(m.tools_called),
         created_at=m.created_at.isoformat(),
@@ -535,7 +541,6 @@ def _message_out(m) -> MessageOut:
 def _answer_response(msg, *, question_id: uuid.UUID, asked_again: bool) -> QueryResponse:
     """The response for a stored assistant message: an answer, or the failure it records."""
     from celerp.ai.conversations import help_pages, message_failure, pending_actions, tool_names
-    from celerp.ai.service import RETRYABLE_ERRORS
     failure = message_failure(msg.tools_called)
     common = dict(
         model_used=msg.model_used or "", tools_called=tool_names(msg.tools_called),
@@ -544,7 +549,7 @@ def _answer_response(msg, *, question_id: uuid.UUID, asked_again: bool) -> Query
     if failure is not None:
         return QueryResponse(
             answer="", error=msg.content, error_code=failure.get("code"),
-            retryable=failure.get("code") in RETRYABLE_ERRORS, **common,
+            **_failure_next(failure.get("code")), **common,
         )
     return QueryResponse(
         answer=msg.content,

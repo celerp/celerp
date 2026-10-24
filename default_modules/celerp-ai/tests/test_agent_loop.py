@@ -549,19 +549,25 @@ async def test_question_still_running_is_waited_for_then_asked_again(monkeypatch
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("code, credits, retryable", [
-    ("outcome_unknown", 1, True), ("service_unavailable", 0, True), ("operation_expired", 0, False),
-    ("operation_mismatch", 0, False),
+@pytest.mark.parametrize("code, credits, retryable, key", [
+    ("outcome_unknown", 1, False, "ai.err_outcome_unknown"), ("service_unavailable", 0, True, None),
+    ("operation_expired", 0, False, "ai.err_question_expired"),
+    ("operation_mismatch", 0, False, "ai.err_operation_mismatch"),
 ])
-async def test_relay_failure_codes_reach_the_result(monkeypatch, code, credits, retryable):
+async def test_relay_failure_codes_reach_the_result(monkeypatch, code, credits, retryable, key):
+    """A failure is retried under its question id, or asked as a new question, never both:
+    the service keeps an unknown outcome final for that id."""
     _install(monkeypatch, [RelayError(code, "Lost.", status=503, credits=credits)])
     result = await _run()
     assert result.error_code == code and result.credits == credits
     assert (code in service.RETRYABLE_ERRORS) is retryable
-    if code == "outcome_unknown":
-        assert result.error == t("ai.err_outcome_unknown")
-    if code == "operation_expired":
-        assert result.error == t("ai.err_question_expired")
+    assert (code in service.NEW_QUESTION_ERRORS) is (not retryable)
+    if key:
+        assert result.error == t(key)
+
+
+def test_retry_and_new_question_failures_are_disjoint():
+    assert not service.RETRYABLE_ERRORS & service.NEW_QUESTION_ERRORS
 
 
 @pytest.mark.asyncio

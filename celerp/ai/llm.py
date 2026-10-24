@@ -43,12 +43,12 @@ class RelayError(RuntimeError):
     (the relay dropped the reservation), ``service_unavailable`` (the model
     surely did not run; ask again with the same question id),
     ``outcome_unknown`` (the model may have run but no answer came back; the
-    question is charged ``credits`` and asking again with the same question id
-    costs nothing more), ``operation_in_progress`` (the first attempt of this
+    question is charged ``credits``, and the same question id only ever gets this
+    outcome again: ask as a new question), ``operation_in_progress`` (the first attempt of this
     question is still running; ask again after ``retry_after`` seconds),
     ``operation_expired`` (the question id can no longer be used; ask as a new
-    question), ``operation_mismatch`` (the question id names a different
-    question), ``busy`` (rate limited, or the service is overloaded), and
+    question), ``operation_mismatch`` (the question id was first sent with
+    different content; ask as a new question), ``busy`` (rate limited, or the service is overloaded), and
     ``gateway_error`` (any other non-2xx status, carried in ``status``).
     """
 

@@ -349,18 +349,43 @@ async def test_answer_clears_the_composer_and_starts_a_new_question(ui_client):
 
 
 @pytest.mark.asyncio
-async def test_lost_answer_keeps_the_question_and_offers_to_ask_again(ui_client):
+async def test_timed_out_question_keeps_the_question_and_offers_to_ask_again(ui_client):
     import html as _html
     import json as _json
     r, _ = await _send(ui_client, result={
-        "answer": "", "error": t("ai.err_outcome_unknown"), "error_code": "outcome_unknown",
+        "answer": "", "error": t("ai.err_timeout"), "error_code": "timeout",
         "retryable": True, "message_id": _QUESTION, "asked_again": False})
     assert "X-AI-Clear-Composer" not in r.headers
     assert _operation_value(r.text) == _QUESTION
-    assert t("ai.err_outcome_unknown") in _html.unescape(r.text)
+    assert t("ai.err_timeout") in _html.unescape(r.text)
     vals = _json.loads(_html.unescape(r.text.split("hx-vals='", 1)[1].split("'", 1)[0]))
     assert vals == {"query": "How do I add a supplier?", "file_ids": "", "conversation_id": "conv-1",
                     "operation_id": _QUESTION}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("code, key", [
+    ("outcome_unknown", "ai.err_outcome_unknown"), ("operation_expired", "ai.err_question_expired"),
+    ("operation_mismatch", "ai.err_operation_mismatch"),
+])
+async def test_lost_answer_offers_to_ask_it_as_a_new_question(ui_client, code, key):
+    """The AI service will not take this question id again: the reply says so, the
+    composer gets a new id at once, and the button asks the question under another new
+    id, saying it counts as one more question. It never repeats the old id."""
+    import html as _html
+    import json as _json
+    r, _ = await _send(ui_client, result={
+        "answer": "", "error": t(key), "error_code": code, "retryable": False, "new_question": True,
+        "message_id": _QUESTION, "asked_again": False})
+    text = _html.unescape(r.text)
+    assert "X-AI-Clear-Composer" not in r.headers
+    composer = _operation_value(r.text)
+    assert composer != _QUESTION and len(composer) == 36
+    assert t(key) in text and t("ai.ask_as_new") in text
+    assert "ai-msg__again" not in r.text and r.text.count("ai-msg__new") == 1
+    vals = _json.loads(_html.unescape(r.text.split("hx-vals='", 1)[1].split("'", 1)[0]))
+    assert vals["query"] == "How do I add a supplier?" and vals["conversation_id"] == "conv-1"
+    assert vals["operation_id"] not in (_QUESTION, composer) and len(vals["operation_id"]) == 36
 
 
 @pytest.mark.asyncio
@@ -417,7 +442,7 @@ def test_reloaded_thread_explains_refusals_and_offers_ask_again_last_only():
         return {"id": f"a{i}", "role": "assistant", "error": True, "created_at": f"2026-10-23T00:0{i}:30", **kw}
 
     paused = {"code": "free_paused", "message": "paused", "resets_at": "2026-11-01T00:00:00+00:00"}
-    lost = dict(content=t("ai.err_outcome_unknown"), error_code="outcome_unknown", retryable=True)
+    lost = dict(content=t("ai.err_timeout"), error_code="timeout", retryable=True)
     messages = [
         _user(1), _failed(1, content="paused", error_code="free_paused", refusal=paused, refusal_status=503),
         _user(2), _failed(2, **lost),
@@ -428,7 +453,13 @@ def test_reloaded_thread_explains_refusals_and_offers_ask_again_last_only():
     assert html.count("ai-msg__again") == 1
     assert '"operation_id": "u3"' in html and "question 3" in html
 
-    # A last reply that cannot be retried offers nothing.
-    expired = _failed(3, content=t("ai.err_question_expired"), error_code="operation_expired", retryable=False)
-    html = "".join(to_xml(ft) for ft in _thread([*messages[:-1], expired], [], "conv-1", "en"))
-    assert "ai-msg__again" not in html
+    # A last reply the service will not take again offers it as a new question, under
+    # a new id; one that is neither offers nothing.
+    unknown = _failed(3, content=t("ai.err_outcome_unknown"), error_code="outcome_unknown",
+                      retryable=False, new_question=True)
+    html = "".join(to_xml(ft) for ft in _thread([*messages[:-1], unknown], [], "conv-1", "en"))
+    assert "ai-msg__again" not in html and html.count("ai-msg__new") == 1
+    assert t("ai.ask_as_new") in html and "question 3" in html and '"operation_id": "u3"' not in html
+    refused = _failed(3, content="refused", error_code="free_exhausted", retryable=False)
+    html = "".join(to_xml(ft) for ft in _thread([*messages[:-1], refused], [], "conv-1", "en"))
+    assert "ai-msg__again" not in html and "ai-msg__new" not in html

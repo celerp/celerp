@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, patch
 
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 
+import httpx
 import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
@@ -469,21 +470,22 @@ async def test_batch_notification_failure_handled(session, db_factory, company, 
 @pytest.mark.asyncio
 async def test_batch_lost_answer_is_asked_again_under_the_files_id(session, db_factory, company, user):
     """Each file is asked under an id of its own within the job. A file whose answer
-    was lost is asked again once under that id and read, charged once; a file the
-    service could not read is not asked again and not charged. The usage record
-    names every charge by the job."""
+    timed out is asked again once under that id and gets the answer the service kept;
+    a file whose outcome the service reports unknown keeps its charge and is not asked
+    again (that id only ever gets the same outcome); a file the service could not read
+    is not asked again and not charged. The usage record names every charge by the job."""
     from sqlalchemy import select
     from celerp.models.ai import AIUsage
 
-    file_ids = _create_test_files(company.id, user.id, 3)
+    file_ids = _create_test_files(company.id, user.id, 4)
     job = await create_batch_job(session, company.id, user.id, "analyze", file_ids)
     await session.commit()
     file_of = {uuid.uuid5(job.id, fid): fid for fid in file_ids}
     replies = {
         file_ids[0]: [_model_result("Extracted", credits=1)],
-        file_ids[1]: [RelayError("outcome_unknown", "lost", status=503, credits=1),
-                      _model_result("Extracted", credits=0)],
+        file_ids[1]: [httpx.ReadTimeout("slow"), _model_result("Extracted", credits=0)],
         file_ids[2]: [RelayError("service_unavailable", "down", status=503)],
+        file_ids[3]: [RelayError("outcome_unknown", "lost", status=503, credits=1)],
     }
     asked: list = []
 
@@ -498,10 +500,10 @@ async def test_batch_lost_answer_is_asked_again_under_the_files_id(session, db_f
         with patch("celerp.notifications.service.deliver"):
             await run_batch(job.id, company.id, user.id, "analyze", file_ids, db_factory)
 
-    assert sorted(asked) == sorted([file_ids[0], file_ids[1], file_ids[1], file_ids[2]])
+    assert sorted(asked) == sorted([file_ids[0], file_ids[1], file_ids[1], file_ids[2], file_ids[3]])
     async with db_factory() as s:
         updated = await s.get(AIBatchJob, job.id)
-        assert (updated.completed_files, updated.failed_files, updated.credits_consumed) == (2, 1, 2)
+        assert (updated.completed_files, updated.failed_files, updated.credits_consumed) == (2, 2, 2)
         usage = (await s.execute(select(AIUsage))).scalars().all()
     assert sorted(u.credits for u in usage) == [1, 1]
     assert {(u.operation_id, u.company_id, u.user_id) for u in usage} == {(job.id, company.id, user.id)}

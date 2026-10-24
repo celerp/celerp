@@ -21,6 +21,7 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.models.ai import AIBatchJob, AIConversation, AIMessage
+from celerp.ai.service import NEW_QUESTION_ERRORS
 from celerp.ai.usage import record_usage
 from ui.i18n import t
 
@@ -376,10 +377,6 @@ def message_error(tools_called: list | None) -> bool:
     return message_failure(tools_called) is not None
 
 
-# After these failures the AI service will not take the question id again.
-_CLOSED_AFTER = frozenset({"operation_expired", "operation_mismatch"})
-
-
 class QuestionIdConflict(Exception):
     """The question id already names a question this send cannot be: another question,
     another conversation, or one that can no longer be asked under it."""
@@ -421,7 +418,7 @@ async def find_question(
         if not message_error(reply.tools_called):
             return asked, reply
     if next_question < len(later) or (
-        replies and (message_failure(replies[-1].tools_called) or {}).get("code") in _CLOSED_AFTER
+        replies and (message_failure(replies[-1].tools_called) or {}).get("code") in NEW_QUESTION_ERRORS
     ):
         raise QuestionIdConflict
     return asked, None

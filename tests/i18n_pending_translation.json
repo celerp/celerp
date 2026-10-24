@@ -696,6 +696,18 @@
     "ai.err_operation_conflict": {
       "en": "This question was already sent and cannot be sent again. Press Send to ask it as a new question; it counts as one more question.",
       "params": []
+    },
+    "ai.err_outcome_unknown": {
+      "en": "Celerp AI's answer to this question was lost and can't be recovered. You can ask it as a new question, which counts as one more question.",
+      "params": []
+    },
+    "ai.err_operation_mismatch": {
+      "en": "This question can't be sent again because its context has changed since it was first sent. You can ask it as a new question, which counts as one more question.",
+      "params": []
+    },
+    "ai.ask_as_new": {
+      "en": "Ask as a new question",
+      "params": []
     }
   }
 }
