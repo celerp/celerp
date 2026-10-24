@@ -3579,6 +3579,7 @@
   "modules.unavailable_retry": "La lista de módulos no está disponible en este momento. Volviendo a intentarlo...",
   "modules.also_enabled": "También activados, porque los necesita: {names}",
   "modules.off_for_company": "El módulo {module} está desactivado para su empresa.",
+  "modules.turn_off_busy": "The {module} module is still finishing work for your company, such as a store sync or a payment. Try again in a minute.",
   "modules.off_for_company_title": "Módulo desactivado",
   "modules.starts_after_restart": "El módulo {module} se iniciará cuando Celerp se reinicie.",
   "modules.starts_after_restart_title": "El módulo aún no se ha iniciado",

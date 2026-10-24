@@ -14,7 +14,9 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp import __version__
+from celerp.connectors.ownership import PRODUCT_CHANNEL_MODULES
 from celerp.db import get_session
+from celerp.modules.boundary import needs_modules_for
 from celerp.modules.outcome import BOOT_TOKEN
 from celerp.services.auth import (
     ROLE_LEVELS,
@@ -1242,6 +1244,7 @@ async def _relay_reports_connected(api_key: str, platform: str) -> bool | None:
 
 
 @settings_router.get("/connectors/{platform}/authorize-url", dependencies=[require_permission("manage_integrations")])
+@needs_modules_for("platform", PRODUCT_CHANNEL_MODULES)
 async def connector_authorize_url(
     platform: str,
     shop: str = "",
@@ -1270,10 +1273,6 @@ async def connector_authorize_url(
         connector = get_connector(platform)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=t("connectors.unknown_connector", platform=platform)) from exc
-
-    # Refused before anything is claimed.
-    from celerp.connectors.product_links import require_inventory_for
-    await require_inventory_for(company_id, platform)
 
     category = getattr(connector.category, "value", connector.category)
     default_frequency = (

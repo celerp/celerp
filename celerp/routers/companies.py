@@ -1936,9 +1936,11 @@ async def disable_module(
 ) -> dict:
     """Turn a module off for this company. Other companies keep using it. Refused for a
     module built into Celerp, which is always on."""
+    from celerp.modules.boundary import settle_module_use
     from celerp.modules.loader import is_core_folded, module_label
     from celerp.modules.registry import (
-        ModuleStillNeeded, commit_with_load_set, disable_for_company, get_enabled, hold_module_state,
+        ModuleStillNeeded, commit_with_load_set, disable_for_company, get_enabled, hold_company_modules,
+        hold_module_state,
     )
     from celerp.services.turn_off_preflight import outstanding
 
@@ -1947,6 +1949,8 @@ async def disable_module(
             f"{module_label(module_name)} is part of Celerp and is always on."))
 
     await hold_module_state(session)
+    await settle_module_use(company_id, module_name)
+    await hold_company_modules(session, company_id)
     company = await locked_company(session, company_id)
     if not company:
         raise HTTPException(status_code=404, detail=t("error.company_unavailable"))

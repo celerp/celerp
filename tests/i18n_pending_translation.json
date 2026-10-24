@@ -692,6 +692,12 @@
         "paid",
         "where"
       ]
+    },
+    "modules.turn_off_busy": {
+      "en": "The {module} module is still finishing work for your company, such as a store sync or a payment. Try again in a minute.",
+      "params": [
+        "module"
+      ]
     }
   }
 }

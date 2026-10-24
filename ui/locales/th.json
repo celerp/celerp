@@ -3579,6 +3579,7 @@
   "modules.unavailable_retry": "ขณะนี้ไม่สามารถแสดงรายการโมดูลได้ กำลังลองใหม่...",
   "modules.also_enabled": "เปิดใช้งานด้วย เพราะจำเป็นต้องใช้: {names}",
   "modules.off_for_company": "โมดูล {module} ปิดอยู่สำหรับบริษัทของคุณ",
+  "modules.turn_off_busy": "The {module} module is still finishing work for your company, such as a store sync or a payment. Try again in a minute.",
   "modules.off_for_company_title": "ปิดโมดูลแล้ว",
   "modules.starts_after_restart": "โมดูล {module} จะเริ่มทำงานหลังจากรีสตาร์ต Celerp",
   "modules.starts_after_restart_title": "โมดูลยังไม่เริ่มทำงาน",

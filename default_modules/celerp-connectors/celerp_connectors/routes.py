@@ -12,8 +12,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.accounting_roles import refusal
 from celerp.connectors.base import SyncDirection, SyncEntity
-from celerp.connectors.ownership import PRODUCT_CHANNEL_PLATFORMS
+from celerp.connectors.ownership import PRODUCT_CHANNEL_MODULES, PRODUCT_CHANNEL_PLATFORMS
 from celerp.db import get_session
+from celerp.modules.boundary import needs_modules_for
 from celerp.services.auth import (
     get_current_company_id,
     get_current_user,
@@ -221,6 +222,7 @@ def _relay_https_error() -> dict | None:
 
 
 @router.post("/{connector_name}/credentials")
+@needs_modules_for("connector_name", PRODUCT_CHANNEL_MODULES)
 async def store_credentials(
     connector_name: str,
     payload: ApiKeyCredentials,
@@ -240,9 +242,6 @@ async def store_credentials(
         connector = connectors.get(connector_name)
     except KeyError:
         raise HTTPException(status_code=404, detail=t("connectors.unknown_connector", platform=connector_name))
-
-    from celerp.connectors.product_links import require_inventory_for
-    await require_inventory_for(company_id, connector_name)
 
     if (err := _relay_https_error()) is not None:
         return err
@@ -719,6 +718,7 @@ class ItemSyncRequest(BaseModel):
 
 
 @local_router.post("/{connector_name}/sync")
+@needs_modules_for("connector_name", PRODUCT_CHANNEL_MODULES)
 async def set_item_sync(
     connector_name: str, payload: ItemSyncRequest,
     company_id: Annotated[str, Depends(get_current_company_id)],
@@ -740,8 +740,7 @@ async def set_item_sync(
         lock_connector_operation,
     )
     from celerp.events.engine import emit_event
-    from celerp.connectors.product_links import external_link_for_state, require_inventory_for
-    await require_inventory_for(company_id, connector_name)
+    from celerp.connectors.product_links import external_link_for_state
     from celerp_inventory.services import resolve_catalog_anchor_for_item, set_external_link_state
     try:
         await lock_connector_operation(

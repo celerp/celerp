@@ -228,6 +228,39 @@ async def test_a_payment_for_a_company_with_documents_on_is_recorded(client, pay
     assert len(await _paid_with(client, tok, eid)) == 1
 
 
+@pytest.mark.asyncio
+async def test_a_payment_whose_company_turns_documents_off_after_it_was_admitted_writes_nothing(
+        client, session, payments_on, monkeypatch):
+    """Documents goes off for the company (as another Celerp process would turn it off)
+    after the payment passed its boundary but before it is written: the write is
+    refused, the payment is not acknowledged and is not kept among the unmatched, and
+    the invoice is unchanged. Back on, the payment delivered again is recorded once."""
+    import celerp_docs.routes_payments as routes_payments
+    from sqlalchemy import select, update
+    from celerp.models.company import Company
+    from celerp.modules.registry import disable_for_company
+    mark_running(monkeypatch, "celerp-docs")
+    tok = await _register(client)
+    eid, _ = await _payable_invoice(client, tok)
+    payload = _delivery(tok, eid)
+    real = routes_payments.record_stripe_payment
+
+    async def turned_off_first(s, cid, *args, **kwargs):
+        settings = await s.scalar(select(Company.settings).where(Company.id == cid))
+        await s.execute(update(Company).where(Company.id == cid)
+                        .values(settings=disable_for_company(settings, "celerp-docs")))
+        return await real(s, cid, *args, **kwargs)
+
+    monkeypatch.setattr(routes_payments, "record_stripe_payment", turned_off_first)
+    assert await _acked(payload) is False
+    assert await _unmatched(session) == 0
+    assert await _paid_with(client, tok, eid) == []
+
+    monkeypatch.setattr(routes_payments, "record_stripe_payment", real)
+    assert await _acked(payload) is True
+    assert len(await _paid_with(client, tok, eid)) == 1
+
+
 async def _recorded_elsewhere(client, tok: str, eid: str) -> dict:
     """A payment whose company is gone, recorded by a person on the invoice *eid*: the
     deliveries for it that follow still name the gone company. Returns them."""
@@ -683,19 +716,24 @@ def _literals(args, names: dict[str, set[str]]) -> set[str]:
 # arguments, or (a shared check) the module it always names.
 # Only checks that judge a company count: whether a module runs in this process says
 # nothing about whether the company the work is for may use it.
-_CHECKS: dict[str, set[str] | None] = {
-    "require_on": None, "require_company_uses": None,
-    "require_inventory_for": {"celerp-inventory"},
-}
+_CHECKS: dict[str, set[str] | None] = {"require_on": None, "require_company_uses": None}
+
+
+def _needed_for(name: str) -> set[str]:
+    """Every module the mapping *name* given to needs_modules_for can name."""
+    from celerp.connectors import ownership
+    return set().union(*getattr(ownership, name).values())
 
 
 def _guarded(fn: ast.AST, names: dict[str, set[str]]) -> set[str]:
-    """Modules *fn* refuses without: marked needs_modules, or checked by the boundary
-    or the loader before it imports them."""
+    """Modules *fn* refuses without: marked needs_modules or needs_modules_for, or
+    checked by the boundary or the loader before it imports them."""
     out = set()
     for d in getattr(fn, "decorator_list", ()):
         if isinstance(d, ast.Call) and getattr(d.func, "id", None) == "needs_modules":
             out |= _literals(d.args, names)
+        elif isinstance(d, ast.Call) and getattr(d.func, "id", None) == "needs_modules_for":
+            out |= _needed_for(d.args[1].id)
         elif isinstance(d, ast.Name):
             out |= names.get(d.id, set())
     for n in ast.walk(fn):

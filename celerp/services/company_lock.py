@@ -22,6 +22,8 @@ _LOCKED = "celerp_locked_companies"
 AUTHORITY = "celerp_request_authority"
 _JUDGED = "celerp_authority_judged"
 _REFUSED = "celerp_authority_refused"
+# The modules each company's running work relies on, judged in this transaction.
+_MODULES_JUDGED = "celerp_module_use_judged"
 
 
 async def lock_company(session: AsyncSession, company_id) -> None:
@@ -41,13 +43,44 @@ async def lock_company(session: AsyncSession, company_id) -> None:
     KEY SHARE, so the upgrade never happens, while it still conflicts with another
     FOR NO KEY UPDATE.
 
-    Canonical lock order: take this lock first, then any Projection row locks.
-    Never acquire it after SELECT ... FOR UPDATE on a Projection.
+    Canonical lock order: the module-state boundary when the caller holds it, then
+    the company's module settings (judge_module_writes), then this lock, then any
+    Projection row locks. Never acquire it after SELECT ... FOR UPDATE on a Projection.
     """
+    await judge_module_writes(session, company_id)
     await session.execute(
         select(Company.id).where(Company.id == company_id).with_for_update(key_share=True)
     )
     await _judge_authority_again(session, company_id)
+
+
+async def judge_module_writes(session: AsyncSession, company_id) -> None:
+    """Work inside a module was admitted before it ran (modules.boundary.module_use), and
+    a module may have been turned off since. Before its first write to the company in a
+    transaction, the work holds the company's module settings (share_company_modules,
+    which turning a module off waits for and holds through its commit) and judges the
+    modules it relies on against them as committed now. A refusal is kept until the
+    transaction ends, as an authority refusal is. Nothing outside module work."""
+    from celerp.modules.boundary import modules_in_use, refuse_writes, require_on
+    from celerp.modules.registry import share_company_modules
+
+    names = modules_in_use(company_id)
+    if not names:
+        return
+    judged = session.info.setdefault(_MODULES_JUDGED, {})
+    done = judged.get(str(company_id), frozenset())
+    if names <= done:
+        return
+    if not done:
+        await share_company_modules(session, company_id)
+    judged[str(company_id)] = done | names
+    row = (await session.execute(select(Company.settings).where(Company.id == company_id))).first()
+    try:
+        require_on(None if row is None else dict(row[0] or {}), *sorted(names))
+    except Exception as exc:
+        session.info[_REFUSED] = exc
+        refuse_writes(exc)
+        raise
 
 
 async def _judge_authority_again(session: AsyncSession, company_id) -> None:
@@ -184,4 +217,5 @@ def _lock_released(session: Session, transaction) -> None:
     if transaction.parent is None:
         session.info.pop(_LOCKED, None)
         session.info.pop(_JUDGED, None)
+        session.info.pop(_MODULES_JUDGED, None)
         session.info.pop(_REFUSED, None)

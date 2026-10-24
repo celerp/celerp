@@ -3579,6 +3579,7 @@
   "modules.unavailable_retry": "現在、モジュール一覧は利用できません。再試行中...",
   "modules.also_enabled": "必要なため、次も有効にしました: {names}",
   "modules.off_for_company": "{module} モジュールはあなたの会社では無効になっています。",
+  "modules.turn_off_busy": "The {module} module is still finishing work for your company, such as a store sync or a payment. Try again in a minute.",
   "modules.off_for_company_title": "モジュールは無効です",
   "modules.starts_after_restart": "{module}モジュールはCelerpの再起動後に起動します。",
   "modules.starts_after_restart_title": "モジュールはまだ起動していません",

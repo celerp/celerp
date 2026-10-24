@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.models.company import Company
 from celerp.models.projections import Projection
 from celerp.connectors.ownership import PRODUCT_CHANNEL_PLATFORMS
-from celerp.modules.boundary import company_settings, require_on
+from celerp.modules.boundary import require_on
 from celerp.modules.loader import is_running
 
 INVENTORY = "celerp-inventory"
@@ -45,13 +45,6 @@ def external_link_for_state(state: dict, platform: str) -> dict:
     if isinstance(raw, dict) and raw.get("product_id") not in (None, ""):
         return dict(raw)
     return _legacy_external_link(platform, str(state.get("idempotency_key") or ""))
-
-
-async def require_inventory_for(company_id, platform: str) -> None:
-    """Connecting a store, or choosing which items sync with it, writes links on
-    Inventory's items: refused, naming Inventory, while the company cannot use it."""
-    if platform in PRODUCT_CHANNEL_PLATFORMS:
-        require_on(await company_settings(company_id), INVENTORY)
 
 
 async def refuse_while_links_cannot_detach(session: AsyncSession, company_id, platform: str) -> None:

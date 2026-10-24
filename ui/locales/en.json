@@ -1300,6 +1300,7 @@
   "modules.unavailable_retry": "The modules list is not available right now. Retrying...",
   "modules.also_enabled": "Also turned on, because it needs them: {names}",
   "modules.off_for_company": "The {module} module is turned off for your company.",
+  "modules.turn_off_busy": "The {module} module is still finishing work for your company, such as a store sync or a payment. Try again in a minute.",
   "modules.off_for_company_title": "Module turned off",
   "modules.starts_after_restart": "The {module} module starts after Celerp restarts.",
   "modules.starts_after_restart_title": "Module not started yet",

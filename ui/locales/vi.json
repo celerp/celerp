@@ -3579,6 +3579,7 @@
   "modules.unavailable_retry": "Danh sách mô-đun hiện không khả dụng. Đang thử lại...",
   "modules.also_enabled": "Cũng đã bật, vì cần đến: {names}",
   "modules.off_for_company": "Mô-đun {module} đã tắt cho công ty của bạn.",
+  "modules.turn_off_busy": "The {module} module is still finishing work for your company, such as a store sync or a payment. Try again in a minute.",
   "modules.off_for_company_title": "Mô-đun đã tắt",
   "modules.starts_after_restart": "Mô-đun {module} sẽ khởi động sau khi Celerp khởi động lại.",
   "modules.starts_after_restart_title": "Mô-đun chưa khởi động",

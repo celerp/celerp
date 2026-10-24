@@ -539,6 +539,10 @@ async def emit_event(
     if _backup_active():
         raise HTTPException(status_code=503, detail=t("error.backup_running"))
 
+    # Work inside a module writes only while its company still uses that module.
+    from celerp.services.company_lock import judge_module_writes
+    await judge_module_writes(session, kwargs["company_id"])
+
     schema = EVENT_SCHEMA_MAP.get(kwargs["event_type"])
     if schema is None:
         raise ValueError(f"Unknown event_type: {kwargs['event_type']}")

@@ -3579,6 +3579,7 @@
   "modules.unavailable_retry": "قائمة الوحدات النمطية غير متاحة حاليًا. إعادة المحاولة...",
   "modules.also_enabled": "تم تشغيلها أيضًا لأنها مطلوبة: {names}",
   "modules.off_for_company": "الوحدة {module} متوقفة لشركتك.",
+  "modules.turn_off_busy": "The {module} module is still finishing work for your company, such as a store sync or a payment. Try again in a minute.",
   "modules.off_for_company_title": "الوحدة متوقفة",
   "modules.starts_after_restart": "تبدأ وحدة {module} بالعمل بعد إعادة تشغيل Celerp.",
   "modules.starts_after_restart_title": "لم تبدأ الوحدة بعد",

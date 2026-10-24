@@ -3580,6 +3580,7 @@
   "modules.unavailable_retry": "La liste des modules n'est pas disponible pour le moment. Nouvelle tentative...",
   "modules.also_enabled": "Également activés, car il en a besoin : {names}",
   "modules.off_for_company": "Le module {module} est désactivé pour votre entreprise.",
+  "modules.turn_off_busy": "The {module} module is still finishing work for your company, such as a store sync or a payment. Try again in a minute.",
   "modules.off_for_company_title": "Module désactivé",
   "modules.starts_after_restart": "Le module {module} démarrera après le redémarrage de Celerp.",
   "modules.starts_after_restart_title": "Module pas encore démarré",

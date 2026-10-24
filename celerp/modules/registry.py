@@ -110,6 +110,43 @@ async def hold_module_state(session) -> None:
     await session.execute(text("SET LOCAL statement_timeout TO DEFAULT"))
 
 
+async def share_module_state(session) -> None:
+    """Hold the module-state boundary in shared mode until *session*'s transaction ends.
+
+    Work that uses a company's modules is admitted under it (boundary.module_use):
+    holders never wait for each other, and a change to which modules a company uses
+    (hold_module_state) waits for every holder and is waited for by them, so the
+    admission reads settings no change is part way through. A no-op off Postgres, as
+    hold_module_state is."""
+    from sqlalchemy import text
+    if session.get_bind().dialect.name != "postgresql":
+        return
+    await session.execute(text("SELECT pg_advisory_xact_lock_shared(:k)"), {"k": _MODULE_STATE_LOCK_KEY})
+
+
+async def _company_module_lock(session, company_id, mode: str) -> None:
+    from sqlalchemy import text
+    if session.get_bind().dialect.name != "postgresql":
+        return
+    await session.execute(text(f"SELECT {mode}(hashtextextended(:k, 0))"),
+                          {"k": f"module-use:{company_id}"})
+
+
+async def hold_company_modules(session, company_id) -> None:
+    """Keep the module work of *company_id* from writing until *session*'s transaction
+    ends, waiting for the writes already made (share_company_modules). Taken by turning
+    a module off, after the module-state boundary and before the company lock."""
+    await _company_module_lock(session, company_id, "pg_advisory_xact_lock")
+
+
+async def share_company_modules(session, company_id) -> None:
+    """Hold, until *session*'s transaction ends, the company's module settings as they
+    are: a write of module work takes it before reading them, so no change to them is
+    part way through while it writes, and none commits before it does. Holders never
+    wait for each other. Before the company lock, as hold_company_modules is."""
+    await _company_module_lock(session, company_id, "pg_advisory_xact_lock_shared")
+
+
 def is_installed(module_name: str) -> bool:
     """Whether *module_name* is a module this installation runs or has on disk."""
     from celerp.modules.loader import is_running, module_search_path, read_manifest, resolve_module_path
