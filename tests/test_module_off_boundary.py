@@ -8,8 +8,7 @@ Three states: the module on; turned off for one company while another keeps it o
 (that company is refused, the other works as before); not started, checked in a fresh
 process with the real loader, where nothing of the module is importable, and in this
 one for a company that uses it before Celerp restarts. A payment refused either way is
-not acknowledged, so Celerp Cloud keeps it and delivers it again; once Documents is on
-it is recorded exactly once."""
+not acknowledged, and once Documents is on it is recorded exactly once."""
 
 from __future__ import annotations
 
@@ -135,7 +134,7 @@ def _delivery(tok: str, eid: str, delivery_id: str = "delivery-1") -> dict:
 
 
 async def _acked(payload: dict) -> bool:
-    """Deliver *payload* as Celerp Cloud does; True when the installation acknowledged it."""
+    """Hand *payload* to the installation; True when it acknowledged it."""
     from celerp.gateway.client import GatewayClient
     gateway = GatewayClient(gateway_token="t", instance_id="i", gateway_url="wss://relay.invalid/ws")
     gateway._ws = object()
@@ -173,8 +172,8 @@ async def _documents(client, tok: str, action: str) -> None:
 async def test_a_payment_waits_until_documents_starts_and_is_then_recorded_once(
         client, session, payments_on, monkeypatch, caplog):
     """The company uses Documents but Celerp has not started it: not acknowledged, with
-    nothing written; delivered again once it runs, it is recorded once, and a further
-    delivery changes nothing."""
+    nothing written; once it runs, the same payment is recorded once, and receiving it
+    again changes nothing."""
     tok = await _register(client)
     eid, _ = await _payable_invoice(client, tok)
     payload = _delivery(tok, eid)
@@ -196,7 +195,7 @@ async def test_a_payment_for_a_company_that_turned_documents_off_waits_until_it_
         client, session, payments_on, monkeypatch, caplog):
     """Documents off for this company while another keeps it on: this company's payment
     is not acknowledged and writes nothing, the other's is recorded as before. Turned
-    back on, the payment delivered again is recorded once."""
+    back on, the same payment is recorded once."""
     mark_running(monkeypatch, "celerp-docs")
     tok = await _register(client)
     eid, _ = await _payable_invoice(client, tok)
@@ -234,7 +233,7 @@ async def test_a_payment_whose_company_turns_documents_off_after_it_was_admitted
     """Documents goes off for the company (as another Celerp process would turn it off)
     after the payment passed its boundary but before it is written: the write is
     refused, the payment is not acknowledged and is not kept among the unmatched, and
-    the invoice is unchanged. Back on, the payment delivered again is recorded once."""
+    the invoice is unchanged. Back on, the same payment is recorded once."""
     import celerp_docs.routes_payments as routes_payments
     from sqlalchemy import select, update
     from celerp.models.company import Company

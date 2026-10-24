@@ -9,9 +9,7 @@ through the same path as a manual payment.
 
 A delivery (payment, fees, refund, release) is recorded on invoices, so while the
 company it is written to cannot use Documents (turned off, or not started yet) it is
-refused before anything is written (``needs_modules``). It is not acknowledged, so Celerp Cloud keeps it
-and delivers it again; once Documents is on it is recorded as any other, and recording
-it twice changes nothing.
+refused before anything is written (``needs_modules``) and not acknowledged.
 """
 from __future__ import annotations
 
@@ -29,9 +27,8 @@ from ui.i18n import t
 
 log = logging.getLogger(__name__)
 
-# A delivery waits, unacknowledged, while its company has Documents turned off, as it
-# does while Documents has not started. A payment recorded on another company's
-# invoice is judged by that company once it is known (_home_uses_documents).
+# A delivery needs Documents on the company it names. A payment recorded on another
+# company's invoice is judged by that company once it is known (_home_uses_documents).
 _on_invoices = needs_modules("celerp-docs", company=lambda payload: payload.get("company_id"))
 
 
