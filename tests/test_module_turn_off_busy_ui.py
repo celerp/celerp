@@ -6,6 +6,7 @@ outcome, here the message to try again, never the "not available" panel."""
 from __future__ import annotations
 
 import json
+from unittest.mock import patch
 
 import pytest
 
@@ -29,12 +30,13 @@ async def test_the_modules_page_shows_the_busy_message_and_waits_out_the_turn_of
         waits.append(timeout)
         return bridged(token, timeout)
 
-    monkeypatch.setattr(api_client, "_client", _recording)
     # The company's Labels work still running, and a short wait so the test is quick.
     monkeypatch.setattr(boundary, "MODULE_SETTLE_SECONDS", 0.2)
     monkeypatch.setitem(boundary._RUNNING, (cid, LABELS), 1)
 
-    r = await owner_ui.post(f"/modules/{LABELS}/disable", headers={"HX-Request": "true"})
+    # Scoped to the request: owner_ui's own patch of _client must be what is undone last.
+    with patch.object(api_client, "_client", _recording):
+        r = await owner_ui.post(f"/modules/{LABELS}/disable", headers={"HX-Request": "true"})
     assert r.status_code == 200, r.text
     toast = json.loads(r.headers["HX-Trigger"])["celerpToast"]
     assert toast["type"] == "error"
