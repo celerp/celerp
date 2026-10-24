@@ -692,28 +692,6 @@
         "paid",
         "where"
       ]
-    },
-    "modules.turn_off_busy": {
-      "en": "The {module} module is still finishing work for your company, such as a store sync or a payment. Try again in a minute.",
-      "params": [
-        "module"
-      ]
-    },
-    "contacts.paid_year_to_date": {
-      "en": "Year To Date, Part Payments Included",
-      "params": []
-    },
-    "modules.use_busy": {
-      "en": "Modules are being changed right now, so this {module} work did not go ahead. Try again in a minute.",
-      "params": [
-        "module"
-      ]
-    },
-    "modules.change_busy": {
-      "en": "Another change to modules is in progress, so the {module} module was not turned off. Try again in a minute.",
-      "params": [
-        "module"
-      ]
     }
   }
 }
