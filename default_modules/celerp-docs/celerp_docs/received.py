@@ -389,8 +389,9 @@ def unrepresentable(document: dict, target: BookTarget) -> dict | None:
     list_total = _money(list_totals(managed_fields(document, target))["total"], currency)
     if list_total == total:
         return None
-    key, params = "documents.err_received_list_total", {"total": str(total), "list_total": str(list_total)}
-    return {**refusal(key, t(key, **params), **params), "code": "received_list_total"}
+    params = {"total": str(total), "list_total": str(list_total)}
+    return {**refusal("documents.err_received_list_total", t("documents.err_received_list_total", **params), **params),
+            "code": "received_list_total"}
 
 
 def _fits(state: dict, booked: dict, target: Projection) -> bool:
