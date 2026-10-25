@@ -551,7 +551,13 @@ async def emit_event(
 
     # A list's write carries the totals it gives the list, whichever path writes it, so a
     # replay (backup restore, rebuild) gives the list the totals it was saved with.
+    # Only Documents gives a list its totals, so a company that cannot use it does not write one.
     if kwargs["event_type"] in LIST_TOTALLED_EVENTS:
+        from celerp.models.company import Company
+        from celerp.modules.boundary import require_company_uses
+
+        row = (await session.execute(select(Company.settings).where(Company.id == kwargs["company_id"]))).first()
+        require_company_uses(None if row is None else dict(row[0] or {}), "celerp-docs")
         from celerp_docs.doc_projections import with_list_totals
 
         stored = None

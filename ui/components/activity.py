@@ -653,7 +653,10 @@ def _line_tax_change_summary(fields_changed: dict, currency: str | None):
     def _key(li):
         return li.get("entity_id") or li.get("item_id") or li.get("sku") or li.get("name") or ""
 
-    from celerp_docs.doc_money import line_tax_rate
+    try:
+        from celerp_docs.doc_money import line_tax_rate
+    except ImportError:  # Documents is not installed: no tax wording to give
+        return [], frozenset()
 
     def _rate(li) -> Decimal | None:
         try:

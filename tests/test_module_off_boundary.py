@@ -901,7 +901,13 @@ _REVIEWED: dict[tuple[str, str], str] = {
     ("ui/routes/contacts.py", "setup_routes"): _OWN_UI,
     **{(_DOCS_UI, name): _OWN_UI for name in (
         "_hold_refusal", "_physical_lots", "_sales_options", "_doc_line_actions",
-        "_writeoff_account_choices", "_payment_section", "_doc_detail")},
+        "_writeoff_account_choices", "_payment_section", "_doc_detail", "setup_routes")},
+    ("celerp/output/doc_print.py", "render_doc_print_html"):
+        "its list-totals step runs only for a list; its callers are Documents' share route "
+        "(celerp_docs.routes_share) and Documents' own print page, so it runs only while Documents runs",
+    ("ui/components/activity.py", "_line_tax_change_summary"):
+        "only shows the tax lines of an activity entry and writes nothing; it shows none where "
+        "Documents cannot be imported",
     ("ui/routes/inventory.py", "<module>"): _OWN_UI,
     ("ui/routes/inventory.py", "_item_files_section"): _OWN_UI,
 }
