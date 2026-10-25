@@ -191,18 +191,7 @@
     "settings.tab_cloud_relay",
     "setup.cloud",
     "th.position",
-    "th.sku",
-    "documents.err_received_list_total",
-    "notice.list_tax_rule.title",
-    "notice.list_tax_rule.body",
-    "documents.list_old_rule_notice",
-    "documents.btn_recalculate_total",
-    "documents.list_total_recalculated",
-    "documents.btn_restore_total",
-    "event.list.totals_recalculated",
-    "event.list.totals_restored",
-    "documents.err_list_old_rule_total",
-    "documents.err_list_total_status"
+    "th.sku"
   ],
   "ar": [
     "account.email_placeholder",
@@ -384,18 +373,7 @@
     "settings.tab_cloud_relay",
     "setup.cloud",
     "th.position",
-    "th.sku",
-    "documents.err_received_list_total",
-    "notice.list_tax_rule.title",
-    "notice.list_tax_rule.body",
-    "documents.list_old_rule_notice",
-    "documents.btn_recalculate_total",
-    "documents.list_total_recalculated",
-    "documents.btn_restore_total",
-    "event.list.totals_recalculated",
-    "event.list.totals_restored",
-    "documents.err_list_old_rule_total",
-    "documents.err_list_total_status"
+    "th.sku"
   ],
   "de": [
     "acct.source_system",
@@ -648,18 +626,7 @@
     "th.sku",
     "th.status",
     "th.text",
-    "th.version",
-    "documents.err_received_list_total",
-    "notice.list_tax_rule.title",
-    "notice.list_tax_rule.body",
-    "documents.list_old_rule_notice",
-    "documents.btn_recalculate_total",
-    "documents.list_total_recalculated",
-    "documents.btn_restore_total",
-    "event.list.totals_recalculated",
-    "event.list.totals_restored",
-    "documents.err_list_old_rule_total",
-    "documents.err_list_total_status"
+    "th.version"
   ],
   "es": [
     "account.plan",
@@ -885,18 +852,7 @@
     "th.factor",
     "th.position",
     "th.sku",
-    "th.total",
-    "documents.err_received_list_total",
-    "notice.list_tax_rule.title",
-    "notice.list_tax_rule.body",
-    "documents.list_old_rule_notice",
-    "documents.btn_recalculate_total",
-    "documents.list_total_recalculated",
-    "documents.btn_restore_total",
-    "event.list.totals_recalculated",
-    "event.list.totals_restored",
-    "documents.err_list_old_rule_total",
-    "documents.err_list_total_status"
+    "th.total"
   ],
   "fr": [
     "acct.tab_journal",
@@ -1163,18 +1119,7 @@
     "th.sku",
     "th.source",
     "th.total",
-    "th.version",
-    "documents.err_received_list_total",
-    "notice.list_tax_rule.title",
-    "notice.list_tax_rule.body",
-    "documents.list_old_rule_notice",
-    "documents.btn_recalculate_total",
-    "documents.list_total_recalculated",
-    "documents.btn_restore_total",
-    "event.list.totals_recalculated",
-    "event.list.totals_restored",
-    "documents.err_list_old_rule_total",
-    "documents.err_list_total_status"
+    "th.version"
   ],
   "id": [
     "acct.source_manual",
@@ -1425,18 +1370,7 @@
     "th.ref",
     "th.sku",
     "th.status",
-    "th.total",
-    "documents.err_received_list_total",
-    "notice.list_tax_rule.title",
-    "notice.list_tax_rule.body",
-    "documents.list_old_rule_notice",
-    "documents.btn_recalculate_total",
-    "documents.list_total_recalculated",
-    "documents.btn_restore_total",
-    "event.list.totals_recalculated",
-    "event.list.totals_restored",
-    "documents.err_list_old_rule_total",
-    "documents.err_list_total_status"
+    "th.total"
   ],
   "it": [
     "attr.volume_l",
@@ -1659,18 +1593,7 @@
     "th.memo",
     "th.output",
     "th.position",
-    "th.sku",
-    "documents.err_received_list_total",
-    "notice.list_tax_rule.title",
-    "notice.list_tax_rule.body",
-    "documents.list_old_rule_notice",
-    "documents.btn_recalculate_total",
-    "documents.list_total_recalculated",
-    "documents.btn_restore_total",
-    "event.list.totals_recalculated",
-    "event.list.totals_restored",
-    "documents.err_list_old_rule_total",
-    "documents.err_list_total_status"
+    "th.sku"
   ],
   "ja": [
     "account.email_placeholder",
@@ -1862,18 +1785,7 @@
     "settings.tab_cloud_relay",
     "setup.cloud",
     "th.position",
-    "th.sku",
-    "documents.err_received_list_total",
-    "notice.list_tax_rule.title",
-    "notice.list_tax_rule.body",
-    "documents.list_old_rule_notice",
-    "documents.btn_recalculate_total",
-    "documents.list_total_recalculated",
-    "documents.btn_restore_total",
-    "event.list.totals_recalculated",
-    "event.list.totals_restored",
-    "documents.err_list_old_rule_total",
-    "documents.err_list_total_status"
+    "th.sku"
   ],
   "pt": [
     "acct.source_manual",
@@ -2110,18 +2022,7 @@
     "th.sku",
     "th.skuitem",
     "th.status",
-    "th.total",
-    "documents.err_received_list_total",
-    "notice.list_tax_rule.title",
-    "notice.list_tax_rule.body",
-    "documents.list_old_rule_notice",
-    "documents.btn_recalculate_total",
-    "documents.list_total_recalculated",
-    "documents.btn_restore_total",
-    "event.list.totals_recalculated",
-    "event.list.totals_restored",
-    "documents.err_list_old_rule_total",
-    "documents.err_list_total_status"
+    "th.total"
   ],
   "th": [
     "account.email_placeholder",
@@ -2311,18 +2212,7 @@
     "settings.tab_cloud_relay",
     "setup.cloud",
     "th.position",
-    "th.sku",
-    "documents.err_received_list_total",
-    "notice.list_tax_rule.title",
-    "notice.list_tax_rule.body",
-    "documents.list_old_rule_notice",
-    "documents.btn_recalculate_total",
-    "documents.list_total_recalculated",
-    "documents.btn_restore_total",
-    "event.list.totals_recalculated",
-    "event.list.totals_restored",
-    "documents.err_list_old_rule_total",
-    "documents.err_list_total_status"
+    "th.sku"
   ],
   "vi": [
     "btn.u00d7",
@@ -2516,17 +2406,6 @@
     "settings.tab_cloud_relay",
     "setup.cloud",
     "th.position",
-    "th.sku",
-    "documents.err_received_list_total",
-    "notice.list_tax_rule.title",
-    "notice.list_tax_rule.body",
-    "documents.list_old_rule_notice",
-    "documents.btn_recalculate_total",
-    "documents.list_total_recalculated",
-    "documents.btn_restore_total",
-    "event.list.totals_recalculated",
-    "event.list.totals_restored",
-    "documents.err_list_old_rule_total",
-    "documents.err_list_total_status"
+    "th.sku"
   ]
 }
