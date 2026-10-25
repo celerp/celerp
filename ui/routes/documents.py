@@ -31,7 +31,7 @@ from ui.components.shell import base_shell, page_header, toast_header, page_titl
 from ui.security import not_permitted_redirect
 from ui.components.table import search_bar, search_results, EMPTY, pagination, per_page_value, server_pager, searchable_select, breadcrumbs, status_cards, empty_state_cta, fmt_money, fmt_rate, format_value, currency_symbol, unwrap_address, col_resize_script, bank_account_options as _bank_account_options, display_cell, editable_cell, display_enum, display_unit, doc_href
 from celerp.services.business_time import business_today
-from celerp.services.doc_balance import awaiting_status_param, doc_tax, doc_value, is_awaiting_payment, is_owed, outstanding_balance
+from celerp.services.doc_balance import doc_tax, doc_value, is_awaiting_payment, is_owed, outstanding_balance
 from celerp.services.record_quantities import FULFILLABLE_STATUSES, RECEIVABLE_STATUSES
 from celerp.services.money import document_line_amount, to_decimal, to_stored_float, round_money, currency_dp, rate_dp
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, line_price_list, resolve_price
@@ -6770,15 +6770,7 @@ def _doc_money(doc: dict) -> dict:
             "subtotal": fmt_money(float(doc.get("subtotal") or 0), currency),
             "discount_row_html": to_xml(_header_discount_row(doc, float(doc.get("discount_amount") or 0), currency)),
             "total": fmt_money(float((doc.get("subtotal") if customs else total) or 0), currency),
-            "outstanding": fmt_money(float(_outstanding_value(doc) or 0), currency)}
-
-
-def _outstanding_value(doc: dict):
-    """The amount still owed that a document page shows, or None when the document carries none."""
-    for key in ("outstanding_balance", "amount_outstanding"):
-        if doc.get(key) is not None:
-            return doc[key]
-    return None
+            "outstanding": fmt_money(float(doc_value(doc, "amount_outstanding") or 0), currency)}
 
 
 def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", settings: dict | None = None, item_categories: dict | None = None, notes: list | None = None, company_currency: str = "USD", suppress_doc_actions: bool = False, extra_left_actions: list | None = None, extra_right_actions: list | None = None, suppress_pdf: bool = False, free_send_offer: bool = False, email_used: int = 0, email_quota: int = 0, email_resets_on: str | None = None, share_enabled: bool = False, share_active: bool = False, payments_on: bool = False, item_status_map: dict | None = None, item_status_doc_map: dict | None = None, item_meta_map: dict | None = None, chart_accounts: list | None = None, contact_shipping_addresses: list | None = None, line_suggestions: dict | None = None, line_identifier_mode: str = "sku", relay_error: bool = False, line_offset: int = 0, line_total: int | None = None, line_limit: int = 100,
@@ -6872,7 +6864,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
     due_date_value = _pick("due_date", "payment_due_date")
     total_value = doc_value(doc, "total")
     tax_value = doc_tax(doc)
-    outstanding_value = _outstanding_value(doc)
+    outstanding_value = doc_value(doc, "amount_outstanding")
     subtotal_value = _pick("subtotal")
     discount_value = _pick("discount_amount") or 0
     currency = doc.get("currency") or "USD"
