@@ -530,7 +530,8 @@ def test_a_tag_build_upgrade_tests_its_own_linux_and_windows_binaries():
     assert smoke == {
         "needs": ["build"],
         "if": "${{ success() && startsWith(github.ref, 'refs/tags/v') }}",
-        "permissions": {"actions": "read", "contents": "read"},
+        # contents: write only to read the draft holding the previous installers.
+        "permissions": {"actions": "read", "contents": "write"},
         "uses": "./.github/workflows/packaged-upgrade-smoke.yml",
         "with": {"candidate_run": "${{ github.run_id }}"},
     }

@@ -577,6 +577,12 @@ jobs:
           done
           echo "electron-builder failed after 3 attempts" >&2; exit 1
 
+      # From here on the job runs what it built, and no copy reaches the public
+      # release: the downloads it counts are users' (scripts/ci_installers.py).
+      - name: Keep the apps under test off the public release
+        shell: bash
+        run: ${{ runner.os == 'Windows' && 'python' || 'python3' }} scripts/ci_installers.py hide-releases
+
       # Prove the licenses/ folder and the PostgreSQL tools actually made it into
       # the packaged artifact: the pre-build checks only prove they existed before
       # electron-builder ran, not that extraResources put them in the resources.
@@ -1212,24 +1218,27 @@ jobs:
         with:
           name: binaries-windows-latest
           path: ${{ runner.temp }}/candidate
+      # The release's installer is the copy on the CI mirror draft, never the public
+      # download (scripts/ci_installers.py).
+      - name: Download ${{ matrix.previous }}
+        id: previous
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/ci_installers.py fetch "${{ matrix.previous }}" Celerp-Setup.exe "$env:RUNNER_TEMP\previous"
+      - name: Keep the apps under test off the public release
+        shell: pwsh
+        run: python scripts/ci_installers.py hide-releases
       - name: Account ${{ matrix.user }}, from ${{ matrix.previous }}
         shell: pwsh
         working-directory: electron
         env:
-          GH_TOKEN: ${{ github.token }}
           CASE_USER: ${{ matrix.user }}
-          CASE_PREVIOUS: ${{ matrix.previous }}
           CASE_FAILS: ${{ matrix.fails }}
         run: |
           $ErrorActionPreference = "Stop"
           $previous = Join-Path $env:RUNNER_TEMP "previous"
-          # $LASTEXITCODE is unset until a native command runs, so it is read only after gh.
-          $tag = $env:CASE_PREVIOUS
-          if ($tag -eq "latest") { $tag = gh release view --repo $env:GITHUB_REPOSITORY --json tagName --jq .tagName; if ($LASTEXITCODE -ne 0) { $tag = $null } }
-          if (-not $tag) { Write-Host "::error::no release $env:CASE_PREVIOUS to upgrade from"; exit 1 }
-          gh release download $tag --repo $env:GITHUB_REPOSITORY --pattern Celerp-Setup.exe --dir $previous
-          if ($LASTEXITCODE -ne 0) { Write-Host "::error::could not download Celerp-Setup.exe from $tag"; exit 1 }
-          Write-Host "upgrading from $tag"
+          Write-Host "upgrading from ${{ steps.previous.outputs.tag }}"
           $smoke = @{ Account = "standard"; UserName = $env:CASE_USER; Previous = (Join-Path $previous "Celerp-Setup.exe")
                       Installer = (Join-Path $env:RUNNER_TEMP "candidate\Celerp-Setup.exe"); Demo = $true
                       PreviousFails = ($env:CASE_FAILS -eq "true"); NoShortNames = ($env:CASE_USER -notmatch '^[\x20-\x7e]+$') }
@@ -1336,9 +1345,10 @@ jobs:
   upgrade-smoke:
     needs: [build]
     if: ${{ success() && startsWith(github.ref, 'refs/tags/v') }}
+    # contents: write only to read the draft that holds the previous installers.
     permissions:
       actions: read
-      contents: read
+      contents: write
     uses: ./.github/workflows/packaged-upgrade-smoke.yml
     with:
       candidate_run: ${{ github.run_id }}
@@ -1433,6 +1443,33 @@ jobs:
             -d "$PAYLOAD"
           echo "Published $TAG."
 
+  # ── Mirror the published installers for CI (tag builds only) ─────────────
+  # The installers later builds upgrade from, copied from this run's own build
+  # artifacts to the CI mirror draft, so no CI job ever downloads them from the
+  # public release (scripts/ci_installers.py). Re-running it replaces the copies.
+  mirror-installers:
+    needs: [publish-release]
+    if: ${{ success() && startsWith(github.ref, 'refs/tags/v') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: binaries-windows-latest
+          path: ${{ runner.temp }}/windows
+      - uses: actions/download-artifact@v8
+        with:
+          name: binaries-ubuntu-latest
+          path: ${{ runner.temp }}/linux
+      - name: Copy this release's installers to the CI mirror
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 scripts/ci_installers.py put "$GITHUB_REF_NAME" \
+            "$RUNNER_TEMP/windows/Celerp-Setup.exe" "$RUNNER_TEMP/linux/Celerp.AppImage"
+
   # ── Alert on a failed release build ──────────────────────────────────────────
   # When any platform (or prepare, upgrade test or publish) fails on a v* tag, the release is left as
   # a draft and `latest` keeps serving the previous version - correct, but SILENT.
@@ -1441,8 +1478,9 @@ jobs:
   # so a stuck/failed release is loud and team-visible regardless of those settings.
   # This is the only signal that e.g. macOS notarization broke (Apple agreement
   # expiry) - after which NO platform ships until it is fixed and the tag re-pushed.
+  # A release that published but could not be copied to the CI mirror is told apart.
   notify-release-failure:
-    needs: [prepare-release, setup-matrix, build, account-names, openapi-asset, upgrade-smoke, publish-release]
+    needs: [prepare-release, setup-matrix, build, account-names, openapi-asset, upgrade-smoke, publish-release, mirror-installers]
     if: ${{ failure() && startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
     permissions:
@@ -1454,10 +1492,19 @@ jobs:
           REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          PUBLISHED: ${{ needs.publish-release.result == 'success' }}
         run: |
           set -eo pipefail
           gh label create release-failure --repo "$REPO" --color B60205 --force \
             --description "A release build failed; the release is stuck as a draft" || true
+          if [ "$PUBLISHED" = true ]; then
+          cat > /tmp/release_failure.md <<EOF
+          **$TAG** is published, but copying its installers to the CI mirror draft failed, so the next release's upgrade test cannot install $TAG and stops with an error naming it.
+
+          - Failed run: $RUN_URL
+          - Re-run the failed mirror-installers job of this run; it replaces any copy left part written.
+          EOF
+          else
           cat > /tmp/release_failure.md <<EOF
           The build or upgrade test for **$TAG** failed, so the release was left as a **draft and not published**.
 
@@ -1469,6 +1516,7 @@ jobs:
           Re-pushing the tag after a fix re-drafts and re-publishes automatically once every platform succeeds.
           If this version is already on PyPI and only publishing the release failed, re-run just the failed jobs of this run; a version on PyPI is never built again.
           EOF
+          fi
           TITLE="Release build failed: $TAG"
           EXISTING=$(gh issue list --repo "$REPO" --state open --label release-failure \
             --json number,title --jq "map(select(.title == \"$TITLE\")) | .[0].number // empty")
