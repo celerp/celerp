@@ -27,13 +27,19 @@ def _mark_unresolved(company_id: str, run_id: str) -> None:
 @pytest.fixture
 def value_beyond_stock_in_shared_company(api):
     """What other browser tests can leave in the shared company: 10.00 on the components account
-    beyond any stock on hand, which the app refuses to reconcile a run's value against."""
-    r = api.post("/accounting/journal-entries", json={
-        "ts": "2026-03-10", "memo": "Value beyond stock",
-        "entries": [{"account": "1130-P", "debit": 10.0, "credit": 0}, {"account": "1111", "debit": 0, "credit": 10.0}],
-        "idempotency_token": uuid.uuid4().hex,
-    })
-    assert r.status_code == 200, r.text
+    beyond any stock on hand, which the app refuses to reconcile a run's value against. The entry
+    is reversed afterwards, so the tests that follow find the shared company as it was."""
+    def post(debit: str, credit: str) -> None:
+        r = api.post("/accounting/journal-entries", json={
+            "ts": "2026-03-10", "memo": "Value beyond stock",
+            "entries": [{"account": debit, "debit": 10.0, "credit": 0}, {"account": credit, "debit": 0, "credit": 10.0}],
+            "idempotency_token": uuid.uuid4().hex,
+        })
+        assert r.status_code == 200, r.text
+
+    post("1130-P", "1111")
+    yield
+    post("1111", "1130-P")
 
 
 def _run_needing_reconciliation(api) -> tuple[str, str, str]:
