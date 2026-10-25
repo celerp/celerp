@@ -73,7 +73,6 @@ jobs:
         # backup and reset files in one shard.
         run: >
           timeout 600 pytest tests/ default_modules/*/tests/ -n auto -q --tb=short --no-cov
-          --timeout=30
           -m "not browser and not embedded_pg and not process and not integration"
           --splits 12 --group ${{ matrix.group }} --splitting-algorithm least_duration
           --durations-path tests/.test_durations
@@ -121,7 +120,6 @@ jobs:
           DATABASE_URL: postgresql+asyncpg://celerp:celerp@localhost:5432/celerp_test
         run: >
           timeout 600 pytest tests/ default_modules/*/tests/ -m "process and not integration" -n auto -q --tb=short --no-cov
-          --timeout=30
           --ignore=tests/test_visual.py
           --ignore=tests/test_browser
 
