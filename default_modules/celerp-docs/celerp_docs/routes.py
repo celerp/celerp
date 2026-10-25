@@ -35,7 +35,7 @@ from celerp.inventory_codes import MAX_SCAN_CODE_LEN, PHYSICAL_CODE_RESOLVE_EXCL
 from celerp_docs.consignment_buy import bought_parcels, bought_receipt_lots, buy_consignment
 from celerp_docs.doc_money import (LIST_TOTAL_FIELDS, document_money, list_totals_differ, money_from_lines,
                                    refuse_malformed_taxes, refuse_unset_line_tax)
-from celerp_docs.doc_projections import UNISSUED_STATUSES, list_lines_and_totals, payment_status
+from celerp_docs.doc_projections import RESTORE_POINT, UNISSUED_STATUSES, list_lines_and_totals, payment_status
 from celerp_docs.taxes import TaxApplication
 from celerp.services.field_schema import reject_system_item_fields
 from celerp.services.locations import require_company_location, require_ship_from
@@ -9378,7 +9378,7 @@ async def restore_list_total(
 ) -> dict:
     """Give a recalculated list back the totals it held before, until it is next edited."""
     state = await _list_for_total_change(session, company_id, entity_id)
-    previous = state.get("totals_before_recalc")
+    previous = state.get(RESTORE_POINT)
     if not previous:
         return {"event_id": None}
     entry = await _emit_list(session, company_id, entity_id, "list.totals_restored", {
@@ -9494,7 +9494,7 @@ async def convert_list(
     # (money_from_lines), as for any document created.
     new_data = {k: v for k, v in state.items()
                 if k not in {"status", "result", "entity_type", "list_type", "finalized_at", "sent_at", "accepted_at",
-                             SCAN_RUNS_FIELD, "tax", "tax_amount", "subtotal", "discount_amount", "total"}}
+                             SCAN_RUNS_FIELD, RESTORE_POINT, "tax", "tax_amount", "subtotal", "discount_amount", "total"}}
     if state.get("tax"):
         new_data["tax_rate"] = state["tax"]
     new_data = money_from_lines(new_data, state.get("currency"))
@@ -9527,7 +9527,7 @@ async def duplicate_list(
     ref_id = next_doc_ref(company, list_sequence_key(state.get("list_type")))
     new_entity_id = f"list:{ref_id}"
     new_data = {k: v for k, v in state.items()
-                if k not in {"status", "entity_type", "ref_id", "share_token", SCAN_RUNS_FIELD}}
+                if k not in {"status", "entity_type", "ref_id", "share_token", SCAN_RUNS_FIELD, RESTORE_POINT}}
     new_data.update({"ref_id": ref_id, "status": "draft", "source_list_id": entity_id,
                      "line_items": strip_line_ids(state.get("line_items"))})
     await require_moving_fits_units(session, company_id, new_entity_id, "list", new_data)

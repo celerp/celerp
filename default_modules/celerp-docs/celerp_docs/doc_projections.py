@@ -49,10 +49,16 @@ def _legacy_list_totals(state: dict) -> dict:
     return state
 
 
+# The totals a recalculated list can restore (list.totals_recalculated). They belong to that list
+# alone: a list created from another one's state (duplicate, import) starts without them.
+RESTORE_POINT = "totals_before_recalc"
+
+
 def _list_fields(current: dict, event_type: str, data: dict) -> dict:
     """A list with the fields of a list.created or list.updated applied, before its totals."""
     if event_type == "list.created":
-        current.update({"entity_type": "list", **{k: v for k, v in data.items() if k != "totals"}})
+        current.update({"entity_type": "list",
+                        **{k: v for k, v in data.items() if k not in ("totals", RESTORE_POINT)}})
         _fold_legacy_list_contact(current)
         current.setdefault("status", "draft")
         current.setdefault("line_items", [])
@@ -654,15 +660,15 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
     elif event_type in ("list.created", "list.updated"):
         current = _apply_list_totals(_list_fields(current, event_type, data), data)
         if event_type == "list.updated":
-            current.pop("totals_before_recalc", None)
+            current.pop(RESTORE_POINT, None)
     elif event_type == "list.totals_recalculated":
         # The current rule's totals for a list an earlier version totalled; what it held before
         # stays with it until the user restores it or edits the list.
-        current["totals_before_recalc"] = data["previous"]
+        current[RESTORE_POINT] = data["previous"]
         current["line_items"] = data["line_items"]
         current.update(data["totals"])
     elif event_type == "list.totals_restored":
-        current.pop("totals_before_recalc", None)
+        current.pop(RESTORE_POINT, None)
         current["line_items"] = data["line_items"]
         current.update(data["totals"])
     elif event_type == "list.finalized":

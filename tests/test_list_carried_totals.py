@@ -195,3 +195,29 @@ async def test_recalculate_and_restore_leave_a_list_that_agrees_as_it_is(client,
     for action in ("recalculate-total", "restore-total"):
         r = await client.post(f"/lists/{lid}/{action}", headers=auth["headers"])
         assert r.status_code == 200 and r.json() == {"event_id": None}, r.text
+
+
+async def test_a_copy_of_a_recalculated_list_takes_no_restore_point(client, session):
+    """The previous total a recalculated quotation can restore belongs to that quotation: its
+    duplicate and the invoice made from it start without one, so Restore previous total never
+    puts the original's lines and earlier total on another document."""
+    auth, lid = await _quotation(client, session)
+    cid, h = auth["company_id"], auth["headers"]
+    await _as_saved_by_earlier_version(session, cid, lid)
+    assert (await client.post(f"/lists/{lid}/recalculate-total", headers=h)).status_code == 200
+
+    r = await client.post(f"/lists/{lid}/duplicate", headers=h)
+    assert r.status_code == 200, r.text
+    dup = r.json()["id"]
+    assert "totals_before_recalc" not in await _state(session, cid, dup)
+    r = await client.post(f"/lists/{dup}/restore-total", headers=h)
+    assert r.status_code == 200 and r.json() == {"event_id": None}, r.text
+    assert (await _state(session, cid, dup))["total"] == 99.0
+
+    r = await client.post(f"/lists/{lid}/convert", headers=h, json={"target_type": "invoice"})
+    assert r.status_code == 200, r.text
+    assert "totals_before_recalc" not in await _state(session, cid, r.json()["target_doc_id"])
+
+    await _rebuild(session, cid)
+    assert "totals_before_recalc" not in await _state(session, cid, dup)
+    assert "totals_before_recalc" not in await _state(session, cid, r.json()["target_doc_id"])
