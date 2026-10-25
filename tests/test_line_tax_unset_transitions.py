@@ -319,6 +319,8 @@ _CANNOT_CROSS = {
     "/lists/{entity_id}/set-available": "releases a reservation",
     "/lists/{entity_id}/convert": "a finalized list only, which Issue already refused",
     "/lists/{entity_id}/duplicate": "makes a new draft list",
+    "/lists/{entity_id}/recalculate-total": "re-totals the lines as they stand; each line keeps its taxes",
+    "/lists/{entity_id}/restore-total": "gives back the totals and lines held before a recalculation",
     "/lists/{entity_id}/send": "records a finalized list as sent, which Issue or a re-type already refused",
     "/lists/{entity_id}/unmark-sent": "clears the sent mark only",
     "/lists/{entity_id}/scan": "adds lines to a draft list, or checks off an audit's count",

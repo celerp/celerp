@@ -4519,7 +4519,7 @@
   "documents.totals_pending": "لم يُحفظ بعد: هذه الإجماليات تقديرية حتى تُحفظ تعديلاتك.",
   "documents.err_received_list_total": "This document totals {total}, but as a quotation it would total {list_total}. A quotation has no shipping charge and holds a tax on the whole document as one rate. Ask the sender for a version without these, or enter the quotation yourself.",
   "notice.list_tax_rule.title": "Quotation totals now match invoices",
-  "notice.list_tax_rule.body": "Quotations now work out tax the same way as invoices: a discount on the whole quotation comes off before tax, and each line's tax is rounded on its own. {count} of your quotations ({refs}) still show totals worked out the earlier way. A draft is updated the next time it's saved, and an invoice made from any of them uses the new total.",
+  "notice.list_tax_rule.body": "Quotations now work out tax the same way as invoices: a discount on the whole quotation comes off before tax, and each line's tax is rounded on its own. Saved quotations never change on their own, so these keep the totals worked out the earlier way: {refs}. To use the new rule on one, open it and choose Recalculate total. You can restore the previous total afterwards. Recalculate a quotation's total before you convert it.",
   "documents.err_list_changed": "غيّر شخص آخر هذه القائمة أثناء تعديلك لها. اختر إعادة المحاولة لرؤية تغييراتهم ثم أجرِ تغييراتك مرة أخرى.",
   "documents.err_doc_changed_reprice": "غيّر شخص آخر هذا المستند أثناء عملك. اختر إعادة المحاولة ثم أعد حساب الأسعار.",
   "documents.err_list_changed_reprice": "غيّر شخص آخر هذه القائمة أثناء عملك. اختر إعادة المحاولة ثم أعد حساب الأسعار.",
@@ -4676,6 +4676,8 @@
   "documents.err_writeoff_failed": "تعذّر شطب {sku}: {error}",
   "documents.err_writeoff_no_undo": "لم يُخرج هذا الشطب أي مخزون، لذا لا يوجد ما يُتراجع عنه.",
   "documents.err_list_type_locked": "لا يمكن تغيير نوع هذه القائمة الآن لأنها اكتملت أو أُلغيت.",
+  "documents.err_list_old_rule_total": "This quotation was totalled by the previous rounding rule: {stored}. The current rule gives {current}. Recalculate its total, then convert it.",
+  "documents.err_list_total_status": "This list has been completed or voided, so its total stays as it is. A completed list keeps the total of the invoice or memo made from it.",
   "documents.err_transfer_only": "لا يمكن نقل المخزون بين المواقع إلا بقائمة تحويل.",
   "documents.err_transfer_destination": "اختر الموقع الذي ستُنقل إليه الأصناف.",
   "documents.err_pay_link_unknown": "رابط الدفع هذا لا يعمل. ربما انتهت صلاحيته أو استُبدل. اطلب رابطًا جديدًا من الجهة التي أرسلته.",
@@ -5879,6 +5881,8 @@
   "event.list.patched": "تم تصحيح القائمة",
   "event.list.reopened": "تمت إعادة فتح القائمة",
   "event.list.reverted": "تمت الإعادة إلى مسودة",
+  "event.list.totals_recalculated": "Total recalculated",
+  "event.list.totals_restored": "Previous total restored",
   "event.list.updated": "تم تحديث القائمة",
   "event.list.voided": "تم إلغاء القائمة",
   "event.mfg.operation.recorded": "تم تسجيل العملية",
@@ -6511,5 +6515,9 @@
   "event.fa.check.removed": "تمت إزالة فحص أصل ثابت",
   "modules.turn_on": "تشغيل",
   "nav.my_assets": "أصولي",
-  "connectors.order_changed_in_woocommerce": "تغيّر هذا الطلب في WooCommerce. اختر إعادة المحاولة لمراجعة التغيير."
+  "connectors.order_changed_in_woocommerce": "تغيّر هذا الطلب في WooCommerce. اختر إعادة المحاولة لمراجعة التغيير.",
+  "documents.list_old_rule_notice": "This quotation was totalled by the previous rounding rule: {stored}. The current rule gives {current}. Recalculate its total to use the current rule. You can restore the previous total afterwards.",
+  "documents.btn_recalculate_total": "Recalculate total",
+  "documents.list_total_recalculated": "Total recalculated from {old} to {new}.",
+  "documents.btn_restore_total": "Restore previous total"
 }

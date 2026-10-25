@@ -265,7 +265,7 @@ document.addEventListener('htmx:afterRequest', function(e) {
     var obj = JSON.parse(hdr);
     // A toast sent with a redirect is shown on the page the redirect opens, not on this one.
     if (obj.celerpToast && e.detail.xhr.getResponseHeader('HX-Redirect')) _celerpKeepToast(obj.celerpToast);
-    else if (obj.celerpToast) celerpToast(obj.celerpToast.message, obj.celerpToast.type || 'error', obj.celerpToast.persist);
+    else if (obj.celerpToast) celerpToast(obj.celerpToast.message, obj.celerpToast.type || 'error', obj.celerpToast.persist, obj.celerpToast.action);
     if (obj.celerpRestoreCell) {
       // Close any open editable cell: trigger ESC on focused element, then blur
       var active = document.activeElement;
@@ -283,7 +283,7 @@ document.addEventListener('DOMContentLoaded', function() {
   var pending;
   try { pending = sessionStorage.getItem('celerp_pending_toast'); sessionStorage.removeItem('celerp_pending_toast'); } catch(ex) {}
   if (!pending) return;
-  try { var t = JSON.parse(pending); celerpToast(t.message, t.type || 'error', t.persist); } catch(ex) {}
+  try { var t = JSON.parse(pending); celerpToast(t.message, t.type || 'error', t.persist, t.action); } catch(ex) {}
 });
 
 function showGlobalUiError(message) {
@@ -3030,12 +3030,15 @@ def secret_input(name: str, value: str = "", lang: str = "en", cls: str = "form-
 
 
 def toast_header(message: str, kind: str = "success", *, persist: bool = False,
-                 **extra_triggers) -> dict:
-    """HX-Trigger header for the shell's celerpToast listener. Extra keyword
-    arguments become sibling client events fired from the same header."""
+                 action: dict | None = None, **extra_triggers) -> dict:
+    """HX-Trigger header for the shell's celerpToast listener. ``action`` ({href, label})
+    adds a link to the toast. Extra keyword arguments become sibling client events fired
+    from the same header."""
     toast: dict = {"message": message, "type": kind}
     if persist:
         toast["persist"] = True
+    if action:
+        toast["action"] = action
     return {"HX-Trigger": json.dumps({"celerpToast": toast, **extra_triggers})}
 
 

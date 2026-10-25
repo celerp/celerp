@@ -1105,6 +1105,36 @@ def _action_error(msg: str, **triggers):
     )
 
 
+async def _list_total_notice(token: str, entity_id: str, lst: dict) -> FT | None:
+    """A quotation an earlier version totalled by its own rule offers Recalculate total; a
+    recalculated one offers Restore previous total until it is next edited. The buttons stay
+    on a completed or void quotation too, where the server keeps the total and says why."""
+    if not _list_behavior(lst.get("list_type")).money:
+        return None
+    cur = lst.get("currency")
+    if previous := lst.get("totals_before_recalc"):
+        return Div(
+            Span(t("documents.list_total_recalculated", old=fmt_money(previous["totals"]["total"], cur),
+                   new=fmt_money(lst.get("total"), cur))),
+            Button(t("documents.btn_restore_total"), hx_post=f"/lists/{entity_id}/action/restore-total",
+                   hx_swap="none", cls="btn btn--secondary btn--sm"),
+            cls="flash flash--info", id="list-old-rule-notice")
+    try:
+        differ = await api.get_list_old_rule_total(token, entity_id)
+    except APIError as e:
+        if e.status == 401:
+            raise
+        return None
+    if differ.get("stored") is None:
+        return None
+    return Div(
+        Span(t("documents.list_old_rule_notice", stored=fmt_money(differ["stored"], cur),
+               current=fmt_money(differ["current"], cur))),
+        Button(t("documents.btn_recalculate_total"), hx_post=f"/lists/{entity_id}/action/recalculate-total",
+               hx_swap="none", cls="btn btn--primary btn--sm"),
+        cls="flash flash--warning", id="list-old-rule-notice")
+
+
 _LINE_PAGE_CAP = 100
 
 
@@ -4681,9 +4711,11 @@ celerpUpdateBulkAlloc();
                         chart_accounts=_chart_accounts,
                         line_identifier_mode=_ident_mode, relay_error=_ls_error,
                         line_offset=_line_offset, line_total=_line_total, line_limit=_line_limit)
+        _total_notice = await _list_total_notice(token, entity_id, lst)
         return await base_shell(
             breadcrumbs([(t("nav.dashboard"), "/dashboard"), (t("nav.lists"), "/lists"), (f"{status_label} {ref}", None)]),
             page_header(f"{list_type_label} - {status_label} {ref}"),
+            *([_total_notice] if _total_notice is not None else []),
             _detail,
             title=f"{t('documents.doc_list')} {ref} - Celerp",
             nav_active="lists",
@@ -4895,13 +4927,17 @@ celerpUpdateBulkAlloc();
                 await api.send_list(token, entity_id, {"sent_via": "manual"})
             elif action == "unmark_sent":
                 await api.unmark_list_sent(token, entity_id)
-            elif action in ("adjust", "undo-adjust", "write-off", "undo-write-off"):
+            elif action in ("adjust", "undo-adjust", "write-off", "undo-write-off",
+                            "recalculate-total", "restore-total"):
                 await api.list_action(token, entity_id, action)
             else:
                 return _R("", status_code=400)
         except APIError as e:
             if e.status == 401:
                 raise
+            if isinstance(e.data, dict) and e.data.get("code") == "list_old_rule_total":
+                return _action_error(error_message(e), action={
+                    "href": "#list-old-rule-notice", "label": t("documents.btn_recalculate_total")})
             return _action_error(error_message(e))
         return _R("", status_code=204, headers={"HX-Redirect": f"/lists/{entity_id}"})
 

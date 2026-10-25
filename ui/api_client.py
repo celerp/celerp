@@ -2556,6 +2556,12 @@ async def delete_list(token: str, entity_id: str) -> dict:
         return _raise(await c.delete(f"/lists/{entity_id}")).json()
 
 
+async def get_list_old_rule_total(token: str, entity_id: str) -> dict:
+    """{"stored", "current"} totals of a list an earlier version totalled, or nulls when they agree."""
+    async with _api_client(token) as c:
+        return _raise(await c.get(f"/lists/{entity_id}/old-rule-total")).json()
+
+
 async def convert_list(token: str, entity_id: str, target_type: str) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.post(f"/lists/{entity_id}/convert", json={"target_type": target_type})).json()

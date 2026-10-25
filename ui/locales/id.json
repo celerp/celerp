@@ -4519,7 +4519,7 @@
   "documents.totals_pending": "Belum disimpan: total ini masih perkiraan sampai perubahan Anda tersimpan.",
   "documents.err_received_list_total": "This document totals {total}, but as a quotation it would total {list_total}. A quotation has no shipping charge and holds a tax on the whole document as one rate. Ask the sender for a version without these, or enter the quotation yourself.",
   "notice.list_tax_rule.title": "Quotation totals now match invoices",
-  "notice.list_tax_rule.body": "Quotations now work out tax the same way as invoices: a discount on the whole quotation comes off before tax, and each line's tax is rounded on its own. {count} of your quotations ({refs}) still show totals worked out the earlier way. A draft is updated the next time it's saved, and an invoice made from any of them uses the new total.",
+  "notice.list_tax_rule.body": "Quotations now work out tax the same way as invoices: a discount on the whole quotation comes off before tax, and each line's tax is rounded on its own. Saved quotations never change on their own, so these keep the totals worked out the earlier way: {refs}. To use the new rule on one, open it and choose Recalculate total. You can restore the previous total afterwards. Recalculate a quotation's total before you convert it.",
   "documents.err_list_changed": "Orang lain mengubah daftar ini saat Anda mengeditnya. Pilih Coba lagi untuk melihat perubahan mereka, lalu buat perubahan Anda lagi.",
   "documents.err_doc_changed_reprice": "Orang lain mengubah dokumen ini saat Anda bekerja. Pilih Coba lagi, lalu hitung ulang harga.",
   "documents.err_list_changed_reprice": "Orang lain mengubah daftar ini saat Anda bekerja. Pilih Coba lagi, lalu hitung ulang harga.",
@@ -4676,6 +4676,8 @@
   "documents.err_writeoff_failed": "{sku} tidak bisa dihapus dari stok: {error}",
   "documents.err_writeoff_no_undo": "Penghapusan stok ini belum mengeluarkan stok apa pun, jadi tidak ada yang perlu dibatalkan.",
   "documents.err_list_type_locked": "Jenis daftar ini tidak bisa diubah lagi karena sudah selesai atau dibatalkan.",
+  "documents.err_list_old_rule_total": "This quotation was totalled by the previous rounding rule: {stored}. The current rule gives {current}. Recalculate its total, then convert it.",
+  "documents.err_list_total_status": "This list has been completed or voided, so its total stays as it is. A completed list keeps the total of the invoice or memo made from it.",
   "documents.err_transfer_only": "Hanya daftar transfer yang bisa memindahkan stok antar lokasi.",
   "documents.err_transfer_destination": "Pilih lokasi tujuan pemindahan barang.",
   "documents.err_pay_link_unknown": "Tautan pembayaran ini tidak berfungsi. Mungkin sudah kedaluwarsa atau diganti. Minta tautan baru ke bisnis yang mengirimnya.",
@@ -5879,6 +5881,8 @@
   "event.list.patched": "Daftar dikoreksi",
   "event.list.reopened": "Daftar dibuka kembali",
   "event.list.reverted": "Dikembalikan ke draf",
+  "event.list.totals_recalculated": "Total recalculated",
+  "event.list.totals_restored": "Previous total restored",
   "event.list.updated": "Daftar diperbarui",
   "event.list.voided": "Daftar dibatalkan",
   "event.mfg.operation.recorded": "Operasi dicatat",
@@ -6511,5 +6515,9 @@
   "event.fa.check.removed": "Pemeriksaan aset tetap dihapus",
   "modules.turn_on": "Aktifkan",
   "nav.my_assets": "Aset saya",
-  "connectors.order_changed_in_woocommerce": "Pesanan ini berubah di WooCommerce. Pilih Coba lagi untuk meninjau perubahannya."
+  "connectors.order_changed_in_woocommerce": "Pesanan ini berubah di WooCommerce. Pilih Coba lagi untuk meninjau perubahannya.",
+  "documents.list_old_rule_notice": "This quotation was totalled by the previous rounding rule: {stored}. The current rule gives {current}. Recalculate its total to use the current rule. You can restore the previous total afterwards.",
+  "documents.btn_recalculate_total": "Recalculate total",
+  "documents.list_total_recalculated": "Total recalculated from {old} to {new}.",
+  "documents.btn_restore_total": "Restore previous total"
 }

@@ -4519,7 +4519,7 @@
   "documents.totals_pending": "Ainda não salvo: esses totais são estimativas até que as alterações sejam salvas.",
   "documents.err_received_list_total": "This document totals {total}, but as a quotation it would total {list_total}. A quotation has no shipping charge and holds a tax on the whole document as one rate. Ask the sender for a version without these, or enter the quotation yourself.",
   "notice.list_tax_rule.title": "Quotation totals now match invoices",
-  "notice.list_tax_rule.body": "Quotations now work out tax the same way as invoices: a discount on the whole quotation comes off before tax, and each line's tax is rounded on its own. {count} of your quotations ({refs}) still show totals worked out the earlier way. A draft is updated the next time it's saved, and an invoice made from any of them uses the new total.",
+  "notice.list_tax_rule.body": "Quotations now work out tax the same way as invoices: a discount on the whole quotation comes off before tax, and each line's tax is rounded on its own. Saved quotations never change on their own, so these keep the totals worked out the earlier way: {refs}. To use the new rule on one, open it and choose Recalculate total. You can restore the previous total afterwards. Recalculate a quotation's total before you convert it.",
   "documents.err_list_changed": "Outra pessoa alterou esta lista enquanto você editava. Selecione Tentar novamente para ver as alterações deles e depois refaça as suas.",
   "documents.err_doc_changed_reprice": "Outra pessoa alterou este documento enquanto você trabalhava. Selecione Tentar novamente e depois recalcule os preços.",
   "documents.err_list_changed_reprice": "Outra pessoa alterou esta lista enquanto você trabalhava. Selecione Tentar novamente e depois recalcule os preços.",
@@ -4676,6 +4676,8 @@
   "documents.err_writeoff_failed": "Não foi possível dar baixa em {sku}: {error}",
   "documents.err_writeoff_no_undo": "Esta baixa não removeu estoque, então não há nada para desfazer.",
   "documents.err_list_type_locked": "O tipo desta lista não pode mais ser alterado porque ela foi concluída ou anulada.",
+  "documents.err_list_old_rule_total": "This quotation was totalled by the previous rounding rule: {stored}. The current rule gives {current}. Recalculate its total, then convert it.",
+  "documents.err_list_total_status": "This list has been completed or voided, so its total stays as it is. A completed list keeps the total of the invoice or memo made from it.",
   "documents.err_transfer_only": "Só uma lista de transferência pode mover estoque entre locais.",
   "documents.err_transfer_destination": "Escolha o local para onde mover os itens.",
   "documents.err_pay_link_unknown": "Este link de pagamento não funciona. Ele pode ter expirado ou sido substituído. Peça um novo link à empresa que o enviou.",
@@ -5879,6 +5881,8 @@
   "event.list.patched": "Lista corrigida",
   "event.list.reopened": "Lista reaberta",
   "event.list.reverted": "Revertido para rascunho",
+  "event.list.totals_recalculated": "Total recalculated",
+  "event.list.totals_restored": "Previous total restored",
   "event.list.updated": "Lista atualizada",
   "event.list.voided": "Lista anulada",
   "event.mfg.operation.recorded": "Operação registrada",
@@ -6511,5 +6515,9 @@
   "event.fa.check.removed": "Verificação de ativo imobilizado removida",
   "modules.turn_on": "Ativar",
   "nav.my_assets": "Os meus ativos",
-  "connectors.order_changed_in_woocommerce": "Este pedido mudou no WooCommerce. Selecione Tentar novamente para revisar a alteração."
+  "connectors.order_changed_in_woocommerce": "Este pedido mudou no WooCommerce. Selecione Tentar novamente para revisar a alteração.",
+  "documents.list_old_rule_notice": "This quotation was totalled by the previous rounding rule: {stored}. The current rule gives {current}. Recalculate its total to use the current rule. You can restore the previous total afterwards.",
+  "documents.btn_recalculate_total": "Recalculate total",
+  "documents.list_total_recalculated": "Total recalculated from {old} to {new}.",
+  "documents.btn_restore_total": "Restore previous total"
 }

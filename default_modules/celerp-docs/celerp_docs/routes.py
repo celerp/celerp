@@ -9387,6 +9387,18 @@ async def restore_list_total(
     return {"event_id": entry.id}
 
 
+@lists_router.get("/{entity_id}/old-rule-total")
+async def get_list_old_rule_total(
+    entity_id: str,
+    company_id: str = Depends(get_current_company_id),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """The total a list an earlier version totalled holds and the one the document rule gives it,
+    as money text, or nulls when they agree: the list page offers Recalculate total on it."""
+    stored, current = list_totals_differ((await _get_list(session, company_id, entity_id)).state) or (None, None)
+    return {"stored": stored, "current": current}
+
+
 @lists_router.post("/{entity_id}/void")
 async def void_list(
     entity_id: str,

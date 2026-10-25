@@ -4519,7 +4519,7 @@
   "documents.totals_pending": "Noch nicht gespeichert: Diese Summen sind Schätzwerte, bis Ihre Änderungen gespeichert sind.",
   "documents.err_received_list_total": "This document totals {total}, but as a quotation it would total {list_total}. A quotation has no shipping charge and holds a tax on the whole document as one rate. Ask the sender for a version without these, or enter the quotation yourself.",
   "notice.list_tax_rule.title": "Quotation totals now match invoices",
-  "notice.list_tax_rule.body": "Quotations now work out tax the same way as invoices: a discount on the whole quotation comes off before tax, and each line's tax is rounded on its own. {count} of your quotations ({refs}) still show totals worked out the earlier way. A draft is updated the next time it's saved, and an invoice made from any of them uses the new total.",
+  "notice.list_tax_rule.body": "Quotations now work out tax the same way as invoices: a discount on the whole quotation comes off before tax, and each line's tax is rounded on its own. Saved quotations never change on their own, so these keep the totals worked out the earlier way: {refs}. To use the new rule on one, open it and choose Recalculate total. You can restore the previous total afterwards. Recalculate a quotation's total before you convert it.",
   "documents.err_list_changed": "Jemand anderes hat diese Liste geändert, während Sie sie bearbeitet haben. Wählen Sie „Erneut versuchen“, um die Änderungen zu sehen, und nehmen Sie Ihre dann erneut vor.",
   "documents.err_doc_changed_reprice": "Jemand anderes hat dieses Dokument geändert, während Sie daran gearbeitet haben. Wählen Sie „Erneut versuchen“ und berechnen Sie die Preise dann erneut.",
   "documents.err_list_changed_reprice": "Jemand anderes hat diese Liste geändert, während Sie daran gearbeitet haben. Wählen Sie „Erneut versuchen“ und berechnen Sie die Preise dann erneut.",
@@ -4676,6 +4676,8 @@
   "documents.err_writeoff_failed": "{sku} konnte nicht abgeschrieben werden: {error}",
   "documents.err_writeoff_no_undo": "Diese Abschreibung hat keinen Bestand entfernt, es gibt also nichts rückgängig zu machen.",
   "documents.err_list_type_locked": "Der Typ dieser Liste kann nicht mehr geändert werden, weil sie erledigt oder storniert ist.",
+  "documents.err_list_old_rule_total": "This quotation was totalled by the previous rounding rule: {stored}. The current rule gives {current}. Recalculate its total, then convert it.",
+  "documents.err_list_total_status": "This list has been completed or voided, so its total stays as it is. A completed list keeps the total of the invoice or memo made from it.",
   "documents.err_transfer_only": "Nur eine Umlagerungsliste kann Bestand zwischen Lagerorten verschieben.",
   "documents.err_transfer_destination": "Wählen Sie den Lagerort, an den die Artikel verschoben werden sollen.",
   "documents.err_pay_link_unknown": "Dieser Zahlungslink funktioniert nicht. Er ist möglicherweise abgelaufen oder wurde ersetzt. Bitten Sie das Unternehmen, das ihn gesendet hat, um einen neuen Link.",
@@ -5879,6 +5881,8 @@
   "event.list.patched": "Liste korrigiert",
   "event.list.reopened": "Liste wieder geöffnet",
   "event.list.reverted": "Auf Entwurf zurückgesetzt",
+  "event.list.totals_recalculated": "Total recalculated",
+  "event.list.totals_restored": "Previous total restored",
   "event.list.updated": "Liste aktualisiert",
   "event.list.voided": "Liste storniert",
   "event.mfg.operation.recorded": "Arbeitsgang erfasst",
@@ -6511,5 +6515,9 @@
   "event.fa.check.removed": "Prüfung einer Anlage entfernt",
   "modules.turn_on": "Einschalten",
   "nav.my_assets": "Meine Anlagen",
-  "connectors.order_changed_in_woocommerce": "Diese Bestellung wurde in WooCommerce geändert. Wählen Sie „Erneut versuchen“, um die Änderung zu prüfen."
+  "connectors.order_changed_in_woocommerce": "Diese Bestellung wurde in WooCommerce geändert. Wählen Sie „Erneut versuchen“, um die Änderung zu prüfen.",
+  "documents.list_old_rule_notice": "This quotation was totalled by the previous rounding rule: {stored}. The current rule gives {current}. Recalculate its total to use the current rule. You can restore the previous total afterwards.",
+  "documents.btn_recalculate_total": "Recalculate total",
+  "documents.list_total_recalculated": "Total recalculated from {old} to {new}.",
+  "documents.btn_restore_total": "Restore previous total"
 }
