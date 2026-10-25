@@ -705,13 +705,19 @@ def _docs_content(state: dict[str, str], docs: list[dict], total_count: int, sum
     """Summary, status cards, table and pager for a document list state: the page embeds it
     and the live search replaces it, so all four always describe the same result set."""
     doc_type = state.get("type", "")
-    status = state.get("status", "")
-    # The status cards keep the dates and sort; the sort links and pages keep everything.
-    cards_base_url = "/docs?" + urlencode({"type": doc_type, **{k: v for k, v in state.items() if k not in _DOC_STATUS_KEYS and k != "type"}})
+    # The drafts view lists the drafts, so its Draft card is the one marked.
+    status = "draft" if state.get("view") == "drafts" else state.get("status", "")
+    # The status cards keep the dates and sort; the sort links and pages keep everything. An id
+    # batch is never windowed (_doc_list_dates) and its cards count every date, so their links,
+    # which leave the batch, say so.
+    cards_state = {k: v for k, v in state.items() if k not in _DOC_STATUS_KEYS and k != "type"}
+    if state.get("ids") and not any(state.get(k) for k in _DATE_KEYS):
+        cards_state["preset"] = "all"
+    cards_base_url = "/docs?" + urlencode({"type": doc_type, **cards_state})
     return Div(
         _accounting_sync_filter(state),
         _summary_bar(chips, doc_type, currency, lang),
-        _doc_status_cards(docs, status, summary, currency, doc_type=doc_type, lang=lang,
+        _doc_status_cards(status, summary, currency, doc_type=doc_type, lang=lang,
                           status_in=state.get("status_in", ""), overdue_only=bool(state.get("overdue_only")),
                           unfulfilled_only=bool(state.get("unfulfilled_only")),
                           not_restocked=bool(state.get("not_restocked")), not_stocked=bool(state.get("not_stocked")),
@@ -1610,11 +1616,9 @@ def setup_routes(app):
 
         # Auto-redirect to drafts when no finalized docs exist but drafts do.
         # Prevents the "where did my draft go?" confusion for new users.
+        # It keeps the type, contact, dates and order the user chose.
         if not is_drafts_view and not docs and draft_count > 0 and not q and not has_status_filter:
-            redirect_params = f"?view=drafts"
-            if doc_type:
-                redirect_params += f"&type={doc_type}"
-            return RedirectResponse(f"/docs{redirect_params}", status_code=302)
+            return RedirectResponse("/docs?" + _state_query({"view": "drafts", **state}), status_code=302)
 
         lang = get_lang(request)
         section_label_key = _DOC_TYPE_PAGE_LABELS.get(doc_type, "page.documents")
@@ -10392,7 +10396,7 @@ def _doc_history_section(ledger: list[dict]) -> FT:
     )
 
 
-def _doc_status_cards(docs: list[dict], active_status: str, summary: dict | None = None, currency: str | None = None, doc_type: str = "", lang: str = "en", status_in: str = "", overdue_only: bool = False, unfulfilled_only: bool = False, not_restocked: bool = False, not_stocked: bool = False, all_issued: bool = False, converted_to_type: str = "", base_url: str | None = None) -> FT:
+def _doc_status_cards(active_status: str, summary: dict | None = None, currency: str | None = None, doc_type: str = "", lang: str = "en", status_in: str = "", overdue_only: bool = False, unfulfilled_only: bool = False, not_restocked: bool = False, not_stocked: bool = False, all_issued: bool = False, converted_to_type: str = "", base_url: str | None = None) -> FT:
     """Render status cards for the doc list page. Doc-type-aware. base_url carries the
     filters a card click keeps (search, dates, sort); it always holds a query string."""
     _sm = summary or {}
@@ -10612,27 +10616,16 @@ def _doc_status_cards(docs: list[dict], active_status: str, summary: dict | None
         ("paid", t("label.paid", lang), "green"),
         ("void", t("enum.doc_status.void", lang), "gray"),
     ]
-    card_defs = _DEFAULT_CARDS
-    api_counts = _cbs
-    counts: dict[str, int] = {s: api_counts.get(s, 0) for s, _, _ in card_defs}
-    totals: dict[str, float] = {s: 0.0 for s, _, _ in card_defs}
-    for d in docs:
-        s = str(d.get("status") or "").lower()
-        if not api_counts and s in counts:
-            counts[s] += 1
-        if s in totals:
-            amt = d.get("total")
-            try:
-                totals[s] += float(amt or 0)
-            except (ValueError, TypeError):
-                pass
+    _tbs = _sm.get("total_by_status") or {}
     cards = [
-        {"label": label, "count": counts[s], "total": totals[s], "status": s, "color": color}
-        for s, label, color in card_defs
+        {"label": label, "count": _cbs.get(s, 0), "total": _tbs.get(s, 0.0), "status": s, "color": color}
+        for s, label, color in _DEFAULT_CARDS
     ]
     cards.insert(3, {"label": t("status.overdue", lang), "count": _sm.get("overdue_count", 0), "total": None, "status": "overdue",
                      "color": "red", "_url": f"{base_url}&overdue_only=1", "_active_key": "overdue"})
-    return status_cards(cards, base_url, "overdue" if overdue_only else (active_status or None), total_override=sum(counts.values()), currency=currency)
+    # The All card opens the list without a status filter, which leaves the drafts out.
+    return status_cards(cards, base_url, "overdue" if overdue_only else (active_status or None),
+                        total_override=_sm.get("total_count", 0), currency=currency)
 
 
 def _summary_bar(summary: dict, doc_type: str = "", currency: str | None = None, lang: str = "en") -> FT:
@@ -10649,13 +10642,13 @@ def _summary_bar(summary: dict, doc_type: str = "", currency: str | None = None,
             unvalued_chip,
             cls="valuation-bar",
         )
-    # Invoices that are all drafts or voids have no receivable, billing or payment: the bar
-    # states their count and what they total, as their status card does.
-    if doc_type and rows and not summary.get("invoice_count"):
-        unissued = float(summary.get("draft_total") or 0) + float(summary.get("void_total") or 0)
+    # Rows that hold no issued invoice (drafts, voids) have no receivable, billing or payment:
+    # the bar states their count and what they total, as their status cards do.
+    if rows and not summary.get("invoice_count"):
+        listed = sum(float(v or 0) for v in (summary.get("total_by_status") or {}).values())
         return Div(
-            Span(f"{t('chip.invoices', lang)}: {rows}", cls="val-chip"),
-            Span(f"{t('chip.total', lang)}: {fmt_money(unissued, currency)}", cls="val-chip"),
+            Span(f"{t('chip.invoices' if doc_type else 'page.documents', lang)}: {rows}", cls="val-chip"),
+            Span(f"{t('chip.total', lang)}: {fmt_money(listed, currency)}", cls="val-chip"),
             unvalued_chip,
             cls="valuation-bar",
         )

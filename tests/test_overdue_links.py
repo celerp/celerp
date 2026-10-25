@@ -52,7 +52,7 @@ def _card_hrefs(html: str) -> dict[str, str]:
 def test_awaiting_card_links_to_the_type_awaiting_statuses(doc_type, awaiting):
     from ui.routes.documents import _doc_status_cards
 
-    html = str(_doc_status_cards([], "", {"count_by_status": {}}, "USD", doc_type=doc_type, lang="en"))
+    html = str(_doc_status_cards("", {"count_by_status": {}}, "USD", doc_type=doc_type, lang="en"))
     assert _card_hrefs(html)["Awaiting Payment"] == f"/docs?type={doc_type}&status_in={awaiting}"
 
 
@@ -63,7 +63,7 @@ def test_all_documents_overdue_card_counts_and_links_the_overdue_list(doc_type):
     from ui.routes.documents import _doc_status_cards
 
     summary = {"count_by_status": {"final": 4, "draft": 1}, "overdue_count": 3}
-    html = str(_doc_status_cards([], "", summary, "USD", doc_type=doc_type, lang="en"))
+    html = str(_doc_status_cards("", summary, "USD", doc_type=doc_type, lang="en"))
     href = _card_hrefs(html)["Overdue"]
     assert "overdue_only=1" in href and "status=overdue" not in href, href
     count = re.search(r'overdue_only=1" class="status-card[^"]*">.*?<span class="status-card-count">(\d+)</span>', html)
@@ -73,7 +73,7 @@ def test_all_documents_overdue_card_counts_and_links_the_overdue_list(doc_type):
 def test_all_documents_overdue_card_is_active_on_the_overdue_list():
     from ui.routes.documents import _doc_status_cards
 
-    html = str(_doc_status_cards([], "", {"count_by_status": {}, "overdue_count": 2}, "USD", doc_type="", lang="en", overdue_only=True))
+    html = str(_doc_status_cards("", {"count_by_status": {}, "overdue_count": 2}, "USD", doc_type="", lang="en", overdue_only=True))
     assert re.search(r'overdue_only=1" class="status-card status-card--red status-card--active"', html), html
 
 

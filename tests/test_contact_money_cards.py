@@ -325,17 +325,50 @@ async def test_the_paid_summary_chip_has_its_own_wording(monkeypatch):
 
 
 @pytest.mark.parametrize("status", ["draft", "void"])
-async def test_a_view_of_unissued_invoices_states_their_total_not_empty_money(status):
-    """Drafts or voids alone hold no receivable, billing or payment, so the bar shows their
-    count and what they total, never those money chips at 0.00 beside a count."""
+async def test_a_view_of_unissued_documents_states_their_count_and_total(owner_ui, monkeypatch, status):
+    """Drafts or voids alone hold no receivable, billing or payment, so the bar shows how many
+    rows the list holds and what they total, with or without a type, never money chips at 0.00
+    beside a count. A new company's drafts fill more than one page (50 rows): the bar and the
+    status card total all of them, not the page."""
+    from urllib.parse import parse_qs, urlparse
+
+    mark_running(monkeypatch, "celerp-docs")
+    api = owner_ui.api
+    contact = await _ok(await api.post("/crm/contacts", json={"name": "Draft Customer", "contact_type": "customer"}))
+    contact = {"id": contact["id"], "name": "Draft Customer"}
+    steps = () if status == "draft" else ("finalize", "void")
+    for _ in range(55):
+        await _invoice(api, contact, 10.0, steps=steps)
+    quote = await _ok(await api.post("/docs", json={
+        "doc_type": "quotation", "contact_id": contact["id"], "contact_name": contact["name"], "issue_date": _day(),
+        "line_items": [{"name": "Service", "quantity": 1, "unit_price": 70.0, "line_total": 70.0}], "total": 70.0}))
+    if status == "void":
+        await _ok(await api.post(f"/docs/{quote['id']}/void", json={}))
+    if status == "draft":
+        # A first visit finds no issued document and opens the drafts, keeping the filters.
+        r = await owner_ui.get(f"/docs?contact_id={contact['id']}&preset=all")
+        assert r.status_code == 302, r.status_code
+        assert parse_qs(urlparse(r.headers["location"]).query) == {
+            "view": ["drafts"], "contact_id": [contact["id"]], "preset": ["all"]}, r.headers["location"]
+        view = r.headers["location"]
+    else:
+        view = f"/docs?status=void&contact_id={contact['id']}&preset=all"
+    page = await owner_ui.get(view)
+    assert page.status_code == 200, page.text[:300]
+    assert _summary_chips(page.text) == {"Documents": "56", "Total": fmt_money(620.0, None)}, _summary_chips(page.text)
+    card = "Draft" if status == "draft" else "Void"
+    # The card for the rows shown is the one marked.
+    assert re.search(rf'status-card--active">\s*<span class="status-card-label">{card}<', page.text), card
+    assert re.search(rf'status-card-label">{card}</span>\s*<span class="status-card-count">56</span>\s*'
+                     rf'<span class="status-card-total">{re.escape(fmt_money(620.0, None))}<', page.text), card
+    typed = await owner_ui.get(view + "&type=invoice")
+    assert _summary_chips(typed.text) == {"Invoices": "55", "Total": fmt_money(550.0, None)}, _summary_chips(typed.text)
+
+
+async def test_a_view_with_issued_invoices_keeps_its_money_chips():
     from fasthtml.common import to_xml
     from ui.routes.documents import _summary_bar
 
-    summary = {"total_count": 0 if status == "draft" else 2, "draft_count": 2 if status == "draft" else 0,
-               "invoice_count": 0, f"{status}_total": 150.0, "count_by_status": {status: 2}}
-    chips = _summary_chips(to_xml(_summary_bar(summary, "invoice", currency="USD")))
-    assert chips == {"Invoices": "2", "Total": fmt_money(150.0, "USD")}, chips
-    # A view with issued invoices keeps its money chips.
     issued = _summary_chips(to_xml(_summary_bar({"total_count": 1, "invoice_count": 1, "ar_total": 40.0}, "invoice", currency="USD")))
     assert issued["Billed"] == fmt_money(40.0, "USD"), issued
 

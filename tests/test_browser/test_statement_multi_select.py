@@ -128,21 +128,21 @@ def test_the_open_list_follows_the_field_when_content_loads_above_it(page, state
 
 def test_the_open_list_follows_the_field_when_a_notice_shows_above_it(page, statement_url):
     """The system health notice is shown by script once its check answers, which can be
-    after the list opened. Nothing is swapped in, but the field still moves down. The list
-    is opened once the health check has answered and no part of the page is still loading
-    or settling, so no later page update places it by chance."""
-    with page.expect_response(lambda r: r.url.endswith("/health/system")) as health:
+    after the list opened. Nothing is swapped in, but the field still moves down. The check
+    is held until the page has settled and the list is open, then answers that disk space is
+    low, and the list must follow the field once the notice script has shown the notice."""
+    held = []
+    page.route("**/health/system", lambda route: held.append(route))
+    with page.expect_request(lambda r: r.url.endswith("/health/system")):
         page.goto(statement_url, wait_until="load")
-    health.value.body()
+    # No part of the page is still loading or settling, so no later page update places the list.
     page.wait_for_function("!document.querySelector('.htmx-request, .htmx-swapping, .htmx-settling')")
     page.locator(".combobox-wrap[data-multiple] .combobox-input").first.click()
     page.wait_for_selector(".combobox-list.open", timeout=3000)
     offset = page.evaluate(_LIST_OFFSET)
-    page.evaluate("""(() => {
-        const b = document.getElementById('sys-health-banner');
-        b.querySelector('.sys-health-banner__msg').textContent = 'Disk space is low.';
-        b.style.display = 'flex';
-    })()""")
+    assert len(held) == 1, held
+    held[0].fulfill(json={"overall": "warning", "disk": {"status": "warning", "message": "Disk space is low."}})
+    page.wait_for_function("document.getElementById('sys-health-banner').style.display === 'flex'", timeout=3000)
     page.wait_for_function(f"Math.abs({_LIST_OFFSET} - {offset}) < 1", timeout=3000)
 
 

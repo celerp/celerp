@@ -3374,7 +3374,7 @@ async def enable_module(token: str, module_name: str) -> dict:
 
 
 async def disable_module(token: str, module_name: str) -> dict:
-    """POST /companies/me/modules/{name}/disable — disable a module (admin only). The
+    """POST /companies/me/modules/{name}/disable: disable a module (admin only). The
     turn-off can wait MODULE_SETTLE_SECONDS for the company's running work in the module,
     so this waits longer than that and always gets its outcome."""
     async with _api_client(token, timeout=MODULE_SETTLE_SECONDS + 30) as c:

@@ -15238,7 +15238,7 @@ class TestProFormaLabel:
         """
         from ui.routes.documents import _doc_status_cards
         from fasthtml.common import to_xml
-        html = to_xml(_doc_status_cards([], "", doc_type="invoice"))
+        html = to_xml(_doc_status_cards("", doc_type="invoice"))
         assert "Pro Forma" in html  # draft count visible in card bar
         assert "All Issued" in html
         assert "Awaiting Payment" in html

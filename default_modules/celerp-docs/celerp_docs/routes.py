@@ -1138,8 +1138,10 @@ async def _doc_list_filter(session: AsyncSession, company_id: str, f: DocListFil
 
 # The filters the status cards split the list by. The cards count the set the other filters
 # select; the summary's own figures count the rows the list shows, every filter applied.
+# An ids batch is split too: a card link keeps search, contact and dates only, so a card counts
+# the rows its link lands on.
 _DOC_SPLIT_FILTERS = ("status", "status_in", "exclude_status", "all_issued", "overdue_only",
-                      "unfulfilled_only", "not_restocked", "not_stocked", "converted_to_type")
+                      "unfulfilled_only", "not_restocked", "not_stocked", "converted_to_type", "ids")
 _DOC_FILTER_DEFAULTS = {fl.name: fl.default for fl in _dc_fields(DocListFilters)}
 
 
@@ -1292,7 +1294,9 @@ async def get_doc_summary(
     Totals are in the company currency (``_doc_base_amounts``). A document that cannot be valued
     there is left out of every total and counted in ``unvalued_count``. ``open_credit_total`` is
     what the open credit notes and supplier credit notes still have to apply or refund
-    (``is_open_credit``, the rule the aging reports net them by)."""
+    (``is_open_credit``, the rule the aging reports net them by). ``total_by_status`` totals the
+    documents of every type by status. A sort the list refuses is refused here too."""
+    _doc_sort_field(filters)
     today = (await company_today(session, company_id)).isoformat()
     company = await session.get(Company, company_id)
     base_currency = (company.settings or {}).get("currency", "USD") if company else "USD"
@@ -1318,6 +1322,7 @@ def _doc_summary(states: list[dict], today: str, base_currency: str) -> dict:
         "draft", "void", "memo", "unfulfilled", "open_credit",
     ), Decimal(0))
     count_by_status: dict[str, int] = {}
+    total_by_status: dict[str, Decimal] = {}
     invoice_count = 0
     awaiting_payment_count = 0
     overdue_count = 0
@@ -1335,10 +1340,15 @@ def _doc_summary(states: list[dict], today: str, base_currency: str) -> dict:
         st = state.get("status", "")
         count_by_status[st] = count_by_status.get(st, 0) + 1
         dt = state.get("doc_type")
+        open_credit = dt != "invoice" and st not in ("void", "draft") and is_open_credit(state)
+        amounts = _doc_base_amounts(state, ("total", "amount_outstanding", "amount_paid") if dt == "invoice"
+                                    else ("total", "amount_outstanding") if open_credit else ("total",), base_currency)
+        total_by_status.setdefault(st, Decimal(0))
+        if amounts is None:
+            unvalued_count += 1
+        else:
+            total_by_status[st] += amounts["total"]
         if dt == "invoice":
-            amounts = _doc_base_amounts(state, ("total", "amount_outstanding", "amount_paid"), base_currency)
-            if amounts is None:
-                unvalued_count += 1
             if st == "draft":
                 add("draft", amounts, "total")
                 continue
@@ -1367,14 +1377,8 @@ def _doc_summary(states: list[dict], today: str, base_currency: str) -> dict:
             if st in ("void", "draft"):
                 continue
             if dt == "memo":
-                amounts = _doc_base_amounts(state, ("total",), base_currency)
-                if amounts is None:
-                    unvalued_count += 1
                 add("memo", amounts, "total")
-            if is_open_credit(state):
-                amounts = _doc_base_amounts(state, ("amount_outstanding",), base_currency)
-                if amounts is None:
-                    unvalued_count += 1
+            if open_credit:
                 add("open_credit", amounts, "amount_outstanding")
             if is_awaiting_payment(dt, st):
                 awaiting_payment_count += 1
@@ -1417,7 +1421,7 @@ def _doc_summary(states: list[dict], today: str, base_currency: str) -> dict:
         "unvalued_count": unvalued_count,
         "memo_all_total": money["memo"],
         "open_credit_total": money["open_credit"],
-        "count_by_status": count_by_status,
+        "count_by_status": count_by_status,        "total_by_status": {k: to_stored_float(round_money(v, base_currency)) for k, v in total_by_status.items()},
     }
 
 

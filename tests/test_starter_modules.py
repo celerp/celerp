@@ -304,6 +304,39 @@ async def test_a_config_file_that_cannot_be_written_is_tried_again_at_the_next_s
     assert await _told(made, old["company_id"]) == 1
 
 
+async def test_a_commit_that_reports_a_failure_after_it_landed_is_finished_at_the_next_start(
+        committed_engine, made, monkeypatch, tmp_path):
+    """The database commits the start's change and the connection drops before it says so.
+    The start puts the config file back, but the companies were told: the next start puts the
+    starter modules back in the file, and tells no one twice."""
+    from sqlalchemy.ext.asyncio import AsyncSession
+    from celerp.services.starter_modules import enable_starter_modules
+
+    cfg = _installed(monkeypatch, tmp_path, ["celerp-labels"])
+    async with made() as s:
+        old = await _registered_on_older_release(s)
+    real, commits = AsyncSession.commit, []
+
+    async def _lost_reply(self):
+        await real(self)
+        commits.append(1)
+        if len(commits) == 1:
+            raise ConnectionError("server closed the connection unexpectedly")
+
+    monkeypatch.setattr(AsyncSession, "commit", _lost_reply)
+    async with made() as s:
+        with pytest.raises(ConnectionError):
+            await enable_starter_modules(s)
+    assert await _told(made, old["company_id"]) == 1
+    monkeypatch.setattr(AsyncSession, "commit", real)
+
+    async with made() as s:
+        await enable_starter_modules(s)
+    assert _STARTERS | {"celerp-labels"} <= _enabled(cfg)
+    assert await _marker(made) == "done"
+    assert await _told(made, old["company_id"]) == 1
+
+
 async def test_a_module_turned_on_while_the_starter_modules_go_on_is_kept(
         committed_engine, made, monkeypatch, tmp_path):
     """Another process (celerp module install) turns Labels on for every company while this

@@ -8,13 +8,16 @@ list without reaching the summary fails here."""
 from __future__ import annotations
 
 import dataclasses
-from collections import Counter
+import re
+from collections import Counter, defaultdict
+from urllib.parse import urlencode
 
 import pytest
 
 from celerp_docs.routes import _DOC_SPLIT_FILTERS, DocListFilters
 from test_contact_money_cards import _day, _demo_contact, _invoice, _ok
-from ui.routes.documents import _DOC_PAGE_KEYS
+from test_helpers import mark_running
+from ui.routes.documents import _DOC_PAGE_KEYS, _DOC_STATE_KEYS
 
 pytestmark = pytest.mark.asyncio
 
@@ -88,8 +91,12 @@ async def _listed(api, params: dict) -> list[dict]:
 
 
 def _figures_of(rows: list[dict]) -> dict:
-    """What the summary must say about ``rows``: its row counts and the issued invoices' total."""
+    """What the summary must say about ``rows``: its row counts, the issued invoices' total and
+    every row's total by status."""
     statuses = Counter(r["status"] for r in rows)
+    by_status: dict[str, float] = defaultdict(float)
+    for r in rows:
+        by_status[r["status"]] += float(r["total"] or 0)
     issued = [r for r in rows if r["doc_type"] == "invoice" and r["status"] not in ("draft", "void")]
     return {
         "count_by_status": dict(statuses),
@@ -97,11 +104,23 @@ def _figures_of(rows: list[dict]) -> dict:
         "draft_count": statuses["draft"],
         "invoice_count": len(issued),
         "all_issued_total": round(sum(float(r["total"]) for r in issued), 2),
+        "total_by_status": {k: round(v, 2) for k, v in by_status.items()},
     }
 
 
 def _figures(summary: dict) -> dict:
-    return {k: summary[k] for k in ("count_by_status", "total_count", "draft_count", "invoice_count", "all_issued_total")}
+    return {k: summary[k] for k in ("count_by_status", "total_count", "draft_count", "invoice_count",
+                                    "all_issued_total", "total_by_status")}
+
+
+def _cases(made: dict) -> list[tuple[str, dict]]:
+    """Every list filter alone, and the combinations the pages put together."""
+    return list(_filters(made).items()) + [
+        ("contact_id+overdue_only", {"contact_id": made["contact"]["id"], "overdue_only": "1"}),
+        ("doc_type+overdue_only", {"doc_type": "invoice", "all_issued": "1", "overdue_only": "1"}),
+        ("doc_type+unfulfilled_only", {"doc_type": "invoice", "exclude_status": "draft", "unfulfilled_only": "1"}),
+        ("doc_type+status", {"doc_type": "invoice", "status": "paid", "q": made["contact"]["name"]}),
+    ]
 
 
 async def test_every_list_filter_is_named_here():
@@ -116,16 +135,60 @@ async def test_the_summary_counts_the_rows_the_list_shows_for_every_filter(owner
     made = await _documents(owner_ui, monkeypatch)
     api = owner_ui.api
     everything = await _listed(api, {})
-    cases = list(_filters(made).items()) + [
-        ("contact_id+overdue_only", {"contact_id": made["contact"]["id"], "overdue_only": "1"}),
-        ("doc_type+overdue_only", {"doc_type": "invoice", "all_issued": "1", "overdue_only": "1"}),
-        ("doc_type+unfulfilled_only", {"doc_type": "invoice", "exclude_status": "draft", "unfulfilled_only": "1"}),
-        ("doc_type+status", {"doc_type": "invoice", "status": "paid", "q": made["contact"]["name"]}),
-    ]
-    for name, params in cases:
+    for name, params in _cases(made):
         rows = await _listed(api, params)
         assert 0 < len(rows) < len(everything), (name, len(rows), len(everything))
         summary = await _ok(await api.get("/docs/summary", params=params))
         assert _figures(summary) == _figures_of(rows), name
         split = {k: v for k, v in params.items() if k not in _DOC_SPLIT_FILTERS}
         assert _figures(summary["cards"]) == _figures_of(await _listed(api, split)), name
+
+
+# The page parameter for each list filter. The rest are API-only: no page sets them, so no card
+# link carries them.
+_PAGE_KEYS = {"doc_type": "type", "date_from": "from", "date_to": "to"}
+_API_ONLY = {"exclude_status", "due_from", "due_to"}
+_TYPES = ("invoice", "quotation", "credit_note", "bill", "memo")
+
+
+def _row_ids(html: str) -> set[str]:
+    return set(re.findall(r'href="/docs/(doc:[^"/?#]+)"', html))
+
+
+def _status_cards(html: str) -> list[tuple[str, int, str]]:
+    """(label, count, link) for each status card on a document list."""
+    return [(label, int(count), href.replace("&amp;", "&")) for href, label, count in re.findall(
+        r'<a href="(/docs\?[^"]*)" class="status-card[^"]*">\s*<span class="status-card-label">([^<]+)</span>\s*'
+        r'<span class="status-card-count">(\d+)</span>', html)]
+
+
+async def test_every_status_card_counts_the_rows_its_link_opens(owner_ui, monkeypatch):
+    """For every filter combination above that a page can set, and the type filter on each
+    document type: each status card's count is the number of rows on the page its link opens."""
+    made = await _documents(owner_ui, monkeypatch)
+    assert {_PAGE_KEYS.get(k, k) for k in _FILTER_KEYS if k not in _API_ONLY} <= set(_DOC_STATE_KEYS)
+    cases = [(n, p) for n, p in _cases(made) if not set(p) & _API_ONLY]
+    cases += [(f"doc_type={dt}", {"doc_type": dt}) for dt in _TYPES]
+    checked = 0
+    for name, params in cases:
+        query = {_PAGE_KEYS.get(k, k): v for k, v in params.items()}
+        if not {"from", "to"} & set(query):
+            query["preset"] = "all"
+        r = await owner_ui.get("/docs?" + urlencode(query))
+        assert r.status_code == 200, (name, r.status_code)
+        cards = _status_cards(r.text)
+        assert cards, name
+        for label, count, href in cards:
+            landing = await owner_ui.get(href + "&per_page=500", follow_redirects=True)
+            assert landing.status_code == 200, (name, href)
+            assert count == len(_row_ids(landing.text)), (name, label, count, href)
+            checked += 1
+    assert checked > len(cases)
+
+
+async def test_the_summary_refuses_the_sort_the_list_refuses(owner_ui, monkeypatch):
+    mark_running(monkeypatch, "celerp-docs")
+    for params in ({"sort": "nonsense"}, {"dir": "sideways"}):
+        for path in ("/docs", "/docs/summary", "/docs/export/csv"):
+            r = await owner_ui.api.get(path, params=params)
+            assert r.status_code == 422, (path, params, r.status_code)

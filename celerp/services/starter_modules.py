@@ -18,6 +18,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 STARTER_MODULES = ("celerp-inventory", "celerp-contacts")
 STARTER_MODULES_KEY = "starter_modules_enabled"
+# The marker while the companies' change has committed and the config file is still to be
+# confirmed: a start that finds it adds whichever starter module the file lacks.
+_FILE_PENDING = "file_pending"
 NOTICE_TITLE = "Inventory and Contacts were turned on"
 _NOTICE_BODY = ("This company's starter items and its own contact, created when it was registered, "
                 "are kept by Inventory and Contacts, so both were turned on. They are listed on the "
@@ -34,9 +37,11 @@ async def enable_starter_modules(session: AsyncSession) -> None:
     list, so the modules are added there; a company with its own list has them added to it.
     It all happens in one transaction under the module-state boundary, so no other module
     change lands in between: the installation's list is read, the config file is written, and
-    only then do the companies' lists, the notices and the done marker commit. A write that
-    fails leaves everything as it was and the next start tries again; a commit that fails puts
-    the file back as it was read."""
+    only then do the companies' lists, the notices and the marker commit. A write that fails
+    leaves everything as it was and the next start tries again; a commit that fails puts the
+    file back as it was read. A commit can report a failure after it landed, so when the file
+    was written the marker says so until a second commit confirms the first: a start that
+    finds it puts the starter modules back in the file."""
     import functools
 
     from celerp.config import read_config, replace_enabled_modules
@@ -54,6 +59,18 @@ async def enable_starter_modules(session: AsyncSession) -> None:
     if await conn.run_sync(lambda c: get_meta(c, STARTER_MODULES_KEY)) == "done":
         return
     await hold_module_state(session)
+    marker = await conn.run_sync(lambda c: get_meta(c, STARTER_MODULES_KEY))
+    if marker == "done":
+        await session.commit()
+        return
+    if marker == _FILE_PENDING:
+        installed = list(read_config().get("modules", {}).get("enabled") or [])
+        missing = [m for m in STARTER_MODULES if m not in installed]
+        if missing:
+            await asyncio.to_thread(replace_enabled_modules, installed + missing)
+        await conn.run_sync(lambda c: set_meta(c, STARTER_MODULES_KEY, "done"))
+        await session.commit()
+        return
     holder_ids = list((await session.execute(select(LedgerEntry.company_id).where(
         or_(*(LedgerEntry.idempotency_key.startswith(k, autoescape=True) for k in _STARTER_RECORD_PREFIXES))).distinct())).scalars())
     holders = [c for c in await take_company_locks(
@@ -75,7 +92,7 @@ async def enable_starter_modules(session: AsyncSession) -> None:
         await notify(session, company.id, "system", NOTICE_TITLE, _NOTICE_BODY,
                      action_url="/modules", priority="high",
                      i18n={"title": "notice.starter_modules_on.title", "body": "notice.starter_modules_on.body"})
-    await conn.run_sync(lambda c: set_meta(c, STARTER_MODULES_KEY, "done"))
+    await conn.run_sync(lambda c: set_meta(c, STARTER_MODULES_KEY, _FILE_PENDING if add_to_installation else "done"))
     if add_to_installation:
         await asyncio.to_thread(replace_enabled_modules, installed + list(STARTER_MODULES))
     try:
@@ -84,5 +101,9 @@ async def enable_starter_modules(session: AsyncSession) -> None:
         if add_to_installation:
             await asyncio.to_thread(replace_enabled_modules, installed)
         raise
+    if add_to_installation:
+        await (await session.connection()).run_sync(lambda c: set_meta(c, STARTER_MODULES_KEY, "done"))
     if own_lists:
         await commit_with_load_set(session)
+    else:
+        await session.commit()
