@@ -6472,5 +6472,6 @@
   "event.fa.check.removed": "固定資産の実査を削除",
   "modules.turn_on": "オンにする",
   "nav.my_assets": "自分の資産",
-  "connectors.order_changed_in_woocommerce": "この注文はWooCommerceで変更されました。「再試行」を選んで変更内容を確認してください。"
+  "connectors.order_changed_in_woocommerce": "この注文はWooCommerceで変更されました。「再試行」を選んで変更内容を確認してください。",
+  "doc.converted_to": "変換先:"
 }

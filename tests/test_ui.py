@@ -3330,6 +3330,42 @@ class TestDocumentPolish:
         assert b"ct:CUST-001" in r.content
 
 
+class TestConvertedQuotationDetail:
+
+    @pytest.mark.asyncio
+    async def test_converted_quotation_links_to_the_document_it_became(self, ui_client):
+        quotation = {
+            "entity_id": "list:LST-1", "list_type": "quotation", "status": "closed", "result": "converted",
+            "converted_to": "doc:MEMO-1", "converted_to_type": "memo", "issue_date": "2026-10-24",
+            "currency": "USD", "discount": 0, "tax": 0, "subtotal": 0, "total": 0, "line_items": [],
+        }
+        from bs4 import BeautifulSoup
+        ui_client.cookies.update(_authed())
+        with (
+            patch("ui.api_client.get_list", new=AsyncMock(return_value=quotation)),
+            patch("ui.api_client.get_list_page", create=True, new=_list_page_stub(quotation)),
+        ):
+            r = await ui_client.get("/lists/list:LST-1")
+        assert r.status_code == 200
+        link = BeautifulSoup(r.content.decode(), "html.parser").find("a", href="/docs/doc:MEMO-1")
+        assert link is not None and link.get_text(strip=True) == "MEMO-1"
+        assert "Converted to:" in r.content.decode()
+
+    @pytest.mark.asyncio
+    async def test_unconverted_quotation_has_no_converted_link(self, ui_client):
+        quotation = {
+            "entity_id": "list:LST-2", "list_type": "quotation", "status": "finalized", "issue_date": "2026-10-24",
+            "currency": "USD", "discount": 0, "tax": 0, "subtotal": 0, "total": 0, "line_items": [],
+        }
+        ui_client.cookies.update(_authed())
+        with (
+            patch("ui.api_client.get_list", new=AsyncMock(return_value=quotation)),
+            patch("ui.api_client.get_list_page", create=True, new=_list_page_stub(quotation)),
+        ):
+            r = await ui_client.get("/lists/list:LST-2")
+        assert "Converted to:" not in r.content.decode()
+
+
 class TestWriteoffListDetail:
     """A draft write-off list renders qty_out / account / comment as on-page click-to-edit cells
     (GDR 2f), the account picker is filtered to expense and equity chart accounts (function-level
@@ -12819,6 +12855,23 @@ class TestListFieldPatch:
                                       data={"value": "transfer"})
         assert r.status_code == 204, r.text
         assert r.headers.get("HX-Redirect") == "/lists/list:1"
+
+    @pytest.mark.asyncio
+    async def test_issue_date_is_edited_inline_like_a_document(self, ui_client):
+        ui_client.cookies.update(_authed())
+        with patch("ui.api_client.get_list", new=AsyncMock(return_value={**self._LST, "issue_date": "2026-03-01"})):
+            r = await ui_client.get("/lists/list:1/field/issue_date/edit")
+        assert r.status_code == 200
+        assert 'type="date"' in r.text and 'value="2026-03-01"' in r.text
+        with (
+            patch("ui.api_client.patch_list", new=AsyncMock(return_value={"event_id": "e1"})) as patched,
+            patch("ui.api_client.get_list", new=AsyncMock(return_value={**self._LST, "issue_date": "2026-03-02"})),
+        ):
+            r = await ui_client.patch("/lists/list:1/field/issue_date", data={"value": "2026-03-02"})
+        assert r.status_code == 200, r.text
+        patched.assert_awaited_once()
+        assert patched.await_args.args[2] == {"issue_date": "2026-03-02"}
+        assert "2026-03-02" in r.text
 
     @pytest.mark.asyncio
     async def test_patch_receiver_type_returns_display_cell(self, ui_client):

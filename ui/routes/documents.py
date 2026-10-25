@@ -10164,6 +10164,12 @@ async function celerpCsvImport(input, entityId) {{
     # so it is read-only here for lists.
     _status_field = P(_list_status_label(doc), cls="meta-value") if is_list else _cell("status", status)
     _contact_rows.append(Div(Div(t("doc.status"), cls="form-label"), _status_field, *_slot_badges, cls="form-group"))
+    # A converted quotation points at the document it became.
+    if is_list and doc.get("result") == "converted" and doc.get("converted_to"):
+        _converted_to = str(doc["converted_to"])
+        _contact_rows.append(Div(Div(t("doc.converted_to"), cls="form-label"),
+                                 A(_converted_to.split(":", 1)[-1], href=doc_href(_converted_to), cls="table-link"),
+                                 cls="form-group"))
     # Currency row: always show (except money-less internal docs); rate row only when foreign.
     # Shipping documents keep it - the commercial invoice declares values in this currency.
     if not is_no_money or pol["customs"]:

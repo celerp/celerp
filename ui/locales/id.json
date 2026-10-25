@@ -6472,5 +6472,6 @@
   "event.fa.check.removed": "Pemeriksaan aset tetap dihapus",
   "modules.turn_on": "Aktifkan",
   "nav.my_assets": "Aset saya",
-  "connectors.order_changed_in_woocommerce": "Pesanan ini berubah di WooCommerce. Pilih Coba lagi untuk meninjau perubahannya."
+  "connectors.order_changed_in_woocommerce": "Pesanan ini berubah di WooCommerce. Pilih Coba lagi untuk meninjau perubahannya.",
+  "doc.converted_to": "Dikonversi menjadi:"
 }

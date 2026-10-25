@@ -6472,5 +6472,6 @@
   "event.fa.check.removed": "Đã xóa lần kiểm kê tài sản cố định",
   "modules.turn_on": "Bật",
   "nav.my_assets": "Tài sản của tôi",
-  "connectors.order_changed_in_woocommerce": "Đơn hàng này đã thay đổi trong WooCommerce. Hãy chọn Thử lại để xem xét thay đổi."
+  "connectors.order_changed_in_woocommerce": "Đơn hàng này đã thay đổi trong WooCommerce. Hãy chọn Thử lại để xem xét thay đổi.",
+  "doc.converted_to": "Đã chuyển thành:"
 }

@@ -6472,5 +6472,6 @@
   "event.fa.check.removed": "Prüfung einer Anlage entfernt",
   "modules.turn_on": "Einschalten",
   "nav.my_assets": "Meine Anlagen",
-  "connectors.order_changed_in_woocommerce": "Diese Bestellung wurde in WooCommerce geändert. Wählen Sie „Erneut versuchen“, um die Änderung zu prüfen."
+  "connectors.order_changed_in_woocommerce": "Diese Bestellung wurde in WooCommerce geändert. Wählen Sie „Erneut versuchen“, um die Änderung zu prüfen.",
+  "doc.converted_to": "Umgewandelt in:"
 }

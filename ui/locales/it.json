@@ -6472,5 +6472,6 @@
   "event.fa.check.removed": "Verifica del cespite rimossa",
   "modules.turn_on": "Attiva",
   "nav.my_assets": "I miei cespiti",
-  "connectors.order_changed_in_woocommerce": "Questo ordine è cambiato in WooCommerce. Seleziona Riprova per esaminare la modifica."
+  "connectors.order_changed_in_woocommerce": "Questo ordine è cambiato in WooCommerce. Seleziona Riprova per esaminare la modifica.",
+  "doc.converted_to": "Convertito in:"
 }

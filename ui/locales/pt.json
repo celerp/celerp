@@ -6472,5 +6472,6 @@
   "event.fa.check.removed": "Verificação de ativo imobilizado removida",
   "modules.turn_on": "Ativar",
   "nav.my_assets": "Os meus ativos",
-  "connectors.order_changed_in_woocommerce": "Este pedido mudou no WooCommerce. Selecione Tentar novamente para revisar a alteração."
+  "connectors.order_changed_in_woocommerce": "Este pedido mudou no WooCommerce. Selecione Tentar novamente para revisar a alteração.",
+  "doc.converted_to": "Convertido em:"
 }
