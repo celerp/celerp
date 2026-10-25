@@ -644,6 +644,15 @@ def _ui_api_not_running(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _held_ai_limits(monkeypatch):
+    """Test relays model a current AI service: the app holds its published limits, so
+    a model call does not first fetch them (tests/test_ai_deadlines.py forgets them
+    to test the fetch itself)."""
+    from celerp.ai import deadlines
+    monkeypatch.setattr(deadlines, "_held", deadlines.CURRENT_RELAY_DEFAULTS)
+
+
+@pytest.fixture(autouse=True)
 def _mock_get_modules_default():
     """Default get_modules mock — returns empty list so settings page always has a valid response."""
     from unittest.mock import patch, AsyncMock

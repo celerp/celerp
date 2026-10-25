@@ -16,6 +16,7 @@ The service never touches quota or gateway directly - that lives in the router.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import time
@@ -26,8 +27,9 @@ from datetime import datetime, timedelta, timezone
 import httpx
 from fastapi import HTTPException
 
+from celerp.ai import jobs
 from celerp.ai.files import load_file_for_llm
-from celerp.ai.llm import MODEL_CALL_TIMEOUT_S, ModelResult, RelayError, _build_user_content, complete
+from celerp.ai.llm import ModelResult, RelayError, _build_user_content, complete
 from celerp.ai.models import select_model
 from celerp.ai.tools import (
     AGENT_RESULT_MAX_BYTES,
@@ -56,7 +58,6 @@ AGENT_RUN_TIMEOUT_S = 120.0     # whole run; wider than one model call
 PENDING_ACTION_TTL_S = 15 * 60  # interactive proposals
 PROPOSAL_TTL_S = 24 * 60 * 60   # proposals built from an extraction job
 
-assert MODEL_CALL_TIMEOUT_S < AGENT_RUN_TIMEOUT_S
 
 _EMPTY_ANSWER = "I could not find an answer to that. Please try rephrasing your question."
 
@@ -600,6 +601,11 @@ async def _agent_loop(
     )
 
 
+def _model_slot():
+    """The caller's gate slot when it holds one (a reading job), else an interactive one."""
+    return contextlib.nullcontext() if jobs.holding_slot() else jobs.gate.slot("interactive")
+
+
 async def _model_turn(
     messages: list[dict],
     tools: list[dict] | None,
@@ -615,9 +621,10 @@ async def _model_turn(
     same id; the run's own time limit bounds the waiting."""
     while True:
         try:
-            result = await complete(
-                messages, tools=tools, reservation_id=reservation_id, operation_id=operation_id, **request,
-            )
+            async with _model_slot():
+                result = await complete(
+                    messages, tools=tools, reservation_id=reservation_id, operation_id=operation_id, **request,
+                )
         except RelayError as exc:
             tally.charge(exc.credits, exc.operation_credits)
             if exc.code != "operation_in_progress":

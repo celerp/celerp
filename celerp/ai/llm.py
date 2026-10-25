@@ -5,36 +5,33 @@
 
 Calls are served through the cloud gateway, which selects the model and meters
 usage. Supports text-only and multimodal (image/PDF) messages, plus structured
-tool calling for the agent loop. Concurrency-limited via a module-level
-semaphore.
+tool calling for the agent loop. Every call runs inside a slot of the one model
+gate (celerp.ai.jobs) and within the budget celerp.ai.deadlines derives for it.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json as jsonlib
 import logging
-import os
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import httpx
 from fastapi import HTTPException
 
+from celerp.ai import deadlines, jobs
 from celerp.ai.files import XLSX_CONTENT_TYPE
-from celerp.gateway.state import relay_http_url, relay_session_headers
+from celerp.gateway.state import relay_http_url, relay_session_headers, with_relay_client
 from ui.i18n import t
 
 log = logging.getLogger(__name__)
 
-_MAX_CONCURRENT = int(os.getenv("AI_MAX_CONCURRENT", "3"))
-_semaphore = asyncio.Semaphore(_MAX_CONCURRENT)
-
-# One model call may run this long; the agent run budget in celerp.ai.service
-# is wider so that several calls fit inside one run.
-MODEL_CALL_TIMEOUT_S = 90.0
-# An operation status read is a small lookup.
-STATUS_TIMEOUT_S = 10.0
-OPERATION_STATES = frozenset({"charged", "in_progress", "not_charged", "none"})
+# An operation status read reports these states; anything else is an unexpected reply.
+OPERATION_STATES = frozenset({"charged", "in_progress", "not_charged", "unknown_id"})
+# Bytes per chunk of an uploaded request body.
+_UPLOAD_CHUNK = 64 * 1024
 
 
 class RelayError(RuntimeError):
@@ -175,23 +172,42 @@ def _build_user_content(
     return parts
 
 
-async def _relay_request(method: str, path: str, *, json: dict | None = None,
-                         timeout: float = MODEL_CALL_TIMEOUT_S) -> httpx.Response:
-    """One AI service call with the session headers, or with the install's account
+def _upload(body: bytes, deadline: float) -> Callable[[], object]:
+    """A fresh body stream per connection attempt; a stream still sending at
+    ``deadline`` (loop time) is aborted, so the service never received the whole
+    request and cannot have run it."""
+    async def _chunks():
+        loop = asyncio.get_running_loop()
+        for start in range(0, len(body), _UPLOAD_CHUNK):
+            if loop.time() > deadline:
+                raise RelayError("service_unavailable", "The question could not be sent in time.")
+            yield body[start:start + _UPLOAD_CHUNK]
+    return _chunks
+
+
+async def _relay_request(method: str, path: str, *, body: dict | None, budget: deadlines.CallBudget,
+                         headers: dict[str, str] | None = None) -> httpx.Response:
+    """One AI service call within ``budget`` (connect retries, sign-in, upload and
+    reply under one total), with the session headers, or with the install's account
     key when there is no Connect session (a free account)."""
-    headers = relay_session_headers()
-    if headers.get("X-Session-Token"):
-        async with _semaphore:
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                return await client.request(method, f"{relay_http_url()}{path}", headers=headers, json=json)
-    from celerp.config import settings
-    if settings.cloud_disconnected:
-        raise RelayError("no_session", "The AI service is not available - signed out of Celerp Connect.")
-    from celerp.services.cloud_entitlement import authenticated_request
-    async with _semaphore:
-        resp = await authenticated_request(method, path, json=json, total_s=timeout)
-    if resp is None:
-        raise RelayError("no_account", "The AI service is not available - no Celerp account.")
+    payload = b"" if body is None else jsonlib.dumps(body).encode()
+    upload = _upload(payload, asyncio.get_running_loop().time() + budget.upload_s)
+    extra = {**(headers or {}), "Content-Type": "application/json", "Content-Length": str(len(payload))}
+    session = relay_session_headers()
+    if session.get("X-Session-Token"):
+        async def _op(client):
+            return await client.request(method, f"{relay_http_url()}{path}", headers={**session, **extra},
+                                        content=upload())
+        resp = await with_relay_client(budget.total_s, _op)
+    else:
+        from celerp.config import settings
+        if settings.cloud_disconnected:
+            raise RelayError("no_session", "The AI service is not available - signed out of Celerp Connect.")
+        from celerp.services.cloud_entitlement import authenticated_request
+        resp = await authenticated_request(method, path, content=upload, headers=extra, total_s=budget.total_s)
+        if resp is None:
+            raise RelayError("no_account", "The AI service is not available - no Celerp account.")
+    deadlines.note_header(resp.headers.get("X-AI-Limits"))
     return resp
 
 
@@ -200,22 +216,27 @@ def _count(value) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
 
 
-async def operation_status(operation_id: uuid.UUID) -> dict | None:
-    """What the service charged for one question this install asked, read only:
-    {operation_id, state, outcome, credits, charged_at}, state one of ``charged``,
-    ``in_progress``, ``not_charged`` and ``none``. None from an older service that
-    keeps no operation status. Raises RelayError, or httpx errors, when the service
-    cannot be asked or does not answer as described."""
-    resp = await _relay_request("GET", f"/ai/operations/{operation_id}", timeout=STATUS_TIMEOUT_S)
+async def operations_status(operation_ids: list[uuid.UUID]) -> list[dict] | None:
+    """What the service charged for questions this install asked, read only: one
+    {operation_id, state, outcome, credits, charged_at} per id, state one of
+    OPERATION_STATES. None from an older service that keeps no operation status.
+    Raises RelayError, or httpx errors, when the service cannot be asked or does not
+    answer as described."""
+    body = {"operation_ids": [str(i) for i in operation_ids]}
+    budget = deadlines.status_budget(await deadlines.limits(), len(jsonlib.dumps(body)))
+    resp = await _relay_request("POST", "/ai/operations/status", body=body, budget=budget)
     if resp.status_code == 404:
         return None
     if resp.status_code != 200:
         raise RelayError("gateway_error", f"LLM gateway error {resp.status_code}", status=resp.status_code)
-    status = resp.json()
-    if (not isinstance(status, dict) or status.get("operation_id") != str(operation_id)
-            or status.get("state") not in OPERATION_STATES or _count(status.get("credits")) is None):
+    reply = resp.json()
+    rows = reply.get("operations") if isinstance(reply, dict) else None
+    asked = {str(i) for i in operation_ids}
+    if (not isinstance(rows, list) or any(
+            not isinstance(r, dict) or r.get("operation_id") not in asked
+            or r.get("state") not in OPERATION_STATES or _count(r.get("credits")) is None for r in rows)):
         raise RelayError("unexpected_reply", "The AI service returned an unexpected reply.", status=200)
-    return status
+    return rows
 
 
 async def complete(
@@ -225,26 +246,30 @@ async def complete(
     tool_choice: str | dict | None = None,
     reservation_id: str | None = None,
     operation_id: uuid.UUID | None = None,
+    step_id: uuid.UUID | None = None,
     hints: dict | None = None,
     max_tokens: int = 2048,
-    timeout: float = MODEL_CALL_TIMEOUT_S,
 ) -> ModelResult:
     """Run a structured completion through the gateway.
 
     Posts to {relay}/ai/complete with the session headers, or with the
     install's account key when there is no Connect session. tools,
-    tool_choice, reservation_id and operation_id are sent only when not None.
+    tool_choice, reservation_id, operation_id and step_id are sent only when not None.
+    The caller holds a slot of the model gate (celerp.ai.jobs.gate); the call's
+    budget is computed once the slot is held and declared to the service.
 
     ``operation_id`` names a question on its first turn, so that asking it again
     after a lost answer is not charged twice; it is never sent with a
-    ``reservation_id``, which names the later turns of the same question.
+    ``reservation_id``, which names the later turns of the same question, each
+    named by its own ``step_id`` so a lost later turn is replayed, not rerun.
 
     Raises HTTPException carrying the relay's detail when the relay refuses
     the question (402, and the free-account 413 and 503, see _FREE_REFUSALS)
     and RelayError for every other gateway failure (see RelayError.code).
-    httpx.TimeoutException propagates when the gateway does not answer in
-    ``timeout`` seconds.
+    httpx.TimeoutException propagates when the gateway does not answer within the
+    call's budget.
     """
+    assert jobs.holding_slot(), "a model call runs inside a slot of celerp.ai.jobs.gate"
     body: dict = {"messages": messages, "max_tokens": max_tokens}
     if hints is not None:
         body["hints"] = hints
@@ -258,8 +283,12 @@ async def complete(
         body["reservation_id"] = reservation_id
     if operation_id is not None:
         body["operation_id"] = str(operation_id)
+    if step_id is not None:
+        body["step_id"] = str(step_id)
 
-    resp = await _relay_request("POST", "/ai/complete", json=body, timeout=timeout)
+    budget = deadlines.call_budget(await deadlines.limits(), len(jsonlib.dumps(body)))
+    resp = await _relay_request("POST", "/ai/complete", body=body, budget=budget,
+                                headers=deadlines.declared_header(budget))
 
     if resp.status_code == 200:
         data = resp.json()

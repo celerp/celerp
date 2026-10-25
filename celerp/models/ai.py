@@ -119,7 +119,8 @@ class AIUsage(Base):
     message, one file of a reading job, or the one-off request), with what the service
     charged for it. The row is written before the question leaves, and stays
     ``pending`` until the service has named the whole charge (in a reply, or in the
-    operation's status read by celerp.ai.usage.reconcile_usage)."""
+    operation's status read by celerp.ai.usage.reconcile_usage, once ``reconcile_at``
+    has passed)."""
 
     __tablename__ = "ai_usage"
     __table_args__ = (
@@ -138,6 +139,9 @@ class AIUsage(Base):
     operation_id: Mapped[uuid.UUID] = mapped_column(sa.Uuid(as_uuid=True), nullable=False)
     credits: Mapped[int] = mapped_column(Integer, nullable=False)
     pending: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # Written before every send under the id: after it the service has ended and
+    # settled that send (celerp.ai.deadlines.reconcile_delay_s).
+    reconcile_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),

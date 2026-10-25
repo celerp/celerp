@@ -43,6 +43,8 @@ PROMOTE_AFTER_S = 120.0
 SYNC_WAIT_S = 120.0
 # The remote-access proxy's timeout on the service (its proxy_timeout_seconds).
 REMOTE_PROXY_TIMEOUT_S = 180.0
+# A read of the account's AI quota while a page renders.
+QUOTA_READ_S = 5.0
 # Confirming proposed actions runs tools only, no model call.
 ACTIONS_TIMEOUT_S = 150.0
 # Seconds between the background passes that settle pending usage rows.
@@ -102,6 +104,13 @@ def reconcile_delay_s(limits: Limits, nbytes: int) -> float:
 
 def status_timeout_s(limits: Limits) -> float:
     return limits.settle_margin_s + RESPONSE_LATENCY_S
+
+
+def status_budget(limits: Limits, nbytes: int) -> CallBudget:
+    """An operation status read: the upload, then S + N for the reply; it runs no
+    model step, so it declares none."""
+    upload = upload_budget_s(nbytes)
+    return CallBudget(upload_s=upload, declared_s=0.0, total_s=upload + status_timeout_s(limits))
 
 
 def declared_header(budget: CallBudget) -> dict[str, str]:

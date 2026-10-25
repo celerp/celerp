@@ -151,7 +151,7 @@ async def test_ai_usage_month_starts_at_the_company_month(co, client, session):
     month_start = datetime(co.day.year, co.day.month, 1, tzinfo=ZoneInfo(co.tz)).astimezone(timezone.utc)
     for when in (month_start - timedelta(hours=1), month_start + timedelta(hours=1)):
         session.add(AIUsage(company_id=co.id, user_id=co.user_id, operation_id=uuid.uuid4(),
-                            credits=1, pending=False, created_at=when))
+                            credits=1, pending=False, created_at=when, reconcile_at=when))
     await session.commit()
     users = (await client.get("/ai/usage-stats", headers=co.headers)).json()["users"]
     assert [u["query_count"] for u in users] == [1]

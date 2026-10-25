@@ -1656,21 +1656,19 @@ async def usage_stats(
 ) -> dict:
     """Per-user AI questions in the period: the company's current calendar month, or all time.
 
-    Read from the usage record, one row per question with what the AI service charged
-    for it, after settling the company's pending questions from the service
-    (celerp.ai.usage.reconcile_usage). A question counts when it was charged. Returns ``period``
-    {kind, start} (start is the ISO month start, null for all time) and ``users``,
-    a list of {user_id, user_name, query_count, credits_used, last_query_at} with
-    the latest question first.
+    Read from the usage record only, one row per question with what the AI service
+    charged for it; the background reconcile pass settles pending rows. A question
+    counts when its charge is confirmed; ``pending_count`` is the user's questions
+    still awaiting confirmation. Returns ``period`` {kind, start} (start is the ISO
+    month start, null for all time) and ``users``, a list of {user_id, user_name,
+    query_count, credits_used, pending_count, last_query_at} with the latest question
+    first.
     """
     from datetime import datetime
-    from sqlalchemy import func, select
-    from celerp.ai.usage import reconcile_usage
+    from sqlalchemy import func, or_, select
     from celerp.models.ai import AIUsage
     from celerp.models.company import User
     from celerp.services.business_time import business_timezone, business_today
-
-    await reconcile_usage(session, company_id)
 
     tz = company_settings.get("timezone")
     today = business_today(tz)
@@ -1680,11 +1678,12 @@ async def usage_stats(
     rows = (await session.execute(
         select(
             AIUsage.user_id,
-            func.count().label("query_count"),
-            func.sum(AIUsage.credits).label("credits_used"),
+            func.count().filter(~AIUsage.pending).label("query_count"),
+            func.sum(AIUsage.credits).filter(~AIUsage.pending).label("credits_used"),
+            func.count().filter(AIUsage.pending).label("pending_count"),
             func.max(AIUsage.created_at).label("last_query_at"),
         )
-        .where(AIUsage.company_id == company_id, AIUsage.credits > 0,
+        .where(AIUsage.company_id == company_id, or_(AIUsage.pending, AIUsage.credits > 0),
                *([AIUsage.created_at >= since] if since else []))
         .group_by(AIUsage.user_id)
     )).all()
@@ -1692,6 +1691,7 @@ async def usage_stats(
         r.user_id: {
             "query_count": int(r.query_count or 0),
             "credits_used": int(r.credits_used or 0),
+            "pending_count": int(r.pending_count or 0),
             "last_query_at": r.last_query_at,
         }
         for r in rows
@@ -1716,6 +1716,7 @@ async def usage_stats(
                 "user_name": users.get(user_id, str(user_id)),
                 "query_count": row["query_count"],
                 "credits_used": row["credits_used"],
+                "pending_count": row["pending_count"],
                 "last_query_at": row["last_query_at"].isoformat() if row["last_query_at"] else None,
             }
             for user_id, row in ordered

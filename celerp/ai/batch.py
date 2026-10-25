@@ -3,8 +3,8 @@
 
 """AI batch processing - the extraction stage for attached receipts and invoices.
 
-A batch job reads 1 to MAX_BATCH_FILES files in parallel (at most
-BATCH_CONCURRENCY model calls at once). Each file gets its own model call that
+A batch job reads 1 to MAX_BATCH_FILES files in parallel, each inside a
+``documents`` slot of the one model gate (celerp.ai.jobs). Each file gets its own model call that
 returns a structured extraction. Nothing is written to the books here: the
 extractions feed the proposal step, and every document is created only after
 the user confirms it.
@@ -31,6 +31,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from celerp.ai import jobs
 from celerp.ai.files import load_file_for_llm
 from celerp.ai.llm import RelayError
 from celerp.ai.service import RunTally, ask_unattended
@@ -40,10 +41,6 @@ from ui.i18n import t
 
 log = logging.getLogger(__name__)
 
-# Keep file decoding/base64 residency aligned with the transport's process-wide
-# model-call concurrency. A larger batch semaphore only lets extra 10 MB files sit
-# expanded in memory while their model calls wait on the transport's three-call gate.
-BATCH_CONCURRENCY = 3
 MAX_BATCH_FILES = 100
 
 def interrupted_error() -> str:
@@ -130,17 +127,16 @@ async def _process_single_file(
     query: str,
     company_id: uuid.UUID,
     user_id: uuid.UUID,
-    semaphore: asyncio.Semaphore,
     job_id: uuid.UUID,
 ) -> dict:
     """Read one file through the model. Never raises; the result dict carries the outcome.
 
     The file is asked under an id of its own within the job (see ask_unattended).
 
-    File loading/base64 encoding happens inside the concurrency bound so a large
-    batch cannot hold every encoded attachment in memory at once.
+    File loading/base64 encoding happens inside the gate slot so a large batch
+    cannot hold every encoded attachment in memory at once.
     """
-    async with semaphore:
+    async with jobs.gate.slot("documents"):
         try:
             file = load_file_for_llm(file_id, company_id, user_id)
         except (FileNotFoundError, PermissionError):
@@ -234,7 +230,6 @@ async def run_batch(
         db_factory: Callable that returns an AsyncSession context manager.
         on_progress: Optional async callback(job_id, completed, failed, total, result).
     """
-    semaphore = asyncio.Semaphore(BATCH_CONCURRENCY)
     results: list[dict] = []
     conversation_id: uuid.UUID | None = None
     completed = 0
@@ -255,7 +250,7 @@ async def run_batch(
             await session.commit()
 
     tasks = [
-        _process_single_file(fid, query, company_id, user_id, semaphore, job_id)
+        _process_single_file(fid, query, company_id, user_id, job_id)
         for fid in file_ids
     ]
 
@@ -332,24 +327,6 @@ async def run_batch(
             await session.commit()
     except Exception:
         log.warning("Failed to create batch notification", exc_info=True)
-
-
-async def fail_interrupted_jobs(session: AsyncSession) -> int:
-    """Mark every pending or running job as failed. Returns how many were marked.
-
-    Runs at process start: a job can only run inside the process that started
-    it, so anything still pending or running at boot was lost to the restart.
-    """
-    rows = (await session.execute(
-        select(AIBatchJob).where(AIBatchJob.status.in_(("pending", "running")))
-    )).scalars().all()
-    now = datetime.now(timezone.utc)
-    for job in rows:
-        job.status = "failed"
-        job.error = interrupted_error()
-        job.completed_at = now
-        session.add(job)
-    return len(rows)
 
 
 async def get_batch_job(

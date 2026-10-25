@@ -28,6 +28,7 @@ async def get_quota_status() -> dict | None:
     ambiguity are returned as distinct sentinels so UI never turns transport
     state into a purchase decision.
     """
+    from celerp.ai import deadlines
     from celerp.services.cloud_entitlement import authenticated_request, stored_api_key, sync_existing_entitlement
     if settings.cloud_disconnected:
         return {"disconnected": True}
@@ -36,7 +37,7 @@ async def get_quota_status() -> dict | None:
     if not await stored_api_key():
         return None
     try:
-        response = await authenticated_request("GET", "/quota/ai/status", total_s=5.0)
+        response = await authenticated_request("GET", "/quota/ai/status", total_s=deadlines.QUOTA_READ_S)
     except Exception as exc:
         log.warning("Failed to fetch quota status: %s", exc)
         return {"unknown": True}

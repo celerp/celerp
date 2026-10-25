@@ -167,7 +167,8 @@ async def _verify_runtime_dependencies() -> None:
     from celerp.gateway.bootstrap import associate_partner_deployment
     from celerp.gateway import ensure_running, has_active_share
     from celerp.services import backup_scheduler
-    from celerp.ai.batch import fail_interrupted_jobs
+    from celerp.ai import jobs
+    from celerp.ai.usage import reconcile_usage_loop
     from celerp.ai.cleanup import run_cleanup_loop
     from celerp.services.session_tracker import run_jti_cleanup_loop
     from celerp.connectors.outbound_queue import (
@@ -186,7 +187,8 @@ async def _verify_runtime_dependencies() -> None:
         associate_partner_deployment,
         ensure_running,
         backup_scheduler.start,
-        fail_interrupted_jobs,
+        jobs.recover_on_start,
+        reconcile_usage_loop,
         run_cleanup_loop,
         run_jti_cleanup_loop,
         outbound_queue_loop,
@@ -558,20 +560,19 @@ async def _serve(_app: FastAPI, held):
         backup_scheduler.start()
         log.debug("Backup scheduler started")
 
-    # AI batch jobs cannot survive a restart: mark any left pending or running
-    # as failed so their owners are told to resend instead of waiting forever.
+    # AI jobs left by the last process are recovered first; only then does the
+    # usage reconcile loop start, so it never settles a step a job will resend.
     try:
-        from celerp.ai.batch import fail_interrupted_jobs
-        from celerp.db import LifecycleSessionLocal as _BatchSweepSession
-        async with _BatchSweepSession() as _sweep_session:
-            interrupted = await fail_interrupted_jobs(_sweep_session)
-            await _sweep_session.commit()
+        from celerp.ai import jobs
+        from celerp.db import LifecycleSessionLocal as _JobRecoverySession
+        interrupted = await jobs.recover_on_start(_JobRecoverySession)
         if interrupted:
-            logging.getLogger(__name__).warning(
-                "Marked %d interrupted AI batch job(s) as failed", interrupted
-            )
+            logging.getLogger(__name__).warning("Marked %d interrupted AI job(s) as failed", interrupted)
     except Exception:
-        logging.getLogger(__name__).exception("AI batch job sweep failed (non-fatal)")
+        logging.getLogger(__name__).exception("AI job recovery failed (non-fatal)")
+    from celerp.ai.usage import reconcile_usage_loop
+    from celerp.db import SessionLocal as _UsageSession
+    background.append(asyncio.create_task(reconcile_usage_loop(_UsageSession)))
 
     # Company migrations: finish interrupted starts, delete expired scans, mark runs whose
     # runner died with the last process as interrupted, and delete sources past retention.
