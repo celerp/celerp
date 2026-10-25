@@ -23,6 +23,8 @@ from urllib.parse import urlsplit, urlunsplit
 import httpx
 import pytest
 
+from boot_support import Supervised, wait_until_started
+
 pytestmark = pytest.mark.browser
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -79,25 +81,35 @@ def first_run_ui(tmp_path):
     # this environment; the subprocesses need the bundled modules, whose sinks the
     # migration writes through.
     module_dirs = ",".join(str(_REPO_ROOT / d) for d in ("default_modules", "premium_modules"))
+    # Its own config file, so the modules it turns on and its restart request are its own,
+    # not the file the rest of this run shares.
     env = {**os.environ, "DATABASE_URL": db_url, "API_URL": api_base, "CELERP_API_URL": api_base,
-           "MODULE_DIR": module_dirs, "CELERP_DATA_DIR": str(tmp_path / "data")}
-    procs = []
+           "MODULE_DIR": module_dirs, "CELERP_DATA_DIR": str(tmp_path / "data"),
+           "CELERP_CONFIG": str(tmp_path / "config.toml")}
+
+    def spawn():
+        procs = []
+        try:
+            for target, port in (("celerp.main:app", api_port), ("ui.app:app", ui_port)):
+                procs.append(subprocess.Popen(
+                    [sys.executable, "-m", "uvicorn", target, "--host", "127.0.0.1",
+                     "--port", str(port), "--log-level", "error"],
+                    cwd=_REPO_ROOT, env=env))
+                _wait_port(port)
+        except Exception:
+            for proc in procs:
+                proc.kill()
+            raise
+        return tuple(procs)
+
+    servers = None
     try:
-        for target, port in (("celerp.main:app", api_port), ("ui.app:app", ui_port)):
-            procs.append(subprocess.Popen(
-                [sys.executable, "-m", "uvicorn", target, "--host", "127.0.0.1",
-                 "--port", str(port), "--log-level", "error"],
-                cwd=_REPO_ROOT, env=env))
-            _wait_port(port)
+        servers = Supervised(spawn, tmp_path / ".restart_requested")
+        wait_until_started(api_base)
         yield f"http://127.0.0.1:{ui_port}"
     finally:
-        for proc in procs:
-            proc.terminate()
-        for proc in procs:
-            try:
-                proc.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                proc.kill()
+        if servers:
+            servers.stop()
         with admin.cursor() as cur:
             cur.execute(f'DROP DATABASE IF EXISTS "{db_name}" WITH (FORCE)')
         admin.close()

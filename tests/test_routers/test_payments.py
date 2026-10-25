@@ -9,6 +9,7 @@ import uuid
 
 import pytest
 from ui.i18n import t
+from test_helpers import doc_version
 
 
 async def _register(client, email: str | None = None) -> str:
@@ -1157,7 +1158,7 @@ async def test_bill_real_world_flow_blank_create_then_patch_lines(client):
 
     # Step 2: Patch line items (exactly as _celerpPersist JS does via /docs/{id}/lines UI route)
     lines = [{"description": "Service fee", "quantity": 1, "unit_price": 5885.0, "line_total": 5885.0}]
-    r = await client.patch(f"/docs/{bill_id}", headers=h, json={
+    r = await client.patch(f"/docs/{bill_id}", headers=h, json={"expected_version": await doc_version(client, h, bill_id), 
         "fields_changed": {
             "line_items": {"old": None, "new": lines},
             "subtotal": {"old": None, "new": 5885.0},

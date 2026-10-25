@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import struct
 import uuid
 import zipfile
 
@@ -120,6 +121,33 @@ def rezip(parts: dict[str, bytes]) -> bytes:
         for name, body in parts.items():
             zf.writestr(name, body)
     return buf.getvalue()
+
+
+def repacked(data: bytes, method: int, *, password: bool = False) -> bytes:
+    """The zip `data` with every file packed again with `method`, flagged as packed with a password
+    when `password` is set; an LZMA entry declares a 1 GiB dictionary."""
+    with zipfile.ZipFile(io.BytesIO(data)) as z:
+        parts = [(i.filename, z.read(i)) for i in z.infolist()]
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w", method) as z:
+        for name, body in parts:
+            z.writestr(name, body)
+    packed = bytearray(out.getvalue())
+    with zipfile.ZipFile(io.BytesIO(bytes(packed))) as z:
+        infos, central = z.infolist(), z.start_dir
+    for info in infos:
+        local = info.header_offset
+        if password:
+            struct.pack_into("<H", packed, local + 6, info.flag_bits | 0x1)
+        if method == zipfile.ZIP_LZMA:
+            start = local + 30 + int.from_bytes(packed[local + 26:local + 28], "little") + int.from_bytes(
+                packed[local + 28:local + 30], "little")
+            struct.pack_into("<I", packed, start + 5, 1024 ** 3)
+    while password and bytes(packed[central:central + 4]) == b"PK\x01\x02":
+        struct.pack_into("<H", packed, central + 8, struct.unpack_from("<H", packed, central + 8)[0] | 0x1)
+        n, e, c = struct.unpack_from("<HHH", packed, central + 28)
+        central += 46 + n + e + c
+    return bytes(packed)
 
 
 def manifest(data: bytes) -> dict:

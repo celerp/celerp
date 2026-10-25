@@ -132,6 +132,14 @@ def test_a_notice_asking_for_action_leads_the_bell_and_stands_out(page, ui_serve
     assert "notif-item--high" in (first.get_attribute("class") or "")
     news = page.locator("#notif-panel .notif-item", has_text=f"News 1 {tag}")
     assert "notif-item--high" not in (news.get_attribute("class") or "")
-    colour = first.evaluate("el => getComputedStyle(el).borderLeftColor")
-    plain = news.evaluate("el => getComputedStyle(el).borderLeftColor")
-    assert colour != plain, (colour, plain)
+    # The bell list re-renders whenever a notifications fetch lands (page load and the click both
+    # fetch), so both colours are read in one script from the list as it stands, not from nodes
+    # located earlier that a later render may have replaced.
+    page.wait_for_function("""() => {
+        const items = [...document.querySelectorAll('#notif-panel .notif-item')];
+        const high = items.find(el => el.classList.contains('notif-item--high'));
+        const plain = items.find(el => !el.classList.contains('notif-item--high'));
+        if (!high || !plain) return false;
+        const colour = el => getComputedStyle(el).borderLeftColor;
+        return colour(high) !== colour(plain);
+    }""", timeout=5000)

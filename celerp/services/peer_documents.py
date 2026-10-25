@@ -312,10 +312,10 @@ async def _add_taxes(session: AsyncSession, company: Company, incoming: dict, *,
     company does not have, at the sender's rate, with a notice; a tax of the same name
     is left as the receiving company keeps it."""
     from celerp.services.peer_journals import _notify
-    from celerp.tax_regimes import doc_side, side_taxes
+    from celerp.tax_regimes import doc_side, side_taxes, tax_entries
 
-    named = [tax for line in incoming.get("line_items") or [] for tax in line.get("taxes") or []]
-    named += list(incoming.get("doc_taxes") or [])
+    named = [tax for line in incoming.get("line_items") or [] for tax in tax_entries(line.get("taxes"))]
+    named += tax_entries(incoming.get("doc_taxes"))
     if not named:
         return
     company = await locked_company(session, company.id)

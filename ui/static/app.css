@@ -1976,6 +1976,9 @@ form:has(> #fa-preview:not(:empty)) ~ .empty-state-cta { display: none; }
 .doc-section--totals-compact { display: flex; flex-direction: column; align-items: flex-end; padding: 12px 0; }
 .section-divider { border: none; border-top: 1px solid var(--c-border); margin: 10px 0; }
 .total-panel { width: 100%; max-width: 320px; padding: 0; position: relative; }
+.total-pending-note { display: none; font-size: 12px; color: var(--c-text2); padding-top: 4px; }
+.total-panel--pending .total-pending-note { display: block; }
+.total-panel--pending .total-value { opacity: .6; }
 .total-row { display: flex; justify-content: space-between; align-items: center; padding: 3px 0; border-bottom: none; font-size: 13px; gap: 32px; }
 .total-row--final { border-top: 2px solid var(--c-border); padding-top: 6px; margin-top: 4px; }
 .total-label { color: var(--c-text2); white-space: nowrap; }

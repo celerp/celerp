@@ -9,6 +9,7 @@ from decimal import Decimal
 from celerp.services.document_lines import received_line_index
 from celerp.services.money import discount_from_inputs, document_line_amount, round_money, to_decimal, to_stored_float
 from celerp_docs.doc_constants import LEGACY_CONTACT_FIELDS
+from celerp_docs.doc_money import LIST_TOTAL_FIELDS, list_money, list_totals
 
 
 def _fold_legacy_list_contact(state: dict) -> None:
@@ -19,12 +20,9 @@ def _fold_legacy_list_contact(state: dict) -> None:
             state[canonical] = value
 
 
-def _recalc_list_totals(state: dict) -> dict:
-    """Recompute subtotal, discount_amount, tax_amount, total from line_items + header fields.
-
-    All monetary results are computed with Decimal and rounded to the list's currency precision
-    (never raw float) so totals never carry IEEE-754 tails like "346.50000000000006".
-    """
+def _legacy_list_totals(state: dict) -> dict:
+    """The totals a list event written before events carried them was given: tax on each line
+    before the header discount. Replay only, so a saved list keeps the totals it was saved with."""
     currency = state.get("currency")
     items = state.get("line_items", [])
 
@@ -33,15 +31,11 @@ def _recalc_list_totals(state: dict) -> dict:
 
     subtotal = round_money(sum((_li_amount(i) for i in items), to_decimal(0)), currency)
     state["subtotal"] = to_stored_float(subtotal)
-
-    # Always from the inputs: the stored discount_amount is this function's own previous output.
     discount_amount = discount_from_inputs(state, subtotal, currency)
     if discount_amount is None:
         raise ValueError("Discount must be a number")
     state["discount_amount"] = to_stored_float(discount_amount)
-
     taxable = subtotal - discount_amount
-    # Use per-line tax rates if present; fall back to header tax rate.
     per_line_tax = sum(
         (_li_amount(i) * to_decimal(i.get("tax_rate", 0) or 0) / 100 for i in items),
         to_decimal(0),
@@ -49,11 +43,77 @@ def _recalc_list_totals(state: dict) -> dict:
     if per_line_tax:
         tax_amount = round_money(per_line_tax, currency)
     else:
-        tax_rate = to_decimal(state.get("tax", 0) or 0)
-        tax_amount = round_money(taxable * tax_rate / 100, currency)
+        tax_amount = round_money(taxable * to_decimal(state.get("tax", 0) or 0) / 100, currency)
     state["tax_amount"] = to_stored_float(tax_amount)
     state["total"] = to_stored_float(round_money(taxable + tax_amount, currency))
     return state
+
+
+# The totals a recalculated list can restore (list.totals_recalculated). They belong to that list
+# alone: a list created from another one's state (duplicate, import) starts without them.
+RESTORE_POINT = "totals_before_recalc"
+
+
+def _list_fields(current: dict, event_type: str, data: dict) -> dict:
+    """A list with the fields of a list.created or list.updated applied, before its totals."""
+    if event_type == "list.created":
+        current.update({"entity_type": "list",
+                        **{k: v for k, v in data.items() if k not in ("totals", RESTORE_POINT)}})
+        _fold_legacy_list_contact(current)
+        current.setdefault("status", "draft")
+        current.setdefault("line_items", [])
+        current.setdefault("subtotal", 0.0)
+        current.setdefault("discount", 0.0)
+        current.setdefault("discount_type", "flat")
+        current.setdefault("tax", 0.0)
+        current.setdefault("total", 0.0)
+        return current
+    for field, change in data["fields_changed"].items():
+        if field == "currency" and current.get("currency") is not None and current.get("status") != "draft":
+            continue  # a List's currency is fixed once it leaves draft
+        current[LEGACY_CONTACT_FIELDS.get(field, field)] = change.get("new")
+    if "totals" in data and "line_items" in data:
+        current["line_items"] = data["line_items"]
+    return current
+
+
+def list_lines_and_totals(state: dict) -> tuple[list, dict]:
+    """A list's lines with their amounts and taxes, and its totals, by the document rule
+    (doc_money.list_money); the list itself is left untouched."""
+    currency = state.get("currency")
+    lines = [{**i, "line_total": to_stored_float(amount)}
+             if isinstance(i, dict) and (amount := document_line_amount(i, currency)) is not None
+             else deepcopy(i) for i in state.get("line_items") or []]
+    return lines, list_money(state, [i for i in lines if isinstance(i, dict)], currency)
+
+
+def with_list_totals(before: dict | None, event_type: str, data: dict) -> dict:
+    """The data a list.created or list.updated is written with: its own, plus the ``totals`` it
+    gives the list by the document rule (doc_money.list_money), with its lines' amounts and taxes
+    as that rule gives them. A write to a saved list that changes none of its money keeps the
+    totals the list holds, so saving one an earlier version totalled never re-totals it."""
+    after = _list_fields(deepcopy(before) if before is not None else {}, event_type, data)
+    lines, money = list_lines_and_totals(after)
+    if before is not None and list_totals(before) == list_totals(after):
+        return {**data, "totals": {k: before.get(k, money[k]) for k in LIST_TOTAL_FIELDS}}
+    data = {**data, "totals": money}
+    if event_type == "list.created":
+        data["line_items"] = lines
+    elif "line_items" in data["fields_changed"]:
+        data["fields_changed"] = {**data["fields_changed"],
+                                  "line_items": {**data["fields_changed"]["line_items"], "new": lines}}
+    elif lines != (before or {}).get("line_items"):
+        data["line_items"] = lines
+    return data
+
+
+def _apply_list_totals(current: dict, data: dict) -> dict:
+    """The totals the event carries, or for an event written before events carried them, the
+    totals the rule of that version gives (_legacy_list_totals)."""
+    if "totals" not in data:
+        return _legacy_list_totals(current)
+    current.update(data["totals"])
+    return current
 
 
 # A document in one of these statuses was never issued, or no longer stands: it holds no
@@ -597,23 +657,20 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         current.pop("fulfilled_by", None)
 
     # --- List events (entity_type="list") ---
-    elif event_type == "list.created":
-        current.update({"entity_type": "list", **data})
-        _fold_legacy_list_contact(current)
-        current.setdefault("status", "draft")
-        current.setdefault("line_items", [])
-        current.setdefault("subtotal", 0.0)
-        current.setdefault("discount", 0.0)
-        current.setdefault("discount_type", "flat")
-        current.setdefault("tax", 0.0)
-        current.setdefault("total", 0.0)
-        current = _recalc_list_totals(current)
-    elif event_type == "list.updated":
-        for field, change in data["fields_changed"].items():
-            if field == "currency" and current.get("currency") is not None and current.get("status") != "draft":
-                continue  # a List's currency is fixed once it leaves draft
-            current[LEGACY_CONTACT_FIELDS.get(field, field)] = change.get("new")
-        current = _recalc_list_totals(current)
+    elif event_type in ("list.created", "list.updated"):
+        current = _apply_list_totals(_list_fields(current, event_type, data), data)
+        if event_type == "list.updated":
+            current.pop(RESTORE_POINT, None)
+    elif event_type == "list.totals_recalculated":
+        # The current rule's totals for a list an earlier version totalled; what it held before
+        # stays with it until the user restores it or edits the list.
+        current[RESTORE_POINT] = data["previous"]
+        current["line_items"] = data["line_items"]
+        current.update(data["totals"])
+    elif event_type == "list.totals_restored":
+        current.pop(RESTORE_POINT, None)
+        current["line_items"] = data["line_items"]
+        current.update(data["totals"])
     elif event_type == "list.finalized":
         # draft -> finalized. Carries status + finalize milestone (sent_at / issued_at) and, for
         # audits, the frozen on-hand snapshot (line_items with l["on_hand"]).

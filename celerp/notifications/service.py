@@ -238,20 +238,19 @@ async def notify_once(
     i18n: dict | None = None,
 ) -> bool:
     """A high-priority notice told once to the company, or to the member ``user_id``: never
-    again to the same addressee with the same title and body, read or not. ``action_url``
-    and ``i18n`` as for ``create``. Caller commits. Returns whether it was created."""
-    already = (await session.execute(
-        select(Notification.id)
-        .where(
-            Notification.company_id == company_id,
-            Notification.category == category,
-            Notification.title == title,
-            Notification.body == body,
-            Notification.user_id == user_id if user_id is not None else Notification.user_id.is_(None),
-        )
-        .limit(1)
-    )).first()
-    if already:
+    again to the same addressee with the same title and body, read or not. A notice already
+    told takes ``action_url`` as its link, so the link follows the condition to where it is now.
+    ``action_url`` and ``i18n`` as for ``create``. Caller commits. Returns whether it was created."""
+    same = (
+        Notification.company_id == company_id,
+        Notification.category == category,
+        Notification.title == title,
+        Notification.body == body,
+        Notification.user_id == user_id if user_id is not None else Notification.user_id.is_(None),
+    )
+    if (await session.execute(select(Notification.id).where(*same).limit(1))).first():
+        await session.execute(update(Notification).where(*same, Notification.action_url.is_distinct_from(action_url))
+                              .values(action_url=action_url))
         return False
     await create(session, company_id, category, title, body, user_id=user_id, action_url=action_url,
                  priority="high", i18n=i18n)

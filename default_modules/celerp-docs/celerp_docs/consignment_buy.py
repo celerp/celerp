@@ -41,9 +41,9 @@ from celerp.models.projections import Projection
 from celerp.services.account_roles import consignor_of, is_consigned, lineage, new_lot_account, party_key
 from celerp.services.company_lock import lock_projections
 from celerp.services.lot_origin import RETIRED
-from celerp.services.money import allocate_pro_rata, round_money, to_decimal, to_stored_float
+from celerp.services.money import allocate_pro_rata, require_line_amount, round_money, to_decimal, to_stored_float
 from celerp_docs.doc_constants import LIFECYCLE_OWNED_FIELDS
-from celerp_docs.doc_money import UnratedTaxError, document_money
+from celerp_docs.doc_money import UnratedTaxError, document_money, refuse_unset_line_tax
 
 _EPS = Decimal("1e-9")
 
@@ -272,7 +272,7 @@ def _bill_lines(state: dict, kept: dict[int, Decimal], currency: str) -> tuple[l
                 changed = True
                 if qty <= _EPS:
                     continue
-                total = to_decimal(li.get("line_total") or 0) or ordered * to_decimal(li.get("unit_price") or 0)
+                total = require_line_amount(li, currency)
                 line["quantity"] = to_stored_float(qty)
                 if "quantity_received" in line:  # received and kept, never what the consignment received
                     line["quantity_received"] = line["quantity"]
@@ -387,6 +387,7 @@ async def buy_consignment(session, *, company_id, user_id, consignment_id: str, 
             "consignment.buy.nothing_kept",
             "Nothing received on this consignment is still held or sold, so there is nothing to buy. "
             "Receive the goods first."))
+    refuse_unset_line_tax(lines, state, source)  # the bill is born issued
     bill_id = f"doc:{ref}"
     # The bill starts its own lifecycle, as any conversion does: what went back to the consignor was
     # returned on the consignment, never on the bill, and the consignment's scan runs stay with it.
@@ -397,7 +398,7 @@ async def buy_consignment(session, *, company_id, user_id, consignment_id: str, 
         if to_decimal(state.get("discount") or 0) > 0 and state.get("discount_type") != "percentage":
             raise _cannot_recompute()
         try:
-            data.update(document_money(data, lines, currency, keep_unrated_tax=False))
+            data.update(document_money(data, lines, currency, keep_unrated_tax=False, stored=state))
         except UnratedTaxError as exc:
             raise _cannot_recompute() from exc
     # The bill is born issued, so it is finalized in its own right.

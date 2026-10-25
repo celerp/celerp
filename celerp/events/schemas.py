@@ -1312,16 +1312,43 @@ class SubExpired(BaseModel):
 # -----------------
 
 
+class ListTotals(BaseModel):
+    """The totals a list event gives the list, written with it (emit_event stamps it: doc_projections.with_list_totals)."""
+    subtotal: float
+    discount_amount: float
+    tax_amount: float
+    total: float
+
+
 class ListCreated(BaseModel):
     model_config = {"extra": "allow"}
     list_type: str | None = None
     ref_id: str | None = None
     contact_id: str | None = None
     status: str = "draft"
+    totals: ListTotals
 
 
 class ListUpdated(BaseModel):
+    model_config = {"extra": "allow"}
     fields_changed: dict[str, dict[str, Any]]
+    totals: ListTotals
+
+
+class ListTotalsRecalculated(BaseModel):
+    """A list an earlier version totalled, given the totals the document rule gives it; what it
+    held before rides along so it can be restored."""
+    fields_changed: dict[str, dict[str, Any]]
+    totals: ListTotals
+    line_items: list
+    previous: dict[str, Any]
+
+
+class ListTotalsRestored(BaseModel):
+    """A recalculated list given back the totals it held before."""
+    fields_changed: dict[str, dict[str, Any]]
+    totals: ListTotals
+    line_items: list
 
 
 class ListPatched(BaseModel):
@@ -1569,6 +1596,8 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "list.closed": ListClosed,
     "list.reopened": ListReopened,
     "list.voided": ListVoided,
+    "list.totals_recalculated": ListTotalsRecalculated,
+    "list.totals_restored": ListTotalsRestored,
 
     # Subscriptions
     "sub.created": SubCreated,

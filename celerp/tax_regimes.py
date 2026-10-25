@@ -8,8 +8,8 @@ Used to seed company.settings["taxes"] and company.settings["currency"]
 when a default location with a known country is first set.
 
 Each entry:
-  currency: str          — ISO 4217 code
-  taxes: list[dict]      — matches TaxRate schema in routers/companies.py
+  currency: str          ISO 4217 code
+  taxes: list[dict]      matches the TaxRate schema in routers/companies.py
 
 "_default" is the fallback for unknown/unset country.
 """
@@ -48,10 +48,17 @@ TAX_REGIMES: dict[str, _T] = {
     "MY": {
         "currency": "MYR",
         "taxes": [
-            {"name": "SST 6%", "rate": 6.0, "tax_type": "sales", "is_default": True,
-             "description": "Malaysia Sales and Service Tax", "is_compound": False, "default_order": 0},
+            {"name": "Sales Tax 10%", "rate": 10.0, "tax_type": "sales", "is_default": True,
+             "description": "Malaysia sales tax, standard rate", "is_compound": False, "default_order": 0},
+            {"name": "Sales Tax 5%", "rate": 5.0, "tax_type": "sales", "is_default": False,
+             "description": "Malaysia sales tax, reduced rate for listed goods",
+             "is_compound": False, "default_order": 0},
             {"name": "Service Tax 8%", "rate": 8.0, "tax_type": "sales", "is_default": False,
              "description": "Malaysia service tax (selected services)", "is_compound": False, "default_order": 0},
+            {"name": "Service Tax 6%", "rate": 6.0, "tax_type": "sales", "is_default": False,
+             "description": "Malaysia service tax on listed services such as food and drink, telecoms, "
+                            "logistics, parking and rentals",
+             "is_compound": False, "default_order": 0},
             {"name": "Exempt", "rate": 0.0, "tax_type": "both", "is_default": False,
              "description": "Tax-exempt", "is_compound": False, "default_order": 0},
         ],
@@ -73,7 +80,10 @@ TAX_REGIMES: dict[str, _T] = {
         "currency": "IDR",
         "taxes": [
             {"name": "PPN 11%", "rate": 11.0, "tax_type": "both", "is_default": True,
-             "description": "Indonesia VAT (PPN)", "is_compound": False, "default_order": 0},
+             "description": "12% on a base of 11/12 of the price, for goods that are not luxury goods",
+             "is_compound": False, "default_order": 0},
+            {"name": "PPN 12%", "rate": 12.0, "tax_type": "both", "is_default": False,
+             "description": "Luxury goods, on the full price", "is_compound": False, "default_order": 0},
             {"name": "Exempt", "rate": 0.0, "tax_type": "both", "is_default": False,
              "description": "PPN-exempt", "is_compound": False, "default_order": 0},
             {"name": "PPh 2%", "rate": -2.0, "tax_type": "purchase", "is_default": False,
@@ -85,6 +95,9 @@ TAX_REGIMES: dict[str, _T] = {
         "taxes": [
             {"name": "VAT 10%", "rate": 10.0, "tax_type": "both", "is_default": True,
              "description": "Vietnam standard VAT", "is_compound": False, "default_order": 0},
+            {"name": "VAT 8%", "rate": 8.0, "tax_type": "both", "is_default": False,
+             "description": "Reduced rate until 31 Dec 2026. Excluded sectors stay at 10%",
+             "is_compound": False, "default_order": 0},
             {"name": "VAT 5%", "rate": 5.0, "tax_type": "both", "is_default": False,
              "description": "Vietnam reduced VAT (essential goods)", "is_compound": False, "default_order": 0},
             {"name": "Exempt", "rate": 0.0, "tax_type": "both", "is_default": False,
@@ -152,7 +165,7 @@ TAX_REGIMES: dict[str, _T] = {
         "taxes": [
             # No federal VAT; state/local sales taxes vary. User must configure.
             {"name": "Sales Tax", "rate": 0.0, "tax_type": "sales", "is_default": True,
-             "description": "State/local sales tax — set rate for your jurisdiction",
+             "description": "State and local sales tax. Set the rate for your area",
              "is_compound": False, "default_order": 0},
             {"name": "Exempt", "rate": 0.0, "tax_type": "both", "is_default": False,
              "description": "Tax-exempt", "is_compound": False, "default_order": 0},
@@ -164,11 +177,11 @@ TAX_REGIMES: dict[str, _T] = {
             {"name": "GST 5%", "rate": 5.0, "tax_type": "both", "is_default": True,
              "description": "Canada federal GST", "is_compound": False, "default_order": 0},
             {"name": "PST", "rate": 0.0, "tax_type": "both", "is_default": False,
-             "description": "Provincial sales tax — set rate for your province",
+             "description": "Provincial sales tax. Set the rate for your province",
              "is_compound": False, "default_order": 1},
             {"name": "QST 9.975%", "rate": 9.975, "tax_type": "both", "is_default": False,
-             "description": "Quebec sales tax (compound — applies on GST-inclusive amount)",
-             "is_compound": True, "default_order": 1},
+             "description": "Quebec sales tax, charged on the price before GST",
+             "is_compound": False, "default_order": 1},
             {"name": "Exempt", "rate": 0.0, "tax_type": "both", "is_default": False,
              "description": "Tax-exempt", "is_compound": False, "default_order": 0},
         ],
@@ -177,12 +190,13 @@ TAX_REGIMES: dict[str, _T] = {
     "IN": {
         "currency": "INR",
         "taxes": [
-            {"name": "CGST 9%", "rate": 9.0, "tax_type": "both", "is_default": True,
+            {"name": "CGST 9%", "rate": 9.0, "tax_type": "both", "is_default": False,
              "description": "India central GST (standard rate split)", "is_compound": False, "default_order": 0},
-            {"name": "SGST 9%", "rate": 9.0, "tax_type": "both", "is_default": True,
+            {"name": "SGST 9%", "rate": 9.0, "tax_type": "both", "is_default": False,
              "description": "India state GST (standard rate split)", "is_compound": False, "default_order": 0},
-            {"name": "IGST 18%", "rate": 18.0, "tax_type": "both", "is_default": False,
-             "description": "India integrated GST (interstate)", "is_compound": False, "default_order": 0},
+            {"name": "IGST 18%", "rate": 18.0, "tax_type": "both", "is_default": True,
+             "description": "Integrated GST on sales between states. Within a state, 18% is charged as "
+                            "CGST 9% plus SGST 9%", "is_compound": False, "default_order": 0},
             {"name": "GST 5%", "rate": 5.0, "tax_type": "both", "is_default": False,
              "description": "India reduced GST rate", "is_compound": False, "default_order": 0},
             {"name": "Exempt", "rate": 0.0, "tax_type": "both", "is_default": False,
@@ -197,7 +211,7 @@ TAX_REGIMES: dict[str, _T] = {
             {"name": "消費税 10%", "rate": 10.0, "tax_type": "both", "is_default": True,
              "description": "Japan consumption tax (standard)", "is_compound": False, "default_order": 0},
             {"name": "消費税 8%", "rate": 8.0, "tax_type": "both", "is_default": False,
-             "description": "Japan consumption tax (reduced — food/drink)", "is_compound": False, "default_order": 0},
+             "description": "Japan consumption tax (reduced rate for food and drink)", "is_compound": False, "default_order": 0},
             {"name": "Exempt", "rate": 0.0, "tax_type": "both", "is_default": False,
              "description": "Tax-exempt", "is_compound": False, "default_order": 0},
         ],
@@ -208,14 +222,11 @@ TAX_REGIMES: dict[str, _T] = {
         "taxes": [
             {"name": "VAT 15%", "rate": 15.0, "tax_type": "both", "is_default": True,
              "description": "Ethiopia standard VAT", "is_compound": False, "default_order": 0},
-            {"name": "TOT 2%", "rate": 2.0, "tax_type": "sales", "is_default": False,
-             "description": "Turnover tax on goods (non-VAT-registered)", "is_compound": False, "default_order": 0},
-            {"name": "TOT 10%", "rate": 10.0, "tax_type": "sales", "is_default": False,
-             "description": "Turnover tax on services (non-VAT-registered)", "is_compound": False, "default_order": 0},
             {"name": "Exempt", "rate": 0.0, "tax_type": "both", "is_default": False,
              "description": "VAT-exempt", "is_compound": False, "default_order": 0},
-            {"name": "WHT 2%", "rate": -2.0, "tax_type": "purchase", "is_default": False,
-             "description": "Withholding tax on supply of goods", "is_compound": False, "default_order": 1},
+            {"name": "WHT 3%", "rate": -3.0, "tax_type": "purchase", "is_default": False,
+             "description": "Withholding on goods contracts above ETB 20,000 and services from ETB 10,000. "
+                            "30% when the supplier gives no TIN", "is_compound": False, "default_order": 1},
         ],
     },
     # ── Fallback ──────────────────────────────────────────────────────────
@@ -278,16 +289,122 @@ def taxes_for(taxes: list[dict], doc_type: str | None) -> list[dict]:
     return [x for x in taxes if (x.get("tax_type") or "both") in (side, "both")]
 
 
-def default_tax(taxes: list[dict], doc_type: str | None) -> dict | None:
-    """The tax a new line on a document of this type starts with: the company default, when it
-    applies to that side (a purchase document takes no sales-only tax, a sale no purchase-only one)."""
-    return next((x for x in taxes_for(taxes, doc_type) if x.get("is_default")), None)
+def default_line_taxes(taxes: list[dict], doc_type: str | None, *, doc: dict | None) -> list[dict] | None:
+    """The taxes list a new line starts with, whichever way it is added (scan, from items, append,
+    reorder, the editor). `doc` is the target document's stored state, None for a new one.
+
+    On a document with no document tax: every company default for the document's side with a
+    rate that is not zero, in list order (a company may hold two, such as CGST 9% and SGST 9%),
+    each as line_tax builds it. On a draft that already charges a tax as a whole, its taxation
+    stands: a new line takes the taxes its lines all carry (as line_tax_key), copied whole, never
+    a company default; a line saved with only a rate carries what legacy_line_taxes reads. When
+    they differ or there are none, None: the line carries no tax of its own until the user sets one
+    (the editor shows "--"); so does a line whose tax is itself still to be set or can't be read.
+    Stored taxes are never matched by name, so a tax renamed or changed in settings since is never
+    charged next to the one the document holds. The editor mirrors this live
+    (_celerpApplyDefaultTaxes in ui/routes/documents.py)."""
+    if doc and tax_entries(doc.get("doc_taxes")):
+        lines = [line for line in doc.get("line_items") or [] if isinstance(line, dict)]
+        carried = [None if line_tax_unset(line) else tax_entries(line.get("taxes"))
+                   or legacy_line_taxes(line, taxes, doc_type) for line in lines]
+        if not carried or None in carried or len({line_tax_key(each) for each in carried}) != 1:
+            return None
+        return [{**tax, "amount": 0} for tax in carried[0]]
+    return [line_tax(tax) for tax in taxes_for(taxes, doc_type)
+            if tax.get("is_default") and float(tax.get("rate") or 0)]
+
+
+def matching_tax(taxes: list[dict], code: str, rate: float) -> dict | None:
+    """The company tax a line charging *rate* under *code* is: the first in *taxes* at that rate
+    named *code*, or with no code the first at that rate when it is not zero."""
+    return next((tax for tax in taxes if float(tax.get("rate") or 0) == rate
+                 and (tax.get("name", "") == code if code else rate != 0)), None)
+
+
+def legacy_line_taxes(line: dict, taxes: list[dict], doc_type: str | None) -> list[dict] | None:
+    """The taxes a line with no taxes list charges through its ``tax_rate`` (and ``tax_code``),
+    as an older version and a CSV import with tax columns store them, and as the editor shows
+    them: the company tax it matches (matching_tax) as line_tax builds it, else its own code and
+    rate. No tax at a zero rate; None when the rate can't be read."""
+    try:
+        rate = float(line.get("tax_rate") or 0)
+    except (TypeError, ValueError):
+        return None
+    if not rate:
+        return []
+    code = line.get("tax_code") or ""
+    match = matching_tax(taxes_for(taxes, doc_type), code, rate)
+    if match is not None:
+        return [line_tax(match)]
+    return [{"code": code, "rate": rate, "amount": 0, "order": 0, "is_compound": False, "label": ""}]
+
+
+def set_new_line_taxes(line: dict, taxes: list[dict] | None) -> None:
+    """Give a new line the taxes default_line_taxes chose: each its own copy, or None (stored as
+    it is) when the user sets the line's tax. A line with no taxes to start with is left as built."""
+    if taxes is None:
+        line["taxes"] = None
+    elif taxes:
+        line["taxes"] = [dict(tax) for tax in taxes]
+
+
+def line_tax_unset(line: dict) -> bool:
+    """Whether a line's tax is still for the user to set: its ``taxes`` is stored as None
+    (set_new_line_taxes). It charges nothing until then, and the editor shows it as "--"."""
+    return "taxes" in line and line["taxes"] is None
+
+
+def line_tax(tax: dict) -> dict:
+    """A company tax as a line carries it: its name, rate, saved calculation order and whether
+    it is compound, with no amount yet."""
+    return {"code": tax.get("name"), "rate": float(tax["rate"]), "amount": 0,
+            "order": int(tax.get("default_order") or 0), "is_compound": bool(tax.get("is_compound")),
+            "label": ""}
+
+
+def line_tax_key(value) -> tuple:
+    """What a line's ``taxes`` value charges, for telling whether two lines carry the same taxes:
+    each tax's code, rate, order, compounding and label, amounts aside."""
+    return tuple((tax.get("code"), float(tax.get("rate") or 0), int(tax.get("order") or 0),
+                  bool(tax.get("is_compound")), tax.get("label") or "") for tax in tax_entries(value))
+
+
+def tax_entries(value) -> list[dict]:
+    """The taxes a stored ``doc_taxes`` or line ``taxes`` value holds: its tax objects when it
+    is a list, else none. Every write refuses another shape, so one stored by an older version
+    shows as no taxes on a page or printout rather than failing it; every path that recalculates
+    or rewrites money refuses it instead (unreadable_tax)."""
+    return [tax for tax in value if isinstance(tax, dict)] if isinstance(value, list) else []
+
+
+def tax_text(entry) -> str:
+    """A stored tax entry as text that names it: a tax object's code or label, anything else
+    as it is written, at most 60 characters."""
+    if isinstance(entry, dict):
+        entry = entry.get("code") or entry.get("label") or entry
+    return str(entry)[:60]
+
+
+def unreadable_tax(value) -> str | None:
+    """The first entry of a ``doc_taxes`` or line ``taxes`` value that is not a tax object, as
+    tax_text, or the whole value when it is not a list; None when it is absent or a list of
+    tax objects."""
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        return tax_text(value)
+    return next((tax_text(entry) for entry in value if not isinstance(entry, dict)), None)
 
 
 def _tax_name_key(name) -> str:
     """A tax name as a lookup key: the same name in another case or with spaces around it
     is the same tax."""
     return str(name or "").strip().casefold()
+
+
+def holds_tax(taxes: list[dict], name: str) -> bool:
+    """Whether the tax list holds a tax named ``name`` (as _tax_name_key)."""
+    return any(_tax_name_key(x.get("name")) == _tax_name_key(name) for x in taxes)
 
 
 def misplaced_tax(settings: dict, doc_type: str | None, applied: list[dict]) -> str | None:
@@ -310,3 +427,52 @@ def misplaced_tax(settings: dict, doc_type: str | None, applied: list[dict]) -> 
         if tax_side not in (side, "both"):
             return code or f"{rate:g}%"
     return None
+
+
+# Rows earlier seeds wrote that are no longer right. A company keeps the taxes it saved, so each
+# entry is told to the company as a notice (services/tax_seed_notice.py) and never changed for it.
+# An entry matches a tax list holding a row for each of its ``rows`` ("all") or for any one of them
+# ("any"); a row matches on its name (as _tax_name_key) and every other field given.
+RETIRED_SEED_ROWS: tuple[dict, ...] = (
+    {"id": "in-default-2025", "match": "all",
+     "rows": ({"name": "CGST 9%", "is_default": True}, {"name": "SGST 9%", "is_default": True})},
+    {"id": "et-wht-2025", "match": "any", "rows": ({"name": "WHT 2%", "rate": -2.0},)},
+    {"id": "et-tot-2025", "match": "any", "rows": ({"name": "TOT 2%"}, {"name": "TOT 10%"})},
+    {"id": "ca-qst-compound", "match": "any", "rows": ({"name": "QST 9.975%", "is_compound": True},)},
+    {"id": "my-sst-6", "match": "any", "rows": ({"name": "SST 6%", "rate": 6.0},)},
+)
+
+
+def _row_matches(row: dict, want: dict) -> bool:
+    """Whether a stored tax row is the retired row ``want`` describes."""
+    for field, value in want.items():
+        if field == "name":
+            if _tax_name_key(row.get("name")) != _tax_name_key(value):
+                return False
+        elif field == "rate":
+            try:
+                if float(row.get("rate") or 0) != value:
+                    return False
+            except (TypeError, ValueError):
+                return False
+        elif bool(row.get(field)) != value:
+            return False
+    return True
+
+
+def retired_seed_rows(settings: dict) -> list[dict]:
+    """The RETIRED_SEED_ROWS entries a company's saved tax lists still hold, in that order, each
+    ``{"id", "lists"}`` naming the lists ("sales", "purchase") it was found in. Only lists the
+    company saved are read: a purchasing list never saved is a copy of the sales list, not a
+    second place to find the same row. A list or row of the wrong shape holds nothing."""
+    saved = {"sales": settings.get("taxes"), "purchase": settings.get("purchasing_taxes")}
+    lists = {side: [r for r in rows if isinstance(r, dict)]
+             for side, rows in saved.items() if isinstance(rows, list)}
+    found = []
+    for entry in RETIRED_SEED_ROWS:
+        test = all if entry["match"] == "all" else any
+        sides = {side for side, rows in lists.items()
+                 if test(any(_row_matches(r, want) for r in rows) for want in entry["rows"])}
+        if sides:
+            found.append({"id": entry["id"], "lists": sides})
+    return found

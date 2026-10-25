@@ -9,7 +9,7 @@ from sqlalchemy import func, select
 
 from celerp.models.ledger import LedgerEntry
 from test_cost_restatement import _item, _merge
-from test_helpers import in_language
+from test_helpers import in_language, doc_version
 from test_receipt_accounting import _doc
 
 APP_OWNED = {"consignment_flag": "in", "status_doc_id": "doc:FAKE", "reserved_quantity": 2,
@@ -89,7 +89,7 @@ async def test_a_document_line_cannot_enter_app_owned_fields_as_attributes(clien
         bill = await _doc(client, auth, "bill", [_goods_line(goods)], total=100.0)
         before = await _events(session, auth)
         r = await client.patch(f"/docs/{bill}", headers=auth["headers"],
-                               json={"fields_changed": {"line_items": {"new": [line]}}})
+                               json={"expected_version": await doc_version(client, auth["headers"], bill), "fields_changed": {"line_items": {"new": [line]}}})
     _refused(r)
     assert await _events(session, auth) == before
 

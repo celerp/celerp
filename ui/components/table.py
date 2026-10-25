@@ -338,13 +338,22 @@ def date_range_filter(table_id: str, col: int, label: str) -> FT:
     )
 
 
+# Both funnel kinds open their panel under the button, kept inside the window, and keep it
+# there while it is open (followAnchor in the shell's client bundle).
+_FILTER_POP_JS = """
+  function placeFilterPop(pop,btn){var br=btn.getBoundingClientRect();
+    pop.style.top=(br.bottom+2)+'px';pop.style.left=Math.max(8,Math.min(br.left,window.innerWidth-8-pop.offsetWidth))+'px';}
+  function openFilterPop(pop,btn){pop.style.position='fixed';document.body.appendChild(pop);
+    placeFilterPop(pop,btn);followAnchor(pop,btn,function(){placeFilterPop(pop,btn);});}
+"""
+
 # Excel-style column filters: each `.colfilter` funnel (in a `filter_th`) opens a checkbox list of
 # the distinct values in its column (data-col = cell index). Filtering is client-side and instant;
 # multiple columns AND together; hidden rows get `.dp-row-hidden` and are de-selected. Per-table
 # state (WeakMap) so it works on any table on the page; resets when a table is re-rendered via htmx.
 COLUMN_FILTER_JS = """
 (function(){
-  if(window.__celerpColFilter)return;window.__celerpColFilter=true;
+  if(window.__celerpColFilter)return;window.__celerpColFilter=true;""" + _FILTER_POP_JS + """
   var state=new WeakMap();
   function active(t){if(!state.has(t))state.set(t,{});return state.get(t);}
   function rows(t){return Array.prototype.slice.call(t.querySelectorAll('tbody tr.data-row'));}
@@ -427,11 +436,7 @@ COLUMN_FILTER_JS = """
     var clear=document.createElement('button');clear.type='button';clear.className='colfilter-clear';clear.textContent=i18nClearFilter;
     clear.addEventListener('click',function(){delete a[col];closeAll();apply(t);});
     pop.appendChild(search);pop.appendChild(selAll);pop.appendChild(list);pop.appendChild(clear);
-    pop.style.position='fixed';
-    document.body.appendChild(pop);
-    var br=btn.getBoundingClientRect();
-    pop.style.top=(br.bottom+2)+'px';
-    pop.style.left=Math.max(8,Math.min(br.left,window.innerWidth-8-pop.offsetWidth))+'px';
+    openFilterPop(pop,btn);
     search.focus();
   }
   document.addEventListener('click',function(e){
@@ -511,7 +516,7 @@ def server_filter_th(label: str, param: str, options: list, selected=None, *, ce
 # is filtered across its whole dataset, not just the visible page. Reuses the .colfilter-pop styling.
 SERVER_FILTER_JS = """
 (function(){
-  if(window.__celerpSrvFilter)return;window.__celerpSrvFilter=true;
+  if(window.__celerpSrvFilter)return;window.__celerpSrvFilter=true;""" + _FILTER_POP_JS + """
   function closeAll(){var p=document.querySelector('.colfilter-pop');if(p)p.remove();}
   function build(btn){
     var param=btn.getAttribute('data-param');
@@ -551,9 +556,7 @@ SERVER_FILTER_JS = """
     clear.addEventListener('click',function(){go([]);});
     foot.appendChild(apply);foot.appendChild(clear);
     pop.appendChild(search);pop.appendChild(selAll);pop.appendChild(list);pop.appendChild(foot);
-    pop.style.position='fixed';document.body.appendChild(pop);
-    var br=btn.getBoundingClientRect();
-    pop.style.top=(br.bottom+2)+'px';pop.style.left=Math.max(8,Math.min(br.left,window.innerWidth-8-pop.offsetWidth))+'px';
+    openFilterPop(pop,btn);
     search.focus();
   }
   document.addEventListener('click',function(e){

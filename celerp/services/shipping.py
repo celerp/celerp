@@ -10,6 +10,8 @@ declared here so no surface can drift.
 """
 from __future__ import annotations
 
+from celerp.services.list_behavior import DRAFT
+
 SHIPPING_LIST_TYPE = "shipping_doc"
 
 # The 11 Incoterms 2020 codes - the full, closed set. Any-country shipments pick
@@ -59,17 +61,57 @@ def line_gross_weight(line: dict, item_state: dict, qty_is_weight: bool) -> tupl
         return None, ""
 
 
+def reads_item_customs(state: dict) -> bool:
+    """Whether a document's printout, share view and detail page read its items as they are now
+    (customs codes via customs_backfill, weights, measures, barcode): a draft does, and so does an
+    issued one whose lines were never saved with their items (``customs_saved``)."""
+    return state.get("status") == DRAFT or not state.get("customs_saved")
+
+
+# The item fields an issued customs document shows, saved on each linked line at Issue
+# (``item_at_issue``): customs codes, the per-unit gross weight, the lot's measures the
+# whole-lot fallback reads, and the barcode.
+ITEM_AT_ISSUE = "item_at_issue"
+_ITEM_AT_ISSUE_FIELDS = ("hs_code", "country_of_origin", "gross_weight", "gross_weight_unit", "sell_by",
+                         "quantity", "pieces", "weight", "weight_unit", "barcode")
+
+
+def item_at_issue(item_state: dict) -> dict:
+    """What an issued customs document keeps of a line's item, attributes lifted to the top
+    level the way the item reads flatten them (a core field is never overridden)."""
+    attributes = item_state.get("attributes") or {}
+    return {k: item_state.get(k, attributes.get(k)) for k in _ITEM_AT_ISSUE_FIELDS}
+
+
+def issued_item(line: dict, state: dict) -> dict | None:
+    """The item a line of ``state`` shows when the document keeps the item as it was at Issue,
+    else None: the caller reads the item as it is now."""
+    return None if reads_item_customs(state) else line.get(ITEM_AT_ISSUE)
+
+
 def customs_backfill(line: dict, item_state: dict) -> None:
     """Fill a line's customs fields from its catalog item when the line lacks them.
 
     The item is the durable home of HS code / country of origin; a line only
-    overrides it. Used by both print-enrichment paths (UI and share view).
+    overrides it. A draft's printout and share view read them from the item;
+    Issue saves them on the lines (celerp-docs, ``customs_saved``), so an issued
+    document keeps them; one not saved yet still reads them from the item.
+    ``item_state`` is the stored item or its flattened read: a field the item has no
+    column for (country of origin) is stored in its attributes.
     """
+    attributes = item_state.get("attributes") or {}
     for key in ("hs_code", "country_of_origin"):
         if not line.get(key):
-            v = item_state.get(key)
+            v = item_state.get(key) or attributes.get(key)
             if v:
                 line[key] = v
+
+
+def backfill_item_customs(line: dict, item_state: dict, state: dict) -> None:
+    """customs_backfill on a line of a shipping list *state* that reads its items' customs codes
+    (reads_item_customs). The one rule its page, printout and share view show them by."""
+    if state.get("list_type") == SHIPPING_LIST_TYPE and reads_item_customs(state):
+        customs_backfill(line, item_state)
 
 
 # Country names for the export/destination pickers (English short names - customs

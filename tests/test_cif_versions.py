@@ -37,7 +37,8 @@ async def _import(manifest) -> tuple[list[dict], object]:
 @pytest.mark.asyncio
 async def test_a_v1_manifest_generated_on_main_imports_unchanged():
     """manifest.json was written by the bundle schema as released; posted.json is
-    what the released bundle importer sent for it."""
+    what the bundle importer sends for it (a line's total as ``line_total``, the key
+    every reader takes)."""
     from celerp.importers.importer import load_manifest
 
     expected = json.loads((FIXTURE / "posted.json").read_text())

@@ -83,7 +83,9 @@ celerp = "celerp.cli:main"
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
-    "pytest-asyncio>=0.23",
+    # >=1.4: earlier releases left the main thread's loop unclosed after an async test, and a
+    # later sync test calling asyncio.run() dropped it, failing whichever test ran next.
+    "pytest-asyncio>=1.4",
     "pytest-cov>=5.0",
     "aiosqlite>=0.20",
     "faker>=24.0",

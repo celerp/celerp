@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Uplo
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session, sqlstate
@@ -53,6 +54,7 @@ from celerp.services.payment_terms import DEFAULT_PAYMENT_TERMS, company_payment
 from celerp.services.business_time import business_timezone
 from celerp.services.company_settings import BOOKS_KEYS, record_change, require_general
 from celerp.services.company_lock import lock_company, lock_company_for_deletion, locked_company
+from celerp.services.tax_seed_notice import reconcile_tax_seed_notices
 from ui.i18n import t
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
@@ -577,10 +579,24 @@ async def create_location(
         is_default=payload.is_default,
     )
     session.add(loc)
+    await _flush_location(session, payload.name)
     if payload.is_default:
         await _maybe_apply_regime(session, company_id, payload.address)
     await session.commit()
     return {"id": str(loc.id)}
+
+
+async def _flush_location(session: AsyncSession, name: str) -> None:
+    """Write a location's name now, refusing a name the company already uses with a message
+    naming it. Runs before any later query, which would otherwise flush the name first and
+    fail outside this check."""
+    try:
+        await session.flush()
+    except IntegrityError as exc:
+        await session.rollback()
+        if "uq_location_company_name" not in str(exc.orig):
+            raise
+        raise HTTPException(status_code=409, detail=t("company.err_location_name_taken", name=name))
 
 
 class LocationBatchImportRequest(BaseModel):
@@ -651,6 +667,7 @@ async def patch_location(
         raise HTTPException(status_code=404, detail=t("company.err_location_not_found"))
     if payload.name is not None:
         loc.name = payload.name
+        await _flush_location(session, payload.name)
     if payload.address is not None:
         loc.address = payload.address
     if payload.type is not None:
@@ -1309,6 +1326,7 @@ async def patch_taxes(
     settings = dict(company.settings)
     settings["taxes"] = [t.model_dump() for t in payload.taxes]
     company.settings = settings
+    await reconcile_tax_seed_notices(session, company_id, settings)
     await session.commit()
     return {"ok": True}
 
@@ -1380,6 +1398,7 @@ async def import_taxes_batch(
 
     settings["taxes"] = taxes
     company.settings = settings
+    await reconcile_tax_seed_notices(session, company_id, settings)
     await session.commit()
     return res
 
@@ -1603,6 +1622,7 @@ async def patch_purchasing_taxes(
     settings = dict(company.settings)
     settings["purchasing_taxes"] = [t.model_dump() for t in payload.taxes]
     company.settings = settings
+    await reconcile_tax_seed_notices(session, company_id, settings)
     await session.commit()
     return {"ok": True}
 
@@ -1646,6 +1666,7 @@ async def import_purchasing_taxes_batch(
     settings = dict(company.settings)
     settings["purchasing_taxes"] = taxes
     company.settings = settings
+    await reconcile_tax_seed_notices(session, company_id, settings)
     await session.commit()
     return res
 

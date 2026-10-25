@@ -11,6 +11,7 @@ import pytest
 from httpx import AsyncClient
 
 from celerp_docs.doc_constants import SHAREABLE_DOC_TYPES
+from ui.i18n import t
 
 
 # ---------------------------------------------------------------------------
@@ -752,6 +753,60 @@ async def test_import_recomputes_total_and_drops_unknown_fields(client: AsyncCli
     assert "injected_field" not in doc
 
 
+_VAT_7 = {"code": "VAT", "rate": 7.0, "amount": 7.0, "order": 0, "is_compound": False, "label": ""}
+
+
+# A Levy 5% an older version stored as plain text, or with a rate that is not a number.
+_LEVIES = ["Levy 5%", {"code": "Levy 5%", "rate": "five", "amount": 5.0}]
+
+
+@pytest.mark.parametrize("levy", _LEVIES)
+@pytest.mark.parametrize("where", ["doc_taxes", "taxes"])
+def test_a_shared_document_carries_a_tax_it_cannot_read_as_its_text(where, levy):
+    """A levy the totals cannot be computed from leaves in the bundle as its text, never dropped
+    or charged at another rate, so the recipient is told about it instead of receiving totals
+    without it."""
+    from celerp_docs.routes_share import _public_bundle_doc
+
+    line = {"description": "S", "quantity": 1, "unit_price": 100.0}
+    doc = {"doc_type": "invoice", "currency": "USD", "line_items": [line]}
+    (doc if where == "doc_taxes" else line)[where] = [_VAT_7, levy]
+    public = _public_bundle_doc(doc)
+    held = public["doc_taxes"] if where == "doc_taxes" else public["line_items"][0]["taxes"]
+    assert held == [_VAT_7, "Levy 5%"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("levy", _LEVIES)
+@pytest.mark.parametrize("where", ["doc_taxes", "taxes"])
+async def test_import_refuses_a_tax_it_cannot_read_naming_it(client: AsyncClient, where, levy):
+    tok = await _token(client)
+    line = {"description": "S", "quantity": 1, "unit_price": 100.0}
+    doc = {"doc_type": "invoice", "currency": "USD", "line_items": [line]}
+    (doc if where == "doc_taxes" else line)[where] = [_VAT_7, levy]
+    r = await _import(client, tok, doc)
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"] == t("documents.err_tax_unreadable_shared", tax="Levy 5%")
+
+
+@pytest.mark.asyncio
+async def test_a_shared_line_whose_tax_is_still_to_set_arrives_still_to_set(client: AsyncClient):
+    """A line whose tax the sender has not chosen yet ("--") is not received as a line taxed at
+    nothing: the recipient chooses its tax too."""
+    from celerp_docs.routes_share import _public_bundle_doc
+
+    doc = {"doc_type": "invoice", "currency": "USD",
+           "line_items": [{"description": "S", "quantity": 1, "unit_price": 100.0, "taxes": None},
+                          {"description": "T", "quantity": 1, "unit_price": 50.0, "taxes": [_VAT_7]}]}
+    assert [line.get("taxes", "absent") for line in _public_bundle_doc(doc)["line_items"]] == [None, [_VAT_7]]
+    tok = await _token(client)
+    r = await _import(client, tok, doc)
+    assert r.status_code == 302, r.text
+    received = (await client.get(r.headers["location"], headers=_h(tok))).json()["document"]
+    assert [line.get("taxes", "absent") for line in received["line_items"]][0] is None
+    assert (received["tax"], received["total"]) == (3.5, 153.5)
+
+
 @pytest.mark.asyncio
 async def test_import_rejects_unsupported_doc_type(client: AsyncClient):
     tok = await _token(client)
@@ -1165,6 +1220,30 @@ async def test_send_doc_failure_creates_failure_notification(client: AsyncClient
     assert calls["title"] == "Email to cust@shop.example failed"
     assert "quota" in calls["body"]
     assert calls["priority"] == "high"
+
+
+@pytest.mark.asyncio
+async def test_a_send_still_in_flight_is_held_until_it_ends(client: AsyncClient, monkeypatch):
+    """The delivery and its receipt run after the response, held as a background task so it
+    cannot be collected halfway, and shutdown or a test teardown can wait for it to finish."""
+    import asyncio
+    from celerp.services import background
+    release = asyncio.Event()
+
+    async def _slow_send(*a, **kw):
+        await release.wait()
+        return True, "delivered"
+
+    monkeypatch.setattr("celerp.services.email.send_email", _slow_send)
+    before = set(background._BG_TASKS)
+    tok = await _token(client)
+    entity_id = await _create_doc(client, tok)
+    r = await client.post(f"/docs/{entity_id}/send", json={"sent_to": "cust@shop.example"}, headers=_h(tok))
+    assert r.status_code == 200
+    in_flight = background._BG_TASKS - before
+    assert len(in_flight) == 1
+    release.set()
+    await asyncio.gather(*in_flight)
 
 
 @pytest.mark.asyncio

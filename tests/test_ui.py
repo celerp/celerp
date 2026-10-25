@@ -4626,7 +4626,7 @@ class TestListsCreateBlank:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("key", ["line.protected_held", "docs.some_other_refusal"])
     async def test_save_lines_refusal_returns_the_translated_reason(self, ui_client, key):
-        """A refused save answers 400 with the translated reason; the page puts the stored lines back
+        """A refused save answers with the refusal's own status and the translated reason; the page puts the stored lines back
         for every refusal (tests/test_browser/test_line_save_refusal.py)."""
         from ui.api_client import _api_error
         detail = {"message_key": key, "message": "Line 1 (W-1) holds reserved stock.", "params": {}}
@@ -4637,7 +4637,7 @@ class TestListsCreateBlank:
                 "/docs/doc:INV-2026-0001/lines",
                 json={"line_items": [], "subtotal": 0, "tax": 0, "total": 0},
             )
-        assert r.status_code == 400
+        assert r.status_code == 409
         assert r.json() == {"error": r.json()["error"]} and r.json()["error"]
 
     @pytest.mark.asyncio
@@ -4649,7 +4649,8 @@ class TestListsCreateBlank:
         submitted page's length when the body omits it) and expected_version the 6th."""
         mock = AsyncMock(return_value={"event_id": 42, "version": 42})
         ui_client.cookies.update(_authed())
-        with patch("ui.api_client.patch_list_line_page", create=True, new=mock):
+        with patch("ui.api_client.patch_list_line_page", create=True, new=mock), \
+                patch("ui.api_client.get_list", new=AsyncMock(return_value={"entity_id": "list:WO-1", "line_items": []})):
             r = await ui_client.post(
                 "/lists/list:WO-1/lines",
                 json={"line_items": [], "subtotal": 0, "tax": 0, "total": 0, "expected_version": 7},
@@ -5969,7 +5970,8 @@ class TestSplitCardLiveRefresh:
 
     @pytest.mark.asyncio
     async def test_advanced_panel_endpoint_get_item_failure(self, ui_client):
-        """When api.get_item raises, the endpoint returns 500 carrying the error detail."""
+        """When api.get_item raises, the endpoint answers with the API's status and its message
+        as plain text, which the page's error banner shows."""
         from ui.api_client import APIError
         ui_client.cookies.update(_authed())
         with (
@@ -5977,8 +5979,9 @@ class TestSplitCardLiveRefresh:
             patch("ui.api_client.get_company", new=AsyncMock(return_value={"settings": {}})),
         ):
             r = await ui_client.get("/api/items/gc:404/advanced-panel")
-        assert r.status_code == 500
-        assert "no such item" in r.text
+        assert r.status_code == 404
+        assert r.headers["content-type"].startswith("text/plain")
+        assert r.text == "no such item"
 
     @pytest.mark.asyncio
     async def test_advanced_panel_endpoint_split_preview_failure(self, ui_client):
@@ -12845,6 +12848,7 @@ class TestBulkActionsPhase6SendTo:
         "quantity": 1, "sell_by": "weight", "weight": 3.5, "weight_unit": "ct",
         "sale_price": 500, "attributes": {},
     }
+    _VAT7 = [{"name": "VAT", "rate": 7, "tax_type": "both", "is_default": True}]
     _PIECE_ITEM = {
         "entity_id": "item:p1", "sku": "JWL-002", "name": "Gold Ring",
         "quantity": 2, "sell_by": "piece",
@@ -12886,6 +12890,7 @@ class TestBulkActionsPhase6SendTo:
         mock_create = AsyncMock(return_value={"id": "doc:INV-001"})
         ui_client.cookies.update(_authed())
         with (
+            patch("ui.api_client.get_document_taxes", new=AsyncMock(return_value=self._VAT7)),
             patch("ui.api_client.get_item", new=AsyncMock(return_value=self._PIECE_ITEM)),
             patch("ui.api_client.create_doc", new=mock_create),
         ):
@@ -12900,6 +12905,9 @@ class TestBulkActionsPhase6SendTo:
         assert call_data["doc_type"] == "invoice"
         assert call_data["status"] == "draft"
         assert len(call_data["line_items"]) == 1
+        # The new line starts with the default tax; the document carries no document-level copy.
+        assert [x["code"] for x in call_data["line_items"][0]["taxes"]] == ["VAT"]
+        assert "doc_taxes" not in call_data
 
     @pytest.mark.asyncio
     async def test_docs_from_items_new_weight_uses_weight_as_qty(self, ui_client):
@@ -12912,6 +12920,7 @@ class TestBulkActionsPhase6SendTo:
         mock_create = AsyncMock(return_value={"id": "doc:INV-002"})
         ui_client.cookies.update(_authed())
         with (
+            patch("ui.api_client.get_document_taxes", new=AsyncMock(return_value=[])),
             patch("ui.api_client.get_item", new=AsyncMock(return_value=item)),
             patch("ui.api_client.create_doc", new=mock_create),
         ):
@@ -12936,6 +12945,7 @@ class TestBulkActionsPhase6SendTo:
         mock_create = AsyncMock(return_value={"id": "doc:INV-003"})
         ui_client.cookies.update(_authed())
         with (
+            patch("ui.api_client.get_document_taxes", new=AsyncMock(return_value=[])),
             patch("ui.api_client.get_item", new=AsyncMock(return_value=item)),
             patch("ui.api_client.create_doc", new=mock_create),
         ):
@@ -13379,12 +13389,14 @@ class TestSendToPurchaseOrder:
     }
     _UNITS = [{"name": "box", "label": "Box", "decimals": 0, "unit_type": "count"},
               {"name": "piece", "label": "Piece", "decimals": 0, "unit_type": "count"}]
+    _VAT7 = TestBulkActionsPhase6SendTo._VAT7
 
     @pytest.mark.asyncio
     async def test_send_to_new_po_builds_purchase_lines(self, ui_client):
         mock_create = AsyncMock(return_value={"id": "doc:PO-001"})
         ui_client.cookies.update(_authed())
         with (
+            patch("ui.api_client.get_document_taxes", new=AsyncMock(return_value=self._VAT7)),
             patch("ui.api_client.get_item", new=AsyncMock(return_value=self._PO_ITEM)),
             patch("ui.api_client.get_units", new=AsyncMock(return_value=self._UNITS)),
             patch("ui.api_client.create_doc", new=mock_create),
@@ -13399,8 +13411,9 @@ class TestSendToPurchaseOrder:
         payload = mock_create.call_args[0][1]
         assert payload["doc_type"] == "purchase_order"
         assert payload["purchase_kind"] == "inventory"
-        assert "doc_taxes" not in payload  # purchasing, not a sales doc
+        assert "doc_taxes" not in payload
         line = payload["line_items"][0]
+        assert [x["code"] for x in line["taxes"]] == ["VAT"]  # the default tax applies to both sides
         assert line["quantity"] == 2        # reorder_qty 24 / conversion 12
         assert line["unit_price"] == 120    # cost per PURCHASE unit = 10 x 12
         assert line["unit"] == "box"        # purchase unit, not sell unit
@@ -13412,6 +13425,7 @@ class TestSendToPurchaseOrder:
         mock_create = AsyncMock(return_value={"id": "doc:PO-002"})
         ui_client.cookies.update(_authed())
         with (
+            patch("ui.api_client.get_document_taxes", new=AsyncMock(return_value=[])),
             patch("ui.api_client.get_item", new=AsyncMock(return_value=item)),
             patch("ui.api_client.get_units", new=AsyncMock(return_value=self._UNITS)),
             patch("ui.api_client.create_doc", new=mock_create),
@@ -13430,6 +13444,7 @@ class TestSendToPurchaseOrder:
         existing = {"line_items": [{"description": "Old", "quantity": 1, "unit_price": 5}]}
         ui_client.cookies.update(_authed())
         with (
+            patch("ui.api_client.get_document_taxes", new=AsyncMock(return_value=[])),
             patch("ui.api_client.get_item", new=AsyncMock(return_value=self._PO_ITEM)),
             patch("ui.api_client.get_units", new=AsyncMock(return_value=self._UNITS)),
             patch("ui.api_client.get_doc", new=AsyncMock(return_value=existing)),
@@ -13476,6 +13491,7 @@ class TestSendToPurchaseOrder:
         ])
         ui_client.cookies.update(_authed())
         with (
+            patch("ui.api_client.get_document_taxes", new=AsyncMock(return_value=[])),
             patch("ui.api_client.get_item", new=_get_item),
             patch("ui.api_client.get_units", new=AsyncMock(return_value=self._UNITS)),
             patch("ui.api_client.create_doc", new=mock_create),
@@ -13532,6 +13548,7 @@ class TestSendToPurchaseOrder:
         ])
         ui_client.cookies.update(_authed())
         with (
+            patch("ui.api_client.get_document_taxes", new=AsyncMock(return_value=[])),
             patch("ui.api_client.get_item", new=_get_item),
             patch("ui.api_client.get_units", new=AsyncMock(return_value=self._UNITS)),
             patch("ui.api_client.create_doc", new=mock_create),
@@ -13566,6 +13583,7 @@ class TestSendToPurchaseOrder:
         ])
         ui_client.cookies.update(_authed())
         with (
+            patch("ui.api_client.get_document_taxes", new=AsyncMock(return_value=[])),
             patch("ui.api_client.get_item", new=_get_item),
             patch("ui.api_client.get_units", new=AsyncMock(return_value=self._UNITS)),
             patch("ui.api_client.create_doc", new=mock_create),
@@ -20966,7 +20984,7 @@ async def test_save_doc_lines_returns_reserved_conflicts(ui_client):
             "/docs/doc:INV-2026-0001/lines",
             json={"line_items": [], "subtotal": 0, "tax": 0, "total": 0},
         )
-    assert r.status_code == 400
+    assert r.status_code == 422
     body = r.json()
     assert "release it there first" in body["error"]
     assert body["reserved_conflicts"] == conflicts

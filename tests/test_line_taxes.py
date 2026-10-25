@@ -13,6 +13,7 @@ import pytest
 from fasthtml.common import to_xml
 
 from line_actions_support import h, state  # noqa: F401
+from test_helpers import doc_version
 
 _L0 = "11111111-1111-4111-8111-111111111111"
 
@@ -28,7 +29,7 @@ async def test_a_quantity_edit_recomputes_the_line_tax_amounts(client, h):
     assert lines[0]["taxes"][0]["amount"] == 14.5
     # The editor sends the stored taxes back as they are, old amount included.
     lines[0].update(quantity=6, line_total=174)
-    r = await client.patch(f"/docs/{d}", headers=h, json={"fields_changed": {
+    r = await client.patch(f"/docs/{d}", headers=h, json={"expected_version": await doc_version(client, h, d), "fields_changed": {
         "line_items": {"new": lines}, "subtotal": {"new": 174}, "tax": {"new": 17.4}, "total": {"new": 191.4}}})
     assert r.status_code == 200, r.text
     assert (await state(client, h, d))["line_items"][0]["taxes"][0]["amount"] == 17.4

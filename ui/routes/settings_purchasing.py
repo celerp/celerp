@@ -17,7 +17,7 @@ from ui.i18n import t
 
 from ui.routes.settings import _token, _check_permission, _taxes_tab, _terms_conditions_tab
 from ui.routes.settings_general import _section_breadcrumb
-from ui.routes.settings_sales import _numbering_tab
+from ui.routes.settings_sales import _numbering_content
 
 _PURCHASING_DOC_TYPES = frozenset({"purchase_order", "bill", "consignment_in"})
 
@@ -65,11 +65,7 @@ def setup_routes(app):
                 tc_templates = []
             content = _terms_conditions_tab(tc_templates, prefix="purchasing-terms-conditions", scope="purchasing")
         elif tab == "numbering":
-            try:
-                sequences = await api.get_doc_sequences(token)
-            except (APIError, Exception):
-                sequences = []
-            content = _numbering_tab([s for s in sequences if s.get("doc_type") in _PURCHASING_DOC_TYPES])
+            content = await _numbering_content(token, _PURCHASING_DOC_TYPES)
         else:
             content = _taxes_tab(purchasing_taxes, lang=lang, prefix="purchasing-taxes", import_path=None)
             tab = "taxes"

@@ -1476,5 +1476,14 @@
   },
   "PUT /manufacturing/items/{item_id}/workflow": {
     "path:item_id": "Identifier of the inventory item."
+  },
+  "GET /lists/{entity_id}/old-rule-total": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /lists/{entity_id}/recalculate-total": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /lists/{entity_id}/restore-total": {
+    "path:entity_id": "Identifier of the requested Celerp record."
   }
 }
