@@ -6742,6 +6742,21 @@ def _doc_tax_rows(doc: dict, currency: str, can_edit: bool) -> tuple[FT, FT]:
     return line_tax_rows, stored_tax_rows
 
 
+def _header_discount_row(doc: dict, discount: float, currency: str):
+    """The totals panel's whole-document discount row, or "" when there is none. A save puts
+    the server's row back in place of the page's estimate (_celerpShowStoredMoney)."""
+    if discount <= 0.005:
+        return ""
+    raw = float(doc.get("discount") or 0)
+    # doc.discount carries its trailing colon ("Discount:"); for the % variant build from the
+    # colon-less label.discount and re-add the colon after the percentage.
+    label = (f"{t('label.discount')} ({raw:g}%):"
+             if doc.get("discount_type") == "percentage" and raw else t("doc.discount"))
+    return Div(Span(label, cls="total-label"),
+               Span(f"-{fmt_money(discount, currency)}", id="doc-header-discount", cls="total-value"),
+               id="doc-header-discount-row", cls="total-row")
+
+
 def _doc_money(doc: dict) -> dict:
     """The stored money a document editor puts in place of its own figures after a line save
     (_celerpShowStoredMoney): the tax rows as HTML, the other figures formatted. A shipping
@@ -6753,7 +6768,7 @@ def _doc_money(doc: dict) -> dict:
     line_tax_rows, stored_tax_rows = _doc_tax_rows(doc, currency, doc.get("status") == "draft")
     return {"tax_rows_html": to_xml(line_tax_rows), "stored_tax_rows_html": to_xml(stored_tax_rows),
             "subtotal": fmt_money(float(doc.get("subtotal") or 0), currency),
-            "discount": f"-{fmt_money(float(doc.get('discount_amount') or 0), currency)}",
+            "discount_row_html": to_xml(_header_discount_row(doc, float(doc.get("discount_amount") or 0), currency)),
             "total": fmt_money(float((doc.get("subtotal") if customs else total) or 0), currency),
             "outstanding": fmt_money(float(_outstanding_value(doc) or 0), currency)}
 
@@ -9392,8 +9407,8 @@ function _celerpMoneyOn(root) {{
     const html = id => {{ const el = root.getElementById(id); return el ? el.outerHTML : null; }};
     const text = id => {{ const el = root.getElementById(id); return el ? el.textContent : null; }};
     return {{tax_rows_html: html('doc-tax-rows'), stored_tax_rows_html: html('doc-stored-tax-rows'),
-             subtotal: text('doc-subtotal'), discount: text('doc-header-discount'),
-             total: text('doc-total'), outstanding: text('doc-outstanding')}};
+             discount_row_html: html('doc-header-discount-row') || '',
+             subtotal: text('doc-subtotal'), total: text('doc-total'), outstanding: text('doc-outstanding')}};
 }}
 function _celerpShowStoredMoney(money) {{
     ['doc-tax-rows', 'doc-stored-tax-rows'].forEach(id => {{
@@ -9401,7 +9416,17 @@ function _celerpShowStoredMoney(money) {{
         const html = money[id === 'doc-tax-rows' ? 'tax_rows_html' : 'stored_tax_rows_html'];
         if (el && html != null) el.outerHTML = html;
     }});
-    [['doc-subtotal', 'subtotal'], ['doc-header-discount', 'discount'], ['doc-total', 'total'],
+    // The discount row is the server's too: the page's estimate drops it where the discount is
+    // not edited on the page (a list), and only the stored row can put it back.
+    const discRow = document.getElementById('doc-header-discount-row');
+    if (money.discount_row_html != null) {{
+        if (discRow) discRow.outerHTML = money.discount_row_html;
+        else if (money.discount_row_html) {{
+            const tax = document.getElementById('doc-tax-rows');
+            if (tax) tax.insertAdjacentHTML('beforebegin', money.discount_row_html);
+        }}
+    }}
+    [['doc-subtotal', 'subtotal'], ['doc-total', 'total'],
      ['doc-outstanding', 'outstanding']].forEach(([id, key]) => {{
         const el = document.getElementById(id);
         if (el && money[key]) el.textContent = money[key];
@@ -10366,10 +10391,6 @@ async function celerpCsvImport(input, entityId) {{
     # of an eligible money doc (sales + supplier order/bill); the discount row itself shows whenever
     # a discount is set (so it stays visible on a finalized doc too).
     _can_discount = is_draft and doc_type in _HEADER_DISCOUNT_DOC_TYPES and not pol["no_money"]
-    # doc.discount carries its trailing colon ("Discount:"); for the % variant build from the
-    # colon-less label.discount and re-add the colon after the percentage.
-    _disc_label = (f"{t('label.discount')} ({discount_raw:g}%):"
-                   if discount_type == "percentage" and discount_raw else t("doc.discount"))
 
     total_panel = Div(
         Div(Span(t("doc.subtotal"), cls="total-label"),
@@ -10378,9 +10399,7 @@ async function celerpCsvImport(input, entityId) {{
             Span(f"-{fmt_money(line_discount, currency)}", id="doc-line-discount", cls="total-value"), cls="total-row") if line_discount > 0.005 else "",
         Div(Span(t("documents.net_subtotal") if line_discount > 0.005 else t("doc.subtotal"), cls="total-label"),
             Span(fmt_money(subtotal, currency), id="doc-subtotal", cls="total-value"), cls="total-row"),
-        Div(Span(_disc_label, cls="total-label"),
-            Span(f"-{fmt_money(discount, currency)}", id="doc-header-discount", cls="total-value"),
-            id="doc-header-discount-row", cls="total-row") if discount > 0.005 else "",
+        _header_discount_row(doc, discount, currency),
         line_tax_rows,
         stored_tax_rows,
         Div(Span(t("doc.shipping"), cls="total-label"),
