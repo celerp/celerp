@@ -692,14 +692,6 @@
         "paid",
         "where"
       ]
-    },
-    "chip.paid": {
-      "en": "Paid",
-      "params": []
-    },
-    "modules.company_busy": {
-      "en": "Other work for your company is still being saved, so this change did not go ahead. Try again in a minute.",
-      "params": []
     }
   }
 }
