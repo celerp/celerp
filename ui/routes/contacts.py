@@ -23,7 +23,7 @@ from ui.components.shell import base_shell, info_tip, page_header, page_title
 from ui.components.table import search_bar, search_results, pagination, per_page_value, EMPTY, breadcrumbs, status_cards, empty_state_cta, fmt_money, format_value, add_new_option, data_table, column_manager
 from ui.components.notes import notes_tab as _shared_notes_tab, note_edit_form as _shared_note_edit_form
 from ui.components.files import files_error, files_error_block, files_section as _shared_files_section, files_session_expired, linked_files, _DOCUMENT_TAGS
-from celerp.services.doc_balance import awaiting_status_param, doc_value, settled_on
+from celerp.services.doc_balance import doc_value, settled_on
 from celerp.services.currencies import KNOWN_CURRENCY_CODES
 from ui.components.currency import currency_combobox_td
 from ui.components.phone import phone_input_td, phone_head_items as _phone_head_items
@@ -330,7 +330,7 @@ def _financial_summary(docs: list[dict], contact_id: str = "", invoice_totals: d
               href=f"/docs?type=invoice&all_issued=1{contact_filter}{ytd_filter}" if contact_id else ""),
         _card(t("th.outstanding"), _money("outstanding"),
               sub_label=t("contacts.open_credit", amount=_money("open_credit")) if totals.get("open_credit") else "",
-              href=(f"/docs?type=invoice&status_in={awaiting_status_param('invoice')}{contact_filter}&preset=all"
+              href=(f"/docs?type=invoice&awaiting_only=1{contact_filter}&preset=all"
                     if contact_id else "")),
         _card(t("contacts.avg_days_to_pay"), avg_dtp),
         # An unavailable figure shows as EMPTY rather than 0.00, which would wrongly read

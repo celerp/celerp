@@ -22,7 +22,10 @@ pytestmark = pytest.mark.asyncio
 
 _TERM = "Chipwalk"
 _TYPES = ("", "invoice", "quotation", "bill", "credit_note")
-_VIEWS = ("", "all_issued=1", "view=drafts", "status=void", "status_in=draft,sent", "converted_to_type=invoice")
+# Views that admit only drafts or voids: a typed list totals its rows there, whatever mix of the
+# two it admits.
+_UNISSUED_VIEWS = ("view=drafts", "status=void", "status_in=draft,void")
+_VIEWS = ("", "all_issued=1", *_UNISSUED_VIEWS, "status_in=draft,sent", "converted_to_type=invoice")
 # Chips that state an amount, and the documents each one may total.
 _RECEIVABLE = {"AR": "amount_outstanding", "Billed": "total", "Paid": "amount_paid"}
 
@@ -38,11 +41,13 @@ async def _doc(api, doc_type: str, contact: dict, total: float, steps=("finalize
     return doc["id"]
 
 
-async def _check_view(owner_ui, url: str, doc_type: str) -> tuple[str, ...]:
+async def _check_view(owner_ui, url: str, doc_type: str, view: str) -> tuple[str, ...]:
     """The chip labels of ``url``, after checking each money chip against the rows it lists."""
     r = await owner_ui.get(url)
     assert r.status_code == 200, (url, r.text[:300])
     chips = _summary_chips(r.text)
+    if doc_type and view in _UNISSUED_VIEWS:
+        assert "Total" in chips and not set(chips) & set(_RECEIVABLE), (url, chips)
     rows = []
     for doc_id in dict.fromkeys(re.findall(r'href="/docs/(doc:[^"/?#]+)"', r.text)):
         rows.append(await _ok(await owner_ui.api.get(f"/docs/{doc_id}")))
@@ -107,6 +112,6 @@ async def test_the_chips_of_a_view_never_change_with_its_rows(owner_ui, monkeypa
                 query = "&".join(p for p in (f"type={doc_type}" if doc_type else "", view,
                                              f"q={_TERM}", "preset=all", "per_page=500") if p)
                 for path in ("/docs/search", "/docs"):
-                    labels[f"{path}?{query}"].add(await _check_view(owner_ui, f"{path}?{query}", doc_type))
+                    labels[f"{path}?{query}"].add(await _check_view(owner_ui, f"{path}?{query}", doc_type, view))
     changed = {url: seen for url, seen in labels.items() if len(seen) != 1}
     assert not changed, changed

@@ -1588,7 +1588,6 @@
   "status.issued": "صادر",
   "status.overdue": "متأخر",
   "status.pro_forma": "فاتورة أولية",
-  "status.purchase_order": "أمر شراء",
   "status.unfulfilled": "لم يُنفَّذ",
   "th._of_revenue": "% من الإيرادات",
   "th.account": "حساب",

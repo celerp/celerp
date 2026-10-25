@@ -124,16 +124,16 @@ def is_awaiting_payment(doc_type: str | None, status: str | None) -> bool:
     return status in AWAITING_PAYMENT_STATUSES.get(doc_type, ())
 
 
+def is_paid_document(state: dict) -> bool:
+    """Whether a document of a type that awaits payment (``AWAITING_PAYMENT_STATUSES``) is paid in
+    full. A credit note settled by applying or refunding it also reads "paid", but nobody paid it."""
+    return state.get("status") == "paid" and state.get("doc_type") in AWAITING_PAYMENT_STATUSES
+
+
 def is_open_credit(state: dict) -> bool:
     """Whether a document is an issued credit note or supplier credit note with a balance
     still to apply or refund (``OPEN_CREDIT_STATUSES``, ``is_owed``)."""
     return state.get("status") in OPEN_CREDIT_STATUSES.get(state.get("doc_type"), ()) and is_owed(state)
-
-
-def awaiting_status_param(doc_type: str) -> str:
-    """The ``status_in`` list-filter value that lists the documents of ``doc_type`` awaiting
-    payment."""
-    return ",".join(sorted(AWAITING_PAYMENT_STATUSES[doc_type]))
 
 
 def is_overdue_document(state: dict, today: str) -> bool:

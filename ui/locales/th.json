@@ -1588,7 +1588,6 @@
   "status.issued": "ออกแล้ว",
   "status.overdue": "เกินกำหนด",
   "status.pro_forma": "ใบแจ้งหนี้เบื้องต้น",
-  "status.purchase_order": "ใบสั่งซื้อ",
   "status.unfulfilled": "ยังไม่จัดส่ง",
   "th._of_revenue": "% ของรายได้",
   "th.account": "บัญชี",

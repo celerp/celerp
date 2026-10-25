@@ -75,7 +75,7 @@ from celerp_contacts.references import (
 from celerp.output.document_context import prepare_document_output
 from celerp_docs.doc_constants import WRITEOFF_ACCOUNT_TYPES, INBOUND_DOC_TYPES, LEGACY_CONTACT_FIELDS, LIFECYCLE_OWNED_FIELDS, NON_FINANCIAL_DOC_TYPES, RESERVABLE_DOC_STATUSES, REVERTIBLE_STATUSES, SALES_PRICED_DOC_TYPES, SUPPLIER_RETURN_STATUSES, CREDIT_APPLICATION_METHODS, CONVERTIBLE_STATUSES
 from celerp.services.record_quantities import FULFILLABLE_STATUSES, QUOTATION_SPENT_STATUSES, RECEIVABLE_STATUSES, sent_out_by
-from celerp.services.doc_balance import DOC_FIELD_FALLBACKS, doc_value, is_awaiting_payment, is_open_credit, is_overdue_document, is_owed, outstanding_balance
+from celerp.services.doc_balance import DOC_FIELD_FALLBACKS, doc_value, is_awaiting_payment, is_open_credit, is_overdue_document, is_owed, is_paid_document, outstanding_balance
 from celerp.services.list_behavior import (
     DRAFT, FINALIZED, CLOSED, VOID, DEFAULT_LIST_TYPE, LIST_TYPES, SCAN_RUNS_FIELD, SUPPLIER_DOC_TYPES, ScanBehavior,
     behavior, scan_behavior, terminal_action, is_money_list,
@@ -979,6 +979,8 @@ class DocListFilters:
     q: str | None = None
     contact_id: str | None = None
     overdue_only: bool = False
+    awaiting_only: bool = False
+    paid_only: bool = False
     all_issued: bool = False
     unfulfilled_only: bool = False
     not_restocked: bool = False
@@ -1008,8 +1010,8 @@ _DOC_NUMERIC_SORT_FIELDS = frozenset({"total", "amount_outstanding"})
 
 def _doc_sql_where(company_id: str, f: DocListFilters) -> list:
     """The SQL WHERE for ``f`` (company scope included): every filter the DB can evaluate. The
-    multi-field filters (overdue_only, unfulfilled_only, not_restocked, not_stocked) are not
-    here; they run row by row (``_doc_filter``), and ``_doc_list_filter`` pairs the two."""
+    flag filters (``_doc_flag_rules``) are not here; they run row by row (``_doc_filter``), and
+    ``_doc_list_filter`` pairs the two."""
     id_list = [x.strip() for x in f.ids.split(",") if x.strip()] if f.ids else []
     if len(id_list) > MAX_IDS_FILTER:
         raise HTTPException(status_code=422, detail=t("documents.err_too_many_ids", max=MAX_IDS_FILTER))
@@ -1112,21 +1114,46 @@ def _doc_row(r: Projection, contact_name: str | None) -> dict:
 _DOC_FILTER_KEYS = ("doc_type", "status", "due_date", "amount_outstanding", "total", "fulfillment_status", "return_received_items", "received_items")
 
 
+def _doc_flag_rules(today: str) -> dict[str, Callable[[dict], bool]]:
+    """The rule each flag filter of the list selects a displayed row (``_doc_display``) by, on
+    ``today``. The list applies it (``_doc_filter``) and the summary counts it (``_doc_summary``)
+    with the same function, so a status card linked through a flag counts the rows it opens."""
+    def issued(x: dict) -> bool:
+        return x.get("status") not in (DRAFT, VOID)
+
+    return {
+        "overdue_only": lambda x: is_overdue_document(x, today),
+        "awaiting_only": lambda x: is_awaiting_payment(x.get("doc_type"), x.get("status")),
+        "paid_only": is_paid_document,
+        "unfulfilled_only": lambda x: issued(x) and x.get("status") != CLOSED and x.get("fulfillment_status") != "fulfilled",
+        "not_restocked": lambda x: issued(x) and not (x.get("return_received_items") or []),
+        "not_stocked": lambda x: issued(x) and not (x.get("received_items") or []),
+    }
+
+
+# Each flag filter's summary figures: the count key, and the receivable total (key, field) its
+# issued invoices add to, or None.
+_DOC_FLAG_FIGURES: dict[str, tuple[str, tuple[str, str] | None]] = {
+    "overdue_only": ("overdue_count", ("overdue", "amount_outstanding")),
+    "awaiting_only": ("awaiting_payment_count", ("awaiting_payment", "amount_outstanding")),
+    "paid_only": ("paid_count", ("paid", "total")),
+    "unfulfilled_only": ("unfulfilled_count", ("unfulfilled", "total")),
+    "not_restocked": ("not_restocked_count", None),
+    "not_stocked": ("not_stocked_count", None),
+}
+_DOC_FLAGS = tuple(_DOC_FLAG_FIGURES)
+
+
 async def _doc_filter(session: AsyncSession, company_id: str, f: DocListFilters):
-    """The filters that run row by row over displayed rows (``_doc_display``), as one predicate,
+    """The flag filters set on ``f`` (``_doc_flag_rules``) as one predicate over displayed rows,
     or None when none is set and every filter is in the SQL WHERE. The company's day is read only
-    when a filter needs it."""
-    checks = []
-    if f.overdue_only:
-        today = (await company_today(session, company_id)).isoformat()
-        checks.append(lambda x: is_overdue_document(x, today))
-    if f.unfulfilled_only:
-        checks.append(lambda x: x.get("status") not in ("draft", "void", "closed") and x.get("fulfillment_status") != "fulfilled")
-    if f.not_restocked:
-        checks.append(lambda x: x.get("status") not in ("draft", "void") and not (x.get("return_received_items") or []))
-    if f.not_stocked:
-        checks.append(lambda x: x.get("status") not in ("draft", "void") and not (x.get("received_items") or []))
-    return (lambda x: all(c(x) for c in checks)) if checks else None
+    when a filter is set."""
+    flags = [flag for flag in _DOC_FLAGS if getattr(f, flag)]
+    if not flags:
+        return None
+    rules = _doc_flag_rules((await company_today(session, company_id)).isoformat())
+    checks = [rules[flag] for flag in flags]
+    return lambda x: all(c(x) for c in checks)
 
 
 async def _doc_list_filter(session: AsyncSession, company_id: str, f: DocListFilters):
@@ -1140,8 +1167,7 @@ async def _doc_list_filter(session: AsyncSession, company_id: str, f: DocListFil
 # select; the summary's own figures count the rows the list shows, every filter applied.
 # An ids batch is split too: a card link keeps search, contact and dates only, so a card counts
 # the rows its link lands on.
-_DOC_SPLIT_FILTERS = ("status", "status_in", "exclude_status", "all_issued", "overdue_only",
-                      "unfulfilled_only", "not_restocked", "not_stocked", "converted_to_type", "ids")
+_DOC_SPLIT_FILTERS = ("status", "status_in", "exclude_status", "all_issued", *_DOC_FLAGS, "converted_to_type", "ids")
 _DOC_FILTER_DEFAULTS = {fl.name: fl.default for fl in _dc_fields(DocListFilters)}
 
 
@@ -1324,13 +1350,9 @@ def _doc_summary(states: list[dict], today: str, base_currency: str) -> dict:
     ), Decimal(0))
     count_by_status: dict[str, int] = {}
     total_by_status: dict[str, Decimal] = {}
+    rules = _doc_flag_rules(today)
+    flag_counts = dict.fromkeys(rules, 0)
     invoice_count = 0
-    awaiting_payment_count = 0
-    overdue_count = 0
-    paid_count = 0
-    unfulfilled_count = 0
-    not_restocked_count = 0
-    not_stocked_count = 0
     unvalued_count = 0
     invoice_unvalued_count = 0
 
@@ -1350,6 +1372,13 @@ def _doc_summary(states: list[dict], today: str, base_currency: str) -> dict:
             unvalued_count += 1
         else:
             total_by_status[st] += amounts["total"]
+        shown = _doc_display(state)
+        for flag, rule in rules.items():
+            if rule(shown):
+                flag_counts[flag] += 1
+                money = _DOC_FLAG_FIGURES[flag][1]
+                if money and dt == "invoice":
+                    add(money[0], amounts, money[1])
         if dt == "invoice":
             if st == "draft":
                 add("draft", amounts, "total")
@@ -1362,37 +1391,13 @@ def _doc_summary(states: list[dict], today: str, base_currency: str) -> dict:
             add("ar_gross", amounts, "total")
             add("ar_paid", amounts, "amount_paid")
             add("ar_outstanding", amounts, "amount_outstanding")
-            if state.get("fulfillment_status") != "fulfilled":
-                unfulfilled_count += 1
-                add("unfulfilled", amounts, "total")
-            if is_awaiting_payment(dt, st):
-                awaiting_payment_count += 1
-                add("awaiting_payment", amounts, "amount_outstanding")
-                if is_overdue_document(state, today):
-                    overdue_count += 1
-                    add("overdue", amounts, "amount_outstanding")
-                if st == "sent":
-                    add("sent", amounts, "amount_outstanding")
-            elif st == "paid":
-                paid_count += 1
-                add("paid", amounts, "total")
-        else:
-            if st in ("void", "draft"):
-                continue
+            if st == "sent":
+                add("sent", amounts, "amount_outstanding")
+        elif st not in ("void", "draft"):
             if dt == "memo":
                 add("memo", amounts, "total")
             if open_credit:
                 add("open_credit", amounts, "amount_outstanding")
-            if is_awaiting_payment(dt, st):
-                awaiting_payment_count += 1
-            if is_overdue_document(state, today):
-                overdue_count += 1
-            if dt == "credit_note":
-                if not (state.get("return_received_items") or []):
-                    not_restocked_count += 1
-            if dt == "bill":
-                if not (state.get("received_items") or []):
-                    not_stocked_count += 1
     money = {k: to_stored_float(round_money(v, base_currency)) for k, v in totals.items()}
     draft_count = count_by_status.get("draft", 0)
     total_rows = sum(count_by_status.values())
@@ -1404,11 +1409,9 @@ def _doc_summary(states: list[dict], today: str, base_currency: str) -> dict:
         "non_void_count": sum(v for k, v in count_by_status.items() if k not in ("void", "draft")),
         "all_issued_count": all_issued_count,
         "all_issued_total": money["ar_gross"],
-        "awaiting_payment_count": awaiting_payment_count,
+        **{count_key: flag_counts[flag] for flag, (count_key, _money) in _DOC_FLAG_FIGURES.items()},
         "awaiting_payment_total": money["awaiting_payment"],
-        "overdue_count": overdue_count,
         "overdue_total": money["overdue"],
-        "paid_count": paid_count,
         "paid_total": money["paid"],
         "sent_total": money["sent"],
         "draft_total": money["draft"],
@@ -1417,10 +1420,7 @@ def _doc_summary(states: list[dict], today: str, base_currency: str) -> dict:
         "ar_paid": money["ar_paid"],
         "ar_outstanding": money["ar_outstanding"],
         "invoice_count": invoice_count,
-        "unfulfilled_count": unfulfilled_count,
         "unfulfilled_total": money["unfulfilled"],
-        "not_restocked_count": not_restocked_count,
-        "not_stocked_count": not_stocked_count,
         "unvalued_count": unvalued_count,
         "invoice_unvalued_count": invoice_unvalued_count,
         "memo_all_total": money["memo"],

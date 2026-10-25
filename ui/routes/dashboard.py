@@ -19,7 +19,6 @@ from ui.components.start_options import start_options, supported_sources
 from ui.config import get_token as _token, get_role as _get_role
 from ui.components.table import fmt_money as _fmt_money
 from ui.i18n import t, get_lang
-from celerp.services.doc_balance import awaiting_status_param
 from celerp.services.permissions import role_has_permission as _role_has_permission
 from ui.routes.company_backup import SETTINGS as _RESTORE
 from ui.routes.migrations import COMPANY as _MIGRATE
@@ -28,7 +27,7 @@ from urllib.parse import urlencode as _urlencode
 
 # The invoice lists the receivables cards open: what is overdue, and what still awaits payment.
 _AR_OVERDUE_HREF = "/docs?type=invoice&overdue_only=1"
-_AR_OUTSTANDING_HREF = f"/docs?type=invoice&status_in={awaiting_status_param('invoice')}"
+_AR_OUTSTANDING_HREF = "/docs?type=invoice&awaiting_only=1"
 
 
 # ---------------------------------------------------------------------------
@@ -560,7 +559,7 @@ _DEFAULT_CONFIG: dict = {
         {"key": "inv_value",      "label": "Inventory (active)",  "value_fn": "active_items_count","sub_fn": "total_items_sub",      "href": "/inventory"},
         {"key": "cost_basis",     "label": "Cost Value",          "value_fn": "cost_total",        "sub_fn": "at_cost_sub",          "href": "/inventory", "permission": "view_inventory_costs"},
         {"key": "retail_value",   "label": "Retail Value",        "value_fn": "retail_total",      "sub_fn": "at_retail_sub",        "href": "/inventory"},
-        {"key": "ar_outstanding", "label": "AR Outstanding",      "value_fn": "ar_outstanding",    "sub_fn": "invoices_outstanding_sub","href": "/docs?type=invoice&status_in=final,sent,awaiting_payment,partial", "alert_fn": "ar_positive"},
+        {"key": "ar_outstanding", "label": "AR Outstanding",      "value_fn": "ar_outstanding",    "sub_fn": "invoices_outstanding_sub","href": _AR_OUTSTANDING_HREF, "alert_fn": "ar_positive"},
         {"key": "revenue_mtd",    "label": "Revenue MTD",         "value_fn": "revenue_mtd",       "sub_fn": None,                   "href": "/reports/sales?preset=this_month&group_by=customer"},
         {"key": "pos_pending",    "label": "POs Pending",         "value_fn": "pending_pos_count", "sub_fn": "ap_outstanding_sub",   "href": "/docs?type=purchase_order&status=draft"},
     ],

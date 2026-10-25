@@ -56,7 +56,7 @@ async def _documents(owner_ui, monkeypatch) -> dict:
         "line_items": [{"name": "Service", "quantity": 1, "unit_price": 70.0, "line_total": 70.0}],
         "total": 70.0}))
     await _ok(await api.post(f"/docs/{quote['id']}/convert", json={}))
-    return {"contact": contact, "ids": ids, "bill": bill["id"]}
+    return {"contact": contact, "ids": ids, "bill": bill["id"], "credit_note": cn["id"]}
 
 
 def _filters(made: dict) -> dict[str, dict]:
@@ -74,6 +74,8 @@ def _filters(made: dict) -> dict[str, dict]:
         "q": {"q": contact["name"]},
         "contact_id": {"contact_id": contact["id"]},
         "overdue_only": {"overdue_only": "1"},
+        "awaiting_only": {"awaiting_only": "1"},
+        "paid_only": {"paid_only": "1"},
         "all_issued": {"all_issued": "1"},
         "unfulfilled_only": {"unfulfilled_only": "1"},
         "not_restocked": {"not_restocked": "1"},
@@ -192,3 +194,68 @@ async def test_the_summary_refuses_the_sort_the_list_refuses(owner_ui, monkeypat
         for path in ("/docs", "/docs/summary", "/docs/export/csv"):
             r = await owner_ui.api.get(path, params=params)
             assert r.status_code == 422, (path, params, r.status_code)
+
+
+# Every document list that has status cards: all types, then each type.
+_CARD_LISTS = ("", "invoice", "bill", "credit_note", "debit_note", "quotation", "memo", "receipt",
+               "purchase_order", "production_order", "consignment_in")
+# The documents of _documents a card of each label must list, and those it must not.
+_CARD_MEANING = {
+    "Awaiting Payment": ({"sent", "partial", "bill"}, {"paid", "draft", "void", "credit_note"}),
+    "Paid": ({"paid"}, {"sent", "partial", "bill", "credit_note"}),
+    "Overdue": ({"overdue", "sent", "partial", "bill"}, {"paid", "draft", "void", "credit_note"}),
+    "Draft": ({"draft"}, {"sent", "void"}),
+    "Pro Forma": ({"draft"}, {"sent", "void"}),
+    "Void": ({"void"}, {"sent", "draft"}),
+    "All Issued": ({"sent", "partial", "paid", "overdue", "bill"}, {"draft", "void"}),
+}
+
+
+def _card_filter(href: str) -> tuple[tuple[str, str], ...]:
+    """The filters a card link sets beyond the list it is on (type, search, dates, page)."""
+    query = dict(p.split("=", 1) for p in href.split("?", 1)[1].split("&") if "=" in p)
+    return tuple(sorted((k, v) for k, v in query.items() if k not in ("type", "preset", "q", "from", "to")))
+
+
+async def test_a_card_label_means_one_rule_on_every_list(owner_ui, monkeypatch):
+    """Each status card counts the rows its link opens, its label names one filter on every list,
+    a typed list's card lists exactly the all-types card's documents of that type, and the card
+    of each label lists the documents its label says: a sent invoice, a partly paid invoice and
+    a supplier bill awaiting payment are all Awaiting Payment, wherever that card is shown."""
+    made = await _documents(owner_ui, monkeypatch)
+    api = owner_ui.api
+    partial = await _invoice(api, made["contact"], 300.0, issued=1)
+    await _ok(await api.post(f"/docs/{partial}/payment", json={
+        "amount": 100.0, "method": "cash", "payment_date": _day(1), "bank_account": "1111"}))
+    named = made["ids"] | {"partial": partial, "bill": made["bill"], "credit_note": made["credit_note"]}
+    assert (await _ok(await api.get(f"/docs/{partial}")))["status"] == "partial"
+    # The credit note was applied to its invoice when issued, so it reads "paid"; nobody paid it,
+    # so it is never a Paid document.
+    assert (await _ok(await api.get(f"/docs/{made['credit_note']}")))["status"] == "paid"
+    type_of = {d["id"]: d["doc_type"] for d in await _listed(api, {})}
+
+    listed: dict[tuple[str, str], set[str]] = {}
+    filters: dict[str, set[tuple]] = defaultdict(set)
+    for doc_type in _CARD_LISTS:
+        r = await owner_ui.get("/docs?" + urlencode({"type": doc_type, "preset": "all"}))
+        assert r.status_code == 200, (doc_type, r.status_code)
+        cards = _status_cards(r.text)
+        assert cards, doc_type
+        for label, count, href in cards:
+            landing = await owner_ui.get(href + "&per_page=500", follow_redirects=True)
+            assert landing.status_code == 200, (doc_type, href)
+            rows = _row_ids(landing.text)
+            assert count == len(rows), (doc_type, label, count, href)
+            listed[(doc_type, label)] = rows
+            filters[label].add(_card_filter(href))
+    assert {label: f for label, f in filters.items() if len(f) != 1} == {}
+    for (doc_type, label), rows in listed.items():
+        if doc_type and ("", label) in listed:
+            assert rows == {i for i in listed[("", label)] if type_of.get(i) == doc_type}, (doc_type, label)
+        must, never = _CARD_MEANING.get(label, (set(), set()))
+        for name in must:
+            if not doc_type or type_of[named[name]] == doc_type:
+                assert named[name] in rows, (doc_type, label, name)
+        for name in never & set(named):
+            assert named[name] not in rows, (doc_type, label, name)
+    assert ("", "Awaiting Payment") in listed and ("bill", "Awaiting Payment") in listed
