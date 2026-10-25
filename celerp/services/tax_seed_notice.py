@@ -25,7 +25,6 @@ from celerp.models.projections import Projection
 from celerp.notifications import service as notification_service
 from celerp.services.list_behavior import DRAFT, FINALIZED, is_money_list
 from celerp.services.migrations import is_company_migration_staged
-from celerp.services.money import round_money
 from celerp.tax_regimes import RETIRED_SEED_ROWS, retired_seed_rows
 from ui.i18n import t
 
@@ -55,30 +54,19 @@ async def reconcile_tax_seed_notices(session: AsyncSession, company_id, settings
 
 
 _LIST_NOTICE = "notice.list_tax_rule"
-_LIST_TOTALS = ("subtotal", "discount_amount", "tax_amount", "total")
-
-
-def _list_totals_differ(state: dict) -> bool:
-    """Whether a list's stored totals are not what the document rule gives its lines."""
-    from celerp_docs.doc_projections import _recalc_list_totals
-
-    currency = state.get("currency")
-    try:
-        derived = _recalc_list_totals({**state})
-    except (ArithmeticError, TypeError, ValueError):
-        return False
-    return any(round_money(state.get(k) or 0, currency) != round_money(derived[k], currency) for k in _LIST_TOTALS)
 
 
 async def reconcile_list_tax_notice(session: AsyncSession, company_id) -> None:
     """Tell the company which of its open lists (draft or issued) hold totals the document rule
     would change, by number; reads only, and clears the notice once none does. Caller commits."""
+    from celerp_docs.doc_money import list_totals_differ
+
     title = t(f"{_LIST_NOTICE}.title", "en")
     rows = (await session.execute(select(Projection.state).where(
         Projection.company_id == company_id, Projection.entity_type == "list",
         Projection.state["status"].as_string().in_((DRAFT, FINALIZED))))).scalars().all()
     refs = sorted(str(s.get("ref_id") or "") for s in rows
-                  if is_money_list(s.get("list_type")) and _list_totals_differ(s))
+                  if is_money_list(s.get("list_type")) and list_totals_differ(s))
     if not refs:
         await notification_service.clear_standing(session, company_id, _CATEGORY, title)
         return

@@ -220,6 +220,30 @@ def list_money(state: dict, lines: list[dict], currency: str) -> dict:
             "tax_amount": money["tax"], "total": money["total"]}
 
 
+LIST_TOTAL_FIELDS = ("subtotal", "discount_amount", "tax_amount", "total")
+
+
+def list_totals(state: dict) -> dict:
+    """The totals the document rule (list_money) gives a list as it stands, its lines untouched."""
+    lines = [dict(i) for i in state.get("line_items") or [] if isinstance(i, dict)]
+    return list_money(state, lines, state.get("currency"))
+
+
+def list_totals_differ(state: dict) -> tuple[str, str] | None:
+    """The total a list holds and the one the document rule gives it, as money text, when they
+    differ: a list an earlier version totalled by its own rule. None when they agree or the list
+    cannot be totalled."""
+    currency = state.get("currency")
+    try:
+        derived = list_totals(state)
+    except (ArithmeticError, TypeError, ValueError):
+        return None
+    held = {k: round_money(to_decimal(state.get(k) or 0), currency) for k in LIST_TOTAL_FIELDS}
+    if all(held[k] == round_money(derived[k], currency) for k in LIST_TOTAL_FIELDS):
+        return None
+    return str(held["total"]), str(round_money(derived["total"], currency))
+
+
 def _derived_money(state: dict, lines: list[dict], currency: str, *, keep_unrated_tax: bool,
                    stored: dict | None) -> dict:
     subtotal = round_money(

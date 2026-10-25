@@ -33,8 +33,9 @@ from celerp.modules.slots import fire_lifecycle
 from celerp.models.projections import Projection
 from celerp.inventory_codes import MAX_SCAN_CODE_LEN, PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES
 from celerp_docs.consignment_buy import bought_parcels, bought_receipt_lots, buy_consignment
-from celerp_docs.doc_money import document_money, money_from_lines, refuse_malformed_taxes, refuse_unset_line_tax
-from celerp_docs.doc_projections import UNISSUED_STATUSES, payment_status
+from celerp_docs.doc_money import (LIST_TOTAL_FIELDS, document_money, list_totals_differ, money_from_lines,
+                                   refuse_malformed_taxes, refuse_unset_line_tax)
+from celerp_docs.doc_projections import UNISSUED_STATUSES, list_lines_and_totals, payment_status, with_list_totals
 from celerp_docs.taxes import TaxApplication
 from celerp.services.field_schema import reject_system_item_fields
 from celerp.services.locations import require_company_location, require_ship_from
@@ -8158,7 +8159,16 @@ async def _get_list_for_update(session: AsyncSession, company_id, entity_id: str
     return row
 
 
+async def _list_event_data(session, company_id, entity_id, event_type, data) -> dict:
+    """The data a list.created or list.updated is written with (with_list_totals), from the list
+    as it stands."""
+    row = None if event_type == "list.created" else await session.get(Projection, (company_id, entity_id))
+    return with_list_totals(row.state if row is not None else None, event_type, data)
+
+
 async def _emit_list(session, company_id, entity_id, event_type, data, user, idem_key=None, meta=None):
+    if event_type in ("list.created", "list.updated"):
+        data = await _list_event_data(session, company_id, entity_id, event_type, data)
     return await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="list",
         event_type=event_type, data=data, actor_id=user.id, location_id=None,
@@ -9332,6 +9342,52 @@ async def revert_list_to_draft(
     return {"event_id": entry.id}
 
 
+def _total_change(state: dict, totals: dict) -> dict:
+    return {"total": {"old": state.get("total"), "new": totals["total"]}}
+
+
+@lists_router.post("/{entity_id}/recalculate-total")
+async def recalculate_list_total(
+    entity_id: str,
+    company_id: str = Depends(get_current_company_id),
+    _: None = require_permission("edit_documents"),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Give a list an earlier version totalled the totals the document rule gives it, as a
+    recorded change the user can undo (restore-total). A list that already agrees is left as is."""
+    row = await _get_list_for_update(session, company_id, entity_id)
+    state = row.state
+    if list_totals_differ(state) is None:
+        return {"event_id": None}
+    lines, totals = list_lines_and_totals(state)
+    entry = await _emit_list(session, company_id, entity_id, "list.totals_recalculated", {
+        "fields_changed": _total_change(state, totals), "totals": totals, "line_items": lines,
+        "previous": {"totals": {k: state.get(k) for k in LIST_TOTAL_FIELDS}, "line_items": state.get("line_items") or []},
+    }, user)
+    await session.commit()
+    return {"event_id": entry.id}
+
+
+@lists_router.post("/{entity_id}/restore-total")
+async def restore_list_total(
+    entity_id: str,
+    company_id: str = Depends(get_current_company_id),
+    _: None = require_permission("edit_documents"),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Give a recalculated list back the totals it held before, until it is next edited."""
+    row = await _get_list_for_update(session, company_id, entity_id)
+    previous = row.state.get("totals_before_recalc")
+    if not previous:
+        return {"event_id": None}
+    entry = await _emit_list(session, company_id, entity_id, "list.totals_restored", {
+        "fields_changed": _total_change(row.state, previous["totals"]), **previous}, user)
+    await session.commit()
+    return {"event_id": entry.id}
+
+
 @lists_router.post("/{entity_id}/void")
 async def void_list(
     entity_id: str,
@@ -9396,6 +9452,12 @@ async def convert_list(
                             detail=t("documents.err_list_convert_type"))
     if state.get("status") != FINALIZED:
         raise HTTPException(status_code=409, detail="Finalize the quotation before converting it")
+    if (differ := list_totals_differ(state)) is not None:
+        stored, current = differ
+        key = "documents.err_list_old_rule_total"
+        raise HTTPException(status_code=409, detail={
+            **refusal(key, t(key, stored=stored, current=current), stored=stored, current=current),
+            "code": "list_old_rule_total"})
 
     # Every hold of this list moves with the conversion, still for the same line (the new
     # document keeps the line ids): it is re-stamped to the new document first, so it is
@@ -9616,7 +9678,8 @@ async def import_list(
 
     entry = await emit_event(
         session, company_id=company_id, entity_id=body.entity_id, entity_type="list",
-        event_type="list.created", data=await _issued_import_data(session, company_id, body.data),
+        event_type="list.created",
+        data=with_list_totals(None, "list.created", await _issued_import_data(session, company_id, body.data)),
         actor_id=user.id, location_id=None,
         source=body.source, idempotency_key=body.idempotency_key,
         metadata_={"request": import_digest(body.entity_id, body.data),
@@ -9735,7 +9798,8 @@ async def batch_import_lists(
             await _assert_import_number_free(session, company_id, "list", rec.data)
             entry = await emit_event(
                 session, company_id=company_id, entity_id=rec.entity_id, entity_type="list",
-                event_type="list.created", data=await _issued_import_data(session, company_id, rec.data),
+                event_type="list.created",
+                data=with_list_totals(None, "list.created", await _issued_import_data(session, company_id, rec.data)),
                 actor_id=user.id, location_id=None,
                 source=rec.source, idempotency_key=rec.idempotency_key,
                 metadata_={"request": import_digest(rec.entity_id, rec.data),

@@ -39,8 +39,7 @@ from celerp.services.company_lock import lock_company
 from celerp.services.money import round_money, to_decimal
 from celerp.services.permissions import get_current_company_settings, require_permission
 from celerp.tax_regimes import tax_entries
-from celerp_docs.doc_money import line_tax_definition
-from celerp_docs.doc_projections import _recalc_list_totals
+from celerp_docs.doc_money import line_tax_definition, list_totals
 from ui.i18n import t
 
 ENTITY_TYPE = "received_document"
@@ -385,7 +384,7 @@ def unrepresentable(document: dict, target: BookTarget) -> str | None:
         return None
     currency = document.get("currency")
     total = _money(document.get("total"), currency)
-    list_total = _money(_recalc_list_totals(dict(managed_fields(document, target)))["total"], currency)
+    list_total = _money(list_totals(managed_fields(document, target))["total"], currency)
     if list_total == total:
         return None
     return t("documents.err_received_list_total", total=str(total), list_total=str(list_total))
