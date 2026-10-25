@@ -24,6 +24,18 @@ def _mark_unresolved(company_id: str, run_id: str) -> None:
         json.dumps({**state, "wip_unresolved": "books disagree"}), company_id, run_id)
 
 
+@pytest.fixture
+def value_beyond_stock_in_shared_company(api):
+    """What other browser tests can leave in the shared company: 10.00 on the components account
+    beyond any stock on hand, which the app refuses to reconcile a run's value against."""
+    r = api.post("/accounting/journal-entries", json={
+        "ts": "2026-03-10", "memo": "Value beyond stock",
+        "entries": [{"account": "1130-P", "debit": 10.0, "credit": 0}, {"account": "1111", "debit": 0, "credit": 10.0}],
+        "idempotency_token": uuid.uuid4().hex,
+    })
+    assert r.status_code == 200, r.text
+
+
 def _run_needing_reconciliation(api) -> tuple[str, str, str]:
     """A product, its issued run and the company, the run in the state an older release leaves
     it in when its history cannot prove the value of its materials (setup only: how a run
@@ -45,9 +57,9 @@ def _run_needing_reconciliation(api) -> tuple[str, str, str]:
     return product, run_id, company_id
 
 
-def test_a_run_needing_reconciliation_is_reconciled_on_its_page(page, ui_server, api):
+def test_a_run_needing_reconciliation_is_reconciled_on_its_page(page, ui_server, value_beyond_stock_in_shared_company, fresh_company):
     SHOTS.mkdir(parents=True, exist_ok=True)
-    product, run_id, _ = _run_needing_reconciliation(api)
+    product, run_id, _ = _run_needing_reconciliation(fresh_company)
 
     page.set_viewport_size({"width": 1440, "height": 1000})
     page.goto(f"{ui_server}/inventory/{product}?tab=manufacturing", wait_until="domcontentloaded")
@@ -67,11 +79,11 @@ def test_a_run_needing_reconciliation_is_reconciled_on_its_page(page, ui_server,
     page.wait_for_selector("#reconcile-panel .flash--success", timeout=10000)
     assert "The run can issue, return, receive and complete again." in page.inner_text("#reconcile-panel")
     assert page.evaluate("window.__stay") == 1
-    assert not api.get(f"/manufacturing/{run_id}").json().get("wip_unresolved")
+    assert not fresh_company.get(f"/manufacturing/{run_id}").json().get("wip_unresolved")
 
 
-def test_a_key_spent_on_another_action_is_replaced_so_the_user_can_send_again(page, ui_server, api):
-    _, run_id, company_id = _run_needing_reconciliation(api)
+def test_a_key_spent_on_another_action_is_replaced_so_the_user_can_send_again(page, ui_server, value_beyond_stock_in_shared_company, fresh_company):
+    _, run_id, company_id = _run_needing_reconciliation(fresh_company)
     key = "#reconcile-panel input[name='idempotency_key']"
     page.goto(f"{ui_server}/manufacturing/runs/{run_id}/reconcile", wait_until="domcontentloaded")
     page.wait_for_selector("#reconcile-panel form", timeout=10000)
@@ -95,4 +107,4 @@ def test_a_key_spent_on_another_action_is_replaced_so_the_user_can_send_again(pa
     page.fill("#reconcile-panel input[name='value']", "0")
     page.click("#reconcile-panel button[type='submit']")
     page.wait_for_selector("#reconcile-panel .flash--success", timeout=10000)
-    assert not api.get(f"/manufacturing/{run_id}").json().get("wip_unresolved")
+    assert not fresh_company.get(f"/manufacturing/{run_id}").json().get("wip_unresolved")
