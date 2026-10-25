@@ -444,7 +444,7 @@
   "chip.deleted": "Dihapus",
   "chip.available": "Tersedia",
   "chip.billed": "Ditagih",
-  "chip.paid": "Lunas",
+  "chip.paid": "Dibayar",
   "chip.not_in_totals": "{n} tidak termasuk total (tanpa kurs atau jumlah)",
   "chip.cost": "Biaya",
   "chip.expired": "Kedaluwarsa",
