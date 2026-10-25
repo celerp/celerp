@@ -326,10 +326,10 @@ async def test_the_paid_summary_chip_has_its_own_wording(monkeypatch):
 
 @pytest.mark.parametrize("status", ["draft", "void"])
 async def test_a_view_of_unissued_documents_states_their_count_and_total(owner_ui, monkeypatch, status):
-    """Drafts or voids alone hold no receivable, billing or payment, so the bar shows how many
-    rows the list holds and what they total, with or without a type, never money chips at 0.00
-    beside a count. A new company's drafts fill more than one page (50 rows): the bar and the
-    status card total all of them, not the page."""
+    """A drafts or voids view holds no receivable, billing or payment. A typed list shows how
+    many rows it holds and what they total; the all-types list counts them only, since its total
+    would add a quotation to invoices. A new company's drafts fill more than one page (50 rows):
+    the bar and the status card count and total all of them, not the page."""
     from urllib.parse import parse_qs, urlparse
 
     mark_running(monkeypatch, "celerp-docs")
@@ -355,14 +355,16 @@ async def test_a_view_of_unissued_documents_states_their_count_and_total(owner_u
         view = f"/docs?status=void&contact_id={contact['id']}&preset=all"
     page = await owner_ui.get(view)
     assert page.status_code == 200, page.text[:300]
-    assert _summary_chips(page.text) == {"Documents": "56", "Total": fmt_money(620.0, None)}, _summary_chips(page.text)
+    assert _summary_chips(page.text) == {"Documents": "56"}, _summary_chips(page.text)
     card = "Draft" if status == "draft" else "Void"
     # The card for the rows shown is the one marked.
     assert re.search(rf'status-card--active">\s*<span class="status-card-label">{card}<', page.text), card
-    assert re.search(rf'status-card-label">{card}</span>\s*<span class="status-card-count">56</span>\s*'
-                     rf'<span class="status-card-total">{re.escape(fmt_money(620.0, None))}<', page.text), card
+    assert re.search(rf'status-card-label">{card}</span>\s*<span class="status-card-count">56</span>\s*</', page.text), card
     typed = await owner_ui.get(view + "&type=invoice")
     assert _summary_chips(typed.text) == {"Invoices": "55", "Total": fmt_money(550.0, None)}, _summary_chips(typed.text)
+    typed_card = "Pro Forma" if status == "draft" else "Void"
+    assert re.search(rf'status-card-label">{typed_card}</span>\s*<span class="status-card-count">55</span>\s*'
+                     rf'<span class="status-card-total">{re.escape(fmt_money(550.0, None))}<', typed.text), typed_card
 
 
 async def test_a_view_with_issued_invoices_keeps_its_money_chips():

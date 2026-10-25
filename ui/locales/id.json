@@ -449,6 +449,7 @@
   "chip.cost": "Biaya",
   "chip.expired": "Kedaluwarsa",
   "chip.invoices": "Faktur",
+  "chip.issued_invoices": "Faktur terbit",
   "chip.retail": "Eceran",
   "chip.sold": "Terjual",
   "chip.total": "Total",

@@ -714,14 +714,15 @@ def _docs_content(state: dict[str, str], docs: list[dict], total_count: int, sum
     if state.get("ids") and not any(state.get(k) for k in _DATE_KEYS):
         cards_state["preset"] = "all"
     cards_base_url = "/docs?" + urlencode({"type": doc_type, **cards_state})
+    params = _doc_api_params(state, "", "", limit=None)
     return Div(
         _accounting_sync_filter(state),
-        _summary_bar(chips, doc_type, currency, lang),
+        _summary_bar(chips, doc_type, currency, lang, view=_doc_view_class(params)),
         _doc_status_cards(status, summary, currency, doc_type=doc_type, lang=lang,
                           status_in=state.get("status_in", ""), overdue_only=bool(state.get("overdue_only")),
                           unfulfilled_only=bool(state.get("unfulfilled_only")),
                           not_restocked=bool(state.get("not_restocked")), not_stocked=bool(state.get("not_stocked")),
-                          all_issued=_doc_api_params(state, "", "", limit=None).get("all_issued") == "1",
+                          all_issued=params.get("all_issued") == "1",
                           converted_to_type=state.get("converted_to_type", ""), base_url=cards_base_url),
         _doc_table(
             docs,
@@ -10616,9 +10617,11 @@ def _doc_status_cards(active_status: str, summary: dict | None = None, currency:
         ("paid", t("label.paid", lang), "green"),
         ("void", t("enum.doc_status.void", lang), "gray"),
     ]
+    # A typed list totals its documents by status; the all-types list only counts them, since a
+    # total there would add documents of different types and of both sides (receivable, payable).
     _tbs = _sm.get("total_by_status") or {}
     cards = [
-        {"label": label, "count": _cbs.get(s, 0), "total": _tbs.get(s, 0.0), "status": s, "color": color}
+        {"label": label, "count": _cbs.get(s, 0), "total": _tbs.get(s, 0.0) if doc_type else None, "status": s, "color": color}
         for s, label, color in _DEFAULT_CARDS
     ]
     cards.insert(3, {"label": t("status.overdue", lang), "count": _sm.get("overdue_count", 0), "total": None, "status": "overdue",
@@ -10628,36 +10631,83 @@ def _doc_status_cards(active_status: str, summary: dict | None = None, currency:
                         total_override=_sm.get("total_count", 0), currency=currency)
 
 
-def _summary_bar(summary: dict, doc_type: str = "", currency: str | None = None, lang: str = "en") -> FT:
-    # Totals leave out documents that cannot be valued in the company currency; say how many.
-    unvalued = summary.get("unvalued_count") or 0
-    unvalued_chip = Span(t("chip.not_in_totals", lang, n=unvalued), cls="val-chip val-chip--alert") if unvalued else None
-    # The summary covers the rows the list shows, so a list of one type counts every row of it,
-    # drafts and voids included where the list shows them. The money chips total issued invoices.
+# The chips above a document list, fixed per view: (type group, view class) -> chips. The view
+# class is what the list's status filter admits (_doc_view_class), so a view's chips never change
+# with the rows it holds. No money chip adds documents of different types or of the two sides
+# (receivable, payable): the receivable chips total issued invoices only, and a Total sums one
+# type's drafts or voids. The all-types list counts its rows and states the issued-invoice figures.
+_RECEIVABLE_CHIPS = ("ar", "billed", "paid")
+_DOC_CHIPS: dict[tuple[str, str], tuple[str, ...]] = {
+    ("all", "issued"): ("documents", "issued_invoices", *_RECEIVABLE_CHIPS),
+    ("all", "mixed"): ("documents", "issued_invoices", *_RECEIVABLE_CHIPS),
+    ("all", "drafts"): ("documents",),
+    ("all", "void"): ("documents",),
+    ("invoice", "issued"): (*_RECEIVABLE_CHIPS, "count"),
+    ("invoice", "mixed"): (*_RECEIVABLE_CHIPS, "count"),
+    ("invoice", "drafts"): ("count", "total"),
+    ("invoice", "void"): ("count", "total"),
+    ("typed", "issued"): ("count",),
+    ("typed", "mixed"): ("count",),
+    ("typed", "drafts"): ("count", "total"),
+    ("typed", "void"): ("count", "total"),
+    ("no_money", "issued"): ("count",),
+    ("no_money", "mixed"): ("count",),
+    ("no_money", "drafts"): ("count",),
+    ("no_money", "void"): ("count",),
+}
+
+
+def _doc_view_class(params: dict) -> str:
+    """The statuses a list query admits: "drafts", "void", "issued" (neither) or "mixed"."""
+    if params.get("all_issued"):
+        return "issued"
+    admitted = {params["status"]} if params.get("status") else set(filter(None, (params.get("status_in") or "").split(",")))
+    if not admitted:
+        return "mixed"  # every status but draft: issued and void
+    if admitted <= {"draft"}:
+        return "drafts"
+    if admitted <= {"void"}:
+        return "void"
+    return "mixed" if admitted & {"draft", "void"} else "issued"
+
+
+def _doc_chip_group(doc_type: str) -> str:
+    if not doc_type:
+        return "all"
+    if doc_type == "invoice":
+        return "invoice"
+    return "no_money" if doc_type in _NO_MONEY_DOC_TYPES else "typed"
+
+
+def _summary_bar(summary: dict, doc_type: str = "", currency: str | None = None, lang: str = "en",
+                 view: str = "mixed") -> FT:
+    """The chips _DOC_CHIPS names for the view, with the figures of the rows the list shows."""
+    kinds = _DOC_CHIPS[(_doc_chip_group(doc_type), view)]
     rows = (summary.get("total_count") or 0) + (summary.get("draft_count") or 0)
-    # Only show invoice-specific metrics when viewing invoices or all types
-    if doc_type and doc_type != "invoice":
-        return Div(
-            Span(t("documents.doc_type_count", type=doc_type_label(doc_type), count=rows), cls="val-chip"),
-            unvalued_chip,
-            cls="valuation-bar",
-        )
-    # Rows that hold no issued invoice (drafts, voids) have no receivable, billing or payment:
-    # the bar states their count and what they total, as their status cards do.
-    if rows and not summary.get("invoice_count"):
-        listed = sum(float(v or 0) for v in (summary.get("total_by_status") or {}).values())
-        return Div(
-            Span(f"{t('chip.invoices' if doc_type else 'page.documents', lang)}: {rows}", cls="val-chip"),
-            Span(f"{t('chip.total', lang)}: {fmt_money(listed, currency)}", cls="val-chip"),
-            unvalued_chip,
-            cls="valuation-bar",
-        )
+
+    def money(key: str) -> str:
+        return fmt_money(float(summary.get(key, 0) or 0), currency)
+
+    count_label = t("chip.invoices", lang) if doc_type == "invoice" else None
+    chips = {
+        "documents": lambda: Span(f"{t('page.documents', lang)}: {rows}", cls="val-chip"),
+        "issued_invoices": lambda: Span(f"{t('chip.issued_invoices', lang)}: {summary.get('invoice_count', 0)}", cls="val-chip"),
+        "count": lambda: Span(f"{count_label}: {rows}" if count_label else
+                              t("documents.doc_type_count", type=doc_type_label(doc_type), count=rows), cls="val-chip"),
+        "ar": lambda: Span(f"{t('chip.ar', lang)}: {money('ar_outstanding')}", cls="val-chip val-chip--alert"),
+        "billed": lambda: Span(f"{t('chip.billed', lang)}: {money('ar_total')}", cls="val-chip"),
+        "paid": lambda: Span(f"{t('chip.paid', lang)}: {money('ar_paid')}", cls="val-chip"),
+        "total": lambda: Span(f"{t('chip.total', lang)}: "
+                              f"{fmt_money(sum(float(v or 0) for v in (summary.get('total_by_status') or {}).values()), currency)}",
+                              cls="val-chip"),
+    }
+    # Totals leave out documents that cannot be valued in the company currency; say how many of
+    # the documents the shown totals cover.
+    unvalued = (summary.get("unvalued_count") if "total" in kinds
+                else summary.get("invoice_unvalued_count") if "ar" in kinds else 0) or 0
     return Div(
-        Span(f"{t('chip.ar', lang)}: {fmt_money(float(summary.get('ar_outstanding', 0) or 0), currency)}", cls="val-chip val-chip--alert"),
-        Span(f"{t('chip.billed', lang)}: {fmt_money(float(summary.get('ar_total', 0) or 0), currency)}", cls="val-chip"),
-        Span(f"{t('chip.paid', lang)}: {fmt_money(float(summary.get('ar_paid', 0) or 0), currency)}", cls="val-chip"),
-        Span(f"{t('chip.invoices', lang)}: {rows if doc_type else summary.get('invoice_count', 0)}", cls="val-chip"),
-        unvalued_chip,
+        *(chips[k]() for k in kinds),
+        Span(t("chip.not_in_totals", lang, n=unvalued), cls="val-chip val-chip--alert") if unvalued else None,
         cls="valuation-bar",
     )
 

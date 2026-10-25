@@ -449,6 +449,7 @@
   "chip.cost": "原価",
   "chip.expired": "期限切れ",
   "chip.invoices": "請求書",
+  "chip.issued_invoices": "発行済み請求書",
   "chip.retail": "小売",
   "chip.sold": "売却済み",
   "chip.total": "合計",

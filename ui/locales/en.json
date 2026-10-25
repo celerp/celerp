@@ -477,6 +477,7 @@
   "chip.cost": "Cost",
   "chip.expired": "Expired",
   "chip.invoices": "Invoices",
+  "chip.issued_invoices": "Issued invoices",
   "chip.retail": "Retail",
   "chip.sold": "Sold",
   "chip.total": "Total",

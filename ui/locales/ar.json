@@ -449,6 +449,7 @@
   "chip.cost": "التكلفة",
   "chip.expired": "منتهي الصلاحية",
   "chip.invoices": "الفواتير",
+  "chip.issued_invoices": "الفواتير الصادرة",
   "chip.retail": "التجزئة",
   "chip.sold": "مباع",
   "chip.total": "الإجمالي",

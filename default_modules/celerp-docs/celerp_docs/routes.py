@@ -1292,7 +1292,8 @@ async def get_doc_summary(
     (``_DOC_SPLIT_FILTERS``). One read of the rows serves both.
 
     Totals are in the company currency (``_doc_base_amounts``). A document that cannot be valued
-    there is left out of every total and counted in ``unvalued_count``. ``open_credit_total`` is
+    there is left out of every total and counted in ``unvalued_count`` (and, when it is an issued
+    invoice, in ``invoice_unvalued_count``). ``open_credit_total`` is
     what the open credit notes and supplier credit notes still have to apply or refund
     (``is_open_credit``, the rule the aging reports net them by). ``total_by_status`` totals the
     documents of every type by status. A sort the list refuses is refused here too."""
@@ -1331,6 +1332,7 @@ def _doc_summary(states: list[dict], today: str, base_currency: str) -> dict:
     not_restocked_count = 0
     not_stocked_count = 0
     unvalued_count = 0
+    invoice_unvalued_count = 0
 
     def add(key: str, amounts: dict[str, Decimal] | None, field: str) -> None:
         if amounts is not None:
@@ -1356,6 +1358,7 @@ def _doc_summary(states: list[dict], today: str, base_currency: str) -> dict:
                 add("void", amounts, "total")
                 continue
             invoice_count += 1
+            invoice_unvalued_count += amounts is None
             add("ar_gross", amounts, "total")
             add("ar_paid", amounts, "amount_paid")
             add("ar_outstanding", amounts, "amount_outstanding")
@@ -1419,9 +1422,11 @@ def _doc_summary(states: list[dict], today: str, base_currency: str) -> dict:
         "not_restocked_count": not_restocked_count,
         "not_stocked_count": not_stocked_count,
         "unvalued_count": unvalued_count,
+        "invoice_unvalued_count": invoice_unvalued_count,
         "memo_all_total": money["memo"],
         "open_credit_total": money["open_credit"],
-        "count_by_status": count_by_status,        "total_by_status": {k: to_stored_float(round_money(v, base_currency)) for k, v in total_by_status.items()},
+        "count_by_status": count_by_status,
+        "total_by_status": {k: to_stored_float(round_money(v, base_currency)) for k, v in total_by_status.items()},
     }
 
 

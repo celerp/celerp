@@ -452,6 +452,7 @@
   "chip.cost": "ወጪ ዋጋ",
   "chip.expired": "ጊዜው አልፏል",
   "chip.invoices": "የሽያጭ ደረሰኞች",
+  "chip.issued_invoices": "የተሰጡ የሽያጭ ደረሰኞች",
   "chip.retail": "ችርቻሮ",
   "chip.sold": "ተሽጧል",
   "chip.total": "ድምር",

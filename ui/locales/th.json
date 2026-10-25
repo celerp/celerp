@@ -449,6 +449,7 @@
   "chip.cost": "ต้นทุน",
   "chip.expired": "หมดอายุ",
   "chip.invoices": "ใบแจ้งหนี้",
+  "chip.issued_invoices": "ใบแจ้งหนี้ที่ออกแล้ว",
   "chip.retail": "ปลีก",
   "chip.sold": "ขายแล้ว",
   "chip.total": "ทั้งหมด",

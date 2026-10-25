@@ -449,6 +449,7 @@
   "chip.cost": "Kosten",
   "chip.expired": "Abgelaufen",
   "chip.invoices": "Rechnungen",
+  "chip.issued_invoices": "Ausgestellte Rechnungen",
   "chip.retail": "Einzelhandel",
   "chip.sold": "Verkauft",
   "chip.total": "Gesamt",

@@ -357,6 +357,7 @@ async def test_doc_summary_totals_are_in_the_company_currency(client, session):
     assert body["ar_total"] == 127.0
     assert body["ar_outstanding"] == 127.0
     assert body["unvalued_count"] == 1
+    assert body["invoice_unvalued_count"] == 1
     assert body["invoice_count"] == 4
 
 
@@ -379,9 +380,12 @@ def test_summary_bar_says_how_many_documents_are_left_out_of_the_totals():
     from fasthtml.common import to_xml
     from ui.routes.documents import _summary_bar
 
-    assert "2 not in the totals" in to_xml(_summary_bar({"unvalued_count": 2}, lang="en"))
-    assert "not in the totals" not in to_xml(_summary_bar({"unvalued_count": 0}, lang="en"))
-    assert "3 not in the totals" in to_xml(_summary_bar({"unvalued_count": 3}, doc_type="memo", lang="en"))
+    # The count covers the documents the shown totals add: issued invoices for the receivable
+    # chips, every listed row for a Total, none where the bar only counts.
+    assert "2 not in the totals" in to_xml(_summary_bar({"unvalued_count": 5, "invoice_unvalued_count": 2}, lang="en"))
+    assert "not in the totals" not in to_xml(_summary_bar({"unvalued_count": 5, "invoice_unvalued_count": 0}, lang="en"))
+    assert "3 not in the totals" in to_xml(_summary_bar({"unvalued_count": 3}, doc_type="memo", lang="en", view="drafts"))
+    assert "not in the totals" not in to_xml(_summary_bar({"unvalued_count": 3}, doc_type="memo", lang="en"))
 
 
 @pytest.mark.asyncio
