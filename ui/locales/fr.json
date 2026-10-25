@@ -6519,5 +6519,8 @@
   "documents.list_old_rule_notice": "Le total de ce devis a été calculé selon l’ancienne règle d’arrondi : {stored}. La règle actuelle donne {current}. Recalculez le total pour appliquer la règle actuelle. Vous pourrez ensuite rétablir le total précédent.",
   "documents.btn_recalculate_total": "Recalculer le total",
   "documents.list_total_recalculated": "Total recalculé de {old} à {new}.",
-  "documents.btn_restore_total": "Rétablir le total précédent"
+  "documents.btn_restore_total": "Rétablir le total précédent",
+  "docs.list_issue_before_send": "Émettez la liste avant de l'envoyer.",
+  "documents.marked_as_sent": "Marqué comme envoyé.",
+  "documents.sent_marker_cleared": "Marque « envoyé » retirée."
 }

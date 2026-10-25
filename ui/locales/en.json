@@ -6519,5 +6519,8 @@
   "event.fa.check.removed": "Fixed asset check removed",
   "modules.turn_on": "Turn on",
   "nav.my_assets": "My assets",
-  "connectors.order_changed_in_woocommerce": "This order changed in WooCommerce. Select Try again to review the change."
+  "connectors.order_changed_in_woocommerce": "This order changed in WooCommerce. Select Try again to review the change.",
+  "docs.list_issue_before_send": "Issue the list before sending it.",
+  "documents.marked_as_sent": "Marked as sent.",
+  "documents.sent_marker_cleared": "Sent marker cleared."
 }

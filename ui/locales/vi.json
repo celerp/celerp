@@ -6519,5 +6519,8 @@
   "documents.list_old_rule_notice": "Tổng báo giá này được tính theo quy tắc làm tròn trước đây: {stored}. Theo quy tắc hiện tại, tổng là {current}. Hãy tính lại tổng để áp dụng quy tắc hiện tại. Sau đó, bạn có thể khôi phục tổng cũ.",
   "documents.btn_recalculate_total": "Tính lại tổng",
   "documents.list_total_recalculated": "Đã tính lại tổng từ {old} thành {new}.",
-  "documents.btn_restore_total": "Khôi phục tổng trước đó"
+  "documents.btn_restore_total": "Khôi phục tổng trước đó",
+  "docs.list_issue_before_send": "Hãy phát hành danh sách trước khi gửi.",
+  "documents.marked_as_sent": "Đã đánh dấu là đã gửi.",
+  "documents.sent_marker_cleared": "Đã bỏ dấu đã gửi."
 }

@@ -6519,5 +6519,8 @@
   "documents.list_old_rule_notice": "حُسب إجمالي عرض السعر هذا وفق قاعدة التقريب السابقة: {stored}. وتعطي القاعدة الحالية {current}. أعد حساب الإجمالي لاستخدام القاعدة الحالية. ويمكنك استعادة الإجمالي السابق بعد ذلك.",
   "documents.btn_recalculate_total": "إعادة حساب الإجمالي",
   "documents.list_total_recalculated": "أُعيد حساب الإجمالي من {old} إلى {new}.",
-  "documents.btn_restore_total": "استعادة الإجمالي السابق"
+  "documents.btn_restore_total": "استعادة الإجمالي السابق",
+  "docs.list_issue_before_send": "أصدر القائمة قبل إرسالها.",
+  "documents.marked_as_sent": "تم وضع علامة «تم الإرسال».",
+  "documents.sent_marker_cleared": "تمت إزالة علامة «تم الإرسال»."
 }

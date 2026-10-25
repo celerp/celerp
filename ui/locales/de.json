@@ -6519,5 +6519,8 @@
   "documents.list_old_rule_notice": "Die Gesamtsumme dieses Angebots wurde nach der früheren Rundungsregel berechnet: {stored}. Nach der aktuellen Regel ergibt sich {current}. Berechnen Sie die Gesamtsumme neu, um die aktuelle Regel anzuwenden. Anschließend können Sie die vorherige Summe wiederherstellen.",
   "documents.btn_recalculate_total": "Gesamtsumme neu berechnen",
   "documents.list_total_recalculated": "Gesamtsumme von {old} auf {new} neu berechnet.",
-  "documents.btn_restore_total": "Vorherige Gesamtsumme wiederherstellen"
+  "documents.btn_restore_total": "Vorherige Gesamtsumme wiederherstellen",
+  "docs.list_issue_before_send": "Stellen Sie die Liste aus, bevor Sie sie senden.",
+  "documents.marked_as_sent": "Als gesendet markiert.",
+  "documents.sent_marker_cleared": "Markierung „gesendet“ entfernt."
 }

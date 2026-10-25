@@ -13566,7 +13566,8 @@ async def send_list(
     use. `sent_via="manual"` (no recipient) is the Mark-as-sent path."""
     row = await _get_list_for_update(session, company_id, entity_id)
     if row.state.get("status") != FINALIZED:
-        raise HTTPException(status_code=409, detail="Issue the list before sending it")
+        raise HTTPException(status_code=409, detail=refusal(
+            "docs.list_issue_before_send", "Issue the list before sending it."))
     now = datetime.now(timezone.utc).isoformat()
     await _set_list_fields(session, company_id, entity_id, user,
                            {"sent_at": now, "sent_via": payload.sent_via or "email",
@@ -13575,7 +13576,8 @@ async def send_list(
     if payload.sent_to:
         from celerp_docs.routes_share import send_view_url
         view_url = await send_view_url(session, company_id, entity_id)
-        await session.commit()
+    # One commit for both paths: the mark as sent (no recipient) writes just as the email does.
+    await session.commit()
     if payload.sent_to:
         from celerp_docs.doc_email import compose_doc_email
         ref = row.state.get("ref_id") or entity_id.split(":")[-1]
