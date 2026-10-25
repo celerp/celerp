@@ -95,7 +95,13 @@ class AIBatchJob(Base):
     )
     status: Mapped[str] = mapped_column(
         String(16), default="pending", nullable=False,
-    )  # "pending" | "running" | "completed" | "failed"
+    )  # "pending" | "running" | "completed" | "failed" | "cancelled"
+    kind: Mapped[str] = mapped_column(String(16), default="documents", nullable=False)  # "documents" | "question"
+    mode: Mapped[str] = mapped_column(String(16), default="background", nullable=False)  # "interactive" | "background"
+    question_id: Mapped[uuid.UUID | None] = mapped_column(sa.Uuid(as_uuid=True), nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    promoted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    cancel_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     total_files: Mapped[int] = mapped_column(Integer, nullable=False)
     completed_files: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     failed_files: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
@@ -111,6 +117,40 @@ class AIBatchJob(Base):
     )
     completed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True,
+    )
+
+
+class AIJobStep(Base):
+    """One step of a job, and the identity the AI service answers it by: a file of a
+    reading job, or a model turn or tool call of a question. The steps are the job's
+    progress; a resumed job rebuilds from them and sends a step again only under the
+    identity it was sent under."""
+
+    __tablename__ = "ai_job_steps"
+    __table_args__ = (sa.UniqueConstraint("job_id", "key", name="uq_ai_job_steps_key"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        sa.Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4,
+    )
+    job_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("ai_batch_jobs.id", ondelete="CASCADE"), nullable=False, index=True,
+    )
+    seq: Mapped[int] = mapped_column(Integer, nullable=False)
+    key: Mapped[str] = mapped_column(String(160), nullable=False)  # file id, "model:{turn}" or "tool:{call_id}"
+    operation_id: Mapped[uuid.UUID | None] = mapped_column(sa.Uuid(as_uuid=True), nullable=True)
+    step_id: Mapped[uuid.UUID | None] = mapped_column(sa.Uuid(as_uuid=True), nullable=True)
+    generation: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    state: Mapped[str] = mapped_column(
+        String(16), default="pending", nullable=False,
+    )  # "pending" | "running" | "done" | "failed" | "unknown" | "expired"
+    result: Mapped[dict | None] = mapped_column(sa.JSON, nullable=True)
+    credits: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    charge_known: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+        nullable=False,
     )
 
 

@@ -264,4 +264,4 @@ async def test_a_replayed_call_to_a_tool_no_longer_offered_gets_the_tool_error(c
     continuation = [b for b in cloud.bodies if b.get("step_id")][-1]
     (tool_msg,) = [m for m in continuation["messages"] if m.get("role") == "tool"]
     assert tool_msg["tool_call_id"] == "call-9"
-    assert json.loads(tool_msg["content"])["error"]["code"] == "unknown_tool"
+    assert json.loads(tool_msg["content"])["error"]["code"] == "unknown_capability"

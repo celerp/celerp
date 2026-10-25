@@ -9,13 +9,13 @@ a run the upgrade's restart already ended, so it is due at once: reconcile_at =
 created_at.
 
 Revision ID: i3b4c5d6e7f8
-Revises: h2a3b4c5d6e7
+Revises: h4c5d6e7f8a9
 """
 import sqlalchemy as sa
 from alembic import op
 
 revision = "i3b4c5d6e7f8"
-down_revision = "h2a3b4c5d6e7"
+down_revision = "h4c5d6e7f8a9"
 branch_labels = None
 depends_on = None
 
