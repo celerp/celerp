@@ -242,66 +242,101 @@ def test_seed_reads_each_public_installer_once(github, tmp_path):
 
 # ── Guards over every workflow and CI script ────────────────────────────────
 
+# Everything CI runs: the workflows, the scripts they call, the desktop build and the test
+# suite. test_the_scan_covers_every_file_a_workflow_runs keeps this list whole.
+_CI_ROOTS = (".github", "scripts", "electron", "tests")
+_CI_SUFFIXES = {".yml", ".yaml", ".py", ".sh", ".ps1", ".js", ".mjs", ".cjs"}
+
+
 def _ci_files():
-    for folder in (_ROOT / ".github", _ROOT / "scripts", _ROOT / "electron" / "scripts"):
-        for path in sorted(folder.rglob("*")):
-            if path.is_file() and path.suffix in {".yml", ".yaml", ".py", ".sh", ".ps1", ".js", ".mjs", ".cjs"}:
+    for folder in _CI_ROOTS:
+        for path in sorted((_ROOT / folder).rglob("*")):
+            if path.is_file() and path.suffix in _CI_SUFFIXES and "node_modules" not in path.parts:
                 yield path
 
 
 # A download of one of this repository's release files, in any form a workflow or
-# script can make one. Another project's release (the Python build, OpenSSL), named
-# by its owner on github.com, is that project's counter, not ours.
-_DOWNLOAD = re.compile(r"gh\s+release\s+download|browser_download_url|Accept\W{0,4}application/octet-stream")
-_RELEASE_FILE = re.compile(r"releases/(?:latest/)?download")
-_OTHER_PROJECT = re.compile(r"github\.com/(?!celerp/)[\w.-]+/[\w.-]+/$")
+# script can make one, in any letter case (HTTP headers and URLs paths are matched as
+# typed by any tool). Another project's release (the Python build, OpenSSL), named by its
+# owner on github.com, is that project's counter, not ours.
+_DOWNLOAD = re.compile(r"gh\s+release\s+download|browser_download_url|Accept\W{0,4}application/octet-stream", re.I)
+_RELEASE_FILE = re.compile(r"releases/(?:latest/)?download", re.I)
+_OTHER_PROJECT = re.compile(r"github\.com/(?!celerp/)[\w.-]+/[\w.-]+/$", re.I)
+# A command continued on the next line (shell \, PowerShell `), or a YAML folded block, is
+# one command: the scan reads the text as one line with every line break and indent folded.
+_CONTINUATION = re.compile(r"[\\`]\r?\n")
 
 
-def _downloads_ours(line: str) -> bool:
-    if _DOWNLOAD.search(line):
-        return True
-    return any(not _OTHER_PROJECT.search(line[:m.start()]) for m in _RELEASE_FILE.finditer(line))
+def _logical(text: str) -> str:
+    return re.sub(r"\s+", " ", _CONTINUATION.sub(" ", text))
+
+
+def _downloads_ours(text: str) -> list[str]:
+    """Each download of this repository's release files in ``text``, as the text around it."""
+    text = _logical(text)
+    found = [m for m in _DOWNLOAD.finditer(text)]
+    found += [m for m in _RELEASE_FILE.finditer(text) if not _OTHER_PROJECT.search(text[:m.start()])]
+    return [text[max(0, m.start() - 60):m.end() + 20] for m in found]
 
 
 def test_no_ci_file_downloads_a_release_file_outside_the_mirror_helper():
-    found = []
-    for path in _ci_files():
-        if path == _SCRIPT:
-            continue
-        for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-            if _downloads_ours(line):
-                found.append(f"{path.relative_to(_ROOT)}:{n}: {line.strip()}")
+    guard = Path(__file__).resolve()
+    found = [f"{path.relative_to(_ROOT)}: {hit}" for path in _ci_files() if path not in (_SCRIPT, guard)
+             for hit in _downloads_ours(path.read_text(encoding="utf-8"))]
     assert found == []
     # Other projects' release downloads stay: the scan passes them, not skips them.
-    assert any("/releases/download" in line for p in _ci_files() for line in p.read_text(encoding="utf-8").splitlines())
+    assert any("/releases/download" in p.read_text(encoding="utf-8") for p in _ci_files())
 
 
-def test_the_helper_reads_the_public_release_only_to_seed():
-    source = _SCRIPT.read_text()
-    seed = source.split("\ndef seed(", 1)[1].split("\ndef ", 1)[0]
-    assert source.count("browser_download_url") == 1 and "browser_download_url" in seed
+def test_the_scan_covers_every_file_a_workflow_runs():
+    """Every script a workflow names (run steps, working directories) lies under _CI_ROOTS."""
+    named = set()
+    for wf in (_ROOT / ".github" / "workflows").glob("*.y*ml"):
+        named |= set(re.findall(r"[\w./-]+\.(?:py|sh|ps1|js|mjs|cjs)\b", wf.read_text(encoding="utf-8")))
+    scanned = set(_ci_files())
+    outside = []
+    for name in sorted(named):
+        direct = (_ROOT / name.lstrip("./")).resolve()
+        candidates = [direct] if direct.is_file() else [
+            p for p in _ROOT.rglob(Path(name).name) if "node_modules" not in p.parts and ".git" not in p.parts]
+        outside += [f"{name} -> {p.relative_to(_ROOT)}" for p in candidates if p.resolve() not in scanned]
+    assert named and outside == []
 
 
 def test_the_guard_pattern_catches_every_shape_of_a_release_download():
     shapes = [
         'gh release download "$PREVIOUS" --repo "$GITHUB_REPOSITORY" --pattern Celerp-Setup.exe',
         "gh  release  download v2.5.6",
+        "gh release \\\n  download v2.5.6",
+        "gh release `\n  download v2.5.6",
+        "run: >\n  gh release\n  download v2.5.6\n",
+        "GH Release Download v2.5.6",
         "curl -fL https://github.com/celerp/celerp/releases/download/v2.5.6/Celerp-Setup.exe",
+        "curl -fL https://github.com/Celerp/Celerp/Releases/Download/v2.5.6/Celerp-Setup.exe",
         "curl -fL https://github.com/celerp/celerp/releases/latest/download/Celerp-Setup.exe",
         'curl -L "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/Celerp.AppImage"',
         "Invoke-WebRequest https://github.com/${{ github.repository }}/releases/download/x/y",
         "Invoke-WebRequest \"https://github.com/$env:GITHUB_REPOSITORY/releases/download/$tag/Celerp-Setup.exe\"",
         'url = f"{base}/releases/download/{tag}/{name}"',
         "a['browser_download_url']",
+        "a['BROWSER_DOWNLOAD_URL']",
         '-H "Accept: application/octet-stream" "$ASSET_URL"',
         '-Headers @{ Accept = "application/octet-stream" }',
         'headers={"Accept": "application/octet-stream"}',
+        'headers={"accept": "application/octet-stream"}',
+        "gh api repos/celerp/celerp/releases/assets/123 -H accept:application/octet-stream",
+        "gh api repos/celerp/celerp/releases/assets/123 \\\n  -H 'Accept: application/octet-stream'",
     ]
     assert [s for s in shapes if not _downloads_ours(s)] == []
-    allowed = ['"Content-Type: application/octet-stream\\r\\n"',  # an upload to the app under test
-               'BASE="https://github.com/astral-sh/python-build-standalone/releases/download/$PBS_TAG"',
-               '"https://github.com/openssl/openssl/releases/download/openssl-${OPENSSL_VERSION}/x.tar.gz"']
-    assert [s for s in allowed if _downloads_ours(s)] == []
+    # Another project's release, and an upload's content type, are not ours to count.
+    assert _downloads_ours("curl -fL https://github.com/indygreg/python-build-standalone/releases/download/x/y") == []
+    assert _downloads_ours('files = {"file": (name, data, "application/octet-stream")}') == []
+
+
+def test_the_helper_reads_the_public_release_only_to_seed():
+    source = _SCRIPT.read_text()
+    seed = source.split("\ndef seed(", 1)[1].split("\ndef ", 1)[0]
+    assert source.count("browser_download_url") == 1 and "browser_download_url" in seed
 
 
 def _workflows():
@@ -318,8 +353,9 @@ _ACTIONS = {
     # Runs the script written in the workflow, which the download scan above reads.
     "actions/github-script",
     # Publishes each stable release to winget. The winget manifest names the public
-    # installer users download, so its hash is taken from that file: one download per
-    # stable release, outside this repository's CI copies.
+    # installer users download, so its hash is taken from that file, and the winget
+    # validation fetches it again: a few downloads per stable release, outside this
+    # repository's CI copies.
     "vedantmgoyal2009/winget-releaser",
 }
 
@@ -412,6 +448,20 @@ def test_each_published_release_mirrors_its_own_built_installers():
     issue = notify["steps"][0]
     assert issue["env"]["PUBLISHED"] == "${{ needs.publish-release.result == 'success' }}"
     assert "is published, but copying its installers to the CI mirror draft failed" in issue["run"]
+
+
+def test_every_job_that_writes_the_mirror_waits_for_the_others():
+    """put and seed read the mirror draft and then change it; two at once could make a second
+    draft. Every job that runs either one shares one queue that cancels nothing."""
+    writers = {}
+    for name, wf in _workflows():
+        for job_id, job in (wf.get("jobs") or {}).items():
+            runs = " ".join(str(step.get("run", "")) for step in job.get("steps") or [])
+            if re.search(r"ci_installers\.py\s+(?:put|seed)\b", runs):
+                writers[f"{name}:{job_id}"] = job.get("concurrency")
+    assert set(writers) == {"build.yml:mirror-installers", "ci-installers.yml:seed"}, writers
+    assert all(c == {"group": "ci-installers-mirror", "cancel-in-progress": False, "queue": "max"}
+               for c in writers.values()), writers
 
 
 def test_the_seed_workflow_runs_only_on_demand():

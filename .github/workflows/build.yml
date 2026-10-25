@@ -1450,6 +1450,13 @@ jobs:
   mirror-installers:
     needs: [publish-release]
     if: ${{ success() && startsWith(github.ref, 'refs/tags/v') }}
+    # One writer to the mirror at a time, here and in the seed workflow: put and seed
+    # read the draft and then change it, so two at once could make a second draft.
+    # Every waiting run stays queued, none is cancelled.
+    concurrency:
+      group: ci-installers-mirror
+      cancel-in-progress: false
+      queue: max
     runs-on: ubuntu-latest
     permissions:
       contents: write

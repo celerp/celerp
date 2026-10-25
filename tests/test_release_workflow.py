@@ -660,7 +660,9 @@ def test_tag_releases_mark_latest_one_at_a_time():
         "cancel-in-progress": True}
     assert build["jobs"]["publish-release"]["concurrency"] == {
         "group": "github-release", "cancel-in-progress": False, "queue": "max"}
-    assert ["publish-release"] == [name for name, job in build["jobs"].items() if "concurrency" in job]
+    # The only other queue is the CI mirror's, which never holds a release back.
+    assert {name: job["concurrency"]["group"] for name, job in build["jobs"].items() if "concurrency" in job} == {
+        "publish-release": "github-release", "mirror-installers": "ci-installers-mirror"}
     assert "concurrency" not in publish
     assert not any("concurrency" in job for job in publish["jobs"].values())
 
