@@ -31,6 +31,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from celerp.accounting_roles import refusal
 from celerp.db import get_session
 from celerp.events.engine import emit_event, find_event_by_idempotency
 from celerp.models.projections import Projection
@@ -372,8 +373,9 @@ def _money(value, currency) -> Decimal:
     return round_money(to_decimal(value or 0), currency)
 
 
-def unrepresentable(document: dict, target: BookTarget) -> str | None:
-    """Why a draft of this target cannot carry the document's money exactly, or None.
+def unrepresentable(document: dict, target: BookTarget) -> dict | None:
+    """Why a draft of this target cannot carry the document's money exactly, as a refusal
+    the page links to a new quotation from, or None.
 
     A document keeps the sender's amounts as they are. A quotation list
     recomputes its own total from its lines, its discount and its taxes by the
@@ -387,7 +389,8 @@ def unrepresentable(document: dict, target: BookTarget) -> str | None:
     list_total = _money(list_totals(managed_fields(document, target))["total"], currency)
     if list_total == total:
         return None
-    return t("documents.err_received_list_total", total=str(total), list_total=str(list_total))
+    key, params = "documents.err_received_list_total", {"total": str(total), "list_total": str(list_total)}
+    return {**refusal(key, t(key, **params), **params), "code": "received_list_total"}
 
 
 def _fits(state: dict, booked: dict, target: Projection) -> bool:

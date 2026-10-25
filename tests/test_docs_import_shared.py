@@ -9,13 +9,15 @@ opens the received document.
 """
 
 import io
+import json
 
 import httpx
 import pytest
 from fasthtml.common import Div, Span, to_xml
 
 import ui.api_client as api
-from ui.api_client import APIError
+from ui.api_client import APIError, _api_error
+from ui.i18n import t
 from ui.routes import docs_import as di
 
 
@@ -435,6 +437,27 @@ async def test_book_failure_is_explained_on_the_received_page(ui_routes, monkeyp
     monkeypatch.setattr(di.api, "get_received", _get)
     html = to_xml(await ui_routes[("POST", "/docs/received/{rid}/book")](_FormReq({}), "rcv:abc"))
     assert "kept in Received for review" in html and "flash--error" in html
+    assert 'href="/lists/new"' not in html
+
+
+@pytest.mark.asyncio
+async def test_a_total_a_quotation_cannot_hold_links_to_a_new_quotation(ui_routes, monkeypatch):
+    """The refusal says why the document cannot become a quotation and links to entering one by hand."""
+    message = t("documents.err_received_list_total", total="205.00", list_total="200.00")
+    body = {"detail": {"message": message, "message_key": "documents.err_received_list_total",
+                       "params": {"total": "205.00", "list_total": "200.00"}, "code": "received_list_total"}}
+
+    async def _book(token, rid):
+        raise _api_error(422, body, json.dumps(body))
+
+    async def _get(token, rid):
+        return _received()
+
+    monkeypatch.setattr(di.api, "book_received", _book)
+    monkeypatch.setattr(di.api, "get_received", _get)
+    html = to_xml(await ui_routes[("POST", "/docs/received/{rid}/book")](_FormReq({}), "rcv:abc"))
+    assert message.split(".")[0] in html and "flash--error" in html
+    assert 'href="/lists/new"' in html and t("page.new_quotation") in html
 
 
 @pytest.mark.asyncio

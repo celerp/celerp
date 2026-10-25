@@ -1232,7 +1232,7 @@ async def test_quotation_that_would_change_the_total_is_not_booked(client, sessi
     rid = await _import(client, tok, _bundle(_po(**extra)))
     r = await client.post(f"/docs/received/{rid}/book", headers=_h(tok))
     assert r.status_code == 422
-    assert "as a quotation it would total" in r.json()["detail"]
+    assert r.json()["detail"]["code"] == "received_list_total"
     received = await _received(client, tok, rid)
     assert received["revision_state"] == "unbooked"
     assert received["booked_id"] is None
@@ -1581,4 +1581,8 @@ async def test_a_received_order_a_quotation_cannot_total_is_refused_naming_both_
     rid = await _import(client, tok, _bundle(doc))
     r = await client.post(f"/docs/received/{rid}/book", headers=_h(tok))
     assert r.status_code == 422, r.text
-    assert r.json()["detail"] == t("documents.err_received_list_total", total="205.00", list_total="200.00")
+    detail = r.json()["detail"]
+    assert detail["message"] == t("documents.err_received_list_total", total="205.00", list_total="200.00")
+    assert detail["message_key"] == "documents.err_received_list_total"
+    assert detail["params"] == {"total": "205.00", "list_total": "200.00"}
+    assert detail["code"] == "received_list_total"
