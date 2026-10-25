@@ -231,6 +231,15 @@ def document_line_amount(line: dict, currency: str) -> Decimal | None:
     return round_money(unit * qty, currency) if unit is not None else None
 
 
+def require_line_amount(line: dict, currency: str) -> Decimal:
+    """:func:`document_line_amount` for a caller that cannot go on without it (a posting, a
+    split): a line whose amount cannot be read raises ValueError rather than counting as 0."""
+    amount = document_line_amount(line, currency)
+    if amount is None:
+        raise ValueError(f"line amount is not a number: {line.get('line_total')!r}")
+    return amount
+
+
 def discount_from_inputs(doc: dict, subtotal: _MoneyInput, currency: str) -> Decimal | None:
     """Document discount derived from its ``discount`` and ``discount_type`` inputs, or None
     when the discount is not a number."""

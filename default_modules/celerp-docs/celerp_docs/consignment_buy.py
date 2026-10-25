@@ -41,7 +41,7 @@ from celerp.models.projections import Projection
 from celerp.services.account_roles import consignor_of, is_consigned, lineage, new_lot_account, party_key
 from celerp.services.company_lock import lock_projections
 from celerp.services.lot_origin import RETIRED
-from celerp.services.money import allocate_pro_rata, round_money, to_decimal, to_stored_float
+from celerp.services.money import allocate_pro_rata, require_line_amount, round_money, to_decimal, to_stored_float
 from celerp_docs.doc_constants import LIFECYCLE_OWNED_FIELDS
 from celerp_docs.doc_money import UnratedTaxError, document_money, refuse_unset_line_tax
 
@@ -272,7 +272,7 @@ def _bill_lines(state: dict, kept: dict[int, Decimal], currency: str) -> tuple[l
                 changed = True
                 if qty <= _EPS:
                     continue
-                total = to_decimal(li.get("line_total") or 0) or ordered * to_decimal(li.get("unit_price") or 0)
+                total = require_line_amount(li, currency)
                 line["quantity"] = to_stored_float(qty)
                 if "quantity_received" in line:  # received and kept, never what the consignment received
                     line["quantity_received"] = line["quantity"]

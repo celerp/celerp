@@ -14,6 +14,8 @@ re-exports them (ui.components.table) so there is one definition.
 """
 from __future__ import annotations
 
+from decimal import Decimal
+
 from fasthtml.common import (
     A, Body, Div, Head, Html, Meta, P, Script, Span, Strong, Style,
     Table, Tbody, Td, Th, Thead, Title, Tr, to_xml,
@@ -24,6 +26,7 @@ from celerp.output.document_context import prepare_document_output
 from celerp.services.doc_balance import is_awaiting_payment, outstanding_balance
 from celerp.services.line_measures import line_identifier as _line_identifier, measure_sublines, qty_label
 from celerp.services.list_behavior import SUPPLIER_DOC_TYPES
+from celerp.services.money import document_line_amount, to_decimal
 from celerp.services.shipping import REASON_EXPORT_LABELS, SHIPPING_LIST_TYPE
 from celerp.services.units import DEFAULT_UNITS, build_unit_map
 
@@ -331,6 +334,14 @@ def render_doc_print_html(doc: dict, *, import_url: str | None = None,
             sym = currency_symbol(currency)
             return f"{sym}{float(v or 0):,.2f}"
 
+    def _line_amount_value(li: dict) -> Decimal | None:
+        return document_line_amount({**li, "quantity": li.get("quantity") or li.get("qty") or 0}, currency)
+
+    def _line_amount(li: dict) -> str:
+        """The line's amount as the document stores it; blank when it cannot be read."""
+        amount = _line_amount_value(li)
+        return "" if amount is None else _money(amount)
+
     has_disc = any(li.get("discount_pct") for li in line_items)
     _print_umap = build_unit_map(DEFAULT_UNITS)
 
@@ -379,7 +390,6 @@ def render_doc_print_html(doc: dict, *, import_url: str | None = None,
         for li in line_items:
             qty = li.get("quantity") or li.get("qty") or 0
             price = li.get("unit_price") or li.get("price") or 0
-            line_total = li.get("line_total") or (float(qty) * float(price))
             base = [
                 _ident_cell(li),
                 Td(li.get("description") or li.get("name") or ""),
@@ -397,7 +407,7 @@ def render_doc_print_html(doc: dict, *, import_url: str | None = None,
                     Td(_line_weight(li), cls="r"),
                     Td(_line_gross(li), cls="r"),
                     Td(fmt_rate(price, currency) if float(price or 0) else "", cls="r"),
-                    Td(_money(line_total) if float(price or 0) else "", cls="r"),
+                    Td(_line_amount(li) if float(price or 0) else "", cls="r"),
                 ))
         if ship_layout == "delivery_note":
             headers = Tr(Th(_ident_header), Th("Description"), Th("Net Weight", cls="r"), Th("Qty", cls="r"))
@@ -410,7 +420,6 @@ def render_doc_print_html(doc: dict, *, import_url: str | None = None,
             qty = li.get("quantity") or li.get("qty") or 0
             price = li.get("unit_price") or li.get("price") or 0
             disc = li.get("discount_pct") or 0
-            line_total = li.get("line_total") or (float(qty) * float(price) * (1 - float(disc) / 100))
             # Description holds only the description (the SKU has its own column) plus
             # Pieces / Weight as labelled sub-lines when the line carries them.
             desc = li.get("description") or li.get("name") or ""
@@ -424,8 +433,8 @@ def render_doc_print_html(doc: dict, *, import_url: str | None = None,
                 Td(Div(*_desc_parts)),
                 Td(qty_label(li), cls="r"),
                 Td(fmt_rate(price, currency), cls="r"),
-                *([] if not has_disc else [Td(f"{disc}%" if disc else "", cls="r")]),
-                Td(_money(line_total), cls="r"),
+                *([] if not has_disc else [Td(f"{to_decimal(disc).normalize():f}%" if disc else "", cls="r")]),
+                Td(_line_amount(li), cls="r"),
             ))
 
         headers = Tr(
@@ -446,17 +455,14 @@ def render_doc_print_html(doc: dict, *, import_url: str | None = None,
         # FedEx-style totals band: packages, net + gross weight, declared value.
         # Gross = the FINAL weighed package (typed on the shipment, box included);
         # fallback = sum of per-line gross weights when they share a unit.
-        declared = sum(
-            float(li.get("line_total") or 0)
-            or float(li.get("quantity") or 0) * float(li.get("unit_price") or 0)
-            for li in line_items
-        )
+        _amounts = [_line_amount_value(li) for li in line_items]
+        declared = None if None in _amounts else sum(_amounts, Decimal(0))
         _total_gross = str(doc.get("gross_weight") or "").strip() or _weight_total("gross_weight", "gross_weight_unit")
         _totals_cells = [
             ("Total Packages", str(doc.get("package_count") or "")),
             ("Total Net Weight", _weight_total("weight", "weight_unit")),
             ("Total Gross Weight", _total_gross),
-            (f"Total Declared Value ({currency})", _money(declared)),
+            (f"Total Declared Value ({currency})", "" if declared is None else _money(declared)),
         ]
         totals_section = Table(Tr(*[
             Td(Span(lbl, cls="lbl"), Div(val or " ", cls="val"))

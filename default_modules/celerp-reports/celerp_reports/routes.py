@@ -19,9 +19,17 @@ from celerp.services.business_time import company_today
 from celerp.services.doc_balance import (
     canonical_doc_type, doc_value, is_awaiting_payment, is_open_credit, is_owed, outstanding_balance,
 )
+from celerp.services.money import document_line_amount
 from celerp.services.permissions import require_permission
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
+
+
+def _line_amount(line: dict, doc: dict) -> Decimal:
+    """A line's amount as its document charges it; a line that cannot be read adds nothing,
+    as an unreadable figure does everywhere in these reports."""
+    amount = document_line_amount(line, doc.get("currency") or "USD")
+    return Decimal(0) if amount is None else amount
 
 
 def _parse_d(val: str | None) -> Decimal:
@@ -217,7 +225,7 @@ async def sales_report(
                 iid = line.get("item_id") or line.get("entity_id") or "Unlinked"
                 data[iid]["name"] = line.get("name") or line.get("description") or iid
                 data[iid]["qty_sold"] += _parse_d(line.get("quantity") or 1)
-                data[iid]["total_revenue"] += _parse_d(line.get("line_total") or line.get("price") or 0)
+                data[iid]["total_revenue"] += _line_amount(line, inv)
                 data[iid]["total_cost"] += _parse_d(line.get("cost_price") or 0) * _parse_d(line.get("quantity") or 0)
         lines = []
         for iid, d in sorted(data.items(), key=lambda x: -x[1]["qty_sold"]):
@@ -407,7 +415,7 @@ async def purchases_report(
                 iid = line.get("item_id") or line.get("entity_id") or "Unlinked"
                 data[iid]["name"] = line.get("name") or line.get("description") or iid
                 data[iid]["qty_purchased"] += _parse_d(line.get("quantity") or 1)
-                data[iid]["total_spend"] += _parse_d(line.get("line_total") or line.get("price") or 0)
+                data[iid]["total_spend"] += _line_amount(line, po)
         lines = [
             {
                 "item_id": iid,
