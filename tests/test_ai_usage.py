@@ -22,7 +22,7 @@ import pytest
 from fastapi import HTTPException
 from sqlalchemy import select
 
-from celerp.ai import service
+from celerp.ai import llm, service, usage
 from celerp.ai.conversations import record_credits
 from celerp.ai.llm import ModelResult, RelayError
 from celerp.ai.service import AgentResult, run_agent
@@ -56,9 +56,13 @@ async def _question(session, company_id, user_id, *, credits: int, when: datetim
     return message
 
 
-def _answer(content: str = "Open Contacts and choose New.", credits: int = 1) -> ModelResult:
+def _answer(content: str = "Open Contacts and choose New.", credits: int = 1,
+            operation_credits: int | None = None) -> ModelResult:
+    """A reply from the current service, which names the question's whole charge on
+    every first-turn reply (``operation_credits``, by default ``credits``)."""
     return ModelResult(message={"role": "assistant", "content": content}, model_used="test-model",
-                       usage={"credits": credits}, reservation_id=None, remaining=10)
+                       usage={"credits": credits}, reservation_id=None, remaining=10,
+                       operation_credits=credits if operation_credits is None else operation_credits)
 
 
 def _relay(monkeypatch, replies: list) -> list:
@@ -132,7 +136,7 @@ async def test_credits_kept_when_a_later_turn_fails(client, session, owner, monk
     turns = [ModelResult(
         message={"role": "assistant", "content": "", "tool_calls": [
             {"id": "c1", "type": "function", "function": {"name": "no_such_tool", "arguments": "{}"}}]},
-        model_used="test-model", usage={"credits": 1}, reservation_id="r", remaining=10,
+        model_used="test-model", usage={"credits": 1}, reservation_id="r", remaining=10, operation_credits=1,
     )]
 
     async def _complete(messages, *, tools=None, reservation_id=None, **_kw):
@@ -164,7 +168,7 @@ async def test_credits_kept_when_the_relay_refuses_a_later_turn(client, session,
     turns = [ModelResult(
         message={"role": "assistant", "content": "", "tool_calls": [
             {"id": "c1", "type": "function", "function": {"name": "no_such_tool", "arguments": "{}"}}]},
-        model_used="test-model", usage={"credits": 1}, reservation_id="r", remaining=10,
+        model_used="test-model", usage={"credits": 1}, reservation_id="r", remaining=10, operation_credits=1,
     )]
 
     async def _complete(messages, *, tools=None, reservation_id=None, **_kw):
@@ -366,9 +370,10 @@ async def test_question_without_an_id_is_a_new_question(client, owner, monkeypat
     assert len(await _messages(client, token, conv)) == 4
 
 
-async def test_refusal_is_kept_in_the_thread(client, owner, monkeypatch):
+async def test_refusal_is_kept_in_the_thread(client, session, owner, monkeypatch):
     """A refused question stays in the thread with the refusal, so a reloaded page
-    explains it; nothing is counted when nothing was charged."""
+    explains it; nothing is counted when nothing was charged: the question awaits
+    confirmation until the service reports it was never charged."""
     token, _, _ = owner
     refusal = {"code": "quota_exceeded", "message": "No questions left this month."}
     _relay(monkeypatch, [HTTPException(status_code=402, detail=refusal)])
@@ -383,6 +388,14 @@ async def test_refusal_is_kept_in_the_thread(client, owner, monkeypatch):
     assert (reply["error"], reply["error_code"], reply["refusal_status"], reply["refusal"]) == (
         True, "quota_exceeded", 402, refusal)
     assert reply["content"] == refusal["message"]
+    (row,) = (await _usage(client, token)).json()["users"]
+    assert (row["query_count"], row["credits_used"], row["pending_count"]) == (0, 0, 1)
+
+    async def _operations_status(ids):
+        return [{"operation_id": str(i), "state": "not_charged", "credits": 0} for i in ids]
+
+    monkeypatch.setattr(llm, "operations_status", _operations_status)
+    await usage.reconcile_usage(session)
     assert (await _usage(client, token)).json()["users"] == []
 
 
@@ -512,7 +525,7 @@ async def test_one_off_query_is_counted_and_cites_help(client, owner, monkeypatc
     async def _run_agent(**kw):
         calls.append(kw["operation_id"])
         return AgentResult(answer="See the help page.", model_used="test-model", tools_called=[],
-                           pending_actions=[], credits=1, help_pages=["contacts.add"])
+                           pending_actions=[], credits=1, charge_known=True, help_pages=["contacts.add"])
 
     set_session_token("s" * 64)
     monkeypatch.setattr(service, "run_agent", _run_agent)
@@ -526,7 +539,7 @@ async def test_one_off_query_is_counted_and_cites_help(client, owner, monkeypatc
 
     async def _lost(**kw):
         return AgentResult(answer="", model_used="test-model", tools_called=[], pending_actions=[],
-                           credits=1, error="lost", error_code="outcome_unknown")
+                           credits=1, charge_known=True, error="lost", error_code="outcome_unknown")
 
     monkeypatch.setattr(service, "run_agent", _lost)
     r = await client.post("/ai/query", headers=headers, json={"query": "customer?"})
@@ -589,7 +602,7 @@ async def test_refusal_after_a_charged_turn_is_counted(client, owner, monkeypatc
     tool_turn = ModelResult(
         message={"role": "assistant", "content": "", "tool_calls": [
             {"id": "c1", "type": "function", "function": {"name": "no_such_tool", "arguments": "{}"}}]},
-        model_used="test-model", usage={"credits": 1}, reservation_id="r", remaining=10)
+        model_used="test-model", usage={"credits": 1}, reservation_id="r", remaining=10, operation_credits=1)
     refusal = {"code": "quota_exceeded", "message": "No questions left this month."}
     _relay(monkeypatch, [tool_turn, HTTPException(status_code=402, detail=refusal),
                          tool_turn, HTTPException(status_code=402, detail=refusal)])

@@ -14,7 +14,7 @@ import uuid
 import httpx
 import pytest
 
-from celerp.ai import llm, service
+from celerp.ai import llm, service, usage
 from celerp.gateway.state import set_session_token
 from celerp.routers.health import _ai_counts
 from test_ai_usage import _ask, _claims, _conversation, _counts, _messages, _usage, owner  # noqa: F401
@@ -30,10 +30,10 @@ class _OlderRelay:
         self.status_reads = 0
 
     def handle(self, request: httpx.Request) -> httpx.Response:
-        if request.method == "GET" and request.url.path.startswith("/ai/operations/"):
-            self.status_reads += 1
+        if request.url.path != "/ai/complete":
+            self.status_reads += request.url.path == "/ai/operations/status"
             return httpx.Response(404, json={"detail": "Not Found"})
-        assert (request.method, request.url.path) == ("POST", "/ai/complete")
+        assert request.method == "POST"
         self.bodies.append(json.loads(request.content))
         reply = self.replies.pop(0)
         if isinstance(reply, BaseException):
@@ -63,7 +63,7 @@ def _older_relay(monkeypatch, replies: list) -> _OlderRelay:
 
 async def test_operation_status_from_an_older_service_is_none(monkeypatch):
     relay = _older_relay(monkeypatch, [])
-    assert await llm.operation_status(uuid.uuid4()) is None
+    assert await llm.operations_status([uuid.uuid4()]) is None
     assert relay.status_reads == 1
 
 
@@ -82,6 +82,7 @@ async def test_a_free_account_is_shown_the_upgrade_path(client, session, owner, 
     _, reply = await _messages(client, token, conv)
     assert (reply["error_code"], reply["refusal_status"]) == ("not_available", 402)
     await _age(session)
+    await usage.reconcile_usage(session)
     assert (await _usage(client, token)).json()["users"] == []
     assert await _rows(session) == {question: (0, False)}
 
@@ -93,7 +94,7 @@ def test_no_free_question_count_from_an_older_service():
 
 async def test_usage_settles_on_what_the_older_service_reported(client, session, owner, monkeypatch):
     """A paid question answered by the older service names no operation charge, so its
-    row waits for reconcile; the status read finds no route and the row keeps the
+    row waits for reconcile; the batch status read finds no route and the row keeps the
     credits the reply reported. A lost reply settles at 0: the older service keeps no
     operation to read a charge from."""
     token, _, _ = owner
@@ -105,8 +106,9 @@ async def test_usage_settles_on_what_the_older_service_reported(client, session,
     assert await _rows(session) == {answered: (1, True), lost: (0, True)}
 
     await _age(session)
+    await usage.reconcile_usage(session)
     assert _counts((await _usage(client, token)).json()["users"]) == [(1, 1)]
     assert await _rows(session) == {answered: (1, False), lost: (0, False)}
-    assert relay.status_reads == 2
-    assert _counts((await _usage(client, token)).json()["users"]) == [(1, 1)]
-    assert relay.status_reads == 2  # settled rows are never read again
+    assert relay.status_reads == 1  # one batch read for both rows
+    await usage.reconcile_usage(session)
+    assert relay.status_reads == 1  # settled rows are never read again
