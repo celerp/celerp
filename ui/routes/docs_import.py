@@ -120,7 +120,7 @@ def _group_documents(rows: list[dict]) -> OrderedDict:
             if up:
                 line["unit_price"] = up
             if line_total:
-                line["total_price"] = line_total
+                line["line_total"] = line_total
             cost = _number(r, "line_cost_basis")
             if cost:
                 line["cost_basis"] = cost

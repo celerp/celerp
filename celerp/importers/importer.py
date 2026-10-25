@@ -256,7 +256,7 @@ class BundleImporter:
                                 "weight": str(li.weight) if li.weight is not None else None,
                                 "weight_unit": li.weight_unit,
                                 "unit_price": str(li.unit_price),
-                                "total_price": str(li.total_price),
+                                "line_total": str(li.total_price),
                                 "cost_basis": str(li.cost_basis) if li.cost_basis is not None else None,
                             }
                             for li in d.line_items
