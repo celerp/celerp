@@ -42,7 +42,7 @@ from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.models.share import DocShareToken, is_active as share_is_active
 from celerp.services.auth import get_current_company_id, get_current_user
-from celerp.services.money import round_money, to_decimal, to_stored_float
+from celerp.services.money import document_line_amount, round_money, to_decimal, to_stored_float
 from celerp.services.permissions import require_permission
 from celerp.services.outbound_url import validate_public_base_url
 from celerp.output.doc_print import (
@@ -51,9 +51,10 @@ from celerp.output.doc_print import (
 )
 from celerp.output.share_render import _not_found_page
 from celerp.output.document_context import prepare_document_output
+from celerp.tax_regimes import line_tax_unset, tax_text, unreadable_tax
 from celerp_docs import received
 from celerp_docs.doc_constants import SHAREABLE_DOC_TYPES, is_shareable, share_doc_type
-from celerp_docs.doc_money import UnratedTaxError, document_money
+from celerp_docs.doc_money import UnratedTaxError, computable_tax, document_money
 from celerp_docs.taxes import TaxApplication
 from celerp.services.currencies import CURRENCY_CODES
 from ui.i18n import t
@@ -155,37 +156,50 @@ def _str(v, limit: int = _MAX_STR) -> str | None:
 
 
 def _sanitize_taxes(raw) -> list[TaxApplication]:
-    if not isinstance(raw, list):
-        return []
+    """The bundle's taxes as tax definitions, amounts left to be recomputed. A tax entry that
+    cannot be read is refused by name, never dropped from the totals; only its sender can
+    correct it."""
+    named = unreadable_tax(raw)
+    if named is not None:
+        raise HTTPException(status_code=422, detail=t("documents.err_tax_unreadable_shared", tax=named))
     out: list[TaxApplication] = []
-    for t in raw[:20]:
-        if not isinstance(t, dict):
-            continue
+    for tax in (raw or [])[:20]:
         out.append(TaxApplication(
-            code=str(t.get("code") or "")[:64],
-            rate=_num(t.get("rate")),
+            code=str(tax.get("code") or "")[:64],
+            rate=_num(tax.get("rate")),
             amount=0.0,  # recomputed below — never trust the sender's amount
-            order=int(_num(t.get("order"))),
-            is_compound=bool(t.get("is_compound")),
-            label=str(t.get("label") or "")[:64],
+            order=int(_num(tax.get("order"))),
+            is_compound=bool(tax.get("is_compound")),
+            label=str(tax.get("label") or "")[:64],
         ))
     return out
 
 
-def _public_taxes(raw) -> list[dict]:
-    if not isinstance(raw, list):
+def _public_tax(tax) -> dict | str:
+    """One tax a bundle carries. A number that is not finite is refused as such (_num) before
+    anything else; an entry that is not a tax a total can be computed from (computable_tax)
+    leaves as its text (tax_text), so the recipient is told about it rather than given totals
+    without it or at another rate."""
+    if not isinstance(tax, dict):
+        return tax_text(tax)
+    rate, amount, order = _num(tax.get("rate")), _num(tax.get("amount")), _num(tax.get("order"))
+    if not computable_tax(tax):
+        return tax_text(tax)
+    return {
+        "code": str(tax.get("code") or "")[:64],
+        "rate": rate,
+        "amount": amount,
+        "order": int(order),
+        "is_compound": bool(tax.get("is_compound")),
+        "label": str(tax.get("label") or "")[:64],
+    }
+
+
+def _public_taxes(raw) -> list:
+    """The taxes a bundle carries (_public_tax)."""
+    if raw is None:
         return []
-    return [
-        {
-            "code": str(t.get("code") or "")[:64],
-            "rate": _num(t.get("rate")),
-            "amount": _num(t.get("amount")),
-            "order": int(_num(t.get("order"))),
-            "is_compound": bool(t.get("is_compound")),
-            "label": str(t.get("label") or "")[:64],
-        }
-        for t in raw[:20] if isinstance(t, dict)
-    ]
+    return [_public_tax(tax) for tax in (raw if isinstance(raw, list) else [raw])[:20]]
 
 
 def _public_bundle_doc(doc: dict) -> dict:
@@ -230,6 +244,8 @@ def _public_bundle_doc(doc: dict) -> dict:
         taxes = _public_taxes(raw.get("taxes"))
         if taxes:
             line["taxes"] = taxes
+        elif line_tax_unset(raw):
+            line["taxes"] = None
         lines.append(line)
     out["line_items"] = lines
 
@@ -272,14 +288,12 @@ def _sanitize_bundle_doc(doc: dict) -> dict:
     lines: list[dict] = []
     for raw in public.get("line_items") or []:
         line: dict = {k: v for k, v in raw.items() if k in _LINE_STR_FIELDS or k in _LINE_NUM_FIELDS}
-        base = to_decimal(line.get("quantity", 0)) * to_decimal(line.get("unit_price", 0))
-        disc_pct = to_decimal(line.get("discount_pct", 0))
-        if disc_pct:
-            base = base * (to_decimal(1) - disc_pct / 100)
-        line["line_total"] = to_stored_float(round_money(base, currency))
+        line["line_total"] = to_stored_float(document_line_amount(line, currency) or to_decimal(0))
         taxes = _sanitize_taxes(raw.get("taxes"))
         if taxes:
             line["taxes"] = [t.model_dump() for t in taxes]
+        elif line_tax_unset(raw):
+            line["taxes"] = None
         lines.append(line)
     out["line_items"] = lines
 
@@ -555,7 +569,8 @@ async def _resolve_share_contact(session: AsyncSession, company_id, state: dict)
 async def _enrich_share_lines(session: AsyncSession, company_id, state: dict) -> str:
     """Source pieces/weight (and the weight's unit) from each line's item for
     the shared view - the DB-side mirror of the UI print enrichment. Shipping
-    documents also backfill HS code / country of origin from the item. When the
+    documents also backfill HS code / country of origin from the item, and an issued
+    one reads each item as it was at Issue (shipping.issued_item). When the
     company shows barcodes on lines, every doc type backfills barcodes onto
     lines saved before barcode stamping.
 
@@ -564,7 +579,8 @@ async def _enrich_share_lines(session: AsyncSession, company_id, state: dict) ->
     from celerp.models.company import Company
     from celerp.services.line_measures import (
         LINE_IDENTIFIER_MODES, identifier_backfill, item_measure_meta, resolve_line_measures)
-    from celerp.services.shipping import SHIPPING_LIST_TYPE, customs_backfill, line_gross_weight
+    from celerp.services.shipping import (
+        SHIPPING_LIST_TYPE, backfill_item_customs, issued_item, line_gross_weight)
     from celerp.services.units import DEFAULT_UNITS, build_unit_map
     company = await session.get(Company, company_id)
     settings = (company.settings or {}) if company else {}
@@ -581,19 +597,22 @@ async def _enrich_share_lines(session: AsyncSession, company_id, state: dict) ->
         eid = li.get("entity_id") or li.get("item_id")
         if not eid:
             continue
-        irow = await session.get(Projection, (company_id, eid))
-        if irow is None or irow.entity_type != "item":
-            continue
+        item = issued_item(li, state)
+        if item is None:
+            irow = await session.get(Projection, (company_id, eid))
+            if irow is None or irow.entity_type != "item":
+                continue
+            item = irow.state or {}
         if ident_mode != "sku":
-            identifier_backfill(li, irow.state or {})
+            identifier_backfill(li, item)
         if not invoice_layout:
             continue
-        meta = item_measure_meta(irow.state or {}, umap)
+        meta = item_measure_meta(item, umap)
         li["pieces"], li["weight"], li["weight_unit"], _, _ = resolve_line_measures(li, item_meta=meta)
         if is_shipping:
-            customs_backfill(li, irow.state or {})
+            backfill_item_customs(li, item, state)
             li["gross_weight"], li["gross_weight_unit"] = line_gross_weight(
-                li, irow.state or {}, bool(meta.get("qty_is_weight")))
+                li, item, bool(meta.get("qty_is_weight")))
     return ident_mode
 
 

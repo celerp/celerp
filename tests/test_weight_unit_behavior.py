@@ -369,6 +369,19 @@ class TestImporterPayloadSerialisation:
         assert li_data["weight_unit"] == "ct"
         assert li_data["cost_basis"] == "1200"
 
+    def test_a_line_priced_by_weight_keeps_its_own_total(self) -> None:
+        """RED before the change: the line total was sent as ``total_price``, a key no reader
+        takes, so the line read as quantity x unit price (1 x 2222.22) instead of 4000."""
+        from celerp.importers.schema import CIFBundleDocument, CIFBundleLineItem
+        from celerp.services.money import document_line_amount
+        li = CIFBundleLineItem(item_external_id="i:1", quantity=Decimal("1"), weight=Decimal("1.80"),
+                               weight_unit="ct", unit_price=Decimal("2222.22"), total_price=Decimal("4000"))
+        doc = CIFBundleDocument(external_id="d:1", doc_type="invoice", status="paid", total=Decimal("4000"),
+                                amount_paid=Decimal("4000"), amount_outstanding=Decimal("0"), line_items=[li])
+        payloads = self._run_import(self._make_manifest(documents=[doc]))
+        doc_payload = next(p for p in payloads if p.get("event_type") == "doc.created")
+        assert document_line_amount(doc_payload["data"]["line_items"][0], "USD") == Decimal("4000.00")
+
     def test_line_item_payload_no_weight_ct_field(self) -> None:
         from celerp.importers.schema import CIFBundleDocument, CIFBundleLineItem
         li = CIFBundleLineItem(

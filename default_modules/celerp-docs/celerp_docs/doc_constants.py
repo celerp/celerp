@@ -27,6 +27,14 @@ REVERTIBLE_STATUSES: dict[str, frozenset[str]] = dict(FULFILLABLE_STATUSES)
 # Revert-to-draft for these types allows additional statuses (received, partially_received).
 INBOUND_DOC_TYPES: frozenset[str] = frozenset({"consignment_in", "bill"})
 
+# The statuses POST /revert-to-draft takes a document back from: an issued one, and for an
+# inbound one also a receiving status. A document that sent back every good it received also
+# reverts from a returned status (DRAFT_REVERT_RETURNED). Payments, credit notes, goods still
+# held and lines out on memo or sold refuse it whatever the status.
+DRAFT_REVERT_STATUSES = frozenset({"final", "sent", "awaiting_payment"})
+INBOUND_DRAFT_REVERT_STATUSES = DRAFT_REVERT_STATUSES | {"received", "partially_received", "fulfilled"}
+DRAFT_REVERT_RETURNED = frozenset({"partial_returned", "returned"})
+
 # Statuses each document type sends goods back to its supplier in (POST /return-items): once
 # goods have come in on it, and until all of them have gone back. A bill or purchase order
 # paid in part or in full returns goods too: what was paid for them becomes a supplier credit.

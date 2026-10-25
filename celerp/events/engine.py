@@ -34,6 +34,8 @@ STRIPE_OWNED_PAYMENT = (
     "This payment was received through Stripe, so it can only be refunded or reversed in Stripe."
 )
 PAYMENT_NOT_NAMED = "A payment can be taken off a document only by naming it, and a deletion keeps its place."
+# The list writes that carry the totals they give the list (emit_event).
+LIST_TOTALLED_EVENTS = frozenset({"list.created", "list.updated"})
 # Every event that takes a received payment back off a document.
 PAYMENT_REMOVAL_EVENTS = frozenset({"doc.payment.voided", "doc.payment.deleted", "doc.payment.refunded"})
 
@@ -546,6 +548,17 @@ async def emit_event(
     schema = EVENT_SCHEMA_MAP.get(kwargs["event_type"])
     if schema is None:
         raise ValueError(f"Unknown event_type: {kwargs['event_type']}")
+
+    # A list's write carries the totals it gives the list, whichever path writes it, so a
+    # replay (backup restore, rebuild) gives the list the totals it was saved with.
+    if kwargs["event_type"] in LIST_TOTALLED_EVENTS:
+        from celerp_docs.doc_projections import with_list_totals
+
+        stored = None
+        if kwargs["event_type"] != "list.created":
+            proj = await session.get(Projection, (kwargs.get("company_id"), kwargs.get("entity_id")))
+            stored = proj.state if proj is not None and proj.entity_type == "list" else None
+        kwargs["data"] = with_list_totals(stored, kwargs["event_type"], kwargs["data"])
 
     schema(**kwargs["data"])
 

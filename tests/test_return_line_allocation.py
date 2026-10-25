@@ -247,7 +247,7 @@ def _lots_of(n: int, places: int) -> tuple[list[tuple[str, float]], dict[str, fl
 
 def _timed_takes(lots, whole_only, *qtys: float, seconds: float = 1.0) -> list:
     """``_line_takes`` for each of ``qtys``, run in a process of its own held to 2 GB, each
-    call within ``seconds``."""
+    call within ``seconds`` of CPU time."""
     import json
     import os
     import subprocess
@@ -258,9 +258,9 @@ def _timed_takes(lots, whole_only, *qtys: float, seconds: float = 1.0) -> list:
             "from celerp_docs.routes import _line_takes\n"
             "lots, whole_only, qtys = json.load(sys.stdin)\n"
             "for qty in qtys:\n"
-            "    t = time.perf_counter()\n"
+            "    t = time.process_time()\n"
             "    takes = _line_takes([tuple(x) for x in lots], whole_only, qty)\n"
-            "    print(json.dumps([time.perf_counter() - t, takes]), flush=True)\n")
+            "    print(json.dumps([time.process_time() - t, takes]), flush=True)\n")
     try:
         done = subprocess.run([sys.executable, "-c", code], input=json.dumps([lots, whole_only, qtys]),
                               capture_output=True, text=True, timeout=30 + 5 * len(qtys),

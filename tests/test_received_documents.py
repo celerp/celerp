@@ -1203,6 +1203,9 @@ def _tax(rate: float, *, compound: bool = False) -> list[dict]:
     pytest.param({"doc_taxes": _tax(7.0), "discount": 15.0}, id="document-tax"),
     pytest.param({"line_items": [{"description": "Widget", "quantity": 2, "unit_price": 100.0,
                                   "taxes": _tax(10.0)}]}, id="line-tax"),
+    pytest.param({"line_items": [{"description": "Widget", "quantity": 2, "unit_price": 100.0,
+                                  "taxes": _tax(5.0, compound=True)}]}, id="compound-line-tax"),
+    pytest.param({"doc_taxes": _tax(5.0, compound=True)}, id="compound-document-tax"),
 ])
 async def test_booked_quotation_keeps_currency_and_total_exactly(client, extra):
     tok = await _token(client)
@@ -1218,21 +1221,18 @@ async def test_booked_quotation_keeps_currency_and_total_exactly(client, extra):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("extra, reason", [
-    pytest.param({"shipping": 25.0}, "no shipping charge", id="shipping"),
-    pytest.param({"doc_taxes": _tax(5.0, compound=True)}, "no compound tax", id="compound-document-tax"),
-    pytest.param({"line_items": [{"description": "Widget", "quantity": 2, "unit_price": 100.0,
-                                  "taxes": _tax(5.0, compound=True)}]}, "no compound tax", id="compound-line-tax"),
+@pytest.mark.parametrize("extra", [
+    pytest.param({"shipping": 25.0}, id="shipping"),
     pytest.param({"doc_taxes": _tax(7.0),
                   "line_items": [{"description": "Widget", "quantity": 2, "unit_price": 100.0,
-                                  "taxes": _tax(10.0)}]}, "not both", id="line-and-document-tax"),
+                                  "taxes": _tax(10.0)}]}, id="line-and-document-tax"),
 ])
-async def test_quotation_that_would_change_the_total_is_not_booked(client, session, extra, reason):
+async def test_quotation_that_would_change_the_total_is_not_booked(client, session, extra):
     tok = await _token(client)
     rid = await _import(client, tok, _bundle(_po(**extra)))
     r = await client.post(f"/docs/received/{rid}/book", headers=_h(tok))
     assert r.status_code == 422
-    assert reason in r.json()["detail"]
+    assert r.json()["detail"]["code"] == "received_list_total"
     received = await _received(client, tok, rid)
     assert received["revision_state"] == "unbooked"
     assert received["booked_id"] is None
@@ -1422,6 +1422,8 @@ async def test_mark_reconciled_needs_a_booked_draft(client):
     pytest.param(lambda d: d["line_items"][0].update(unit_price="NaN"), id="line-nan"),
     pytest.param(lambda d: d.update(shipping="Infinity"), id="shipping-inf"),
     pytest.param(lambda d: d.update(doc_taxes=[{"code": "VAT", "rate": 7, "order": "NaN"}]), id="tax-order-nan"),
+    pytest.param(lambda d: d["line_items"][0].update(taxes=[{"code": "VAT", "rate": 7, "order": "NaN"}]),
+                 id="line-tax-order-nan"),
     pytest.param(lambda d: d.update(discount=float("-inf")), id="discount-neg-inf"),
 ])
 async def test_non_finite_number_is_rejected(client, patch_doc):
@@ -1540,3 +1542,47 @@ async def test_legacy_import_queued_for_a_connected_platform_stays_a_document(cl
 
     doc = await session.get(Projection, {"company_id": company_id, "entity_id": queued})
     assert doc is not None and doc.entity_type == "doc"
+
+
+_T1 = {"code": "T1", "rate": 10.0, "amount": 10.0, "order": 0, "is_compound": False, "label": ""}
+_T2 = {"code": "T2", "rate": 5.0, "amount": 5.5, "order": 1, "is_compound": True, "label": ""}
+# case -> the sender's line and header, and its money (subtotal, discount, tax, total)
+_LIST_BOOKABLE = {
+    "compound": ({"taxes": [_T1, _T2]}, {}, (100.0, 0.0, 15.5, 115.5)),
+    "header_discount": ({"taxes": [{**_T1, "amount": 9.0}]}, {"discount": 10, "discount_type": "flat"},
+                        (100.0, 10.0, 9.0, 99.0)),
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", sorted(_LIST_BOOKABLE))
+async def test_a_received_order_books_as_a_quotation_with_its_own_money(client, case):
+    """A quotation holds compound line taxes and a header discount taken off before tax, as a
+    document does, so a received purchase order carrying them books as a quotation of the same
+    total."""
+    line, header, (subtotal, discount, tax, total) = _LIST_BOOKABLE[case]
+    tok = await _token(client)
+    doc = _doc(doc_type="purchase_order", number="PO-3")
+    doc["line_items"] = [{**doc["line_items"][0], "quantity": 1, "unit_price": 100.0, "line_total": 100.0, **line}]
+    doc.update(header, subtotal=subtotal, discount_amount=discount, tax=tax, total=total)
+    rid = await _import(client, tok, _bundle(doc))
+    made = await _target(client, tok, await _book(client, tok, rid))
+    assert (made["subtotal"], made["discount_amount"], made["tax_amount"], made["total"]) == (
+        subtotal, discount, tax, total)
+
+
+@pytest.mark.asyncio
+async def test_a_received_order_a_quotation_cannot_total_is_refused_naming_both_totals(client):
+    """A quotation has no shipping, so a received order charging it cannot become one without
+    changing its total: booking is refused, in the reader's language, naming both totals."""
+    tok = await _token(client)
+    doc = _doc(doc_type="purchase_order", number="PO-4")
+    doc.update(shipping=5.0, subtotal=200.0, tax=0.0, total=205.0)
+    rid = await _import(client, tok, _bundle(doc))
+    r = await client.post(f"/docs/received/{rid}/book", headers=_h(tok))
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert detail["message"] == t("documents.err_received_list_total", total="205.00", list_total="200.00")
+    assert detail["message_key"] == "documents.err_received_list_total"
+    assert detail["params"] == {"total": "205.00", "list_total": "200.00"}
+    assert detail["code"] == "received_list_total"

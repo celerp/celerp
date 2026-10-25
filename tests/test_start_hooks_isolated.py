@@ -85,3 +85,27 @@ async def test_the_doctor_reports_but_does_not_repair_while_the_records_are_held
     r = await client.post("/admin/doctor", headers=auth["headers"])
     assert r.status_code == 200, r.text
     assert r.json()["mode"] == "dry-run"
+
+
+async def test_whatever_marks_the_records_current_also_clears_why_they_were_held_back():
+    """The flag and its cause are one pair: setting the records current while the cause stays
+    leaves the next refusal, notice or report naming a start that no longer holds them back."""
+    import ast
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    halves = []
+    for path in [root / "conftest.py", *(p for d in ("celerp", "default_modules", "tests")
+                                          for p in (root / d).rglob("*.py"))]:
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if not isinstance(node, ast.Assign):
+                continue
+            names = [t.attr for target in node.targets
+                     for t in (target.elts if isinstance(target, ast.Tuple) else [target])
+                     if isinstance(t, ast.Attribute)]
+            values = node.value.elts if isinstance(node.value, ast.Tuple) else [node.value]
+            current = [v for n, v in zip(names, values) if n == "data_current"]
+            if any(isinstance(v, ast.Constant) and v.value is True for v in current) \
+                    and "held_back" not in names:
+                halves.append(f"{path.relative_to(root)}:{node.lineno}")
+    assert halves == []

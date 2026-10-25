@@ -28,7 +28,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from unittest.mock import AsyncMock, patch
 
-from test_helpers import make_test_token
+from test_helpers import make_test_token, doc_version
 from test_ui import _mock_get_company  # noqa: F401  (autouse fixture: the company settings)
 
 
@@ -460,7 +460,7 @@ class TestLinesTotalAPIPreservation:
         patch_r = await client.patch(
             f"/docs/{entity_id}",
             headers=headers,
-            json={
+            json={"expected_version": await doc_version(client, headers, entity_id), 
                 "fields_changed": {
                     "line_items": {"old": None, "new": [updated_line]},
                     "subtotal": {"old": None, "new": 100.0},

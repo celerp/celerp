@@ -76,10 +76,18 @@ def _create(s, company_id, user, *entity_ids):
                            user=user, session=s)
 
 
-def _patch(s, company_id, user, entity_id, old_lines, new_lines, **extra):
+def _patch(s, company_id, user, entity_id, version, old_lines, new_lines, **extra):
     changed = {"line_items": {"old": old_lines, "new": new_lines}, **extra}
-    return docs.patch_doc(entity_id, docs.DocPatch(fields_changed=changed), company_id=company_id,
-                          _=None, role="admin", settings={}, user=user, session=s)
+    return docs.patch_doc(entity_id, docs.DocPatch(fields_changed=changed, expected_version=version),
+                          company_id=company_id, _=None, role="admin", settings={}, user=user, session=s)
+
+
+async def _version(engine, company_id, entity_id) -> int:
+    """The version a client that read the record now saves against."""
+    async with engine.connect() as conn:
+        return (await conn.execute(text(
+            "SELECT version FROM projections WHERE company_id = :c AND entity_id = :e"),
+            {"c": company_id, "e": entity_id})).scalar_one()
 
 
 async def _undone(factory, company_id, user, batch_id) -> None:
@@ -205,9 +213,10 @@ async def test_an_edit_adding_an_undone_item_is_refused(committed_engine):
         created = await _create(s, company_id, user, _KEPT)
     await _undone(factory, company_id, user, batch_id)
 
+    version = await _version(committed_engine, company_id, created["id"])
     async with factory() as s:
         outcome = (await asyncio.gather(
-            _patch(s, company_id, user, created["id"], [_line(_KEPT)], [_line(_KEPT), _line(_ITEM)]),
+            _patch(s, company_id, user, created["id"], version, [_line(_KEPT)], [_line(_KEPT), _line(_ITEM)]),
             return_exceptions=True))[0]
 
     _refused(outcome, line=2)
@@ -229,8 +238,9 @@ async def test_an_edit_keeps_a_line_whose_item_was_already_gone(committed_engine
 
     old = [_line(_ITEM)]
     new = [{**_line(_ITEM), "description": "kept as sold"}, _line(_KEPT)]
+    version = await _version(committed_engine, company_id, created["id"])
     async with factory() as s:
-        await _patch(s, company_id, user, created["id"], old, new)
+        await _patch(s, company_id, user, created["id"], version, old, new)
 
     assert await _records(committed_engine, company_id, "doc") == [(created["id"], [_ITEM, _KEPT])]
 
@@ -332,16 +342,12 @@ async def _with_a_line_already_gone(factory, engine, company_id, user, kind: str
     async with factory() as s:
         await erase_items(s, company_id, [_ITEM])
         await s.commit()
-    async with engine.connect() as conn:
-        version = (await conn.execute(text(
-            "SELECT version FROM projections WHERE company_id = :c AND entity_id = :e"),
-            {"c": company_id, "e": created["id"]})).scalar_one()
-    return created["id"], version
+    return created["id"], await _version(engine, company_id, created["id"])
 
 
 def _save(s, company_id, user, kind, entity_id, version, old, new):
     if kind == "doc":
-        return _patch(s, company_id, user, entity_id, old, new)
+        return _patch(s, company_id, user, entity_id, version, old, new)
     if kind == "list-page":
         page = docs.ListLinePagePatch(line_items=new, offset=0, original_count=len(old), expected_version=version)
         return docs.patch_list_line_page(entity_id, page, company_id=company_id, _=None, role="admin",

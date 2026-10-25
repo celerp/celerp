@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from celerp.models.ledger import LedgerEntry
 from fa_fixtures import FA
 from test_runs import _contributed, _lines, _lock, _managed_from, _movements, _notices, _owner_id, _run, _set_module
+from test_helpers import doc_version
 
 pytestmark = pytest.mark.asyncio
 
@@ -170,7 +171,8 @@ async def _patch(fa: FA, doc_id: str, lines: list[dict], **fields):
     """Edit a draft's lines (and any header fields) as the document page does."""
     changed = {"line_items": {"new": lines}, **{k: {"new": v} for k, v in fields.items()}}
     return await _discard_refused(fa, await fa.client.patch(f"/docs/{doc_id}", headers=fa.h,
-                                                            json={"fields_changed": changed}))
+                                                            json={"fields_changed": changed,
+                                                                  "expected_version": await doc_version(fa.client, fa.h, doc_id)}))
 
 
 async def _patch_lines(fa: FA, doc_id: str, lines: list[dict], **fields) -> None:

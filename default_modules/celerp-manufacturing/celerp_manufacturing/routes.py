@@ -1530,7 +1530,14 @@ async def patch_work_center(
     if "name" in fields:
         if not (fields["name"] or "").strip():
             raise HTTPException(status_code=422, detail=t("manufacturing.err_wc_name_required"))
-        wc.name = fields["name"].strip()
+        new_name = fields["name"].strip()
+        wc.name = new_name
+        # Write the name now: a later read would flush it first, outside the check below.
+        try:
+            await session.flush()
+        except IntegrityError as exc:
+            await session.rollback()
+            raise _wc_conflict(exc, new_name)
     if "wip_location_id" in fields:
         wc.wip_location_id = await _wip_location(session, company_id, fields["wip_location_id"])
     if "labor_rate" in fields:

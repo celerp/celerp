@@ -196,7 +196,7 @@ def setup_physical_routes(app) -> None:
         try:
             r = await api.fixed_assets_download(token, path)
         except APIError as e:
-            return Response(_error_text(e), status_code=e.status)
+            return api.refusal_response(e)
         return Response(r.content, media_type=r.headers.get("content-type", "application/octet-stream"),
                         headers={k: v for k, v in r.headers.items() if k.lower() == "content-disposition"})
 

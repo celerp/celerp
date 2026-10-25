@@ -11,7 +11,7 @@ from sqlalchemy import select
 
 from celerp.models.ledger import LedgerEntry
 from ui.i18n import t
-from test_helpers import sell_item
+from test_helpers import sell_item, doc_version
 
 
 async def _register(client, email: str | None = None) -> str:
@@ -1651,7 +1651,7 @@ async def test_bill_category_and_receive_as_preserved_after_finalize(client, ses
     bill_id = bill_r.json()["id"]
 
     # Simulate autosave: patch with the same line items (as the JS now collects them)
-    patch_r = await client.patch(f"/docs/{bill_id}", headers=h, json={
+    patch_r = await client.patch(f"/docs/{bill_id}", headers=h, json={"expected_version": await doc_version(client, h, bill_id), 
         "fields_changed": {
             "line_items": {
                 "old": None,

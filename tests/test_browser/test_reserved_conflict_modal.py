@@ -200,6 +200,71 @@ def test_conflict_modal_removes_line(page, ui_server, api):
     assert _row_count(page, eid_ok) == 1, "Reloaded draft must keep the plain line"
 
 
+def test_a_late_refusal_for_removed_rows_does_not_reopen_the_dialog(page, ui_server, api):
+    """A save sent before the user chose "Remove from draft" can come back refused after it.
+    Its conflicts name rows that are no longer on the page, so the dialog stays closed and the
+    clean save that follows the removal persists."""
+    sku_res = f"RESMOD-LATE-{uuid.uuid4().hex[:6]}"
+    eid_res = _create_item(api, sku_res)
+    _reserve_on_new_invoice(api, sku_res, eid_res)
+    sku_ok = f"RESMOD-PLAIN-{uuid.uuid4().hex[:6]}"
+    eid_ok = _create_item(api, sku_ok)
+    draft_id = _create_draft_invoice(api, f"RESMOD-DRAFT-{uuid.uuid4().hex[:6]}", [
+        {"sku": sku_ok, "name": sku_ok, "quantity": 1, "unit_price": 50.0,
+         "line_total": 50.0, "entity_id": eid_ok},
+    ], total=50.0)
+
+    page.goto(f"{ui_server}/docs/{draft_id}", wait_until="domcontentloaded")
+    _picker_add(page, sku_res)
+    dlg = page.locator("#reserved-conflict-modal")
+    dlg.wait_for(state="visible", timeout=5000)
+    page.keyboard.press("Escape")
+    dlg.wait_for(state="detached", timeout=5000)
+
+    # Hold line saves so their order is fixed: two saves queue with the reserved row on the page.
+    held, hold = [], {"on": True}
+
+    def _hold_saves(route):
+        if hold["on"] and route.request.method == "POST":
+            held.append(route)
+        else:
+            route.continue_()
+
+    def _release(route):
+        route.fulfill(response=route.fetch())
+
+    page.route("**/lines", _hold_saves)
+    # Not awaited: the saves resolve only as the test releases them.
+    page.evaluate("() => { _celerpPersist(); _celerpPersist(); }")
+    for _ in range(40):
+        if held:
+            break
+        page.wait_for_timeout(50)
+    _release(held[0])
+    dlg.wait_for(state="visible", timeout=5000)
+    for _ in range(40):
+        if len(held) == 2:
+            break
+        page.wait_for_timeout(50)
+    assert len(held) == 2, "The second save must be in flight with the reserved row before removal"
+
+    dlg.locator("button:has-text('Remove from draft')").click()
+    dlg.wait_for(state="detached", timeout=5000)
+    hold["on"] = False
+    _release(held[1])
+
+    skus = None
+    for _ in range(20):
+        doc = api.get(f"/docs/{draft_id}").json()
+        skus = [li.get("sku") for li in doc.get("line_items", [])]
+        if skus == [sku_ok]:
+            break
+        page.wait_for_timeout(250)
+    assert skus == [sku_ok], f"The save after removal must persist only the plain line, got {skus}"
+    assert dlg.count() == 0, "A refusal for rows already removed must not reopen the dialog"
+    assert _row_count(page, eid_res) == 0
+
+
 def test_scan_refuses_reserved_lot_naming_holder(page, ui_server, api):
     """A scanned foreign-reserved lot never reaches the draft: the scan bar names the
     reserving document, keeps the code in the field, and no line is stored."""

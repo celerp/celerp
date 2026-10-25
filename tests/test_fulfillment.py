@@ -15,6 +15,7 @@ from celerp.services.company_lock import locked_company
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, User
 from ui.i18n import t
+from test_helpers import doc_version
 
 
 # ---------------------------------------------------------------------------
@@ -763,7 +764,7 @@ async def test_patch_doc_cannot_delete_fulfilled_line_item(client, session, auth
         li for li in doc_state.get("line_items", [])
         if (li.get("entity_id") or li.get("item_id")) != item_id
     ]
-    r = await client.patch(f"/docs/{doc_id}", headers=auth["headers"], json={
+    r = await client.patch(f"/docs/{doc_id}", headers=auth["headers"], json={"expected_version": await doc_version(client, auth["headers"], doc_id), 
         "fields_changed": {"line_items": {"new": remaining_lines}},
     })
     if sent_out_by == "elsewhere":
@@ -1784,7 +1785,7 @@ async def test_patch_doc_rejects_adding_foreign_reserved_line(client, session, a
     assert rd.status_code == 200, rd.text
     draft_id = rd.json()["id"]
 
-    rp = await client.patch(f"/docs/{draft_id}", headers=auth["headers"], json={
+    rp = await client.patch(f"/docs/{draft_id}", headers=auth["headers"], json={"expected_version": await doc_version(client, auth["headers"], draft_id), 
         "fields_changed": {"line_items": {"new": [
             own_line,
             {"sku": res_sku, "name": res_sku, "quantity": 1, "unit_price": 100.0,
@@ -1795,7 +1796,7 @@ async def test_patch_doc_rejects_adding_foreign_reserved_line(client, session, a
     assert "release it there first" in rp.text
 
     # Re-sending the doc's own lines passes: the guard only sees newly added lines.
-    rk = await client.patch(f"/docs/{draft_id}", headers=auth["headers"], json={
+    rk = await client.patch(f"/docs/{draft_id}", headers=auth["headers"], json={"expected_version": await doc_version(client, auth["headers"], draft_id), 
         "fields_changed": {"line_items": {"new": [own_line]}},
     })
     assert rk.status_code == 200, rk.text
@@ -1814,7 +1815,7 @@ async def test_patch_doc_allows_own_reserved_line(client, session, auth, _setup_
 
     rd = await client.get(f"/docs/{owner_doc}", headers=auth["headers"])
     assert rd.status_code == 200, rd.text
-    rp = await client.patch(f"/docs/{owner_doc}", headers=auth["headers"], json={
+    rp = await client.patch(f"/docs/{owner_doc}", headers=auth["headers"], json={"expected_version": await doc_version(client, auth["headers"], owner_doc), 
         "fields_changed": {"line_items": {"new": rd.json().get("line_items") or []}},
     })
     assert rp.status_code == 200, rp.text
@@ -1935,7 +1936,7 @@ async def test_reserved_conflict_detail_structured(client, session, auth, _setup
         "doc_type": "invoice", "line_items": [],
     })
     assert rd.status_code == 200, rd.text
-    rp = await client.patch(f"/docs/{rd.json()['id']}", headers=auth["headers"], json={
+    rp = await client.patch(f"/docs/{rd.json()['id']}", headers=auth["headers"], json={"expected_version": await doc_version(client, auth["headers"], rd.json()['id']), 
         "fields_changed": {"line_items": {"new": [
             {"sku": sku, "name": sku, "quantity": 1, "unit_price": 100.0, "entity_id": eid},
         ]}},
@@ -3091,7 +3092,7 @@ async def test_a_lot_out_on_a_memo_is_refused_on_another_document(client, auth, 
 
     other = await client.post("/docs", headers=auth["headers"], json={"doc_type": doc_type, "line_items": []})
     assert other.status_code == 200, other.text
-    r = await client.patch(f"/docs/{other.json()['id']}", headers=auth["headers"], json={
+    r = await client.patch(f"/docs/{other.json()['id']}", headers=auth["headers"], json={"expected_version": await doc_version(client, auth["headers"], other.json()['id']), 
         "fields_changed": {"line_items": {"new": [line]}}})
     assert r.status_code == 422, r.text
     assert f"out on memo {memo_no}" in r.json()["detail"]["message"]
@@ -3167,6 +3168,6 @@ async def test_source_memo_cannot_be_claimed_by_a_client(client, auth):
         "doc_type": "invoice", "source_memo_id": memo_id, "line_items": [line]})
     assert r.status_code == 422, r.text
     inv = await client.post("/docs", headers=auth["headers"], json={"doc_type": "invoice", "line_items": []})
-    r = await client.patch(f"/docs/{inv.json()['id']}", headers=auth["headers"], json={
+    r = await client.patch(f"/docs/{inv.json()['id']}", headers=auth["headers"], json={"expected_version": await doc_version(client, auth["headers"], inv.json()['id']), 
         "fields_changed": {"source_memo_id": {"new": memo_id}, "line_items": {"new": [line]}}})
     assert r.status_code == 422, r.text

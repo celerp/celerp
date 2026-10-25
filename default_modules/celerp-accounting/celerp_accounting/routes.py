@@ -62,7 +62,7 @@ from celerp.services.je_keys import je_void_data
 from celerp.services.journal_accounts import require_destinations
 from celerp.services.line_measures import line_label
 from celerp.services.money import (
-    checked_exchange_rate, currency_dp, round_money, to_base, to_decimal, to_stored_float,
+    checked_exchange_rate, currency_dp, require_line_amount, round_money, to_base, to_decimal, to_stored_float,
 )
 from celerp.services.permissions import locked_authority, require_permission
 from celerp.schemas.numbers import FiniteFloat
@@ -1388,9 +1388,7 @@ def _doc_item_lines(doc: dict, base: str) -> list[dict]:
     out: list[dict] = []
     for li in doc.get("line_items") or []:
         try:
-            net = (to_decimal(li.get("line_total") or 0)
-                   or to_decimal(li.get("quantity") or 0) * to_decimal(li.get("unit_price") or 0))
-            line_total = round_money(net, currency)
+            line_total = require_line_amount(li, currency)
         except (ArithmeticError, TypeError, ValueError):
             return []
         if line_total <= 0:

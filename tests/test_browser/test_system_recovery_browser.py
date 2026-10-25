@@ -195,33 +195,35 @@ def test_failed_recovery_shows_its_outcome_after_signing_in_again_browser(
     monkeypatch.setattr(config, "replace_enabled_modules", lambda names: False)
     monkeypatch.setattr(system, "_send_sigterm", lambda: None)
     (tmp_path / "data").mkdir()
-    try:
-        page.goto(f"{ui_server}/settings/system-recovery", wait_until="domcontentloaded")
-        page.on("dialog", lambda d: d.accept())
-        page.set_input_files("#backup-import-input", _archive(tmp_path / "whole.celerp-backup", dump))
-        page.wait_for_selector("#backup-flash .flash--error", timeout=_WAIT_MS)
-        flash = page.locator("#backup-flash").inner_text()
-        assert "System Recovery did not complete" in flash and "DuplicateColumn" in flash
-        assert t("system_recovery.failed_signed_out", "en") in flash
-        assert _company_names(url) == names
+    # The safety copy is checked like any backup: it needs the history every install has.
+    with released_migration_history(settings.database_url):
+        try:
+            page.goto(f"{ui_server}/settings/system-recovery", wait_until="domcontentloaded")
+            page.on("dialog", lambda d: d.accept())
+            page.set_input_files("#backup-import-input", _archive(tmp_path / "whole.celerp-backup", dump))
+            page.wait_for_selector("#backup-flash .flash--error", timeout=_WAIT_MS)
+            flash = page.locator("#backup-flash").inner_text()
+            assert "System Recovery did not complete" in flash and "DuplicateColumn" in flash
+            assert t("system_recovery.failed_signed_out", "en") in flash
+            assert _company_names(url) == names
 
-        page.click('#backup-flash a:has-text("Sign in")')
-        page.wait_for_selector("#email", timeout=_WAIT_MS)
-        assert t("auth.recovery_failed_signin", "en") in page.content()
-        assert "DuplicateColumn" not in page.content()
+            page.click('#backup-flash a:has-text("Sign in")')
+            page.wait_for_selector("#email", timeout=_WAIT_MS)
+            assert t("auth.recovery_failed_signin", "en") in page.content()
+            assert "DuplicateColumn" not in page.content()
 
-        clear_session_registry()
-        page.fill("#email", seeded_user["email"])
-        page.fill("#password", seeded_user["password"])
-        page.click('button[type="submit"]')
-        page.wait_for_selector("#main-content", timeout=_WAIT_MS)
-        outcome = page.locator("#main-content .flash--error").first
-        outcome.wait_for(timeout=_WAIT_MS)
-        assert "System Recovery did not complete" in outcome.inner_text()
-        assert "DuplicateColumn" in outcome.inner_text()
+            clear_session_registry()
+            page.fill("#email", seeded_user["email"])
+            page.fill("#password", seeded_user["password"])
+            page.click('button[type="submit"]')
+            page.wait_for_selector("#main-content", timeout=_WAIT_MS)
+            outcome = page.locator("#main-content .flash--error").first
+            outcome.wait_for(timeout=_WAIT_MS)
+            assert "System Recovery did not complete" in outcome.inner_text()
+            assert "DuplicateColumn" in outcome.inner_text()
 
-        page.reload(wait_until="domcontentloaded")
-        page.wait_for_selector("#main-content", timeout=_WAIT_MS)
-        assert "did not complete" not in page.locator("#main-content").inner_text()
-    finally:
-        _set_auth_cookie(page.context, api.headers["Authorization"].split(" ", 1)[1])
+            page.reload(wait_until="domcontentloaded")
+            page.wait_for_selector("#main-content", timeout=_WAIT_MS)
+            assert "did not complete" not in page.locator("#main-content").inner_text()
+        finally:
+            _set_auth_cookie(page.context, api.headers["Authorization"].split(" ", 1)[1])

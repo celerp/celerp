@@ -16,13 +16,14 @@ import socket
 import subprocess
 import sys
 import tempfile
-import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import urlsplit
 
 import httpx
+
+from boot_support import Supervised, wait_until_started
 
 REPO = Path(__file__).resolve().parents[2]
 _worker = os.environ.get("PYTEST_XDIST_WORKER", "")
@@ -76,7 +77,7 @@ class FreshInstall:
         self.api = f"http://127.0.0.1:{API_PORT}"
         self.ui = f"http://127.0.0.1:{UI_PORT}"
         self.tmp = Path(tempfile.mkdtemp(prefix="celerp-first-run-"))
-        self.procs: list[subprocess.Popen] = []
+        self.servers: Supervised | None = None
 
     def _spawn(self, app: str, port: int, env: dict) -> subprocess.Popen:
         with open(self.tmp / f"{port}.log", "ab") as log:
@@ -105,44 +106,25 @@ class FreshInstall:
             "API_URL": self.api,
             "CELERP_API_URL": self.api,
         })
-        self._launch()
-        self._stopping = threading.Event()
-        self._supervisor = threading.Thread(target=self._supervise, daemon=True)
-        self._supervisor.start()
+        self.servers = Supervised(self._launch, self.restart_requested)
+        wait_until_started(self.api)
 
-    def _launch(self) -> None:
-        api = self._spawn("celerp.main:app", API_PORT, self.env)
-        self.procs = [api]
-        _wait_http(f"{self.api}/health", api)
-        ui = self._spawn("ui.app:app", UI_PORT, self.env)
-        self.procs.append(ui)
-        _wait_http(f"{self.ui}/health", ui)
-
-    def _supervise(self) -> None:
-        """Start both servers again when the API stops after asking for a restart, as the
-        desktop app does: choosing a business type on a new install restarts Celerp to load
-        the type's modules."""
-        while not self._stopping.wait(0.2):
-            if self.procs[0].poll() is None:
-                continue
-            if not self.restart_requested.exists():
-                return
-            self.restart_requested.unlink()
-            self.procs[1].terminate()
-            self.procs[1].wait(timeout=10)
-            self._launch()
+    def _launch(self) -> tuple[subprocess.Popen, subprocess.Popen]:
+        procs = [self._spawn("celerp.main:app", API_PORT, self.env)]
+        try:
+            _wait_http(f"{self.api}/health", procs[0])
+            procs.append(self._spawn("ui.app:app", UI_PORT, self.env))
+            _wait_http(f"{self.ui}/health", procs[1])
+        except Exception:
+            for proc in procs:
+                proc.kill()
+            raise
+        return procs[0], procs[1]
 
     def stop(self) -> None:
-        self._stopping.set()
-        self._supervisor.join()
-        for p in self.procs:
-            p.terminate()
-        for p in self.procs:
-            try:
-                p.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                p.kill()
-        self.procs = []
+        if self.servers:
+            self.servers.stop()
+            self.servers = None
 
     def reset(self) -> None:
         """Back to a new install: no owner, no company, a fresh config."""

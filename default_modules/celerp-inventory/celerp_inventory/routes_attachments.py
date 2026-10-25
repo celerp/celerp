@@ -34,6 +34,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
 from celerp.events.engine import emit_event
+from celerp.importers.tabular import ZIP_ERRORS, check_zip_member, read_zip_member, zip_directory_fits
 from celerp.models.projections import Projection
 from celerp.services.attachments import (
     AttachmentType,
@@ -256,21 +257,21 @@ async def bulk_attach_files(
     import mimetypes as _mt
     from starlette.datastructures import Headers as _Headers
 
-    if not zipfile.is_zipfile(file.file):
-        raise HTTPException(status_code=422, detail=t("inventory.err_zip_invalid"))
-    file.file.seek(0)
-    zf = zipfile.ZipFile(file.file)
-    entries = [info for info in zf.infolist() if not info.is_dir()]
+    too_many = t("inventory.err_zip_too_many_files", max=_BULK_MAX_ENTRIES)
+    if not zip_directory_fits(file.file):
+        raise HTTPException(status_code=422, detail=too_many)
+    try:
+        zf = zipfile.ZipFile(file.file)
+        entries = [info for info in zf.infolist() if not info.is_dir()]
+        for info in entries:  # before any is read, so a zip is taken whole or not at all
+            check_zip_member(info)
+    except ZIP_ERRORS:
+        raise HTTPException(status_code=422, detail=t("inventory.err_zip_invalid")) from None
     if len(entries) > _BULK_MAX_ENTRIES:
-        raise HTTPException(
-            status_code=422,
-            detail=f"The ZIP holds {len(entries)} files; split it into archives of at most {_BULK_MAX_ENTRIES}",
-        )
+        raise HTTPException(status_code=422, detail=too_many)
     if sum(info.file_size for info in entries) > _BULK_MAX_UNPACKED:
-        raise HTTPException(
-            status_code=422,
-            detail=f"The ZIP unpacks to more than {_BULK_MAX_UNPACKED // 1024 ** 3} GB; split it into smaller archives",
-        )
+        raise HTTPException(status_code=422, detail=t("inventory.err_zip_too_large",
+                                                       gb=_BULK_MAX_UNPACKED // 1024 ** 3))
 
     rows = (
         await session.execute(
@@ -326,7 +327,7 @@ async def bulk_attach_files(
                 meta = None
                 try:
                     check_file_size(info.file_size)  # before anything is decompressed
-                    raw = zf.read(info)
+                    raw = read_zip_member(zf, info)
                     guessed_mime = _mt.guess_type(name)[0] or "application/octet-stream"
                     upload = UploadFile(
                         file=io.BytesIO(raw),

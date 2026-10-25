@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import atexit
 import os
 import shutil
 import sys
@@ -17,7 +18,8 @@ os.environ.setdefault("PYTHONPYCACHEPREFIX", os.path.join(tempfile.gettempdir(),
 sys.pycache_prefix = sys.pycache_prefix or os.environ["PYTHONPYCACHEPREFIX"]
 
 from conftest_support import (
-    is_own_test_config, provision_worker_db, resolve_worker_config, resolve_worker_data_dir)
+    is_own_test_config, provision_worker_db, resolve_worker_config, resolve_worker_data_dir, skip_relay_check_in,
+    worker_label)
 
 # Must be set before celerp.config is imported (JWT guard fires at module load).
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
@@ -37,23 +39,27 @@ if _inherited_data_dir:
 # mid-write (a torn read raises tomllib.TOMLDecodeError) and leaks one test's
 # instance_id/token into the next. resolve_worker_config is the shared rule (see
 # its docstring for why a plain setdefault does not achieve this under xdist).
-_worker = os.environ.get("PYTEST_XDIST_WORKER", "main")
+# The file is this run's alone (worker_label), so it starts empty and another suite
+# running at once on this machine never reads or writes it.
+_worker = worker_label(os.environ)
 os.environ["CELERP_CONFIG"] = resolve_worker_config(os.environ.get("CELERP_CONFIG"), _worker)
 
-# Start from a clean config: a temp file left by a previous local run (e.g. a
-# persisted [cloud] disconnected = true from the disconnect endpoint) must not
-# leak into this session. Scoped to our own temp path so a real CELERP_CONFIG
-# passed in by CI is never touched.
-_cfg_start = os.environ["CELERP_CONFIG"]
-if is_own_test_config(_cfg_start) and os.path.exists(_cfg_start):
-    os.remove(_cfg_start)
-
-# Per-worker data directory, emptied at start, for the same reason: the default ./data
-# is shared with every other worker and with any app booted from this checkout.
-_data_own = resolve_worker_data_dir(None, _worker)
+# Per-worker data directory, for the same reason: the default ./data is shared with
+# every other worker and with any app booted from this checkout.
 os.environ["DATA_DIR"] = resolve_worker_data_dir(os.environ.get("DATA_DIR"), _worker)
-if os.environ["DATA_DIR"] == _data_own:
-    shutil.rmtree(_data_own, ignore_errors=True)
+
+
+_own_config, _own_data = os.environ["CELERP_CONFIG"], os.environ["DATA_DIR"]
+
+
+@atexit.register
+def _remove_own_temp_files() -> None:
+    """Remove this run's config and data directory, never a real CELERP_CONFIG or DATA_DIR passed in."""
+    if is_own_test_config(_own_config):
+        Path(_own_config).unlink(missing_ok=True)
+    if _own_data == resolve_worker_data_dir(None, _worker):
+        shutil.rmtree(_own_data, ignore_errors=True)
+
 
 # ── Postgres for the whole test suite ──────────────────────────────────────────
 # Both production targets (the server and the Electron embedded-postgres build)
@@ -729,16 +735,6 @@ def _refuse_live_database():
 from celerp.models.base import Base
 import celerp.models.marketplace  # noqa: F401,E402 - registers marketplace_configs, as celerp/migrations/env.py does
 
-@pytest.fixture
-def no_relay_check_in(monkeypatch):
-    """A lifespan under test never reaches the real relay: its activation check-in would
-    be cut off mid-connect at shutdown, leaving an open socket for a later test to collect."""
-    from unittest.mock import AsyncMock
-    import celerp.main as main_mod
-    monkeypatch.setattr(main_mod, "_try_auto_activate", AsyncMock())
-    monkeypatch.setattr(main_mod, "_try_sync_existing_entitlement", AsyncMock())
-
-
 # Session-scoped engine: created once, shared across all tests to avoid OOM from
 # 1000+ engine create/dispose cycles when test_ui.py + test_routers/ run together.
 @pytest_asyncio.fixture(scope="session")
@@ -873,7 +869,9 @@ async def auth(session, ids):
 
 @pytest_asyncio.fixture
 async def client(session: AsyncSession):
+    import asyncio
     from httpx import ASGITransport, AsyncClient
+    from celerp.services import background
     from celerp.services.session_tracker import clear as _clear_tracker
     from celerp.gateway.state import set_session_token as _set_session_token
     from unittest.mock import patch, MagicMock
@@ -928,8 +926,12 @@ async def client(session: AsyncSession):
          patch("celerp.db.LifecycleSessionLocal", lifecycle_factory):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             yield c
+        # Work a request left running (an email send and its receipt) finishes on this
+        # test's loop: cut off by the loop closing, it would leave its connection open.
+        await asyncio.gather(*list(background._BG_TASKS), return_exceptions=True)
     app.dependency_overrides.clear()
-    app.state.data_current = True  # a test that started on held-back records leaves none behind
+    # A test that started on held-back records leaves neither the flag nor its cause behind.
+    app.state.data_current, app.state.held_back = True, None
     await _clear_tracker(session)
     _set_session_token(_saved_token or "")
 
@@ -1004,3 +1006,64 @@ def connector_modules_running(monkeypatch):
     """Record the modules connectors write into as loaded: Inventory, Documents and Contacts."""
     from test_helpers import mark_running
     mark_running(monkeypatch, "celerp-inventory", "celerp-docs", "celerp-contacts")
+
+
+@pytest.fixture(autouse=True)
+def no_connection_off_this_machine(monkeypatch):
+    """Refuse, and fail the test for, any connection to a host but this machine or the
+    test database. Code left unstubbed would otherwise reach the live relay, and its
+    socket outlives the test and fails a later one; refused, it takes its offline path.
+    Yields the connections refused so far, for a test about the guard itself."""
+    import errno
+    import ipaddress
+    import socket
+    import traceback
+    from sqlalchemy.engine import make_url
+    from celerp.config import settings
+
+    db_host = make_url(settings.database_url).host
+    allowed = {socket.gethostbyname(db_host)} if db_host else set()
+    reached = []
+
+    def _off_machine(address):
+        try:
+            return address[0] not in allowed and not ipaddress.ip_address(address[0]).is_loopback
+        except (TypeError, ValueError, IndexError):
+            return False
+
+    def _refusing(real, refuse):
+        def _connect(sock, address):
+            if not _off_machine(address):
+                return real(sock, address)
+            # Where it was opened from, so the failure names the code to stub.
+            reached.append((address, "".join(traceback.format_stack(limit=25))))
+            return refuse(address)
+        return _connect
+
+    def _raise(address):
+        raise ConnectionRefusedError(errno.ECONNREFUSED, f"tests do not connect off this machine: {address}")
+
+    monkeypatch.setattr(socket.socket, "connect", _refusing(socket.socket.connect, _raise))
+    monkeypatch.setattr(socket.socket, "connect_ex", _refusing(socket.socket.connect_ex, lambda _: errno.ECONNREFUSED))
+    yield reached
+    assert not reached, "connected off this machine:\n" + "\n".join(f"{a} from\n{stack}" for a, stack in reached)
+
+
+@pytest.fixture(autouse=True)
+def account_methods_offline(monkeypatch):
+    """Answer the screens' account-methods request as the API does when the relay is
+    unreachable. Opening a document refreshes the free-send quota from it in a task that
+    outlives the test. A test about the answer patches it again itself."""
+    import ui.api_client as api
+
+    async def _offline(token):
+        return {"google": False, "free_email_quota": 0, "google_start_url": ""}
+
+    monkeypatch.setattr(api, "account_methods", _offline)
+
+
+@pytest.fixture
+def relay_not_called_at_boot(no_connection_off_this_machine, monkeypatch):
+    """Boot without checking in with the relay (skip_relay_check_in). A test that wants the
+    check-in patches it again itself."""
+    skip_relay_check_in(monkeypatch.setattr)

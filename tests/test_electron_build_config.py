@@ -516,6 +516,9 @@ def test_windows_install_over_the_running_app_requires_the_app_running_first():
     for name in ('"Celerp"', '"python"', '"postgres"'):
         assert name in running_app
     assert "/health/ready" in running_app and "Fail " in running_app
+    # The processes are kept as values read while the app runs: a process object looks up its path and
+    # start time by id when first asked, after the install that may be another process with a reused id.
+    assert running_app.rstrip().endswith("$procs | Select-Object Id, Name, Path, StartTime")
     assert over.index("$before = RunningApp $installDir $port") < over.index("InstallSetup $setup")
     assert "Get-Process -Id $_.Id" in over and "$p.StartTime -eq $_.StartTime" in over
     assert over.index("InstallSetup $setup") < over.index("TreeMatches $installDir") < over.index("Launch $exe")

@@ -498,26 +498,22 @@ def test_derived_doc_totals_suppressed_in_summary():
     assert _fields_changed_summary({"subtotal": {"old": 20, "new": 30}, "total": {"old": 20, "new": 30}}) == ""
 
 
-def test_per_item_tax_change_shows_pct_and_amount():
-    """#156: a per-item tax-rate change names the item, the % change, and the amount -
-    not a bare, item-less document-level 'Tax: 0.00 → 503.44'."""
+def test_per_item_tax_change_names_the_item_and_the_tax_charged():
+    """#156: a per-item tax-rate change names the item and the % change, then the tax the document
+    charges as it was recalculated (here 7% of 7192 less a 10% header discount), once and never a
+    bare, item-less 'Tax: 0.00 → 453.10' alone. A line's own amount is not worked out again from
+    the line: the discount and rounding of the whole document decide it."""
     from ui.components.activity import _fields_changed_summary
-    fields = {
-        "line_items": {
-            "old": [{"sku": "DEMO-AUTO-007", "name": "Widget", "quantity": 1,
-                     "unit_price": 7192, "line_total": 7192, "tax_rate": 0}],
-            "new": [{"sku": "DEMO-AUTO-007", "name": "Widget", "quantity": 1,
-                     "unit_price": 7192, "line_total": 7192, "tax_rate": 7}],
-        },
-        # the document-level scalar that today renders as a bare, item-less amount
-        "tax": {"old": 0.0, "new": 503.44},
-        "tax_amount": {"old": 0.0, "new": 503.44},
+    lines = {
+        "old": [{"sku": "DEMO-AUTO-007", "name": "Widget", "quantity": 1,
+                 "unit_price": 7192, "line_total": 7192, "tax_rate": 0}],
+        "new": [{"sku": "DEMO-AUTO-007", "name": "Widget", "quantity": 1,
+                 "unit_price": 7192, "line_total": 7192, "tax_rate": 7}],
     }
-    summary = _fields_changed_summary(fields, "USD")
-    assert "DEMO-AUTO-007 Tax 0% → 7%" in summary  # 7192 × 7% = 503.44
-    assert "503.44" in summary
-    # the bare, item-less document-level tax scalar is suppressed (no "Tax: 0.00 → 503.44")
-    assert "Tax: " not in summary
+    for scalar in ("tax", "tax_amount"):  # a document's tax amount, a list's
+        summary = _fields_changed_summary({"line_items": lines, scalar: {"old": 0.0, "new": 453.10}}, "USD")
+        assert summary.startswith("DEMO-AUTO-007 Tax 0% → 7%"), summary
+        assert summary.count("453.10") == 1 and "503.44" not in summary, summary
 
 
 def test_per_item_tax_change_reads_structured_taxes():
@@ -527,10 +523,10 @@ def test_per_item_tax_change_reads_structured_taxes():
         "old": [{"sku": "A", "name": "A", "line_total": 1000, "taxes": []}],
         "new": [{"sku": "A", "name": "A", "line_total": 1000,
                  "taxes": [{"code": "VAT", "rate": 10.0}]}],
-    }}
+    }, "tax": {"old": 0, "new": 100}}
     summary = _fields_changed_summary(fields, "USD")
     assert "A Tax 0% → 10%" in summary
-    assert "100.00" in summary  # 1000 × 10%
+    assert "100.00" in summary
 
 
 def test_doc_tax_scalar_kept_when_no_per_item_change():

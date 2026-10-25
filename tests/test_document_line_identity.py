@@ -12,6 +12,7 @@ import pytest
 
 from test_cost_restatement import _item, _state
 from stock_books import assert_settled
+from test_helpers import doc_version
 
 
 async def _invoice(client, auth, lines: list[dict]):
@@ -42,7 +43,7 @@ async def test_an_edit_that_gives_a_line_a_second_item_is_refused_and_changes_no
     assert r.status_code == 200, r.text
     doc_id = r.json()["id"]
     stored = (await _state(session, auth, doc_id))["line_items"]
-    r = await client.patch(f"/docs/{doc_id}", headers=auth["headers"], json={
+    r = await client.patch(f"/docs/{doc_id}", headers=auth["headers"], json={"expected_version": await doc_version(client, auth["headers"], doc_id), 
         "fields_changed": {"line_items": {"old": stored, "new": [dict(stored[0], entity_id=b)]}}})
     assert r.status_code == 422, r.text
     assert r.json()["detail"]["code"] == "conflicting_reference"
