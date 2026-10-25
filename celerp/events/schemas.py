@@ -1313,7 +1313,7 @@ class SubExpired(BaseModel):
 
 
 class ListTotals(BaseModel):
-    """The totals a list event gives the list, written with it (doc_projections.with_list_totals)."""
+    """The totals a list event gives the list, written with it (emit_event stamps it: doc_projections.with_list_totals)."""
     subtotal: float
     discount_amount: float
     tax_amount: float

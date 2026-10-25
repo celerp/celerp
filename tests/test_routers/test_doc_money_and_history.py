@@ -16,7 +16,7 @@ import pytest
 from sqlalchemy import select
 
 from celerp.models.ledger import LedgerEntry
-from celerp_docs.doc_projections import _recalc_list_totals
+from celerp_docs.doc_money import list_totals
 from ui.components.activity import _fields_changed_summary
 
 
@@ -33,11 +33,11 @@ def _h(token: str) -> dict:
 
 # ── Issue 1: money precision ──────────────────────────────────────────────────
 
-class TestRecalcListTotalsRounds:
-    """_recalc_list_totals must round every monetary result to currency precision."""
+class TestListTotalsRound:
+    """list_totals must round every monetary result to currency precision."""
 
     def test_usd_tax_has_no_float_tail(self):
-        state = _recalc_list_totals({"currency": "USD", "line_items": [{"line_total": 4950, "tax_rate": 7}]})
+        state = list_totals({"currency": "USD", "line_items": [{"line_total": 4950, "tax_rate": 7}]})
         assert state["tax_amount"] == 346.5
         assert state["total"] == 5296.5
         # No IEEE-754 residue once stored.
@@ -45,13 +45,13 @@ class TestRecalcListTotalsRounds:
         assert "0000000" not in repr(state["total"])
 
     def test_zero_decimal_currency_rounds_to_whole_units(self):
-        state = _recalc_list_totals({"currency": "JPY", "line_items": [{"line_total": 4950, "tax_rate": 7}]})
+        state = list_totals({"currency": "JPY", "line_items": [{"line_total": 4950, "tax_rate": 7}]})
         assert state["tax_amount"] == 347.0  # 346.5 -> 347 at 0 dp (HALF_UP)
         assert state["total"] == 5297.0
 
     def test_percentage_discount_reduces_taxable_base(self):
         # Header tax rate (no per-line tax_rate) applies to the post-discount base.
-        state = _recalc_list_totals({
+        state = list_totals({
             "currency": "USD",
             "line_items": [{"line_total": 1000}],
             "tax": 10,  # header rate 10%

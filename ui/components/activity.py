@@ -70,7 +70,8 @@ _EVENT_TYPES: tuple[str, ...] = (
     "item.supplier_return_undone", "doc.supplier_return_undone",
     "item.snapshot", "item.workflow.set", "item.written_off", "list.closed", "list.created",
     "list.finalized", "list.note_added", "list.note_removed", "list.note_updated", "list.patched",
-    "list.reopened", "list.reverted", "list.updated", "list.voided", "mfg.operation.recorded",
+    "list.reopened", "list.reverted", "list.totals_recalculated", "list.totals_restored",
+    "list.updated", "list.voided", "mfg.operation.recorded",
     "mfg.order.cancelled", "mfg.order.completed", "mfg.order.created", "mfg.order.issued",
     "mfg.order.on_hold", "mfg.order.received", "mfg.order.resumed", "mfg.order.scheduled",
     "mfg.order.started", "mfg.order.returned", "mfg.order.receipt_undone", "mfg.order.reopened",
@@ -300,11 +301,13 @@ _ORIGIN_EVENT_TYPES = frozenset({
 # scan_runs is the scan bar's idempotency ledger, not something the user edited.
 _SYSTEM_FIELDS = frozenset({"updated_at", "created_at", "customs_saved", SCAN_RUNS_FIELD})
 
-# Document totals that are computed from line_items + header fields (see _recalc_list_totals).
+# Document totals that are computed from line_items + header fields (doc_money).
 # Editing an item's price or quantity recalculates these, but the user's action was the line
 # edit alone - so they are suppressed from change summaries to avoid noise like
 # "Subtotal: x → y, Total: x → y" alongside the real "ItemName: x → y".
 _DERIVED_DOC_FIELDS = frozenset({"subtotal", "total", "tax_amount", "discount_amount", "amount_outstanding"})
+# Events whose change is a list's total itself (recalculated or restored), shown as "Total: x → y".
+_TOTAL_EVENT_TYPES = frozenset({"list.totals_recalculated", "list.totals_restored"})
 
 # Field keys shown in activity change summaries; the label for each is resolved at
 # render time via ``t("field.<key>")`` (see _fields_changed_summary). Values are those
@@ -355,7 +358,8 @@ def detail_from_entry(data: dict, event_type: str, currency: str | None = None,
         return ""
     fields_changed = data.get("fields_changed", {})
     if fields_changed and isinstance(fields_changed, dict):
-        summary = _fields_changed_summary(fields_changed, currency, category_names)
+        summary = _fields_changed_summary(fields_changed, currency, category_names,
+                                          show_totals=event_type in _TOTAL_EVENT_TYPES)
         if summary:
             return summary
         # fields_changed was present but all entries were noise (empty→empty etc.)
@@ -713,12 +717,13 @@ def _doc_tax_change_summary(fields_changed: dict, currency: str | None, show_tot
 
 
 def _fields_changed_summary(fields_changed: dict, currency: str | None = None,
-                            category_names: dict | None = None) -> str:
+                            category_names: dict | None = None, *, show_totals: bool = False) -> str:
     """Compact summary of field changes from a ledger data dict.
 
     Scalar changes: "field: old → new", each value formatted by its field type.
     Complex changes (list/dict): "Lines edited", "Contact updated", etc.
     Unknown complex: "field updated".
+    show_totals: the change is to the totals themselves, so they are not suppressed as derived.
     """
     if not fields_changed or not isinstance(fields_changed, dict):
         return ""
@@ -739,7 +744,7 @@ def _fields_changed_summary(fields_changed: dict, currency: str | None = None,
     consumed = consumed | tax_consumed | doc_tax_consumed
 
     user_fields = {k: v for k, v in fields_changed.items()
-                   if k not in _SYSTEM_FIELDS and k not in _DERIVED_DOC_FIELDS
+                   if k not in _SYSTEM_FIELDS and (show_totals or k not in _DERIVED_DOC_FIELDS)
                    and k not in consumed
                    and k not in {"attachments", "preview_image_id"}}
     if not user_fields and not discount_summary and not tax_parts:

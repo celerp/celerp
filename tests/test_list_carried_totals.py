@@ -14,6 +14,7 @@ from sqlalchemy import select
 from celerp.events.schemas import EVENT_SCHEMA_MAP
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
+from ui.i18n import t
 
 _VAT10 = {"code": "VAT 10%", "rate": 10.0, "amount": 0, "order": 0, "is_compound": False, "label": ""}
 _TOTALS = ("subtotal", "discount_amount", "tax_amount", "total")
@@ -80,9 +81,26 @@ async def test_new_list_events_carry_the_totals_they_give(client, session):
     ("list.updated", {"fields_changed": {"notes": {"old": None, "new": "x"}}}),
 ])
 def test_a_list_event_without_its_totals_is_refused_at_write(event_type, data):
-    """Every writer of these events goes through the one stamp; one that does not fails here."""
+    """emit_event stamps every list write with its totals; an event that reached the schema
+    unstamped is refused."""
     with pytest.raises(ValidationError):
         EVENT_SCHEMA_MAP[event_type](**data)
+
+
+async def test_a_list_write_from_outside_the_documents_module_carries_its_totals(client, session):
+    """A writer that knows nothing of totals (a contact merge re-pointing the list, a line given
+    its id) emits through emit_event, which stamps the write."""
+    from celerp.events.engine import emit_event
+
+    auth, lid = await _quotation(client, session, finalize=False)
+    cid = auth["company_id"]
+    held = {k: (await _state(session, cid, lid))[k] for k in _TOTALS}
+    entry = await emit_event(
+        session, company_id=cid, entity_id=lid, entity_type="list", event_type="list.updated",
+        data={"fields_changed": {"contact_name": {"old": None, "new": "Renamed"}}},
+        actor_id=None, location_id=None, source="test", idempotency_key=f"outside:{lid}", metadata_={})
+    await session.commit()
+    assert entry.data["totals"] == held
 
 
 async def test_earlier_version_quotation_keeps_its_totals_through_restore_check_and_rebuild(client, session):
@@ -148,8 +166,27 @@ async def test_convert_refuses_an_earlier_version_total_until_it_is_recalculated
     assert events[-3:] == ["list.totals_recalculated", "list.totals_restored", "list.totals_recalculated"]
     r = await client.post(f"/lists/{lid}/convert", headers=h, json={"target_type": "invoice"})
     assert r.status_code == 200, r.text
-    r = await client.post(f"/lists/{lid}/recalculate-total", headers=h)
-    assert r.status_code == 200 and r.json() == {"event_id": None}, r.text
+
+
+@pytest.mark.parametrize("ending", ["convert", "void"])
+async def test_a_completed_or_void_list_keeps_its_total(client, session, ending):
+    """Recalculate and Restore are refused, saying why, once a list is completed or void: a
+    converted quotation keeps the total of the invoice made from it."""
+    auth, lid = await _quotation(client, session)
+    cid, h = auth["company_id"], auth["headers"]
+    await _as_saved_by_earlier_version(session, cid, lid)
+    assert (await client.post(f"/lists/{lid}/recalculate-total", headers=h)).status_code == 200
+    if ending == "convert":
+        r = await client.post(f"/lists/{lid}/convert", headers=h, json={"target_type": "invoice"})
+    else:
+        r = await client.post(f"/lists/{lid}/void", headers=h)
+    assert r.status_code == 200, r.text
+    before = await _state(session, cid, lid)
+    for action in ("recalculate-total", "restore-total"):
+        r = await client.post(f"/lists/{lid}/{action}", headers=h)
+        assert r.status_code == 409, r.text
+        assert r.json()["detail"] == t("documents.err_list_total_status")
+    assert {k: (await _state(session, cid, lid))[k] for k in _TOTALS} == {k: before[k] for k in _TOTALS}
 
 
 async def test_recalculate_and_restore_leave_a_list_that_agrees_as_it_is(client, session):

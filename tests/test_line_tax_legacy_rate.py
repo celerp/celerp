@@ -140,7 +140,7 @@ def test_every_reader_of_a_lines_tax_reads_a_line_saved_with_only_a_rate(line):
     """Class guard: each reader of what a line charges outside the money itself (the activity
     feed, a document becoming a quotation list) reads a rate-only line as the same line holding
     the tax as a list, as document_money charges it."""
-    from celerp_docs.doc_money import document_money, line_tax_rate
+    from celerp_docs.doc_money import document_money, line_tax_rate, list_totals
     from celerp_docs.received import _lines
 
     assert line_tax_rate({**line, "line_total": 100.0}) == 7
@@ -154,18 +154,17 @@ def test_every_reader_of_a_lines_tax_reads_its_taxes_list_before_its_rate(curren
     summed rate, an older version may hold a stale one) is read by its taxes everywhere: what a
     list and a document charge it, the activity feed, a document becoming a quotation list and
     the editor's rate. 10% then 5% compound on 100."""
-    from celerp_docs.doc_money import document_money, line_tax_rate
-    from celerp_docs.doc_projections import _recalc_list_totals
+    from celerp_docs.doc_money import document_money, line_tax_rate, list_totals
     from celerp_docs.received import _lines
     from ui.components.activity import _fields_changed_summary
 
     compound = [{"code": "T1", "rate": 10.0, "amount": 0, "order": 0, "is_compound": False, "label": ""},
                 {"code": "T2", "rate": 5.0, "amount": 0, "order": 1, "is_compound": True, "label": ""}]
     line = {**_modern(compound), "tax_rate": 7, "line_total": 100.0}
-    listed = _recalc_list_totals({"currency": currency, "line_items": [dict(line)]})
+    listed = list_totals({"currency": currency, "line_items": [dict(line)]})
     assert listed["tax_amount"] == pytest.approx(tax)
     assert document_money({}, [dict(line)], currency, keep_unrated_tax=True)["tax"] == pytest.approx(tax)
-    received = _recalc_list_totals({"currency": currency, "line_items": _lines({"line_items": [line]}, "list")})
+    received = list_totals({"currency": currency, "line_items": _lines({"line_items": [line]}, "list")})
     assert received["tax_amount"] == pytest.approx(tax)
     assert line_tax_rate(line) == 15
     shown = _fields_changed_summary({"line_items": {"old": [{**line, "taxes": []}], "new": [line]}}, currency)

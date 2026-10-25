@@ -37,7 +37,6 @@ async def freeze_issued_customs_lists(session: AsyncSession) -> dict:
     from celerp.notifications.service import notify_once
     from celerp.services.list_behavior import DRAFT, LIST_TYPES, behavior
     from celerp.services.migrations import is_company_migration_staged
-    from celerp_docs.doc_projections import with_list_totals
     from celerp_docs.routes import customs_snapshot
     from ui.i18n import t
 
@@ -71,8 +70,7 @@ async def freeze_issued_customs_lists(session: AsyncSession) -> dict:
                 await emit_event(
                     session, company_id=company_id, entity_id=entity_id, entity_type="list",
                     event_type="list.updated",
-                    data=with_list_totals(row.state, "list.updated",
-                                          {"fields_changed": {k: {"new": v} for k, v in saved.items()}}),
+                    data={"fields_changed": {k: {"new": v} for k, v in saved.items()}},
                     actor_id=None, location_id=None, source="system",
                     idempotency_key=f"customs-freeze:{entity_id}",
                 )

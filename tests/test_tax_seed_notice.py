@@ -242,8 +242,8 @@ async def _list_notice(session, company_id) -> Notification | None:
 async def test_quotations_saved_under_the_earlier_tax_rule_are_told_and_never_changed(client, session):
     """A quotation an earlier version saved taxed its lines before the header discount. Its stored
     totals are the company's record, so the startup pass only reads them: it names the quotations
-    the document rule would total differently, leaves them as they are, and clears the notice once
-    each has been saved again."""
+    the document rule would total differently and leaves them as they are. Saving one with no
+    change to its money keeps its totals and the notice; Recalculate total clears it."""
     from celerp.models.projections import Projection
     from test_tax_acceptance_matrix import _demo_company
 
@@ -269,6 +269,13 @@ async def test_quotations_saved_under_the_earlier_tax_rule_are_told_and_never_ch
 
     r = await client.patch(f"/lists/{lst}", headers=auth["headers"], json={
         "fields_changed": {"notes": {"old": None, "new": "Saved again"}}})
+    assert r.status_code == 200, r.text
+    await _run(session)
+    assert await _list_notice(session, auth["company_id"]) is not None
+    session.expire_all()
+    assert (await session.get(Projection, (auth["company_id"], lst))).state["total"] == 100.0
+
+    r = await client.post(f"/lists/{lst}/recalculate-total", headers=auth["headers"])
     assert r.status_code == 200, r.text
     await _run(session)
     assert await _list_notice(session, auth["company_id"]) is None

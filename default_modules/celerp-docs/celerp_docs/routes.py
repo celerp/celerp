@@ -35,7 +35,7 @@ from celerp.inventory_codes import MAX_SCAN_CODE_LEN, PHYSICAL_CODE_RESOLVE_EXCL
 from celerp_docs.consignment_buy import bought_parcels, bought_receipt_lots, buy_consignment
 from celerp_docs.doc_money import (LIST_TOTAL_FIELDS, document_money, list_totals_differ, money_from_lines,
                                    refuse_malformed_taxes, refuse_unset_line_tax)
-from celerp_docs.doc_projections import UNISSUED_STATUSES, list_lines_and_totals, payment_status, with_list_totals
+from celerp_docs.doc_projections import UNISSUED_STATUSES, list_lines_and_totals, payment_status
 from celerp_docs.taxes import TaxApplication
 from celerp.services.field_schema import reject_system_item_fields
 from celerp.services.locations import require_company_location, require_ship_from
@@ -8159,16 +8159,7 @@ async def _get_list_for_update(session: AsyncSession, company_id, entity_id: str
     return row
 
 
-async def _list_event_data(session, company_id, entity_id, event_type, data) -> dict:
-    """The data a list.created or list.updated is written with (with_list_totals), from the list
-    as it stands."""
-    row = None if event_type == "list.created" else await session.get(Projection, (company_id, entity_id))
-    return with_list_totals(row.state if row is not None else None, event_type, data)
-
-
 async def _emit_list(session, company_id, entity_id, event_type, data, user, idem_key=None, meta=None):
-    if event_type in ("list.created", "list.updated"):
-        data = await _list_event_data(session, company_id, entity_id, event_type, data)
     return await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="list",
         event_type=event_type, data=data, actor_id=user.id, location_id=None,
@@ -9346,6 +9337,15 @@ def _total_change(state: dict, totals: dict) -> dict:
     return {"total": {"old": state.get("total"), "new": totals["total"]}}
 
 
+async def _list_for_total_change(session, company_id, entity_id: str) -> dict:
+    """The list whose total is to be recalculated or restored. A completed or void list keeps
+    its total: a completed one would no longer match the invoice or memo made from it."""
+    state = (await _get_list_for_update(session, company_id, entity_id)).state
+    if state.get("status") in (CLOSED, VOID):
+        raise HTTPException(status_code=409, detail=t("documents.err_list_total_status"))
+    return state
+
+
 @lists_router.post("/{entity_id}/recalculate-total")
 async def recalculate_list_total(
     entity_id: str,
@@ -9356,8 +9356,7 @@ async def recalculate_list_total(
 ) -> dict:
     """Give a list an earlier version totalled the totals the document rule gives it, as a
     recorded change the user can undo (restore-total). A list that already agrees is left as is."""
-    row = await _get_list_for_update(session, company_id, entity_id)
-    state = row.state
+    state = await _list_for_total_change(session, company_id, entity_id)
     if list_totals_differ(state) is None:
         return {"event_id": None}
     lines, totals = list_lines_and_totals(state)
@@ -9378,12 +9377,12 @@ async def restore_list_total(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Give a recalculated list back the totals it held before, until it is next edited."""
-    row = await _get_list_for_update(session, company_id, entity_id)
-    previous = row.state.get("totals_before_recalc")
+    state = await _list_for_total_change(session, company_id, entity_id)
+    previous = state.get("totals_before_recalc")
     if not previous:
         return {"event_id": None}
     entry = await _emit_list(session, company_id, entity_id, "list.totals_restored", {
-        "fields_changed": _total_change(row.state, previous["totals"]), **previous}, user)
+        "fields_changed": _total_change(state, previous["totals"]), **previous}, user)
     await session.commit()
     return {"event_id": entry.id}
 
@@ -9678,8 +9677,7 @@ async def import_list(
 
     entry = await emit_event(
         session, company_id=company_id, entity_id=body.entity_id, entity_type="list",
-        event_type="list.created",
-        data=with_list_totals(None, "list.created", await _issued_import_data(session, company_id, body.data)),
+        event_type="list.created", data=await _issued_import_data(session, company_id, body.data),
         actor_id=user.id, location_id=None,
         source=body.source, idempotency_key=body.idempotency_key,
         metadata_={"request": import_digest(body.entity_id, body.data),
@@ -9798,8 +9796,7 @@ async def batch_import_lists(
             await _assert_import_number_free(session, company_id, "list", rec.data)
             entry = await emit_event(
                 session, company_id=company_id, entity_id=rec.entity_id, entity_type="list",
-                event_type="list.created",
-                data=with_list_totals(None, "list.created", await _issued_import_data(session, company_id, rec.data)),
+                event_type="list.created", data=await _issued_import_data(session, company_id, rec.data),
                 actor_id=user.id, location_id=None,
                 source=rec.source, idempotency_key=rec.idempotency_key,
                 metadata_={"request": import_digest(rec.entity_id, rec.data),
