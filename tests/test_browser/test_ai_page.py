@@ -16,6 +16,11 @@ import re
 import pytest
 from playwright.sync_api import Page, expect
 
+# A fragment loaded by HTMX on page load is read once it has text, not after a fixed
+# pause: its server read can take longer than any pause on a busy runner.
+_LOADED = re.compile(r"\S")
+_FRAGMENT_MS = 20_000
+
 pytestmark = pytest.mark.browser
 
 
@@ -366,9 +371,8 @@ class TestChatView:
     def test_chat_conversations_list_loads(self, page, ui_server):
         """Conversation list HTMX endpoint loads."""
         page.goto(f"{ui_server}/ai", wait_until="domcontentloaded")
-        page.wait_for_timeout(1500)
         history = page.locator("#ai-history")
-        expect(history).to_be_visible()
+        expect(history).to_have_text(_LOADED, timeout=_FRAGMENT_MS)
         text = history.inner_text()
         assert len(text) > 0
 
@@ -410,9 +414,8 @@ class TestSettingsPage:
     def test_settings_content_loads(self, page, ui_server):
         """HTMX settings content fragment loads."""
         page.goto(f"{ui_server}/ai/settings", wait_until="domcontentloaded")
-        page.wait_for_timeout(1500)  # Let HTMX load
         content = page.locator("#ai-settings-content")
-        expect(content).to_be_visible()
+        expect(content).to_have_text(_LOADED, timeout=_FRAGMENT_MS)
         # Should have loaded content (not empty)
         assert len(content.inner_text()) > 0
 
@@ -420,7 +423,7 @@ class TestSettingsPage:
         """Without session token, shows local install message."""
         # No session token set → local install
         page.goto(f"{ui_server}/ai/settings", wait_until="domcontentloaded")
-        page.wait_for_timeout(1500)
+        expect(page.locator("#ai-settings-content")).to_have_text(_LOADED, timeout=_FRAGMENT_MS)
         body = page.locator("body").inner_text()
         assert "local install" in body.lower() or "AI Settings" in body
 
@@ -439,8 +442,8 @@ class TestSettingsPage:
     def test_settings_with_session_has_quota_section(self, page, ui_server, _set_session_token):
         """With session token, quota section is rendered."""
         page.goto(f"{ui_server}/ai/settings", wait_until="domcontentloaded")
-        page.wait_for_timeout(1500)
         content = page.locator("#ai-settings-content")
+        expect(content).to_have_text(_LOADED, timeout=_FRAGMENT_MS)
         text = content.inner_text()
         # Should have quota-related content or error message
         assert len(text) > 10
