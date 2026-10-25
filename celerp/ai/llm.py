@@ -15,7 +15,7 @@ import asyncio
 import json as jsonlib
 import logging
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 import httpx
@@ -249,6 +249,7 @@ async def complete(
     step_id: uuid.UUID | None = None,
     hints: dict | None = None,
     max_tokens: int = 2048,
+    before_send: Callable[[int], Awaitable[None]] | None = None,
 ) -> ModelResult:
     """Run a structured completion through the gateway.
 
@@ -257,6 +258,8 @@ async def complete(
     tool_choice, reservation_id, operation_id and step_id are sent only when not None.
     The caller holds a slot of the model gate (celerp.ai.jobs.gate); the call's
     budget is computed once the slot is held and declared to the service.
+    ``before_send(nbytes)`` is awaited after the budget and before the request
+    leaves, with the body's size (a job step journals the send there).
 
     ``operation_id`` names a question on its first turn, so that asking it again
     after a lost answer is not charged twice; it is never sent with a
@@ -286,7 +289,10 @@ async def complete(
     if step_id is not None:
         body["step_id"] = str(step_id)
 
-    budget = deadlines.call_budget(await deadlines.limits(), len(jsonlib.dumps(body)))
+    nbytes = len(jsonlib.dumps(body))
+    budget = deadlines.call_budget(await deadlines.limits(), nbytes)
+    if before_send is not None:
+        await before_send(nbytes)
     resp = await _relay_request("POST", "/ai/complete", body=body, budget=budget,
                                 headers=deadlines.declared_header(budget))
 

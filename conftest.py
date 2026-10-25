@@ -926,10 +926,18 @@ async def client(session: AsyncSession):
         bind=await session.connection(), class_=AsyncSession,
         expire_on_commit=False, join_transaction_mode="create_savepoint")
 
+    # AI job tasks run beside the requests that start them, on the same connection.
+    # Their sessions join the outer transaction without savepoints of their own, so
+    # a job's commit can never release a savepoint a request session still holds.
+    job_factory = async_sessionmaker(
+        bind=await session.connection(), class_=AsyncSession,
+        expire_on_commit=False, join_transaction_mode="rollback_only")
+
     with patch("celerp.gateway.client._client", MagicMock()), \
          patch("celerp.gateway.state.get_session_token", return_value="test-session-token"), \
          patch("celerp.middleware.get_session_ctx", _shared_session_ctx), \
-         patch("celerp.db.LifecycleSessionLocal", lifecycle_factory):
+         patch("celerp.db.LifecycleSessionLocal", lifecycle_factory), \
+         patch("celerp.ai.jobs.SessionLocal", job_factory):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             yield c
     app.dependency_overrides.clear()

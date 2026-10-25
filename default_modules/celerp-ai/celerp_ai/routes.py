@@ -26,6 +26,9 @@ Endpoints:
   POST   /ai/conversations/{id}/confirm-all          Run every proposed change on a message
   POST   /ai/conversations/{id}/jobs/{job}/proposals Turn read receipts into bill proposals
   GET    /ai/batch/{job_id}                          Job status and per-file results
+  POST   /ai/jobs/{job_id}/cancel                    Stop a job; finished files are kept
+  POST   /ai/jobs/{job_id}/resume                    Send the files a stopped job did not send
+  POST   /ai/jobs/{job_id}/retry-failed              Send again the files that got no answer
   GET    /ai/usage-stats                             Per-user questions this month or all time
 """
 
@@ -39,7 +42,7 @@ from dataclasses import asdict
 from datetime import date, datetime, timedelta, timezone
 from typing import Literal
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field, model_validator
 from slowapi import Limiter
@@ -494,6 +497,8 @@ class BatchJobOut(BaseModel):
     completed_files: int
     failed_files: int
     credits_consumed: int
+    files: list[dict]
+    retry_failed: dict | None = None
     results: dict | None = None
     error: str | None = None
     proposal_message_id: str | None = None
@@ -559,21 +564,32 @@ def _answer_response(msg, *, question_id: uuid.UUID, asked_again: bool) -> Query
     )
 
 
-def _job_out(job: AIBatchJob) -> BatchJobOut:
+def _job_out(job: AIBatchJob, steps: list) -> BatchJobOut:
+    """A reading job as its user sees it; its progress is read from its steps."""
+    from celerp.ai import jobs
+    done = sum(1 for s in steps if s.state == "done")
     return BatchJobOut(
         id=job.id,
         conversation_id=job.conversation_id,
         status=job.status,
-        total_files=job.total_files,
-        completed_files=job.completed_files,
-        failed_files=job.failed_files,
-        credits_consumed=job.credits_consumed,
+        total_files=len(steps),
+        completed_files=done,
+        failed_files=sum(1 for s in steps if s.state in jobs.RETRYABLE_STEPS),
+        credits_consumed=sum(s.credits for s in steps),
+        files=[jobs.file_view(s) for s in steps],
+        retry_failed=jobs.retry_offer(steps),
         results=job.results,
         error=job.error,
         proposal_message_id=(job.results or {}).get("proposal_message_id"),
         created_at=job.created_at.isoformat(),
         completed_at=job.completed_at.isoformat() if job.completed_at else None,
     )
+
+
+async def _jobs_out(session: AsyncSession, rows: list[AIBatchJob]) -> list[BatchJobOut]:
+    from celerp.ai import jobs
+    steps = await jobs.job_steps(session, [job.id for job in rows])
+    return [_job_out(job, steps[job.id]) for job in rows]
 
 
 # ── Conversation endpoints ────────────────────────────────────────────────────
@@ -651,7 +667,7 @@ async def get_conv(
         id=conv.id, title=conv.title,
         created_at=conv.created_at.isoformat(), updated_at=conv.updated_at.isoformat(),
         messages=[_message_out(m) for m in msgs],
-        jobs=[_job_out(j) for j in jobs],
+        jobs=await _jobs_out(session, jobs),
     )
 
 
@@ -699,41 +715,12 @@ async def rename_conv(
     )
 
 
-def _launch_batch(
-    background_tasks: BackgroundTasks, job: AIBatchJob, company_id, user_id, query: str, file_ids: list[str],
-) -> None:
-    """Run the job after the response is sent; progress rides the notification stream."""
-    from celerp.ai.batch import run_batch
-    from celerp.db import SessionLocal
-    from celerp.notifications.sse import publish as sse_publish
-
-    async def _on_progress(job_id, completed, failed, total, result):
-        await sse_publish(
-            company_id, user_id,
-            {
-                "type": "batch_progress",
-                "job_id": str(job_id),
-                "completed": completed,
-                "failed": failed,
-                "total": total,
-                "file_id": result.get("file_id"),
-                "status": result.get("status"),
-            },
-        )
-
-    async def _run():
-        await run_batch(job.id, company_id, user_id, query, file_ids, SessionLocal, on_progress=_on_progress)
-
-    background_tasks.add_task(_run)
-
-
 @router.post("/conversations/{conversation_id}/query")
 @_limiter.limit("20/minute")
 async def query_in_conversation(
     request: Request,
     conversation_id: uuid.UUID,
     body: ConversationQueryRequest,
-    background_tasks: BackgroundTasks,
     company_id=Depends(get_current_company_id),
     user=Depends(get_current_user),
     role: str = Depends(get_current_role),
@@ -758,6 +745,7 @@ async def query_in_conversation(
     """
     from sqlalchemy.exc import IntegrityError
 
+    from celerp.ai import jobs
     from celerp.ai.batch import create_batch_job
     from celerp.ai.conversations import (
         add_message,
@@ -806,7 +794,7 @@ async def query_in_conversation(
                 await session.rollback()
                 raise _conflict("question_in_progress", t("ai.err_question_in_progress"))
             await session.refresh(job)
-            _launch_batch(background_tasks, job, company_id, user.id, body.query, list(job.file_ids or []))
+            jobs.start_job(job.id)
         return JSONResponse(
             status_code=202,
             content={"job_id": str(job.id), "message_id": str(question_id), "asked_again": asked is not None},
@@ -1583,7 +1571,8 @@ async def propose_from_job(
         raise HTTPException(status_code=404, detail=t("ai.err_job_not_found"))
     if job.status in ("pending", "running"):
         raise _conflict("job_not_finished", "The files are still being read.")
-    result_files = (job.results or {}).get("files") or []
+    from celerp.ai import jobs
+    result_files = [jobs.file_view(step) for step in (await jobs.job_steps(session, [job.id]))[job.id]]
     if job.status == "failed" and not any(entry.get("status") == "success" for entry in result_files):
         raise _conflict("job_failed", job.error or "None of the files could be read.")
 
@@ -1622,7 +1611,7 @@ async def propose_from_job(
     now = datetime.now(timezone.utc)
     records: list[dict] = []
     lines: list[str] = []
-    for entry in (job.results or {}).get("files") or []:
+    for entry in result_files:
         filename = entry.get("filename") or entry.get("file_id")
         extraction = entry.get("extraction")
         if entry.get("status") != "success":
@@ -1736,4 +1725,34 @@ async def batch_status(
     job = await get_batch_job(session, job_id, company_id, user.id)
     if job is None:
         raise HTTPException(status_code=404, detail=t("ai.err_batch_not_found"))
-    return _job_out(job)
+    return (await _jobs_out(session, [job]))[0]
+
+
+async def _job_action(action, job_id: uuid.UUID, company_id, user) -> JSONResponse:
+    if await action(job_id, company_id, user.id) in (None, False):
+        raise _conflict("job_not_open", t("ai.err_job_not_open"))
+    return JSONResponse(status_code=202, content={"job_id": str(job_id)})
+
+
+@router.post("/jobs/{job_id}/cancel")
+async def cancel_job(job_id: uuid.UUID, company_id=Depends(get_current_company_id),
+                     user=Depends(get_current_user)) -> JSONResponse:
+    """Stop a running job: files not yet sent wait for Resume, the files in the model finish."""
+    from celerp.ai import jobs
+    return await _job_action(jobs.cancel, job_id, company_id, user)
+
+
+@router.post("/jobs/{job_id}/resume")
+async def resume_job(job_id: uuid.UUID, company_id=Depends(get_current_company_id),
+                     user=Depends(get_current_user)) -> JSONResponse:
+    """Send the files a cancelled job did not send, each under its own id."""
+    from celerp.ai import jobs
+    return await _job_action(jobs.resume, job_id, company_id, user)
+
+
+@router.post("/jobs/{job_id}/retry-failed")
+async def retry_failed_job(job_id: uuid.UUID, company_id=Depends(get_current_company_id),
+                           user=Depends(get_current_user)) -> JSONResponse:
+    """Send again, each as a new question, the files that ended without an answer."""
+    from celerp.ai import jobs
+    return await _job_action(jobs.retry_failed, job_id, company_id, user)

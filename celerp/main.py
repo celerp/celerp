@@ -560,14 +560,13 @@ async def _serve(_app: FastAPI, held):
         backup_scheduler.start()
         log.debug("Backup scheduler started")
 
-    # AI jobs left by the last process are recovered first; only then does the
-    # usage reconcile loop start, so it never settles a step a job will resend.
+    # AI jobs left by the last process resume first; only then does the usage
+    # reconcile loop start, so it never asks about a step a job is about to send.
     try:
         from celerp.ai import jobs
-        from celerp.db import LifecycleSessionLocal as _JobRecoverySession
-        interrupted = await jobs.recover_on_start(_JobRecoverySession)
-        if interrupted:
-            logging.getLogger(__name__).warning("Marked %d interrupted AI job(s) as failed", interrupted)
+        resumed = await jobs.recover_on_start()
+        if resumed:
+            logging.getLogger(__name__).info("Resumed %d AI job(s) left by the last process", resumed)
     except Exception:
         logging.getLogger(__name__).exception("AI job recovery failed (non-fatal)")
     from celerp.ai.usage import reconcile_usage_loop
@@ -644,11 +643,12 @@ async def _serve(_app: FastAPI, held):
     from celerp.notifications.sse import shutdown_all as _sse_shutdown
     _sse_shutdown()
 
-    # Stop background tasks, the backup scheduler and migration runs included, and wait for them
+    # Stop background tasks, the backup scheduler, migration runs and AI jobs included, and wait for them
+    from celerp.ai import jobs as _ai_jobs
     from celerp.services import backup_scheduler
     from celerp.services import migrations as _migration_runs
     background.append(backup_scheduler.stop())
-    await _stop_background_tasks(background + _migration_runs.running_tasks())
+    await _stop_background_tasks(background + _migration_runs.running_tasks() + _ai_jobs.running_tasks())
 
     # Close the tunnel and its run task, whoever started it (boot gate, auto-activate,
     # or a runtime share-create) - the gateway package owns that lifecycle now.

@@ -6514,5 +6514,11 @@
   "ai.err_operation_mismatch": "This question can't be sent again because its context has changed since it was first sent. You can ask it as a new question, which counts as one more question.",
   "ai.ask_again": "Ask again",
   "ai.ask_as_new": "Ask as a new question",
-  "ai.free_terms": "Each free question can include one file. Free AI may pause until the next month when the monthly free-usage budget is reached."
+  "ai.free_terms": "Each free question can include one file. Free AI may pause until the next month when the monthly free-usage budget is reached.",
+  "ai.job_permission_lost": "This job stopped because you no longer have permission to use the AI assistant.",
+  "ai.retry_files": "Retry {n} files",
+  "ai.retry_files_confirm": "This counts as {n} questions, one per file.",
+  "ai.retry_one_file": "Retry 1 file",
+  "ai.retry_one_file_confirm": "This counts as 1 question.",
+  "ai.err_job_not_open": "This job can't do that now. It may still be running, or have nothing left to send."
 }

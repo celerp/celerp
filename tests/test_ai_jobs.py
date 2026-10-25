@@ -114,11 +114,12 @@ def test_a_file_keeps_its_generation_zero_id_and_a_retry_takes_the_next_generati
 # ── Red 25: a reading job resumes after a kill ────────────────────────────────
 
 async def test_a_killed_reading_job_resumes_and_no_file_runs_twice_under_one_id(client, owner, cloud, monkeypatch):
-    """100 files, gate at 3; killed with 10 done, 3 in the model and 87 pending. On
-    restart the done files are not sent again, the three in flight are sent again under
-    their own ids (one gets its stored reply, two are reported lost, charged and not
-    charged, and are never sent a third time), and the pending files run."""
-    monkeypatch.setattr(jobs, "gate", jobs.ModelGate(3))
+    """100 files, gate at 4 (documents take at most 3 slots); killed with 10 done, 3
+    in the model and 87 pending. On restart the done files are not sent again, the
+    three in flight are sent again under their own ids (one gets its stored reply, two
+    are reported lost, charged and not charged, and are never sent a third time), and
+    the pending files run."""
+    monkeypatch.setattr(jobs, "gate", jobs.ModelGate(4))
     token, company_id, user_id = owner
     conv = await _conversation(client, token)
     file_ids = _files(company_id, user_id, 100)
@@ -129,7 +130,7 @@ async def test_a_killed_reading_job_resumes_and_no_file_runs_twice_under_one_id(
     cloud.held(lost_charged, end="lost_charged")
     cloud.held(lost_uncharged, end="lost_uncharged")
     held = {stored, lost_charged, lost_uncharged}
-    # Files after the held ones wait at the gate: the three slots are taken.
+    # Files after the held ones wait at the gate: the three document slots are taken.
     r = await client.post(f"/ai/conversations/{conv}/query", headers=AUTH(token), json={
         "query": "Read these receipts", "file_ids": file_ids, "document_mode": "receipts",
         "operation_id": str(job_id)})
