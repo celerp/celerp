@@ -223,6 +223,11 @@ def list_money(state: dict, lines: list[dict], currency: str) -> dict:
 LIST_TOTAL_FIELDS = ("subtotal", "discount_amount", "tax_amount", "total")
 
 
+def stored_list_totals(state: dict) -> dict:
+    """The totals a list holds, by LIST_TOTAL_FIELDS, as numbers; an absent one is zero."""
+    return {k: float(state.get(k) or 0) for k in LIST_TOTAL_FIELDS}
+
+
 def list_totals(state: dict) -> dict:
     """The totals the document rule (list_money) gives a list as it stands, its lines untouched."""
     lines = [dict(i) for i in state.get("line_items") or [] if isinstance(i, dict)]

@@ -446,6 +446,11 @@ def render_doc_print_html(doc: dict, *, import_url: str | None = None,
     subtotal = doc.get("subtotal") or 0
     tax_total = doc.get("tax_total") or doc.get("tax") or 0
     grand_total = doc.get("grand_total") or doc.get("total") or 0
+    list_totals = None
+    if doc_type == "list":
+        from celerp_docs.doc_money import stored_list_totals
+        list_totals = stored_list_totals(doc)
+        subtotal, tax_total, grand_total = list_totals["subtotal"], list_totals["tax_amount"], list_totals["total"]
     terms_text = doc.get("terms_text") or ""
     customer_note = doc.get("customer_note") or ""
 
@@ -471,10 +476,10 @@ def render_doc_print_html(doc: dict, *, import_url: str | None = None,
     else:
         totals_rows = [Tr(Td("Subtotal", cls="label"), Td(_money(subtotal), cls="amount"))]
         # Header (whole-document) discount, when set. grand_total/total already reflects it.
-        _disc_amt = float(doc.get("discount_amount") or 0)
+        _disc_amt = list_totals["discount_amount"] if list_totals else float(doc.get("discount_amount") or 0)
         _disc_raw = float(doc.get("discount") or 0)
         _disc_type = doc.get("discount_type") or "flat"
-        if not _disc_amt and _disc_raw:
+        if not list_totals and not _disc_amt and _disc_raw:
             _disc_amt = subtotal * _disc_raw / 100 if _disc_type == "percentage" else _disc_raw
         if _disc_amt > 0.005:
             _dlabel = f"Discount ({_disc_raw:g}%)" if _disc_type == "percentage" and _disc_raw else "Discount"
