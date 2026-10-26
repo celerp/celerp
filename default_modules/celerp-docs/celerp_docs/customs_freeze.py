@@ -51,7 +51,8 @@ async def freeze_issued_customs_lists(session: AsyncSession) -> dict:
         select(Projection.company_id, Projection.entity_id)
         .where(Projection.entity_type == "list",
                Projection.state["list_type"].as_string().in_(customs_types),
-               Projection.state["status"].as_string() != DRAFT)
+               Projection.state["status"].as_string() != DRAFT,
+               Projection.state["customs_saved"].as_boolean().isnot(True))
         .order_by(Projection.company_id, Projection.entity_id)
     )).all()
     frozen: dict = {}

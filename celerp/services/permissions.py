@@ -181,32 +181,38 @@ class AuthoritySettings(dict):
 
 @dataclass(eq=False)
 class RequestAuthority:
-    """What a request was authorized as: its company, user and role, the permissions
-    it relied on, and the settings it was handed. Registered on the request's session
+    """What a request was authorized as: its company, user and role, the module whose
+    route it reached, the permissions it relied on, and the settings it was handed. Registered on the request's session
     by get_auth_context and judged again under the company lock (company_lock)."""
 
     company_id: uuid.UUID
     user_id: uuid.UUID
     role: str
+    module: str | None = None
     keys: set[str] = field(default_factory=set)
     views: list[AuthoritySettings] = field(default_factory=list)
 
     async def judge_again(self, session: AsyncSession) -> None:
         """403 unless the caller still holds the same role, active, with every
-        permission the request relied on; then refresh the settings it was handed."""
+        permission the request relied on, and the company still uses the module whose
+        route it reached; then refresh the settings it was handed."""
         role, settings = await read_authority(session, self.company_id, self.user_id)
         if role != self.role:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=t("error.access_changed"))
         for key in sorted(self.keys):
             assert_role_permission(settings, role, key)
+        if self.module:
+            from celerp.modules.boundary import require_company_uses
+            require_company_uses(settings, self.module)
         for view in self.views:
             view.clear()
             view.update(settings)
 
 
-def authorize_request(session: AsyncSession, company_id, user_id, role: str) -> RequestAuthority:
+def authorize_request(session: AsyncSession, company_id, user_id, role: str,
+                      module: str | None = None) -> RequestAuthority:
     """Register the request's authority on its session (get_auth_context)."""
-    authority = RequestAuthority(company_id=company_id, user_id=user_id, role=role)
+    authority = RequestAuthority(company_id=company_id, user_id=user_id, role=role, module=module)
     session.info[AUTHORITY] = authority
     return authority
 

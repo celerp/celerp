@@ -293,6 +293,58 @@ async def test_document_price_override_commits_when_it_holds_the_lock_first(comm
     assert await _doc_count(factory, c["company_id"]) == 1
 
 
+_INVOICE = {"doc_type": "invoice", "line_items": [
+    {"item_id": _ITEM, "sku": _ITEM, "name": _ITEM, "quantity": 1, "unit_price": 2, "sell_by": "piece"}]}
+
+
+@pytest.fixture
+def docs_routes(monkeypatch):
+    """Documents' routes known to the loader as its own, as at startup, so a request to
+    one is judged by whether the company uses Documents."""
+    from fastapi import FastAPI
+    from celerp.modules import loader
+    from celerp_docs.api_setup import setup_api_routes
+    own = FastAPI()
+    setup_api_routes(own)
+    monkeypatch.setitem(loader._module_routes, "celerp-docs", list(own.routes))
+
+
+def _turn_off_documents(company_id):
+    async def _go(s):
+        return await companies.disable_module("celerp-docs", company_id=company_id, session=s)
+    return _go
+
+
+async def test_a_document_waiting_while_documents_is_turned_off_is_refused(committed_engine, docs_routes):
+    """A document request authorized while the company uses Documents, that reaches the
+    company lock after Documents is turned off for it, is refused and writes nothing."""
+    factory = async_sessionmaker(bind=committed_engine, class_=AsyncSession, expire_on_commit=False)
+    c = await _seed(factory)
+    async with _app_client(factory) as (client, pending):
+        changed, wrote = await _race(
+            committed_engine,
+            lambda held: _direct(factory, held, _turn_off_documents(c["company_id"])),
+            lambda held: _http(pending, held, lambda: client.post("/docs", json=_INVOICE, headers=c["h"]["owner"])),
+        )
+    _ok(changed)
+    _refused(wrote, 403)
+    assert wrote.json()["detail"]["message_key"] == "modules.off_for_company"
+    assert await _doc_count(factory, c["company_id"]) == 0
+
+
+async def test_a_document_holding_the_lock_first_commits_before_documents_is_turned_off(committed_engine, docs_routes):
+    factory = async_sessionmaker(bind=committed_engine, class_=AsyncSession, expire_on_commit=False)
+    c = await _seed(factory)
+    async with _app_client(factory) as (client, pending):
+        wrote, changed = await _race(
+            committed_engine,
+            lambda held: _http(pending, held, lambda: client.post("/docs", json=_INVOICE, headers=c["h"]["owner"])),
+            lambda held: _direct(factory, held, _turn_off_documents(c["company_id"])),
+        )
+    _ok(wrote)
+    assert await _doc_count(factory, c["company_id"]) == 1
+
+
 async def test_draft_cost_refused_once_a_concurrent_make_available_lands_first(committed_engine):
     """A draft's author may set its cost without set_inventory_prices; once Make Available
     commits first, the waiting cost edit is judged against the live item and refused."""

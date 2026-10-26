@@ -556,3 +556,20 @@ async def test_startup_freeze_waits_for_a_company_with_documents_off(client, aut
     await _start(session)
     assert (await _lines(client, auth, ship))[0]["hs_code"] == "1234"
     assert await _marker(session)
+
+
+async def test_a_company_with_documents_off_and_every_list_saved_lets_the_freeze_finish(client, auth, session):
+    """Only a list still lacking its item details is work that waits: a company with Documents
+    off whose issued lists are all saved does not keep the startup freeze running."""
+    from celerp_docs.customs_freeze import freeze_issued_customs_lists
+
+    item_id = await _item(client, auth)
+    ship = await _list(client, auth, "shipping_doc", item_id)
+    await _issue(client, auth, ship)
+    await _set_docs(session, auth["company_id"], on=False)
+    await _reset_marker(session)
+
+    result = await freeze_issued_customs_lists(session)
+    await session.commit()
+    assert result["failed"] == 0 and result["staged"] == 0
+    assert await _marker(session)

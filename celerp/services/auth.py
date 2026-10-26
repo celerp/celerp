@@ -389,12 +389,15 @@ async def get_auth_context(
     from celerp.modules.loader import reads_when_off, route_module
 
     module = route_module(request.scope)
-    if module and not reads_when_off(request.scope, module):
+    if module and reads_when_off(request.scope, module):
+        module = None
+    if module:
         require_company_uses(ctx.company.settings, module)
     # The authority the request starts with is judged again under the company lock
-    # (company_lock), so a write that waits there never runs on revoked access.
+    # (company_lock), so a write that waits there never runs on revoked access or
+    # on a module the company has since turned off.
     from celerp.services.permissions import authorize_request, end_request
-    authority = authorize_request(session, ctx.company_id, ctx.user.id, ctx.role)
+    authority = authorize_request(session, ctx.company_id, ctx.user.id, ctx.role, module)
     if token is not None:
         session.info[SIGNED_TOKEN] = token
     request.state.company_id = ctx.company_id  # the company a refused request places stock for (OlderStockMiddleware)
