@@ -6472,5 +6472,20 @@
   "event.fa.check.removed": "Fixed asset check removed",
   "modules.turn_on": "Turn on",
   "nav.my_assets": "My assets",
-  "connectors.order_changed_in_woocommerce": "This order changed in WooCommerce. Select Try again to review the change."
+  "connectors.order_changed_in_woocommerce": "This order changed in WooCommerce. Select Try again to review the change.",
+  "settings_menu.title": "Side menu",
+  "settings_menu.hint": "Choose which entries and groups the side menu shows, and in what order. This applies to everyone in the company, and only to what each person's role already lets them see. Hiding an entry does not block the page itself.",
+  "settings_menu.main_menu": "Main menu",
+  "settings_menu.hide": "Hide",
+  "settings_menu.show": "Show",
+  "settings_menu.hidden_badge": "Hidden",
+  "settings_menu.always_shown": "Always shown",
+  "settings_menu.move_up": "Move up",
+  "settings_menu.move_down": "Move down",
+  "settings_menu.reset": "Reset to default",
+  "settings_menu.reset_confirm": "Show every entry again in its default order?",
+  "settings_menu.owner_only": "Only the owner can change the side menu.",
+  "company.nav_override_bad_id": "A menu entry name is blank, too long or has control characters.",
+  "company.nav_override_too_many": "Too many menu entries in one list (at most {max}).",
+  "company.nav_override_settings": "Settings cannot be hidden from the menu."
 }

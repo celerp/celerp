@@ -6472,5 +6472,20 @@
   "event.fa.check.removed": "固定資産の実査を削除",
   "modules.turn_on": "オンにする",
   "nav.my_assets": "自分の資産",
-  "connectors.order_changed_in_woocommerce": "この注文はWooCommerceで変更されました。「再試行」を選んで変更内容を確認してください。"
+  "connectors.order_changed_in_woocommerce": "この注文はWooCommerceで変更されました。「再試行」を選んで変更内容を確認してください。",
+  "settings_menu.title": "サイドメニュー",
+  "settings_menu.hint": "サイドメニューに表示する項目とグループ、およびその順序を選びます。会社の全員に適用され、各自のロールで既に閲覧できるものだけが対象です。項目を非表示にしても、ページ自体は使えなくなりません。",
+  "settings_menu.main_menu": "メインメニュー",
+  "settings_menu.hide": "非表示",
+  "settings_menu.show": "表示",
+  "settings_menu.hidden_badge": "非表示中",
+  "settings_menu.always_shown": "常に表示",
+  "settings_menu.move_up": "上へ移動",
+  "settings_menu.move_down": "下へ移動",
+  "settings_menu.reset": "初期設定に戻す",
+  "settings_menu.reset_confirm": "すべての項目を初期の順序で再表示しますか？",
+  "settings_menu.owner_only": "サイドメニューを変更できるのはオーナーのみです。",
+  "company.nav_override_bad_id": "メニュー項目の名前が空か、長すぎるか、制御文字を含んでいます。",
+  "company.nav_override_too_many": "1つのリストのメニュー項目が多すぎます（最大 {max}）。",
+  "company.nav_override_settings": "設定をメニューから非表示にすることはできません。"
 }

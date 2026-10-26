@@ -30,7 +30,7 @@ ALLOWED_IN_CODE: dict[str, int] = {
     "default_modules/celerp-labels/__init__.py": 2,
     "default_modules/celerp-manufacturing/__init__.py": 3,
     "ui/components/files.py": 3,
-    "ui/components/shell.py": 9,
+    "ui/components/shell.py": 2,
     "ui/routes/accounting.py": 1,
     "ui/routes/contacts.py": 5,
     "ui/routes/csv_import.py": 1,

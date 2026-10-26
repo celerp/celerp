@@ -6472,5 +6472,20 @@
   "event.fa.check.removed": "የቋሚ ንብረት ፍተሻ ተወግዷል",
   "modules.turn_on": "አብራ",
   "nav.my_assets": "የእኔ ንብረቶች",
-  "connectors.order_changed_in_woocommerce": "ይህ ትዕዛዝ በWooCommerce ተቀይሯል። ለውጡን ለመገምገም እንደገና ሞክር ይምረጡ።"
+  "connectors.order_changed_in_woocommerce": "ይህ ትዕዛዝ በWooCommerce ተቀይሯል። ለውጡን ለመገምገም እንደገና ሞክር ይምረጡ።",
+  "settings_menu.title": "የጎን ምናሌ",
+  "settings_menu.hint": "የጎን ምናሌው የሚያሳየውን ግቤቶችና ቡድኖች እና ቅደም ተከተላቸውን ይምረጡ። ይህ ለኩባንያው ሁሉ ሰው ይሠራል፣ እና የእያንዳንዱ ሰው ሚና አስቀድሞ እንዲያይ የሚፈቅደውን ብቻ ይመለከታል። ግቤትን መደበቅ ገጹን ራሱ አይዘጋም።",
+  "settings_menu.main_menu": "ዋና ምናሌ",
+  "settings_menu.hide": "ደብቅ",
+  "settings_menu.show": "አሳይ",
+  "settings_menu.hidden_badge": "ተደብቋል",
+  "settings_menu.always_shown": "ሁልጊዜ ይታያል",
+  "settings_menu.move_up": "ወደ ላይ አንቀሳቅስ",
+  "settings_menu.move_down": "ወደ ታች አንቀሳቅስ",
+  "settings_menu.reset": "ወደ ነባሪ መልስ",
+  "settings_menu.reset_confirm": "ሁሉንም ግቤቶች በነባሪ ቅደም ተከተላቸው እንደገና ይታዩ?",
+  "settings_menu.owner_only": "የጎን ምናሌውን መለወጥ የሚችለው ባለቤቱ ብቻ ነው።",
+  "company.nav_override_bad_id": "የአንድ ምናሌ ግቤት ስም ባዶ ነው፣ በጣም ረጅም ነው ወይም የቁጥጥር ቁምፊዎች አሉት።",
+  "company.nav_override_too_many": "በአንድ ዝርዝር ውስጥ ብዙ ምናሌ ግቤቶች አሉ (ቢበዛ {max})።",
+  "company.nav_override_settings": "ቅንብሮችን ከምናሌው መደበቅ አይቻልም።"
 }

@@ -6472,5 +6472,20 @@
   "event.fa.check.removed": "تمت إزالة فحص أصل ثابت",
   "modules.turn_on": "تشغيل",
   "nav.my_assets": "أصولي",
-  "connectors.order_changed_in_woocommerce": "تغيّر هذا الطلب في WooCommerce. اختر إعادة المحاولة لمراجعة التغيير."
+  "connectors.order_changed_in_woocommerce": "تغيّر هذا الطلب في WooCommerce. اختر إعادة المحاولة لمراجعة التغيير.",
+  "settings_menu.title": "القائمة الجانبية",
+  "settings_menu.hint": "اختر الإدخالات والمجموعات التي تعرضها القائمة الجانبية وترتيبها. ينطبق هذا على الجميع في الشركة، وعلى ما يسمح به دور كل شخص فقط. إخفاء إدخال لا يحجب الصفحة نفسها.",
+  "settings_menu.main_menu": "القائمة الرئيسية",
+  "settings_menu.hide": "إخفاء",
+  "settings_menu.show": "إظهار",
+  "settings_menu.hidden_badge": "مخفي",
+  "settings_menu.always_shown": "يُعرض دائمًا",
+  "settings_menu.move_up": "نقل لأعلى",
+  "settings_menu.move_down": "نقل لأسفل",
+  "settings_menu.reset": "إعادة التعيين إلى الافتراضي",
+  "settings_menu.reset_confirm": "هل تريد إظهار كل الإدخالات مجددًا بترتيبها الافتراضي؟",
+  "settings_menu.owner_only": "وحده المالك يمكنه تغيير القائمة الجانبية.",
+  "company.nav_override_bad_id": "اسم أحد إدخالات القائمة فارغ أو طويل جدًا أو يحتوي على أحرف تحكم.",
+  "company.nav_override_too_many": "عدد إدخالات القائمة في قائمة واحدة كبير جدًا (الحد الأقصى {max}).",
+  "company.nav_override_settings": "لا يمكن إخفاء الإعدادات من القائمة."
 }

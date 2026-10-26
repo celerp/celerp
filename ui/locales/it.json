@@ -6472,5 +6472,20 @@
   "event.fa.check.removed": "Verifica del cespite rimossa",
   "modules.turn_on": "Attiva",
   "nav.my_assets": "I miei cespiti",
-  "connectors.order_changed_in_woocommerce": "Questo ordine è cambiato in WooCommerce. Seleziona Riprova per esaminare la modifica."
+  "connectors.order_changed_in_woocommerce": "Questo ordine è cambiato in WooCommerce. Seleziona Riprova per esaminare la modifica.",
+  "settings_menu.title": "Menu laterale",
+  "settings_menu.hint": "Scegli quali voci e gruppi mostra il menu laterale e in quale ordine. Vale per tutta l'azienda e solo per ciò che il ruolo di ciascuno già consente di vedere. Nascondere una voce non blocca la pagina stessa.",
+  "settings_menu.main_menu": "Menu principale",
+  "settings_menu.hide": "Nascondi",
+  "settings_menu.show": "Mostra",
+  "settings_menu.hidden_badge": "Nascosto",
+  "settings_menu.always_shown": "Sempre visibile",
+  "settings_menu.move_up": "Sposta su",
+  "settings_menu.move_down": "Sposta giù",
+  "settings_menu.reset": "Ripristina predefiniti",
+  "settings_menu.reset_confirm": "Mostrare di nuovo tutte le voci nell'ordine predefinito?",
+  "settings_menu.owner_only": "Solo il proprietario può modificare il menu laterale.",
+  "company.nav_override_bad_id": "Il nome di una voce di menu è vuoto, troppo lungo o contiene caratteri di controllo.",
+  "company.nav_override_too_many": "Troppe voci di menu in un elenco (al massimo {max}).",
+  "company.nav_override_settings": "Le impostazioni non possono essere nascoste dal menu."
 }

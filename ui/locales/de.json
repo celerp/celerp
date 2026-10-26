@@ -6472,5 +6472,20 @@
   "event.fa.check.removed": "Prüfung einer Anlage entfernt",
   "modules.turn_on": "Einschalten",
   "nav.my_assets": "Meine Anlagen",
-  "connectors.order_changed_in_woocommerce": "Diese Bestellung wurde in WooCommerce geändert. Wählen Sie „Erneut versuchen“, um die Änderung zu prüfen."
+  "connectors.order_changed_in_woocommerce": "Diese Bestellung wurde in WooCommerce geändert. Wählen Sie „Erneut versuchen“, um die Änderung zu prüfen.",
+  "settings_menu.title": "Seitenmenü",
+  "settings_menu.hint": "Legen Sie fest, welche Einträge und Gruppen das Seitenmenü zeigt und in welcher Reihenfolge. Das gilt für alle im Unternehmen und nur für das, was die Rolle der Person ohnehin sehen darf. Ein ausgeblendeter Eintrag sperrt die Seite selbst nicht.",
+  "settings_menu.main_menu": "Hauptmenü",
+  "settings_menu.hide": "Ausblenden",
+  "settings_menu.show": "Einblenden",
+  "settings_menu.hidden_badge": "Ausgeblendet",
+  "settings_menu.always_shown": "Immer sichtbar",
+  "settings_menu.move_up": "Nach oben",
+  "settings_menu.move_down": "Nach unten",
+  "settings_menu.reset": "Auf Standard zurücksetzen",
+  "settings_menu.reset_confirm": "Alle Einträge wieder in der Standardreihenfolge anzeigen?",
+  "settings_menu.owner_only": "Nur der Inhaber kann das Seitenmenü ändern.",
+  "company.nav_override_bad_id": "Ein Menüeintragsname ist leer, zu lang oder enthält Steuerzeichen.",
+  "company.nav_override_too_many": "Zu viele Menüeinträge in einer Liste (höchstens {max}).",
+  "company.nav_override_settings": "Die Einstellungen können nicht aus dem Menü ausgeblendet werden."
 }

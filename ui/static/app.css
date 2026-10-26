@@ -3643,3 +3643,13 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
 .doctor-failures { margin: 0 0 12px; }
 .doctor-failures dd { margin: 4px 0 0; }
 .doctor-error { white-space: pre-wrap; word-break: break-word; }
+.menu-icon { display: inline-flex; vertical-align: -0.125em; margin-inline-end: 0.5em; }
+.lang-switcher__globe { display: inline-flex; align-items: center; }
+.notif-bell-btn svg, .sidebar-toggle svg { display: block; }
+.menu-editor__row, .menu-editor__group-head { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--c-border); }
+.menu-editor__group-head { margin-top: 12px; }
+.menu-editor__group-head .settings-section-title { flex: 1; margin: 0; }
+.menu-editor__label { flex: 1; }
+.menu-editor__badge { font-size: 11px; color: var(--c-text2); }
+.menu-editor__row--hidden .menu-editor__label, .menu-editor__section--hidden .menu-editor__label { color: var(--c-text2); text-decoration: line-through; }
+.menu-editor__move { display: inline-flex; gap: 4px; }

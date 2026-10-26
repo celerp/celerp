@@ -38,7 +38,7 @@ Third-party icon shapes: the icons in ui/components/icons.py are the Lucide icon
 (https://lucide.dev, lucide v1.8.0), copied unchanged (the spreadsheet icon is an earlier
 revision of the same Lucide icon). Lucide is released under the ISC
 license, below; the icons it lists as derived from Feather (here: alert-triangle, check, info,
-trash-2 and x) are under the MIT License that follows.
+key, trash-2 and x) are under the MIT License that follows.
 
 ISC License
 
@@ -58,7 +58,7 @@ OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 ---
 
-Lucide icons derived from the Feather project (alert-triangle, check, info, trash-2, x):
+Lucide icons derived from the Feather project (alert-triangle, check, info, key, trash-2, x):
 
 The MIT License (MIT) (for the icons listed above)
 

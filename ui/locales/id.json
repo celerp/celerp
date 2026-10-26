@@ -6472,5 +6472,20 @@
   "event.fa.check.removed": "Pemeriksaan aset tetap dihapus",
   "modules.turn_on": "Aktifkan",
   "nav.my_assets": "Aset saya",
-  "connectors.order_changed_in_woocommerce": "Pesanan ini berubah di WooCommerce. Pilih Coba lagi untuk meninjau perubahannya."
+  "connectors.order_changed_in_woocommerce": "Pesanan ini berubah di WooCommerce. Pilih Coba lagi untuk meninjau perubahannya.",
+  "settings_menu.title": "Menu samping",
+  "settings_menu.hint": "Pilih entri dan grup yang ditampilkan menu samping, serta urutannya. Ini berlaku untuk semua orang di perusahaan, dan hanya untuk apa yang sudah boleh dilihat oleh peran masing-masing. Menyembunyikan entri tidak memblokir halamannya.",
+  "settings_menu.main_menu": "Menu utama",
+  "settings_menu.hide": "Sembunyikan",
+  "settings_menu.show": "Tampilkan",
+  "settings_menu.hidden_badge": "Tersembunyi",
+  "settings_menu.always_shown": "Selalu ditampilkan",
+  "settings_menu.move_up": "Naik",
+  "settings_menu.move_down": "Turun",
+  "settings_menu.reset": "Atur ulang ke default",
+  "settings_menu.reset_confirm": "Tampilkan lagi semua entri dalam urutan default?",
+  "settings_menu.owner_only": "Hanya pemilik yang dapat mengubah menu samping.",
+  "company.nav_override_bad_id": "Nama entri menu kosong, terlalu panjang, atau berisi karakter kontrol.",
+  "company.nav_override_too_many": "Terlalu banyak entri menu dalam satu daftar (maksimal {max}).",
+  "company.nav_override_settings": "Pengaturan tidak dapat disembunyikan dari menu."
 }

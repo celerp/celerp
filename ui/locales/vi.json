@@ -6472,5 +6472,20 @@
   "event.fa.check.removed": "Đã xóa lần kiểm kê tài sản cố định",
   "modules.turn_on": "Bật",
   "nav.my_assets": "Tài sản của tôi",
-  "connectors.order_changed_in_woocommerce": "Đơn hàng này đã thay đổi trong WooCommerce. Hãy chọn Thử lại để xem xét thay đổi."
+  "connectors.order_changed_in_woocommerce": "Đơn hàng này đã thay đổi trong WooCommerce. Hãy chọn Thử lại để xem xét thay đổi.",
+  "settings_menu.title": "Menu bên",
+  "settings_menu.hint": "Chọn các mục và nhóm mà menu bên hiển thị, và thứ tự của chúng. Điều này áp dụng cho mọi người trong công ty, và chỉ với những gì vai trò của mỗi người vốn đã được xem. Ẩn một mục không chặn chính trang đó.",
+  "settings_menu.main_menu": "Menu chính",
+  "settings_menu.hide": "Ẩn",
+  "settings_menu.show": "Hiện",
+  "settings_menu.hidden_badge": "Đã ẩn",
+  "settings_menu.always_shown": "Luôn hiển thị",
+  "settings_menu.move_up": "Di chuyển lên",
+  "settings_menu.move_down": "Di chuyển xuống",
+  "settings_menu.reset": "Đặt lại mặc định",
+  "settings_menu.reset_confirm": "Hiện lại mọi mục theo thứ tự mặc định?",
+  "settings_menu.owner_only": "Chỉ chủ sở hữu mới có thể thay đổi menu bên.",
+  "company.nav_override_bad_id": "Tên một mục menu để trống, quá dài hoặc có ký tự điều khiển.",
+  "company.nav_override_too_many": "Quá nhiều mục menu trong một danh sách (tối đa {max}).",
+  "company.nav_override_settings": "Không thể ẩn Cài đặt khỏi menu."
 }

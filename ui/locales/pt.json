@@ -6472,5 +6472,20 @@
   "event.fa.check.removed": "Verificação de ativo imobilizado removida",
   "modules.turn_on": "Ativar",
   "nav.my_assets": "Os meus ativos",
-  "connectors.order_changed_in_woocommerce": "Este pedido mudou no WooCommerce. Selecione Tentar novamente para revisar a alteração."
+  "connectors.order_changed_in_woocommerce": "Este pedido mudou no WooCommerce. Selecione Tentar novamente para revisar a alteração.",
+  "settings_menu.title": "Menu lateral",
+  "settings_menu.hint": "Escolha quais entradas e grupos o menu lateral mostra e em que ordem. Aplica-se a toda a empresa e apenas ao que a função de cada pessoa já permite ver. Ocultar uma entrada não bloqueia a própria página.",
+  "settings_menu.main_menu": "Menu principal",
+  "settings_menu.hide": "Ocultar",
+  "settings_menu.show": "Mostrar",
+  "settings_menu.hidden_badge": "Oculto",
+  "settings_menu.always_shown": "Sempre visível",
+  "settings_menu.move_up": "Mover para cima",
+  "settings_menu.move_down": "Mover para baixo",
+  "settings_menu.reset": "Repor predefinições",
+  "settings_menu.reset_confirm": "Mostrar novamente todas as entradas na ordem predefinida?",
+  "settings_menu.owner_only": "Apenas o proprietário pode alterar o menu lateral.",
+  "company.nav_override_bad_id": "O nome de uma entrada do menu está vazio, é demasiado longo ou tem caracteres de controlo.",
+  "company.nav_override_too_many": "Demasiadas entradas de menu numa lista (no máximo {max}).",
+  "company.nav_override_settings": "As definições não podem ser ocultadas do menu."
 }
