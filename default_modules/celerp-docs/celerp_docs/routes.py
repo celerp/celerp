@@ -7653,7 +7653,7 @@ async def add_doc_note(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    await _get_doc(session, company_id, entity_id)
+    await _get_doc(session, company_id, entity_id, for_update=True)
     if not payload.note.strip():
         raise HTTPException(status_code=422, detail=t("documents.err_note_empty"))
     note_id = f"note:{uuid.uuid4()}"
@@ -7685,7 +7685,7 @@ async def update_doc_note(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    await _get_doc(session, company_id, entity_id)
+    await _get_doc(session, company_id, entity_id, for_update=True)
     row = await session.get(Projection, {"company_id": company_id, "entity_id": note_id})
     if row is None or row.entity_type != "doc_note" or row.state.get("doc_id") != entity_id:
         raise HTTPException(status_code=404, detail=t("documents.err_note_not_found"))
@@ -7709,7 +7709,7 @@ async def delete_doc_note(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    await _get_doc(session, company_id, entity_id)
+    await _get_doc(session, company_id, entity_id, for_update=True)
     row = await session.get(Projection, {"company_id": company_id, "entity_id": note_id})
     if row is None or row.entity_type != "doc_note" or row.state.get("doc_id") != entity_id:
         raise HTTPException(status_code=404, detail=t("documents.err_note_not_found"))
@@ -9614,7 +9614,7 @@ async def add_list_note(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    await _get_list(session, company_id, entity_id)
+    await _get_list_for_update(session, company_id, entity_id)
     if not payload.note.strip():
         raise HTTPException(status_code=422, detail=t("documents.err_note_empty"))
     note_id = f"note:{uuid.uuid4()}"
@@ -9646,7 +9646,7 @@ async def update_list_note(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    await _get_list(session, company_id, entity_id)
+    await _get_list_for_update(session, company_id, entity_id)
     row = await session.get(Projection, {"company_id": company_id, "entity_id": note_id})
     if row is None or row.entity_type != "list_note" or row.state.get("list_id") != entity_id:
         raise HTTPException(status_code=404, detail=t("documents.err_note_not_found"))
@@ -9670,7 +9670,7 @@ async def delete_list_note(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    await _get_list(session, company_id, entity_id)
+    await _get_list_for_update(session, company_id, entity_id)
     row = await session.get(Projection, {"company_id": company_id, "entity_id": note_id})
     if row is None or row.entity_type != "list_note" or row.state.get("list_id") != entity_id:
         raise HTTPException(status_code=404, detail=t("documents.err_note_not_found"))

@@ -315,34 +315,89 @@ def _turn_off_documents(company_id):
     return _go
 
 
-async def test_a_document_waiting_while_documents_is_turned_off_is_refused(committed_engine, docs_routes):
-    """A document request authorized while the company uses Documents, that reaches the
-    company lock after Documents is turned off for it, is refused and writes nothing."""
+async def _company_state(factory, company_id) -> tuple[int, dict]:
+    async with factory() as s:
+        events = (await s.execute(select(func.count()).select_from(LedgerEntry).where(
+            LedgerEntry.company_id == company_id))).scalar_one()
+        rows = (await s.execute(select(Projection.entity_id, Projection.state).where(
+            Projection.company_id == company_id))).all()
+    return events, {entity_id: state for entity_id, state in rows}
+
+
+async def _documents_writes(client, headers) -> dict:
+    """Each write a Documents route makes, as (method, path, body), with the document, list
+    and notes it acts on already in place."""
+    async def made(path, body):
+        r = await client.post(path, json=body, headers=headers)
+        assert r.status_code == 200, r.text
+        return r.json()["id"]
+
+    doc = await made("/docs", _INVOICE)
+    lst = await made("/lists", {"list_type": "shipping_doc", "contact_name": "Buyer",
+                                "line_items": [{"item_id": _ITEM, "sku": _ITEM, "name": _ITEM, "quantity": 1}]})
+    doc_note = await made(f"/docs/{doc}/notes", {"note": "First"})
+    list_note = await made(f"/lists/{lst}/notes", {"note": "First"})
+    return {
+        "create_document": ("post", "/docs", _INVOICE),
+        "add_document_note": ("post", f"/docs/{doc}/notes", {"note": "Added"}),
+        "edit_document_note": ("patch", f"/docs/{doc}/notes/{doc_note}", {"note": "Edited"}),
+        "delete_document_note": ("delete", f"/docs/{doc}/notes/{doc_note}", None),
+        "add_list_note": ("post", f"/lists/{lst}/notes", {"note": "Added"}),
+        "edit_list_note": ("patch", f"/lists/{lst}/notes/{list_note}", {"note": "Edited"}),
+        "delete_list_note": ("delete", f"/lists/{lst}/notes/{list_note}", None),
+    }
+
+
+_DOCUMENTS_WRITES = ("create_document", "add_document_note", "edit_document_note", "delete_document_note",
+                     "add_list_note", "edit_list_note", "delete_list_note")
+
+
+def _send(client, headers, write):
+    method, path, body = write
+    if body is None:
+        return lambda: getattr(client, method)(path, headers=headers)
+    return lambda: getattr(client, method)(path, json=body, headers=headers)
+
+
+@pytest.mark.parametrize("write", _DOCUMENTS_WRITES)
+async def test_a_documents_write_waiting_while_documents_is_turned_off_is_refused(committed_engine, docs_routes, write):
+    """A Documents write authorized while the company uses Documents, that reaches the company
+    lock after Documents is turned off for it, is refused and writes nothing. Another company
+    using Documents is unaffected."""
     factory = async_sessionmaker(bind=committed_engine, class_=AsyncSession, expire_on_commit=False)
-    c = await _seed(factory)
+    c, other = await _seed(factory), await _seed(factory)
     async with _app_client(factory) as (client, pending):
+        writes = await _documents_writes(client, c["h"]["owner"])
+        other_writes = await _documents_writes(client, other["h"]["owner"])
+        before = await _company_state(factory, c["company_id"])
         changed, wrote = await _race(
             committed_engine,
             lambda held: _direct(factory, held, _turn_off_documents(c["company_id"])),
-            lambda held: _http(pending, held, lambda: client.post("/docs", json=_INVOICE, headers=c["h"]["owner"])),
+            lambda held: _http(pending, held, _send(client, c["h"]["owner"], writes[write])),
         )
-    _ok(changed)
-    _refused(wrote, 403)
-    assert wrote.json()["detail"]["message_key"] == "modules.off_for_company"
-    assert await _doc_count(factory, c["company_id"]) == 0
+        _ok(changed)
+        _refused(wrote, 403)
+        assert wrote.json()["detail"]["message_key"] == "modules.off_for_company"
+        assert await _company_state(factory, c["company_id"]) == before
+        _ok(await _send(client, other["h"]["owner"], other_writes[write])())
 
 
-async def test_a_document_holding_the_lock_first_commits_before_documents_is_turned_off(committed_engine, docs_routes):
+@pytest.mark.parametrize("write", _DOCUMENTS_WRITES)
+async def test_a_documents_write_holding_the_lock_first_commits_before_documents_is_turned_off(
+        committed_engine, docs_routes, write):
     factory = async_sessionmaker(bind=committed_engine, class_=AsyncSession, expire_on_commit=False)
     c = await _seed(factory)
     async with _app_client(factory) as (client, pending):
+        writes = await _documents_writes(client, c["h"]["owner"])
+        before = await _company_state(factory, c["company_id"])
         wrote, changed = await _race(
             committed_engine,
-            lambda held: _http(pending, held, lambda: client.post("/docs", json=_INVOICE, headers=c["h"]["owner"])),
+            lambda held: _http(pending, held, _send(client, c["h"]["owner"], writes[write])),
             lambda held: _direct(factory, held, _turn_off_documents(c["company_id"])),
         )
     _ok(wrote)
-    assert await _doc_count(factory, c["company_id"]) == 1
+    _ok(changed)
+    assert (await _company_state(factory, c["company_id"]))[0] > before[0]
 
 
 async def test_draft_cost_refused_once_a_concurrent_make_available_lands_first(committed_engine):
