@@ -6519,5 +6519,10 @@
   "documents.list_old_rule_notice": "この見積書の合計は以前の端数処理ルールで計算されています：{stored}。現在のルールでは{current}です。現在のルールを適用するには合計を再計算してください。その後、以前の合計に戻すこともできます。",
   "documents.btn_recalculate_total": "合計を再計算",
   "documents.list_total_recalculated": "合計を{old}から{new}に再計算しました。",
-  "documents.btn_restore_total": "以前の合計に戻す"
+  "documents.btn_restore_total": "以前の合計に戻す",
+  "documents.picker_no_items_yet": "まだ品目がありません。先に在庫を追加するか、入力して自由な行を追加してください。",
+  "documents.contact_picker_error": "連絡先を読み込めませんでした。もう一度お試しください。",
+  "documents.contact_picker_retry": "再試行",
+  "documents.picker_no_customers": "まだ顧客がいません。{add}で作成してください。",
+  "documents.picker_no_vendors": "まだ仕入先がいません。{add}で作成してください。"
 }

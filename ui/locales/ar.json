@@ -6519,5 +6519,10 @@
   "documents.list_old_rule_notice": "حُسب إجمالي عرض السعر هذا وفق قاعدة التقريب السابقة: {stored}. وتعطي القاعدة الحالية {current}. أعد حساب الإجمالي لاستخدام القاعدة الحالية. ويمكنك استعادة الإجمالي السابق بعد ذلك.",
   "documents.btn_recalculate_total": "إعادة حساب الإجمالي",
   "documents.list_total_recalculated": "أُعيد حساب الإجمالي من {old} إلى {new}.",
-  "documents.btn_restore_total": "استعادة الإجمالي السابق"
+  "documents.btn_restore_total": "استعادة الإجمالي السابق",
+  "documents.picker_no_items_yet": "لا توجد أصناف بعد. أضف مخزونًا أولًا، أو اكتب لإدخال سطر مخصص.",
+  "documents.contact_picker_error": "تعذّر تحميل جهات الاتصال. يرجى المحاولة مرة أخرى.",
+  "documents.contact_picker_retry": "إعادة المحاولة",
+  "documents.picker_no_customers": "لا يوجد عملاء بعد. استخدم {add} لإنشاء واحد.",
+  "documents.picker_no_vendors": "لا يوجد موردون بعد. استخدم {add} لإنشاء واحد."
 }

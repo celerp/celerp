@@ -6519,5 +6519,10 @@
   "documents.list_old_rule_notice": "Le total de ce devis a été calculé selon l’ancienne règle d’arrondi : {stored}. La règle actuelle donne {current}. Recalculez le total pour appliquer la règle actuelle. Vous pourrez ensuite rétablir le total précédent.",
   "documents.btn_recalculate_total": "Recalculer le total",
   "documents.list_total_recalculated": "Total recalculé de {old} à {new}.",
-  "documents.btn_restore_total": "Rétablir le total précédent"
+  "documents.btn_restore_total": "Rétablir le total précédent",
+  "documents.picker_no_items_yet": "Aucun article pour le moment. Ajoutez d'abord du stock, ou saisissez pour entrer une ligne libre.",
+  "documents.contact_picker_error": "Les contacts n'ont pas pu être chargés. Veuillez réessayer.",
+  "documents.contact_picker_retry": "Réessayer",
+  "documents.picker_no_customers": "Aucun client pour le moment. Utilisez {add} pour en créer un.",
+  "documents.picker_no_vendors": "Aucun fournisseur pour le moment. Utilisez {add} pour en créer un."
 }

@@ -6519,5 +6519,10 @@
   "documents.list_old_rule_notice": "El total de este presupuesto se calculó con la regla de redondeo anterior: {stored}. La regla actual da {current}. Vuelva a calcular el total para aplicar la regla actual. Después podrá restablecer el total anterior.",
   "documents.btn_recalculate_total": "Volver a calcular el total",
   "documents.list_total_recalculated": "Total recalculado de {old} a {new}.",
-  "documents.btn_restore_total": "Restablecer el total anterior"
+  "documents.btn_restore_total": "Restablecer el total anterior",
+  "documents.picker_no_items_yet": "Aún no hay artículos. Añada existencias primero, o escriba para introducir una línea libre.",
+  "documents.contact_picker_error": "No se pudieron cargar los contactos. Inténtelo de nuevo.",
+  "documents.contact_picker_retry": "Reintentar",
+  "documents.picker_no_customers": "Aún no hay clientes. Use {add} para crear uno.",
+  "documents.picker_no_vendors": "Aún no hay proveedores. Use {add} para crear uno."
 }

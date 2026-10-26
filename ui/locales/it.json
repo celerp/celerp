@@ -6519,5 +6519,10 @@
   "documents.list_old_rule_notice": "Il totale di questo preventivo è stato calcolato con la precedente regola di arrotondamento: {stored}. La regola attuale dà {current}. Ricalcola il totale per applicare la regola attuale. Potrai poi ripristinare il totale precedente.",
   "documents.btn_recalculate_total": "Ricalcola il totale",
   "documents.list_total_recalculated": "Totale ricalcolato da {old} a {new}.",
-  "documents.btn_restore_total": "Ripristina il totale precedente"
+  "documents.btn_restore_total": "Ripristina il totale precedente",
+  "documents.picker_no_items_yet": "Ancora nessun articolo. Aggiungi prima delle scorte, oppure scrivi per inserire una riga libera.",
+  "documents.contact_picker_error": "Impossibile caricare i contatti. Riprova.",
+  "documents.contact_picker_retry": "Riprova",
+  "documents.picker_no_customers": "Ancora nessun cliente. Usa {add} per crearne uno.",
+  "documents.picker_no_vendors": "Ancora nessun fornitore. Usa {add} per crearne uno."
 }

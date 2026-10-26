@@ -6519,5 +6519,10 @@
   "documents.list_old_rule_notice": "ይህ የዋጋ ጥቅስ ጠቅላላ ድምር በቀድሞው የማጠጋጋት ሕግ ተሰልቷል፦ {stored}። የአሁኑ ሕግ {current} ያስገኛል። የአሁኑን ሕግ ለመጠቀም ጠቅላላ ድምሩን እንደገና ያስሉ። ከዚያ በኋላ የቀድሞውን ድምር መመለስ ይችላሉ።",
   "documents.btn_recalculate_total": "ጠቅላላ ድምሩን እንደገና አስላ",
   "documents.list_total_recalculated": "ጠቅላላ ድምሩ ከ{old} ወደ {new} እንደገና ተሰልቷል።",
-  "documents.btn_restore_total": "የቀድሞውን ጠቅላላ ድምር መልስ"
+  "documents.btn_restore_total": "የቀድሞውን ጠቅላላ ድምር መልስ",
+  "documents.picker_no_items_yet": "እስካሁን ምንም ዕቃ የለም። መጀመሪያ ክምችት ያክሉ፣ ወይም ብጁ መስመር ለማስገባት ይተይቡ።",
+  "documents.contact_picker_error": "እውቂያዎችን መጫን አልተቻለም። እባክዎ እንደገና ይሞክሩ።",
+  "documents.contact_picker_retry": "እንደገና ሞክር",
+  "documents.picker_no_customers": "እስካሁን ደንበኛ የለም። ለመፍጠር {add} ይጠቀሙ።",
+  "documents.picker_no_vendors": "እስካሁን አቅራቢ የለም። ለመፍጠር {add} ይጠቀሙ።"
 }

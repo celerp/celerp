@@ -449,6 +449,9 @@ from ui.routes.reports import _company_today, _date_filter_bar, _get_company, _p
 
 logger = logging.getLogger(__name__)
 
+# How many items the line-item picker offers before anything is typed.
+_PICKER_START_LIMIT = 20
+
 # ---------------------------------------------------------------------------
 # Lists constants
 # ---------------------------------------------------------------------------
@@ -1881,11 +1884,30 @@ def setup_routes(app):
         if not _token(request):
             return _J({"error": "unauthorized"}, status_code=401)
         q = request.query_params.get("q", "").strip()
-        if not q:
-            return _J([])
         try:
             ctx = await _picker_context(request)
             token, extract = ctx["token"], ctx["extract"]
+            if not q:
+                # Focus or click on an empty field: a starting list in the inventory list's own
+                # default order (most recently updated first), not a blank dropdown.
+                if ctx["doc_type"] == "credit_note":
+                    # Sold lots first, as for a typed search: you credit the lot the customer returns.
+                    sold = (await api.list_items(token, {"limit": _PICKER_START_LIMIT // 2, "status": "sold"}))["items"]
+                    active = (await api.list_items(token, {"limit": _PICKER_START_LIMIT // 2}))["items"]
+                    seen, items = set(), []
+                    for item in sold + active:
+                        key = item.get("entity_id") or item.get("id") or item.get("sku")
+                        if key and key not in seen and str(item.get("status") or "").lower() != "draft":
+                            seen.add(key)
+                            items.append(item)
+                    return _J([extract(i) for i in items])
+                found = (await api.list_items(token, {"limit": _PICKER_START_LIMIT}))["items"]
+                try:
+                    items = await _sales_options(token, found, ctx["settings"], q, doc_id=ctx["doc_id"],
+                                                 line_id=ctx["line_id"], source_memo_id=ctx["source_memo_id"])
+                except _PickerRefusal:
+                    items = []
+                return _J([extract(i) for i in items])
             lot = await _exact_physical_lot(token, q, doc_type=ctx["doc_type"], doc_id=ctx["doc_id"],
                                             line_id=ctx["line_id"], source_memo_id=ctx["source_memo_id"])
             if lot is not None:
@@ -5568,10 +5590,21 @@ async def _contact_picker(token: str, *, resource: str, entity_id: str, field: s
     company, still saving contact_id). A document saves through htmx; a List saves through
     its mutation queue, persisting pending line edits first because the save reloads the page.
     """
+    prefix = "/lists" if resource == "list" else "/docs"
+    restore_url = f"{prefix}/{entity_id}/field/{field}/display"
     try:
         contacts = (await api.list_contacts(token, {"limit": 500, "contact_type": contact_type})).get("items", [])
-    except APIError:
-        contacts = []
+    except APIError as exc:
+        logger.warning("Contact picker preload failed: %s", exc)
+        # A failed load is not an empty company: say so, and offer another try.
+        return Div(
+            Span(t("documents.contact_picker_error"), cls="field-error", role="alert"),
+            " ",
+            Button(t("documents.contact_picker_retry"), type="button", cls="btn btn--ghost btn--xs contact-picker-retry",
+                   hx_get=f"{prefix}/{entity_id}/field/{field}/edit", hx_target="closest .editable-cell",
+                   hx_swap="outerHTML"),
+            cls="contact-picker-error",
+        )
     if field == "contact_company_name":
         options = [
             (c.get("entity_id") or c.get("id") or "", c.get("company_name") or c.get("name") or "")
@@ -5582,7 +5615,6 @@ async def _contact_picker(token: str, *, resource: str, entity_id: str, field: s
         options = [(c.get("entity_id") or c.get("id") or "", c.get("name") or c.get("entity_id") or c.get("id") or "") for c in contacts]
         options.append(("__new__", t("documents.add_new_contact")))
         save_field = field
-    prefix = "/lists" if resource == "list" else "/docs"
     patch_url = f"{prefix}/{entity_id}/field/{save_field}"
     if resource == "list":
         save_attrs = {"onchange": f"_celerpPatchListField(this, {_json.dumps(patch_url)}, true)"}
@@ -5591,8 +5623,14 @@ async def _contact_picker(token: str, *, resource: str, entity_id: str, field: s
                       "hx_swap": "outerHTML", "hx_trigger": "change",
                       # The page's current version pins the selection to the document it shows.
                       "hx_vals": "js:{expected_version: window._celerpEntityVersion}"}
-    restore_url = f"{prefix}/{entity_id}/field/{field}/display"
     # The wrapper catches ESC bubbling out of the combobox and restores the display cell.
+    no_contacts = None
+    if not contacts:
+        # Nothing of this kind exists yet: say so, rather than showing a silent blank list.
+        no_contacts = P(
+            t("documents.picker_no_vendors" if contact_type == "vendor" else "documents.picker_no_customers",
+              add=t("documents.add_new_contact")),
+            cls="contact-picker-empty muted")
     return Div(
         searchable_select(
             name="value",
@@ -5602,6 +5640,7 @@ async def _contact_picker(token: str, *, resource: str, entity_id: str, field: s
             search_url=f"/contacts/search-options?contact_type={contact_type}&field={field}",
             **save_attrs,
         ),
+        no_contacts,
         onkeydown=(
             f"if(event.key==='Escape'){{"
             f"htmx.ajax('GET','{restore_url}',{{target:this.closest('.editable-cell'),swap:'outerHTML'}});"
@@ -7531,6 +7570,8 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                           autocomplete="off",
                           title=t("documents.tip_catalog_search"),
                           oninput="celerpAcSearch(this,'sku')",
+                          onfocus="celerpAcSearch(this,'sku')",
+                          onclick="celerpAcSearch(this,'sku')",
                           onblur="celerpAcBlur(this)",
                           onkeydown="celerpAcKey(event,this)"),
                     Div(cls="catalog-ac-list", style="display:none"),
@@ -7548,6 +7589,8 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                       autocomplete="off",
                       title=t("documents.tip_catalog_search"),
                       oninput="celerpAcSearch(this,'description')",
+                      onfocus="celerpAcSearch(this,'description')",
+                      onclick="celerpAcSearch(this,'description')",
                       onblur="celerpAcBlur(this)",
                       onkeydown="celerpAcKey(event,this)"),
                 Div(cls="catalog-ac-list", style="display:none"),
@@ -8233,6 +8276,7 @@ window._L = {_json.dumps({
     "scan_run_committed": t("documents.scan_run_committed"),
     "scan_reload_needed": t("documents.scan_reload_needed"),
     "lookup_error": t("documents.lookup_error"),
+    "no_items_yet": t("documents.picker_no_items_yet"),
     "view_item_details": t("documents.view_item_details"),
     "no_linked_item": t("documents.no_linked_item"),
     "view_in_catalog": t("documents.view_in_catalog"),
@@ -8688,14 +8732,27 @@ async function celerpAcSearch(input, field) {{
     const q = input.value.trim();
     const wrap = input.parentElement;
     const list = wrap.querySelector('.catalog-ac-list');
-    if (!q || q.length < 2) {{ list.style.display = 'none'; return; }}
+    // An empty field offers the starting list; one typed character waits for a second.
+    if (q.length === 1) {{ list.style.display = 'none'; return; }}
     clearTimeout(_celerpAcTimer);
     _celerpAcTimer = setTimeout(async () => {{
         const pl = _celerpPriceListParam();
         const resp = await celerpFetch('/docs/catalog-search?q=' + encodeURIComponent(q) + pl + _celerpDocTypeParam() + _celerpHolderParam(input.closest('tr')));
         if (!resp.ok) {{ list.style.display = 'none'; _celerpPickerStatus(await _celerpPickerError(resp)); return; }}
         const items = await resp.json();
+        // Typing moved on while this answered (the starting list, or an earlier word).
+        if (input.value.trim() !== q) return;
         list.innerHTML = '';
+        if (!q && !items.length) {{
+            const none = document.createElement('div');
+            none.className = 'catalog-ac-option catalog-ac-option--empty';
+            none.textContent = _L.no_items_yet;
+            list.appendChild(none);
+            list.style.display = 'block';
+            _celerpAcPlace(list, wrap);
+            followAnchor(list, wrap, () => _celerpAcPlace(list, wrap));
+            return;
+        }}
         items.forEach(item => {{
             const opt = document.createElement('div');
             opt.className = 'catalog-ac-option';
@@ -8718,7 +8775,13 @@ async function celerpAcSearch(input, field) {{
             }});
             list.appendChild(opt);
         }});
-        // Always append a custom-entry option at the bottom
+        // A typed text always offers a custom-entry option at the bottom; the starting list has none.
+        if (!q) {{
+            list.style.display = 'block';
+            _celerpAcPlace(list, wrap);
+            followAnchor(list, wrap, () => _celerpAcPlace(list, wrap));
+            return;
+        }}
         const _expenseTypes = ['bill', 'purchase_order', 'consignment_in'];
         const _customLabel = _expenseTypes.includes(_CELERP_DOC_TYPE)
             ? '✏ Use as expense: "' + q + '"'

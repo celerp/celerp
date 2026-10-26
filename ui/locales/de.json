@@ -6519,5 +6519,10 @@
   "documents.list_old_rule_notice": "Die Gesamtsumme dieses Angebots wurde nach der früheren Rundungsregel berechnet: {stored}. Nach der aktuellen Regel ergibt sich {current}. Berechnen Sie die Gesamtsumme neu, um die aktuelle Regel anzuwenden. Anschließend können Sie die vorherige Summe wiederherstellen.",
   "documents.btn_recalculate_total": "Gesamtsumme neu berechnen",
   "documents.list_total_recalculated": "Gesamtsumme von {old} auf {new} neu berechnet.",
-  "documents.btn_restore_total": "Vorherige Gesamtsumme wiederherstellen"
+  "documents.btn_restore_total": "Vorherige Gesamtsumme wiederherstellen",
+  "documents.picker_no_items_yet": "Noch keine Artikel. Legen Sie zuerst Bestand an oder tippen Sie, um eine freie Zeile einzugeben.",
+  "documents.contact_picker_error": "Die Kontakte konnten nicht geladen werden. Bitte versuchen Sie es erneut.",
+  "documents.contact_picker_retry": "Erneut versuchen",
+  "documents.picker_no_customers": "Noch keine Kunden. Mit {add} legen Sie einen an.",
+  "documents.picker_no_vendors": "Noch keine Lieferanten. Mit {add} legen Sie einen an."
 }

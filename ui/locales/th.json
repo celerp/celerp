@@ -6519,5 +6519,10 @@
   "documents.list_old_rule_notice": "ยอดรวมใบเสนอราคานี้คำนวณตามกฎการปัดเศษเดิม: {stored} ส่วนกฎปัจจุบันได้ {current} โปรดคำนวณยอดรวมใหม่เพื่อใช้กฎปัจจุบัน และสามารถคืนค่ายอดรวมเดิมได้ภายหลัง",
   "documents.btn_recalculate_total": "คำนวณยอดรวมใหม่",
   "documents.list_total_recalculated": "คำนวณยอดรวมใหม่จาก {old} เป็น {new} แล้ว",
-  "documents.btn_restore_total": "คืนค่ายอดรวมเดิม"
+  "documents.btn_restore_total": "คืนค่ายอดรวมเดิม",
+  "documents.picker_no_items_yet": "ยังไม่มีสินค้า เพิ่มสต็อกก่อน หรือพิมพ์เพื่อป้อนรายการเอง",
+  "documents.contact_picker_error": "โหลดรายชื่อผู้ติดต่อไม่ได้ โปรดลองอีกครั้ง",
+  "documents.contact_picker_retry": "ลองอีกครั้ง",
+  "documents.picker_no_customers": "ยังไม่มีลูกค้า ใช้ {add} เพื่อสร้าง",
+  "documents.picker_no_vendors": "ยังไม่มีผู้ขาย ใช้ {add} เพื่อสร้าง"
 }
