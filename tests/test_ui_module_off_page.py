@@ -49,7 +49,7 @@ async def test_payments_page_with_documents_off_shows_the_module_off_page(ui_cli
     assert 'href="/modules"' in r.text
 
 
-async def test_payments_page_before_documents_starts_says_it_starts_after_a_restart(ui_client):
+async def test_payments_page_before_documents_starts_says_it_starts_after_a_restart(ui_client, docs_not_started):
     r = await _payments(ui_client, {})
     assert r.status_code == 403
     assert "Module not started yet" in r.text
@@ -58,7 +58,7 @@ async def test_payments_page_before_documents_starts_says_it_starts_after_a_rest
     assert 'href="/modules"' in r.text
 
 
-async def test_someone_who_cannot_manage_modules_is_told_who_can_act(ui_client):
+async def test_someone_who_cannot_manage_modules_is_told_who_can_act(ui_client, docs_not_started):
     r = await _payments(ui_client, {}, role="viewer")
     assert r.status_code == 403
     assert "Ask an administrator to restart Celerp." in r.text
@@ -93,7 +93,7 @@ async def _company_details(ui_client, settings: dict):
     return page, section, reads
 
 
-async def test_company_details_before_documents_starts_has_no_documents_tab_and_no_error(ui_client, monkeypatch):
+async def test_company_details_before_documents_starts_has_no_documents_tab_and_no_error(ui_client, monkeypatch, docs_not_started):
     mark_running(monkeypatch, "celerp-inventory")
     page, section, reads = await _company_details(ui_client, {})
     assert page.status_code == 200 and section.status_code == 200, page.text
@@ -144,7 +144,7 @@ async def _contact(ui_client, settings: dict, *paths: str, docs=None):
 
 
 @pytest.mark.parametrize("running", [(), ("celerp-docs",)], ids=["not-started", "turned-off"])
-async def test_a_contact_without_documents_opens_on_its_files_with_no_documents_tab(ui_client, monkeypatch, running):
+async def test_a_contact_without_documents_opens_on_its_files_with_no_documents_tab(ui_client, monkeypatch, running, docs_not_started):
     mark_running(monkeypatch, *running)
     (page, files_tab, section), reads = await _contact(
         ui_client, _DOCS_OFF if running else {}, "/contacts/contact:c1/tab/files",

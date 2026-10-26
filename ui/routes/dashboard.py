@@ -14,6 +14,7 @@ import asyncio
 from ui.components.demo_items import DEMO_ITEMS_FILTER, DEMO_ITEMS_URL
 from ui.components.icons import import_icon
 from ui.components.import_access import can_import_documents
+from ui.components.module_off import can_open
 from ui.components.shell import base_shell, page_header, star_supporter_card, page_title
 from ui.components.start_options import start_options, supported_sources
 from ui.config import get_token as _token, get_role as _get_role
@@ -779,7 +780,7 @@ def setup_routes(app):
             _charts_section(cfg, valuation, ar_aging,
                             kpis_data.get("sales", {}).get("revenue_trend", []), currency,
                             category_names),
-            _activity_feed(activities, category_names) if cfg.get("show_activity") else "",
+            _activity_feed(activities, category_names, can_open(company, "celerp-docs")) if cfg.get("show_activity") else "",
             _quick_links(cfg),
             title=f"{t('nav.dashboard')} - {company.get('name', '')}",
             nav_active="dashboard",
@@ -863,11 +864,13 @@ def setup_routes(app):
         per_page = 50
 
         try:
-            result = await api.search_activity(token, q=q, date_from=date_from, date_to=date_to, page=page, per_page=per_page)
+            result, company = await asyncio.gather(
+                api.search_activity(token, q=q, date_from=date_from, date_to=date_to, page=page, per_page=per_page),
+                api.get_company(token))
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
-            result = {"activities": [], "total": 0, "page": 1, "per_page": per_page, "pages": 1}
+            result, company = {"activities": [], "total": 0, "page": 1, "per_page": per_page, "pages": 1}, {}
         category_names = await api.get_category_labels(token)
 
         activities = result.get("activities", [])
@@ -897,7 +900,8 @@ def setup_routes(app):
             method="get", action="/history",
         )
 
-        table = activity_table(activities, title="", section_cls="", category_names=category_names)
+        table = activity_table(activities, title="", section_cls="", category_names=category_names,
+                               docs_on=can_open(company, "celerp-docs"))
 
         pager = pagination(page, total, per_page, "/history", extra) if pages > 1 else ""
 
@@ -1301,11 +1305,12 @@ def _charts_section(cfg: dict, valuation: dict, ar_aging: dict | None,
 # Activity feed
 # ---------------------------------------------------------------------------
 
-def _activity_feed(activities: list[dict], category_names: dict) -> FT:
+def _activity_feed(activities: list[dict], category_names: dict, docs_on: bool) -> FT:
     from ui.components.activity import activity_table
     if not activities:
         return ""
-    return activity_table(activities, max_display=15, history_url="/history", category_names=category_names)
+    return activity_table(activities, max_display=15, history_url="/history", category_names=category_names,
+                          docs_on=docs_on)
 
 
 

@@ -284,7 +284,7 @@ def _count_reads(monkeypatch, name: str, error: APIError | None = None) -> list:
     return calls
 
 
-async def test_contact_page_reads_no_money_figures_while_documents_is_off(owner_ui, monkeypatch):
+async def test_contact_page_reads_no_money_figures_while_documents_is_off(owner_ui, monkeypatch, docs_not_started):
     contact = await _ok(await owner_ui.api.post("/crm/contacts", json={"name": "No Docs", "contact_type": "customer"}))
     summaries, holdings = _count_reads(monkeypatch, "get_doc_summary"), _count_reads(monkeypatch, "list_items")
     r = await owner_ui.get(f"/contacts/{contact['id']}")

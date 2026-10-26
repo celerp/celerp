@@ -994,11 +994,19 @@ def files_unchecked(monkeypatch):
     monkeypatch.setattr(loader, "check_unchanged", lambda module: None)
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def docs_running(monkeypatch):
-    """Record Documents as loaded, as it is in an installation that takes online payments."""
+    """Record Documents as loaded: the harness mounts its routes, as a running installation does.
+    A test of a process where it has not started asks for ``docs_not_started``."""
     from test_helpers import mark_running
     mark_running(monkeypatch, "celerp-docs")
+
+
+@pytest.fixture
+def docs_not_started(monkeypatch, docs_running):
+    """This process has not started Documents: the loader lists it as not running."""
+    from celerp.modules import loader
+    monkeypatch.setattr(loader, "_loaded", [m for m in loader._loaded if m["name"] != "celerp-docs"])
 
 
 @pytest.fixture

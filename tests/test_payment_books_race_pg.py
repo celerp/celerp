@@ -22,7 +22,7 @@ from test_company_reset_payments import (_OCTOBER_3, _Cloud, _company_settings, 
                                          _payments_on, _rate_changed, _references, _shared_invoice, _unmatched,
                                          _waiting_on_a_lock)
 
-pytestmark = [pytest.mark.asyncio, pytest.mark.usefixtures("docs_running")]
+pytestmark = pytest.mark.asyncio
 
 
 def _hold_the_payment(monkeypatch) -> tuple[asyncio.Event, asyncio.Event]:

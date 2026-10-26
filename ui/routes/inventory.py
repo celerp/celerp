@@ -21,6 +21,7 @@ from starlette.requests import Request
 from starlette.responses import RedirectResponse, Response
 
 import ui.api_client as api
+from ui.components.module_off import can_open
 from ui.components.deleted_items import deleted_items, deleted_label, is_deleted
 from ui.components.demo_items import DEMO_ITEMS_FILTER
 from ui.components.icons import import_icon
@@ -2012,7 +2013,7 @@ def setup_routes(app):
         deleted_parents = await deleted_items(token, [item.get("split_from"), item.get("transformed_from")])
         table = activity_table(activities, title="", section_cls="", subject_entity_id=entity_id,
                                currency=currency, category_names=category_names, resizable=True,
-                               deleted=deleted_parents)
+                               deleted=deleted_parents, docs_on=can_open(company, "celerp-docs"))
         pages = max(1, (total + per_page - 1) // per_page)
         pager = pagination(page, total, per_page, f"/inventory/{entity_id}/history") if pages > 1 else ""
 
@@ -7456,7 +7457,7 @@ def _item_detail_tabs(
         panel = Div(
             _undo_merge_block(entity_id, ledger),
             _ledger_table(ledger, entity_id=entity_id, currency=currency, category_names=category_names,
-                          deleted=deleted_parents),
+                          deleted=deleted_parents, docs_on=can_open({"settings": settings}, "celerp-docs")),
             cls="detail-grid detail-grid--single",
         )
     else:
@@ -7782,11 +7783,13 @@ def _undo_merge_block(entity_id: str, ledger: list[dict]) -> FT | str:
 
 
 def _ledger_table(ledger: list[dict], entity_id: str | None = None, currency: str | None = None,
-                  category_names: dict | None = None, deleted: dict[str, dict] | None = None) -> FT:
+                  category_names: dict | None = None, deleted: dict[str, dict] | None = None,
+                  docs_on: bool = False) -> FT:
     from ui.components.activity import activity_table
     history_url = f"/inventory/{entity_id}/history" if entity_id else None
     return activity_table(ledger, max_display=10, subject_entity_id=entity_id, currency=currency,
-                          category_names=category_names, history_url=history_url, resizable=True, deleted=deleted)
+                          category_names=category_names, history_url=history_url, resizable=True, deleted=deleted,
+                          docs_on=docs_on)
 
 
 # ---------------------------------------------------------------------------

@@ -12,7 +12,6 @@ from celerp.models.accounting import UserCompany
 from celerp.services.peer_payments import apply_source_payments, validate_source_payments
 from test_payments_stripe import _register, _payable_invoice, _h, _company_id
 
-pytestmark = pytest.mark.usefixtures("docs_running")
 
 
 def _source_payment(index=0, amount=200.0):

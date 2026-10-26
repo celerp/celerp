@@ -558,10 +558,10 @@ def _notes_tab(contact_id: str, notes: list[dict], tz: str = "UTC") -> FT:
     )
 
 
-def _contact_ledger_table(ledger: list[dict]) -> FT:
+def _contact_ledger_table(ledger: list[dict], docs_on: bool) -> FT:
     """Activity history section for contact detail page."""
     from ui.components.activity import activity_table
-    return activity_table(ledger, max_display=10)
+    return activity_table(ledger, max_display=10, docs_on=docs_on)
 
 
 def _contacts_bulk_toolbar(contact_type: str) -> FT:
@@ -1454,11 +1454,12 @@ def setup_routes(app):
         if not token:
             return P(t("error.session_expired"), cls="cell-error")
         try:
-            ledger_resp = await api.list_ledger(token, {"entity_id": contact_id, "limit": 10})
+            ledger_resp, company = await _asyncio.gather(
+                api.list_ledger(token, {"entity_id": contact_id, "limit": 10}), api.get_company(token))
             ledger = ledger_resp.get("items", []) if isinstance(ledger_resp, dict) else []
         except Exception:
-            ledger = []
-        return _contact_ledger_table(ledger)
+            ledger, company = [], {}
+        return _contact_ledger_table(ledger, can_open(company, "celerp-docs"))
 
     # ── Notes routes ─────────────────────────────────────────────────────
 

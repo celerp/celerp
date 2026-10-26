@@ -1276,7 +1276,7 @@ class TestActivityFeed:
             "entity_id": "item:92f778e9-0000-0000-0000-000000000000",
             "name": "Burmese Ruby 2.5ct",
             "ts": "2026-03-20T10:00:00Z",
-        }], {}))
+        }], {}, False))
         assert "Burmese Ruby 2.5ct" in html
         # Hash must only appear inside an href, not as visible text
         import re
@@ -1293,7 +1293,7 @@ class TestActivityFeed:
             "entity_id": eid,
             "name": "Emerald",
             "ts": "2026-03-20T10:00:00Z",
-        }], {}))
+        }], {}, False))
         assert f"/inventory/{eid}" in html
 
     def test_activity_feed_no_actor_hash(self):
@@ -1306,7 +1306,7 @@ class TestActivityFeed:
             "name": "Test",
             "ts": "2026-03-20T10:00:00Z",
             "actor_name": "Noah Severs",
-        }], {}))
+        }], {}, False))
         assert "f9a514bf" not in html
         assert "Noah Severs" in html
 
@@ -1611,7 +1611,6 @@ class TestCRMPage:
         assert b"Alice" in r.content
 
     @pytest.mark.asyncio
-    @pytest.mark.usefixtures("docs_running")
     async def test_contact_detail_holdings_cards(self, ui_client):
         """On Memo / Consignment cards show the live holdings value and link to that
         exact filtered inventory list, so the number and the list cannot disagree."""
@@ -1640,7 +1639,6 @@ class TestCRMPage:
         assert b"/inventory?consigned_from=ct:1" in body
 
     @pytest.mark.asyncio
-    @pytest.mark.usefixtures("docs_running")
     async def test_contact_detail_holdings_unavailable_falls_back(self, ui_client):
         """When the holdings figure cannot be fetched the page still renders, and the
         Consignment card falls back to the document-derived total."""
@@ -11965,7 +11963,6 @@ class TestWebAccessPlansAd:
         assert "cloud-plans" in r.text                    # upgrade ad below
 
 
-@pytest.mark.usefixtures("docs_running")
 class TestPaymentsSettingsPage:
     """The payments page must actually be registered (regression: it was
     imported in ui/app.py but missing from the kernel route tuple, so it

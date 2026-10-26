@@ -13,7 +13,6 @@ from celerp.services.permissions import missing_permission_text
 from test_payments_stripe import BOOKS, PAID, _company_id, _doc_state, _h, _payable_invoice, _register
 from test_payments_stripe import payments_on  # noqa: F401  (fixture)
 
-pytestmark = pytest.mark.usefixtures("docs_running")
 
 REFUSED = {
     "currency": "This invoice is in another currency than the payment.",

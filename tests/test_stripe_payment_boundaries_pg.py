@@ -32,7 +32,7 @@ from test_stripe_refunds import (RELEASED_AT, STRIPE_OWNED, _assert_books, _at, 
 from test_stripe_release_race_pg import _waiting
 from ui.i18n import t
 
-pytestmark = [pytest.mark.asyncio, pytest.mark.usefixtures("docs_running")]
+pytestmark = pytest.mark.asyncio
 
 _ITEM = "item:boundary"
 

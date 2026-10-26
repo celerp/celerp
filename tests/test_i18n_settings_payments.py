@@ -59,7 +59,6 @@ async def ui_client():
         yield c
 
 
-@pytest.mark.usefixtures("docs_running")
 async def test_payments_browser_title_translates(ui_client):
     """The <title> the payments settings page renders resolves through page_title
     at render time. The relay/status/company calls are stubbed so the pre-connect

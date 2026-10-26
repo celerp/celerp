@@ -15,7 +15,7 @@ from migration_support import code_config, maker, real_client, real_engine  # no
 from test_stripe_refunds import (_REFUND, _RELEASE, RELEASED_AT, _assert_books, _at, _doc, _kept_refunds,
                                  _ledger, _paid_invoice, _payment)
 
-pytestmark = [pytest.mark.asyncio, pytest.mark.usefixtures("docs_running")]
+pytestmark = pytest.mark.asyncio
 
 
 async def _waiting(watch, count: int) -> None:

@@ -4266,7 +4266,8 @@ celerpUpdateBulkAlloc();
             ts_display = format_timestamp(str(e.get("ts") or "")) or EMPTY
             data = e.get("data") or {}
             raw_type = str(e.get("event_type") or "")
-            detail = detail_from_entry(data, raw_type, category_names=category_names) if isinstance(data, dict) else ""
+            # A Documents page: it opens only while the company can open Documents.
+            detail = detail_from_entry(data, raw_type, category_names=category_names, docs_on=True) if isinstance(data, dict) else ""
             return Tr(event_cell, Td(ts_display), Td(actor_label(e)), Td(detail or EMPTY))
         rows = [_row(e) for e in entries]
         footer = server_pager(

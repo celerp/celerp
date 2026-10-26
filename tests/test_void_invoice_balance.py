@@ -17,7 +17,6 @@ from celerp.output.doc_print import render_doc_print_html
 from celerp_docs.doc_projections import apply_documents_event
 from test_payments_stripe import _h, _payable_invoice, _register, payments_on  # noqa: F401
 
-pytestmark = pytest.mark.usefixtures("docs_running")
 
 PAY_BAR = 'class="dp-paybar"'
 

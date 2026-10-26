@@ -58,11 +58,12 @@ _LIST_NOTICE = "notice.list_tax_rule"
 
 async def reconcile_list_tax_notice(session: AsyncSession, company_id, settings: dict | None) -> None:
     """Tell the company which of its open lists (draft or issued) hold totals the document rule
-    would change, by number; reads only, and clears the notice once none does. A company that cannot
-    use Documents has no rule to judge its lists by, so its notice is left as it is. Caller commits."""
-    from celerp.modules.boundary import ModuleOff, require_company_uses
+    would change, by number; reads only, and clears the notice once none does. Without Documents
+    (turned off for the company, or not started in this process) there is no rule to judge its lists
+    by, so its notice is left as it is. Caller commits."""
+    from celerp.modules.boundary import ModuleOff, require_on
     try:
-        require_company_uses(settings, "celerp-docs")
+        require_on(settings, "celerp-docs")
     except ModuleOff:
         return
     from celerp_docs.doc_money import list_totals_differ

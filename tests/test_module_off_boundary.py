@@ -172,7 +172,7 @@ async def _documents(client, tok: str, action: str) -> None:
 
 @pytest.mark.asyncio
 async def test_a_payment_waits_until_documents_starts_and_is_then_recorded_once(
-        client, session, payments_on, monkeypatch, caplog):
+        client, session, payments_on, monkeypatch, caplog, docs_not_started):
     """The company uses Documents but Celerp has not started it: not acknowledged, with
     nothing written; once it runs, the same payment is recorded once, and receiving it
     again changes nothing."""
@@ -416,7 +416,7 @@ def _not_fetched():
 
 
 @pytest.mark.asyncio
-async def test_a_sync_run_before_its_module_starts_fails_with_the_refusal_alone(client, monkeypatch):
+async def test_a_sync_run_before_its_module_starts_fails_with_the_refusal_alone(client, monkeypatch, docs_not_started):
     """One sentence on the run, nothing fetched from the store, so nothing is lost and
     the watermark stays where it was."""
     tok = await _register(client)
@@ -599,7 +599,7 @@ def _key(r) -> str | None:
 
 
 @pytest.mark.asyncio
-async def test_choosing_a_deposit_account_follows_the_company_documents_state(client, monkeypatch):
+async def test_choosing_a_deposit_account_follows_the_company_documents_state(client, monkeypatch, docs_not_started):
     """Not started: the module starts after a restart. On: the account itself is judged.
     Off for this company while another keeps it on: turned off, naming Documents."""
     tok = await _register(client)
@@ -737,7 +737,7 @@ async def test_connecting_a_store_or_choosing_items_to_sync_needs_inventory(clie
 
 
 @pytest.mark.asyncio
-async def test_reconciling_a_store_order_needs_documents(client, connect_session):
+async def test_reconciling_a_store_order_needs_documents(client, connect_session, docs_not_started):
     """Marking an order change as reconciled writes on the order, so it is refused,
     naming Documents, while the company cannot use it."""
     headers, _ = await _owner(client)
@@ -822,9 +822,10 @@ def _literals(args, names: dict[str, set[str]]) -> set[str]:
 
 # Calls that refuse unless a module runs for the company: the modules named in their
 # arguments, or (a shared check) the module it always names.
-# Only checks that judge a company count: whether a module runs in this process says
-# nothing about whether the company the work is for may use it.
-_CHECKS: dict[str, set[str] | None] = {"require_on": None, "require_company_uses": None}
+# Only checks that judge both count: the company may use the module, and this process
+# has started it. A check of the company alone (require_company_uses) leaves the import
+# to fail in a process that has not.
+_CHECKS: dict[str, set[str] | None] = {"require_on": None}
 
 
 def _needed_for(name: str) -> set[str]:
