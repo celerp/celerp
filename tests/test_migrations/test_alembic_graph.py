@@ -236,10 +236,13 @@ def test_ai_charges_from_before_the_usage_record_are_carried_over():
                 ])
                 conn.execute(jobs.insert(), [
                     {"id": ids["job"], "company_id": ids["company"], "user_id": ids["user"], "status": "done",
-                     "total_files": 3, "credits_consumed": 3, "query": "q", "file_ids": []},
+                     "query": "q", "file_ids": []},
                     {"id": ids["idle"], "company_id": ids["company"], "user_id": ids["user"], "status": "failed",
-                     "total_files": 1, "credits_consumed": 0, "query": "q", "file_ids": []},
+                     "query": "q", "file_ids": []},
                 ])
+                # The counters are not columns of today's model, so they are written as that app wrote them.
+                conn.execute(text("UPDATE ai_batch_jobs SET total_files = :n, credits_consumed = :c WHERE id = :j"),
+                             [{"j": ids["job"], "n": 3, "c": 3}, {"j": ids["idle"], "n": 1, "c": 0}])
             carried = []
             for _ in range(2):  # carried over again (down, then up): the same rows, once each
                 upgrade_to(sync_url, head_rev())

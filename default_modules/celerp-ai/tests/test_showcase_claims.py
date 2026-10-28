@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from celerp.ai import batch
+from celerp.ai import jobs
 from celerp.ai import tools as ai_tools
 from celerp_ai import routes as ai_routes
 from celerp_ai import ui_routes as ai_ui
@@ -27,7 +27,7 @@ _CONFIRM = ("POST", "/conversations/{conversation_id}/confirm")
 # a route on the assistant's own router that the page posts to, or a code
 # symbol whose source carries the behavior.
 _BATCH_BILLS_CLAIMS = [
-    ("Read 5 of 5 receipts", ("symbol", batch.run_batch, "asyncio.as_completed")),
+    ("Read 5 of 5 receipts", ("symbol", jobs._run_job, "asyncio.TaskGroup")),
     ("Proposed 5 draft bills", ("capability", "POST", "/docs")),
     ("lines matched to items", ("capability", "GET", "/items")),
     ("new vendor proposed", ("capability", "POST", "/crm/contacts")),

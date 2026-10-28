@@ -23,12 +23,19 @@ from fastapi import HTTPException
 
 from celerp.ai import llm as llm_mod
 from celerp.ai.files import XLSX_CONTENT_TYPE
-from celerp.ai.llm import ModelResult, RelayError, _build_user_content, complete
+from celerp.ai import deadlines, jobs
+from celerp.ai.llm import ModelResult, RelayError, _build_user_content
 from celerp.ai.service import RunTally, ask_unattended
 
 from _fixtures import synthetic_response
 
 _RELAY = "https://relay.test"
+
+
+async def complete(*args, **kwargs) -> ModelResult:
+    """``llm.complete`` as every caller runs it: inside a slot of the app's model gate."""
+    async with jobs.gate.slot("interactive"):
+        return await llm_mod.complete(*args, **kwargs)
 
 
 @pytest.fixture
@@ -293,13 +300,14 @@ async def test_complete_without_session_header(monkeypatch, case):
     bearer = AsyncMock(return_value=None if case == "no_key" else reply)
     with patch("celerp.services.cloud_entitlement.authenticated_request", new=bearer):
         if case == "connected":
-            result = await complete([{"role": "user", "content": "x"}], timeout=12.0)
+            result = await complete([{"role": "user", "content": "x"}])
             assert result.remaining == 29
             bearer.assert_awaited_once()
             args, kwargs = bearer.await_args
             assert args == ("POST", "/ai/complete")
-            assert kwargs["json"]["messages"] == [{"role": "user", "content": "x"}]
-            assert kwargs["total_s"] == 12.0
+            body = b"".join([chunk async for chunk in kwargs["content"]()])
+            assert json.loads(body)["messages"] == [{"role": "user", "content": "x"}]
+            assert kwargs["total_s"] == deadlines.call_budget(await deadlines.limits(), len(body)).total_s
             return
         with pytest.raises(RelayError) as ei:
             await complete([{"role": "user", "content": "x"}])
@@ -390,10 +398,3 @@ async def test_ask_unattended_no_session(monkeypatch):
         await ask_unattended("s", "u", operation_id=uuid.uuid4(), tally=RunTally())
     assert ei.value.code == "no_session"
 
-
-def test_ai_deadline_hierarchy_leaves_transport_margin():
-    from celerp.ai.llm import MODEL_CALL_TIMEOUT_S
-    from celerp.ai.service import AGENT_RUN_TIMEOUT_S
-    from ui.api_client import AI_QUERY_TIMEOUT_S
-
-    assert MODEL_CALL_TIMEOUT_S < AGENT_RUN_TIMEOUT_S < AI_QUERY_TIMEOUT_S
