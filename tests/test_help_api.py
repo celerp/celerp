@@ -172,7 +172,8 @@ async def test_every_first_party_screen_gets_its_module_help_on_both_routes(clie
     """Over the pages that ship, not the fixed set: each sidebar and settings screen of
     every first-party module (the AI page and its settings among them) is answered by
     the route lookup with a page of that module, and that page opens on the read
-    route. A module the loader does not trust as first-party drops out here."""
+    route. Pages count only as first-party, so a module whose content no longer matches
+    its lock entry (loaded as third-party) fails here."""
     from celerp.help import checks
     registry.reset()
     try:
@@ -185,7 +186,9 @@ async def test_every_first_party_screen_gets_its_module_help_on_both_routes(clie
             for path in dict.fromkeys(paths):
                 r = await client.get("/help/for-route", params={"path": path}, headers=headers)
                 assert r.status_code == 200
-                ids = [p["id"] for p in r.json()["pages"] if index.pages[p["id"]].module == module]
+                ids = [p["id"] for p in r.json()["pages"]
+                       if index.pages[p["id"]].module == module
+                       and index.pages[p["id"]].source == "first_party"]
                 if not ids:
                     missing.append(f"{module}: {path}")
                 for page_id in ids:
