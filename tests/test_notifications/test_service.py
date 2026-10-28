@@ -133,6 +133,23 @@ async def test_notify_once_is_once_per_addressee(session, company, user, user_b)
     assert await svc.get_unread_count(session, company.id, user_b.id) == 2
 
 
+@pytest.mark.asyncio
+async def test_notify_once_again_moves_the_link_and_keeps_it_read(session, company, user):
+    """Told again with another link, the notice already told takes that link and stays as the
+    user left it: the link follows the condition without telling it a second time."""
+    with patch("celerp.notifications.service.deliver"):
+        assert await svc.notify_once(session, company.id, "fa", "Due", "Van", action_url="/a")
+        await session.commit()
+        notice, _read = (await svc.list_notifications(session, company.id, user.id))[0]
+        assert await svc.mark_read(session, notice.id, company.id, user.id)
+        assert not await svc.notify_once(session, company.id, "fa", "Due", "Van", action_url="/b")
+        await session.commit()
+
+    rows = (await session.execute(text("SELECT action_url FROM notifications WHERE title = 'Due'"))).all()
+    assert [r[0] for r in rows] == ["/b"]
+    assert await svc.get_unread_count(session, company.id, user.id) == 0
+
+
 # ── unread_count ─────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio

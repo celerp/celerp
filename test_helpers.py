@@ -12,8 +12,10 @@ tests/helpers.py is a shim that re-exports from here for backward compatibility.
 from __future__ import annotations
 
 import base64
+import gc
 import json
 import os
+import time
 import uuid
 from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
@@ -197,6 +199,13 @@ async def clear_sample_items(session, company_id) -> None:
     from celerp.services.demo import delete_untouched_demo_items
     await delete_untouched_demo_items(session, uuid.UUID(str(company_id)))
     await session.commit()
+
+
+async def doc_version(client, headers: dict, doc_id: str) -> int:
+    """The document's current version: a PATCH that replaces line_items names the version it read."""
+    r = await client.get(f"/docs/{doc_id}", headers=headers)
+    assert r.status_code == 200, r.text
+    return r.json()["version"]
 
 
 async def default_location_id(client, headers: dict) -> str:
@@ -502,3 +511,22 @@ def released_migration_history(database_url: str = DATABASE_URL):
             else:
                 cur.execute("DROP TABLE IF EXISTS alembic_version")
         conn.close()
+
+
+def fastest_cpu_seconds(*runs, times: int = 3) -> list[float]:
+    """The least CPU time each of ``runs`` spends over ``times`` rounds, the runs called in turn
+    in every round, with the garbage collector paused (its passes over everything the test
+    process holds are not the runs'). CPU time, not the wall clock, which other processes on a
+    busy machine stretch; in turn, so a load that comes and goes falls on every run alike."""
+    took = [float("inf")] * len(runs)
+    for _ in range(times):
+        for i, run in enumerate(runs):
+            gc.collect()
+            gc.disable()
+            try:
+                began = time.process_time()
+                run()
+                took[i] = min(took[i], time.process_time() - began)
+            finally:
+                gc.enable()
+    return took

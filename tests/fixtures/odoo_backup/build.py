@@ -275,9 +275,11 @@ ATTACHMENTS = [
 @dataclass
 class Tables:
     rows: dict[str, tuple[list[str], list[list]]] = field(default_factory=dict)
+    jsonb: dict[str, tuple[str, ...]] = field(default_factory=dict)   # table -> its columns PostgreSQL types jsonb
 
-    def add(self, table: str, columns: list[str], rows: list[list]) -> None:
+    def add(self, table: str, columns: list[str], rows: list[list], jsonb: tuple[str, ...] = ()) -> None:
         self.rows[table] = (columns, rows)
+        self.jsonb[table] = jsonb
 
 
 def _residuals(all_moves: list[Move]) -> tuple[dict[tuple[int, int], Decimal], dict[int, Decimal]]:
@@ -315,6 +317,8 @@ def tables(version: int, bulk_lines: int = 0) -> Tables:
     def name(text: str):
         return json.dumps({"en_US": text}, ensure_ascii=False) if modern else text
 
+    translated = ("name",) if modern else ()  # Odoo 16 made each translated name a jsonb column
+
     out = Tables()
     out.add("res_currency", ["id", "name", "symbol", "decimal_places", "active"],
             [[USD, BASE, "$", 2, "t"], [EUR, FOREIGN, "€", 2, "t"], [3, "GBP", "£", 2, "f"]])
@@ -332,7 +336,7 @@ def tables(version: int, bulk_lines: int = 0) -> Tables:
         out.add("account_account", ["id", "currency_id", "company_id", "code", "account_type", "internal_group",
                                     "name", "deprecated", "reconcile"],
                 [[i, None, 1, code, kind, LEGACY[kind][2], name(n), "f", _bool(rec)]
-                 for i, code, n, kind, rec in ACCOUNTS])
+                 for i, code, n, kind, rec in ACCOUNTS], translated)
     else:
         types = sorted({kind for *_, kind, _ in ACCOUNTS})
         type_ids = {kind: n for n, kind in enumerate(types, 1)}
@@ -350,7 +354,7 @@ def tables(version: int, bulk_lines: int = 0) -> Tables:
                  for i, code, n, kind, rec in ACCOUNTS])
     out.add("account_tax", ["id", "company_id", "sequence", "type_tax_use", "amount_type", "name", "amount",
                             "active", "price_include"],
-            [[i, 1, i, use, "percent", name(n), f"{rate:.4f}", "t", "f"] for i, n, use, rate, _ in TAXES])
+            [[i, 1, i, use, "percent", name(n), f"{rate:.4f}", "t", "f"] for i, n, use, rate, _ in TAXES], translated)
     repartition = []
     for i, _, _, _, account in TAXES:
         for document, base_id in (("invoice", 4 * i - 3), ("refund", 4 * i - 1)):
@@ -370,7 +374,8 @@ def tables(version: int, bulk_lines: int = 0) -> Tables:
         template_columns.insert(4, "detailed_type")
     out.add("product_template", template_columns,
             [[t, 1, 1, None, *((kind,) if modern else ()), kind, name(n), name(f"{n} for sale"), f"{price}", "t",
-              "t", "t"] for _, t, _, n, kind, price in PRODUCTS])
+              "t", "t"] for _, t, _, n, kind, price in PRODUCTS],
+            (*translated, *(("description_sale",) if modern else ())))
     out.add("product_product", ["id", "product_tmpl_id", "default_code", "barcode", "active"],
             [[p, t, code, None, "t"] for p, t, code, *_ in PRODUCTS])
     _ledger(out, version, bulk_lines)
@@ -448,12 +453,12 @@ def _ledger(out: Tables, version: int, bulk_lines: int) -> None:
                     "price_subtotal", "price_total", "discount", "tax_line_id", "payment_id"]
     line_columns += ["display_type", "analytic_distribution"] if modern else [
         "display_type", "exclude_from_invoice_tab", "is_rounding_line", "analytic_account_id"]
-    out.add("account_move_line", line_columns, line_rows)
+    out.add("account_move_line", line_columns, line_rows, ("analytic_distribution",) if modern else ())
     if modern:
         out.add("account_analytic_plan", ["id", "name", "company_id"],
-                [[i, json.dumps({"en_US": n}), None] for i, n in ANALYTIC_PLANS])
+                [[i, json.dumps({"en_US": n}), None] for i, n in ANALYTIC_PLANS], ("name",))
         out.add("account_analytic_account", ["id", "name", "plan_id", "company_id", "active"],
-                [[i, json.dumps({"en_US": n}), plan, 1, "t"] for i, n, plan in ANALYTIC_ACCOUNTS])
+                [[i, json.dumps({"en_US": n}), plan, 1, "t"] for i, n, plan in ANALYTIC_ACCOUNTS], ("name",))
     else:
         out.add("account_analytic_account", ["id", "name", "group_id", "company_id", "active"],
                 [[i, n, None, 1, "t"] for i, n, plan in ANALYTIC_ACCOUNTS if plan == 1])
@@ -498,7 +503,7 @@ def _stock(out: Tables, version: int) -> None:
     moves_ = {m[0]: m for m in STOCK_MOVES}
     out.add("uom_uom", ["id", "name", "category_id", "factor", "rounding", "active"],
             [[i, json.dumps({"en_US": n}) if version >= 16 else n, 1, factor, rounding, "t"]
-             for i, n, factor, rounding in UOMS])
+             for i, n, factor, rounding in UOMS], ("name",) if version >= 16 else ())
     # Odoo 17 also stores what each line moved in its product's unit.
     out.add("stock_move_line", ["id", "move_id", "product_id", "lot_id", "location_id", "location_dest_id",
                                 "product_uom_id", "quantity" if version >= 17 else "qty_done",
@@ -542,7 +547,8 @@ def dump_sql(out: Tables) -> str:
     parts = ["--\n-- PostgreSQL database dump\n--\n\n-- Dumped from database version 16.3\n\n",
              "SET statement_timeout = 0;\nSET client_encoding = 'UTF8';\n\n"]
     for table, (columns, _) in out.rows.items():
-        parts.append(f"CREATE TABLE public.{table} (\n" + ",\n".join(f"    {c} text" for c in columns) + "\n);\n\n")
+        types = [f"    {c} {'jsonb' if c in out.jsonb.get(table, ()) else 'text'}" for c in columns]
+        parts.append(f"CREATE TABLE public.{table} (\n" + ",\n".join(types) + "\n);\n\n")
     for table, (columns, rows) in out.rows.items():
         parts.append(f"--\n-- Data for Name: {table}; Type: TABLE DATA; Schema: public; Owner: odoo\n--\n\n")
         parts.append(f"COPY public.{table} ({', '.join(columns)}) FROM stdin;\n")

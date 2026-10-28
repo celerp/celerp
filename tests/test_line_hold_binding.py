@@ -11,6 +11,7 @@ from sqlalchemy.orm.attributes import flag_modified
 
 from celerp.models.projections import Projection
 from celerp.services.document_lines import line_item_id
+from test_helpers import doc_version
 
 pytestmark = pytest.mark.asyncio
 
@@ -51,7 +52,7 @@ async def _invoice(client, auth, lines) -> str:
 
 async def _save(client, auth, doc_id, lines):
     return await client.patch(f"/docs/{doc_id}", headers=auth["headers"],
-                              json={"fields_changed": {"line_items": {"new": lines}}})
+                              json={"expected_version": await doc_version(client, auth["headers"], doc_id), "fields_changed": {"line_items": {"new": lines}}})
 
 
 async def test_another_line_cannot_newly_take_a_lot_held_for_a_line(client, session, auth):

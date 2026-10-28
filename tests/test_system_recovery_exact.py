@@ -1461,6 +1461,7 @@ def _boot_to_schema(monkeypatch, engine):
     return main_mod, verified
 
 
+@pytest.mark.usefixtures("relay_not_called_at_boot")
 async def test_boot_finishes_unfinished_recovery_before_schema_init(rec, tmp_path, monkeypatch, committed_engine):
     """A recovery marker over a database the current schema cannot be created on: the
     recovery puts the installation back first, then startup initializes the schema on
@@ -1496,6 +1497,7 @@ async def test_boot_finishes_unfinished_recovery_before_schema_init(rec, tmp_pat
     assert set(Base.metadata.tables) <= tables
 
 
+@pytest.mark.usefixtures("relay_not_called_at_boot")
 async def test_boot_with_recovery_still_unfinished_starts_nothing_else(rec, tmp_path, monkeypatch, committed_engine):
     """When the recovery cannot be finished at startup the marker stays, the database
     is left exactly as it was for the next start, and nothing else starts: only the

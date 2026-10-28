@@ -19,7 +19,7 @@ import re
 import sys
 import traceback
 import zipfile
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import datetime
 from decimal import Decimal
@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import IO
 
 from celerp.importers.adapters.base import ScanError, SourceRevisionError
-from celerp.importers.tabular import ZIP_ERRORS, zip_directory_fits
+from celerp.importers.tabular import ZIP_ERRORS, ZipMemberRefused, open_zip_member, zip_directory_fits
 from ui.i18n import t
 
 MANIFEST = "manifest.json"
@@ -54,6 +54,10 @@ ID_DIGITS = 19  # the most a PostgreSQL bigint id writes
 # The largest amount or quantity read, as a power of ten: no book holds one larger, and one
 # larger cannot be carried to the cent in Decimal's 28 digits.
 MAX_MAGNITUDE = 20
+# The most fraction digits of a number read. PostgreSQL writes a float in at most 17 significant
+# digits, so this reads any down to 1e-31, far below a cent of any amount; a number written with
+# more, such as 1e-999999, is not one a database holds, and would be spelled in as many digits.
+MAX_SCALE = 48
 # What the rows read may take of the server's memory, in bytes, counted as Python holds them:
 # each row a tuple of its kept values, each distinct value a string held once in its table, at
 # its own size (one, two or four bytes a character, by its widest one, and its header).
@@ -77,16 +81,20 @@ BUILT_BYTES = {"account_move_line": 450, "account_move": 700, "account_move_line
 DOCUMENT_BYTES, DOCUMENT_LINE_BYTES = 1000, 500
 STOCK_MOVE_BYTES, HOLDING_BYTES, MONTH_ACCOUNT_BYTES = 700, 1200, 600
 # A string the read builds per record out of values the dump holds once (a name told apart by its
-# id, a key, an address, a label, a decoded translation) is a new copy, so a long value repeated
+# id, a key, an address, a label) is a new copy, so a long value repeated
 # across many records is held many times. Each is charged at its size as Python holds it,
 # TEXT_COPIES times: the shared exports code copies it again (a holding key into its inventory
 # label and opening adjustment, a document key into its fallback journal, a label per month end).
 TEXT_COPIES = 2
+# Each id of an analytic distribution's key is split out to be looked up: a string of its own,
+# its place in a list and in the set of those seen, about this many bytes.
+KEY_ID_BYTES = 120
 # Reading a line holds it a few times over while it is split (the decoded text, the line, its
 # fields): the longest line read is charged LINE_COPIES times its size, once.
 LINE_COPIES = 4
-PASSWORD = 0x1  # the zip flag of a file packed with a password
-METHODS = (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED)  # what Odoo, and a zip made again from its backup, packs with
+# Decoding JSON takes about two kilobytes whatever it decodes, and builds an object for each value,
+# however short its text: a number or an empty list two characters long is a hundred bytes or more.
+JSON_DECODER_BYTES, JSON_VALUE_BYTES = 4096, 128
 OLDEST, NEWEST = 13, 17
 LANGUAGE = "en_US"
 
@@ -106,6 +114,7 @@ class Row(tuple):
 
 
 _CREATE = re.compile(r'^CREATE TABLE (?:"?public"?\.)?"?(\w+)"? \($')
+_COLUMN = re.compile(r'^\s+"?(\w+)"? (\w+)')  # a column as CREATE TABLE declares it: its name and type
 _COPY = re.compile(r'^COPY (?:"?public"?\.)?"?(\w+)"? \((.*)\) FROM stdin;$')
 _ESCAPE = re.compile(r"\\(?:([0-7]{1,3})|x([0-9a-fA-F]{1,2})|(.))")
 _ESCAPED = {"b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t", "v": "\v"}
@@ -115,18 +124,19 @@ def _id(value: str) -> bool:
     return value.isascii() and value.isdigit() and len(value) <= ID_DIGITS
 
 
-_PLAIN = re.compile(rf"-?\d{{1,{MAX_MAGNITUDE}}}(?:\.\d+)?").fullmatch  # how most numbers are written
+_PLAIN = re.compile(rf"-?\d{{1,{MAX_MAGNITUDE}}}(?:\.\d{{1,{MAX_SCALE}}})?").fullmatch  # how most numbers are written
 
 
 def _number(value: str) -> bool:
-    """A finite number below MAX_MAGNITUDE, as PostgreSQL writes a numeric or a float."""
+    """A finite number below MAX_MAGNITUDE with at most MAX_SCALE fraction digits, as PostgreSQL
+    writes a numeric or a float."""
     if _PLAIN(value):
         return True
     try:
         number = Decimal(value)
     except ArithmeticError:
         return False
-    return number.is_finite() and number.adjusted() < MAX_MAGNITUDE
+    return number.is_finite() and number.adjusted() < MAX_MAGNITUDE and number.as_tuple().exponent >= -MAX_SCALE
 
 
 # The forms PostgreSQL writes a date and a timestamp in. datetime.fromisoformat also reads ISO week
@@ -162,6 +172,28 @@ def json_value(text: str):
     return json.loads(text, parse_float=_json_number, parse_int=_json_number, parse_constant=_no_constant)
 
 
+def json_size(text: str) -> int:
+    """At most what decoding `text` (json_value) holds at once: the decoder's own, twice the text,
+    for the strings copied out of it, at four bytes a character when it holds an escape (one
+    escaped emoji makes the whole decoded string that wide), and JSON_VALUE_BYTES for each value
+    it can hold, one more than its commas, colons and opening brackets."""
+    return (JSON_DECODER_BYTES + 2 * text_size([text], width=4 if "\\u" in text else 1)
+            + JSON_VALUE_BYTES * (1 + sum(map(text.count, ",:[{"))))
+
+
+def translation(value: str) -> str | None:
+    """The English name in a translated value, JSON keyed by language as Odoo keeps a translated
+    name from 16 on, else the first one stored; None when the value is not a non-empty object
+    whose every name is a string."""
+    try:
+        names = json_value(value)
+    except (ValueError, RecursionError):
+        return None
+    if not isinstance(names, dict) or not names or not all(isinstance(name, str) for name in names.values()):
+        return None
+    return names.get(LANGUAGE) or next(iter(names.values()))
+
+
 def _json(value: str) -> bool:
     try:
         json_value(value)
@@ -181,6 +213,27 @@ def _bytes(value: str) -> bool:
 # What each kind of column holds when the database wrote it.
 KINDS: dict[str, Callable[[str], bool]] = {"id": _id, "number": _number, "date": _date, "bytes": _bytes,
                                           "json": _json}
+# The kind of a column holding a name Odoo translates: from 16 a jsonb column (see translation),
+# before that, and in a table where Odoo does not translate it, plain text.
+TRANSLATED = "translated"
+
+
+_ASCII_HEADER = sys.getsizeof("")
+_HEADER = sys.getsizeof("\u0100") - 4  # of a string with a character outside ASCII: less it and its end
+
+
+def _width(text: str) -> int:
+    """The bytes each character of `text` takes as Python holds it: one, two or four, by its widest."""
+    return 1 if text.isascii() else min(4, (sys.getsizeof(text) - _HEADER) // (len(text) + 1))
+
+
+def text_size(parts: Sequence[str], sep: str = "", width: int = 1) -> int:
+    """The size, as Python holds it, of `parts` joined by `sep`: one, two or four bytes a character
+    by the widest of theirs (at least `width`), and its header."""
+    length = sum(map(len, parts)) + len(sep) * max(len(parts) - 1, 0)
+    if width == 1 and sep.isascii() and all(map(str.isascii, parts)):
+        return _ASCII_HEADER + length
+    return _HEADER + (length + 1) * max(width, _width(sep), *map(_width, parts))
 
 
 def _unescape(match: re.Match) -> str:
@@ -199,7 +252,9 @@ def _field(value: str) -> str | None:
 
 
 def _major(manifest: dict) -> int | None:
-    found = re.search(r"(\d+)\.", str(manifest.get("major_version") or manifest.get("version") or ""))
+    """The Odoo major version the manifest names, as text ("17.0"); None when it names none."""
+    version = manifest.get("major_version") or manifest.get("version")
+    found = re.search(r"(\d+)\.", version) if isinstance(version, str) else None
     return int(found.group(1)) if found else None
 
 
@@ -277,14 +332,11 @@ def _long_row(first: str, lines: IO[str], limits: Mapping[int, float]) -> tuple[
 def _open(archive: zipfile.ZipFile, name: str) -> IO[bytes]:
     """One file of the zip, open for reading. Raises SourceRevisionError when it is packed with
     a password, which a backup must be made again without, or with a method Odoo does not zip
-    with: LZMA keeps as much of the unpacked file resident as the dictionary its entry declares,
-    up to 4 GB, outside any budget."""
-    info = archive.getinfo(name)
-    if info.flag_bits & PASSWORD:
-        raise SourceRevisionError(t(ENCRYPTED))
-    if info.compress_type not in METHODS:
-        raise SourceRevisionError(t(UNREADABLE))
-    return archive.open(info)
+    with (see ZIP_METHODS)."""
+    try:
+        return open_zip_member(archive, name)
+    except ZipMemberRefused as exc:
+        raise SourceRevisionError(t(ENCRYPTED if exc.password else UNREADABLE)) from exc
 
 
 def _cut_short(path: Path) -> bool:
@@ -410,10 +462,27 @@ class Backup:
         if self.held > MAX_HELD:
             raise too_large()
 
-    def held_text(self, text: str) -> str:
-        """`text`, a string built per record from values the backup holds, charged as held."""
-        self.hold(TEXT_COPIES * sys.getsizeof(text))
+    def fits(self, size: int) -> None:
+        """Refuses the backup when `size` bytes more, held only for a moment, would take what it
+        holds past MAX_HELD."""
+        if self.held + size > MAX_HELD:
+            raise too_large()
+
+    def decodable(self, text: str) -> str:
+        """`text`, JSON, once decoding it (json_size) fits the budget (fits)."""
+        self.fits(json_size(text))
         return text
+
+    def hold_text(self, *parts: str, sep: str = "") -> None:
+        """Counts a string built per record from values the backup holds, `parts` joined by `sep`,
+        before it is built, so building it never takes more than the budget allows."""
+        self.hold(TEXT_COPIES * text_size(parts, sep))
+
+    def held_text(self, *parts: str, sep: str = "") -> str:
+        """`parts` joined by `sep`, a string built per record from values the backup holds,
+        charged as held before it is built."""
+        self.hold_text(*parts, sep=sep)
+        return sep.join(parts)
 
     def __enter__(self) -> Backup:
         return self
@@ -440,14 +509,21 @@ class Backup:
         when a row of another wanted table, or one whose leading field is not an id, keeps that
         much, when the rows kept, with what is built from them (BUILT_BYTES), would take more
         than MAX_HELD of memory, or when the dump is cut short or damaged: it does not unpack,
-        has no closing line, a table's data never ends or never starts, a row has more or fewer
-        fields than its table, a kept column of a kind in `kinds` (column -> a key of KINDS) holds
-        a value not of that kind, or a `required` table (one an installed module makes) is missing."""
+        has no closing line, a table's data never ends or never starts, a wanted table's data comes
+        before its CREATE TABLE (which declares the columns holding translated names), a row has
+        more or fewer fields than its table, a kept column of a kind in `kinds` (column -> a key of KINDS) holds
+        a value not of that kind, or a `required` table (one an installed module makes) is missing.
+        A kept column of the TRANSLATED kind that the dump declares jsonb is read as its English
+        name (the first stored when it has none): one that is not a non-empty JSON object of
+        strings is damaged. A value of the json kind, or a translated one, is decoded only when
+        decoding it fits the budget (decodable), and a translated one is charged only for the name kept."""
         wanted, where, capped, may_leave_out = set(names) | set(required), where or {}, capped or {}, set(may_leave_out)
         kinds = kinds or {}
         self.left_out: dict[str, list[str]] = {}
         out: dict[str, list[Row]] = {}
         made: set[str] = set()
+        jsonb: dict[str, set[str]] = {}            # wanted table -> its kept columns declared jsonb
+        declaring: str | None = None
         copying: str | None = None
         complete = False
         with _intact(), _open(self.archive, self.root + DUMP) as raw:
@@ -479,24 +555,44 @@ class Backup:
                         if len(values) != width or not line.endswith("\n"):
                             raise ScanError(t(DAMAGED))
                         fields = [_field(values[i]) if len(values[i]) <= limit else None for i, limit in zip(kept, limits)]
+                        for n in decoded:
+                            if fields[n] is not None:
+                                self.decodable(fields[n])
                         for n, valid in checked:
                             if fields[n] is not None and not valid(fields[n]):
                                 raise ScanError(t(DAMAGED))
+                        for n in translated:
+                            if fields[n] is not None:
+                                if (name := translation(fields[n])) is None:
+                                    raise ScanError(t(DAMAGED))
+                                fields[n] = name
                         if keep is not None and not keep(shape(fields)):
                             continue
                         self.hold(row_bytes + sum(map(sys.getsizeof, {f for f in fields if f is not None and f not in seen})))
                         rows.append(shape(map(seen.setdefault, fields, fields)))
                     continue
+                if declaring is not None:
+                    if line.startswith(")"):
+                        declaring = None
+                    elif (column := _COLUMN.match(line)) and column.group(2) == "jsonb" and column.group(1) in columns:
+                        jsonb.setdefault(declaring, set()).add(column.group(1))
+                    continue
                 if line.startswith(DUMP_COMPLETE):
                     complete = True
                 elif created := _CREATE.match(line):
                     made.add(created.group(1))
+                    declaring = created.group(1) if created.group(1) in wanted else None
                 elif line.startswith("COPY ") and (match := _COPY.match(line.rstrip("\n"))):
                     copying = match.group(1)
+                    if copying in wanted and copying not in made:
+                        raise ScanError(t(DAMAGED))
                     if copying in wanted:
                         header = [c.strip().strip('"') for c in match.group(2).split(",")]
                         width, kept = len(header), [i for i, name in enumerate(header) if name in columns]
-                        checked = [(n, KINDS[kinds[header[i]]]) for n, i in enumerate(kept) if header[i] in kinds]
+                        checked = [(n, KINDS[kinds[header[i]]]) for n, i in enumerate(kept) if kinds.get(header[i]) in KINDS]
+                        translated = [n for n, i in enumerate(kept)
+                                      if kinds.get(header[i]) == TRANSLATED and header[i] in jsonb.get(copying, ())]
+                        decoded = [n for n, i in enumerate(kept) if kinds.get(header[i]) == "json"] + translated
                         limits = [capped.get(header[i], math.inf) for i in kept]
                         shape = type("Row", (Row,), {"__slots__": (), "index": {header[i]: n for n, i in enumerate(kept)}})
                         keep, seen = where.get(copying), {}
@@ -505,21 +601,6 @@ class Backup:
         if copying is not None or not complete or ((made & wanted) | set(required)) - set(out):
             raise ScanError(t(DAMAGED))
         return out
-
-    def text(self, value: str | None) -> str:
-        """A name as Odoo shows it in English. From Odoo 16 a translated name is stored as
-        JSON keyed by language; earlier names are plain text. A decoded name is a new string
-        on every call, so a value read for many records is decoded once."""
-        if not value:
-            return ""
-        if self.version >= 16 and value.startswith("{"):
-            try:
-                names = json.loads(value)
-            except ValueError:
-                return value
-            if isinstance(names, dict) and names:
-                return self.held_text(str(names.get(LANGUAGE) or next(iter(names.values())) or ""))
-        return value
 
     def stored_file(self, store_fname: str, limit: int) -> bytes | None:
         """The content of one filestore file, or None when the backup does not hold it or it

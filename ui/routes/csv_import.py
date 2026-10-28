@@ -663,6 +663,7 @@ _MAPPING_JS = """
       dd.showMatched = false;
       renderOptions();
       positionPanel();
+      followAnchor(panel, trigger, positionPanel);
       search.focus();
     }
 
@@ -699,15 +700,7 @@ _MAPPING_JS = """
   // Initialize all dropdowns
   document.querySelectorAll('.mapping-dropdown').forEach(initDropdown);
 
-  // Close panels on outside click or scroll
-  function closeAll() {
-    allDropdowns.forEach(function(dd) {
-      if (dd.open) {
-        dd.container.querySelector('.mapping-dd-panel').style.display = 'none';
-        dd.open = false;
-      }
-    });
-  }
+  // Close panels on an outside click. A scroll leaves an open panel open beside its button.
   document.addEventListener('mousedown', function(e) {
     allDropdowns.forEach(function(dd) {
       if (!dd.open) return;
@@ -722,26 +715,6 @@ _MAPPING_JS = """
       dd.open = false;
     });
   });
-  document.querySelector('.mapping-scroll-wrapper')?.addEventListener('scroll', function(e) {
-    // Only close if scrolling the wrapper itself, not inside a dropdown panel
-    allDropdowns.forEach(function(dd) {
-      if (!dd.open) return;
-      var panel = dd.container.querySelector('.mapping-dd-panel');
-      if (panel && panel.contains(e.target)) return;
-      panel.style.display = 'none';
-      dd.open = false;
-    });
-  });
-  window.addEventListener('scroll', function(e) {
-    // Don't close dropdowns when scrolling inside a dropdown panel
-    allDropdowns.forEach(function(dd) {
-      if (!dd.open) return;
-      var panel = dd.container.querySelector('.mapping-dd-panel');
-      if (panel && panel.contains(e.target)) return;
-      panel.style.display = 'none';
-      dd.open = false;
-    });
-  }, true);
 })();
 """
 

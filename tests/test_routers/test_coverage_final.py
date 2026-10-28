@@ -419,10 +419,13 @@ async def test_share_public_list_page_discount_row(client):
                 "list_type": "quotation",
                 "ref_id": "DISC-001",
                 "contact_name": "Customer A",
+                "subtotal": 100,
+                "discount_amount": 10,
+                "tax_amount": 0,
                 "total": 90,
                 "discount": 10,
                 "discount_type": "flat",
-                "items": [{"description": "Widget", "quantity": 1, "unit_price": 100}],
+                "line_items": [{"description": "Widget", "quantity": 1, "unit_price": 100}],
             },
         }
     ]})

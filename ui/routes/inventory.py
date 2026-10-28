@@ -1489,10 +1489,7 @@ def setup_routes(app):
             params["cols"] = ",".join(await _export_columns(token, p))
             data = await api.export_items_csv(token, params)
         except APIError as e:
-            if e.status == 401:
-                return RedirectResponse("/login", status_code=302)
-            # A failed export is an error page, never a downloaded file that says "error".
-            return Response(content=str(e.detail), status_code=e.status, media_type="text/plain")
+            return api.refusal_response(e)
         return Response(
             content=data,
             media_type="text/csv",
@@ -1844,10 +1841,8 @@ def setup_routes(app):
             result = await api.create_item(token, {"name": "New Item", "quantity": 0, "sell_by": "piece"})
             item_id = result.get("id", result.get("entity_id", ""))
         except APIError as e:
-            if e.status == 401:
-                return Response("", status_code=401, headers={"HX-Redirect": "/login"})
             logger.warning("Blank-create item failed: %s", e.detail)
-            return Response("", status_code=500)
+            return api.refusal_response(e)
         return Response("", status_code=204, headers={"HX-Redirect": f"/inventory/{item_id}"})
 
     # /inventory/new: ?type=component creates a blank component item and opens it
@@ -3113,7 +3108,7 @@ function celerpPrintLabel(entityId, templateId) {
                 api.get_price_lists(token),
             )
         except APIError as e:
-            return Response(str(e.detail), status_code=500)
+            return api.refusal_response(e)
         # Build category options
         cat_names = sorted(cat_schemas.keys())
         schema = [
@@ -3153,7 +3148,7 @@ function celerpPrintLabel(entityId, templateId) {
         try:
             item, company = await asyncio.gather(api.get_item(token, entity_id), api.get_company(token))
         except APIError as e:
-            return Response(str(e.detail), status_code=500)
+            return api.refusal_response(e)
         # Fresh split preview in its own try/except so a non-splittable item (or any preview
         # error) degrades to the disabled card rather than blanking the fragment.
         try:
@@ -3186,7 +3181,7 @@ function celerpPrintLabel(entityId, templateId) {
                 "skus": item.get("sku", ""), "limit": 50,
                 **{k: p[k] for k in ("q", "status", "on_memo_to", "consigned_from") if p.get(k)}})
         except APIError as e:
-            return Response(str(e.detail), status_code=500)
+            return api.refusal_response(e)
         row = next((r for r in scoped.get("items", []) if r.get("id") == entity_id), None) \
             or _flatten_item_attrs(item)
         role = _get_role(request)
@@ -4108,11 +4103,10 @@ function celerpPrintLabel(entityId, templateId) {
             if target_id and not target_id.startswith("__new__"):
                 # Add to existing document
                 if doc_type == "invoice":
-                    new_lines = await _line_items_from_inventory(token, entity_ids)
                     doc = await api.get_doc(token, target_id)
-                    combined = (doc.get("line_items") or []) + new_lines
-                    subtotal = sum(l.get("quantity", 0) * l.get("unit_price", 0) for l in combined)
-                    await api.patch_doc(token, target_id, {"line_items": combined, "subtotal": subtotal, "total": subtotal})
+                    new_lines = await _line_items_from_inventory(token, entity_ids, doc_type="invoice", doc=doc)
+                    await api.patch_doc(token, target_id, {"line_items": (doc.get("line_items") or []) + new_lines},
+                                        expected_version=doc.get("version"))
                     return Response("", status_code=204, headers={"HX-Redirect": f"/docs/{target_id}"})
                 elif doc_type in ("list", "shipping_doc"):
                     new_lines = await _line_items_from_inventory(token, entity_ids)
@@ -4124,26 +4118,22 @@ function celerpPrintLabel(entityId, templateId) {
                     await api.patch_list(token, target_id, {"line_items": combined, "subtotal": subtotal, "total": subtotal}, expected_version=lst.get("version"))
                     return Response("", status_code=204, headers={"HX-Redirect": f"/lists/{target_id}"})
                 elif doc_type == "memo":
-                    new_lines = await _line_items_from_inventory(token, entity_ids)
                     doc = await api.get_doc(token, target_id)
-                    combined = (doc.get("line_items") or []) + new_lines
-                    subtotal = sum(l.get("quantity", 0) * l.get("unit_price", 0) for l in combined)
-                    await api.patch_doc(token, target_id, {"line_items": combined, "subtotal": subtotal, "total": subtotal})
+                    new_lines = await _line_items_from_inventory(token, entity_ids, doc_type="memo", doc=doc)
+                    await api.patch_doc(token, target_id, {"line_items": (doc.get("line_items") or []) + new_lines},
+                                        expected_version=doc.get("version"))
                     return Response("", status_code=204, headers={"HX-Redirect": f"/docs/{target_id}"})
                 elif doc_type == "purchase_order":
-                    new_lines = await _reorder_lines_from_inventory(token, entity_ids)
                     doc = await api.get_doc(token, target_id)
-                    combined = (doc.get("line_items") or []) + new_lines
-                    subtotal = sum(l.get("quantity", 0) * l.get("unit_price", 0) for l in combined)
-                    await api.patch_doc(token, target_id, {"line_items": combined, "subtotal": subtotal, "total": subtotal})
+                    new_lines = await _reorder_lines_from_inventory(token, entity_ids, doc_type="purchase_order", doc=doc)
+                    await api.patch_doc(token, target_id, {"line_items": (doc.get("line_items") or []) + new_lines},
+                                        expected_version=doc.get("version"))
                     return Response("", status_code=204, headers={"HX-Redirect": f"/docs/{target_id}"})
             else:
                 # Create new document
                 if doc_type == "invoice":
-                    line_items = await _line_items_from_inventory(token, entity_ids)
-                    from ui.routes.documents import _company_doc_taxes
-                    doc_taxes = await _company_doc_taxes(token, "invoice")
-                    result = await api.create_doc(token, {"doc_type": "invoice", "status": "draft", "line_items": line_items, "doc_taxes": doc_taxes})
+                    line_items = await _line_items_from_inventory(token, entity_ids, doc_type="invoice")
+                    result = await api.create_doc(token, {"doc_type": "invoice", "status": "draft", "line_items": line_items})
                     doc_id = result.get("entity_id") or result.get("id", "")
                     return Response("", status_code=204, headers={"HX-Redirect": f"/docs/{doc_id}"})
                 elif doc_type in ("list", "shipping_doc"):
@@ -4153,15 +4143,13 @@ function celerpPrintLabel(entityId, templateId) {
                     list_id = result.get("entity_id") or result.get("id", "")
                     return Response("", status_code=204, headers={"HX-Redirect": f"/lists/{list_id}"})
                 elif doc_type == "memo":
-                    line_items = await _line_items_from_inventory(token, entity_ids)
-                    from ui.routes.documents import _company_doc_taxes
-                    doc_taxes = await _company_doc_taxes(token, "memo")
-                    result = await api.create_doc(token, {"doc_type": "memo", "status": "draft", "line_items": line_items, "doc_taxes": doc_taxes})
+                    line_items = await _line_items_from_inventory(token, entity_ids, doc_type="memo")
+                    result = await api.create_doc(token, {"doc_type": "memo", "status": "draft", "line_items": line_items})
                     doc_id = result.get("entity_id") or result.get("id", "")
                     return Response("", status_code=204, headers={"HX-Redirect": f"/docs/{doc_id}"})
                 elif doc_type == "purchase_order":
                     # Purchase-side: qty = reorder_qty in purchase units (blank when unset),
-                    # cost price, purchase unit, no sales taxes. Group the selection by each
+                    # cost price, purchase unit, the purchase-side default tax. Group the selection by each
                     # item's preferred supplier so a multi-supplier reorder becomes one draft
                     # PO per supplier (plus one for items with no supplier set).
                     from celerp.services.reorder import group_by_supplier
@@ -4178,7 +4166,7 @@ function celerpPrintLabel(entityId, templateId) {
                     for sup, ids in groups.items():
                         label = sup or t("inv.no_supplier")
                         try:
-                            line_items = await _reorder_lines_from_inventory(token, ids)
+                            line_items = await _reorder_lines_from_inventory(token, ids, doc_type="purchase_order")
                             payload = {"doc_type": "purchase_order", "status": "draft",
                                        "purchase_kind": "inventory", "line_items": line_items}
                             # preferred_supplier is a free-text name, so record it as the
@@ -4827,10 +4815,7 @@ function celerpPrintLabel(entityId, templateId) {
         try:
             resp = await api.download_item_file(token, entity_id, file_id)
         except APIError as e:
-            if e.status == 401:
-                return RedirectResponse("/login", status_code=302)
-            from starlette.responses import Response as _R
-            return _R(str(e.detail), status_code=e.status)
+            return api.refusal_response(e)
         content_type = resp.headers.get("content-type", "application/octet-stream")
         from starlette.responses import Response as _R
         return _R(
@@ -4878,9 +4863,7 @@ function celerpPrintLabel(entityId, templateId) {
         try:
             resp = await api.get_item_thumbnail(token, entity_id, file_id)
         except APIError as e:
-            if e.status == 401:
-                return RedirectResponse("/login", status_code=302)
-            return Response(str(e.detail), status_code=e.status)
+            return api.refusal_response(e)
         return Response(
             content=resp.content,
             media_type=resp.headers.get("content-type", "image/jpeg"),

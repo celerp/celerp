@@ -58,11 +58,11 @@ from celerp.services.je_keys import je_idempotency_key, je_void_data, unminted_p
 from celerp.services.journal_accounts import UnbalancedJournalEntry, lock_accounts
 from celerp.services.line_measures import splitting_allowed
 from celerp.services.lot_origin import held_value, in_stock, is_stock_type, recorded_value
-from celerp.services.money import allocate_pro_rata, checked_exchange_rate, document_line_amount, received_share, require_doc_rate, round_money, to_base, to_decimal, to_stored_float
+from celerp.services.money import allocate_pro_rata, checked_exchange_rate, document_line_amount, received_share, require_doc_rate, require_line_amount, round_money, to_base, to_decimal, to_stored_float
 from celerp.services.posting_dates import correction_day, void_reversal
 from celerp.services.pick import as_lot, attribute_holds, line_draw_sources, plan_line_draws, resolve_pick_method
 from celerp.services.units import is_non_stock_line, line_receive_kind
-from celerp.tax_regimes import doc_side, misplaced_tax
+from celerp.tax_regimes import doc_side, misplaced_tax, tax_entries
 from sqlalchemy import ARRAY, String, any_, bindparam, func, or_
 from sqlalchemy import select as _select
 from ui.i18n import t
@@ -626,11 +626,11 @@ def refuse_misplaced_tax(settings: dict, doc_type: str | None, state: dict, line
     withholding or other purchase tax on a sale, or a sales-only tax on a purchase. Every
     tax line counts: each line's taxes (or its rate and code), the document taxes and the
     header rate."""
-    applied = [*(state.get("doc_taxes") or []), {"code": "", "rate": state.get("tax_rate")}]
+    applied = [*tax_entries(state.get("doc_taxes")), {"code": "", "rate": state.get("tax_rate")}]
     for line in lines:
         if isinstance(line, dict):
-            applied += line.get("taxes") or [{"code": line.get("tax_code"), "rate": line.get("tax_rate")}]
-    name = misplaced_tax(settings, doc_type, [tax for tax in applied if isinstance(tax, dict)])
+            applied += tax_entries(line.get("taxes")) or [{"code": line.get("tax_code"), "rate": line.get("tax_rate")}]
+    name = misplaced_tax(settings, doc_type, applied)
     if name is not None:
         from fastapi import HTTPException
 
@@ -1787,16 +1787,14 @@ def bill_line_charges(doc: dict) -> list[tuple[_Dec, _Dec, _Dec]]:
     the discount."""
     currency = doc.get("currency", "USD")
     items = doc.get("line_items") or []
-    gross = [max(round_money(to_decimal(li.get("line_total") or 0) or
-                             to_decimal(li.get("quantity", 0)) * to_decimal(li.get("unit_price", 0)), currency),
-                 _Dec(0)) for li in items]
+    gross = [max(require_line_amount(li, currency), _Dec(0)) for li in items]
     goods = sum(gross, _Dec(0))
     tax = round_money(to_decimal(doc.get("tax", 0) or 0), currency) if items else _Dec(0)
     discount = (goods + tax + round_money(doc.get("shipping", 0) or 0, currency)
                 - round_money(doc.get("total", 0) or 0, currency))
     discounts = (allocate_pro_rata(discount, gross, currency) if 0 < discount <= goods
                  else [_Dec(0)] * len(items))
-    taxes = [round_money(sum((to_decimal(t.get("amount") or 0) for t in li.get("taxes") or []), _Dec(0)), currency)
+    taxes = [round_money(sum((to_decimal(t.get("amount") or 0) for t in tax_entries(li.get("taxes"))), _Dec(0)), currency)
              for li in items]
     net = [g - d for g, d in zip(gross, discounts)]
     rest = tax - sum(taxes, _Dec(0))

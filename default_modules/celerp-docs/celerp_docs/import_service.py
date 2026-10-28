@@ -23,7 +23,7 @@ from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.services.journal_accounts import require_line_destinations
 from celerp.services.locations import require_ship_from
-from celerp_docs.doc_money import money_from_lines
+from celerp_docs.doc_money import money_from_lines, refuse_malformed_taxes, refuse_unset_line_tax
 from celerp_docs.doc_projections import UNISSUED_STATUSES
 from celerp_docs.routes import (
     RECORD_NOW,
@@ -162,7 +162,7 @@ async def _upsert_doc(session, company_id, user, role, settings, rec: DocImportR
     )
     result = await write_doc_patch(
         session, company_id, role, settings, user, rec.entity_id,
-        DocPatch(fields_changed=fields_changed, idempotency_key=upsert_idem),
+        DocPatch(fields_changed=fields_changed, idempotency_key=upsert_idem, expected_version=row.version),
     )
     return "skipped" if result.get("event_id") is None else "updated"
 
@@ -181,10 +181,12 @@ async def create_imported_doc(
     await _assert_import_number_free(session, company_id, "doc", rec.data)
     if auto_je.imported_issue_kind(rec.data) is not None:
         _require_doc_rate_http(rec.data, base_currency)
+    refuse_malformed_taxes(rec.data)
     await check_imported_snapshot(session, company_id, rec.entity_id, rec.data, base_currency)
     await require_ship_from(session, company_id, rec.data.get("from_location_id"))
     priced = rec.data
     if str(rec.data.get("status") or "draft") not in UNISSUED_STATUSES:
+        refuse_unset_line_tax(rec.data.get("line_items"))
         auto_je.refuse_unissuable_taxes(settings, rec.data.get("doc_type"), rec.data)
     elif rec.data.get("total") in (None, "") and rec.data.get("line_items"):
         # A draft the file gives no totals for is worth what its lines are, as in the app.

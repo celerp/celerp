@@ -10,6 +10,7 @@ from typing import BinaryIO
 from urllib.parse import quote
 
 import httpx
+from starlette.responses import PlainTextResponse
 
 from celerp.capacity import REQUEST_DB_POOL_SIZE
 from celerp.services.auth import CALLER_HEADER, CONNECT_HEADER, connect_caller, is_loopback
@@ -404,6 +405,15 @@ def error_message(e: APIError) -> str:
     error's own text, else a generic sentence; never a raw payload or an empty string."""
     text = refusal_text(e.data) or (e.detail if isinstance(e.detail, str) else "")
     return text or t("error.unexpected_error_body")
+
+
+def refusal_response(e: APIError) -> PlainTextResponse:
+    """The reply a UI route gives for an APIError it caught: the refusal as short plain
+    text with its status, which the page's error banner shows. An ended session is raised
+    again, so the app's handler sends the browser to the sign-in page."""
+    if e.status == 401:
+        raise e
+    return PlainTextResponse(error_message(e), status_code=e.status)
 
 
 def error_text(r: httpx.Response, fallback: str) -> str:
@@ -2544,6 +2554,12 @@ async def void_list(token: str, entity_id: str, reason: str | None = None) -> di
 async def delete_list(token: str, entity_id: str) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.delete(f"/lists/{entity_id}")).json()
+
+
+async def get_list_old_rule_total(token: str, entity_id: str) -> dict:
+    """{"stored", "current"} totals of a list an earlier version totalled, or nulls when they agree."""
+    async with _api_client(token) as c:
+        return _raise(await c.get(f"/lists/{entity_id}/old-rule-total")).json()
 
 
 async def convert_list(token: str, entity_id: str, target_type: str) -> dict:

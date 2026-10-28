@@ -89,9 +89,7 @@ async def compute_bill_landed_allocation(session, company_id, doc_state: dict) -
     goods: list[dict] = []
     lines = doc_state.get("line_items", [])
     for index, (li, (gross, discount, _tax)) in enumerate(zip(lines, bill_line_charges(doc_state))):
-        line_total = float(li.get("line_total") or
-                           (float(li.get("quantity") or 0) * float(li.get("unit_price") or 0)))
-        base_amt = to_base(line_total, rate, base_currency)
+        base_amt = to_base(gross, rate, base_currency)
         role = await landed_role_for_line(session, company_id, li)
         if role in LANDED_KIND_BY_ROLE:
             charged = to_base(gross - discount, rate, base_currency)

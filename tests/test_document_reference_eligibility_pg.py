@@ -186,8 +186,13 @@ async def test_a_second_line_for_an_item_reserved_elsewhere_is_refused(committed
         await s.commit()
     await _make(factory, company_id, user, "reserved")
     before = await _events(committed_engine, company_id, "doc:A")
+    async with committed_engine.connect() as conn:
+        version = (await conn.execute(text(
+            "SELECT version FROM projections WHERE company_id = :c AND entity_id = 'doc:A'"),
+            {"c": company_id})).scalar_one()
     payload = docs.DocPatch(fields_changed={"line_items": {"old": [_line()], "new": [_line(), _line()]},
-                                            "subtotal": {"old": 10, "new": 20}, "total": {"old": 10, "new": 20}})
+                                            "subtotal": {"old": 10, "new": 20}, "total": {"old": 10, "new": 20}},
+                            expected_version=version)
 
     outcome = await _call(factory, lambda s: docs.patch_doc(
         "doc:A", payload, company_id=company_id, _=None, role="admin", settings={}, user=user, session=s))

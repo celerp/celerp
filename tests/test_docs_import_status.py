@@ -21,6 +21,7 @@ import io
 import json
 import re
 import uuid
+from decimal import Decimal
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -31,6 +32,7 @@ from starlette.requests import Request
 
 import ui.api_client as api_client
 from celerp.models.projections import Projection
+from celerp.services.money import document_line_amount
 from test_import_invariants import stage_dir  # noqa: F401
 from test_import_navigation import _ui_request
 from test_import_upsert import _Form, _numbered_via, _staged_form
@@ -296,6 +298,9 @@ async def test_an_unpaid_or_overdue_document_imports_as_awaiting_payment(
     doc = await _doc(client, auth, number)
     assert doc["status"] == "awaiting_payment" and float(doc["amount_outstanding"]) == 100.0, doc
     assert float(doc.get("amount_paid") or 0) == 0.0, doc
+    # RED before the change: the file's line total was stored under a key no reader takes, so
+    # the line held no amount and a bill booked now was refused for it.
+    assert [document_line_amount(li, "USD") for li in doc["line_items"]] == [Decimal("100.00")], doc
     held = await _net(session, auth, _CONTROL[doc_type], prefix="je:")
     # The same document imported as awaiting_payment books exactly as much again.
     control = f"C-{uuid.uuid4().hex[:6]}"
@@ -366,3 +371,17 @@ async def test_a_list_keeps_a_list_status_and_refuses_any_other(client, auth, mo
         assert t("lists_import.status_not_importable", ref=ref, status=status,
                  allowed="closed, draft, finalized, void") in html, html
         assert rows == []
+
+
+async def test_no_importer_stores_a_line_amount_under_a_key_no_reader_takes():
+    """Class guard: every reader takes a document line's amount from ``line_total`` (see
+    celerp.services.money.document_line_amount), so an importer that writes ``total_price``
+    on a line leaves it without an amount."""
+    root = Path(__file__).resolve().parents[1]
+    written = re.compile(r"""["']total_price["']\s*(:|\]\s*=)""")
+    offenders = [f"{path.relative_to(root)}:{n}"
+                 for base in ("celerp", "ui", "default_modules")
+                 for path in sorted((root / base).rglob("*.py")) if "tests" not in path.parts
+                 for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
+                 if written.search(line)]
+    assert offenders == []

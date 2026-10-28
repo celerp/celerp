@@ -1499,5 +1499,14 @@
   "POST /connectors/{connector_name}/products/{record_id}/resolve": {
     "path:connector_name": "Connector name identifying the external integration.",
     "path:record_id": "Attention record id of the product whose conflicting store edit is being resolved."
+  },
+  "GET /lists/{entity_id}/old-rule-total": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /lists/{entity_id}/recalculate-total": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /lists/{entity_id}/restore-total": {
+    "path:entity_id": "Identifier of the requested Celerp record."
   }
 }

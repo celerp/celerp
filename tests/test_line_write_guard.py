@@ -16,6 +16,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 
 from line_actions_support import doc, h, item, line, line_ids, lot, quotation, set_list_lines, state  # noqa: F401
+from test_helpers import doc_version
 
 pytestmark = pytest.mark.asyncio
 
@@ -41,7 +42,7 @@ async def _held_draft(client, h, sku):
 
 async def _patch_lines(client, h, d, lines):
     return await client.patch(f"/docs/{d}", headers=h,
-                              json={"fields_changed": {"line_items": {"new": lines}}})
+                              json={"expected_version": await doc_version(client, h, d), "fields_changed": {"line_items": {"new": lines}}})
 
 
 def _key(r):
