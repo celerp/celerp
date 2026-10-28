@@ -100,6 +100,14 @@ async def judge_module_writes(session: AsyncSession, company_id) -> None:
         raise
 
 
+async def judge_without_company_lock(session: AsyncSession, company_id) -> None:
+    """Judge the request again, as the company lock does, for the one write that must not
+    wait for that lock: a migration cancel (migrations.request_cancel), saved while the
+    runner holds the lock through a batch. The caller's membership is read under its row
+    lock, so a role change in flight is waited for and a committed one is seen."""
+    await _judge_authority_again(session, company_id)
+
+
 async def _judge_authority_again(session: AsyncSession, company_id) -> None:
     """A request was authorized before its handler ran, but a role, membership or
     permission change commits under this same lock, so a write that waited here may wake

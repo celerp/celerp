@@ -8,7 +8,8 @@ A write is protected when, before it ran, lock_company() for the company it writ
 completed in the same transaction while this request was served (holding the row lock and
 judging the request's authority again) and PostgreSQL still holds that lock (the proofs
 company_lock keeps), and no narrower lock (a chart, row or other advisory lock) was taken
-before the company lock. Each statement is judged on the Session that ran it. A write is
+before the company lock; a write named in JUDGED_WITHOUT_LOCK is protected by the
+request's authority judged again without the lock. Each statement is judged on the Session that ran it. A write is
 judged when its transaction commits: a write rolled back with its savepoint or transaction
 never became durable and is dropped, as the lock proofs are.
 
@@ -105,6 +106,20 @@ INFRASTRUCTURE: dict[str, str] = {
     "payment_recoveries": "a System Recovery restore of the install, for Celerp Cloud: services/payments.py",
     "unmatched_payments": "payments received for no company the install holds: services/payments.py",
     "unmatched_refunds": "refunds received for no company the install holds: services/payments.py",
+}
+
+# The writes a request may make after judging its authority again without the company
+# lock (company_lock.judge_without_company_lock), each the one operation that cannot wait
+# for that lock, by table and statement type.
+JUDGED_WITHOUT_LOCK: dict[tuple[str, str], str] = {
+    ("migration_runs", "UPDATE"): "a migration cancel, saved while the runner holds the company lock through a "
+                                  "batch: services/migrations.request_cancel",
+}
+# The writes protected by their own row, locked earlier in the transaction, by table and
+# statement type: rows that outlive their company, so no company lock can hold them.
+UNDER_OWN_ROW_LOCK: dict[tuple[str, str], str] = {
+    ("migration_cleanup_tasks", "DELETE"): "a cleanup task deleted once its files are, after its company was "
+                                           "discarded, reset or replaced: services/migrations._run_task",
 }
 
 _ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -657,6 +672,12 @@ def _executed(conn, cursor, statement, parameters, context, executemany) -> None
             kind = None
         elif company is not None and target != company and not _holds(request, session, target):
             kind = "cross-company"
+        elif (op.table, op.detail) in JUDGED_WITHOUT_LOCK and target in _here(request, session, "judged") \
+                and not _holds(request, session, target):
+            kind = None
+        elif (op.table, op.detail) in UNDER_OWN_ROW_LOCK and not _holds(request, session, target) \
+                and any(f"{op.table} row update" in held for held in _here(request, session, _LOCK)):
+            kind = None
         elif not _holds(request, session, target):
             kind = "unprotected"
         elif _here(request, session, _LOCK):

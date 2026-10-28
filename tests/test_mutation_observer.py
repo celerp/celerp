@@ -23,8 +23,9 @@ from mutation_observer import serving
 from celerp.connectors.ownership import lock_connector_key
 from celerp.events.engine import emit_event
 from celerp.models.company import Company, Location, User
+from celerp.models.migration import MigrationCleanupTask, MigrationRun
 from celerp.models.projections import Projection
-from celerp.services.company_lock import lock_chart, lock_company
+from celerp.services.company_lock import judge_without_company_lock, lock_chart, lock_company
 from celerp.services.permissions import authorize_request
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.observer_control]
@@ -311,6 +312,69 @@ async def test_a_write_under_a_refused_authority_never_counts(session, auth):
             await session.commit()
         await session.rollback()
     assert _kinds() == [] and mutation_observer.CENSUS.routes == {}
+
+
+async def _migration_run(session, auth) -> uuid.UUID:
+    run_id = uuid.uuid4()
+    session.add(MigrationRun(id=run_id, company_id=auth["company_id"], created_by_user_id=auth["user_id"],
+                             scan_claim_sha256=run_id.hex * 2, source_system="observed",
+                             source_artifact_sha256="0" * 64, adapter_version="1", cif_version="1", mode="new"))
+    await session.commit()
+    return run_id
+
+
+@pytest.mark.parametrize("judged", [True, False])
+async def test_a_cancel_is_protected_by_the_request_judged_again_without_the_lock(session, auth, judged):
+    run_id = await _migration_run(session, auth)
+    with serving("POST", "/observed"):
+        cid = _authorize(session, auth)
+        if judged:
+            await judge_without_company_lock(session, cid)
+        await session.execute(update(MigrationRun).where(MigrationRun.id == run_id).values(status="cancelled"))
+        await session.commit()
+    assert _kinds() == ([] if judged else ["unprotected"])
+
+
+@pytest.mark.parametrize("write", ["another table", "another statement"])
+async def test_a_judgment_without_the_lock_protects_only_the_named_write(session, auth, write):
+    run_id = await _migration_run(session, auth)
+    with serving("POST", "/observed"):
+        cid = _authorize(session, auth)
+        await judge_without_company_lock(session, cid)
+        if write == "another table":
+            await session.execute(update(Company).where(Company.id == cid).values(name="Judged"))
+        else:
+            await session.execute(delete(MigrationRun).where(MigrationRun.id == run_id))
+        await session.commit()
+    assert _kinds() == ["unprotected"]
+
+
+async def test_a_judgment_without_the_lock_that_refuses_writes_nothing(session, auth):
+    run_id = await _migration_run(session, auth)
+    with serving("POST", "/observed"):
+        cid = auth["company_id"]
+        authorize_request(session, cid, auth["user_id"], "viewer")
+        with pytest.raises(HTTPException):
+            await judge_without_company_lock(session, cid)
+        await session.execute(update(MigrationRun).where(MigrationRun.id == run_id).values(status="cancelled"))
+        with pytest.raises(HTTPException):
+            await session.commit()
+        await session.rollback()
+    assert _kinds() == []
+
+
+@pytest.mark.parametrize("row_locked", [True, False])
+async def test_a_cleanup_task_is_deleted_under_its_own_row_lock(session, auth, row_locked):
+    task = MigrationCleanupTask(company_id=auth["company_id"], run_ids=[])
+    session.add(task)
+    await session.commit()
+    with serving("POST", "/observed"):
+        _authorize(session, auth)
+        query = select(MigrationCleanupTask.id).where(MigrationCleanupTask.id == task.id)
+        await session.execute(query.with_for_update(skip_locked=True) if row_locked else query)
+        await session.execute(delete(MigrationCleanupTask).where(MigrationCleanupTask.id == task.id))
+        await session.commit()
+    assert _kinds() == ([] if row_locked else ["unprotected"])
 
 
 async def test_the_previous_requests_lock_is_not_inherited_on_a_reused_session(session, auth):

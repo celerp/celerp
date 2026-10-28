@@ -191,6 +191,9 @@ class RequestAuthority:
     module: str | None = None
     keys: set[str] = field(default_factory=set)
     views: list[AuthoritySettings] = field(default_factory=list)
+    # The request's own authority when this one is what the request acts with in
+    # another company (act_for); None for the request's own.
+    request: "RequestAuthority | None" = None
 
     async def judge_again(self, session: AsyncSession) -> None:
         """403 unless the caller still holds the same role, active, with every
@@ -225,8 +228,23 @@ def carry_authority(request_session: AsyncSession, session: AsyncSession) -> Non
         session.info[AUTHORITY] = authority
 
 
+def act_for(session: AsyncSession, company_id, user_id, role: str, key: str) -> None:
+    """The request goes on to act in *company_id*, where the caller holds *role* granting
+    *key* (a migration's staged company, run from the owner's working session): register
+    that authority on its session, so the company's lock judges membership, role and *key*
+    there again and the request's writes are judged as that company's."""
+    current = session.info.get(AUTHORITY)
+    if current is not None and str(current.company_id) == str(company_id) and current.role == role:
+        current.keys.add(key)
+        return
+    request = current.request if current is not None and current.request is not None else current
+    session.info[AUTHORITY] = RequestAuthority(company_id=company_id, user_id=user_id, role=role, keys={key},
+                                               request=request)
+
+
 def end_request(session: AsyncSession, authority: RequestAuthority) -> None:
-    if session.info.get(AUTHORITY) is authority:
+    current = session.info.get(AUTHORITY)
+    if current is authority or (current is not None and current.request is authority):
         session.info.pop(AUTHORITY, None)
 
 
