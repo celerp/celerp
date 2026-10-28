@@ -6,6 +6,8 @@ external ids are not live channel links, and reconnecting keeps the same-store c
 
 from __future__ import annotations
 
+import asyncio
+import contextvars
 import json
 import uuid
 from types import SimpleNamespace
@@ -283,8 +285,10 @@ async def test_a_connector_change_after_access_was_revoked_is_refused(
 
     async def check_then_revoke(request, key, **kw):
         denied = await checked(request, key, **kw)
-        await _sql(real_engine, "UPDATE user_companies SET role = 'viewer' WHERE company_id = :c",
-                   c=restored.cid)
+        # Another client's change, outside this request.
+        await asyncio.get_running_loop().create_task(_sql(
+            real_engine, "UPDATE user_companies SET role = 'viewer' WHERE company_id = :c", c=restored.cid,
+        ), context=contextvars.Context())
         return denied
 
     monkeypatch.setattr(settings_connectors, "_check_permission", check_then_revoke)
