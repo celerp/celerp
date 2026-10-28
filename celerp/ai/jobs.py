@@ -658,10 +658,16 @@ def question_job(*, job_id: uuid.UUID, company_id: uuid.UUID, user_id: uuid.UUID
                       status="pending", query=query, file_ids=list(file_ids or []))
 
 
-def reopen_question(job) -> None:
+async def reopen_question(session, job_id: uuid.UUID) -> bool:
     """Ask a question again under its id: its ended steps are kept, so the run is
-    answered from them, and any other step is sent again under its own identity."""
-    job.status, job.results, job.error, job.completed_at = "pending", None, None, None
+    answered from them, and any other step is sent again under its own identity.
+    One conditional update, so a send that read the question before its job answered
+    it never reopens the answer; False when the question is answered."""
+    from celerp.models.ai import AIBatchJob
+    reopened = await session.execute(
+        update(AIBatchJob).where(AIBatchJob.id == job_id, AIBatchJob.status != "completed")
+        .values(status="pending", results=None, error=None, completed_at=None))
+    return reopened.rowcount == 1
 
 
 async def _run_question(job_id: uuid.UUID) -> None:
@@ -790,10 +796,10 @@ async def ask(*, company_id: uuid.UUID, user_id: uuid.UUID, query: str, file_ids
                 company_id, user_id, "question", None, query):
             raise HTTPException(status_code=409, detail={"code": "operation_conflict",
                                                          "message": t("ai.err_operation_conflict")})
-        elif job.status == "failed" and not is_held(job_id):
-            reopen_question(job)
+        reopened = job is not None and job.status == "failed" and not is_held(job_id) and (
+            await reopen_question(session, job_id))
         await session.commit()
-    if job is None or job.status not in TERMINAL_JOBS:
+    if job is None or reopened or job.status not in TERMINAL_JOBS:
         start_job(job_id, authorization=authorization)
         await wait_for_job(job_id, started=started)
     return await question_result(job_id, company_id)

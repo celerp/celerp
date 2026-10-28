@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: LicenseRef-Proprietary
 from __future__ import annotations
 
+import uuid
 from unittest.mock import AsyncMock
 
 import pytest
@@ -58,9 +59,9 @@ async def test_install_owner_can_transfer_and_old_owner_loses_authority(client, 
 @pytest.mark.asyncio
 async def test_module_ai_api_keeps_explicit_session_contract(session, monkeypatch):
     monkeypatch.setattr("celerp.session_gate.get_session_token", lambda: "session-1")
-    from celerp.ai.service import AIResponse
-    run_query = AsyncMock(return_value=AIResponse(answer="ok", model_used="test", tools_called=[]))
-    monkeypatch.setattr("celerp.ai.service.run_query", run_query)
+    ask = AsyncMock(return_value={"status": "completed", "job_id": str(uuid.uuid4()), "answer": "ok",
+                                  "model_used": "test", "tools_called": [], "error": None})
+    monkeypatch.setattr("celerp.ai.jobs.ask", ask)
     company_id, user_id = await seed_member(session)
 
     async with signed_request(session, company_id, user_id):
@@ -68,7 +69,7 @@ async def test_module_ai_api_keeps_explicit_session_contract(session, monkeypatc
             query="hello", company_id=str(company_id),
             session_token="session-1", db_session=session)
         assert result["answer"] == "ok"
-        run_query.assert_awaited_once()
+        ask.assert_awaited_once()
 
         with pytest.raises(HTTPException) as exc:
             await ai_query(

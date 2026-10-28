@@ -51,7 +51,7 @@ from celerp.ai.files import AGENT_UPLOAD_TYPES, XLSX_CONTENT_TYPE
 from celerp.ai.service import PROPOSAL_TTL_S
 from celerp.config import settings
 from celerp.db import get_session
-from celerp.models.ai import AIBatchJob
+from celerp.models.ai import AIBatchJob, AIMessage
 from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
 from celerp.services.company_lock import hold_company
 from celerp.services.permissions import get_current_company_settings, require_permission
@@ -753,16 +753,22 @@ async def query_in_conversation(
         if asked is None:
             await add_message(session, conversation_id, "user", body.query,
                               file_ids=body.file_ids, message_id=question_id)
+        reopened = True
         if job is None:
             session.add(jobs.question_job(job_id=question_id, company_id=company_id, user_id=user.id,
                                           query=body.query, file_ids=body.file_ids,
                                           conversation_id=conversation_id))
         else:
-            jobs.reopen_question(job)
+            reopened = await jobs.reopen_question(session, question_id)
         await session.commit()
     except IntegrityError:
         await session.rollback()
         raise _conflict("question_in_progress", t("ai.err_question_in_progress"))
+    if not reopened:
+        # Answered after this send read the thread: that answer, never a second run.
+        await session.refresh(job)
+        answer = await session.get(AIMessage, uuid.UUID(job.results["message_id"]))
+        return _answer_response(answer, question_id=question_id, asked_again=True)
     if not jobs.start_job(question_id, authorization=request.headers.get("authorization")):
         raise _conflict("question_in_progress", t("ai.err_question_in_progress"))
     return JSONResponse(

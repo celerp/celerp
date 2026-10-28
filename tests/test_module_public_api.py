@@ -250,27 +250,31 @@ def test_read_resource_has_no_write_counterpart():
 
 # ── ai_query ─────────────────────────────────────────────────────────────────
 
-@pytest.fixture
-def run_query(monkeypatch):
-    from celerp.ai.service import AIResponse
+_JOB = str(uuid.uuid4())
+_ANSWERED = {"status": "completed", "job_id": _JOB, "answer": "ok", "model_used": "m", "tools_called": [],
+             "help_pages": None, "error": None, "error_code": None}
 
-    mock = AsyncMock(return_value=AIResponse(answer="ok", model_used="m", tools_called=[]))
-    monkeypatch.setattr("celerp.ai.service.run_query", mock)
+
+@pytest.fixture
+def ask(monkeypatch):
+    """The question job, answered at once: these tests are about who may ask."""
+    mock = AsyncMock(return_value=_ANSWERED)
+    monkeypatch.setattr("celerp.ai.jobs.ask", mock)
     monkeypatch.setattr("celerp.session_gate.get_session_token", lambda: "session-1")
     return mock
 
 
 @pytest.mark.asyncio
-async def test_ai_query_new_form_uses_the_active_connect_session(session, run_query):
+async def test_ai_query_new_form_uses_the_active_connect_session(session, ask):
     company_id, user_id = await seed_member(session)
     async with signed_request(session, company_id, user_id):
         result = await api.ai_query("hello", str(company_id), db_session=session)
-    assert result == {"answer": "ok", "model_used": "m", "tools_called": []}
-    assert str(run_query.await_args.kwargs["company_id"]) == str(company_id)
+    assert result == {"status": "completed", "job_id": _JOB, "answer": "ok", "model_used": "m", "tools_called": []}
+    assert str(ask.await_args.kwargs["company_id"]) == str(company_id)
 
 
 @pytest.mark.asyncio
-async def test_ai_query_refused_after_the_signed_request_ends(session, run_query):
+async def test_ai_query_refused_after_the_signed_request_ends(session, ask):
     """Once the signed request exits, its caller is gone from the session, so a
     later query on the same session answers to no one."""
     from celerp.services.auth import SIGNED_TOKEN
@@ -282,11 +286,11 @@ async def test_ai_query_refused_after_the_signed_request_ends(session, run_query
     with pytest.raises(HTTPException) as exc:
         await api.ai_query("hello", str(company_id), db_session=session)
     assert exc.value.status_code == 403
-    run_query.assert_awaited_once()
+    ask.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_ai_query_new_form_refused_without_a_connect_session(session, run_query, monkeypatch):
+async def test_ai_query_new_form_refused_without_a_connect_session(session, ask, monkeypatch):
     monkeypatch.setattr("celerp.session_gate.get_session_token", lambda: "")
     monkeypatch.setattr("celerp.config.settings.cloud_disconnected", True)
     company_id, user_id = await seed_member(session)
@@ -294,11 +298,11 @@ async def test_ai_query_new_form_refused_without_a_connect_session(session, run_
         with pytest.raises(HTTPException) as exc:
             await api.ai_query("hello", str(company_id), db_session=session)
     assert exc.value.status_code == 401
-    run_query.assert_not_awaited()
+    ask.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_ai_query_legacy_positional_call_still_checks_authority(session, run_query):
+async def test_ai_query_legacy_positional_call_still_checks_authority(session, ask):
     company_id, user_id = await seed_member(session)
     async with signed_request(session, company_id, user_id):
         assert (await api.ai_query("hello", str(company_id), "session-1", session))["answer"] == "ok"
@@ -308,33 +312,33 @@ async def test_ai_query_legacy_positional_call_still_checks_authority(session, r
         with pytest.raises(HTTPException) as exc:
             await api.ai_query("hello", str(uuid.uuid4()), "session-1", session)
         assert exc.value.status_code == 403
-    assert run_query.await_count == 1
+    assert ask.await_count == 1
 
 
 @pytest.mark.asyncio
-async def test_ai_query_refused_for_another_company(session, run_query):
+async def test_ai_query_refused_for_another_company(session, ask):
     company_id, user_id = await seed_member(session)
     other_id, _ = await seed_member(session)
     async with signed_request(session, company_id, user_id):
         with pytest.raises(HTTPException) as exc:
             await api.ai_query("hello", str(other_id), db_session=session)
     assert exc.value.status_code == 403
-    run_query.assert_not_awaited()
+    ask.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_ai_query_refused_without_the_ai_permission(session, run_query):
+async def test_ai_query_refused_without_the_ai_permission(session, ask):
     company_id, user_id = await seed_member(session, "viewer")
     async with signed_request(session, company_id, user_id, "viewer"):
         with pytest.raises(HTTPException) as exc:
             await api.ai_query("hello", str(company_id), db_session=session)
     assert exc.value.status_code == 403
     assert exc.value.detail == missing_permission_text("use_ai_assistant")
-    run_query.assert_not_awaited()
+    ask.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_ai_query_judges_the_membership_as_it_is_now(session, run_query):
+async def test_ai_query_judges_the_membership_as_it_is_now(session, ask):
     from sqlalchemy import update
 
     from celerp.models.accounting import UserCompany
@@ -345,22 +349,22 @@ async def test_ai_query_judges_the_membership_as_it_is_now(session, run_query):
         with pytest.raises(HTTPException) as exc:
             await api.ai_query("hello", str(company_id), db_session=session)
     assert exc.value.status_code == 401
-    run_query.assert_not_awaited()
+    ask.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("with_session", [True, False], ids=["session-without-a-request", "no-session"])
-async def test_ai_query_refused_without_a_signed_request(session, run_query, with_session):
+async def test_ai_query_refused_without_a_signed_request(session, ask, with_session):
     company_id, _ = await seed_member(session)
     with pytest.raises(HTTPException) as exc:
         await api.ai_query("hello", str(company_id), "session-1", session if with_session else None)
     assert exc.value.status_code == 403
-    run_query.assert_not_awaited()
+    ask.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("signed", [False, True], ids=["no-signed-request", "signed-by-a-member-without-ai"])
-async def test_ai_query_answers_only_the_signed_in_caller(session, run_query, signed):
+async def test_ai_query_answers_only_the_signed_in_caller(session, ask, signed):
     """An AI query answers only for the signed-in user who asked it."""
     company_id, viewer_id = await seed_member(session, "viewer")
     _, other_id = await seed_member(session)
@@ -379,11 +383,11 @@ async def test_ai_query_answers_only_the_signed_in_caller(session, run_query, si
         else:
             await ask_as_another_member()
     assert exc.value.status_code == 403
-    run_query.assert_not_awaited()
+    ask.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_ai_query_refuses_a_token_it_did_not_sign(session, run_query):
+async def test_ai_query_refuses_a_token_it_did_not_sign(session, ask):
     """Module code that places an access token of its own making on the session
     gets nothing: the token is validated again, signature included."""
     from jose import jwt
@@ -397,4 +401,4 @@ async def test_ai_query_refuses_a_token_it_did_not_sign(session, run_query):
     with pytest.raises(HTTPException) as exc:
         await api.ai_query("hello", str(company_id), db_session=session)
     assert exc.value.status_code == 401
-    run_query.assert_not_awaited()
+    ask.assert_not_awaited()

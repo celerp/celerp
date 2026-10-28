@@ -60,6 +60,35 @@ _crm_src = os.path.join(os.path.dirname(__file__), "..", "premium_modules", "cel
 _crm_available = os.path.isfile(os.path.join(_crm_src, "celerp_sales_funnel", "__init__.py"))
 
 
+async def until(predicate, timeout: float = 10.0) -> None:
+    """Wait for ``predicate`` (sync or async), polling; fails the test at ``timeout``."""
+    async def _wait():
+        while True:
+            value = predicate()
+            if asyncio.iscoroutine(value):
+                value = await value
+            if value:
+                return
+            await asyncio.sleep(0.01)
+    await asyncio.wait_for(_wait(), timeout)
+
+
+async def drain_jobs(release=lambda: None) -> None:
+    """Let every running AI job finish, then shut the runner down. A task cancelled in
+    the middle of a query would leave the test's one shared connection unusable for
+    its teardown, so jobs are drained, never cancelled, before the client and session
+    go. ``release`` is called on every poll (a fake service lets held calls go)."""
+    from celerp.ai import jobs
+
+    def _drained() -> bool:
+        release()
+        return not jobs.running_tasks()
+    try:
+        await until(_drained)
+    finally:
+        await jobs.shutdown()
+
+
 def make_test_token(
     role: str = "owner",
     user_id: str = "00000000-0000-0000-0000-000000000001",

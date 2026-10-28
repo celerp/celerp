@@ -5,7 +5,8 @@ AI service charged it; the newest asker comes first; the period is this month or
 
 Every path that asks a question records its charges in the usage record under the
 question's id: conversation questions, one-off queries and module queries here, and
-receipt reading jobs in the module's batch tests.
+receipt reading jobs in the module's batch tests. A thread question runs as a job:
+its send returns 202 and the tests read its state until the job ends.
 """
 from __future__ import annotations
 
@@ -22,7 +23,7 @@ import pytest
 from fastapi import HTTPException
 from sqlalchemy import select
 
-from celerp.ai import llm, service, usage
+from celerp.ai import jobs, llm, service, usage
 from celerp.ai.conversations import record_credits
 from celerp.ai.llm import ModelResult, RelayError
 from celerp.ai.service import AgentResult, run_agent
@@ -30,7 +31,7 @@ from celerp.gateway.state import set_session_token
 from celerp.models.ai import AIConversation, AIMessage, AIUsage
 from celerp.services.auth import decode_access_token
 from celerp.services.business_time import business_today
-from test_helpers import invite_user, register_admin, signed_request
+from test_helpers import invite_user, register_admin, signed_request, until
 
 
 def _claims(token: str) -> tuple[uuid.UUID, uuid.UUID]:
@@ -90,6 +91,33 @@ async def _ask(client, token: str, conversation_id: str, operation_id: uuid.UUID
     )
 
 
+async def _state(client, token: str, conversation_id: str, question_id) -> dict:
+    r = await client.get(f"/ai/conversations/{conversation_id}/questions/{question_id}",
+                         headers={"Authorization": f"Bearer {token}"})
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+async def _settled(client, token: str, conversation_id: str, question_id) -> dict:
+    """The question's state once its job has ended."""
+    holder: dict = {}
+
+    async def _ended():
+        holder["s"] = await _state(client, token, conversation_id, question_id)
+        return holder["s"]["state"] != "running"
+    await until(_ended)
+    return holder["s"]
+
+
+async def _asked(client, token: str, conversation_id: str, operation_id: uuid.UUID,
+                 query: str = "supplier?") -> tuple[dict, dict]:
+    """Send a question that starts a job and wait for it: the send's body and the
+    question's assistant message once the job ended."""
+    r = await _ask(client, token, conversation_id, operation_id, query)
+    assert r.status_code == 202, r.text
+    return r.json(), (await _settled(client, token, conversation_id, operation_id))["message"]
+
+
 async def _conversation(client, token: str) -> str:
     r = await client.post("/ai/conversations", headers={"Authorization": f"Bearer {token}"}, json={"title": None})
     return r.json()["id"]
@@ -109,7 +137,9 @@ async def _usage(client, token: str, **params):
 
 
 @pytest.fixture
-async def owner(client):
+async def owner(client, drained_jobs):
+    """The owner of a new company. Its question jobs are drained before the client
+    and its session close."""
     token = await register_admin(client)
     company_id, user_id = _claims(token)
     return token, company_id, user_id
@@ -146,11 +176,14 @@ async def test_credits_kept_when_a_later_turn_fails(client, session, owner, monk
 
     monkeypatch.setattr(service, "complete", _complete)
     monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None: {})
-    result = await run_agent(
-        app=object(), authorization="Bearer tok", query="how do I add a supplier?",
-        company_id=company_id, company_settings={}, user_id=user_id, role="owner",
-        memory={"notes": [], "kv": {}}, file_ids=None, history=[], operation_id=uuid.uuid4(),
-    )
+    operation = uuid.uuid4()
+    async with jobs.gate.slot("interactive"):
+        result = await run_agent(
+            app=object(), authorization="Bearer tok", query="how do I add a supplier?",
+            company_id=company_id, company_settings={}, user_id=user_id, role="owner",
+            memory={"notes": [], "kv": {}}, file_ids=None, history=[], operation_id=operation,
+            journal=jobs.Journal(operation),
+        )
     assert result.error and result.credits == 1
 
     await _question(session, company_id, user_id, credits=result.credits)
@@ -178,11 +211,9 @@ async def test_credits_kept_when_the_relay_refuses_a_later_turn(client, session,
 
     monkeypatch.setattr(service, "complete", _complete)
     monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None: {})
-    headers = {"Authorization": f"Bearer {token}"}
-    conv = (await client.post("/ai/conversations", headers=headers, json={"title": None})).json()["id"]
-    r = await client.post(f"/ai/conversations/{conv}/query", headers=headers, json={"query": "supplier?"})
-    assert r.status_code == 200, r.text
-    assert r.json()["error_code"] == "too_much_data"
+    conv = await _conversation(client, token)
+    _, reply = await _asked(client, token, conv, uuid.uuid4())
+    assert reply["error_code"] == "too_much_data"
     rows = (await _usage(client, token)).json()["users"]
     assert [(r["query_count"], r["credits_used"]) for r in rows] == [(1, 1)]
 
@@ -231,8 +262,9 @@ async def test_usage_refused_without_manage_users(client, session, owner):
 
 
 async def test_timed_out_question_asked_again_gets_its_answer(client, owner, monkeypatch):
-    """A question whose answer did not arrive in time is asked again under the same
-    question id: the service returns the answer it kept and does not add a question."""
+    """A question whose answer did not arrive in time ends failed and is not sent again
+    on its own; asked again under the same question id, the service returns the answer
+    it kept and the app adds no question."""
     token, _, _ = owner
     sent = _relay(monkeypatch, [
         httpx.ReadTimeout("slow"),
@@ -241,15 +273,14 @@ async def test_timed_out_question_asked_again_gets_its_answer(client, owner, mon
     conv = await _conversation(client, token)
     question = uuid.uuid4()
 
-    first = await _ask(client, token, conv, question)
-    assert first.status_code == 200, first.text
-    body = first.json()
-    assert (body["error_code"], body["retryable"], body["new_question"], body["message_id"],
-            body["asked_again"]) == ("timeout", True, False, str(question), False)
+    first, failed = await _asked(client, token, conv, question)
+    assert (first["message_id"], first["asked_again"]) == (str(question), False)
+    assert (failed["error_code"], failed["retryable"], failed["new_question"]) == ("timeout", True, False)
+    assert sent == [question]
 
-    again = (await _ask(client, token, conv, question)).json()
-    assert (again["answer"], again["message_id"], again["asked_again"]) == (
-        "Open Contacts and choose New.", str(question), True)
+    again, reply = await _asked(client, token, conv, question)
+    assert (again["message_id"], again["asked_again"]) == (str(question), True)
+    assert reply["content"] == "Open Contacts and choose New."
     assert sent == [question, question]
     thread = await _messages(client, token, conv)
     assert [m["role"] for m in thread] == ["user", "assistant", "assistant"]
@@ -261,13 +292,13 @@ async def test_answered_question_returns_its_answer_without_asking(client, owner
     sent = _relay(monkeypatch, [_answer()])
     conv = await _conversation(client, token)
     question = uuid.uuid4()
-    first = (await _ask(client, token, conv, question)).json()
-    again = (await _ask(client, token, conv, question)).json()
+    _, reply = await _asked(client, token, conv, question)
+    again = await _ask(client, token, conv, question)
+    assert again.status_code == 200, again.text
     assert sent == [question]
-    assert again["answer"] == first["answer"] and again["asked_again"] is True
+    assert again.json()["answer"] == reply["content"] and again.json()["asked_again"] is True
     assert len(await _messages(client, token, conv)) == 2
     assert _counts((await _usage(client, token)).json()["users"]) == [(1, 1)]
-
 
 
 def _refused_as_operation_conflict(r) -> None:
@@ -283,8 +314,8 @@ async def test_delayed_repeat_after_a_later_question_returns_the_first_answer(cl
     sent = _relay(monkeypatch, [_answer("Answer A"), _answer("Answer B")])
     conv = await _conversation(client, token)
     x, y = uuid.uuid4(), uuid.uuid4()
-    assert (await _ask(client, token, conv, x, query="question A")).status_code == 200
-    assert (await _ask(client, token, conv, y, query="question B")).status_code == 200
+    await _asked(client, token, conv, x, query="question A")
+    await _asked(client, token, conv, y, query="question B")
 
     late = await _ask(client, token, conv, x, query="question A")
     assert late.status_code == 200, late.text
@@ -304,16 +335,18 @@ async def test_question_id_reused_for_another_question_is_refused(client, owner,
     sent = _relay(monkeypatch, [_answer()])
     conv = await _conversation(client, token)
     question = uuid.uuid4()
-    assert (await _ask(client, token, conv, question)).status_code == 200
+    # Uploaded before the question: the upload rolls back the test's one shared
+    # session, which would take the job's stored answer with it.
+    upload = await client.post("/ai/upload", headers={"Authorization": f"Bearer {token}"},
+                               files={"files": ("rows.csv", b"a,b\n1,2\n", "text/csv")})
+    assert upload.status_code == 201, upload.text
+    await _asked(client, token, conv, question)
 
     if change == "text":
         r = await _ask(client, token, conv, question, query="customer?")
     elif change == "conversation":
         r = await _ask(client, token, await _conversation(client, token), question)
     else:
-        upload = await client.post("/ai/upload", headers={"Authorization": f"Bearer {token}"},
-                                   files={"files": ("rows.csv", b"a,b\n1,2\n", "text/csv")})
-        assert upload.status_code == 201, upload.text
         r = await client.post(
             f"/ai/conversations/{conv}/query", headers={"Authorization": f"Bearer {token}"},
             json={"query": "supplier?", "operation_id": str(question),
@@ -334,8 +367,8 @@ async def test_question_id_the_service_will_not_take_again_is_refused(client, ow
     sent = _relay(monkeypatch, [RelayError(code, "refused", status=409)])
     conv = await _conversation(client, token)
     question = uuid.uuid4()
-    first = (await _ask(client, token, conv, question)).json()
-    assert (first["error_code"], first["retryable"], first["new_question"]) == (code, False, True)
+    _, failed = await _asked(client, token, conv, question)
+    assert (failed["error_code"], failed["retryable"], failed["new_question"]) == (code, False, True)
 
     _refused_as_operation_conflict(await _ask(client, token, conv, question))
     assert sent == [question]
@@ -349,8 +382,9 @@ async def test_failed_question_followed_by_another_is_not_asked_again(client, ow
     sent = _relay(monkeypatch, [RelayError("service_unavailable", "down", status=503), _answer("Answer B")])
     conv = await _conversation(client, token)
     x, y = uuid.uuid4(), uuid.uuid4()
-    assert (await _ask(client, token, conv, x, query="question A")).json()["retryable"] is True
-    assert (await _ask(client, token, conv, y, query="question B")).status_code == 200
+    _, failed = await _asked(client, token, conv, x, query="question A")
+    assert failed["retryable"] is True
+    await _asked(client, token, conv, y, query="question B")
 
     _refused_as_operation_conflict(await _ask(client, token, conv, x, query="question A"))
     assert sent == [x, y]
@@ -365,7 +399,8 @@ async def test_question_without_an_id_is_a_new_question(client, owner, monkeypat
     for _ in range(2):
         r = await client.post(f"/ai/conversations/{conv}/query",
                               headers={"Authorization": f"Bearer {token}"}, json={"query": "supplier?"})
-        assert r.status_code == 200 and r.json()["asked_again"] is False, r.text
+        assert r.status_code == 202 and r.json()["asked_again"] is False, r.text
+        assert (await _settled(client, token, conv, r.json()["message_id"]))["state"] == "answered"
     assert len(set(sent)) == 2
     assert len(await _messages(client, token, conv)) == 4
 
@@ -379,9 +414,8 @@ async def test_refusal_is_kept_in_the_thread(client, session, owner, monkeypatch
     _relay(monkeypatch, [HTTPException(status_code=402, detail=refusal)])
     conv = await _conversation(client, token)
     question = uuid.uuid4()
-    r = await _ask(client, token, conv, question)
-    assert r.status_code == 402, r.text
-    assert r.json()["detail"] == {**refusal, "message_id": str(question), "asked_again": False}
+    await _asked(client, token, conv, question)
+    assert (await _state(client, token, conv, question))["state"] == "failed"
 
     user_msg, reply = await _messages(client, token, conv)
     assert user_msg["id"] == str(question) and user_msg["content"] == "supplier?"
@@ -424,31 +458,33 @@ async def test_question_sent_twice_at_once_is_refused_once(client, session, owne
 
 
 async def test_question_sent_again_while_it_is_answered_runs_once(client, owner, monkeypatch):
-    """The same question sent again half a second later, while its first send is still
-    being answered, is told it is in progress: one model run, one stored answer, one
-    charge. Once answered, sending it again returns that answer without asking."""
+    """The same question sent again while its job is still being answered is told it
+    is in progress: one model run, one stored answer, one charge. Once answered,
+    sending it again returns that answer without asking."""
     token, _, _ = owner
     sent: list = []
+    in_model, release = asyncio.Event(), asyncio.Event()
 
-    async def _slow(messages, *, tools=None, reservation_id=None, operation_id=None, **_kw):
+    async def _held(messages, *, tools=None, reservation_id=None, operation_id=None, **_kw):
         sent.append(operation_id)
-        await asyncio.sleep(1.0)
+        in_model.set()
+        await release.wait()
         return _answer()
 
     set_session_token("s" * 64)
-    monkeypatch.setattr(service, "complete", _slow)
+    monkeypatch.setattr(service, "complete", _held)
     monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None: {})
     conv = await _conversation(client, token)
     question = uuid.uuid4()
 
-    async def _again():
-        await asyncio.sleep(0.5)
-        return await _ask(client, token, conv, question)
-
-    first, second = await asyncio.gather(_ask(client, token, conv, question), _again())
-    assert first.status_code == 200, first.text
+    first = await _ask(client, token, conv, question)
+    assert first.status_code == 202, first.text
+    await asyncio.wait_for(in_model.wait(), 10)
+    second = await _ask(client, token, conv, question)
     assert second.status_code == 409, second.text
     assert second.json()["detail"]["code"] == "question_in_progress"
+    release.set()
+    reply = (await _settled(client, token, conv, question))["message"]
     assert sent == [question]
     thread = await _messages(client, token, conv)
     assert [m["role"] for m in thread] == ["user", "assistant"]
@@ -456,7 +492,7 @@ async def test_question_sent_again_while_it_is_answered_runs_once(client, owner,
 
     again = await _ask(client, token, conv, question)
     assert (again.status_code, again.json()["asked_again"], again.json()["answer"]) == (
-        200, True, first.json()["answer"])
+        200, True, reply["content"])
     assert sent == [question]
     assert len(await _messages(client, token, conv)) == 2
 
@@ -465,8 +501,9 @@ async def test_question_sent_again_while_it_is_answered_runs_once(client, owner,
 async def test_repeat_send_in_a_read_window_runs_once(client, owner, monkeypatch, window):
     """A repeat that reads the question just as the first send moves on is still one model
     run and one charge. Both windows are forced with events, not sleeps: the repeat's
-    read of the question is held while the first send reaches the model, and in the
-    second window the first send also finishes before the repeat acts on that read."""
+    read of the question is held while the first send's job reaches the model, and in
+    the second window the job also answers before the repeat acts on that read, which
+    then returns the answer and never reopens the question."""
     from celerp.ai import conversations
 
     token, _, _ = owner
@@ -500,19 +537,21 @@ async def test_repeat_send_in_a_read_window_runs_once(client, owner, monkeypatch
         read = await real_find(*args, **kw)  # stored, not yet answered
         release.set()
         await first_send[0]
+        await until(lambda: not jobs.is_held(question))  # the job stored its answer
         return read
 
     monkeypatch.setattr(conversations, "find_question", _read_while_first_send_moves_on)
     repeat = await _ask(client, token, conv, question)
     release.set()
     first = await first_send[0]
-    assert first.status_code == 200, first.text
+    assert first.status_code == 202, first.text
+    reply = (await _settled(client, token, conv, question))["message"]
     if window == "not_yet_stored":
         assert repeat.status_code == 409, repeat.text
         assert repeat.json()["detail"]["code"] == "question_in_progress"
     else:
         assert (repeat.status_code, repeat.json()["asked_again"], repeat.json()["answer"]) == (
-            200, True, first.json()["answer"])
+            200, True, reply["content"])
     assert sent == [question]
     assert [m["role"] for m in await _messages(client, token, conv)] == ["user", "assistant"]
     assert _counts((await _usage(client, token)).json()["users"]) == [(1, 1)]
@@ -547,52 +586,51 @@ async def test_one_off_query_is_counted_and_cites_help(client, owner, monkeypatc
     assert _counts((await _usage(client, token)).json()["users"]) == [(2, 2)]
 
 
-async def test_module_query_is_counted(session, monkeypatch):
-    from types import SimpleNamespace
-    from unittest.mock import AsyncMock
-
+async def test_module_query_is_counted(client, session, drained_jobs, monkeypatch):
     from celerp.modules.api import ai_query
     from test_helpers import seed_member
 
     monkeypatch.setattr("celerp.session_gate.get_session_token", lambda: "session-1")
-    monkeypatch.setattr("celerp.ai.service.run_query", AsyncMock(return_value=SimpleNamespace(
-        answer="ok", model_used="test", tools_called=[], credits=1, charge_known=False)))
+
+    async def _run_agent(**kw):
+        return AgentResult(answer="ok", model_used="test", tools_called=[], pending_actions=[],
+                           credits=1, charge_known=False)
+
+    monkeypatch.setattr(service, "run_agent", _run_agent)
     company_id, user_id = await seed_member(session)
     async with signed_request(session, company_id, user_id):
-        await ai_query(query="hello", company_id=str(company_id), session_token="session-1", db_session=session)
+        out = await ai_query(query="hello", company_id=str(company_id), session_token="session-1",
+                             db_session=session)
+    assert (out["status"], out["answer"]) == ("completed", "ok")
     rows = (await session.execute(select(AIUsage).where(AIUsage.company_id == company_id))).scalars().all()
     assert [(r.user_id, r.credits) for r in rows] == [(user_id, 1)]
 
 
-async def test_module_query_timed_out_is_asked_again_once_and_unknown_is_not(session, monkeypatch):
-    """A module's query whose answer timed out is asked again once under the same id and
-    answered; one whose outcome the service reports unknown, or that fails for another
-    reason, is not asked again (the service would only report the same outcome)."""
+async def test_module_query_that_timed_out_or_failed_is_not_sent_again(client, session, drained_jobs, monkeypatch):
+    """A module's question that timed out after it was sent, whose outcome the service
+    reports unknown, or that fails for another reason ends failed with its reason and
+    is never sent again on its own: the service would only answer the same id again,
+    and asking again is the caller's choice. Each question has its usage row from
+    before it left."""
     from celerp.modules.api import ai_query
     from test_helpers import seed_member
 
     monkeypatch.setattr("celerp.session_gate.get_session_token", lambda: "session-1")
     sent = _relay(monkeypatch, [
         httpx.ReadTimeout("slow"),
-        _answer(credits=1),
         RelayError("outcome_unknown", "lost", status=503, credits=1),
         RelayError("service_unavailable", "down", status=503),
     ])
     company_id, user_id = await seed_member(session)
     async with signed_request(session, company_id, user_id):
-        answered = await ai_query(query="hello", company_id=str(company_id), session_token="session-1",
-                                  db_session=session)
-        unknown = await ai_query(query="lost", company_id=str(company_id), session_token="session-1",
-                                 db_session=session)
-        failed = await ai_query(query="again", company_id=str(company_id), session_token="session-1",
-                                db_session=session)
-    assert answered["answer"] == "Open Contacts and choose New."
-    assert unknown["answer"] == "" and failed["answer"] == ""
-    assert len(sent) == 4 and sent[0] == sent[1] and len({sent[1], sent[2], sent[3]}) == 3
+        outs = [await ai_query(query=q, company_id=str(company_id), session_token="session-1", db_session=session)
+                for q in ("slow", "lost", "down")]
+    assert [o["status"] for o in outs] == ["failed"] * 3
+    assert all(o["answer"] for o in outs)
+    assert len(set(sent)) == 3
     rows = (await session.execute(select(AIUsage).where(AIUsage.company_id == company_id))).scalars().all()
-    # Every question has its row from before it left; the failed one was charged nothing.
     assert sorted((str(r.operation_id), r.credits) for r in rows) == sorted(
-        [(str(sent[0]), 1), (str(sent[2]), 1), (str(sent[3]), 0)])
+        [(str(sent[0]), 0), (str(sent[1]), 1), (str(sent[2]), 0)])
 
 
 async def test_refusal_after_a_charged_turn_is_counted(client, owner, monkeypatch):
@@ -607,8 +645,8 @@ async def test_refusal_after_a_charged_turn_is_counted(client, owner, monkeypatc
     _relay(monkeypatch, [tool_turn, HTTPException(status_code=402, detail=refusal),
                          tool_turn, HTTPException(status_code=402, detail=refusal)])
     conv = await _conversation(client, token)
-    r = await _ask(client, token, conv, uuid.uuid4())
-    assert r.status_code == 402, r.text
+    _, reply = await _asked(client, token, conv, uuid.uuid4())
+    assert (reply["refusal_status"], reply["refusal"]) == (402, refusal)
     assert _counts((await _usage(client, token)).json()["users"]) == [(1, 1)]
 
     r = await client.post("/ai/query", headers={"Authorization": f"Bearer {token}"}, json={"query": "customer?"})

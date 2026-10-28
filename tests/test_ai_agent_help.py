@@ -18,7 +18,7 @@ os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 import pytest
 from fastapi import FastAPI, Request
 
-from celerp.ai import service
+from celerp.ai import jobs, service
 from celerp.ai.conversations import (
     _has_protected_action,
     help_pages,
@@ -29,6 +29,7 @@ from celerp.ai.conversations import (
 from celerp.ai.service import AgentResult, agent_system_prompt, run_agent
 from celerp.ai.tools import execute_agent_capability
 from celerp.ai.llm import ModelResult
+from test_ai_usage import _settled
 from test_helpers import register_admin
 from ui import i18n
 from ui.i18n import lang_label
@@ -84,6 +85,7 @@ async def _run(**over) -> AgentResult:
         operation_id=uuid.uuid4(),
     )
     kwargs.update(over)
+    kwargs.setdefault("journal", jobs.Journal(kwargs["operation_id"]))
     return await run_agent(**kwargs)
 
 
@@ -123,7 +125,7 @@ async def test_tool_requests_forward_accept_language(thai):
 
 
 @pytest.mark.asyncio
-async def test_help_read_results_become_citations(monkeypatch, client):
+async def test_help_read_results_become_citations(monkeypatch, client, drained_jobs):
     async def _exec(app, authz, capability, arguments, call_id, *, result_max_bytes=None):
         if capability["name"] == "help_read" and arguments["path"]["page_id"] == "contacts.nothing":
             return {"ok": False, "status": 404, "error": {"code": "not_found", "message": "Help page not found"}}
@@ -157,9 +159,10 @@ async def test_help_read_results_become_citations(monkeypatch, client):
     monkeypatch.setattr(service, "run_agent", _agent)
     conv = (await client.post("/ai/conversations", headers=headers, json={"title": None})).json()["id"]
     r = await client.post(f"/ai/conversations/{conv}/query", headers=headers, json={"query": "supplier?"})
-    assert r.status_code == 200, r.text
-    assert r.json()["help_pages"] == ["contacts.add-supplier"]
-    assert r.json()["tools_called"] == ["help_search", "help_read"]
+    assert r.status_code == 202, r.text
+    reply = (await _settled(client, headers["Authorization"].split()[1], conv, r.json()["message_id"]))["message"]
+    assert reply["help_pages"] == ["contacts.add-supplier"]
+    assert reply["tools_called"] == ["help_search", "help_read"]
     detail = (await client.get(f"/ai/conversations/{conv}", headers=headers)).json()
     assistant = [m for m in detail["messages"] if m["role"] == "assistant"][-1]
     assert assistant["help_pages"] == ["contacts.add-supplier"]

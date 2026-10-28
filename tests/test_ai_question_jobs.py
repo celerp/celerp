@@ -19,7 +19,7 @@ import uuid
 
 from ai_fake_cloud import answer, cloud, tool_turn, until  # noqa: F401
 from celerp.ai import jobs, service
-from test_ai_usage import _conversation, owner  # noqa: F401
+from test_ai_usage import _conversation, _settled, _state, owner  # noqa: F401
 
 AUTH = lambda token: {"Authorization": f"Bearer {token}"}  # noqa: E731
 
@@ -33,22 +33,6 @@ def _cap(name: str, method: str, *, confirm: bool) -> dict:
 async def _ask(client, token, conv, qid, query="How do I add a supplier?"):
     return await client.post(f"/ai/conversations/{conv}/query", headers=AUTH(token),
                              json={"query": query, "operation_id": str(qid)})
-
-
-async def _state(client, token, conv, qid) -> dict:
-    r = await client.get(f"/ai/conversations/{conv}/questions/{qid}", headers=AUTH(token))
-    assert r.status_code == 200, r.text
-    return r.json()
-
-
-async def _settled(client, token, conv, qid) -> dict:
-    holder: dict = {}
-
-    async def _terminal():
-        holder["s"] = await _state(client, token, conv, qid)
-        return holder["s"]["state"] != "running"
-    await until(_terminal)
-    return holder["s"]
 
 
 def _fingerprint(body: dict) -> str:

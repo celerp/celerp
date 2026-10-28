@@ -879,6 +879,15 @@ async def auth(session, ids):
 
 
 @pytest_asyncio.fixture
+async def drained_jobs():
+    """Drains the AI jobs a test started (``test_helpers.drain_jobs``); request it
+    after ``client`` and ``session`` so it is torn down before them."""
+    from test_helpers import drain_jobs
+    yield
+    await drain_jobs()
+
+
+@pytest_asyncio.fixture
 async def client(session: AsyncSession):
     from httpx import ASGITransport, AsyncClient
     from celerp.services.session_tracker import clear as _clear_tracker

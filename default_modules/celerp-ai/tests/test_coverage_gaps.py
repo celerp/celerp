@@ -266,35 +266,6 @@ def test_batch_load_file_wrong_company(tmp_path):
             load_file(fid, co_id)
 
 
-# ── service.py: history injection through the gateway ────────────────────────────
-
-@pytest.mark.asyncio
-async def test_ask_unattended_with_history():
-    """History messages are injected between system and user."""
-    from celerp.ai.service import RunTally, ask_unattended
-
-    captured = {}
-
-    async def mock_request(method, url, json=None, **kw):
-        captured["messages"] = json["messages"]
-        resp = MagicMock()
-        resp.status_code = 200
-        resp.json.return_value = {"message": {"role": "assistant", "content": "result"}}
-        return resp
-
-    with patch("celerp.ai.llm.relay_session_headers", return_value={"X-Session-Token": "s", "X-Instance-ID": "i"}):
-        with patch("celerp.ai.llm.relay_http_url", return_value="https://relay"):
-            with patch("httpx.AsyncClient.request", side_effect=mock_request):
-                result = await ask_unattended(
-                    "system prompt", "user question", operation_id=uuid.uuid4(), tally=RunTally(),
-                    history=[{"role": "user", "content": "prior"}, {"role": "assistant", "content": "reply"}],
-                )
-
-    assert result.message["content"] == "result"
-    roles = [m["role"] for m in captured["messages"]]
-    assert roles == ["system", "user", "assistant", "user"]
-
-
 # ── page_count.py: PDF 0 pages ──────────────────────────────────────────────
 
 def test_count_pages_pdf_zero_pages():

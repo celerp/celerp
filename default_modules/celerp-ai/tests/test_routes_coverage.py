@@ -22,55 +22,20 @@ from __future__ import annotations
 
 import json
 import os
-import secrets
 import uuid
-from io import BytesIO
 from unittest.mock import AsyncMock, MagicMock, patch
 
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 
 import pytest
-import pytest_asyncio
-from httpx import ASGITransport, AsyncClient
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.config import settings
-from celerp.db import get_session
-from celerp.main import app
 from celerp.ai import jobs
 from celerp.ai.service import AgentResult, PendingAction
-import celerp.gateway.state as gw_state
 from ui.i18n import t
 
 
-
 # `session` (Postgres, rollback-isolated) comes from the root conftest.
-
-
-@pytest_asyncio.fixture
-async def auth_client(session: AsyncSession):
-    """Authenticated async client with gateway session token."""
-    from celerp.services.session_tracker import clear as _clear_tracker
-    await _clear_tracker(session)
-    app.dependency_overrides[get_session] = lambda: session
-    token = secrets.token_hex(32)
-    gw_state.set_session_token(token)
-
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
-        await c.post("/auth/register", json={
-            "company_name": "RouteCo", "email": "route@test.com",
-            "name": "Admin", "password": "validpass1",
-        })
-        r = await c.post("/auth/login", json={"email": "route@test.com", "password": "validpass1"})
-        jwt = r.json()["access_token"]
-        headers = {
-            "Authorization": f"Bearer {jwt}",
-            "X-Session-Token": token,
-        }
-        yield c, headers
-
-    app.dependency_overrides.clear()
-    gw_state.set_session_token("")
 
 
 # ── POST /ai/upload ──────────────────────────────────────────────────────────
