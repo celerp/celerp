@@ -33,6 +33,7 @@ from sqlalchemy import event
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
+from sqlalchemy.pool import Pool
 
 from celerp.capacity import REQUEST_DB_MAX_OVERFLOW
 
@@ -90,6 +91,10 @@ class SpawnedTaskWrite(ExecutionError):
 
 class UnfencedWrite(ExecutionError):
     """A write inside an execution ran on a transaction that was never fenced."""
+
+
+class ExecutionPoolBudget(ExecutionError):
+    """An execution checked out a second request connection while holding one."""
 
 
 class RemoteCallInTransaction(ExecutionError):
@@ -172,6 +177,8 @@ class Execution:
     lost: bool = False
     ctx: object | None = None
     task: asyncio.Task | None = None
+    # connections its own task has checked out of a pool and not yet returned
+    pool_connections: int = 0
     _open: "weakref.WeakSet" = field(default_factory=weakref.WeakSet)
 
     # -- the lease, as the store sees it ---------------------------------------
@@ -295,6 +302,28 @@ def _on_cursor_execute(conn, _cursor, statement, _params, _context, _executemany
             f"a task spawned inside a {ex.connector} execution wrote without opening its own")
     if conn.get_transaction() not in _FENCED:
         raise UnfencedWrite(f"a write inside a {ex.connector} execution was not fenced")
+
+
+@event.listens_for(Pool, "checkout")
+def _on_checkout(_dbapi_connection, record, _proxy) -> None:
+    """An execution's transactions are sequential, so it holds one connection at a
+    time; a second at once is a nested session that could wait on the pool forever."""
+    ex = current()
+    if ex is None:
+        return
+    if ex.pool_connections >= 1:
+        raise ExecutionPoolBudget(
+            f"a {ex.connector} execution opened a second database connection while holding one")
+    ex.pool_connections += 1
+    record.info["connector_execution"] = ex
+
+
+@event.listens_for(Pool, "checkin")
+@event.listens_for(Pool, "detach")
+def _on_checkin(_dbapi_connection, record) -> None:
+    ex = record.info.pop("connector_execution", None)
+    if ex is not None:
+        ex.pool_connections -= 1
 
 
 def before_remote_call(method: str) -> None:
