@@ -106,6 +106,11 @@ class AIBatchJob(Base):
     file_ids: Mapped[list] = mapped_column(sa.JSON, nullable=False)
     results: Mapped[dict | None] = mapped_column(sa.JSON, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The digest of the request that created the job (celerp.ai.jobs.JobRequest): its id
+    # is reused only for that request.
+    request_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # The asker's session nonce, which a question's tools read the app under.
+    auth_nonce: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),

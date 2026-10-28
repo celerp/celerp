@@ -52,7 +52,9 @@ from celerp.ai.service import PROPOSAL_TTL_S
 from celerp.config import settings
 from celerp.db import get_session
 from celerp.models.ai import AIBatchJob, AIMessage
-from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
+from celerp.services.auth import (
+    AuthContext, get_auth_context, get_current_company_id, get_current_role, get_current_user,
+)
 from celerp.services.company_lock import hold_company
 from celerp.services.permissions import get_current_company_settings, require_permission
 from ui.i18n import t
@@ -189,6 +191,7 @@ async def ai_query(
     body: QueryRequest,
     company_id=Depends(get_current_company_id),
     user=Depends(get_current_user),
+    auth: AuthContext = Depends(get_auth_context),
 ) -> QueryResponse:
     """Run a one-off read-only agent query against live canonical ERP APIs.
 
@@ -200,8 +203,7 @@ async def ai_query(
     from celerp.ai import jobs
     started = time.monotonic()
     out = await jobs.ask(company_id=company_id, user_id=user.id, query=body.query, file_ids=body.file_ids,
-                         job_id=body.operation_id, authorization=request.headers.get("authorization"),
-                         started=started)
+                         job_id=body.operation_id, auth_nonce=auth.snonce, started=started)
     if out["status"] in ("running", "interrupted"):
         return JSONResponse(status_code=202, content={"status": out["status"], "job_id": out["job_id"]})
     if "refusal" in out:
@@ -680,6 +682,7 @@ async def query_in_conversation(
     body: ConversationQueryRequest,
     company_id=Depends(get_current_company_id),
     user=Depends(get_current_user),
+    auth: AuthContext = Depends(get_auth_context),
     session: AsyncSession = Depends(get_session),
 ):
     """Ask the assistant within a conversation.
@@ -720,6 +723,10 @@ async def query_in_conversation(
         # A reading job takes its question's id, so sending the question again
         # returns the job already started for it.
         job = await session.get(AIBatchJob, question_id) if asked is not None else None
+        if job is not None:
+            jobs.hold_to_request(job, jobs.JobRequest(
+                company_id=company_id, user_id=user.id, kind="documents", conversation_id=conversation_id,
+                query=body.query, file_ids=tuple(body.file_ids or ())))
         if job is None:
             try:
                 if asked is None:
@@ -747,19 +754,19 @@ async def query_in_conversation(
     if jobs.is_held(question_id):
         raise _conflict("question_in_progress", t("ai.err_question_in_progress"))
     job = await session.get(AIBatchJob, question_id) if asked is not None else None
-    if job is not None and job.kind != "question":
-        raise _conflict("operation_conflict", t("ai.err_operation_conflict"))
+    asking = jobs.JobRequest.question(company_id=company_id, user_id=user.id, query=body.query,
+                                        file_ids=body.file_ids, conversation_id=conversation_id)
+    if job is not None:
+        jobs.hold_to_request(job, asking)
     try:
         if asked is None:
             await add_message(session, conversation_id, "user", body.query,
                               file_ids=body.file_ids, message_id=question_id)
         reopened = True
         if job is None:
-            session.add(jobs.question_job(job_id=question_id, company_id=company_id, user_id=user.id,
-                                          query=body.query, file_ids=body.file_ids,
-                                          conversation_id=conversation_id))
+            session.add(jobs.question_job(job_id=question_id, request=asking, auth_nonce=auth.snonce))
         else:
-            reopened = await jobs.reopen_question(session, question_id)
+            reopened = await jobs.reopen_question(session, question_id, auth.snonce)
         await session.commit()
     except IntegrityError:
         await session.rollback()
@@ -769,7 +776,7 @@ async def query_in_conversation(
         await session.refresh(job)
         answer = await session.get(AIMessage, uuid.UUID(job.results["message_id"]))
         return _answer_response(answer, question_id=question_id, asked_again=True)
-    if not jobs.start_job(question_id, authorization=request.headers.get("authorization")):
+    if not jobs.start_job(question_id):
         raise _conflict("question_in_progress", t("ai.err_question_in_progress"))
     return JSONResponse(
         status_code=202,

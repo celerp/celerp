@@ -26,12 +26,22 @@ under its id. One still running ``deadlines.PROMOTE_AFTER_S`` after its first mo
 step took a slot, or past a synchronous caller's wait, moves to ``background``: it
 resumes after a restart and leaves a notification when it ends. Nothing bounds a
 job's wall clock, only each step.
+
+A job's run is built from its rows alone, so a run started by a request and one
+resumed after a restart are the same run: a question's tools read the app as its
+asker, under a bearer minted for each read from the asker's session nonce kept on the
+job (a sign-out rotates it, and the read is refused), and the asker is admitted again
+before every step. A job's id names one request (``JobRequest``): reusing the id for
+anything else is refused as ``operation_conflict``.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextvars
+import dataclasses
+import hashlib
+import json
 import logging
 import os
 import time
@@ -120,9 +130,6 @@ _held_operations: set[uuid.UUID] = set()
 _tasks: dict[uuid.UUID, asyncio.Task] = {}
 # Consecutive unexpected failures of a job's runner in this process.
 _failures: dict[uuid.UUID, int] = {}
-# The bearer a question's tools read the app with, held in memory only: a question
-# resumed after a restart has none, so it is offered no tools.
-_authorization: dict[uuid.UUID, str] = {}
 # What a question waits for at the gate (``documents`` or ``questions``), while it waits.
 _waiting: dict[uuid.UUID, str] = {}
 # The questions running in background mode in this process (see ``promote``).
@@ -144,6 +151,38 @@ OPEN_STEPS = ("pending", "running")
 # A step that ended without an answer, which the user may run again under a new identity.
 RETRYABLE_STEPS = ("failed", "unknown", "expired")
 TERMINAL_JOBS = ("completed", "failed", "cancelled")
+
+
+@dataclasses.dataclass(frozen=True)
+class JobRequest:
+    """What a job was asked: everything the asker sends that its answer depends on.
+    A job keeps its digest, and every path that reuses a job by its id holds the new
+    request to it (``hold_to_request``)."""
+    company_id: uuid.UUID
+    user_id: uuid.UUID
+    kind: str
+    conversation_id: uuid.UUID | None
+    query: str
+    file_ids: tuple[str, ...]
+
+    @classmethod
+    def question(cls, *, company_id: uuid.UUID, user_id: uuid.UUID, query: str, file_ids: list[str] | None = None,
+                 conversation_id: uuid.UUID | None = None) -> "JobRequest":
+        return cls(company_id=company_id, user_id=user_id, kind="question", conversation_id=conversation_id,
+                   query=query, file_ids=tuple(file_ids or ()))
+
+    def digest(self) -> str:
+        canonical = json.dumps(dataclasses.asdict(self), sort_keys=True, default=str)
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def hold_to_request(job, request: JobRequest) -> None:
+    """Refuse ``operation_conflict`` unless ``job`` was created for ``request``. A job
+    stored without an identity is never reused."""
+    if job.request_digest != request.digest():
+        from fastapi import HTTPException
+        raise HTTPException(status_code=409, detail={"code": "operation_conflict",
+                                                     "message": t("ai.err_operation_conflict")})
 
 
 def held_operation_ids() -> set[uuid.UUID]:
@@ -168,17 +207,14 @@ def is_held(job_id: uuid.UUID) -> bool:
     return task is not None and not task.done()
 
 
-def start_job(job_id: uuid.UUID, *, delay_s: float = 0.0, authorization: str | None = None) -> bool:
+def start_job(job_id: uuid.UUID, *, delay_s: float = 0.0) -> bool:
     """Run the job's open steps in a task of this process. False, and nothing
-    started, while a task already runs it. ``authorization`` is the bearer a
-    question's tools read the app with.
+    started, while a task already runs it.
 
     The task is supervised: when its runner raises, the job keeps its open steps and
     is started again, after ``delay_s`` growing with each failure in a row."""
     if is_held(job_id):
         return False
-    if authorization:
-        _authorization[job_id] = authorization
     task = asyncio.create_task(_run_job_after(job_id, delay_s), name=f"ai-job-{job_id}")
     _tasks[job_id] = task
 
@@ -226,7 +262,6 @@ async def shutdown() -> None:
     _tasks.clear()
     _failures.clear()
     _held_operations.clear()
-    _authorization.clear()
     _waiting.clear()
     _background.clear()
 
@@ -658,51 +693,77 @@ async def promote(job_id: uuid.UUID) -> None:
         await session.commit()
 
 
-def question_job(*, job_id: uuid.UUID, company_id: uuid.UUID, user_id: uuid.UUID, query: str,
-                 file_ids: list[str] | None = None, conversation_id: uuid.UUID | None = None):
-    """A new question job; the caller adds it to its session, commits, then starts it.
-    A thread question's job takes the question's id, which its first model step is
-    sent under; a question asked outside a thread proposes no changes."""
+def question_job(*, job_id: uuid.UUID, request: JobRequest, auth_nonce: str | None = None):
+    """A new question job for ``request``; the caller adds it to its session, commits,
+    then starts it. A thread question's job takes the question's id, which its first
+    model step is sent under; a question asked outside a thread proposes no changes.
+    ``auth_nonce`` is the asker's session nonce, which its tools read the app under;
+    a question asked without a user session reads nothing."""
     from celerp.models.ai import AIBatchJob
-    return AIBatchJob(id=job_id, company_id=company_id, user_id=user_id, conversation_id=conversation_id,
-                      question_id=job_id if conversation_id else None, kind="question", mode="interactive",
-                      status="pending", query=query, file_ids=list(file_ids or []))
+    return AIBatchJob(id=job_id, company_id=request.company_id, user_id=request.user_id,
+                      conversation_id=request.conversation_id,
+                      question_id=job_id if request.conversation_id else None, kind="question", mode="interactive",
+                      status="pending", query=request.query, file_ids=list(request.file_ids),
+                      request_digest=request.digest(), auth_nonce=auth_nonce)
 
 
-async def reopen_question(session, job_id: uuid.UUID) -> bool:
+async def reopen_question(session, job_id: uuid.UUID, auth_nonce: str | None) -> bool:
     """Ask a question again under its id: its ended steps are kept, so the run is
-    answered from them, and any other step is sent again under its own identity.
+    answered from them, and any other step is sent again under its own identity. Its
+    tools read the app under the session of whoever asks it again (``auth_nonce``).
     One conditional update, so a send that read the question before its job answered
     it never reopens the answer; False when the question is answered."""
     from celerp.models.ai import AIBatchJob
     reopened = await session.execute(
         update(AIBatchJob).where(AIBatchJob.id == job_id, AIBatchJob.status != "completed")
-        .values(status="pending", results=None, error=None, completed_at=None, cancel_requested_at=None))
+        .values(status="pending", results=None, error=None, completed_at=None, cancel_requested_at=None,
+                auth_nonce=auth_nonce))
     return reopened.rowcount == 1
+
+
+def _bearer(job, role: str) -> Callable[[], str] | None:
+    """What a question's tools read the app with: a bearer for the job's asker, minted
+    for each read from the session nonce kept on the job, so every read is authorized
+    by the app as the asker's own request is (a sign-out rotates the nonce and the read
+    is refused). None, and no tools, for a question asked without a user session."""
+    if not job.auth_nonce:
+        return None
+    from celerp.credentials import create_access_token
+    user_id, company_id, nonce = str(job.user_id), str(job.company_id), job.auth_nonce
+    return lambda: "Bearer " + create_access_token(user_id, company_id, role, snonce=nonce)[0]
+
+
+async def _question_context(session, job) -> dict:
+    """Every argument of the question's agent run but its journal, from the job's rows
+    and the app's current authorization: the one source for a run started by a request
+    and for one resumed after a restart."""
+    from celerp.ai.conversations import build_history_context, get_messages
+    from celerp.ai.memory import get_memory
+    from celerp.main import app
+    from celerp.models.ai import AIMessage
+    from celerp.services.permissions import read_authority
+    role, company_settings = await read_authority(session, job.company_id, job.user_id)
+    history: list[dict] = []
+    if job.conversation_id is not None:
+        asked = await session.get(AIMessage, job.question_id)
+        prior = await get_messages(session, job.conversation_id)
+        history = build_history_context([m for m in prior if m.created_at < asked.created_at])
+    return dict(app=app, bearer=_bearer(job, role or ""), operation_id=job.id, query=job.query,
+                company_id=job.company_id, user_id=job.user_id, company_settings=company_settings,
+                role=role or "", memory=await get_memory(session, job.company_id),
+                file_ids=job.file_ids or None, history=history, read_only=job.conversation_id is None)
 
 
 async def _run_question(job_id: uuid.UUID) -> None:
     from celerp.ai import service
-    from celerp.ai.conversations import build_history_context, get_messages
-    from celerp.ai.memory import get_memory
-    from celerp.main import app
-    from celerp.models.ai import AIBatchJob, AIJobStep, AIMessage
-    from celerp.services.permissions import read_authority
+    from celerp.models.ai import AIBatchJob, AIJobStep
     async with SessionLocal() as session:
         job = await session.get(AIBatchJob, job_id)
         if job is None or job.status in TERMINAL_JOBS:
             return
         steps = (await session.execute(
             select(AIJobStep).where(AIJobStep.job_id == job_id).order_by(AIJobStep.seq))).scalars().all()
-        role, company_settings = await read_authority(session, job.company_id, job.user_id)
-        history: list[dict] = []
-        if job.conversation_id is not None:
-            asked = await session.get(AIMessage, job.question_id)
-            prior = await get_messages(session, job.conversation_id)
-            history = build_history_context([m for m in prior if m.created_at < asked.created_at])
-        ask = dict(query=job.query, company_id=job.company_id, user_id=job.user_id, company_settings=company_settings,
-                   role=role or "", memory=await get_memory(session, job.company_id), file_ids=job.file_ids or None,
-                   history=history, read_only=job.conversation_id is None)
+        run = await _question_context(session, job)
         if job.mode == "background":
             _background.add(job_id)
         job.status = "running"
@@ -713,8 +774,7 @@ async def _run_question(job_id: uuid.UUID) -> None:
     try:
         refusal = None
         try:
-            result = await service.run_agent(app=app, authorization=_authorization.get(job_id, ""),
-                                             operation_id=job_id, journal=journal, **ask)
+            result = await service.run_agent(journal=journal, **run)
         except service.AgentRefusal as exc:
             result, refusal = None, exc
         await _finish_question(job_id, result, refusal)
@@ -769,7 +829,6 @@ async def _finish_question(job_id: uuid.UUID, result, refusal) -> None:
         promoted = job.promoted_at is not None
         company_id, user_id, conversation_id = job.company_id, job.user_id, job.conversation_id
         await session.commit()
-    _authorization.pop(job_id, None)
     _background.discard(job_id)
     if promoted:
         key = "ai.question_failed_title" if failed else "ai.question_answered_title"
@@ -790,28 +849,27 @@ async def wait_for_job(job_id: uuid.UUID, *, started: float) -> bool:
 
 
 async def ask(*, company_id: uuid.UUID, user_id: uuid.UUID, query: str, file_ids: list[str] | None = None,
-              job_id: uuid.UUID | None = None, authorization: str | None = None, started: float) -> dict:
+              job_id: uuid.UUID | None = None, auth_nonce: str | None = None, started: float) -> dict:
     """A question from a synchronous caller, outside any thread: its result within
     ``deadlines.SYNC_WAIT_S`` of ``started``, or ``{"status": "running", "job_id"}``.
-    The same ``job_id`` asks it again: a finished answer is returned as it is."""
-    from fastapi import HTTPException
-
+    The same ``job_id`` with the same request asks it again: a finished answer is
+    returned as it is. ``auth_nonce`` is the asker's session nonce (``question_job``)."""
     from celerp.models.ai import AIBatchJob
     job_id = job_id or uuid.uuid4()
+    request = JobRequest.question(company_id=company_id, user_id=user_id, query=query, file_ids=file_ids)
     async with SessionLocal() as session:
         job = await session.get(AIBatchJob, job_id)
         if job is None:
-            session.add(question_job(job_id=job_id, company_id=company_id, user_id=user_id, query=query,
-                                     file_ids=file_ids))
-        elif (job.company_id, job.user_id, job.kind, job.conversation_id, job.query) != (
-                company_id, user_id, "question", None, query):
-            raise HTTPException(status_code=409, detail={"code": "operation_conflict",
-                                                         "message": t("ai.err_operation_conflict")})
+            session.add(question_job(job_id=job_id, request=request, auth_nonce=auth_nonce))
+        else:
+            hold_to_request(job, request)
+            if job.status not in TERMINAL_JOBS and not is_held(job_id):
+                job.auth_nonce = auth_nonce     # an interrupted question, continued by this asker
         reopened = job is not None and job.status == "failed" and not is_held(job_id) and (
-            await reopen_question(session, job_id))
+            await reopen_question(session, job_id, auth_nonce))
         await session.commit()
     if job is None or reopened or job.status not in TERMINAL_JOBS:
-        start_job(job_id, authorization=authorization)
+        start_job(job_id)
         await wait_for_job(job_id, started=started)
     return await question_result(job_id, company_id)
 

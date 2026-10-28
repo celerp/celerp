@@ -4,7 +4,10 @@
 and a job's progress is its steps.
 
 ai_batch_jobs gains kind (documents | question), mode (interactive | background),
-question_id, started_at, promoted_at and cancel_requested_at. The steps of a job are
+question_id, started_at, promoted_at, cancel_requested_at, request_digest (the
+identity of the request a job was created for; an existing row has none, so its id
+is never reused for a new send) and auth_nonce (the session a question's tools read
+the app under). The steps of a job are
 kept in ai_job_steps, one per file of a reading job: each existing job gets one step
 per file from its stored per-file results (read: done, not read: failed; a file a job
 still running had not reached: pending, which the next start sends under the id the
@@ -36,6 +39,7 @@ def _columns() -> list[sa.Column]:
         sa.Column("question_id", sa.Uuid(as_uuid=True), nullable=True),
         *(sa.Column(name, sa.DateTime(timezone=True), nullable=True)
           for name in ("started_at", "promoted_at", "cancel_requested_at")),
+        *(sa.Column(name, sa.String(64), nullable=True) for name in ("request_digest", "auth_nonce")),
     ]
 
 

@@ -102,7 +102,7 @@ def _execute_returning(result):
 
 async def _run(**over):
     kwargs = dict(
-        app=object(), authorization="Bearer tok", query="a question",
+        app=object(), bearer=lambda: "Bearer tok", query="a question",
         company_id=uuid.uuid4(), company_settings={}, user_id=uuid.uuid4(),
         role="owner", memory={"notes": [], "kv": {}}, file_ids=None, history=[],
         operation_id=uuid.uuid4(),

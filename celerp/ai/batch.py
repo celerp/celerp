@@ -198,6 +198,8 @@ async def create_batch_job(
     then starts it (celerp.ai.jobs.start_job).
 
     ``job_id`` is the id of the question that asked for the job, when there is one."""
+    request = jobs.JobRequest(company_id=company_id, user_id=user_id, kind="documents",
+                              conversation_id=conversation_id, query=query, file_ids=tuple(file_ids))
     file_ids = list(dict.fromkeys(file_ids))
     if not file_ids:
         raise ValueError("Attach at least one file")
@@ -214,6 +216,7 @@ async def create_batch_job(
         query=query,
         file_ids=file_ids,
         status="pending",
+        request_digest=request.digest(),
     )
     session.add(job)
     await session.flush()

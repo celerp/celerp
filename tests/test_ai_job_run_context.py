@@ -128,15 +128,15 @@ async def test_a_resumed_question_gets_every_field_of_the_context_its_live_start
     live, resumed = calls
     assert set(resumed) == set(live)
     for name in live:
-        if name == "authorization":
+        if name == "bearer":
             continue
         if name == "journal":
             assert type(resumed[name]) is type(live[name])
             assert resumed[name].question_id == live[name].question_id
             continue
         assert resumed[name] == live[name], name
-    assert live["authorization"] and resumed["authorization"]
-    contexts = [await validate_access_token(session, call["authorization"].removeprefix("Bearer "))
+    assert live["bearer"] and resumed["bearer"]
+    contexts = [await validate_access_token(session, call["bearer"]().removeprefix("Bearer "))
                 for call in calls]
     assert {(c.user.id, c.company_id, c.role, c.snonce) for c in contexts} == {
         (contexts[0].user.id, contexts[0].company_id, contexts[0].role, contexts[0].snonce)}
@@ -165,3 +165,4 @@ async def test_a_question_resumed_after_its_user_signed_out_reads_nothing(client
     messages = (await session.execute(select(AIMessage).where(AIMessage.id == uuid.UUID(row.results["message_id"])))
                 ).scalars().all()
     assert messages and messages[0].content
+

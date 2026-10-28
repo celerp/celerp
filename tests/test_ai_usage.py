@@ -183,7 +183,7 @@ async def test_credits_kept_when_a_later_turn_fails(client, session, owner, monk
     operation = uuid.uuid4()
     async with jobs.gate.slot("interactive"):
         result = await run_agent(
-            app=object(), authorization="Bearer tok", query="how do I add a supplier?",
+            app=object(), bearer=lambda: "Bearer tok", query="how do I add a supplier?",
             company_id=company_id, company_settings={}, user_id=user_id, role="owner",
             memory={"notes": [], "kv": {}}, file_ids=None, history=[], operation_id=operation,
             journal=jobs.Journal(operation),

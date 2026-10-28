@@ -19,6 +19,7 @@ import json
 import logging
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -329,7 +330,7 @@ def _parse_call(call: dict, capabilities: dict) -> tuple[str, str, dict | None, 
 async def run_agent(
     *,
     app,
-    authorization: str,
+    bearer: Callable[[], str] | None,
     query: str,
     company_id: uuid.UUID,
     company_settings: dict,
@@ -347,13 +348,14 @@ async def run_agent(
     ``operation_id`` names the question: asking the same question again under the
     same id after a failure is charged at most once. ``journal`` holds what the
     question's steps returned; each step is bounded on its own, the run as a whole is
-    not. Without an ``authorization`` no tools are offered.
+    not. ``bearer`` mints the Authorization each tool read is sent with; without one
+    no tools are offered.
     """
     t0 = time.monotonic()
     tally = RunTally()
     try:
         result = await _agent_loop(
-            app=app, authorization=authorization, query=query,
+            app=app, bearer=bearer, query=query,
             company_id=company_id, company_settings=company_settings, role=role,
             user_id=user_id, memory=memory, file_ids=file_ids, history=history,
             read_only=read_only, tally=tally, journal=journal,
@@ -376,7 +378,7 @@ async def run_agent(
 async def _agent_loop(
     *,
     app,
-    authorization: str,
+    bearer: Callable[[], str] | None,
     query: str,
     company_id: uuid.UUID,
     company_settings: dict,
@@ -389,7 +391,7 @@ async def _agent_loop(
     tally: RunTally,
     journal: jobs.Journal,
 ) -> AgentResult:
-    capabilities = compile_agent_capabilities(app, company_settings, role) if authorization else {}
+    capabilities = compile_agent_capabilities(app, company_settings, role) if bearer else {}
     if read_only:
         capabilities = {
             name: capability for name, capability in capabilities.items()
@@ -503,7 +505,7 @@ async def _agent_loop(
                 )
             else:
                 tool_result = await _tool_step(journal, call_id, lambda: execute_agent_capability(
-                    app, authorization, capability, arguments, call_id,
+                    app, bearer(), capability, arguments, call_id,
                     result_max_bytes=MAX_RESULT_BYTES,
                 ))
                 tools_called.append(name)
@@ -579,10 +581,12 @@ _STEP_STATES = {"outcome_unknown": "unknown", "operation_expired": "expired"}
 
 
 async def _tool_step(journal: jobs.Journal, call_id: str, run) -> dict:
-    """One read tool call: what the journal holds for it, or its result, journaled."""
+    """One read tool call: what the journal holds for it, or its result, journaled.
+    The question is admitted before the read, as before every model step."""
     key = f"tool:{call_id}"
     stored = journal.stored(key)
     if stored is None:
+        await journal.admit()
         stored = await run()
         await journal.ended(key, "done", stored)
     return stored
