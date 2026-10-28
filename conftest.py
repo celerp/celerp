@@ -160,6 +160,7 @@ def pytest_unconfigure(config):
 
 from celerp.db import get_session
 from celerp.main import app
+import mutation_baseline  # noqa: E402
 import mutation_observer  # noqa: E402 - installs the write observer's listeners
 
 # The `client` fixture patches celerp.gateway.state.get_session_token. The session
@@ -497,21 +498,23 @@ def _one_current_event_loop():
 
 
 _CENSUS = mutation_observer.Totals()
-# A write the observer judges unprotected, out of order, for another company or that it
-# cannot classify fails the test that made it.
-_ENFORCE = os.environ.get("CELERP_MUTATION_ENFORCE") == "1"
 
 
 @pytest.fixture(autouse=True)
 def _mutation_census(request):
     """One write-observer record per test, kept for the census file
-    (CELERP_MUTATION_CENSUS names its folder)."""
+    (CELERP_MUTATION_CENSUS names its folder). A write the observer judges unprotected,
+    out of order, for another company or that it cannot classify fails the test that made
+    it, unless it is exactly one the baseline accepts (mutation_baseline.py)."""
     mutation_observer.reset(request.node.nodeid)
     yield
     seen = mutation_observer.reset()
+    if request.node.get_closest_marker("observer_control"):
+        return  # the observer's own controls make their findings on purpose
     _CENSUS.add(seen)
-    if _ENFORCE and seen.findings and not request.node.get_closest_marker("observer_control"):
-        pytest.fail(mutation_observer.explain(seen.findings), pytrace=False)
+    refused = [f for f in seen.findings if not mutation_baseline.accepted(f)]
+    if refused:
+        pytest.fail(mutation_observer.explain(refused), pytrace=False)
 
 
 def pytest_sessionfinish(session, exitstatus):

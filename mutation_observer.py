@@ -53,6 +53,7 @@ from sqlalchemy.util import greenlet_spawn
 
 import sqlalchemy.orm.session as _orm_session
 from celerp.services.company_lock import _PROOFS, note, noted
+from mutation_baseline import accepted
 
 # Functions whose effects are reviewed: a statement calling only these reads (or writes
 # what its statement type says). Any other function is unknown until reviewed, whatever
@@ -779,7 +780,7 @@ def explain(findings: list[Finding]) -> str:
 class Totals:
     """Everything one test process saw, merged across its tests: request and write counts
     per route, durable writes per app frame, and each distinct finding once, with how
-    often it was seen and the first tests that saw it."""
+    often it was seen, every test that saw it, and the baseline issue that accepts it."""
 
     def __init__(self) -> None:
         self.routes: dict[str, dict[str, int]] = {}
@@ -798,10 +799,12 @@ class Totals:
             key = "|".join(map(str, (f.kind, f.route, f.table, f.detail, f.fingerprint or f.sql, *f.where)))
             seen = self.findings.get(key)
             if seen is None:
-                self.findings[key] = {**asdict(f), "key": key, "sites": [], "count": 1, "tests": [census.test]}
+                entry = accepted(f)
+                self.findings[key] = {**asdict(f), "key": key, "sites": [], "count": 1, "tests": [census.test],
+                                      "accepted": entry["issue"] if entry else None}
             else:
                 seen["count"] += 1
-                if len(seen["tests"]) < 3 and census.test not in seen["tests"]:
+                if census.test not in seen["tests"]:
                     seen["tests"].append(census.test)
 
     def write(self, path: str) -> None:

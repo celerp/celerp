@@ -3,7 +3,7 @@
 
 """Report what the write observer (mutation_observer.py) saw across a test run.
 
-    python scripts/mutation_census.py <census folder>... [--out census.md] [--coverage coverage.json] [--enforce]
+    python scripts/mutation_census.py <census folder>... [--out census.md] [--coverage coverage.json] [--baseline file] [--enforce]
 
 Reads every census-*.json and census-*.routes.json under the folders (one pair per test
 process, so the folders of all CI shards together give the whole suite) and writes:
@@ -17,7 +17,11 @@ process, so the folders of all CI shards together give the whole suite) and writ
   session add, delete or merge, an INSERT, UPDATE or DELETE construct executed) and
   whether any observed durable write passed through each.
 
-With --enforce the exit status is 1 when there is any finding."""
+- the baseline: each accepted finding (mutation_baseline.json) with its tracking issue, and
+  every entry no finding matched or its own reproducing test did not see.
+
+With --enforce the exit status is 1 when a finding matches no baseline entry, or an entry
+is stale or not reproduced by its test."""
 
 from __future__ import annotations
 
@@ -30,9 +34,16 @@ import sys
 from collections import defaultdict
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+import mutation_baseline  # noqa: E402
 MUTATING = {"POST", "PUT", "PATCH", "DELETE"}
 SOURCES = ("celerp", "default_modules", "ui")
 _SKIP_PARTS = ("/tests/", "/migrations/", "/__pycache__/")
+
+
+def _read(path: str) -> str:
+    with open(path, encoding="utf-8") as fh:
+        return fh.read()
 
 
 def _python_files(top: str):
@@ -68,7 +79,7 @@ def static_inventory():
         for path in _python_files(top):
             rel = os.path.relpath(path, ROOT)
             try:
-                tree = ast.parse(open(path, encoding="utf-8").read())
+                tree = ast.parse(_read(path))
             except SyntaxError:
                 continue
             functions = [n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
@@ -105,12 +116,12 @@ def load(folders):
     for folder in folders:
         for path in glob.glob(os.path.join(folder, "**", "census-*.json"), recursive=True):
             if path.endswith(".routes.json"):
-                for row in json.load(open(path, encoding="utf-8")):
+                for row in json.loads(_read(path)):
                     for method in row["methods"]:
                         inventory[(row["app"], method, row["path"])] = row
                 continue
             files += 1
-            data = json.load(open(path, encoding="utf-8"))
+            data = json.loads(_read(path))
             for route, counts in data["routes"].items():
                 for what, n in counts.items():
                     routes[route][what] += n
@@ -120,7 +131,7 @@ def load(folders):
                 key = f["key"]
                 if key in findings:
                     findings[key]["count"] += f["count"]
-                    findings[key]["tests"] = (findings[key]["tests"] + f["tests"])[:3]
+                    findings[key]["tests"] += [t for t in f["tests"] if t not in findings[key]["tests"]]
                 else:
                     findings[key] = f
     return files, routes, sites, findings, inventory
@@ -140,12 +151,12 @@ def _coverage(path):
     """Lines and branches a coverage.py JSON report (--cov-branch) records per file."""
     if not path:
         return None
-    data = json.load(open(path, encoding="utf-8"))["files"]
+    data = json.loads(_read(path))["files"]
     return {rel: (set(f["executed_lines"]), f.get("executed_branches", []), f.get("missing_branches", []))
             for rel, f in data.items()}
 
 
-def report(folders, out, coverage_path=None):
+def report(folders, out, coverage_path=None, baseline=mutation_baseline.PATH):
     files, routes, sites, findings, inventory = load(folders)
     coverage = _coverage(coverage_path)
     decorators, static_sites = static_inventory()
@@ -180,10 +191,16 @@ def report(folders, out, coverage_path=None):
         lines += [f"- {m} {f}:{n} {fn}" for f, n, fn, m, _ in unmounted] + [""]
 
     # -- findings --------------------------------------------------------------
-    by_kind = defaultdict(list)
+    entries = mutation_baseline.load(baseline)
+    by_kind, by_entry = defaultdict(list), defaultdict(list)
     for f in findings.values():
-        by_kind[f["kind"]].append(f)
-    lines += ["## Findings", "", "| Kind | Distinct | Seen |", "|---|---|---|"]
+        key = mutation_baseline.key(f)
+        if key in entries:
+            by_entry[key].append(f)
+        else:
+            by_kind[f["kind"]].append(f)
+    lines += ["## Findings", "", "Writes no baseline entry accepts.", "",
+              "| Kind | Distinct | Seen |", "|---|---|---|"]
     lines += [f"| {k} | {len(v)} | {sum(f['count'] for f in v)} |" for k, v in sorted(by_kind.items())] + [""]
     for kind, items in sorted(by_kind.items()):
         lines += [f"### {kind}", ""]
@@ -198,6 +215,20 @@ def report(folders, out, coverage_path=None):
             lines.append(f"  - where: {' <- '.join(reversed(first['where']))}")
             lines.append(f"  - sql: `{first['sql'][:160]}`")
         lines.append("")
+
+    # -- baseline --------------------------------------------------------------
+    failing = 0
+    lines += ["## Baseline", "", f"Accepted findings (mutation_baseline.json): {len(entries)} entries.", "",
+              "| Route | Table | Seen | Status | Issue |", "|---|---|---|---|---|"]
+    for key, entry in entries.items():
+        seen = by_entry.get(key, [])
+        tests = {t for f in seen for t in f["tests"]}
+        status = "stale: no finding matched" if not seen else \
+            "not reproduced by its test" if entry["test"] not in tests else "matched"
+        failing += status != "matched"
+        lines.append(f"| `{entry['route']}` | {entry['table']} | {sum(f['count'] for f in seen)} | {status} | "
+                     f"{entry['issue']} |")
+    lines.append("")
 
     # -- mutation sites --------------------------------------------------------
     hit = defaultdict(set)
@@ -243,7 +274,7 @@ def report(folders, out, coverage_path=None):
             fh.write(text)
     else:
         sys.stdout.write(text)
-    return sum(len(v) for v in by_kind.values())
+    return sum(len(v) for v in by_kind.values()) + failing
 
 
 def main(argv=None) -> int:
@@ -252,8 +283,9 @@ def main(argv=None) -> int:
     parser.add_argument("--out")
     parser.add_argument("--enforce", action="store_true")
     parser.add_argument("--coverage", help="a coverage.py JSON report of the same run, with branches")
+    parser.add_argument("--baseline", default=mutation_baseline.PATH, help="the accepted findings")
     args = parser.parse_args(argv)
-    count = report(args.folders, args.out, args.coverage)
+    count = report(args.folders, args.out, args.coverage, args.baseline)
     return 1 if args.enforce and count else 0
 
 

@@ -109,12 +109,17 @@ jobs:
 
       # The route inventory, the writes made without the company lock and the write sites
       # the suite passed through, from every shard together (scripts/mutation_census.py).
+      # Fails on a write no baseline entry accepts, and on an entry no finding matched or
+      # its own test did not reproduce.
       - name: Report
         run: |
-          python scripts/mutation_census.py ${{ runner.temp }}/census/census-shard-* --out census.md
+          status=0
+          python scripts/mutation_census.py ${{ runner.temp }}/census/census-shard-* --out census.md --enforce || status=$?
           head -c 1000000 census.md >> "$GITHUB_STEP_SUMMARY"
+          exit $status
 
       - uses: actions/upload-artifact@v7
+        if: always()
         with:
           name: mutation-census
           path: census.md
