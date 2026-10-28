@@ -45,7 +45,10 @@ def _run_needing_reconciliation(api) -> tuple[str, str, str]:
     return product, run_id, company_id
 
 
-def test_a_run_needing_reconciliation_is_reconciled_on_its_page(page, ui_server, api):
+# Both tests run in their own company: whether a run's value may come from retained earnings
+# depends on every inventory account's balance, which other tests move in the shared one.
+def test_a_run_needing_reconciliation_is_reconciled_on_its_page(page, ui_server, fresh_company):
+    api = fresh_company
     SHOTS.mkdir(parents=True, exist_ok=True)
     product, run_id, _ = _run_needing_reconciliation(api)
 
@@ -70,7 +73,8 @@ def test_a_run_needing_reconciliation_is_reconciled_on_its_page(page, ui_server,
     assert not api.get(f"/manufacturing/{run_id}").json().get("wip_unresolved")
 
 
-def test_a_key_spent_on_another_action_is_replaced_so_the_user_can_send_again(page, ui_server, api):
+def test_a_key_spent_on_another_action_is_replaced_so_the_user_can_send_again(page, ui_server, fresh_company):
+    api = fresh_company
     _, run_id, company_id = _run_needing_reconciliation(api)
     key = "#reconcile-panel input[name='idempotency_key']"
     page.goto(f"{ui_server}/manufacturing/runs/{run_id}/reconcile", wait_until="domcontentloaded")
