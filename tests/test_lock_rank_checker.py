@@ -297,11 +297,13 @@ def test_the_offline_check_judges_a_gated_insert_against_the_tables_ungated_inse
     assert listed is ungated
 
 
-def test_each_edge_keeps_an_example_per_mode_pair(recorder):
+def test_each_edge_keeps_every_site_pair_one_call_takes_it_by(recorder):
     recorder.acquire(1, _lock("row:projections", "update wait", key="a"), 0.0)
     recorder.acquire(1, _lock("row:companies", "update wait", key="a"), 0.0)
     recorder.acquire(2, Lock("row:projections", "share wait", "celerp/y.py:2 g", "t", "b"), 0.0)
     recorder.acquire(2, Lock("row:companies", "update wait", "celerp/y.py:3 h", "t", "b"), 0.0)
-    sites = recorder.edges[("row:projections", "row:companies")]["mode_sites"]
-    assert sites == {"update>update": "celerp/x.py:1 f -> celerp/x.py:1 f",
-                     "share>update": "celerp/y.py:2 g -> celerp/y.py:3 h"}
+    recorder.acquire(3, Lock("row:projections", "update wait", "celerp/y.py:2 g", "t", "c"), 0.0)
+    recorder.acquire(3, Lock("row:companies", "update wait", "celerp/y.py:3 h", "t", "c"), 0.0)
+    assert recorder.edges[("row:projections", "row:companies")]["call_sites"] == {
+        "celerp/x.py:1 f -> celerp/x.py:1 f": {"update>update"},
+        "celerp/y.py:2 g -> celerp/y.py:3 h": {"share>update", "update>update"}}

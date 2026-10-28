@@ -345,7 +345,7 @@ class Recorder:
         if edge is None:
             edge = self.edges[(h.cls, lock.cls)] = {
                 "count": 0, "example": None, "waits": False, "gate": gate, "modes": set(),
-                "mode_sites": {}, "gated": set()}
+                "call_sites": {}, "gated": set()}
         edge["gate"] = edge["gate"] & gate
         edge["count"] += 1
         if waits and gated:
@@ -356,11 +356,13 @@ class Recorder:
         if waits:
             combo = f"{_strength(h)}>{_strength(lock)}"
             edge["modes"].add(combo)
-            edge["mode_sites"].setdefault(combo, f"{h.site} -> {lock.site}")
             # Both taken by one call: the order production runs. Taken by two test
             # statements sharing the suite's one outer transaction: recorded apart.
             if h.origin == lock.origin:
                 edge.setdefault("call_modes", set()).add(combo)
+                # Every site pair that takes this edge in one call, with its mode pairs: the
+                # triage judges each pair, not the first example.
+                edge["call_sites"].setdefault(f"{h.site} -> {lock.site}", set()).add(combo)
                 if edge.get("call_example") is None:
                     edge["call_example"] = {"held": h.site, "acquired": lock.site, "test": self.test}
         if edge["example"] is None:
@@ -412,7 +414,8 @@ class Recorder:
     def dump(self) -> dict:
         return {
             "edges": [{"from": a, "to": b, **v, "gate": sorted(v["gate"]), "modes": sorted(v["modes"]),
-                       "call_modes": sorted(v.get("call_modes", ())), "gated": sorted(v["gated"])}
+                       "call_modes": sorted(v.get("call_modes", ())), "gated": sorted(v["gated"]),
+                       "call_sites": {k: sorted(m) for k, m in v["call_sites"].items()}}
                       for (a, b), v in self.edges.items()],
             "classes": {k: {"count": v["count"], "modes": sorted(v["modes"]), "sites": sorted(v["sites"]),
                             "ungated": v.get("ungated", 0)}
@@ -917,10 +920,11 @@ def _merge(directory: Path) -> dict:
             cur = edges.setdefault((e["from"], e["to"]),
                                    {"count": 0, "example": e["example"], "waits": False, "gate": set(e["gate"]),
                                     "modes": set(), "call_modes": set(), "call_example": None,
-                                    "mode_sites": {}, "gated": set()})
+                                    "call_sites": {}, "gated": set()})
             cur["gate"] &= set(e["gate"])
             cur["gated"].update(e.get("gated", ()))
-            cur["mode_sites"] = {**e.get("mode_sites", {}), **cur["mode_sites"]}
+            for pair, combos in e.get("call_sites", {}).items():
+                cur["call_sites"].setdefault(pair, set()).update(combos)
             cur["modes"].update(e["modes"])
             cur["call_modes"].update(e.get("call_modes", ()))
             cur["call_example"] = cur["call_example"] or e.get("call_example")
