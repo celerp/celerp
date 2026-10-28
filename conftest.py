@@ -3,7 +3,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import atexit
+import functools
+import inspect
 import os
 import shutil
 from pathlib import Path
@@ -802,6 +805,40 @@ async def committed_engine():
             admin.close()
 
 
+class _SharedSession(AsyncSession):
+    """The test's one session, which every request shares, while production gives each
+    request a session of its own. Requests in flight together (a page's API calls sent
+    with asyncio.gather, a request that waits on another) take turns per operation: an
+    AsyncSession allows no concurrent use, and a turn per request would leave a request
+    that waits on another waiting forever. A task already holding the turn keeps it
+    (scalar runs execute)."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._turn = asyncio.Lock()
+        self._turn_holder = None
+
+
+def _one_turn(method):
+    @functools.wraps(method)
+    async def call(self, *args, **kwargs):
+        task = asyncio.current_task()
+        if self._turn_holder is task:
+            return await method(self, *args, **kwargs)
+        async with self._turn:
+            self._turn_holder = task
+            try:
+                return await method(self, *args, **kwargs)
+            finally:
+                self._turn_holder = None
+    return call
+
+
+for _name, _method in inspect.getmembers(AsyncSession, inspect.iscoroutinefunction):
+    if not _name.startswith("_") and not isinstance(inspect.getattr_static(AsyncSession, _name), classmethod):
+        setattr(_SharedSession, _name, _one_turn(_method))
+
+
 @pytest_asyncio.fixture
 async def session(_db_engine) -> AsyncSession:
     """Per-test isolation by transaction rollback — nothing commits to disk. The
@@ -811,7 +848,7 @@ async def session(_db_engine) -> AsyncSession:
     conn = await _db_engine.connect()
     trans = await conn.begin()
     factory = async_sessionmaker(
-        bind=conn, class_=AsyncSession, expire_on_commit=False,
+        bind=conn, class_=_SharedSession, expire_on_commit=False,
         join_transaction_mode="create_savepoint")
     sess = factory()
     try:
@@ -847,7 +884,6 @@ async def auth(session, ids):
 
 @pytest_asyncio.fixture
 async def client(session: AsyncSession):
-    import asyncio
     from httpx import ASGITransport, AsyncClient
     from celerp.services import background
     from celerp.services.session_tracker import clear as _clear_tracker
@@ -865,17 +901,7 @@ async def client(session: AsyncSession):
     # Set a mock relay client (used by relay-dependent code paths in tests).
     # The concurrent login gate is bypassed in tests because the tracker is
     # cleared at setup/teardown, so each test starts with an empty registry.
-    # Every request shares the test's one session, which allows no concurrent use, while
-    # production gives each request a session of its own. A page that sends its API calls
-    # together (asyncio.gather), through any transport into the app, so takes the session
-    # one request at a time.
-    session_turn = asyncio.Lock()
-
-    async def _shared_request_session():
-        async with session_turn:
-            yield session
-
-    app.dependency_overrides[get_session] = _shared_request_session
+    app.dependency_overrides[get_session] = lambda: session
 
     # Middleware (DrainMiddleware, SlidingTokenRefreshMiddleware) opens its own
     # session via get_session_ctx() rather than the injected request session. Each

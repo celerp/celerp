@@ -74,3 +74,52 @@ async def test_reading_the_runtime_state_writes_nothing(session):
     assert await runtime_state.is_draining(session) is False
     assert not session.new
     assert await session.scalar(select(func.count()).select_from(SystemRuntimeState)) == 0
+
+
+async def test_a_request_may_wait_on_another_request_in_flight(client, session, auth):
+    """Production gives each request a session of its own, so a request that waits on
+    another (an AI tool call into the API, a download released by a later one) finishes.
+    The shared session takes turns per operation, never per request."""
+    import asyncio
+
+    from fastapi import Depends
+
+    from celerp.db import get_session
+    from celerp.main import app
+
+    released = asyncio.Event()
+
+    async def _wait(db=Depends(get_session)):
+        await db.execute(text("SELECT 1"))
+        await released.wait()
+        return {}
+
+    async def _release(db=Depends(get_session)):
+        await db.execute(text("SELECT 1"))
+        released.set()
+        return {}
+
+    app.router.add_api_route("/__test__/wait", _wait, methods=["POST"])
+    app.router.add_api_route("/__test__/release", _release, methods=["POST"])
+    try:
+        waiting = asyncio.create_task(client.post("/__test__/wait", headers=auth["headers"]))
+        async with asyncio.timeout(10):
+            while not session.in_transaction():
+                await asyncio.sleep(0.01)
+            release = await client.post("/__test__/release", headers=auth["headers"])
+            waited = await waiting
+    finally:
+        del app.router.routes[-2:]
+
+    assert (release.status_code, waited.status_code) == (200, 200), (release.text, waited.text)
+
+
+async def test_operations_sent_together_on_the_shared_session_take_turns(session):
+    """A page that sends its API calls together uses the shared session from several tasks
+    at once; each operation waits for the one before it instead of failing on a session
+    that allows no concurrent use."""
+    import asyncio
+
+    results = await asyncio.gather(*[session.scalar(text(f"SELECT {n} FROM pg_sleep(0.01)")) for n in range(6)])
+
+    assert results == list(range(6))
