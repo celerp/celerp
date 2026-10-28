@@ -668,6 +668,24 @@ async def _waiting_on_a_lock(engine) -> bool:
             "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'")))
 
 
+def _hold_before_the_company(monkeypatch):
+    """Hold a delivered payment just before it takes its company's lock, until released:
+    the last moment another writer can still change the company's books ahead of it."""
+    import asyncio
+
+    from celerp.services import payments
+    reached, release = asyncio.Event(), asyncio.Event()
+    real = payments._lock_company_of
+
+    async def held(session, company_id):
+        if not reached.is_set():
+            reached.set()
+            await release.wait()
+        return await real(session, company_id)
+    monkeypatch.setattr(payments, "_lock_company_of", held)
+    return reached, release
+
+
 @pytest.mark.parametrize("moment", ["before", "during", "after"])
 async def test_a_payment_delivered_around_a_reset_is_recorded_once_and_the_closing_finishes(
         real_engine, real_client, monkeypatch, moment):
