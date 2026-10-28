@@ -120,7 +120,7 @@ def _group_documents(rows: list[dict]) -> OrderedDict:
             if up:
                 line["unit_price"] = up
             if line_total:
-                line["total_price"] = line_total
+                line["line_total"] = line_total
             cost = _number(r, "line_cost_basis")
             if cost:
                 line["cost_basis"] = cost
@@ -436,7 +436,7 @@ def _revisions_table(revisions: list[dict], currency: str | None) -> FT:
     return Table(Thead(head), Tbody(*rows), cls="data-table", id="received-revisions")
 
 
-def received_detail(r: dict, *, error: str | None = None) -> list:
+def received_detail(r: dict, *, error: str | None = None, error_link: FT | None = None) -> list:
     doc = r.get("document") or {}
     facts = [
         (t("received.th_sender"), r.get("sender_name") or EMPTY),
@@ -450,7 +450,7 @@ def received_detail(r: dict, *, error: str | None = None) -> list:
         (t("received.th_original"), _external_link(r.get("source_link"))),
     ]
     return [
-        P(error, cls="flash flash--error") if error else "",
+        P(error, *([" ", error_link] if error_link is not None else []), cls="flash flash--error") if error else "",
         Table(Tbody(*[Tr(Th(label), Td(value)) for label, value in facts]), cls="detail-table", id="received-facts"),
         _received_actions(r),
         H2(t("received.lines_title"), cls="section-title"),
@@ -520,7 +520,8 @@ def setup_routes(app):
             request=request,
         )
 
-    async def _received_page(request: Request, token: str, rid: str, *, error: str | None = None):
+    async def _received_page(request: Request, token: str, rid: str, *, error: str | None = None,
+                             error_link: FT | None = None):
         try:
             r = await api.get_received(token, rid)
         except APIError as e:
@@ -531,7 +532,7 @@ def setup_routes(app):
         return await base_shell(
             breadcrumbs([(t("received.title"), "/docs/received"), (title, None)]),
             page_header(title),
-            *received_detail(r, error=error),
+            *received_detail(r, error=error, error_link=error_link),
             title=page_title("received.title"),
             nav_active="docs",
             request=request,
@@ -553,7 +554,10 @@ def setup_routes(app):
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
-            return await _received_page(request, token, rid, error=str(e.detail))
+            # A document a quotation cannot total as sent is entered as a new quotation by hand.
+            link = (A(t("page.new_quotation"), href="/lists/new", cls="table-link")
+                    if isinstance(e.data, dict) and e.data.get("code") == "received_list_total" else None)
+            return await _received_page(request, token, rid, error=str(e.detail), error_link=link)
         return RedirectResponse(_booked_href(result.get("kind"), result["id"]), status_code=303)
 
     @app.post("/docs/received/{rid}/book")

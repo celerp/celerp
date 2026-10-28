@@ -33,8 +33,9 @@ from celerp.modules.slots import fire_lifecycle
 from celerp.models.projections import Projection
 from celerp.inventory_codes import MAX_SCAN_CODE_LEN, PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES
 from celerp_docs.consignment_buy import bought_parcels, bought_receipt_lots, buy_consignment
-from celerp_docs.doc_money import document_money, money_from_lines
-from celerp_docs.doc_projections import UNISSUED_STATUSES, payment_status
+from celerp_docs.doc_money import (LIST_TOTAL_FIELDS, document_money, list_totals_differ, money_from_lines,
+                                   refuse_malformed_taxes, refuse_unset_line_tax)
+from celerp_docs.doc_projections import RESTORE_POINT, UNISSUED_STATUSES, list_lines_and_totals, payment_status
 from celerp_docs.taxes import TaxApplication
 from celerp.services.field_schema import reject_system_item_fields
 from celerp.services.locations import require_company_location, require_ship_from
@@ -48,7 +49,7 @@ from celerp.services.lot_origin import in_stock, is_stock_type, rerun_after_plac
 from celerp.services.physical_codes import lock_item_code_namespace
 from celerp.services.peer_import import SourceRevision, peer_batch, receive_file
 from celerp.services.payments import recorded_unmatched, return_unmatched
-from celerp.tax_regimes import default_tax, side_taxes
+from celerp.tax_regimes import default_line_taxes, set_new_line_taxes, side_taxes
 from celerp.services.business_time import business_date_at, business_date_of, company_today
 from celerp.services.landed_cost import compute_bill_landed_allocation
 from celerp.services.line_measures import (FULL, floor_to_unit, line_label, proposed_sell_qty, splitting_allowed,
@@ -66,19 +67,20 @@ from celerp.services.permissions import assert_role_permission, get_current_comp
 from celerp_docs.sequences import next_doc_ref, next_draft_ref, require_doc_type, get_all_sequences, update_sequence, list_sequence_key
 from celerp_docs.search import doc_q_clause
 from celerp.services.units import build_unit_map, default_receive_as, get_company_units, is_non_stock_line, is_pieces_unit, is_weight_unit, line_receive_kind, require_moving_fits_units, validate_line_quantity
-from celerp.services.money import allocate_pro_rata, books_currency, checked_exchange_rate, discount_from_inputs, doc_rate, document_line_unit, require_doc_rate, received_share, round_basis, round_money, round_rate, to_base, to_decimal, to_stored_float
+from celerp.services.money import allocate_pro_rata, books_currency, checked_exchange_rate, discount_from_inputs, doc_rate, document_line_amount, document_line_unit, require_doc_rate, received_share, round_basis, round_money, round_rate, to_base, to_decimal, to_stored_float
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, coerce_price, get_price_config, is_cost_list_name, line_price_list, price_keys_in, resolve_price
 from celerp.services.terms import resolve_document_terms
 from celerp.services.payment_terms import company_payment_terms, due_date_for_terms
 from celerp_contacts.references import contact_accepts, contact_snapshot, lock_contacts
 from celerp.output.document_context import prepare_document_output
-from celerp_docs.doc_constants import WRITEOFF_ACCOUNT_TYPES, INBOUND_DOC_TYPES, FULFILLABLE_STATUSES, LEGACY_CONTACT_FIELDS, LIFECYCLE_OWNED_FIELDS, NON_FINANCIAL_DOC_TYPES, RECEIVABLE_STATUSES, RESERVABLE_DOC_STATUSES, REVERTIBLE_STATUSES, SALES_PRICED_DOC_TYPES, SUPPLIER_RETURN_STATUSES, CREDIT_APPLICATION_METHODS, CONVERTIBLE_STATUSES, QUOTATION_SPENT_STATUSES, sent_out_by
+from celerp_docs.doc_constants import WRITEOFF_ACCOUNT_TYPES, INBOUND_DOC_TYPES, DRAFT_REVERT_RETURNED, DRAFT_REVERT_STATUSES, INBOUND_DRAFT_REVERT_STATUSES, FULFILLABLE_STATUSES, LEGACY_CONTACT_FIELDS, LIFECYCLE_OWNED_FIELDS, NON_FINANCIAL_DOC_TYPES, RECEIVABLE_STATUSES, RESERVABLE_DOC_STATUSES, REVERTIBLE_STATUSES, SALES_PRICED_DOC_TYPES, SUPPLIER_RETURN_STATUSES, CREDIT_APPLICATION_METHODS, CONVERTIBLE_STATUSES, QUOTATION_SPENT_STATUSES, sent_out_by
 from celerp.services.doc_balance import DOC_FIELD_FALLBACKS, doc_value, is_awaiting_payment, is_overdue_document, is_owed, outstanding_balance
 from celerp.services.list_behavior import (
     DRAFT, FINALIZED, CLOSED, VOID, DEFAULT_LIST_TYPE, LIST_TYPES, SCAN_RUNS_FIELD, SUPPLIER_DOC_TYPES, ScanBehavior,
     behavior, scan_behavior, terminal_action, is_money_list,
 )
-from celerp.services.shipping import INCOTERMS_2020, REASONS_FOR_EXPORT
+from celerp.services.shipping import (
+    INCOTERMS_2020, ITEM_AT_ISSUE, REASONS_FOR_EXPORT, customs_backfill, issued_item, item_at_issue)
 from celerp.schemas.numbers import FiniteFloat
 from ui.i18n import doc_type_label, t
 
@@ -115,8 +117,11 @@ class LineItem(BaseModel):
     quantity: FiniteFloat = 0
     unit: str | None = None
     unit_price: FiniteFloat = 0
+    # The line's own discount, taken off its price (document_line_amount) when no line_total is given.
+    discount_pct: FiniteFloat | None = None
     tax_rate: FiniteFloat | None = None  # deprecated: kept for backward compat; prefer taxes list
-    taxes: list[TaxApplication] = Field(default_factory=list)
+    # None: the line's tax is still for the user to set (set_new_line_taxes); it charges nothing.
+    taxes: list[TaxApplication] | None = Field(default_factory=list)
     sell_by: str | None = None
     line_total: FiniteFloat | None = None
     # Purchasing: whether the line's goods are received into stock, as an expense or as an asset.
@@ -308,6 +313,12 @@ def _refuse_protected_fields(fields_changed: dict) -> None:
             status_code=422,
             detail=t("documents.err_fields_not_patchable", fields=", ".join(sorted(attempted))),
         )
+
+
+def _stale_doc(key: str) -> HTTPException:
+    """A document edit refused because it was made from an older copy; the code lets the page
+    keep the user's rows and offer Try again instead of an ordinary error."""
+    return HTTPException(status_code=409, detail={**refusal(key, t(key)), "code": "stale_version"})
 
 
 def _patch_identity(kind: str, entity_id: str, payload: "DocPatch") -> tuple[str, str | None]:
@@ -1767,6 +1778,10 @@ async def create_doc(
         raise HTTPException(status_code=409, detail=t("documents.err_doc_number_taken", number=ref_id))
 
     data = payload.model_dump(exclude_none=True)
+    # A line whose tax is still for the user to set keeps that None, which the dump above drops.
+    for line, item in zip(data.get("line_items") or [], payload.line_items):
+        if item.taxes is None:
+            line["taxes"] = None
     chosen = _chosen_terms(data)
     if inv is not None:
         # A credit note refunds its invoice's amounts, which the contact's prices do not change.
@@ -1913,6 +1928,7 @@ async def write_doc_patch(session: AsyncSession, company_id, role: str, settings
     fields_changed = dict(payload.fields_changed)
     require_currency_code((fields_changed.get("currency") or {}).get("new"))
     _refuse_protected_fields(fields_changed)
+    refuse_malformed_taxes({k: (v or {}).get("new") for k, v in fields_changed.items()})
     if scan_runs is not None:
         fields_changed[SCAN_RUNS_FIELD] = {"new": scan_runs}
     selecting = "contact_id" in fields_changed
@@ -1928,8 +1944,13 @@ async def write_doc_patch(session: AsyncSession, company_id, role: str, settings
     row = await _get_doc(session, company_id, entity_id, for_update=True)
     if (done := await _find_patch_replay(session, company_id, idem_key, "doc.updated", entity_id, digest)) is not None:
         return done
+    # Replacing line_items rewrites the whole array, so a writer that read an older copy would drop
+    # every line change saved since. Every line writer must name the version it read, as for lists;
+    # internal writers pass the version of the row they built the lines from.
+    if isinstance((fields_changed.get("line_items") or {}).get("new"), list) and payload.expected_version is None:
+        raise _stale_doc("documents.err_doc_stale")
     if payload.expected_version is not None and row.version != payload.expected_version:
-        raise HTTPException(status_code=409, detail=t("documents.err_doc_changed"))
+        raise _stale_doc("documents.err_doc_changed")
     if selecting and new_contact_id != (row.state.get("contact_id") or ""):
         await _refuse_fixed_consignor(session, company_id, entity_id, row.state)
         state = row.state
@@ -2013,7 +2034,7 @@ async def write_doc_patch(session: AsyncSession, company_id, role: str, settings
         # in document_money, so the stored figures always reconcile (shipping included).
         merged = {**row.state, **{k: (v or {}).get("new") for k, v in fields_changed.items()}}
         money_lines = [dict(li) if isinstance(li, dict) else li for li in (merged.get("line_items") or [])]
-        money = document_money(merged, money_lines, _new_currency, keep_unrated_tax=True)
+        money = document_money(merged, money_lines, _new_currency, keep_unrated_tax=True, stored=row.state)
         if "line_items" in fields_changed or money_lines != (row.state.get("line_items") or []):
             fields_changed["line_items"] = {"new": money_lines}
         for field, value in money.items():
@@ -2158,6 +2179,8 @@ async def mark_doc_sent(session: AsyncSession, company_id, entity_id: str, user,
     doc_type = row.state.get("doc_type", "")
     if doc_type in NO_SEND_DOC_TYPES:
         raise HTTPException(status_code=409, detail=t("documents.err_send_type"))
+    if row.state.get("status") == "draft":  # sending a draft issues it
+        refuse_unset_line_tax(row.state["line_items"])
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.sent",
         data=payload.model_dump(exclude_none=True), actor_id=user.id, location_id=None, source=source,
@@ -2420,6 +2443,7 @@ async def finalize_document(
         return {"event_id": None, "already_finalized": True}
     if not (row.state.get("line_items") or []):
         raise HTTPException(status_code=422, detail="Add at least one line item before finalizing this document.")
+    refuse_unset_line_tax(row.state["line_items"])
     auto_je.refuse_unissuable_taxes((_company.settings or {}) if _company else {}, row.state.get("doc_type"), row.state)
     if row.state.get("doc_type") in _BILL_POSTED:
         await require_line_destinations(session, company_id, row.state["line_items"])
@@ -3232,11 +3256,7 @@ async def revert_doc_to_draft(entity_id: str, payload: DocRevertBody, company_id
     # Inbound docs (bill, consignment_in) can also revert from received/fulfilled statuses.
     _doc_type = state.get("doc_type", "")
     _is_inbound = _doc_type in INBOUND_DOC_TYPES
-    _REVERTABLE = (
-        {"final", "sent", "awaiting_payment", "received", "partially_received", "fulfilled"}
-        if _is_inbound
-        else {"final", "sent", "awaiting_payment"}
-    )
+    _REVERTABLE = INBOUND_DRAFT_REVERT_STATUSES if _is_inbound else DRAFT_REVERT_STATUSES
     to_order = False
     # A document that sent back everything it received reverts too: a bill whose goods all came
     # in on the purchase order it was made from goes back to the order, which keeps them, and
@@ -3259,7 +3279,7 @@ async def revert_doc_to_draft(entity_id: str, payload: DocRevertBody, company_id
                 "purchase order. To cancel the bill, void it."))
         to_order = on_order is True
     if to_order or emptied:
-        _REVERTABLE = _REVERTABLE | {"partial_returned", "returned"}
+        _REVERTABLE = _REVERTABLE | DRAFT_REVERT_RETURNED
     if previous_status not in _REVERTABLE and not settled_by_credit_only(state):
         raise HTTPException(status_code=409, detail=t("documents.err_revert_status"))
     if float(state.get("amount_paid", 0) or 0) != 0:
@@ -5011,6 +5031,7 @@ async def record_receipt(session: AsyncSession, company_id, row: Projection, pay
     Shared by the receive route and an import that records its goods now."""
     from celerp.services import auto_je
 
+    refuse_unset_line_tax(row.state.get("line_items"), row.state, receiving=True)
     entity_id = row.entity_id
     doc_type = row.state.get("doc_type")
     location_uuid = await require_company_location(session, company_id, payload.location_id)
@@ -7434,11 +7455,13 @@ async def convert_doc(entity_id: str, payload: DocConvertBody | None = None, com
                 if _line.get("line_total") is not None:
                     billed["line_total"] = to_stored_float(round_money(
                         to_decimal(_line["line_total"]) * _kept, _currency))
-                if _line.get("taxes"):
+                # An entry that is not a tax stays as it is, so the money below refuses it.
+                if isinstance(_line.get("taxes"), list):
                     billed["taxes"] = [
-                        {**tx, "amount": to_stored_float(round_money(
+                        ({**tx, "amount": to_stored_float(round_money(
                             to_decimal(tx.get("amount") or 0) * _kept, _currency))}
-                        if tx.get("amount") is not None else {**tx}
+                         if tx.get("amount") is not None else {**tx})
+                        if isinstance(tx, dict) else tx
                         for tx in _line["taxes"]
                     ]
             billed_by_bound_eid[_lot_eid] = billed
@@ -7482,7 +7505,7 @@ async def convert_doc(entity_id: str, payload: DocConvertBody | None = None, com
         # invoice is what books its revenue and the cost of the goods sold.
         _MEMO_TOTAL_FIELDS = frozenset({"total", "outstanding", "tax_total", "discount_total", "subtotal", "amount_due"})
         new_data = {k: v for k, v in filtered_state.items() if k not in LIFECYCLE_OWNED_FIELDS | _MEMO_TOTAL_FIELDS}
-        new_data.update(document_money(new_data, qualifying_line_items, _currency, keep_unrated_tax=True))
+        new_data.update(document_money(new_data, qualifying_line_items, _currency, keep_unrated_tax=True, stored=state))
         new_data.update({"doc_type": "invoice", "ref_id": ref, "source_memo_id": entity_id, "status": "draft"})
         await emit_event(
             session, company_id=company_id, entity_id=new_doc_id, entity_type="doc", event_type="doc.created", data=new_data,
@@ -8469,6 +8492,11 @@ async def get_list_page(
     header["id"] = entity_id
     header["version"] = head.version
     item_meta = await _page_item_meta(session, company_id, items)
+    for li in items:
+        saved = issued_item(li, header)
+        eid = li.get("item_id") or li.get("entity_id")
+        if saved is not None and eid:
+            item_meta[eid] = {**item_meta.get(eid, {}), **saved, "id": eid}
     return {"list": header, "items": items, "total": total, "version": head.version,
             "item_meta": item_meta, "line_holds": await _line_holds(session, company_id, entity_id)}
 
@@ -8527,6 +8555,7 @@ async def create_list(
     if (done := await _replay()) is not None:
         return done
     require_currency_code(payload.currency)
+    refuse_malformed_taxes({"line_items": payload.line_items})
     # The contact first, as every contact-reference writer takes it (its lock takes the
     # company lock, then the contact row).
     contact = await _lock_selected_contact(session, company_id, settings, role, payload.contact_id or "")
@@ -8588,6 +8617,7 @@ async def write_list_patch(session: AsyncSession, company_id, role: str, setting
     fields_changed = dict(payload.fields_changed)
     require_currency_code((fields_changed.get("currency") or {}).get("new"))
     _refuse_protected_fields(fields_changed)
+    refuse_malformed_taxes({k: (v or {}).get("new") for k, v in fields_changed.items()})
     selecting = "contact_id" in fields_changed
     new_contact_id = str((fields_changed.get("contact_id") or {}).get("new") or "")
     if selecting and "line_items" in fields_changed:
@@ -8775,12 +8805,8 @@ async def _reprice_catalog_lines(
 
         new_rate = _catalog_rate(item.state, item.entity_id, price_list, effective_currency, price_config)
         line["unit_price"] = float(new_rate)
-        quantity = to_decimal(line.get("quantity", 0) or 0)
-        discount_pct = to_decimal(line.get("discount_pct", 0) or 0)
-        amount = quantity * new_rate
-        if discount_pct:
-            amount *= to_decimal(1) - discount_pct / 100
-        line["line_total"] = to_stored_float(round_money(amount, effective_currency))
+        line["line_total"] = to_stored_float(
+            document_line_amount({**line, "line_total": None}, effective_currency) or to_decimal(0))
         repriced += 1
         updated_lines.append(line)
 
@@ -8915,7 +8941,8 @@ async def _contact_selection_values(
         values["line_items"] = lines
     if kind == "doc" and (lines is not None or "currency" in values):
         merged = {**state, **values}
-        values.update(document_money(merged, merged.get("line_items") or [], currency, keep_unrated_tax=True))
+        values.update(document_money(merged, merged.get("line_items") or [], currency, keep_unrated_tax=True,
+                                     stored=state))
     return values
 
 
@@ -8967,7 +8994,7 @@ async def reprice_doc(
     new_values = {
         "price_list": payload.price_list,
         "line_items": updated_lines,
-        **document_money(row.state, updated_lines, currency, keep_unrated_tax=True),
+        **document_money(row.state, updated_lines, currency, keep_unrated_tax=True, stored=row.state),
     }
     fields_changed = {
         field: {"old": row.state.get(field), "new": value}
@@ -9102,6 +9129,7 @@ async def patch_list_line_page(
     the window is exactly the submitted page's own length (a pure in-place replace that never drops
     off-window rows), so a delete or insert must carry the loaded window length, which the editor
     always sends."""
+    refuse_malformed_taxes({"line_items": payload.line_items})
     row = await _get_list_for_update(session, company_id, entity_id)
     if row.state.get("status") != "draft":
         raise HTTPException(status_code=409, detail=t("documents.err_list_not_draft"))
@@ -9199,6 +9227,7 @@ async def finalize_list_record(entity_id: str, company_id: str, user, session: A
     state = row.state
     if state.get("status") != DRAFT:
         raise HTTPException(status_code=409, detail=t("documents.err_list_not_finalizable"))
+    refuse_unset_line_tax(state.get("line_items"))
     lt = state.get("list_type") or DEFAULT_LIST_TYPE
     milestone = behavior(lt).finalize_milestone
     now = datetime.now(timezone.utc).isoformat()
@@ -9223,6 +9252,8 @@ async def finalize_list_record(entity_id: str, company_id: str, user, session: A
         data["line_items"] = lines
     elif milestone:
         data[milestone] = now
+    if behavior(lt).customs:
+        data.update(await customs_snapshot(session, company_id, state.get("line_items") or []))
     entry = await _emit_list(session, company_id, entity_id, "list.finalized", data, user)
     if commit:
         await session.commit()
@@ -9302,6 +9333,72 @@ async def revert_list_to_draft(
     return {"event_id": entry.id}
 
 
+def _total_change(state: dict, totals: dict) -> dict:
+    return {"total": {"old": state.get("total"), "new": totals["total"]}}
+
+
+async def _list_for_total_change(session, company_id, entity_id: str) -> dict:
+    """The list whose total is to be recalculated or restored. A completed or void list keeps
+    its total: a completed one would no longer match the invoice or memo made from it."""
+    state = (await _get_list_for_update(session, company_id, entity_id)).state
+    if state.get("status") in (CLOSED, VOID):
+        raise HTTPException(status_code=409, detail=t("documents.err_list_total_status"))
+    return state
+
+
+@lists_router.post("/{entity_id}/recalculate-total")
+async def recalculate_list_total(
+    entity_id: str,
+    company_id: str = Depends(get_current_company_id),
+    _: None = require_permission("edit_documents"),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Give a list an earlier version totalled the totals the document rule gives it, as a
+    recorded change the user can undo (restore-total). A list that already agrees is left as is."""
+    state = await _list_for_total_change(session, company_id, entity_id)
+    if list_totals_differ(state) is None:
+        return {"event_id": None}
+    lines, totals = list_lines_and_totals(state)
+    entry = await _emit_list(session, company_id, entity_id, "list.totals_recalculated", {
+        "fields_changed": _total_change(state, totals), "totals": totals, "line_items": lines,
+        "previous": {"totals": {k: state.get(k) for k in LIST_TOTAL_FIELDS}, "line_items": state.get("line_items") or []},
+    }, user)
+    await session.commit()
+    return {"event_id": entry.id}
+
+
+@lists_router.post("/{entity_id}/restore-total")
+async def restore_list_total(
+    entity_id: str,
+    company_id: str = Depends(get_current_company_id),
+    _: None = require_permission("edit_documents"),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Give a recalculated list back the totals it held before, until it is next edited."""
+    state = await _list_for_total_change(session, company_id, entity_id)
+    previous = state.get(RESTORE_POINT)
+    if not previous:
+        return {"event_id": None}
+    entry = await _emit_list(session, company_id, entity_id, "list.totals_restored", {
+        "fields_changed": _total_change(state, previous["totals"]), **previous}, user)
+    await session.commit()
+    return {"event_id": entry.id}
+
+
+@lists_router.get("/{entity_id}/old-rule-total")
+async def get_list_old_rule_total(
+    entity_id: str,
+    company_id: str = Depends(get_current_company_id),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """The total a list an earlier version totalled holds and the one the document rule gives it,
+    as money text, or nulls when they agree: the list page offers Recalculate total on it."""
+    stored, current = list_totals_differ((await _get_list(session, company_id, entity_id)).state) or (None, None)
+    return {"stored": stored, "current": current}
+
+
 @lists_router.post("/{entity_id}/void")
 async def void_list(
     entity_id: str,
@@ -9366,6 +9463,12 @@ async def convert_list(
                             detail=t("documents.err_list_convert_type"))
     if state.get("status") != FINALIZED:
         raise HTTPException(status_code=409, detail="Finalize the quotation before converting it")
+    if (differ := list_totals_differ(state)) is not None:
+        stored, current = differ
+        key = "documents.err_list_old_rule_total"
+        raise HTTPException(status_code=409, detail={
+            **refusal(key, t(key, stored=stored, current=current), stored=stored, current=current),
+            "code": "list_old_rule_total"})
 
     # Every hold of this list moves with the conversion, still for the same line (the new
     # document keeps the line ids): it is re-stamped to the new document first, so it is
@@ -9385,9 +9488,16 @@ async def convert_list(
             actor_id=user.id, location_id=None, source="reservation",
             idempotency_key=str(uuid.uuid4()), metadata_={"doc_id": new_doc_id},
         )
+    # A list holds its header tax as a rate (``tax``) beside the amount (``tax_amount``); a
+    # document holds the rate as ``tax_rate`` and the amount as ``tax``. So no list money is
+    # copied: the document's money is worked out from its lines by the document rule
+    # (money_from_lines), as for any document created.
     new_data = {k: v for k, v in state.items()
                 if k not in {"status", "result", "entity_type", "list_type", "finalized_at", "sent_at", "accepted_at",
-                             SCAN_RUNS_FIELD}}
+                             SCAN_RUNS_FIELD, RESTORE_POINT, "tax", "tax_amount", "subtotal", "discount_amount", "total"}}
+    if state.get("tax"):
+        new_data["tax_rate"] = state["tax"]
+    new_data = money_from_lines(new_data, state.get("currency"))
     new_data.update({"doc_type": payload.target_type, "ref_id": ref, "source_list_id": entity_id, "status": "draft"})
     await emit_event(
         session, company_id=company_id, entity_id=new_doc_id, entity_type="doc",
@@ -9417,7 +9527,7 @@ async def duplicate_list(
     ref_id = next_doc_ref(company, list_sequence_key(state.get("list_type")))
     new_entity_id = f"list:{ref_id}"
     new_data = {k: v for k, v in state.items()
-                if k not in {"status", "entity_type", "ref_id", "share_token", SCAN_RUNS_FIELD}}
+                if k not in {"status", "entity_type", "ref_id", "share_token", SCAN_RUNS_FIELD, RESTORE_POINT}}
     new_data.update({"ref_id": ref_id, "status": "draft", "source_list_id": entity_id,
                      "line_items": strip_line_ids(state.get("line_items"))})
     await require_moving_fits_units(session, company_id, new_entity_id, "list", new_data)
@@ -9560,6 +9670,7 @@ async def import_list(
         ))
     role, settings = await locked_authority(session, company_id, user.id, ("edit_documents", "import_export_data"))
     _assert_list_import_permissions(settings, role, body.data)
+    refuse_malformed_taxes(body.data)
 
     replay = await find_event_by_idempotency(session, company_id, body.idempotency_key)
     if replay is not None:
@@ -9578,7 +9689,8 @@ async def import_list(
 
     entry = await emit_event(
         session, company_id=company_id, entity_id=body.entity_id, entity_type="list",
-        event_type="list.created", data=body.data, actor_id=user.id, location_id=None,
+        event_type="list.created", data=await _issued_import_data(session, company_id, body.data),
+        actor_id=user.id, location_id=None,
         source=body.source, idempotency_key=body.idempotency_key,
         metadata_={"request": import_digest(body.entity_id, body.data),
                    **({"source_ts": body.source_ts} if body.source_ts else {})},
@@ -9691,11 +9803,13 @@ async def batch_import_lists(
             skipped += 1
             continue
         try:
+            refuse_malformed_taxes(rec.data)
             await _lock_imported_contact(session, company_id, "list", rec.data)
             await _assert_import_number_free(session, company_id, "list", rec.data)
             entry = await emit_event(
                 session, company_id=company_id, entity_id=rec.entity_id, entity_type="list",
-                event_type="list.created", data=rec.data, actor_id=user.id, location_id=None,
+                event_type="list.created", data=await _issued_import_data(session, company_id, rec.data),
+                actor_id=user.id, location_id=None,
                 source=rec.source, idempotency_key=rec.idempotency_key,
                 metadata_={"request": import_digest(rec.entity_id, rec.data),
                            **({"source_ts": rec.source_ts} if rec.source_ts else {})},
@@ -12184,6 +12298,32 @@ def _locked_manifest_failure(code: str, item: Projection | None, lines: list[dic
 _AUDIT_IDENTITY_FIELDS = ("sku", "name", "barcode")
 
 
+async def customs_snapshot(session: AsyncSession, company_id: str, lines: list[dict]) -> dict:
+    """The fields an issued customs document saves: copies of ``lines`` with each linked line's
+    customs codes (HS code, country of origin) filled from its item where the line has none, the
+    item as it is now (``item_at_issue``, replacing any earlier one), and ``customs_saved``. A
+    document keeps these, so a later change to the item never reaches what was already issued;
+    one without ``customs_saved`` still reads its items, never blank."""
+    frozen = []
+    for line in lines or []:
+        line = dict(line)
+        key = line.get("entity_id") or line.get("item_id")
+        item = await session.get(Projection, {"company_id": company_id, "entity_id": key}) if key else None
+        if item is not None and item.entity_type == "item":
+            customs_backfill(line, item.state or {})
+            line[ITEM_AT_ISSUE] = item_at_issue(item.state or {})
+        frozen.append(line)
+    return {"line_items": frozen, "customs_saved": True}
+
+
+async def _issued_import_data(session: AsyncSession, company_id: str, data: dict) -> dict:
+    """An imported list as it is stored: an issued customs list keeps its items' codes, as Issue
+    would have given it. A draft takes them at Issue."""
+    if (data.get("status") or DRAFT) == DRAFT or not behavior(data.get("list_type") or DEFAULT_LIST_TYPE).customs:
+        return data
+    return {**data, **await customs_snapshot(session, company_id, data.get("line_items") or [])}
+
+
 async def _lock_audit_lines(session: AsyncSession, company_id: str, lines: list[dict],
                             *, keep_unlinked_on_hand: bool) -> None:
     """In place: refresh each linked line's identity from its item and freeze its on-hand, so the
@@ -12646,17 +12786,15 @@ def _scan_lot(code: str, res, sb: ScanBehavior, settings: dict, state: dict,
 
 
 def _scan_doc_line(lot: Projection, quantity, priced: bool, price_list: str, currency: str | None,
-                   price_config: tuple[list[dict], str, str], tax: dict | None) -> dict:
+                   price_config: tuple[list[dict], str, str], line_taxes: list[dict] | None) -> dict:
     """A new document line for a scanned lot: the scan line, how a purchase receives it, the item's
-    customs fields and the document type's default tax."""
+    customs fields and the taxes a new line takes (default_line_taxes; None leaves them to the user)."""
     st = lot.state or {}
     line = _scan_line(lot, quantity, priced=priced, price_list=price_list, currency=currency,
                       price_config=price_config)
     line["receive_as"] = default_receive_as(st.get("inventory_type"), st.get("sell_by"))
     line.update({k: st[k] for k in ("hs_code", "country_of_origin", "category") if st.get(k)})
-    if tax and float(tax.get("rate") or 0):
-        line["taxes"] = [{"code": tax.get("name"), "rate": float(tax["rate"]), "amount": 0, "order": 0,
-                          "is_compound": bool(tax.get("is_compound")), "label": ""}]
+    set_new_line_taxes(line, line_taxes)
     return line
 
 
@@ -12690,7 +12828,7 @@ async def scan_doc(
     price_list = line_price_list(doc_type, payload.price_list)
     priced = sb.priced and (not is_cost_list_name(price_list) or role_has_permission(settings, role, "view_inventory_costs"))
     currency = state.get("currency")
-    tax = default_tax(side_taxes(settings, doc_type), doc_type)
+    line_taxes = default_line_taxes(side_taxes(settings, doc_type), doc_type, doc=state)
     existing = [dict(l) for l in (state.get("line_items") or [])]
     known = line_id_counts(existing)
 
@@ -12707,7 +12845,7 @@ async def scan_doc(
     lines = [dict(l) for l in existing]
     results, failed = await _apply_scan_run(
         session, company_id, entity_id, state, lines, codes, sb, settings, noun="this document",
-        build=lambda lot, quantity: _scan_doc_line(lot, quantity, priced, price_list, currency, price_config, tax),
+        build=lambda lot, quantity: _scan_doc_line(lot, quantity, priced, price_list, currency, price_config, line_taxes),
         admit=admit)
     scanned = len(results) - len(failed)
     version = row.version
@@ -13401,11 +13539,17 @@ async def change_list_type(
     if status not in (DRAFT, FINALIZED):
         raise HTTPException(status_code=409,
                             detail=t("documents.err_list_type_locked"))
+    if status == FINALIZED:
+        # A write-off finalizes without Issue's check, so a finalized list may still hold a "--"
+        # line that a re-type would issue.
+        refuse_unset_line_tax(state.get("line_items"), state)
     fields: dict = {"list_type": new_type}
     if new_type == "audit" and status == FINALIZED:
         lines = [dict(l) for l in (state.get("line_items") or [])]
         await _lock_audit_lines(session, company_id, lines, keep_unlinked_on_hand=True)
         fields["line_items"] = lines
+    elif behavior(new_type).customs and status == FINALIZED:
+        fields.update(await customs_snapshot(session, company_id, state.get("line_items") or []))
     await _set_list_fields(session, company_id, entity_id, user, fields)
     await session.commit()
     return {"ok": True, "list_type": new_type}

@@ -72,13 +72,13 @@ def _offered(html: str) -> list[dict]:
     return json.loads(re.search(r"window\._CELERP_TAXES = (\[.*?\]);", html).group(1))
 
 
-async def _editor(ui_client, doc_type: str) -> str:
+async def _editor(ui_client, doc_type: str, sales: list[dict] = _SALES, purchasing: list[dict] = _PURCHASING) -> str:
     doc = {"id": "d:1", "entity_id": "d:1", "doc_type": doc_type, "status": "draft", "ref_id": "D-1",
            "line_items": [{"line_id": "l1", "description": "Widget", "quantity": 1, "unit_price": 5}]}
     with (
         patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)),
-        patch("ui.api_client.get_taxes", new=AsyncMock(return_value=_SALES)),
-        patch("ui.api_client.get_purchasing_taxes", new=AsyncMock(return_value=_PURCHASING)),
+        patch("ui.api_client.get_taxes", new=AsyncMock(return_value=sales)),
+        patch("ui.api_client.get_purchasing_taxes", new=AsyncMock(return_value=purchasing)),
     ):
         ui_client.cookies.update(_authed())
         r = await ui_client.get("/docs/d:1")
@@ -100,6 +100,20 @@ async def test_the_invoice_editor_offers_sales_taxes(ui_client):
     offered = _offered(html)
     assert [x["name"] for x in offered] == ["Output VAT"]
     assert "Output VAT|7.0" in html and "Input VAT" not in html
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("doc_type", ["invoice", "bill"])
+@pytest.mark.parametrize("country, shown", [("IN", True), ("TH", False)])
+async def test_the_editor_explains_igst_where_the_company_offers_it(ui_client, doc_type, country, shown):
+    """IGST 18% is the new Indian default; the editor says it is for sales and purchases between
+    states, and that within a state the same 18% is CGST 9% plus SGST 9%."""
+    from celerp.tax_regimes import TAX_REGIMES
+    from ui.i18n import t
+
+    seed = TAX_REGIMES[country]["taxes"]
+    html = await _editor(ui_client, doc_type, sales=seed, purchasing=seed)
+    assert (t("documents.igst_note") in html) is shown
 
 
 @pytest.mark.asyncio

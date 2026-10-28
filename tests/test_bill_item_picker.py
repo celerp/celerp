@@ -64,9 +64,24 @@ async def test_a_picked_item_is_priced_at_cost_on_a_purchase_document(client, au
     assert picked["unit_price"] == price
 
 
-@pytest.mark.parametrize(("doc_type", "default"), [("bill", "'|0'"), ("purchase_order", "'|0'"), ("invoice", "'Sales tax|8.0'")])
+def _new_row_tax(page: str) -> tuple[str, list[str]]:
+    """The tax a row added in the editor starts with: the template row's selected tax option and
+    the codes of the taxes it saves."""
+    import re
+
+    tpl = page[page.index('id="line-row-tpl"'):]
+    tpl = tpl[tpl.index('data-name="tax_select"'):tpl.index("</template>")]
+    selected = re.search(r'<option value="([^"]*)" selected', tpl).group(1)
+    stored = re.search(r"value='([^']*)' data-name=\"taxes_json\"", tpl)
+    codes = [x["code"] for x in json.loads(stored.group(1))] if stored else []
+    return selected, codes
+
+
+@pytest.mark.parametrize(("doc_type", "default", "codes"), [
+    ("bill", "|0", []), ("purchase_order", "|0", []), ("invoice", "Sales tax|8.0", ["Sales tax"])])
 @pytest.mark.asyncio
-async def test_a_sales_only_default_tax_is_not_the_default_on_a_purchase_document(client, auth, doc_type, default):
+async def test_a_sales_only_default_tax_is_not_the_default_on_a_purchase_document(client, auth, doc_type, default,
+                                                                                  codes):
     from ui.routes import documents
     r = await client.post("/docs", headers=auth["headers"], json={"doc_type": doc_type, "line_items": []})
     assert r.status_code == 200, r.text
@@ -76,4 +91,22 @@ async def test_a_sales_only_default_tax_is_not_the_default_on_a_purchase_documen
 
     page = to_xml(documents._doc_detail(doc, company_taxes=taxes))
 
-    assert f"window._CELERP_DEFAULT_TAX = {default};" in page
+    assert _new_row_tax(page) == (default, codes)
+
+
+@pytest.mark.asyncio
+async def test_a_row_added_in_the_editor_starts_with_every_default_tax(client, auth):
+    """A company set up before IGST became the India default holds CGST 9% and SGST 9% both as
+    defaults: a row added in the editor carries both, saved as they are."""
+    from ui.routes import documents
+    r = await client.post("/docs", headers=auth["headers"], json={"doc_type": "invoice", "line_items": []})
+    assert r.status_code == 200, r.text
+    doc = (await client.get(f"/docs/{r.json()['id']}", headers=auth["headers"])).json()
+    taxes = [{"name": "CGST 9%", "rate": 9, "tax_type": "both", "is_default": True},
+             {"name": "SGST 9%", "rate": 9, "tax_type": "both", "is_default": True},
+             {"name": "IGST 18%", "rate": 18, "tax_type": "both", "is_default": False}]
+
+    page = to_xml(documents._doc_detail(doc, company_taxes=taxes))
+
+    assert _new_row_tax(page) == ("|stored", ["CGST 9%", "SGST 9%"])
+    assert "_CELERP_DEFAULT_TAX" not in page

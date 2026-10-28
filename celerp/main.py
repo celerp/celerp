@@ -22,6 +22,7 @@ from celerp.openapi_parameters import describe_parameters
 from celerp.inventory_codes import CodeConflictError
 from celerp.projections.engine import UnhandledEventsError
 from celerp.services.account_roles import PostingRoleError
+from celerp.services.business_time import InvalidTimezoneError
 from celerp.services.journal_accounts import UnbalancedJournalEntry
 from celerp.config import settings, assert_secure_jwt, ensure_instance_id, load_cloud_config, load_backup_config
 load_cloud_config()
@@ -314,6 +315,19 @@ async def _bring_data_current(app: FastAPI, *, modules_ready: bool) -> bool:
         logging.getLogger(__name__).exception(
             "COGS backfill failed (non-fatal); affected invoices keep their "
             "missing COGS until a later boot retries"
+        )
+
+    # Tell each company its saved taxes still hold a row an earlier seed wrote that is no
+    # longer right; reads only, non-fatal like the backfills above.
+    try:
+        from celerp.db import LifecycleSessionLocal as _TaxSeedSession
+        from celerp.services.tax_seed_notice import run_tax_seed_notice
+        async with _TaxSeedSession() as _tax_sess:
+            await run_tax_seed_notice(_tax_sess)
+            await _tax_sess.commit()
+    except Exception:
+        logging.getLogger(__name__).exception(
+            "Tax seed notice failed (non-fatal); companies are told at a later boot"
         )
 
     app.state.data_current, app.state.held_back = True, None
@@ -794,6 +808,15 @@ async def code_conflict_handler(_request: Request, exc: CodeConflictError):
     # introduces a physical code another item already holds. One handler on the shared
     # base maps every physical-code collision to 409.
     return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+
+@app.exception_handler(InvalidTimezoneError)
+async def invalid_timezone_handler(_request: Request, exc: InvalidTimezoneError):
+    # Any request that needs the business day (numbering a document, previewing a counter)
+    # is refused before it stores anything, without a try in every route. The message names
+    # the page that sets the time zone, and the code lets a page link there.
+    return JSONResponse(status_code=422, content={
+        "detail": t("error.company_timezone_unknown"), "code": "company_timezone"})
 
 
 @app.exception_handler(UnhandledEventsError)

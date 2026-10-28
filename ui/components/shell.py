@@ -77,9 +77,51 @@ document.addEventListener('keydown', function (e) {
 """
 
 _CLIENT_JS = """
+// A panel with fixed positioning (picker list, row menu, column funnel, tooltip) is placed
+// against its control when it opens. A banner loading in above, a scroll or a resize then
+// moves the control but not the panel, and a click aimed at an option lands beside it. So
+// while the panel is shown, ``place`` runs again on any frame where the control has moved
+// or the window changed size. Where the control stood is taken when the panel was placed, so
+// a move before the next frame is followed too. Following ends once the panel is hidden or
+// either is removed.
+function followAnchor(popup, anchor, place) {
+  function where() {
+    var r = popup._anchor.getBoundingClientRect();
+    return [r.top, r.left, r.width, r.height, window.innerWidth, window.innerHeight].join();
+  }
+  popup._anchor = anchor;
+  popup._place = place;
+  popup._placedAt = where();
+  if (popup._following) return;
+  popup._following = true;
+  function tick() {
+    if (!popup.isConnected || !popup._anchor.isConnected || !popup.getClientRects().length
+        || getComputedStyle(popup).visibility === 'hidden') {
+      popup._following = false;
+      return;
+    }
+    var key = where();
+    if (key !== popup._placedAt) { popup._place(); popup._placedAt = key; }
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+}
 function _copiedFeedback(btn, restoreLabel) {
   btn.textContent = window.__shellI18n.copied;
   setTimeout(function() { btn.textContent = restoreLabel; }, 2000);
+}
+// A request to this app's own routes made as htmx makes one: it says so, with the page it came
+// from, so an ended session is answered with the sign-in redirect, and that redirect is followed.
+// A followed redirect never resolves, so no caller reads it as a saved or refused edit.
+function celerpFetch(url, opts) {
+  opts = Object.assign({}, opts);
+  opts.headers = Object.assign({'HX-Request': 'true', 'HX-Current-URL': location.href}, opts.headers);
+  return fetch(url, opts).then(function(r) {
+    var to = r.headers.get('HX-Redirect');
+    if (!to) return r;
+    location.href = to;
+    return new Promise(function() {});
+  });
 }
 // Post one line action for the chosen rows (their .li-select checkboxes) as ONE request.
 // Each row is named by its line id; a page whose rows do not all carry one names them by
@@ -94,7 +136,7 @@ async function celerpLineAction(url, rows, fields, key, fallbackMsg) {
   if (key) fd.append('idempotency_key', key);
   var msg = fallbackMsg;
   try {
-    var resp = await fetch(url, {method: 'POST', body: fd});
+    var resp = await celerpFetch(url, {method: 'POST', body: fd});
     var t = null;
     try { t = JSON.parse(resp.headers.get('HX-Trigger') || 'null'); } catch (e) {}
     if (resp.status === 204) {
@@ -211,7 +253,7 @@ document.addEventListener('htmx:afterRequest', function(e) {
     var obj = JSON.parse(hdr);
     // A toast sent with a redirect is shown on the page the redirect opens, not on this one.
     if (obj.celerpToast && e.detail.xhr.getResponseHeader('HX-Redirect')) _celerpKeepToast(obj.celerpToast);
-    else if (obj.celerpToast) celerpToast(obj.celerpToast.message, obj.celerpToast.type || 'error', obj.celerpToast.persist);
+    else if (obj.celerpToast) celerpToast(obj.celerpToast.message, obj.celerpToast.type || 'error', obj.celerpToast.persist, obj.celerpToast.action);
     if (obj.celerpRestoreCell) {
       // Close any open editable cell: trigger ESC on focused element, then blur
       var active = document.activeElement;
@@ -229,7 +271,7 @@ document.addEventListener('DOMContentLoaded', function() {
   var pending;
   try { pending = sessionStorage.getItem('celerp_pending_toast'); sessionStorage.removeItem('celerp_pending_toast'); } catch(ex) {}
   if (!pending) return;
-  try { var t = JSON.parse(pending); celerpToast(t.message, t.type || 'error', t.persist); } catch(ex) {}
+  try { var t = JSON.parse(pending); celerpToast(t.message, t.type || 'error', t.persist, t.action); } catch(ex) {}
 });
 
 function showGlobalUiError(message) {
@@ -243,10 +285,35 @@ function showGlobalUiError(message) {
   box.style.display = 'block';
 }
 
+/* A click-to-edit cell is kept as it was shown just before its editor replaces it, so
+   Escape can put it back in any editor, including those with no restore route of their
+   own. The editor that consumed Escape itself (preventDefault) keeps its own restore.
+   The editor is removed, so its pending blur save never fires. */
+var _cellBeforeEdit = null;
+document.addEventListener('htmx:beforeSwap', function(e) {
+  var t = e.detail.target;
+  _cellBeforeEdit = (t && t.matches && t.matches('td.cell:not(.cell--editing)')) ? t.outerHTML : null;
+});
+document.addEventListener('htmx:afterSettle', function() {
+  if (_cellBeforeEdit === null) return;
+  document.querySelectorAll('.cell--editing').forEach(function(c) {
+    if (c._restoreHtml === undefined) c._restoreHtml = _cellBeforeEdit;
+  });
+  _cellBeforeEdit = null;
+});
 document.addEventListener('keydown', function(e) {
   if (e.key === 'Escape') {
-    /* If any edit cell is open, let per-cell onkeydown handle the restore */
-    if (document.querySelector('.cell--editing')) {
+    var editing = document.querySelector('.cell--editing');
+    if (editing) {
+      var cell = e.target.closest && e.target.closest('.cell--editing');
+      if (!e.defaultPrevented && cell && cell._restoreHtml !== undefined) {
+        e.preventDefault();
+        var tpl = document.createElement('template');
+        tpl.innerHTML = cell._restoreHtml.trim();
+        var shown = tpl.content.firstElementChild;
+        cell.replaceWith(shown);
+        htmx.process(shown);
+      }
       return;
     }
     document.querySelectorAll('.row-menu-dropdown.open').forEach(function(m) { m.classList.remove('open'); });
@@ -264,6 +331,23 @@ document.addEventListener('keydown', function(e) {
    under load the change->PATCH->swap commit takes longer than 300ms, so that timer fired
    mid-commit and reloaded the page, dropping the just-made edit (and any other unsaved state).
    The per-cell handler is sufficient, so no global reload is needed. */
+// Fixed to the window against its button so a table's overflow cannot clip it: anchored to
+// the button's right edge, opening upward when too close to the bottom.
+function placeRowMenu(menu, btn) {
+  var r = btn.getBoundingClientRect();
+  var menuH = 200; // estimated max height
+  menu.style.position = 'fixed';
+  menu.style.right = (window.innerWidth - r.right) + 'px';
+  menu.style.left = 'auto';
+  if (window.innerHeight - r.bottom < menuH) {
+    menu.style.bottom = (window.innerHeight - r.top) + 'px';
+    menu.style.top = 'auto';
+  } else {
+    menu.style.top = r.bottom + 'px';
+    menu.style.bottom = 'auto';
+  }
+  menu.style.zIndex = '9999';
+}
 function toggleRowMenu(id) {
   var menu = document.getElementById('menu-' + id);
   if (!menu) return;
@@ -273,26 +357,10 @@ function toggleRowMenu(id) {
     m.style.cssText = '';
   });
   if (!wasOpen) {
-    // Position fixed relative to button so table overflow: hidden can't clip it
     var btn = menu.previousElementSibling;
-    if (btn) {
-      var r = btn.getBoundingClientRect();
-      // Anchor to right edge of button; flip upward if too close to bottom
-      var menuH = 200; // estimated max height
-      var spaceBelow = window.innerHeight - r.bottom;
-      menu.style.position = 'fixed';
-      menu.style.right = (window.innerWidth - r.right) + 'px';
-      menu.style.left = 'auto';
-      if (spaceBelow < menuH) {
-        menu.style.bottom = (window.innerHeight - r.top) + 'px';
-        menu.style.top = 'auto';
-      } else {
-        menu.style.top = r.bottom + 'px';
-        menu.style.bottom = 'auto';
-      }
-      menu.style.zIndex = '9999';
-    }
+    if (btn) placeRowMenu(menu, btn);
     menu.classList.add('open');
+    if (btn) followAnchor(menu, btn, function() { placeRowMenu(menu, btn); });
   }
 }
 document.addEventListener('click', function(e) {
@@ -426,6 +494,12 @@ function initCombobox(wrap) {
     list.style.left = Math.max(gap, Math.min(r.left, vw - gap - list.offsetWidth)) + 'px';
   }
 
+  function showList() {
+    positionList();
+    list.classList.add('open');
+    followAnchor(list, input, positionList);
+  }
+
   // Lazy — always queries the live DOM so HTMX-swapped options are included.
   function currentOpts() {
     return Array.from(list.querySelectorAll('.combobox-option'));
@@ -500,8 +574,9 @@ function initCombobox(wrap) {
       opt.classList.add('combobox-option--selected');
     }
     syncMultiLabel();
-    // Stay open: picking several accounts in a row is the whole point of the mode.
-    positionList();
+    // Stay open: picking several accounts in a row is the whole point of the mode. The list
+    // is not moved here: this runs on mousedown, and moving it would put the mouseup beside
+    // the option. followAnchor places it again on the next frame if the field has moved.
   }
 
   function selectOpt(opt) {
@@ -613,8 +688,7 @@ function initCombobox(wrap) {
     // Clear the summary so typing searches rather than filtering against "3 selected".
     if (isMulti) input.value = '';
     filterOpts('');
-    positionList();
-    list.classList.add('open');
+    showList();
   }
   input.addEventListener('focus', openList);
   // A click on the field after Esc closed it opens it again; focus alone would not.
@@ -629,13 +703,11 @@ function initCombobox(wrap) {
         filterOpts('');
       }
       // Non-empty: HTMX fires the server request and swaps results into the list
-      positionList();
-      list.classList.add('open');
+      showList();
       if (hidden && !isMulti) hidden.value = '';
     } else {
       filterOpts(input.value);
-      positionList();
-      list.classList.add('open');
+      showList();
       if (hidden && !isMulti) hidden.value = allowCustom ? input.value : '';
     }
   });
@@ -807,8 +879,8 @@ document.addEventListener('htmx:afterSettle', revealActiveTabs);
 _INFO_TIP_JS = """
 // One tooltip for every .info-tip icon (info_tip). It lives under <body> with fixed
 // positioning, so no card's overflow can clip it: above the icon when there is room,
-// else below, and always pulled inside the viewport edges. It follows its icon on scroll
-// and resize, and closes once the icon leaves the viewport. On touch screens a tap on the
+// else below, and always pulled inside the viewport edges. It follows its icon wherever
+// the page moves it (followAnchor), and closes once the icon leaves the viewport. On touch screens a tap on the
 // icon opens or closes it, and a tap anywhere else closes it.
 (function() {
   var MARGIN = 8, GAP = 6, bubble = null, owner = null, tapWasOpen = null;
@@ -848,6 +920,7 @@ _INFO_TIP_JS = """
     el.classList.add('info-tip-bubble--open');
     tip.setAttribute('aria-describedby', el.id);
     place();
+    followAnchor(el, tip, follow);
   }
   function follow() {
     if (!owner) return;
@@ -879,8 +952,7 @@ _INFO_TIP_JS = """
     if (tapWasOpen) hide(); else show(t);
     tapWasOpen = null;
   });
-  window.addEventListener('scroll', follow, true);
-  window.addEventListener('resize', follow);
+  // A page swap that removes the icon ends following, so close the tip here.
   document.addEventListener('htmx:afterSettle', follow);
 })();
 """
@@ -2962,12 +3034,15 @@ def secret_input(name: str, value: str = "", lang: str = "en", cls: str = "form-
 
 
 def toast_header(message: str, kind: str = "success", *, persist: bool = False,
-                 **extra_triggers) -> dict:
-    """HX-Trigger header for the shell's celerpToast listener. Extra keyword
-    arguments become sibling client events fired from the same header."""
+                 action: dict | None = None, **extra_triggers) -> dict:
+    """HX-Trigger header for the shell's celerpToast listener. ``action`` ({href, label})
+    adds a link to the toast. Extra keyword arguments become sibling client events fired
+    from the same header."""
     toast: dict = {"message": message, "type": kind}
     if persist:
         toast["persist"] = True
+    if action:
+        toast["action"] = action
     return {"HX-Trigger": json.dumps({"celerpToast": toast, **extra_triggers})}
 
 

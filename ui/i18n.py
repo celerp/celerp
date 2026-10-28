@@ -136,27 +136,40 @@ _JS_SPECIAL = re.compile(r"[.*+?^${}()|[\]\\/]")
 _PARAM = re.compile(r"\{\w+\}")
 
 
-def _message_pattern(text: str) -> str:
-    """*text* as a regular expression in which each {param} matches any text. A param at either
-    end is left out: in a search it changes nothing, and a leading wildcard makes testing a long
-    notice cost far more than its length. Empty when the message has no words of its own."""
+def _message_literals(text: str) -> list[str]:
+    """The words of *text* between its {params}, each escaped for a regular expression. A param
+    at either end is left out: in a search it changes nothing. Empty when the message has no
+    words of its own."""
     literals = [_JS_SPECIAL.sub(r"\\\g<0>", part) for part in _PARAM.split(text)]
     while literals and not literals[0]:
         literals.pop(0)
     while literals and not literals[-1]:
         literals.pop()
-    return r"[\s\S]*?".join(literals)
+    return literals
 
 
 def _try_again_pattern(lang: str) -> str:
     """A regular expression (valid in Python and JavaScript) that matches the messages which
     tell the user to select Try again, as *lang* words them. The messages are the catalog keys
     whose English says "Select Try again", so a sentence that only means "do it again" never
-    matches, whatever words it uses."""
+    matches, whatever words it uses.
+
+    Each message is looked for from the start of the text, its words in order, each at its first
+    place after the one before: if the message is there at all, it is there that way. Every step
+    is a lookahead the match cannot go back into (its text captured and taken again with a
+    backreference), so a long notice is read once per message, never backtracked over."""
     en = _cached_load("en")
     keys = sorted(k for k, v in en.items() if re.search(r"[Ss]elect Try again", v))
     texts = sorted({t(k, lang) for k in keys}, key=len, reverse=True)
-    return "|".join(p for p in map(_message_pattern, texts) if p)
+    alternatives, group = [], 0
+    for literals in filter(None, map(_message_literals, texts)):
+        steps = []
+        for literal in literals[:-1]:
+            group += 1
+            steps.append(rf"(?=([\s\S]*?{literal}))\{group}")
+        steps.append(rf"(?=[\s\S]*?{literals[-1]})")
+        alternatives.append("".join(steps))
+    return f"^(?:{'|'.join(alternatives)})" if alternatives else ""
 
 
 try_again_pattern = lru_cache(maxsize=32)(_try_again_pattern) if not _DEBUG else _try_again_pattern

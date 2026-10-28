@@ -16,8 +16,10 @@ from decimal import Decimal, InvalidOperation
 from fasthtml.common import *
 from celerp.services.field_schema import DEFAULT_ITEM_SCHEMA, cost_columns
 from celerp.services.list_behavior import SCAN_RUNS_FIELD, SUPPLIER_DOC_TYPES
+from celerp.services.money import to_decimal
 from celerp.services.pricing import PRICE_LISTS_FALLBACK
 from celerp.services.units import line_receive_kind
+from celerp.tax_regimes import tax_entries
 from ui.i18n import t, get_lang, category_label, doc_type_label, field_label, price_list_label
 from ui.components.table import EMPTY, display_enum, fmt_money, fmt_rate
 from ui.components.deleted_items import deleted_label
@@ -68,7 +70,8 @@ _EVENT_TYPES: tuple[str, ...] = (
     "item.supplier_return_undone", "doc.supplier_return_undone",
     "item.snapshot", "item.workflow.set", "item.written_off", "list.closed", "list.created",
     "list.finalized", "list.note_added", "list.note_removed", "list.note_updated", "list.patched",
-    "list.reopened", "list.reverted", "list.updated", "list.voided", "mfg.operation.recorded",
+    "list.reopened", "list.reverted", "list.totals_recalculated", "list.totals_restored",
+    "list.updated", "list.voided", "mfg.operation.recorded",
     "mfg.order.cancelled", "mfg.order.completed", "mfg.order.created", "mfg.order.issued",
     "mfg.order.on_hold", "mfg.order.received", "mfg.order.resumed", "mfg.order.scheduled",
     "mfg.order.started", "mfg.order.returned", "mfg.order.receipt_undone", "mfg.order.reopened",
@@ -296,13 +299,15 @@ _ORIGIN_EVENT_TYPES = frozenset({
 })
 
 # scan_runs is the scan bar's idempotency ledger, not something the user edited.
-_SYSTEM_FIELDS = frozenset({"updated_at", "created_at", SCAN_RUNS_FIELD})
+_SYSTEM_FIELDS = frozenset({"updated_at", "created_at", "customs_saved", SCAN_RUNS_FIELD})
 
-# Document totals that are computed from line_items + header fields (see _recalc_list_totals).
+# Document totals that are computed from line_items + header fields (doc_money).
 # Editing an item's price or quantity recalculates these, but the user's action was the line
 # edit alone - so they are suppressed from change summaries to avoid noise like
 # "Subtotal: x → y, Total: x → y" alongside the real "ItemName: x → y".
 _DERIVED_DOC_FIELDS = frozenset({"subtotal", "total", "tax_amount", "discount_amount", "amount_outstanding"})
+# Events whose change is a list's total itself (recalculated or restored), shown as "Total: x → y".
+_TOTAL_EVENT_TYPES = frozenset({"list.totals_recalculated", "list.totals_restored"})
 
 # Field keys shown in activity change summaries; the label for each is resolved at
 # render time via ``t("field.<key>")`` (see _fields_changed_summary). Values are those
@@ -353,7 +358,8 @@ def detail_from_entry(data: dict, event_type: str, currency: str | None = None,
         return ""
     fields_changed = data.get("fields_changed", {})
     if fields_changed and isinstance(fields_changed, dict):
-        summary = _fields_changed_summary(fields_changed, currency, category_names)
+        summary = _fields_changed_summary(fields_changed, currency, category_names,
+                                          show_totals=event_type in _TOTAL_EVENT_TYPES)
         if summary:
             return summary
         # fields_changed was present but all entries were noise (empty→empty etc.)
@@ -587,23 +593,28 @@ def _discount_change_summary(fields_changed: dict, currency: str | None):
 
     Detection keys on the user-controlled inputs (``discount`` / ``discount_type``), NOT on the
     derived ``discount_amount`` - the latter also shifts when a line edit changes the subtotal of
-    a percentage discount, which is not itself a discount action.
+    a percentage discount, which is not itself a discount action. A missing discount reads as
+    zero, and a discount type change counts only while there is a discount to apply it to: a
+    save that stamps the type on a document with no discount is not a discount action.
     """
-    changed = False
-    for key in ("discount", "discount_type"):
-        if key in fields_changed:
-            old, new = _change_old_new(fields_changed[key])
-            if old != new:
-                changed = True
-                break
-    if not changed:
-        return None, frozenset()
-
     amt_old = amt_new = None
     for key in ("discount_amount", "discount"):
         if key in fields_changed:
             amt_old, amt_new = _change_old_new(fields_changed[key])
             break
+    has_amount = bool(float(amt_old or 0) or float(amt_new or 0))
+
+    changed = False
+    if "discount" in fields_changed:
+        old, new = _change_old_new(fields_changed["discount"])
+        changed = float(old or 0) != float(new or 0)
+    if not changed and has_amount and "discount_type" in fields_changed:
+        old, new = _change_old_new(fields_changed["discount_type"])
+        changed = old != new
+    if not changed:
+        # Discount inputs that did not change the discount are hidden, not dumped as fields.
+        return None, frozenset({"discount", "discount_type"})
+
     if float(amt_new or 0) > 0:
         new_str = fmt_price(amt_new, "discount_amount", currency)
         # When an existing discount is changed, show "old → new" like every other field;
@@ -624,27 +635,13 @@ def _discount_change_summary(fields_changed: dict, currency: str | None):
     return ", ".join(parts), _DISCOUNT_CONSUMED
 
 
-def _line_effective_tax(li: dict) -> tuple[float, float]:
-    """(rate_percent, tax_amount) for a line. Reads the legacy per-line ``tax_rate`` or the
-    structured ``taxes`` list (summed rates); amount is ``line_total × rate / 100`` — the same
-    per-line formula list totals are recomputed with (see doc_projections._recalc_list_totals)."""
-    try:
-        rate = float(li.get("tax_rate") or 0)
-        if not rate and isinstance(li.get("taxes"), list):
-            rate = sum(float(tx.get("rate") or 0) for tx in li["taxes"] if isinstance(tx, dict))
-        line_total = float(li.get("line_total") or 0)
-    except (TypeError, ValueError):
-        return 0.0, 0.0
-    return rate, line_total * rate / 100
-
-
 def _line_tax_change_summary(fields_changed: dict, currency: str | None):
-    """Per-item tax-rate changes from a line_items diff, e.g.
-    'DEMO-AUTO-007 Tax 0% → 7% (0.00 → 503.44)'.
+    """Per-item tax-rate changes from a line_items diff, then the tax the document charges as
+    it was recalculated, once, e.g. 'DEMO-AUTO-007 Tax 0% → 7%, Tax: $0.00 → $453.10'. A line's
+    own amount is never worked out again here: the document's discount and rounding decide it.
 
-    Returns (parts, consumed). When any per-line tax change is shown we consume the
-    document-level ``tax`` scalar so the history doesn't also dump a bare, item-less
-    "Tax: 0.00 → 503.44" for the same change.
+    Returns (parts, consumed). When any per-line tax change is shown the tax amount (``tax`` on a
+    document, ``tax_amount`` on a list) is consumed so the history doesn't also dump it bare.
     """
     change = fields_changed.get("line_items")
     if not isinstance(change, dict):
@@ -656,6 +653,14 @@ def _line_tax_change_summary(fields_changed: dict, currency: str | None):
     def _key(li):
         return li.get("entity_id") or li.get("item_id") or li.get("sku") or li.get("name") or ""
 
+    from celerp_docs.doc_money import line_tax_rate
+
+    def _rate(li) -> Decimal | None:
+        try:
+            return line_tax_rate(li)
+        except (TypeError, ValueError, InvalidOperation):
+            return None
+
     old_by = {_key(li): li for li in old if isinstance(li, dict)}
     parts: list[str] = []
     for li in new:
@@ -664,26 +669,61 @@ def _line_tax_change_summary(fields_changed: dict, currency: str | None):
         prev = old_by.get(_key(li))
         if prev is None:  # added lines are reported by the line_items add/remove diff
             continue
-        o_rate, o_amt = _line_effective_tax(prev)
-        n_rate, n_amt = _line_effective_tax(li)
-        if o_rate == n_rate:
+        o_rate, n_rate = _rate(prev), _rate(li)
+        if o_rate == n_rate or None in (o_rate, n_rate):
             continue
         name = li.get("sku") or li.get("name") or ""
         label = f"{name} " if name else ""
-        parts.append(
-            f"{label}{t('activity.tax')} {o_rate:g}% → {n_rate:g}% "
-            f"({fmt_price(o_amt, 'tax', currency)} → {fmt_price(n_amt, 'tax', currency)})"
-        )
-    return parts, (frozenset({"tax"}) if parts else frozenset())
+        parts.append(f"{label}{t('activity.tax')} {float(o_rate):g}% → {float(n_rate):g}%")
+    if not parts:
+        return [], frozenset()
+    scalar = "tax_amount" if "tax_amount" in fields_changed else "tax"
+    o_tax, n_tax = _change_old_new(fields_changed.get(scalar) or {})
+    if o_tax is not None and n_tax is not None and o_tax != n_tax:
+        parts.append(f"{t('activity.tax')}: {fmt_price(o_tax, 'tax', currency)} → {fmt_price(n_tax, 'tax', currency)}")
+    return parts, frozenset({"tax", "tax_amount"})
+
+
+def _doc_tax_change_summary(fields_changed: dict, currency: str | None, show_total: bool):
+    """Document-level tax edits from a ``doc_taxes`` diff, e.g. 'Removed Levy 5%, Total:
+    210.00 → 200.00'. Returns (parts, consumed); the ``tax`` and ``total`` scalars the edit
+    recomputes are consumed, and Total is shown only when no other summary already shows it."""
+    change = fields_changed.get("doc_taxes")
+    if not isinstance(change, dict):
+        return [], frozenset()
+
+    def _by_code(value) -> dict[str, float]:
+        return {str(tx.get("code") or ""): float(tx.get("rate") or 0) for tx in tax_entries(value)}
+
+    def _name(code: str, rate: float) -> str:
+        pct = f"{rate:g}%"
+        return code if code.endswith(pct) else f"{code} {pct}".strip()
+
+    old, new = _by_code(change.get("old")), _by_code(change.get("new"))
+    parts = (
+        [t("activity.added", item=_name(c, r)) for c, r in new.items() if c not in old]
+        + [t("activity.changed", item=f"{c} {old[c]:g}% → {r:g}%") for c, r in new.items()
+           if c in old and old[c] != r]
+        + [t("activity.removed", item=_name(c, r)) for c, r in old.items() if c not in new]
+    )
+    if not parts:
+        return [], frozenset({"doc_taxes"})
+    if show_total and "total" in fields_changed:
+        o, n = _change_old_new(fields_changed["total"])
+        if o is not None and n is not None and o != n:
+            parts.append(t("activity.total_change",
+                           old=fmt_price(o, 'total', currency), new=fmt_price(n, 'total', currency)))
+    return parts, frozenset({"doc_taxes", "tax", "total"})
 
 
 def _fields_changed_summary(fields_changed: dict, currency: str | None = None,
-                            category_names: dict | None = None) -> str:
+                            category_names: dict | None = None, *, show_totals: bool = False) -> str:
     """Compact summary of field changes from a ledger data dict.
 
     Scalar changes: "field: old → new", each value formatted by its field type.
     Complex changes (list/dict): "Lines edited", "Contact updated", etc.
     Unknown complex: "field updated".
+    show_totals: the change is to the totals themselves, so they are not suppressed as derived.
     """
     if not fields_changed or not isinstance(fields_changed, dict):
         return ""
@@ -697,10 +737,14 @@ def _fields_changed_summary(fields_changed: dict, currency: str | None = None,
     # Per-item tax-rate changes render explicitly (which item, the % and the amount); doing so
     # consumes the document-level `tax` scalar so the same change isn't also dumped item-less.
     tax_parts, tax_consumed = _line_tax_change_summary(fields_changed, currency)
-    consumed = consumed | tax_consumed
+    # Document-level taxes name the tax added, removed or re-rated, never the internal key.
+    doc_tax_parts, doc_tax_consumed = _doc_tax_change_summary(
+        fields_changed, currency, show_total="total" not in consumed)
+    tax_parts = doc_tax_parts + tax_parts
+    consumed = consumed | tax_consumed | doc_tax_consumed
 
     user_fields = {k: v for k, v in fields_changed.items()
-                   if k not in _SYSTEM_FIELDS and k not in _DERIVED_DOC_FIELDS
+                   if k not in _SYSTEM_FIELDS and (show_totals or k not in _DERIVED_DOC_FIELDS)
                    and k not in consumed
                    and k not in {"attachments", "preview_image_id"}}
     if not user_fields and not discount_summary and not tax_parts:

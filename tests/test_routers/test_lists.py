@@ -725,7 +725,7 @@ async def test_list_totals_correct_after_patch_with_per_line_tax(client):
     """Patching line items with per-line tax rates yields correct totals.
 
     Regression for the bug where save_list_lines sent tax as an amount and
-    _recalc_list_totals incorrectly treated it as a percentage rate.
+    the list totals treated it as a percentage rate.
     """
     token = await _register(client)
     # Create list with one line: qty=2, unit_price=100, line_total=200, tax_rate=10%

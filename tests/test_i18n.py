@@ -994,15 +994,18 @@ def _tu_forms(text: str) -> list[str]:
 
 
 def test_es_uses_usted_register():
+    """An app string still in its reviewed English source (the source-identical allowlist) is
+    not Spanish yet, so its English words are not read as tú forms."""
     root = Path(__file__).resolve().parents[1]
     catalogs = [Path(_LOCALES_DIR) / "es.json",
                 *sorted(root.glob("default_modules/*/*/locales/es.json"))]
-    # A value still identical to its English source is an untranslated placeholder, not Spanish.
+    en = _load_locale("en")
+    pending = _load_source_identical_allowlist().get("es", set())
     informal = {f"{p.parent.parent.name}:{k}": hits
                 for p in catalogs
-                for en in [json.loads((p.parent / "en.json").read_text(encoding="utf-8"))]
                 for k, v in json.loads(p.read_text(encoding="utf-8")).items()
-                if v != en.get(k) and (hits := _tu_forms(v))}
+                if not (p.parent == Path(_LOCALES_DIR) and k in pending and v == en.get(k))
+                and (hits := _tu_forms(v))}
     assert not informal, informal
 
 

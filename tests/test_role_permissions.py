@@ -233,7 +233,7 @@ def test_defaults_are_registry_membership():
 
 # ── Gate 1: inventory cost visibility and price writes ───────────
 
-from test_helpers import grant_permission, invite_user, perm_setup, merge_items  # noqa: E402
+from test_helpers import grant_permission, invite_user, perm_setup, merge_items, doc_version  # noqa: E402
 
 _GRANTED = {"role_grants": {"view_inventory_costs": _roles_from("operator")}}
 
@@ -728,12 +728,14 @@ async def test_operator_revoked_patch_price_403(client, session):
     doc_id = await _make_draft_invoice(client, ctx["admin_h"], ctx, 50.0, "INV-P40")
     await grant_permission(client, ctx["admin_h"], "set_sales_doc_prices", "manager")
 
-    r = await client.patch(f"/docs/{doc_id}", json=_line_patch(ctx["item_id"], 2, 75.0),
+    r = await client.patch(f"/docs/{doc_id}", json={**_line_patch(ctx["item_id"], 2, 75.0),
+                                 "expected_version": await doc_version(client, ctx["admin_h"], doc_id)},
                            headers=ctx["operator_h"])
     assert r.status_code == 403, r.text
     assert missing_permission_text("set_sales_doc_prices") in r.json()["detail"]
 
-    r2 = await client.patch(f"/docs/{doc_id}", json=_line_patch(ctx["item_id"], 3, 50.0),
+    r2 = await client.patch(f"/docs/{doc_id}", json={**_line_patch(ctx["item_id"], 3, 50.0),
+                                  "expected_version": await doc_version(client, ctx["admin_h"], doc_id)},
                             headers=ctx["operator_h"])
     assert r2.status_code == 200, r2.text
 
@@ -787,7 +789,7 @@ async def test_operator_default_sets_doc_price(client, session):
 
     r2 = await client.patch(
         f"/docs/{doc_id}",
-        json={"fields_changed": {"line_items": {
+        json={"expected_version": await doc_version(client, ctx["operator_h"], doc_id), "fields_changed": {"line_items": {
             "old": [{"sku": "SKU-PERM", "item_id": ctx["item_id"], "quantity": 1, "unit_price": 999.0}],
             "new": [{"sku": "SKU-PERM", "item_id": ctx["item_id"], "quantity": 1, "unit_price": 50.0}],
         }}},
@@ -825,9 +827,10 @@ async def test_save_doc_lines_surfaces_permission_error(client, session):
                 f"/docs/{doc_id}/lines",
                 json={"line_items": [{"sku": "SKU-PERM", "item_id": ctx["item_id"],
                                       "quantity": 2, "unit_price": 75.0}],
-                      "subtotal": 150.0, "tax": 0, "total": 150.0},
+                      "subtotal": 150.0, "tax": 0, "total": 150.0,
+                      "expected_version": await doc_version(client, ctx["admin_h"], doc_id)},
             )
-    assert r.status_code == 400, r.text
+    assert r.status_code == 403, r.text
     assert missing_permission_text("set_sales_doc_prices") in r.json()["error"]
 
 

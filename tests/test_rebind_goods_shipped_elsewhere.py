@@ -19,6 +19,7 @@ from stock_books import assert_settled
 from test_cost_follows_goods import _doc_number, _invoice, _lots, _ship
 from test_invoice_unshipped_books import _lot, _ok
 from test_set_aside_goods_follow_the_lot import _per_doc
+from test_helpers import doc_version
 
 pytestmark = pytest.mark.asyncio
 
@@ -30,7 +31,7 @@ def _line(lot: str, sku: str) -> list[dict]:
 
 
 async def _rebind(client, auth, doc: str, new: list[dict]):
-    return await client.patch(f"/docs/{doc}", headers=auth["headers"], json={
+    return await client.patch(f"/docs/{doc}", headers=auth["headers"], json={"expected_version": await doc_version(client, auth["headers"], doc), 
         "fields_changed": {"line_items": {"old": None, "new": new}}})
 
 

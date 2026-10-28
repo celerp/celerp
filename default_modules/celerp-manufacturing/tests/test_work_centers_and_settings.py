@@ -392,3 +392,18 @@ def test_hours_per_day_setting_removed() -> None:
             if pat in text:
                 offenders.append(f"{f.name}: still reads/writes the old hours_per_day setting ({pat})")
     assert offenders == [], offenders
+
+
+# A rename that also makes the center the default reads the other centers before saving,
+# and still refuses a taken name with the name message, never a server error.
+@pytest.mark.asyncio
+async def test_renaming_a_work_center_to_a_taken_name_is_refused_by_name(client):
+    token = await _register(client)
+    assert (await client.post("/manufacturing/work-centers", headers=_h(token),
+                              json={"name": "Polishing Bench"})).status_code == 200
+    other = (await client.post("/manufacturing/work-centers", headers=_h(token),
+                               json={"name": "Setting Bench"})).json()["id"]
+    r = await client.patch(f"/manufacturing/work-centers/{other}", headers=_h(token),
+                           json={"name": "Polishing Bench", "is_default": True})
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"] == t("manufacturing.err_wc_name_taken", name="Polishing Bench")

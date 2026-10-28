@@ -152,6 +152,7 @@ async def test_cloud_status_uses_ws_pushed_tier_when_relay_unreachable(client, o
         patch("celerp.services.cloud_entitlement.authenticated_request",
               new=AsyncMock(side_effect=httpx.ConnectError("relay unreachable"))),
         patch("celerp.gateway.client.get_client", return_value=MagicMock(relay_status="active")),
+        patch("celerp.services.cloud_entitlement.authenticated_request", new=AsyncMock(side_effect=OSError)),
     ):
         r = await client.get("/settings/cloud-status", headers=owner_h)
     assert r.status_code == 200

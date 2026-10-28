@@ -704,9 +704,7 @@ def setup_routes(app):
         try:
             order = await api.get_mfg_order(token, order_id)
         except APIError as e:
-            if e.status == 401:
-                return RedirectResponse("/login", status_code=302)
-            return HTMLResponse(str(e.detail), status_code=e.status or 404)
+            return api.refusal_response(e)
         items = (await api.list_items(token, {"limit": 1000, "status": "all"})).get("items", [])
         items += (await deleted_items(token, [i.get("item_id") for i in order.get("inputs") or []])).values()
         return HTMLResponse(to_xml(_run_sheet_print_view(order, items, await _company_today(token))))
@@ -830,9 +828,7 @@ def setup_routes(app):
             run = await api.get_mfg_order(token, run_id)
             needs, accounts = await _reconcile_context(token, run_id)
         except APIError as e:
-            if e.status == 401:
-                return RedirectResponse("/login", status_code=302)
-            return HTMLResponse(str(e.detail), status_code=e.status or 404)
+            return api.refusal_response(e)
         out = (run.get("expected_outputs") or [{}])[0]
         product = out.get("sku") or out.get("name") or run.get("output_item_id")
         if run.get("output_item_id") in await _deleted_outputs(token, [run]):

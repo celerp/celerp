@@ -38,6 +38,7 @@ from company_backup_support import (
     members,
     owner,
     read,
+    repacked,
     replayed,
     restore,
     rezip,
@@ -3026,6 +3027,29 @@ _BK_MEMBER_CHANGES = {
     "unexpected_table": lambda p: [*p.items(), ("tables/users.jsonl", b"")],
     "path_traversal": lambda p: [*p.items(), ("attachments/../../evil.png", b"evil")],
 }
+
+
+@pytest.mark.parametrize("packing", ["lzma_every_file", "lzma_one_table", "bzip2", "password"])
+async def test_a_copy_packed_with_another_method_or_a_password_is_refused(real_engine, real_client, tmp_path,
+                                                                         monkeypatch, packing):
+    """Celerp writes its copies deflated. One whose files, or a single table, are packed with
+    LZMA (which holds what its entry declares, up to 4 GB), bzip2 or a password is refused as
+    damaged before a byte of them is unpacked. The same copy stored instead of deflated restores."""
+    _bk_local(monkeypatch, tmp_path)
+    user, _, tok = await _bk_setup(real_engine)
+    data = await download(real_client, tok)
+    if packing == "lzma_one_table":
+        out = io.BytesIO()
+        with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zf:
+            for name, body in members(data).items():
+                zf.writestr(name, body, compress_type=zipfile.ZIP_LZMA if name == "tables/locations.jsonl" else None)
+        data = out.getvalue()
+    else:
+        method = {"lzma_every_file": zipfile.ZIP_LZMA, "bzip2": zipfile.ZIP_BZIP2}.get(packing, zipfile.ZIP_DEFLATED)
+        data = repacked(data, method, password=packing == "password")
+    await _bk_refused(real_engine, real_client, tok, user, tmp_path, data, "damaged or was changed")
+    r = await restore(real_client, tok, repacked(await download(real_client, tok), zipfile.ZIP_STORED))
+    assert r.status_code == 201, r.text
 
 
 @pytest.mark.parametrize("change", sorted(_BK_MEMBER_CHANGES))

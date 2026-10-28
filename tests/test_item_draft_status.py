@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 
 from celerp.services.pricing import is_cost_list_name  # noqa: E402
-from test_helpers import create_item, grant_permission, perm_setup, merge_items, reserve_item  # noqa: E402
+from test_helpers import create_item, grant_permission, perm_setup, merge_items, reserve_item, doc_version  # noqa: E402
 from celerp.services.permissions import missing_permission_text
 from celerp_inventory.routes import _field_name
 from ui.components.activity import event_label
@@ -461,7 +461,7 @@ async def test_revert_blocked_when_on_document_via_patch_path(client, session):
     old_lines = (await client.get(f"/docs/{doc_id}", headers=ctx["admin_h"])).json()["line_items"]
     patch = await client.patch(
         f"/docs/{doc_id}",
-        json={"fields_changed": {"line_items": {
+        json={"expected_version": await doc_version(client, ctx["admin_h"], doc_id), "fields_changed": {"line_items": {
             "old": old_lines,
             "new": old_lines + [{"entity_id": item_id, "sku": "RVDP-1",
                                  "name": "Draft Widget", "quantity": 1, "unit_price": 12.0}],

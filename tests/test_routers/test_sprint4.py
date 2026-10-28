@@ -11,6 +11,7 @@ Tests for Sprint 4 features:
 from __future__ import annotations
 
 import pytest
+from test_helpers import doc_version
 
 
 # ---------------------------------------------------------------------------
@@ -107,6 +108,7 @@ async def test_patch_doc_line_items(client):
             "total": {"old": None, "new": total},
         }
     }
+    patch["expected_version"] = await doc_version(client, _h(token), eid)
     r = await client.patch(f"/docs/{eid}", headers=_h(token), json=patch)
     assert r.status_code == 200
     doc = (await client.get(f"/docs/{eid}", headers=_h(token))).json()
@@ -149,6 +151,7 @@ async def test_patch_doc_updates_totals(client):
             "total": {"old": None, "new": 10700},
         }
     }
+    patch["expected_version"] = await doc_version(client, _h(token), eid)
     r = await client.patch(f"/docs/{eid}", headers=_h(token), json=patch)
     assert r.status_code == 200
     doc = (await client.get(f"/docs/{eid}", headers=_h(token))).json()

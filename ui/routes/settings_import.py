@@ -260,6 +260,8 @@ def setup_routes(app):
         try:
             result = await api.batch_import(token, "/companies/me/locations/import/batch", records)
         except APIError as e:
+            if e.status == 401:
+                raise
             return import_result_panel(
                 created=0, skipped=0, errors=[e.detail],
                 entity_label=t("settings.tab_locations"),
@@ -460,6 +462,8 @@ def setup_routes(app):
             result = await api.batch_import(token, "/companies/me/taxes/import/batch",
                                           _settings_records("taxes", records))
         except APIError as e:
+            if e.status == 401:
+                raise
             return import_result_panel(
                 created=0, skipped=0, errors=[e.detail],
                 entity_label=t("settings.tab_taxes"),
@@ -658,6 +662,8 @@ def setup_routes(app):
             result = await api.batch_import(token, "/companies/me/payment-terms/import/batch",
                                           _settings_records("payment_terms", records))
         except APIError as e:
+            if e.status == 401:
+                raise
             return import_result_panel(
                 created=0, skipped=0, errors=[e.detail],
                 entity_label=t("settings.tab_terms"),

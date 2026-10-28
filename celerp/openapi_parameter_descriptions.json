@@ -1502,5 +1502,14 @@
   },
   "POST /ai/jobs/{job_id}/retry-failed": {
     "path:job_id": "Identifier of the AI processing job."
+  },
+  "GET /lists/{entity_id}/old-rule-total": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /lists/{entity_id}/recalculate-total": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /lists/{entity_id}/restore-total": {
+    "path:entity_id": "Identifier of the requested Celerp record."
   }
 }

@@ -528,6 +528,8 @@ settings.data_dir = Path(sys.argv[3])
 settings.gateway_token = ""
 settings.celerp_public_url = None
 import celerp.main as app_main
+from conftest_support import skip_relay_check_in
+skip_relay_check_in()
 if mode == "guard_raises":
     import celerp.services.dev_release_guard as guard
     async def _guard_fails(session):

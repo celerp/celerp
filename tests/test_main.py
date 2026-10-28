@@ -15,6 +15,8 @@ from fastapi.testclient import TestClient
 from httpx import ASGITransport, AsyncClient
 from ui.i18n import t
 
+pytestmark = pytest.mark.usefixtures("relay_not_called_at_boot")
+
 
 # ── Exception handlers (via the live app) ────────────────────────────────────
 

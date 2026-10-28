@@ -525,13 +525,15 @@ async def test_bulk_refuses_an_oversized_file_without_unpacking_it(
 
 @pytest.mark.parametrize(
     "limit, value, message",
-    [("_BULK_MAX_UNPACKED", 100, "unpacks to more than"), ("_BULK_MAX_ENTRIES", 1, "holds 2 files")],
+    [("_BULK_MAX_UNPACKED", 100, ("inventory.err_zip_too_large", {"gb": 0})),
+     ("_BULK_MAX_ENTRIES", 1, ("inventory.err_zip_too_many_files", {"max": 1}))],
 )
 @pytest.mark.asyncio
 async def test_bulk_refuses_an_archive_over_the_limits_before_attaching_anything(
-    client: AsyncClient, monkeypatch, limit: str, value: int, message: str
+    client: AsyncClient, monkeypatch, limit: str, value: int, message: tuple[str, dict]
 ):
     from celerp_inventory import routes_attachments
+    from ui.i18n import t
 
     monkeypatch.setattr(routes_attachments, limit, value, raising=False)
     token = await _token(client)
@@ -543,7 +545,7 @@ async def test_bulk_refuses_an_archive_over_the_limits_before_attaching_anything
         headers=_h(token),
     )
     assert resp.status_code == 422
-    assert message in resp.json()["detail"]
+    assert resp.json()["detail"] == t(message[0], **message[1])
     assert await _item_files(client, token, item_id) == []
 
 

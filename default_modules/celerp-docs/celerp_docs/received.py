@@ -31,6 +31,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from celerp.accounting_roles import refusal
 from celerp.db import get_session
 from celerp.events.engine import emit_event, find_event_by_idempotency
 from celerp.models.projections import Projection
@@ -38,7 +39,8 @@ from celerp.services.auth import get_current_company_id, get_current_role, get_c
 from celerp.services.company_lock import lock_company
 from celerp.services.money import round_money, to_decimal
 from celerp.services.permissions import get_current_company_settings, require_permission
-from celerp_docs.doc_projections import _recalc_list_totals
+from celerp.tax_regimes import tax_entries
+from celerp_docs.doc_money import line_tax_definition, list_totals
 from ui.i18n import t
 
 ENTITY_TYPE = "received_document"
@@ -326,10 +328,9 @@ _BILL_FIELDS = ("issue_date", "due_date", "payment_terms")
 
 
 def _tax_rate(taxes) -> float | None:
-    """A list line carries one tax rate; the sender's line taxes collapse to their sum."""
-    if not isinstance(taxes, list) or not taxes:
-        return None
-    return sum(float(t.get("rate") or 0) for t in taxes if isinstance(t, dict)) or None
+    """A list holds its tax on the whole list as one header rate; the sender's document taxes
+    collapse to their sum."""
+    return sum(float(t.get("rate") or 0) for t in tax_entries(taxes)) or None
 
 
 def _lines(document: dict, kind: str) -> list[dict]:
@@ -338,9 +339,11 @@ def _lines(document: dict, kind: str) -> list[dict]:
     for li in document.get("line_items") or []:
         line = {k: li[k] for k in fields if li.get(k) is not None}
         if kind == "list":
-            rate = li.get("tax_rate") or _tax_rate(li.get("taxes"))
-            if rate:
-                line["tax_rate"] = rate
+            entries, rate = line_tax_definition(li)
+            if entries:
+                line["taxes"] = entries
+            elif rate:
+                line["tax_rate"] = float(rate)
         out.append(line)
     return out
 
@@ -370,31 +373,25 @@ def _money(value, currency) -> Decimal:
     return round_money(to_decimal(value or 0), currency)
 
 
-def unrepresentable(document: dict, target: BookTarget) -> str | None:
-    """Why a draft of this target cannot carry the document's money exactly, or None.
+def unrepresentable(document: dict, target: BookTarget) -> dict | None:
+    """Why a draft of this target cannot carry the document's money exactly, as a refusal
+    the page links to a new quotation from, or None.
 
     A document keeps the sender's amounts as they are. A quotation list
-    recomputes its own total from its lines, one discount and simple tax rates,
-    so a revision it cannot hold without changing the total is refused rather
-    than booked or applied with different money."""
+    recomputes its own total from its lines, its discount and its taxes by the
+    document rule, with no shipping and no document taxes beyond one header
+    rate, so a revision it would total differently is refused rather than booked
+    or applied with different money."""
     if target.kind != "list":
         return None
     currency = document.get("currency")
-    doc_taxes = document.get("doc_taxes") or []
-    line_taxes = [t for li in document.get("line_items") or [] for t in li.get("taxes") or []]
-    if _money(document.get("shipping"), currency):
-        return "A quotation has no shipping charge, so this document cannot become one without changing its total."
-    if any(t.get("is_compound") for t in (*doc_taxes, *line_taxes)):
-        return "A quotation has no compound tax, so this document cannot become one without changing its total."
-    if doc_taxes and line_taxes:
-        return (
-            "A quotation taxes either each line or the whole document, not both, "
-            "so this document cannot become one without changing its total."
-        )
-    totals = _recalc_list_totals(dict(managed_fields(document, target)))
-    if _money(totals["total"], currency) != _money(document.get("total"), currency):
-        return "A quotation would total this document differently, so it cannot become one without changing its total."
-    return None
+    total = _money(document.get("total"), currency)
+    list_total = _money(list_totals(managed_fields(document, target))["total"], currency)
+    if list_total == total:
+        return None
+    params = {"total": str(total), "list_total": str(list_total)}
+    return {**refusal("documents.err_received_list_total", t("documents.err_received_list_total", **params), **params),
+            "code": "received_list_total"}
 
 
 def _fits(state: dict, booked: dict, target: Projection) -> bool:

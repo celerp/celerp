@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from unittest.mock import patch
 
 import pytest
@@ -12,7 +12,6 @@ import pytest
 from celerp_docs.sequences import (
     next_doc_ref,
     validate_pattern,
-    preview_pattern,
     get_all_sequences,
     update_sequence,
     DEFAULT_PATTERN,
@@ -102,12 +101,6 @@ def test_validate_pattern_accepts_valid():
     assert validate_pattern("{DD}/{MM}/{YY}-{###}") is None
 
 
-def test_preview_pattern():
-    preview = preview_pattern("{PREFIX}-{YY}{MM}-{##}", "INV", seq_num=42)
-    now = datetime.now(timezone.utc)
-    assert preview == f"INV-{now.year % 100:02d}{now.month:02d}-42"
-
-
 def test_get_all_sequences_returns_all_types():
     c = _company()
     seqs = get_all_sequences(c)
@@ -152,13 +145,12 @@ def test_update_sequence_min_next_is_1():
 
 
 def test_expand_pattern_with_dd():
-    now = datetime(2026, 3, 23, tzinfo=timezone.utc)
-    result = _expand_pattern("{DD}/{MM}/{YY}-{###}", "X", now, 7)
+    result = _expand_pattern("{DD}/{MM}/{YY}-{###}", "X", date(2026, 3, 23), 7)
     assert result == "23/03/26-007"
 
 
 def test_expand_pattern_hash_padding():
-    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
-    assert _expand_pattern("{#####}", "X", now, 42) == "00042"
-    assert _expand_pattern("{##}", "X", now, 42) == "42"
-    assert _expand_pattern("{##}", "X", now, 1) == "01"
+    day = date(2026, 1, 1)
+    assert _expand_pattern("{#####}", "X", day, 42) == "00042"
+    assert _expand_pattern("{##}", "X", day, 42) == "42"
+    assert _expand_pattern("{##}", "X", day, 1) == "01"
