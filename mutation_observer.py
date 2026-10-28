@@ -646,7 +646,7 @@ def explain(findings: list[Finding]) -> str:
         out.append(
             f"- {f.kind}: {f.route} {f.table or ''} company {f.company} ({f.company_from}); {f.detail}\n"
             f"  sql: {f.sql[:300]}\n  earlier locks: {f.earlier_locks or 'none'}\n"
-            f"  at: {' <- '.join(f.where[:4]) or 'no app frame'}")
+            f"  at: {' <- '.join(reversed(f.where[-4:])) or 'no app frame'}")
     return "\n".join(out)
 
 
