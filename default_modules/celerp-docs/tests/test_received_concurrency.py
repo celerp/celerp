@@ -86,3 +86,44 @@ async def test_same_revision_with_different_content_at_once_records_only_one(_db
             await s.execute(delete(LedgerEntry).where(LedgerEntry.company_id == company_id))
             await s.execute(delete(Company).where(Company.id == company_id))
             await s.commit()
+
+
+@pytest.mark.asyncio
+async def test_booking_while_a_new_revision_is_recorded_books_that_revision(_db_engine):
+    """Booking reads the received document under the company lock: a booking made while a
+    newer revision is being recorded waits for it and books the revision it left."""
+    from types import SimpleNamespace
+
+    from celerp_docs import received
+
+    factory = async_sessionmaker(bind=_db_engine, class_=AsyncSession, expire_on_commit=False)
+    company_id = uuid.uuid4()
+    async with factory() as s:
+        s.add(Company(id=company_id, name="BookCo", slug=f"book-{company_id.hex[:8]}"))
+        await s.commit()
+    async with factory() as s:
+        rid = await _record(s, company_id, 1, "5.00")
+        await s.commit()
+
+    async def booked():
+        async with factory() as s:
+            await received.book(s, company_id, rid, role="owner", settings={},
+                                user=SimpleNamespace(id=None))
+        async with factory() as s:
+            return (await s.get(Projection, (company_id, rid))).state["booked"]
+
+    s1 = factory()
+    try:
+        await _record(s1, company_id, 2, "10.00")  # not committed yet
+        task = asyncio.create_task(booked())
+        await asyncio.sleep(0.5)
+        assert not task.done(), "the booking read the received document without waiting for the holder"
+        await s1.commit()
+        assert (await asyncio.wait_for(task, timeout=10))["revision_seq"] == 2
+    finally:
+        await s1.close()
+        async with factory() as s:
+            await s.execute(delete(Projection).where(Projection.company_id == company_id))
+            await s.execute(delete(LedgerEntry).where(LedgerEntry.company_id == company_id))
+            await s.execute(delete(Company).where(Company.id == company_id))
+            await s.commit()

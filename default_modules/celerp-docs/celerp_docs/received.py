@@ -411,7 +411,10 @@ def _fits(state: dict, booked: dict, target: Projection) -> bool:
 # ---------------------------------------------------------------------------
 
 async def _received_row(session: AsyncSession, company_id, rid: str) -> Projection:
-    row = await session.get(Projection, (company_id, rid))
+    """The received document a request books or follows, read under the company lock as
+    the previous holder left it, so a revision recorded meanwhile is the one judged."""
+    await lock_company(session, company_id)
+    row = await _fresh(session, company_id, rid)
     if row is None or row.entity_type != ENTITY_TYPE:
         raise HTTPException(status_code=404, detail=t("documents.err_received_not_found"))
     return row
