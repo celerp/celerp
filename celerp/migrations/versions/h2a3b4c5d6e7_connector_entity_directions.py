@@ -60,9 +60,7 @@ def _single(directions: dict) -> str:
 
 def upgrade() -> None:
     op.add_column("connector_configs", sa.Column("entity_directions", sa.JSON(), nullable=True))
-    op.add_column("connector_configs", sa.Column("first_sync_at", sa.DateTime(timezone=True), nullable=True))
     op.add_column("connector_configs", sa.Column("orders_from", sa.DateTime(timezone=True), nullable=True))
-    op.add_column("connector_configs", sa.Column("first_sync_undo", sa.JSON(), nullable=True))
     op.add_column("connector_configs", sa.Column("connect_lapsed_at", sa.DateTime(timezone=True), nullable=True))
     bind = op.get_bind()
     for row_id, connector, direction in bind.execute(sa.text(
@@ -70,18 +68,6 @@ def upgrade() -> None:
         bind.execute(sa.text(
             "UPDATE connector_configs SET entity_directions = CAST(:d AS json) WHERE id = :id"
         ), {"d": json.dumps(_per_record(connector, direction)), "id": row_id})
-    # Runs before the connection's last reset belong to an earlier connection.
-    bind.execute(sa.text("""
-        UPDATE connector_configs c SET first_sync_at = (
-            SELECT min(r.started_at) FROM sync_runs r
-            WHERE r.company_id = c.company_id AND r.connector = c.connector
-              AND r.entity <> '__connector_reset__'
-              AND r.started_at > coalesce((
-                  SELECT max(x.started_at) FROM sync_runs x
-                  WHERE x.company_id = c.company_id AND x.connector = c.connector
-                    AND x.entity = '__connector_reset__'), '-infinity'::timestamptz)
-        )
-    """))
     op.alter_column("connector_configs", "entity_directions", nullable=False)
     op.drop_column("connector_configs", "direction")
 
@@ -96,7 +82,5 @@ def downgrade() -> None:
         bind.execute(sa.text("UPDATE connector_configs SET direction = :d WHERE id = :id"),
                      {"d": _single(values), "id": row_id})
     op.drop_column("connector_configs", "connect_lapsed_at")
-    op.drop_column("connector_configs", "first_sync_undo")
     op.drop_column("connector_configs", "orders_from")
-    op.drop_column("connector_configs", "first_sync_at")
     op.drop_column("connector_configs", "entity_directions")

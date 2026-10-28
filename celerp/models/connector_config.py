@@ -7,7 +7,7 @@ import json
 from datetime import datetime
 
 import sqlalchemy as sa
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from celerp.models.base import Base
 
@@ -25,10 +25,10 @@ class ConnectorConfig(Base):
     """Per-connector, per-company sync configuration.
 
     ``entity_directions`` sets, for each kind of record the connector carries, which
-    way it syncs (see ConnectorBase.entity_flows). ``first_sync_at`` is when a person
-    started the first sync; nothing runs on a schedule, and webhooks deliver nothing,
-    before it. ``orders_from`` is the earliest order date the connection imports.
-    ``first_sync_undo`` records what the first sync linked and created, for its undo.
+    way it syncs (see ConnectorBase.entity_flows). ``first_sync`` is the connection's
+    first-sync record (ConnectorFirstSync), loaded with it; nothing runs on a schedule,
+    and webhooks deliver nothing, until it completed. ``orders_from`` is the earliest
+    order date the connection imports.
     ``connect_lapsed_at`` is set while Celerp Connect has ended and syncing is paused.
     ``webhooks_dirty`` is set while the store's webhooks may not match the directions;
     ``webhooks_version`` changes with every change that asks for them to be reconciled,
@@ -46,16 +46,26 @@ class ConnectorConfig(Base):
     webhook_ids_json: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
     webhook_secret: Mapped[str | None] = mapped_column(sa.String(128), nullable=True)
     last_daily_sync_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
-    first_sync_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
     orders_from: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
-    first_sync_undo: Mapped[dict | None] = mapped_column(sa.JSON, nullable=True)
     connect_lapsed_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
     webhooks_dirty: Mapped[bool] = mapped_column(sa.Boolean, nullable=False, default=False)
     webhooks_version: Mapped[int] = mapped_column(sa.BigInteger, nullable=False, default=0)
 
+    first_sync = relationship(
+        "ConnectorFirstSync",
+        primaryjoin="and_(foreign(ConnectorConfig.company_id) == ConnectorFirstSync.company_id, "
+                    "foreign(ConnectorConfig.connector) == ConnectorFirstSync.connector)",
+        viewonly=True, uselist=False, lazy="selectin",
+    )
+
     __table_args__ = (
         sa.UniqueConstraint("company_id", "connector", name="uq_connector_config"),
     )
+
+    @property
+    def first_sync_state(self) -> str | None:
+        """The first sync's state (FIRST_SYNC_STATES), None when it has no record."""
+        return self.first_sync.state if self.first_sync is not None else None
 
     @property
     def webhook_ids(self) -> list[str]:

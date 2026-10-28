@@ -79,13 +79,26 @@ def upgrade() -> None:
     if "webhooks_version" not in columns:
         op.add_column("connector_configs", sa.Column(
             "webhooks_version", sa.BigInteger(), nullable=False, server_default="0"))
+    # A connection made before reviewed first syncs existed has been syncing since its
+    # first run after its last reset (runs before that belong to an earlier connection):
+    # that run is its completed first sync. Connectors without a reviewed first sync have
+    # nothing to review.
     bind.execute(sa.text("""
         INSERT INTO connector_first_syncs (company_id, connector, state, started_at)
         SELECT c.company_id, c.connector,
-               CASE WHEN c.connector NOT IN :reviewed OR c.first_sync_at IS NOT NULL
+               CASE WHEN c.connector NOT IN :reviewed OR s.first_run IS NOT NULL
                     THEN 'completed' ELSE 'pending' END,
-               c.first_sync_at
+               s.first_run
         FROM connector_configs c
+        LEFT JOIN LATERAL (
+            SELECT min(r.started_at) AS first_run FROM sync_runs r
+            WHERE r.company_id = c.company_id AND r.connector = c.connector
+              AND r.entity <> '__connector_reset__'
+              AND r.started_at > coalesce((
+                  SELECT max(x.started_at) FROM sync_runs x
+                  WHERE x.company_id = c.company_id AND x.connector = c.connector
+                    AND x.entity = '__connector_reset__'), '-infinity'::timestamptz)
+        ) s ON true
         WHERE NOT EXISTS (SELECT 1 FROM connector_first_syncs f
                           WHERE f.company_id = c.company_id AND f.connector = c.connector)
     """).bindparams(sa.bindparam("reviewed", expanding=True)), {"reviewed": list(_REVIEWED)})
