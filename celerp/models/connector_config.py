@@ -48,8 +48,8 @@ class ConnectorConfig(Base):
     last_daily_sync_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
     orders_from: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
     connect_lapsed_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
-    webhooks_dirty: Mapped[bool] = mapped_column(sa.Boolean, nullable=False, default=False)
-    webhooks_version: Mapped[int] = mapped_column(sa.BigInteger, nullable=False, default=0)
+    webhooks_dirty: Mapped[bool] = mapped_column(sa.Boolean, nullable=False, default=False, server_default=sa.false())
+    webhooks_version: Mapped[int] = mapped_column(sa.BigInteger, nullable=False, default=0, server_default="0")
 
     first_sync = relationship(
         "ConnectorFirstSync",
