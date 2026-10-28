@@ -72,7 +72,10 @@ async def test_shop_sync_disabled_clears_flag(session):
 
 
 @pytest.mark.asyncio
-async def test_shop_sync_event_acquires_connector_fence(session, monkeypatch):
+async def test_shop_sync_event_leaves_the_connector_fence_to_its_caller(session, monkeypatch):
+    """The event is written after the item's projection row is locked, so taking the
+    connector fence here would invert the lock order. The caller that changes an item's
+    sync (set_item_sync) holds the fence already."""
     cid = uuid.uuid4()
     session.add(Company(id=cid, name="FenceCo", slug=f"fenceco-{cid.hex[:8]}"))
     await session.flush()
@@ -92,7 +95,7 @@ async def test_shop_sync_event_acquires_connector_fence(session, monkeypatch):
     )
     await _emit(session, cid, eid, "shop.sync.disabled", {})
 
-    lock.assert_awaited_once_with(session, "shopify")
+    lock.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import contextlib
 import uuid
+from types import SimpleNamespace
 
 import pytest
 
@@ -121,3 +122,38 @@ def connector_session(session, monkeypatch):
     monkeypatch.setattr("celerp.db.SessionLocal", _same)
     monkeypatch.setattr("celerp.db.get_session_ctx", _same)
     return session
+
+
+def stand_in_execution(monkeypatch, ctx=None):
+    """Run connector work against the test's session without a lease: the stand-in
+    reads the connection and its first-sync record and gives the real eligibility
+    answer (ExecutionRefused when it refuses), then yields an execution carrying
+    ``ctx`` as the relay's context, or the context the relay gives when ``ctx`` is
+    None. For unit tests of what runs inside an execution."""
+    import sqlalchemy as sa
+
+    from celerp import connectors
+    from celerp.connectors import execution
+    from celerp.models.connector_config import ConnectorConfig
+
+    @contextlib.asynccontextmanager
+    async def _execution(company_id, connector, purpose, resources, **_):
+        from celerp.db import get_session_ctx
+
+        if isinstance(connector, str):
+            connector = connectors.get(connector)
+        async with get_session_ctx() as session:
+            config = await session.scalar(sa.select(ConnectorConfig).where(
+                ConnectorConfig.company_id == str(company_id), ConnectorConfig.connector == connector.name))
+            first_sync = config.first_sync if config is not None else None
+            for resource in resources:
+                reason = execution.eligible(connector, config, first_sync, purpose, resource)
+                if reason is not None:
+                    raise execution.ExecutionRefused(reason)
+        ex = SimpleNamespace(company_id=str(company_id), connector=connector.name, purpose=purpose,
+                             resources=list(resources), ctx=ctx)
+        if ex.ctx is None:
+            ex.ctx = await execution._credentials(ex)
+        yield ex
+
+    monkeypatch.setattr(execution, "connector_execution", _execution)

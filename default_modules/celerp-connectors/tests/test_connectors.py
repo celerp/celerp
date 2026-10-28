@@ -29,6 +29,7 @@ from celerp.connectors.base import (
 from celerp.connectors.shopify import ShopifyConnector, _next_page_url
 from celerp.connectors.webhooks import WebhookEvent, topic_to_entity, handle_webhook
 import celerp.connectors as connector_registry
+from connector_test_support import connector_session  # noqa: F401
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -287,59 +288,41 @@ def test_topic_to_entity_unknown():
 @pytest.mark.asyncio
 async def test_handle_webhook_unknown_topic():
     event = WebhookEvent(platform="shopify", topic="refund/created")
-    ctx = ConnectorContext(company_id="test", access_token="tok")
     with patch("celerp.connectors.webhooks.run_sync", new=AsyncMock()) as mock_sync:
-        await handle_webhook(event, ctx)
+        await handle_webhook(event, "test")
         mock_sync.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_handle_webhook_unknown_platform():
     event = WebhookEvent(platform="unknown_platform", topic="products/update")
-    ctx = ConnectorContext(company_id="test", access_token="tok")
     with patch("celerp.connectors.webhooks.run_sync", new=AsyncMock()) as mock_sync:
-        await handle_webhook(event, ctx)
+        await handle_webhook(event, "test")
         mock_sync.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_woocommerce_delete_webhook_rechecks_current_direction():
-    """A deletion is applied only while products sync at all; with Products Off it is ignored."""
-    import contextlib
-    from types import SimpleNamespace
+@pytest.mark.parametrize("products, applied", [("off", False), ("inbound", True)])
+async def test_woocommerce_delete_webhook_rechecks_current_direction(
+        connector_session, monkeypatch, products, applied):
+    """A deletion is applied only while products sync at all; with Products Off the
+    execution refuses it."""
+    from celerp import connectors
+    from connector_test_support import connect, seed_company, stand_in_execution
 
-    event = WebhookEvent(
-        platform="woocommerce",
-        topic="product.deleted",
-        payload={"id": 10},
-    )
-    ctx = ConnectorContext(company_id="company-test", access_token="stale")
-    connector = MagicMock()
-    connector.handle_product_deleted = AsyncMock()
-    guard_session = AsyncMock()
+    cid = await seed_company(connector_session, "DeleteHook")
+    await connect(connector_session, cid, "woocommerce", {"products": products, "orders": "inbound"},
+                  first_sync="completed")
+    ctx = ConnectorContext(company_id=str(cid), access_token="k:s", store_handle="https://shop.test")
+    stand_in_execution(monkeypatch, ctx)
+    event = WebhookEvent(platform="woocommerce", topic="product.deleted", payload={"id": 10})
+    with patch.object(connectors.get("woocommerce"), "handle_product_deleted", new=AsyncMock()) as deleted:
+        await handle_webhook(event, cid)
 
-    @contextlib.asynccontextmanager
-    async def _guard():
-        yield guard_session
-
-    with patch(
-        "celerp.connectors.webhooks.connector_registry.get",
-        return_value=connector,
-    ), patch(
-        "celerp.db.get_session_ctx", _guard,
-    ), patch(
-        "celerp.connectors.ownership.lock_connector_operation",
-        new=AsyncMock(return_value=SimpleNamespace(
-            entity_directions={"products": "off", "orders": "inbound"},
-            first_sync_state="completed")),
-    ), patch(
-        "celerp.connectors.relay_token.fetch_context",
-        new=AsyncMock(),
-    ) as fetch:
-        await handle_webhook(event, ctx)
-
-    connector.handle_product_deleted.assert_not_awaited()
-    fetch.assert_not_awaited()
+    if applied:
+        deleted.assert_awaited_once_with(ctx, {"id": 10})
+    else:
+        deleted.assert_not_awaited()
 
 
 # ── ConnectorConfig model ────────────────────────────────────────────────────
@@ -430,10 +413,15 @@ async def test_sync_unsupported_entity(client, patch_session_token):
 
 
 @pytest.mark.asyncio
-async def test_sync_asks_for_an_update_when_the_relay_requires_one(client, session, patch_session_token):
+async def test_sync_asks_for_an_update_when_the_relay_requires_one(
+        client, connector_session, patch_session_token, monkeypatch):
     from celerp.connectors.relay_token import ConnectorUpgradeRequired
     from celerp.models.connector_config import ConnectorConfig
+    from connector_test_support import stand_in_execution
     from test_helpers import register_admin
+
+    session = connector_session
+    stand_in_execution(monkeypatch)
 
     headers = {"Authorization": f"Bearer {await register_admin(client)}",
                "X-Session-Token": _FAKE_SESSION_TOKEN}

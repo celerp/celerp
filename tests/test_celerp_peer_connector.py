@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -327,25 +328,24 @@ async def test_stock_audit_does_not_require_contact_or_product_name(monkeypatch)
 @pytest.mark.asyncio
 async def test_accountant_downstream_stops_when_required_outbound_entity_failed(monkeypatch):
     from contextlib import asynccontextmanager
-    from celerp import db
-    from celerp.connectors import ownership, sync_runner
+    from celerp.connectors import execution, sync_runner
     from celerp.connectors.base import SyncEntity, SyncResult
 
-    class Session:
-        async def commit(self):
-            pass
+    company_id = str(uuid.uuid4())
+    ctx = ConnectorContext(company_id=company_id, access_token="cp1.fake",
+                           store_handle="https://firm.example")
+
+    async def sending_only(cid, name):
+        return {key: "outbound" if flow.outbound else "off"
+                for key, flow in peer.CelerpConnector.entity_flows.items()}
 
     @asynccontextmanager
-    async def session():
-        yield Session()
-
-    async def sending_only(*args, **kwargs):
-        return SimpleNamespace(id=1, entity_directions={
-            key: "outbound" if flow.outbound else "off"
-            for key, flow in peer.CelerpConnector.entity_flows.items()})
+    async def one_execution(cid, connector, purpose, resources):
+        assert (cid, purpose) == (company_id, "manual_sync")
+        yield SimpleNamespace(ctx=ctx)
 
     seen = []
-    async def fake_run_sync(connector, ctx, entity, **kwargs):
+    async def fake_run_sync(connector, cid, entity, **kwargs):
         seen.append(entity)
         return SyncResult(
             entity=SyncEntity.PRODUCTS if entity == "products_out" else SyncEntity.CONTACTS,
@@ -353,21 +353,19 @@ async def test_accountant_downstream_stops_when_required_outbound_entity_failed(
             errors=["Source product needs review"] if entity == "products_out" else [],
         )
 
-    monkeypatch.setattr(db, "get_session_ctx", session)
-    monkeypatch.setattr(ownership, "lock_connector_operation", sending_only)
+    monkeypatch.setattr(sync_runner, "_directions", sending_only)
+    monkeypatch.setattr(execution, "connector_execution", one_execution)
     monkeypatch.setattr(sync_runner, "run_sync", fake_run_sync)
     connector = peer.CelerpConnector()
+    monkeypatch.setattr(connector, "before_outbound", AsyncMock())
     assert connector.outbound_dependencies["documents_out"] == frozenset(
         {"contacts_out", "products_out"})
     assert connector.outbound_dependencies["attachments_out"] == frozenset({"documents_out"})
     assert connector.outbound_dependencies["journals_out"] == frozenset({"contacts_out"})
-    results = await sync_runner.run_connector_sync(
-        connector,
-        ConnectorContext(company_id=str(uuid.uuid4()), access_token="cp1.fake",
-                         store_handle="https://firm.example"),
-    )
+    results = await sync_runner.run_connector_sync(connector, company_id, purpose="manual_sync")
     assert seen == ["products_out", "contacts_out", "journals_out"]
     assert len(results) == 3 and not results[0].ok
+    connector.before_outbound.assert_awaited_once_with(ctx)
 
 
 async def test_a_key_the_accountant_closed_says_so_on_the_journals_pull(monkeypatch):

@@ -2,10 +2,10 @@
 # SPDX-License-Identifier: LicenseRef-Proprietary
 """Connector routes reach the shared connector services.
 
-POST /connectors/{name}/sync-plan writes nothing itself: it reads the company's
-connector row, fetches the channel context and starts run_connector_sync in the
-background with the stored direction. Every record the sync writes goes through
-that runner.
+POST /connectors/{name}/sync-plan writes nothing itself: it checks the company's
+connector row and starts run_connector_sync in the background as a manual sync. The
+runner's execution reads the channel context and the stored directions, and every
+record the sync writes goes through that runner.
 
 POST /connectors/{name}/credentials claims the connector for the company through
 claim_connector_ownership, stores the credential on the relay and saves the
@@ -57,10 +57,8 @@ async def test_sync_plan_runs_the_shared_sync_runner(client, session, connect_se
     await session.flush()
     await record_first_sync(session, config, "completed")
     await session.commit()
-    ctx = object()
     runner = AsyncMock()
-    with patch("celerp_connectors.routes._connector_context", AsyncMock(return_value=ctx)), \
-         patch("celerp.connectors.sync_runner.run_connector_sync", runner):
+    with patch("celerp.connectors.sync_runner.run_connector_sync", runner):
         r = await client.post("/connectors/woocommerce/sync-plan", headers=h)
         assert r.status_code == 200, r.text
         assert r.json() == {"ok": True}
@@ -69,10 +67,11 @@ async def test_sync_plan_runs_the_shared_sync_runner(client, session, connect_se
                 break
             await asyncio.sleep(0.01)
     assert runner.await_count == 1
-    connector, passed_ctx = runner.await_args.args
-    assert connector.name == "woocommerce" and passed_ctx is ctx
-    # The runner reads the connection's own directions; the route passes none.
-    assert runner.await_args.kwargs == {}
+    connector, passed_company = runner.await_args.args
+    assert connector.name == "woocommerce" and str(passed_company) == cid
+    # The runner's execution reads the connection's own context and directions; the
+    # route passes only why it runs.
+    assert runner.await_args.kwargs == {"purpose": "manual_sync"}
 
 
 async def test_sync_plan_refuses_a_channel_that_is_not_connected(client, connect_session):

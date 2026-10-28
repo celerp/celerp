@@ -18,6 +18,12 @@ import respx
 
 from celerp.connectors.base import ConnectorContext
 from celerp.connectors.woocommerce import WooCommerceConnector
+from connector_test_support import (  # noqa: F401
+    connect,
+    connector_session,
+    seed_company,
+    stand_in_execution,
+)
 
 
 def _sign(body: bytes, secret: str) -> str:
@@ -46,15 +52,18 @@ def test_webhook_topics_include_order_deletion():
 
 
 @pytest.mark.asyncio
-async def test_order_deletion_webhook_runs_the_reconciliation_pass():
+async def test_order_deletion_webhook_runs_the_reconciliation_pass(connector_session, monkeypatch):
     """WooCommerce names only the deleted order, so the delivery runs the
     orders sync with its reconciliation pass; other order topics do not."""
     from celerp.connectors.webhooks import WebhookEvent, handle_webhook
 
-    ctx = ConnectorContext(company_id="co", access_token="k:s", store_handle="https://shop.test")
+    cid = await seed_company(connector_session, "OrderGone")
+    await connect(connector_session, cid, "woocommerce", _WOO, first_sync="completed")
+    stand_in_execution(monkeypatch, ConnectorContext(
+        company_id=str(cid), access_token="k:s", store_handle="https://shop.test"))
     with patch("celerp.connectors.webhooks.run_sync", new=AsyncMock()) as run:
-        await handle_webhook(WebhookEvent(platform="woocommerce", topic="order.deleted"), ctx)
-        await handle_webhook(WebhookEvent(platform="woocommerce", topic="order.updated"), ctx)
+        await handle_webhook(WebhookEvent(platform="woocommerce", topic="order.deleted"), cid)
+        await handle_webhook(WebhookEvent(platform="woocommerce", topic="order.updated"), cid)
     assert [c.args[2] for c in run.await_args_list] == ["orders", "orders"]
     assert [c.kwargs["reconcile"] for c in run.await_args_list] == [True, False]
 
@@ -78,13 +87,15 @@ async def test_dispatch_valid_signature_triggers_handle():
     body = b'{"id": 42}'
     secret = "shhh"
     hw = AsyncMock()
-    with patch("celerp.db.get_session_ctx", return_value=_mock_session_ctx([("co-1", secret, "both")])), \
-         patch("celerp.connectors.relay_token.fetch_context", new=AsyncMock(return_value=MagicMock())), \
+    with patch("celerp.db.get_session_ctx", return_value=_mock_session_ctx([("co-1", secret)])), \
          patch("celerp.connectors.webhooks.handle_webhook", new=hw):
         handled = await dispatch_woocommerce_webhook(body, _sign(body, secret), "order.created")
     assert handled is True
     hw.assert_awaited_once()
-    assert hw.await_args[0][0].topic == "order.created"
+    event, company_id = hw.await_args.args
+    assert (event.topic, company_id) == ("order.created", "co-1")
+    # The execution's guard requires the secret that signed it.
+    assert hw.await_args.kwargs == {"expected_webhook_secret": secret}
 
 
 @pytest.mark.asyncio
@@ -92,8 +103,7 @@ async def test_dispatch_bad_signature_returns_false():
     from celerp.connectors.webhooks import dispatch_woocommerce_webhook
     body = b'{"id": 42}'
     hw = AsyncMock()
-    with patch("celerp.db.get_session_ctx", return_value=_mock_session_ctx([("co-1", "realsecret", "both")])), \
-         patch("celerp.connectors.relay_token.fetch_context", new=AsyncMock(return_value=MagicMock())), \
+    with patch("celerp.db.get_session_ctx", return_value=_mock_session_ctx([("co-1", "realsecret")])), \
          patch("celerp.connectors.webhooks.handle_webhook", new=hw):
         handled = await dispatch_woocommerce_webhook(body, _sign(body, "wrongsecret"), "order.created")
     assert handled is False
@@ -135,7 +145,6 @@ async def test_gateway_handler_verifies_and_dispatches():
 
 # ── topics follow the per-record directions ──────────────────────────────────
 
-from connector_test_support import connect, connector_session, seed_company  # noqa: E402,F401
 
 _WOO = {"products": "outbound", "stock": "outbound", "orders": "inbound", "customers": "off"}
 
@@ -162,17 +171,15 @@ async def test_delivery_before_first_sync_ignored(connector_session):
     session = connector_session
     cid = await seed_company(session, "EarlyDelivery")
     await connect(session, cid, "woocommerce", _WOO, webhook_secret="early")
-    ctx = ConnectorContext(company_id=str(cid), access_token="k:s", store_handle="https://shop.test")
     body, signature = _signed_delivery("early", {"id": 42})
     run = AsyncMock()
-    with patch("celerp.connectors.relay_token.fetch_context", new=AsyncMock(return_value=ctx)), \
-            patch("celerp.connectors.webhooks.run_sync", new=run):
+    with patch("celerp.connectors.webhooks.run_sync", new=run):
         assert await dispatch_woocommerce_webhook(body, signature, "order.created") is True
     run.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_own_push_does_not_trigger_inbound_run(connector_session):
+async def test_own_push_does_not_trigger_inbound_run(connector_session, monkeypatch):
     from datetime import datetime, timezone
 
     from celerp.connectors.webhooks import WebhookEvent, handle_webhook
@@ -184,13 +191,14 @@ async def test_own_push_does_not_trigger_inbound_run(connector_session):
     await add_item(session, cid, "item:echo", "ECHO-1", external_links={"woocommerce": {
         "product_id": "7", "sync_enabled": True, "remote_deleted": False,
         "last_pushed_modified": "2026-09-01T10:00:00"}})
-    ctx = ConnectorContext(company_id=str(cid), access_token="k:s", store_handle="https://shop.test")
+    stand_in_execution(monkeypatch, ConnectorContext(
+        company_id=str(cid), access_token="k:s", store_handle="https://shop.test"))
     run = AsyncMock()
     with patch("celerp.connectors.webhooks.run_sync", new=run):
         await handle_webhook(WebhookEvent(platform="woocommerce", topic="product.updated",
-                                          payload={"id": 7, "date_modified_gmt": "2026-09-01T10:00:00"}), ctx)
+                                          payload={"id": 7, "date_modified_gmt": "2026-09-01T10:00:00"}), cid)
         run.assert_not_awaited()
         # A change made in the store after the push does run.
         await handle_webhook(WebhookEvent(platform="woocommerce", topic="product.updated",
-                                          payload={"id": 7, "date_modified_gmt": "2026-09-02T08:00:00"}), ctx)
+                                          payload={"id": 7, "date_modified_gmt": "2026-09-02T08:00:00"}), cid)
     run.assert_awaited_once()

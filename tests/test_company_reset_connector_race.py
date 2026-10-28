@@ -55,9 +55,12 @@ async def test_a_connector_connected_while_the_reset_waits_makes_it_refuse(
 
     assert r.status_code == 409, r.text
     assert r.json()["detail"] == "Disconnect shopify before resetting this company. Nothing was deleted."
+    # The connect itself wrote its config and its pending first-sync record; the reset
+    # changed nothing.
+    connect_rows = {"connector_configs", "connector_first_syncs"}
     after = await snapshot(real_engine)
-    assert {t: v for t, v in after.items() if t != "connector_configs"} == \
-        {t: v for t, v in before.items() if t != "connector_configs"}
+    assert {t: v for t, v in after.items() if t not in connect_rows} == \
+        {t: v for t, v in before.items() if t not in connect_rows}
     assert await count(real_engine, "connector_configs", "company_id = :c", c=str(a)) == 1
 
 
