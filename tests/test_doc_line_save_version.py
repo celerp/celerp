@@ -21,7 +21,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from celerp.events.engine import emit_event
 from celerp.models.projections import Projection
-from test_money_stock_and_contact_invariants import _cleanup, _seed_company, _seed_user
+from test_helpers import remove_company
+from test_money_stock_and_contact_invariants import _seed_company, _seed_user
 from test_ui import _authed, ui_client  # noqa: F401
 
 _LINE = {"description": "Fitting", "quantity": 1, "unit_price": 100.0}
@@ -131,7 +132,7 @@ async def test_two_saves_from_the_same_copy_at_once_write_only_one(_db_engine):
     finally:
         await first.close()
         await second.close()
-        await _cleanup(factory, company_id, user_id)
+        await remove_company(factory, company_id, user_id)
 
 
 # The editor's save route: forwards the version the page read and keeps the conflict's status and code.
