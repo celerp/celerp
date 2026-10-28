@@ -307,11 +307,12 @@ class TestDrainMiddleware:
         transaction so this completes.
         """
         from celerp.services.runtime_state import (
-            get_runtime_state, _drain_cache_bust, _SINGLETON_ID)
+            _get_or_create, _drain_cache_bust, _SINGLETON_ID)
         from celerp.models.auth import SystemRuntimeState
 
-        # Request session (connection A) creates + holds the singleton uncommitted.
-        await get_runtime_state(session)
+        # Request session (connection A) creates + holds the singleton uncommitted (the
+        # writer's path; a read never creates it).
+        await _get_or_create(session)
         assert await session.get(SystemRuntimeState, _SINGLETON_ID) is not None
         # Force the next write's is_draining to hit the DB rather than the 1s cache
         # - the exact window the CI flake needs.
