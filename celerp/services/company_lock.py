@@ -210,11 +210,18 @@ def holds_company_lock(session, company_id) -> bool:
     return str(company_id) in {str(c) for c in noted(session, "locked")}
 
 
+def holds_locked_company(session, company_id) -> bool:
+    """True when locked_company() loaded the company in this transaction and its lock still
+    holds: the session's copy of the row is as the previous lock holder committed it. A copy
+    loaded before a bare lock_company() may be stale."""
+    return str(company_id) in {str(c) for c in noted(session, "loaded")}
+
+
 @event.listens_for(Session, "before_flush")
 def _settings_change_needs_the_lock(session: Session, flush_context, instances) -> None:
-    locked = noted(session, "loaded")
     for obj in session.dirty:
-        if isinstance(obj, Company) and obj.id not in locked and get_history(obj, "settings").has_changes():
+        if isinstance(obj, Company) and not holds_locked_company(session, obj.id) \
+                and get_history(obj, "settings").has_changes():
             raise RuntimeError(
                 f"Company {obj.id} settings changed without locked_company(); load the company "
                 "with it before reading the settings to change"

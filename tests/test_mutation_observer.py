@@ -15,7 +15,8 @@ from __future__ import annotations
 import uuid
 
 import pytest
-from sqlalchemy import func, select, text, update
+from fastapi import HTTPException
+from sqlalchemy import func, insert, select, text, update
 
 import mutation_observer
 from mutation_observer import serving
@@ -152,7 +153,62 @@ async def test_a_locked_write_is_protected(session, auth):
         await _event(session, cid)
         await session.commit()
     assert _kinds() == []
-    assert set(mutation_observer.CENSUS.routes["POST /observed"]) == {"protected"}
+    assert set(mutation_observer.CENSUS.routes["POST /observed"]) == {"protected", "company from statement"}
+
+
+async def test_a_write_naming_no_company_is_judged_for_the_requests_company_and_says_so(session, auth):
+    cid = auth["company_id"]
+    location = Location(company_id=cid, name="Before", type="warehouse")
+    session.add(location)
+    await session.commit()
+    with serving("PATCH", "/observed"):
+        _authorize(session, auth)
+        await lock_company(session, cid)
+        await session.execute(update(Location), [{"id": location.id, "name": "After"}])
+        await session.commit()
+    assert _kinds() == []
+    assert mutation_observer.CENSUS.routes["PATCH /observed"] == {"protected": 1, "company from request": 1}
+
+
+async def test_a_bulk_insert_is_judged_for_every_company_it_writes(session, auth):
+    other = uuid.uuid4()
+    session.add(Company(id=other, name="Other", slug=f"other-{other.hex[:8]}", settings={}))
+    await session.commit()
+    with serving("POST", "/observed"):
+        cid = _authorize(session, auth)
+        await lock_company(session, cid)
+        await session.execute(insert(Location), [
+            {"id": uuid.uuid4(), "company_id": c, "name": "Bulk", "type": "warehouse"} for c in (cid, other)])
+        await session.commit()
+    assert _kinds() == ["cross-company"]
+    assert mutation_observer.CENSUS.findings[0].company == str(other)
+
+
+async def test_a_write_under_a_refused_authority_never_counts(session, auth):
+    with serving("POST", "/observed"):
+        cid = auth["company_id"]
+        authorize_request(session, cid, auth["user_id"], "viewer")
+        with pytest.raises(HTTPException):
+            await lock_company(session, cid)
+        await _event(session, cid)
+        with pytest.raises(HTTPException):
+            await session.commit()
+        await session.rollback()
+    assert _kinds() == [] and mutation_observer.CENSUS.routes == {}
+
+
+async def test_the_previous_requests_lock_is_not_inherited_on_a_reused_session(session, auth):
+    with serving("POST", "/first"):
+        cid = _authorize(session, auth)
+        await lock_company(session, cid)
+        await _event(session, cid)
+        await session.commit()
+    with serving("POST", "/second"):
+        _authorize(session, auth)
+        await _event(session, cid)
+        await session.commit()
+    assert {f.route for f in mutation_observer.CENSUS.findings} == {"POST /second"}
+    assert set(_kinds()) == {"unprotected"}
 
 
 async def test_reads_and_writes_that_change_nothing_are_not_writes(session, auth):

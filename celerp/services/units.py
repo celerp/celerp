@@ -88,9 +88,9 @@ async def get_company_units(session, company_id) -> list[dict]:
     under the same lock, so a quantity checked here can never be stored under decimals it was
     not checked against. A copy the session loaded earlier in the request is never trusted."""
     from celerp.models.company import Company
-    from celerp.services.company_lock import holds_company_lock, locked_company
+    from celerp.services.company_lock import holds_locked_company, locked_company
 
-    if holds_company_lock(session, company_id):
+    if holds_locked_company(session, company_id):
         company = await session.get(Company, company_id)
     else:
         company = await locked_company(session, company_id)

@@ -14,8 +14,10 @@ savepoint or transaction never became durable and is dropped, as the lock proofs
 Statements are classified from the construct SQLAlchemy compiled, never from text
 patterns: INSERT, UPDATE and DELETE constructs are writes; a SELECT is a read only when
 every function it calls is in _PURE, and a lock when it carries FOR UPDATE or calls an
-advisory lock function. Raw SQL text, a writable CTE, an unknown function or a statement
-with no construct is flagged for classification, never taken as a read.
+advisory lock function. Raw SQL text is known only when the whole statement is in
+_REVIEWED_SQL; any other text, a writable CTE, an unknown function or a statement with no
+construct is flagged for classification, never taken as a read. A write is judged for the
+companies its statement names, else for the request's company, and the census says which.
 
 Writes are judged only inside a request (``observed`` wraps the app) and only for tables
 that hold company data: a table with a company_id column, or companies itself. A write to
@@ -30,13 +32,15 @@ import weakref
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field
 
+from greenlet import greenlet
 from sqlalchemy import event
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import visitors
 from sqlalchemy.sql.ddl import ExecutableDDLElement
 from sqlalchemy.sql.dml import Delete, Insert, Update, UpdateBase
-from sqlalchemy.sql.elements import BinaryExpression, BindParameter, TextClause
+from sqlalchemy.sql.elements import (BinaryExpression, BindParameter, ReleaseSavepointClause,
+                                     RollbackToSavepointClause, SavepointClause, TextClause)
 from sqlalchemy.sql.functions import FunctionElement
 from sqlalchemy.sql.selectable import CompoundSelect, Select
 
@@ -49,7 +53,7 @@ _PURE = frozenset({
     "jsonb_agg", "jsonb_build_object", "jsonb_extract_path_text", "jsonb_array_elements",
     "jsonb_array_length", "jsonb_typeof", "least", "length", "lower", "max", "min", "now",
     "nullif", "round", "row_number", "string_agg", "substr", "substring", "sum", "trim",
-    "upper", "current_date", "current_timestamp",
+    "upper", "current_date", "current_timestamp", "hashtext", "hashtextextended",
 })
 _ADVISORY = frozenset({
     "pg_advisory_xact_lock", "pg_advisory_xact_lock_shared",
@@ -58,6 +62,24 @@ _ADVISORY = frozenset({
 # Advisory lock families taken before the company lock by the canonical order (module
 # admission and the module-state boundary come first).
 _BEFORE_COMPANY = ("module-use:", "module-gate:")
+# Raw SQL the app runs, each statement reviewed whole: what it does. Any other text, or
+# any edit to one of these, is flagged. A notice to listeners is an outbound effect, not a
+# write of company data; a SET LOCAL changes only this transaction's settings; an advisory
+# lock is named by its parameters.
+_REVIEWED_SQL = {
+    "SELECT id FROM ledger WHERE company_id = CAST(:cid AS uuid) AND idempotency_key=:k": "read",
+    "SELECT pg_notify('events', :payload)": "effect",
+    "SET LOCAL lock_timeout = 0": "control",
+    "SET LOCAL statement_timeout = 0": "control",
+    "SET LOCAL lock_timeout TO DEFAULT": "control",
+    "SET LOCAL statement_timeout TO DEFAULT": "control",
+    "SELECT pg_advisory_xact_lock(:key)": "lock",
+    "SELECT pg_advisory_xact_lock(:k)": "lock",
+    "SELECT pg_advisory_xact_lock_shared(:k)": "lock",
+    "SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))": "lock",
+    "SELECT pg_advisory_xact_lock_shared(hashtextextended(:k, 0))": "lock",
+}
+_CONTROL = (SavepointClause, ReleaseSavepointClause, RollbackToSavepointClause)
 # Tables that hold no company's data, each written by named infrastructure.
 INFRASTRUCTURE: dict[str, str] = {}
 
@@ -69,7 +91,7 @@ _WRITE, _LOCK = "observed-write", "observed-lock"
 
 @dataclass
 class Op:
-    kind: str  # read, write, lock, ddl, unknown
+    kind: str  # read, write, lock, ddl, control (savepoints), effect (outbound), unknown
     table: str | None = None
     companies: tuple[str, ...] = ()
     detail: str = ""
@@ -88,6 +110,7 @@ class Finding:
     transaction: str = ""
     where: list[str] = field(default_factory=list)
     test: str = ""
+    company_from: str = "statement"  # statement, or request when the SQL names no company
 
 
 @dataclass
@@ -170,6 +193,14 @@ def _where_companies(context, stmt, column: str) -> set[str]:
     return found
 
 
+def _advisory(context, function: str) -> Op:
+    """An advisory lock, named by its key: the one string it hashes, else its one number."""
+    keys = [v for p in context.compiled_parameters or () for v in p.values()]
+    names = [k for k in keys if isinstance(k, str)] or keys
+    return Op("lock", detail=f"{function}({', '.join(map(str, keys))})",
+              name=names[0] if len(names) == 1 else None)
+
+
 def classify(context) -> Op:
     compiled = getattr(context, "compiled", None)
     stmt = getattr(compiled, "statement", None)
@@ -177,6 +208,8 @@ def classify(context) -> Op:
         return Op("unknown", detail="no compiled construct (driver SQL)")
     if isinstance(stmt, ExecutableDDLElement):
         return Op("ddl")
+    if isinstance(stmt, _CONTROL):
+        return Op("control")
     if isinstance(stmt, (Insert, Update, Delete)):
         table = stmt.table
         key = "id" if table.name == "companies" else "company_id"
@@ -192,7 +225,10 @@ def classify(context) -> Op:
                     companies.add(str(params["company_id"]))
         return Op("write", table.name, tuple(sorted(companies)), type(stmt).__name__.upper())
     if isinstance(stmt, TextClause):
-        return Op("unknown", detail="raw SQL text")
+        kind = _REVIEWED_SQL.get(stmt.text, "unknown")
+        if kind == "lock":
+            return _advisory(context, stmt.text.split("(", 1)[0].removeprefix("SELECT "))
+        return Op(kind, detail="raw SQL text")
     if isinstance(stmt, (Select, CompoundSelect)):
         functions, dml = set(), False
         for el in visitors.iterate(stmt):
@@ -204,9 +240,7 @@ def classify(context) -> Op:
             return Op("unknown", detail="writable CTE")
         advisory = functions & _ADVISORY
         if advisory:
-            keys = [v for p in context.compiled_parameters or () for v in p.values()]
-            return Op("lock", detail=f"{min(advisory)}({', '.join(map(str, keys))})",
-                      name=keys[0] if len(keys) == 1 else None)
+            return _advisory(context, min(advisory))
         impure = functions - _PURE - _ADVISORY
         if impure:
             return Op("unknown", detail=f"function {', '.join(sorted(impure))}")
@@ -261,7 +295,13 @@ def _ended(session, transaction) -> None:
 # -- observation -------------------------------------------------------------------
 
 def _where() -> list[str]:
+    """The app's own frames that led to the statement, through the greenlet the async
+    session runs its database work in."""
     frames = traceback.extract_stack()[:-3]
+    child = greenlet.getcurrent()
+    while child.parent is not None and child.parent.gr_frame is not None:
+        frames = traceback.extract_stack(child.parent.gr_frame) + frames
+        child = child.parent
     mine = [f for f in frames if f.filename.startswith(_ROOT) and "/tests/" not in f.filename
             and not f.filename.endswith("mutation_observer.py")]
     return [f"{os.path.relpath(f.filename, _ROOT)}:{f.lineno} {f.name}" for f in mine[-6:]]
@@ -280,7 +320,7 @@ def _executed(conn, cursor, statement, parameters, context, executemany) -> None
     if request is None or context is None:
         return
     op = classify(context)
-    if op.kind in ("read", "ddl"):
+    if op.kind in ("read", "ddl", "control", "effect"):
         return
     session = _session_for(conn)
     company = _request_company(request, session)
@@ -306,7 +346,12 @@ def _executed(conn, cursor, statement, parameters, context, executemany) -> None
             CENSUS.findings.append(Finding("unowned-table", route, company, op.table, statement[:300], op.detail,
                                            where=_where(), test=CENSUS.test))
         return
-    targets = op.companies or ((company,) if company else ())
+    # The statement names the companies it writes (an insert's company_id, a WHERE on it),
+    # or the write is taken as the request's company and says so: an update by primary
+    # key names no company, and the company lock never proves which company owns a row.
+    targets, source = op.companies, "statement"
+    if not targets and company:
+        targets, source = (company,), "request"
     for target in targets:
         if company is not None and target != company and not holds_company_lock(session, target):
             kind = "cross-company"
@@ -320,7 +365,7 @@ def _executed(conn, cursor, statement, parameters, context, executemany) -> None
         note(session, _WRITE, Finding(
             kind or "protected", route, target, op.table, statement[:300], op.detail,
             earlier_locks=list(noted(session, _LOCK)), transaction=f"{id(root):x}",
-            where=_where() if kind else [], test=CENSUS.test))
+            where=_where() if kind else [], test=CENSUS.test, company_from=source))
     if not targets:
         CENSUS.findings.append(Finding("unprotected", route, None, op.table, statement[:300],
                                        "no company for the write", where=_where(), test=CENSUS.test))
@@ -332,6 +377,7 @@ def _committed(session) -> None:
         return
     for finding in noted(session, _WRITE):
         CENSUS.count(finding.route, finding.kind)
+        CENSUS.count(finding.route, f"company from {finding.company_from}")
         if finding.kind != "protected":
             CENSUS.findings.append(finding)
 
