@@ -11,6 +11,7 @@ from urllib.parse import quote
 
 import httpx
 
+from celerp.ai import deadlines
 from celerp.capacity import REQUEST_DB_POOL_SIZE
 from celerp.services.auth import CALLER_HEADER, CONNECT_HEADER, connect_caller, is_loopback
 from celerp.services.company_settings import BOOKS_KEYS, GENERAL
@@ -3210,9 +3211,6 @@ async def disconnect_payments(token: str) -> dict:
 # AI assistant
 # ---------------------------------------------------------------------------
 
-AI_QUERY_TIMEOUT_S = 150.0
-
-
 async def ai_conversation_create(token: str, session_token: str, title: str | None = None) -> dict:
     """POST /ai/conversations - start a new conversation. Returns {"id", ...}."""
     async with _ai_api_client(token, session_token) as c:
@@ -3228,14 +3226,15 @@ async def ai_conversation_get(token: str, session_token: str, conversation_id: s
 async def ai_conversation_query(token: str, session_token: str, conversation_id: str,
                                 query: str, file_ids: list[str] | None = None,
                                 document_mode: str = "chat", operation_id: str = "") -> dict:
-    """POST /ai/conversations/{id}/query - run the agent in a conversation.
+    """POST /ai/conversations/{id}/query - ask a question in a conversation.
 
     ``operation_id`` is the question's id; the same id with the same question
-    asks it again. Returns {"answer", "model_used", "tools_called",
-    "pending_actions", "message_id", "asked_again", "error", "error_code",
-    "retryable"}; each pending action carries its own message_id and tool_call_id
-    for confirmation. Receipts and invoices are read as a job instead: the reply
-    is then {"job_id", "message_id", "asked_again"} and the thread polls the job.
+    asks it again. A question that already has an answer returns it: {"answer",
+    "model_used", "tools_called", "pending_actions", "message_id", "asked_again",
+    "error", "error_code", "retryable"}; each pending action carries its own
+    message_id and tool_call_id for confirmation. Otherwise it starts as a job and
+    returns at once with {"job_id", "message_id", "asked_again"}: the thread polls
+    ``ai_question_state`` for a question, ``ai_batch_status`` for a reading job.
     """
     payload: dict = {"query": query}
     if file_ids:
@@ -3244,8 +3243,16 @@ async def ai_conversation_query(token: str, session_token: str, conversation_id:
         payload["document_mode"] = document_mode
     if operation_id:
         payload["operation_id"] = operation_id
-    async with _ai_api_client(token, session_token, timeout=AI_QUERY_TIMEOUT_S) as c:
+    async with _ai_api_client(token, session_token, timeout=deadlines.UI_REQUEST_S) as c:
         return _raise(await c.post(f"/ai/conversations/{conversation_id}/query", json=payload)).json()
+
+
+async def ai_question_state(token: str, session_token: str, conversation_id: str, question_id: str) -> dict:
+    """GET /ai/conversations/{id}/questions/{question} - where a question stands:
+    {"state": "running" | "answered" | "failed" | "interrupted", "promoted", "waiting",
+    "notice", "message"}; ``message`` is the stored reply once the question ended."""
+    async with _ai_api_client(token, session_token, timeout=deadlines.UI_REQUEST_S) as c:
+        return _raise(await c.get(f"/ai/conversations/{conversation_id}/questions/{question_id}")).json()
 
 
 async def ai_confirm_action(token: str, session_token: str, conversation_id: str,
@@ -3255,7 +3262,7 @@ async def ai_confirm_action(token: str, session_token: str, conversation_id: str
     Sends IDs only, never business arguments.
     Returns {"tool_call_id", "title", "ok", "status", "data", "error"}.
     """
-    async with _ai_api_client(token, session_token, timeout=60.0) as c:
+    async with _ai_api_client(token, session_token, timeout=deadlines.ACTIONS_TIMEOUT_S) as c:
         return _raise(await c.post(
             f"/ai/conversations/{conversation_id}/confirm",
             json={"message_id": message_id, "tool_call_id": tool_call_id},
@@ -3265,7 +3272,7 @@ async def ai_confirm_action(token: str, session_token: str, conversation_id: str
 async def ai_dismiss_action(token: str, session_token: str, conversation_id: str,
                             message_id: str, tool_call_id: str) -> dict:
     """POST /ai/conversations/{id}/dismiss - persist dismissal of one proposal."""
-    async with _ai_api_client(token, session_token, timeout=30.0) as c:
+    async with _ai_api_client(token, session_token, timeout=deadlines.UI_REQUEST_S) as c:
         return _raise(await c.post(
             f"/ai/conversations/{conversation_id}/dismiss",
             json={"message_id": message_id, "tool_call_id": tool_call_id},
@@ -3283,7 +3290,7 @@ async def ai_confirm_all(token: str, session_token: str, conversation_id: str,
     body: dict = {"message_id": message_id}
     if tool_call_ids is not None:
         body["tool_call_ids"] = tool_call_ids
-    async with _ai_api_client(token, session_token, timeout=AI_QUERY_TIMEOUT_S) as c:
+    async with _ai_api_client(token, session_token, timeout=deadlines.ACTIONS_TIMEOUT_S) as c:
         return _raise(await c.post(
             f"/ai/conversations/{conversation_id}/confirm-all", json=body,
         )).json()
@@ -3293,7 +3300,7 @@ async def ai_confirm_all(token: str, session_token: str, conversation_id: str,
 async def ai_dismiss_all(token: str, session_token: str, conversation_id: str,
                          message_id: str, tool_call_ids: list[str]) -> dict:
     """POST /ai/conversations/{id}/dismiss-all - dismiss selected proposals."""
-    async with _ai_api_client(token, session_token, timeout=30.0) as c:
+    async with _ai_api_client(token, session_token, timeout=deadlines.UI_REQUEST_S) as c:
         return _raise(await c.post(
             f"/ai/conversations/{conversation_id}/dismiss-all",
             json={"message_id": message_id, "tool_call_ids": tool_call_ids},
@@ -3305,7 +3312,7 @@ async def ai_job_proposals(token: str, session_token: str, conversation_id: str,
 
     Returns {"message_id", "answer", "pending_actions"}; calling again returns the same.
     """
-    async with _ai_api_client(token, session_token, timeout=60.0) as c:
+    async with _ai_api_client(token, session_token, timeout=deadlines.ACTIONS_TIMEOUT_S) as c:
         return _raise(await c.post(
             f"/ai/conversations/{conversation_id}/jobs/{job_id}/proposals",
         )).json()
@@ -3342,7 +3349,8 @@ async def ai_upload(token: str, session_token: str, files: list[tuple[str, bytes
     Returns {"file_ids": [...]}.
     """
     multipart = [("files", (name, data, ct)) for name, data, ct in files]
-    async with _ai_api_client(token, session_token, timeout=60.0, bulk=True) as c:
+    budget = deadlines.upload_budget_s(sum(len(data) for _, data, _ in files))
+    async with _ai_api_client(token, session_token, timeout=budget, bulk=True) as c:
         return _raise(await c.post("/ai/upload", files=multipart)).json()
 
 
@@ -3856,7 +3864,7 @@ async def ai_offer(token: str) -> dict:
 
     The API bounds its relay read to 2 seconds; the short client timeout keeps a
     slow answer from holding up the page that asked."""
-    async with _api_client(token, timeout=5.0) as c:
+    async with _api_client(token, timeout=deadlines.QUOTA_READ_S) as c:
         return _raise(await c.get("/settings/ai-offer")).json()
 
 

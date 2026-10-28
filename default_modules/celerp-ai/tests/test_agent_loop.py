@@ -21,7 +21,7 @@ os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 
 import pytest
 
-from celerp.ai import service
+from celerp.ai import deadlines, jobs, service
 from celerp.ai.llm import RelayError
 from ui.i18n import t
 from celerp.ai.service import (
@@ -108,6 +108,7 @@ async def _run(**over):
         operation_id=uuid.uuid4(),
     )
     kwargs.update(over)
+    kwargs.setdefault("journal", jobs.Journal(kwargs["operation_id"]))
     return await run_agent(**kwargs)
 
 
@@ -535,7 +536,7 @@ async def test_question_still_running_is_waited_for_then_asked_again(monkeypatch
     async def _sleep(seconds):
         sleeps.append(seconds)
 
-    monkeypatch.setattr(service.asyncio, "sleep", _sleep)
+    monkeypatch.setattr(jobs.asyncio, "sleep", _sleep)
     fake = _install(monkeypatch, [
         RelayError("operation_in_progress", "x", status=409, retry_after=2.0),
         RelayError("operation_in_progress", "x", status=409, retry_after=600.0),
@@ -545,7 +546,7 @@ async def test_question_still_running_is_waited_for_then_asked_again(monkeypatch
     result = await _run(operation_id=question)
     assert result.answer == "answer" and result.error is None
     assert [c["operation_id"] for c in fake.calls] == [question] * 3
-    assert sleeps == [2.0, service.MAX_IN_PROGRESS_WAIT_S]
+    assert sleeps == [2.0, deadlines.IN_PROGRESS_POLL_S]
 
 
 @pytest.mark.asyncio
@@ -613,18 +614,13 @@ async def test_reservation_id_threaded_between_turns(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_timeout_maps_to_error(monkeypatch):
-    import asyncio
-
-    async def _slow(messages, *, tools=None, tool_choice=None, reservation_id=None, **kw):
-        await asyncio.sleep(5)
-        return tool_result(content="never")
-
-    monkeypatch.setattr(service, "AGENT_RUN_TIMEOUT_S", 0.05)
-    monkeypatch.setattr(service, "complete", _slow)
-    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None: CAPS)
+async def test_a_step_with_no_reply_maps_to_the_timeout_error_and_is_not_resent_while_interactive(monkeypatch):
+    """No clock bounds the whole run: one model step's call budget runs out, and a
+    question someone waits on stores the retryable timeout instead of sending it again."""
+    import httpx
+    fake = _install(monkeypatch, [httpx.ReadTimeout("no reply")])
     result = await _run()
-    assert result.error == t("ai.err_timeout")
+    assert result.error == t("ai.err_timeout") and len(fake.calls) == 1
 
 
 @pytest.mark.asyncio
