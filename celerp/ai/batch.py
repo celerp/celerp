@@ -41,10 +41,6 @@ from ui.i18n import t
 log = logging.getLogger(__name__)
 
 MAX_BATCH_FILES = 100
-# Sends of one file under its own id after the service surely did not run it, or
-# after no reply came back in the call's budget; past this the file ends failed.
-RESEND_LIMIT = 3
-MAX_IN_PROGRESS_WAIT_S = 10.0   # longest single wait for a send of the file still running
 
 _BATCH_SYSTEM_PROMPT = """\
 You are reading one business document: a receipt, a supplier invoice, a bank or \
@@ -167,37 +163,26 @@ async def read_file(run: FileRun, file_id: str, operation_id: uuid.UUID, *,
     def _ended(state: str, exc: BaseException, credits: int = 0, known: bool = False) -> FileOutcome:
         return FileOutcome(state, {"filename": filename, "error": _file_error(exc)}, credits, known, sent)
 
-    resends = 0
-    while True:
-        try:
-            result = await llm.complete(messages, operation_id=operation_id, hints=hints, before_send=_send)
-        except RelayError as exc:
-            if exc.code == "operation_in_progress":
-                await asyncio.sleep(min(exc.retry_after or 1.0, MAX_IN_PROGRESS_WAIT_S))
-                continue
-            if exc.code == "outcome_unknown":
-                charge = exc.credits if exc.operation_credits is None else exc.operation_credits
-                return _ended("unknown", exc, charge, True)
-            if exc.code == "operation_expired":
-                return _ended("expired", exc, 0, True)
-            if exc.code in ("service_unavailable", "busy") and resends < RESEND_LIMIT:
-                resends += 1
-                await asyncio.sleep(1.0)
-                continue
-            return _ended("failed", exc, exc.credits)
-        except (httpx.TimeoutException, httpx.TransportError) as exc:
-            if resends < RESEND_LIMIT:
-                resends += 1
-                continue
-            log.warning("File %s of job %s got no reply: %s", file_id, run.job_id, exc)
-            return _ended("failed", asyncio.TimeoutError())
-        except HTTPException as exc:
-            return _ended("failed", exc)
-        answer = result.message.get("content") or ""
-        known = result.operation_credits is not None
-        credits = result.operation_credits if known else int((result.usage or {}).get("credits") or 0)
-        return FileOutcome("done", {"filename": filename, "answer": answer, "extraction": parse_extraction(answer)},
-                           credits, known, sent)
+    try:
+        result = await jobs.send_step(
+            lambda: llm.complete(messages, operation_id=operation_id, hints=hints, before_send=_send), resend=True)
+    except RelayError as exc:
+        if exc.code == "outcome_unknown":
+            charge = exc.credits if exc.operation_credits is None else exc.operation_credits
+            return _ended("unknown", exc, charge, True)
+        if exc.code == "operation_expired":
+            return _ended("expired", exc, 0, True)
+        return _ended("failed", exc, exc.credits)
+    except (httpx.TimeoutException, httpx.TransportError) as exc:
+        log.warning("File %s of job %s got no reply: %s", file_id, run.job_id, exc)
+        return _ended("failed", asyncio.TimeoutError())
+    except HTTPException as exc:
+        return _ended("failed", exc)
+    answer = result.message.get("content") or ""
+    known = result.operation_credits is not None
+    credits = result.operation_credits if known else int((result.usage or {}).get("credits") or 0)
+    return FileOutcome("done", {"filename": filename, "answer": answer, "extraction": parse_extraction(answer)},
+                       credits, known, sent)
 
 
 async def create_batch_job(
@@ -261,29 +246,13 @@ async def publish_progress(run: FileRun, file_id: str, state: str) -> None:
 
 async def notify_finished(run: FileRun, completed: int, failed: int) -> None:
     """The notification a finished reading job leaves for its user."""
-    try:
-        from celerp.notifications.service import create as create_notification
-        async with jobs.SessionLocal() as session:
-            if completed == 0:
-                title = f"Could not read {failed} file(s)"
-                body = "None of the attached files could be read. Open the conversation for details."
-            else:
-                title = f"{completed} of {completed + failed} file(s) read"
-                body = (
-                    f"{completed} read, {failed} could not be read. "
-                    "Open the conversation to review the proposed entries."
-                )
-            await create_notification(
-                session, run.company_id, "ai", title, body,
-                user_id=run.user_id,
-                action_url=(
-                    f"/ai?conversation={run.conversation_id}" if run.conversation_id else "/ai"
-                ),
-                priority="high",
-            )
-            await session.commit()
-    except Exception:
-        log.warning("Failed to create batch notification", exc_info=True)
+    if completed == 0:
+        title = f"Could not read {failed} file(s)"
+        body = "None of the attached files could be read. Open the conversation for details."
+    else:
+        title = f"{completed} of {completed + failed} file(s) read"
+        body = f"{completed} read, {failed} could not be read. Open the conversation to review the proposed entries."
+    await jobs.notify(run.company_id, run.user_id, run.conversation_id, title, body)
 
 
 async def get_batch_job(
@@ -292,9 +261,9 @@ async def get_batch_job(
     company_id: uuid.UUID,
     user_id: uuid.UUID,
 ) -> AIBatchJob | None:
-    """Get a batch job by ID, scoped to company and owning user."""
+    """Get a reading job by ID, scoped to company and owning user."""
     job = await session.get(AIBatchJob, job_id)
-    if job is None or job.company_id != company_id or job.user_id != user_id:
+    if job is None or job.kind != "documents" or job.company_id != company_id or job.user_id != user_id:
         return None
     return job
 

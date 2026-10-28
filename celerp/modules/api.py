@@ -76,23 +76,10 @@ def read_resource(module_file: str, relative_path: str) -> bytes:
     return target.read_bytes()
 
 
-async def ai_query(
-    query: str,
-    company_id: str,
-    session_token: str | None = None,
-    db_session: "AsyncSession | None" = None,
-) -> dict:
-    """Run an AI query for a company through the active Celerp service.
-
-    ``db_session`` is the database session of the request the query is made for;
-    the query runs only for that request's company and for the user its signed
-    access token names, who must be allowed to use the AI assistant.
-    ``session_token`` is optional: without it, the installation's own Celerp
-    Connect session is used.
-    """
+async def _ai_caller(company_id: str, db_session: "AsyncSession | None"):
+    """The signed-in user a module's AI call is made for, allowed to use the assistant."""
     from celerp.services.auth import signed_request_context
     from celerp.services.permissions import assert_role_permission, read_authority
-    from celerp.session_gate import require_active_session, validate_session_token
 
     caller = await signed_request_context(db_session) if db_session is not None else None
     if caller is None or str(caller.company_id) != str(company_id):
@@ -102,30 +89,62 @@ async def ai_query(
         )
     role, settings = await read_authority(db_session, caller.company_id, caller.user.id)
     assert_role_permission(settings, role, "use_ai_assistant")
+    return caller
+
+
+def _ai_outcome(out: dict) -> dict:
+    """What a module is told of a question: ``running`` (or ``interrupted``) with its
+    ``job_id``, or how it ended with the answer. A refusal is raised as it was given."""
+    if "refusal" in out:
+        refusal = out["refusal"]
+        raise HTTPException(status_code=refusal["status"], detail=refusal["detail"], headers=refusal["headers"])
+    if out["status"] in ("running", "interrupted"):
+        return {"status": out["status"], "job_id": out["job_id"]}
+    return {"status": out["status"], "job_id": out["job_id"], "answer": out["error"] or out["answer"],
+            "model_used": out["model_used"], "tools_called": out["tools_called"]}
+
+
+async def ai_query(
+    query: str,
+    company_id: str,
+    session_token: str | None = None,
+    db_session: "AsyncSession | None" = None,
+) -> dict:
+    """Ask the AI assistant a question for a company through the active Celerp service.
+
+    ``db_session`` is the database session of the request the query is made for;
+    the query runs only for that request's company and for the user its signed
+    access token names, who must be allowed to use the AI assistant.
+    ``session_token`` is optional: without it, the installation's own Celerp
+    Connect session is used.
+
+    The question runs as a job. Its answer comes back when it ends within the
+    synchronous wait (``{"status": "completed" | "failed", "answer", "model_used",
+    "tools_called", "job_id"}``); otherwise ``{"status": "running", "job_id"}`` and it
+    keeps working in the background: read it later with ``ai_job``.
+    """
+    import time
+
+    from celerp.ai import jobs
+    from celerp.session_gate import require_active_session, validate_session_token
+
+    started = time.monotonic()
+    caller = await _ai_caller(company_id, db_session)
     if session_token is None:
         await require_active_session()
     else:
         validate_session_token(session_token)
+    return _ai_outcome(await jobs.ask(company_id=caller.company_id, user_id=caller.user.id, query=query,
+                                      started=started))
 
-    from celerp.ai.service import AIResponse, run_query
-    from celerp.ai.usage import record_usage_now
 
-    operation_id = uuid.uuid4()
-    usage = dict(company_id=caller.company_id, user_id=caller.user.id, operation_id=operation_id)
-    # Its row is written before the question leaves, so a charge whose reply never
-    # arrives is still found (celerp.ai.usage.reconcile_usage).
-    await record_usage_now(db_session.bind, **usage)
-    result: AIResponse = await run_query(
-        query=query,
-        session=db_session,
-        company_id=caller.company_id,
-        user_id=caller.user.id,
-        operation_id=operation_id,
-    )
-    # The charge is recorded on its own, leaving the module's request session as it was.
-    await record_usage_now(db_session.bind, credits=result.credits, known=result.charge_known, **usage)
-    return {
-        "answer": result.answer,
-        "model_used": result.model_used,
-        "tools_called": result.tools_called,
-    }
+async def ai_job(job_id: str, *, company_id: str, db_session: "AsyncSession | None" = None) -> dict:
+    """Where a question ``ai_query`` left running stands, in the same shape: the same
+    signed-in request checks apply. An unknown job id, or another company's, is 404."""
+    from celerp.ai import jobs
+
+    caller = await _ai_caller(company_id, db_session)
+    out = await jobs.question_result(uuid.UUID(str(job_id)), caller.company_id)
+    if out is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such AI question.")
+    return _ai_outcome(out)

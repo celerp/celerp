@@ -28,6 +28,7 @@ from collections import Counter
 from typing import Awaitable, Callable
 
 import httpx
+import pytest
 
 LIMITS = {"attempt_deadline_s": 120, "settle_margin_s": 15, "guard_s": 5, "retry_window_s": 86400,
           "max_body_bytes": 20 * 1024 * 1024, "max_tokens": 4000}
@@ -177,3 +178,23 @@ def install(monkeypatch, cloud: FakeCloud) -> FakeCloud:
                         lambda **kw: real(transport=httpx.MockTransport(cloud.handle), **kw))
     deadlines.forget_limits()
     return cloud
+
+
+@pytest.fixture
+async def cloud(monkeypatch):
+    """A FakeCloud for one test, with no agent tools. Torn down before the client and
+    its database session (requested after them), so no job task outlives them. The
+    jobs left running are let finish first: a task cancelled in the middle of a query
+    would leave the test's one shared connection unusable for its teardown."""
+    from celerp.ai import jobs, service
+    c = install(monkeypatch, FakeCloud())
+    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None: {})
+    yield c
+
+    def _drained() -> bool:
+        c.release(*c.hold)
+        return not jobs.running_tasks()
+    try:
+        await until(_drained)
+    finally:
+        await jobs.shutdown()

@@ -37,8 +37,6 @@ from __future__ import annotations
 import copy
 import secrets
 import uuid
-from contextlib import contextmanager
-from dataclasses import asdict
 from datetime import date, datetime, timedelta, timezone
 from typing import Literal
 
@@ -168,30 +166,6 @@ def _attachment_kinds(file_ids: list[str] | None, company_id, user_id) -> set[st
     return kinds
 
 
-# Questions whose agent run is under way in this process. The app runs one server
-# process, so this is every run: a question sent again while its first send is
-# still being answered is told so instead of being answered twice.
-_ANSWERING: set[uuid.UUID] = set()
-
-
-def _refuse_if_answering(question_id: uuid.UUID | None) -> None:
-    """Refuse as ``question_in_progress`` while ``question_id`` is being answered."""
-    if question_id in _ANSWERING:
-        raise _conflict("question_in_progress", t("ai.err_question_in_progress"))
-
-
-@contextmanager
-def _answering(question_id: uuid.UUID):
-    """Hold ``question_id`` as being answered for the duration of the block; a
-    second hold while the first is held is refused as ``question_in_progress``."""
-    _refuse_if_answering(question_id)
-    _ANSWERING.add(question_id)
-    try:
-        yield
-    finally:
-        _ANSWERING.discard(question_id)
-
-
 def _conflict(code: str, message: str) -> HTTPException:
     return HTTPException(status_code=409, detail={"code": code, "message": message})
 
@@ -215,47 +189,30 @@ async def ai_query(
     body: QueryRequest,
     company_id=Depends(get_current_company_id),
     user=Depends(get_current_user),
-    role: str = Depends(get_current_role),
-    company_settings: dict = Depends(get_current_company_settings),
-    session: AsyncSession = Depends(get_session),
 ) -> QueryResponse:
-    """Run a one-off read-only agent query against live canonical ERP APIs."""
-    from celerp.ai.memory import get_memory
-    from celerp.ai.service import AgentRefusal, AgentResult, run_agent
-    from celerp.ai.usage import record_usage
-    memory = await get_memory(session, company_id)
-    operation_id = body.operation_id or uuid.uuid4()
-    await record_usage(session, company_id=company_id, user_id=user.id, operation_id=operation_id)
-    await session.commit()
-    try:
-        result: AgentResult = await run_agent(
-            app=request.app,
-            authorization=request.headers.get("authorization", ""),
-            query=body.query,
-            company_id=company_id,
-            company_settings=company_settings,
-            role=role,
-            user_id=user.id,
-            memory=memory,
-            file_ids=body.file_ids,
-            history=[],
-            operation_id=operation_id,
-            read_only=True,
-        )
-    except AgentRefusal as refusal:
-        await record_usage(session, company_id=company_id, user_id=user.id, operation_id=operation_id,
-                           credits=refusal.credits, known=refusal.charge_known)
-        await session.commit()
-        raise
-    await record_usage(session, company_id=company_id, user_id=user.id, operation_id=operation_id,
-                       credits=result.credits, known=result.charge_known)
-    await session.commit()
-    if result.error:
-        raise HTTPException(status_code=502, detail=result.error)
+    """Run a one-off read-only agent query against live canonical ERP APIs.
+
+    The question runs as a job: its answer when it ends within the synchronous wait,
+    else 202 ``{"status": "running", "job_id"}`` and it keeps working in the background.
+    The same ``operation_id`` asks it again and returns the answer it already has."""
+    import time
+
+    from celerp.ai import jobs
+    started = time.monotonic()
+    out = await jobs.ask(company_id=company_id, user_id=user.id, query=body.query, file_ids=body.file_ids,
+                         job_id=body.operation_id, authorization=request.headers.get("authorization"),
+                         started=started)
+    if out["status"] in ("running", "interrupted"):
+        return JSONResponse(status_code=202, content={"status": out["status"], "job_id": out["job_id"]})
+    if "refusal" in out:
+        refusal = out["refusal"]
+        raise HTTPException(status_code=refusal["status"], detail=refusal["detail"], headers=refusal["headers"])
+    if out["error"]:
+        raise HTTPException(status_code=502, detail=out["error"])
     return QueryResponse(
-        answer=result.answer, model_used=result.model_used,
-        tools_called=result.tools_called, pending_actions=[],
-        help_pages=result.help_pages,
+        answer=out["answer"], model_used=out["model_used"],
+        tools_called=out["tools_called"], pending_actions=[],
+        help_pages=out["help_pages"],
     )
 
 
@@ -723,42 +680,30 @@ async def query_in_conversation(
     body: ConversationQueryRequest,
     company_id=Depends(get_current_company_id),
     user=Depends(get_current_user),
-    role: str = Depends(get_current_role),
-    company_settings: dict = Depends(get_current_company_settings),
     session: AsyncSession = Depends(get_session),
 ):
     """Ask the assistant within a conversation.
 
-    Normal messages, including images and PDFs, run the agent inline. Receipt
-    extraction is an explicit ``document_mode=receipts`` workflow that creates
-    a background reading job. Reads execute against the app the user sees and
-    changes come back as pending actions to confirm. A failed or refused run is
-    stored as an assistant message so the thread keeps its history.
+    Every send that is not answered yet returns 202 ``{job_id, message_id}`` and runs
+    as a job: a question (images and PDFs included) runs the agent, polled at
+    ``GET .../questions/{message_id}``; receipt extraction is an explicit
+    ``document_mode=receipts`` reading job. Reads execute against the app the user
+    sees and changes come back as pending actions to confirm. A failed or refused
+    run is stored as an assistant message so the thread keeps its history.
 
     ``operation_id`` names the question and becomes the id of its user message; it
     is never replaced. Sent again with the same text and files it never adds a new
     question: a question that already has an answer returns it, and the latest one
-    whose run failed runs again, charged at most once in all. Sent again while its
-    first send is still being answered, it is refused as in progress. An id that
-    names another question, or one that can no longer be asked, is refused as
+    whose run failed or was interrupted runs again from the steps that ended, charged
+    at most once in all. Sent again while its job runs, it is refused as in progress.
+    An id that names another question, or one that can no longer be asked, is refused as
     ``operation_conflict``: a new question needs a new id.
     """
     from sqlalchemy.exc import IntegrityError
 
     from celerp.ai import jobs
     from celerp.ai.batch import create_batch_job
-    from celerp.ai.conversations import (
-        add_message,
-        build_history_context,
-        failure_record,
-        get_conversation,
-        get_messages,
-        help_record,
-        record_credits,
-    )
-    from celerp.ai.memory import get_memory
-    from celerp.ai.service import AgentRefusal, AgentResult, run_agent
-    from celerp.ai.usage import record_usage
+    from celerp.ai.conversations import add_message, get_conversation
     conv = await get_conversation(session, conversation_id, company_id, user.id)
     if conv is None:
         raise HTTPException(status_code=404, detail=t("ai.err_conversation_not_found"))
@@ -770,9 +715,6 @@ async def query_in_conversation(
     # A caller that sends no id gets a new question; it is not promised a single charge.
     question_id = body.operation_id or uuid.uuid4()
     asked, answered = await _find_question(session, conversation_id, question_id, body)
-    # A send holds its question before it stores it and releases it after the answer is
-    # stored, so a repeat that read the question too early to see it is refused here.
-    _refuse_if_answering(question_id)
 
     if body.document_mode == "receipts":
         # A reading job takes its question's id, so sending the question again
@@ -802,74 +744,66 @@ async def query_in_conversation(
 
     if answered is not None:
         return _answer_response(answered, question_id=question_id, asked_again=True)
-
-    with _answering(question_id):
-        if asked is not None:
-            # The first send may have stored its answer since the read above.
-            answered = (await _find_question(session, conversation_id, question_id, body))[1]
-            if answered is not None:
-                return _answer_response(answered, question_id=question_id, asked_again=True)
-        # Assemble the read-only context, then commit so the session is quiescent
-        # for the duration of the agent loop (which reaches the app over its own
-        # request sessions). The history is what came before the question.
-        prior_msgs = await get_messages(session, conversation_id)
-        if asked is not None:
-            prior_msgs = [m for m in prior_msgs if m.created_at < asked.created_at]
-        history = build_history_context(prior_msgs)
-        memory = await get_memory(session, company_id)
-        try:
-            user_msg = asked or await add_message(
-                session, conversation_id, "user", body.query, file_ids=body.file_ids, message_id=question_id,
-            )
-            await record_usage(session, company_id=company_id, user_id=user.id, operation_id=question_id)
-            await session.commit()
-        except IntegrityError:
-            await session.rollback()
-            raise _conflict("question_in_progress", t("ai.err_question_in_progress"))
-
-        try:
-            result: AgentResult = await run_agent(
-                app=request.app,
-                authorization=request.headers.get("authorization", ""),
-                query=body.query,
-                company_id=company_id,
-                company_settings=company_settings,
-                user_id=user.id,
-                role=role,
-                memory=memory,
-                file_ids=body.file_ids,
-                history=history,
-                operation_id=question_id,
-            )
-        except AgentRefusal as refusal:
-            # The refusal is stored with the credits charged before it, so a reloaded
-            # thread explains it; the question's id lets it be sent again.
-            detail = refusal.detail if isinstance(refusal.detail, dict) else {"message": str(refusal.detail)}
-            await record_credits(session, user_msg, refusal.credits, known=refusal.charge_known,
-                                 company_id=company_id, user_id=user.id)
-            await add_message(
-                session, conversation_id, "assistant", str(detail.get("message") or ""),
-                tools_called=[failure_record(detail.get("code"), status=refusal.status_code, refusal=detail)],
-            )
-            await session.commit()
-            raise HTTPException(
-                status_code=refusal.status_code, headers=refusal.headers,
-                detail={**detail, "message_id": str(question_id), "asked_again": asked is not None},
-            ) from refusal
-
-        await record_credits(session, user_msg, result.credits, known=result.charge_known,
-                             company_id=company_id, user_id=user.id)
-        if result.error:
-            tools_called = [*result.tools_called, failure_record(result.error_code)]
+    if jobs.is_held(question_id):
+        raise _conflict("question_in_progress", t("ai.err_question_in_progress"))
+    job = await session.get(AIBatchJob, question_id) if asked is not None else None
+    if job is not None and job.kind != "question":
+        raise _conflict("operation_conflict", t("ai.err_operation_conflict"))
+    try:
+        if asked is None:
+            await add_message(session, conversation_id, "user", body.query,
+                              file_ids=body.file_ids, message_id=question_id)
+        if job is None:
+            session.add(jobs.question_job(job_id=question_id, company_id=company_id, user_id=user.id,
+                                          query=body.query, file_ids=body.file_ids,
+                                          conversation_id=conversation_id))
         else:
-            tools_called = [*result.tools_called, *[asdict(p) for p in result.pending_actions],
-                            *help_record(result.help_pages)]
-        msg = await add_message(
-            session, conversation_id, "assistant", result.error or result.answer,
-            model_used=result.model_used, tools_called=tools_called,
-        )
+            jobs.reopen_question(job)
         await session.commit()
-        return _answer_response(msg, question_id=question_id, asked_again=asked is not None)
+    except IntegrityError:
+        await session.rollback()
+        raise _conflict("question_in_progress", t("ai.err_question_in_progress"))
+    if not jobs.start_job(question_id, authorization=request.headers.get("authorization")):
+        raise _conflict("question_in_progress", t("ai.err_question_in_progress"))
+    return JSONResponse(
+        status_code=202,
+        content={"job_id": str(question_id), "message_id": str(question_id), "asked_again": asked is not None},
+    )
+
+
+@router.get("/conversations/{conversation_id}/questions/{question_id}")
+async def question_state(
+    conversation_id: uuid.UUID,
+    question_id: uuid.UUID,
+    company_id=Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Where a question of the conversation stands: ``running`` (with what it waits
+    for, or that it was moved to the background), ``answered`` or ``failed`` with its
+    assistant message, or ``interrupted`` (a restart ended it; asking again under its
+    id resumes it)."""
+    from celerp.ai import jobs
+    from celerp.ai.conversations import get_conversation
+    if await get_conversation(session, conversation_id, company_id, user.id) is None:
+        raise HTTPException(status_code=404, detail=t("ai.err_conversation_not_found"))
+    # The registry first: a job stores its answer before it leaves it, so a question
+    # read as held and then stored is never read as interrupted.
+    held = jobs.is_held(question_id)
+    stored = await jobs.stored_question_state(session, conversation_id, question_id)
+    if stored is None:
+        raise HTTPException(status_code=404, detail=t("ai.err_question_not_found"))
+    waiting = jobs.waiting_for(question_id) if held else None
+    notice = None
+    if waiting:
+        notice = t(f"ai.waiting_{waiting}")
+    elif held and stored["promoted"]:
+        notice = t("ai.question_promoted")
+    message = stored["message"]
+    return {
+        "state": "running" if held else stored["state"], "promoted": stored["promoted"], "waiting": waiting,
+        "notice": notice, "message": None if held or message is None else _message_out(message).model_dump(mode="json"),
+    }
 
 
 def _resolve_action_arguments(records: list, record: dict) -> tuple[dict | None, str | None]:

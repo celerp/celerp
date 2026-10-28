@@ -6507,7 +6507,7 @@
   "ai.plan_monthly_credits": "{n} AI credits every month",
   "help.core_section": "Celerp basics",
   "ai.err_outcome_unknown": "Celerp AI's answer to this question was lost and can't be recovered. You can ask it as a new question, which counts as one more question.",
-  "ai.err_question_expired": "This question can no longer be continued. Send it again to ask it as a new question.",
+  "ai.err_question_expired": "This question can no longer be continued. You can ask it as a new question, which counts as one more question.",
   "ai.err_question_in_progress": "Celerp AI is still answering this question. Wait a moment, then ask again.",
   "ai.err_operation_conflict": "This question was already sent and cannot be sent again. Press Send to ask it as a new question; it counts as one more question.",
   "ai.err_operation_mismatch": "This question can't be sent again because its context has changed since it was first sent. You can ask it as a new question, which counts as one more question.",
@@ -6521,5 +6521,12 @@
   "ai.retry_files_confirm": "This counts as {n} questions, one per file.",
   "ai.retry_one_file": "Retry 1 file",
   "ai.retry_one_file_confirm": "This counts as 1 question.",
-  "ai.err_job_not_open": "This job can't do that now. It may still be running, or have nothing left to send."
+  "ai.err_job_not_open": "This job can't do that now. It may still be running, or have nothing left to send.",
+  "ai.err_question_not_found": "Celerp couldn't find this question in the conversation.",
+  "ai.question_promoted": "This is taking longer than usual. It keeps working in the background, and you'll get a notification when it's done.",
+  "ai.waiting_documents": "Waiting for a document reading job to free up",
+  "ai.waiting_questions": "Waiting for another AI question to finish",
+  "ai.question_answered_title": "Celerp AI answered your question",
+  "ai.question_failed_title": "Celerp AI couldn't answer your question",
+  "ai.question_done_body": "Open the conversation to read the reply."
 }

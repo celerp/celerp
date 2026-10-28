@@ -64,14 +64,6 @@ async def record_usage(
     )
 
 
-async def record_usage_now(bind, **fields) -> None:
-    """``record_usage`` in a transaction of its own on ``bind``, for callers whose
-    session belongs to someone else's request."""
-    async with AsyncSession(bind) as session:
-        await record_usage(session, **fields)
-        await session.commit()
-
-
 async def reconcile_usage(session: AsyncSession) -> None:
     """One pass: settle up to RECONCILE_BATCH pending rows whose reconcile time has
     passed, from ONE status read of their operations, then commit. A charged one

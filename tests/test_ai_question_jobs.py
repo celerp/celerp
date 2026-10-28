@@ -17,9 +17,7 @@ import inspect
 import json
 import uuid
 
-import pytest
-
-from ai_fake_cloud import FakeCloud, answer, install, tool_turn, until
+from ai_fake_cloud import answer, cloud, tool_turn, until  # noqa: F401
 from celerp.ai import jobs, service
 from test_ai_usage import _conversation, owner  # noqa: F401
 
@@ -30,21 +28,6 @@ def _cap(name: str, method: str, *, confirm: bool) -> dict:
     return {"name": name, "method": method, "path": f"/{name}", "path_names": (), "query_names": (),
             "expects_body": method != "GET", "inject_idempotency": False, "requires_confirmation": confirm,
             "tool": {"type": "function", "function": {"name": name, "description": name, "parameters": {}}}}
-
-
-@pytest.fixture
-def cloud(monkeypatch):
-    c = install(monkeypatch, FakeCloud())
-    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None: {})
-    yield c
-    for event in list(c.hold.values()):
-        event.set()
-
-
-@pytest.fixture(autouse=True)
-async def _no_job_left_running():
-    yield
-    await jobs.shutdown()
 
 
 async def _ask(client, token, conv, qid, query="How do I add a supplier?"):
@@ -200,7 +183,7 @@ async def test_ask_again_after_memory_language_and_tools_changed_sends_the_same_
     qid = uuid.uuid4()
     await _interrupted(client, token, conv, qid, cloud)
 
-    r = await client.post("/ai/memory/notes", headers=AUTH(token), json={"note": "We buy from Bangkok suppliers."})
+    r = await client.post("/ai/memory/notes", headers=AUTH(token), json={"content": "We buy from Bangkok suppliers."})
     assert r.status_code == 201, r.text
     monkeypatch.setattr(service, "compile_agent_capabilities",
                         lambda app, settings, role=None: {"contacts_search": _cap("contacts_search", "GET",

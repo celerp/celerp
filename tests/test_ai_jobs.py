@@ -23,7 +23,7 @@ import uuid
 import pytest
 from sqlalchemy import select, update
 
-from ai_fake_cloud import FakeCloud, answer, install, tool_turn, until
+from ai_fake_cloud import answer, cloud, tool_turn, until  # noqa: F401
 from celerp.ai import deadlines, jobs, llm, service, usage
 from celerp.config import settings
 from celerp.models.ai import AIBatchJob, AIJobStep, AIUsage
@@ -33,21 +33,6 @@ from test_ai_usage import _conversation, owner  # noqa: F401
 
 AUTH = lambda token: {"Authorization": f"Bearer {token}"}  # noqa: E731
 TERMINAL = {"completed", "failed", "cancelled"}
-
-
-@pytest.fixture
-def cloud(monkeypatch):
-    c = install(monkeypatch, FakeCloud())
-    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None: {})
-    yield c
-    for event in list(c.hold.values()):
-        event.set()
-
-
-@pytest.fixture(autouse=True)
-async def _no_job_left_running():
-    yield
-    await jobs.shutdown()
 
 
 def _files(company_id, user_id, n: int) -> list[str]:
