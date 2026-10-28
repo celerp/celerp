@@ -1085,16 +1085,21 @@ def no_connection_off_this_machine(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def account_methods_offline(monkeypatch):
-    """Answer the screens' account-methods request as the API does when the relay is
-    unreachable. Opening a document refreshes the free-send quota from it in a task that
-    outlives the test. A test about the answer patches it again itself."""
+def relay_backed_reads_offline(monkeypatch):
+    """Answer the screens' requests whose API answer comes from the relay (account
+    methods, the AI offer) as the API does when the relay is unreachable. Opening a
+    document refreshes the free-send quota in a task that outlives the test, and the
+    dashboard reads the AI offer. A test about an answer patches it again itself."""
     import ui.api_client as api
 
-    async def _offline(token):
+    async def _methods_offline(token):
         return {"google": False, "free_email_quota": 0, "google_start_url": ""}
 
-    monkeypatch.setattr(api, "account_methods", _offline)
+    async def _offer_offline(token):
+        return {"paid_ai": False, "free_ai_questions": None, "plan_ai_questions": None}
+
+    monkeypatch.setattr(api, "account_methods", _methods_offline)
+    monkeypatch.setattr(api, "ai_offer", _offer_offline)
 
 
 @pytest.fixture
