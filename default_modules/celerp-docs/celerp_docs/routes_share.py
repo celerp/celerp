@@ -7,7 +7,7 @@ How a share works:
   1. The sender shares a document (POST /docs/{id}/share) and gets a link to a
      read-only page for it.
   2. That page has an Import button for recipients who use Celerp.
-  3. The recipient pastes the link into their own Celerp (GET /docs/import?link=).
+  3. The recipient pastes the link into their own Celerp (POST /docs/import-link?link=).
   4. The document arrives under Received, apart from the recipient's own books,
      until they book it as a local draft.
   5. When the sender's Celerp is not reachable from the recipient, the page offers
@@ -755,7 +755,7 @@ async def download_share_bundle(
     )
 
 
-@public_router.get("/docs/import")
+@public_router.post("/docs/import-link")
 async def import_shared_doc(
     link: str | None = Query(None, description="The share link: the page the sender's document is shown on"),
     src: str | None = Query(None, description="Older link form: the sender's public address, given with token"),

@@ -30,7 +30,7 @@ from celerp.models.migration import MigrationCleanupTask, MigrationRun
 from celerp.models.projections import Projection
 from celerp.services.company_lock import (
     judge_without_company_lock, lock_chart, lock_company, lock_company_for_deletion)
-from celerp.services.migrations import run_cleanup_task
+from celerp.services.migrations import request_cancel, run_cleanup_task
 from celerp.services.permissions import authorize_request
 from celerp.services.session_tracker import invalidate_sessions, lock_auth_state
 
@@ -62,6 +62,26 @@ async def test_orm_insert_without_the_lock_is_reported(session, auth):
     assert (finding.kind, finding.table, finding.company, finding.route) == (
         "unprotected", "locations", str(cid), "POST /observed")
     assert finding.transaction and finding.sql.startswith("INSERT")
+
+
+@pytest.mark.parametrize("method", ["GET", "HEAD", "POST"])
+async def test_a_locked_write_made_for_a_read_request_is_reported(session, auth, method):
+    with serving(method, "/observed"):
+        cid = _authorize(session, auth)
+        await lock_company(session, cid)
+        session.add(Location(company_id=cid, name="Read", type="warehouse"))
+        await session.commit()
+    assert _kinds() == ([] if method == "POST" else ["read-route-write"])
+
+
+async def test_a_read_request_that_writes_nothing_durable_is_not_reported(session, auth):
+    with serving("GET", "/observed"):
+        cid = _authorize(session, auth)
+        await lock_company(session, cid)
+        session.add(Location(company_id=cid, name="Rolled back", type="warehouse"))
+        await session.flush()
+        await session.rollback()
+    assert _kinds() == []
 
 
 async def test_autoflush_write_without_the_lock_is_reported(session, auth):
@@ -358,25 +378,37 @@ async def test_a_write_under_a_refused_authority_never_counts(session, auth):
     assert _kinds() == [] and mutation_observer.CENSUS.routes == {}
 
 
-async def _migration_run(session, auth) -> uuid.UUID:
+async def _migration_run(session, auth, status: str = "ready") -> uuid.UUID:
     run_id = uuid.uuid4()
     session.add(MigrationRun(id=run_id, company_id=auth["company_id"], created_by_user_id=auth["user_id"],
                              scan_claim_sha256=run_id.hex * 2, source_system="observed",
-                             source_artifact_sha256="0" * 64, adapter_version="1", cif_version="1", mode="new"))
+                             source_artifact_sha256="0" * 64, adapter_version="1", cif_version="1", mode="new",
+                             status=status))
     await session.commit()
     return run_id
 
 
 @pytest.mark.parametrize("judged", [True, False])
 async def test_a_cancel_is_protected_by_the_request_judged_again_without_the_lock(session, auth, judged):
-    run_id = await _migration_run(session, auth)
+    run_id = await _migration_run(session, auth, "running")
+    with serving("POST", "/observed"):
+        _authorize(session, auth)
+        if judged:
+            await request_cancel(session, await session.get(MigrationRun, run_id))
+        else:
+            await session.execute(update(MigrationRun).where(MigrationRun.id == run_id).values(status="cancelled"))
+            await session.commit()
+    assert _kinds() == ([] if judged else ["unprotected"])
+
+
+async def test_a_judgment_without_the_lock_protects_only_the_cancel_that_judged(session, auth):
+    run_id = await _migration_run(session, auth, "running")
     with serving("POST", "/observed"):
         cid = _authorize(session, auth)
-        if judged:
-            await judge_without_company_lock(session, cid)
+        await judge_without_company_lock(session, cid)
         await session.execute(update(MigrationRun).where(MigrationRun.id == run_id).values(status="cancelled"))
         await session.commit()
-    assert _kinds() == ([] if judged else ["unprotected"])
+    assert _kinds() == ["unprotected"]
 
 
 @pytest.mark.parametrize("write", ["another table", "another statement"])

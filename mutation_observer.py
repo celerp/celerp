@@ -14,7 +14,8 @@ own row lock, and a write to a company this transaction created by that company 
 invisible to every other transaction until it commits; a write on a connection no Session
 uses while the request holds the migration lock is the schema migrator's. Each statement is judged on the Session that ran it. A write is
 judged when its transaction commits: a write rolled back with its savepoint or transaction
-never became durable and is dropped, as the lock proofs are.
+never became durable and is dropped, as the lock proofs are. A durable write made while
+serving a GET or HEAD request is a finding of its own however it is locked: those only read.
 
 Statements are classified from the SQL PostgreSQL receives, parsed into its syntax tree
 (pglast) once per distinct text and fingerprinted: INSERT, UPDATE, DELETE, MERGE and
@@ -121,10 +122,18 @@ INFRASTRUCTURE: dict[str, str] = {
 
 # The writes a request may make after judging its authority again without the company
 # lock (company_lock.judge_without_company_lock), each the one operation that cannot wait
-# for that lock, by table and statement type.
-JUDGED_WITHOUT_LOCK: dict[tuple[str, str], str] = {
-    ("migration_runs", "UPDATE"): "a migration cancel, saved while the runner holds the company lock through a "
-                                  "batch: services/migrations.request_cancel",
+# for that lock, by table and statement type. Each names the only functions that may make
+# it; the same write from anywhere else is judged as usual.
+@dataclass(frozen=True)
+class Judged:
+    sites: tuple[str, ...]  # "<file> <function>" that make the write
+    reason: str
+
+
+JUDGED_WITHOUT_LOCK: dict[tuple[str, str], Judged] = {
+    ("migration_runs", "UPDATE"): Judged(
+        ("celerp/services/migrations.py request_cancel",),
+        "a migration cancel, saved while the runner holds the company lock through a batch"),
 }
 # The writes protected by a row lock taken earlier in the transaction instead of a company
 # lock, by table and statement type: rows that outlive their company or are one login's,
@@ -154,6 +163,10 @@ UNDER_ROW_LOCK: dict[tuple[str, str], RowLocked] = {
     ("session_registry", "DELETE"): _TOKEN_REVOKE,
 }
 
+# A request in one of these methods only reads: a durable write it makes is a finding
+# however it is locked, as a link, a prefetch or a page load can send it.
+READ_METHODS = ("GET", "HEAD")
+
 _ROOT = os.path.dirname(os.path.abspath(__file__))
 _REQUEST: ContextVar[dict | None] = ContextVar("mutation_observer_request", default=None)
 _SESSIONS: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
@@ -176,7 +189,7 @@ class Op:
 
 @dataclass
 class Finding:
-    kind: str  # unprotected, lock-order, cross-company, unknown-sql, unowned-table, no-session
+    kind: str  # unprotected, lock-order, cross-company, unknown-sql, unowned-table, no-session, read-route-write
     route: str
     company: str | None
     table: str | None
@@ -300,6 +313,10 @@ def _held() -> "weakref.WeakKeyDictionary":
     outer transaction)."""
     return weakref.WeakKeyDictionary(
         {session: {id(p): p for p in session.info.get(_PROOFS, ())} for session in _open_sessions()})
+
+
+def _reads(request: dict) -> bool:
+    return request["scope"].get("method") in READ_METHODS
 
 
 def _route(request: dict) -> str:
@@ -585,8 +602,13 @@ def _under_row_lock(request: dict, session, op: Op) -> bool:
     if rule is None or not any(rule.table in tables.split(",") and "row update" in mode.split(" + ")
                                for tables, mode in (held.split(" ", 1) for held in _here(request, session, _ROW))):
         return False
+    return _made_by(rule.sites)
+
+
+def _made_by(sites: tuple[str, ...]) -> bool:
+    """The statement runs inside one of *sites* ("<file> <function>")."""
     made_in = {" ".join((frame.split(" ")[0].rsplit(":", 1)[0], frame.split(" ")[1])) for frame in _app_frames()}
-    return any(site in made_in for site in rule.sites)
+    return any(site in made_in for site in sites)
 
 
 def _exclusive(op: Op) -> bool:
@@ -794,7 +816,7 @@ def _executed(conn, cursor, statement, parameters, context, executemany) -> None
         elif company is not None and target != company and not _holds(request, session, target):
             kind = "cross-company"
         elif (op.table, op.detail) in JUDGED_WITHOUT_LOCK and target in _here(request, session, "judged") \
-                and not _holds(request, session, target):
+                and not _holds(request, session, target) and _made_by(JUDGED_WITHOUT_LOCK[(op.table, op.detail)].sites):
             kind = None
         elif not _holds(request, session, target):
             kind = "unprotected"
@@ -807,8 +829,8 @@ def _executed(conn, cursor, statement, parameters, context, executemany) -> None
         note(session, _WRITE, Finding(
             kind or "protected", route, target, op.table, statement[:300], op.detail,
             earlier_locks=before, transaction=f"{id(root):x}",
-            where=_where() if kind else [], test=CENSUS.test, company_from=source, sites=frames,
-            fingerprint=op.fingerprint))
+            where=_where() if kind or _reads(request) else [], test=CENSUS.test, company_from=source,
+            sites=frames, fingerprint=op.fingerprint))
 
 
 @event.listens_for(Session, "after_commit")
@@ -822,6 +844,8 @@ def _committed(session) -> None:
             CENSUS.sites[site] = CENSUS.sites.get(site, 0) + 1
         if finding.kind != "protected":
             CENSUS.findings.append(finding)
+        if finding.route.split(" ")[-2] in READ_METHODS:
+            CENSUS.findings.append(replace(finding, kind="read-route-write"))
 
 
 # -- census files ------------------------------------------------------------------

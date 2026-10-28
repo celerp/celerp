@@ -936,7 +936,7 @@ def test_print_view_escapes_injected_html():
 @pytest.mark.asyncio
 async def test_import_link_rejects_non_https(client: AsyncClient):
     tok = await _token(client)
-    r = await client.get("/docs/import", params={"link": "http://evil.example.com/share/abc"}, headers=_h(tok))
+    r = await client.post("/docs/import-link", params={"link": "http://evil.example.com/share/abc"}, headers=_h(tok))
     assert r.status_code == 400
 
 
@@ -944,7 +944,7 @@ async def test_import_link_rejects_non_https(client: AsyncClient):
 async def test_import_link_rejects_private_and_metadata_hosts(client: AsyncClient):
     tok = await _token(client)
     for host in ("https://127.0.0.1", "https://10.0.0.1", "https://169.254.169.254", "https://192.168.1.1"):
-        r = await client.get("/docs/import", params={"link": f"{host}/share/abc"}, headers=_h(tok))
+        r = await client.post("/docs/import-link", params={"link": f"{host}/share/abc"}, headers=_h(tok))
         assert r.status_code == 400, host
 
 
@@ -956,7 +956,7 @@ async def test_import_link_rejects_private_and_metadata_hosts(client: AsyncClien
 ])
 async def test_import_link_rejects_links_without_a_share_page(client: AsyncClient, link):
     tok = await _token(client)
-    r = await client.get("/docs/import", params={"link": link}, headers=_h(tok))
+    r = await client.post("/docs/import-link", params={"link": link}, headers=_h(tok))
     assert r.status_code == 400
 
 
@@ -979,8 +979,8 @@ async def test_import_link_fetches_the_bundle_next_to_the_share_page(client: Asy
     fetch = AsyncMock(return_value=_bundle_response({"doc_type": "invoice", "currency": "USD", "ref_id": "EXT-9", "total": 5.0}))
     with patch("celerp_docs.routes_share.validate_public_base_url", new=AsyncMock(return_value=link)), \
          patch("celerp.services.outbound_url.fetch_public_bytes", new=fetch):
-        r = await client.get("/docs/import", params={"link": link}, headers=_h(tok), follow_redirects=False)
-        again = await client.get("/docs/import", params={"link": link}, headers=_h(tok), follow_redirects=False)
+        r = await client.post("/docs/import-link", params={"link": link}, headers=_h(tok), follow_redirects=False)
+        again = await client.post("/docs/import-link", params={"link": link}, headers=_h(tok), follow_redirects=False)
 
     assert fetch.await_args.args[0] == f"{link}/bundle"
     assert r.status_code == 302 and r.headers["location"].startswith("/docs/received/rcv:")

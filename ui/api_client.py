@@ -1428,7 +1428,7 @@ async def import_shared_doc(token: str, share_page: str) -> str:
     """Fetch a document shared from another Celerp into Received; returns its UI path."""
     async with _local_error_mapping():
         async with _local_client(token, timeout=30.0, follow_redirects=False) as c:
-            r = await c.get("/docs/import", params={"link": share_page})
+            r = await c.post("/docs/import-link", params={"link": share_page})
     return _received_doc_path(r)
 
 

@@ -138,7 +138,7 @@ async def test_received_list_shows_the_original_share_link(client):
     with patch("celerp_docs.routes_share.validate_public_base_url", new=AsyncMock(return_value=link)), \
          patch("celerp.services.outbound_url.fetch_public_bytes",
                new=AsyncMock(return_value=MagicMock(status_code=200, content=body, headers={}))):
-        r = await client.get("/docs/import", params={"link": link}, headers=_h(tok), follow_redirects=False)
+        r = await client.post("/docs/import-link", params={"link": link}, headers=_h(tok), follow_redirects=False)
     rid = r.headers["location"].rsplit("/", 1)[-1]
     assert (await _received(client, tok, rid))["source_link"] == link
 
@@ -152,7 +152,7 @@ async def test_same_document_through_a_refreshed_link_keeps_the_new_link(client)
         with patch("celerp_docs.routes_share.validate_public_base_url", new=AsyncMock(return_value=link)), \
              patch("celerp.services.outbound_url.fetch_public_bytes",
                    new=AsyncMock(return_value=MagicMock(status_code=200, content=body, headers={}))):
-            r = await client.get("/docs/import", params={"link": link}, headers=_h(tok), follow_redirects=False)
+            r = await client.post("/docs/import-link", params={"link": link}, headers=_h(tok), follow_redirects=False)
         rids.append(r.headers["location"].rsplit("/", 1)[-1])
     assert rids[0] == rids[1]
     received = await _received(client, tok, rids[0])
@@ -565,8 +565,8 @@ async def test_import_accepts_link_or_legacy_src_and_token_as_one_path(client):
     fetch = _fetch_ok()
     with patch("celerp_docs.routes_share.validate_public_base_url", new=AsyncMock(return_value=page)), \
          patch("celerp.services.outbound_url.fetch_public_bytes", new=fetch):
-        by_link = await client.get("/docs/import", params={"link": page}, headers=_h(tok), follow_redirects=False)
-        by_pair = await client.get("/docs/import", params={"src": "https://shop.example.com/", "token": "abc123"},
+        by_link = await client.post("/docs/import-link", params={"link": page}, headers=_h(tok), follow_redirects=False)
+        by_pair = await client.post("/docs/import-link", params={"src": "https://shop.example.com/", "token": "abc123"},
                                    headers=_h(tok), follow_redirects=False)
     assert by_link.status_code == 302 and by_pair.status_code == 302
     assert [c.args[0] for c in fetch.await_args_list] == [f"{page}/bundle", f"{page}/bundle"]
@@ -586,7 +586,7 @@ async def test_import_rejects_mixed_or_incomplete_input(client, params):
     tok = await _token(client)
     fetch = _fetch_ok()
     with patch("celerp.services.outbound_url.fetch_public_bytes", new=fetch):
-        r = await client.get("/docs/import", params=params, headers=_h(tok), follow_redirects=False)
+        r = await client.post("/docs/import-link", params=params, headers=_h(tok), follow_redirects=False)
     assert r.status_code in (400, 422)
     fetch.assert_not_awaited()
 

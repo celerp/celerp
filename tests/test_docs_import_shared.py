@@ -231,7 +231,7 @@ def _mock_api(monkeypatch, handler):
 @pytest.mark.asyncio
 async def test_api_client_returns_the_received_doc_path(monkeypatch):
     def _handler(request):
-        if request.url.path == "/docs/import":
+        if request.url.path == "/docs/import-link":
             return httpx.Response(302, headers={"location": "/docs/received/rcv:abc"})
         return httpx.Response(200, json={"id": "doc:rcv:abc"})
 
@@ -239,7 +239,7 @@ async def test_api_client_returns_the_received_doc_path(monkeypatch):
     path = await api.import_shared_doc("tok", "https://shop.example.com/share/abc123")
 
     assert path == "/docs/received/rcv:abc"
-    assert [r.url.path for r in seen] == ["/docs/import"]
+    assert [(r.method, r.url.path) for r in seen] == [("POST", "/docs/import-link")]
     assert seen[0].url.params["link"] == "https://shop.example.com/share/abc123"
     assert seen[0].headers["authorization"] == "Bearer tok"
 
