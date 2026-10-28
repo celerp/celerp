@@ -555,6 +555,11 @@ class Journal:
             self._done[key] = result
 
 
+class Stopped(Exception):
+    """The user stopped the question: it sends no further model step. Asking it again
+    under its id continues it from the steps that ended."""
+
+
 class _JobJournal(Journal):
     def __init__(self, job_id: uuid.UUID, company_id: uuid.UUID, user_id: uuid.UUID, steps: list) -> None:
         super().__init__(job_id)
@@ -573,9 +578,15 @@ class _JobJournal(Journal):
 
     async def admit(self) -> None:
         from fastapi import HTTPException
+
+        from celerp.models.ai import AIBatchJob
         async with SessionLocal() as session:
             refusal = await _refusal(session, self.company_id, self.user_id)
+            stopped = (await session.execute(
+                select(AIBatchJob.cancel_requested_at).where(AIBatchJob.id == self.job_id))).scalar_one_or_none()
             await session.commit()
+        if stopped is not None:
+            raise Stopped()
         if refusal is not None:
             raise HTTPException(status_code=403, detail={"code": refusal.removeprefix("ai."), "message": t(refusal)})
 
@@ -666,7 +677,7 @@ async def reopen_question(session, job_id: uuid.UUID) -> bool:
     from celerp.models.ai import AIBatchJob
     reopened = await session.execute(
         update(AIBatchJob).where(AIBatchJob.id == job_id, AIBatchJob.status != "completed")
-        .values(status="pending", results=None, error=None, completed_at=None))
+        .values(status="pending", results=None, error=None, completed_at=None, cancel_requested_at=None))
     return reopened.rowcount == 1
 
 

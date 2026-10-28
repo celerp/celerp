@@ -232,3 +232,39 @@ async def test_a_replayed_call_to_a_tool_no_longer_offered_gets_the_tool_error(c
     (tool_msg,) = [m for m in continuation["messages"] if m.get("role") == "tool"]
     assert tool_msg["tool_call_id"] == "call-9"
     assert json.loads(tool_msg["content"])["error"]["code"] == "unknown_capability"
+
+
+async def test_a_stopped_question_sends_no_further_step_and_ask_again_continues_it(
+        client, owner, cloud, monkeypatch):
+    """Stop while a model step runs: that step ends and is kept, no further step is
+    sent, and the question fails as stopped, retryable. Asking it again continues it
+    from the kept step, so the first step is never sent again."""
+    token, *_ = owner
+    caps = {"contacts_search": _cap("contacts_search", "GET", confirm=False)}
+    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None: caps)
+
+    async def _exec(*a, **k):
+        return {"ok": True, "status": 200, "data": {}}
+    monkeypatch.setattr(service, "execute_agent_capability", _exec)
+    conv = await _conversation(client, token)
+    qid = uuid.uuid4()
+    cloud.script = lambda identity, body: (tool_turn(("contacts_search", {}, "call-3"))
+                                           if identity == str(qid) else answer("Found 2 suppliers."))
+    cloud.held(str(qid))
+    assert (await _ask(client, token, conv, qid)).status_code == 202
+    await until(lambda: str(qid) in cloud.arrived)
+
+    r = await client.post(f"/ai/jobs/{qid}/cancel", headers=AUTH(token))
+    assert r.status_code == 202, r.text
+    cloud.release(str(qid))
+    state = await _settled(client, token, conv, qid)
+    assert state["state"] == "failed"
+    assert state["message"]["error_code"] == "stopped"
+    assert state["message"]["retryable"] is True
+    assert not [b for b in cloud.bodies if b.get("step_id")]
+
+    assert (await _ask(client, token, conv, qid)).status_code == 202
+    state = await _settled(client, token, conv, qid)
+    assert state["state"] == "answered"
+    assert state["message"]["content"] == "Found 2 suppliers."
+    assert cloud.executions[str(qid)] == 1

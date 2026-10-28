@@ -735,7 +735,7 @@ async def test_chat_with_receipts_renders_progress_bubble(ui_client):
     with patch("celerp_ai.ui_routes.api.ai_conversation_query",
                AsyncMock(return_value={"job_id": "job-1", "message_id": "m1"})):
         r = await ui_client.post("/ai/chat", data={
-            "query": "", "conversation_id": "conv-1", "file_ids": "f1,f2,f3",
+            "query": "", "conversation_id": "conv-1", "file_ids": "f1,f2,f3", "document_mode": "receipts",
         })
     assert r.status_code == 200
     assert 'data-job-id="job-1"' in r.text
@@ -931,3 +931,88 @@ async def test_usage_table_hidden_without_manage_users(ui_client):
     assert r.status_code == 200
     assert usage_mock.await_count == 0
     assert t("page.this_months_usage", "en") not in r.text
+
+
+@pytest.mark.asyncio
+async def test_a_started_question_shows_a_pending_bubble_that_polls_its_state(ui_client):
+    ui_client.cookies.update(_authed())
+    with patch("celerp_ai.ui_routes.api.ai_conversation_query",
+               AsyncMock(return_value={"job_id": "q-1", "message_id": "q-1"})):
+        r = await ui_client.post("/ai/chat", data={"query": "How do I add a supplier?", "conversation_id": "conv-1"})
+    assert r.status_code == 200
+    assert "ai-msg--pending" in r.text
+    assert "/ai/question-ui?conversation=conv-1&amp;question=q-1" in r.text
+    assert r.headers.get("X-AI-Clear-Composer") == "1"
+
+
+def _state(**kw) -> dict:
+    return {"state": "running", "promoted": False, "waiting": None, "notice": None, "message": None,
+            "asked": {"id": "q-1", "content": "How many open invoices?", "file_ids": None}, **kw}
+
+
+async def _poll(ui_client, state=None, error=None):
+    ui_client.cookies.update(_authed())
+    mock = AsyncMock(side_effect=error) if error else AsyncMock(return_value=state)
+    with patch("celerp_ai.ui_routes.api.ai_question_state", mock), \
+            patch("celerp_ai.ui_routes._plan_counts", AsyncMock(return_value={})):
+        return await ui_client.get("/ai/question-ui?conversation=conv-1&question=q-1")
+
+
+@pytest.mark.asyncio
+async def test_a_running_question_keeps_polling_and_shows_stop_once_promoted(ui_client):
+    r = await _poll(ui_client, _state())
+    assert "ai-msg--pending" in r.text and "load delay:2s" in r.text
+    assert t("ai.stop", "en") not in r.text
+    r = await _poll(ui_client, _state(promoted=True, notice="Keeps working"))
+    assert "Keeps working" in r.text
+    assert "/ai/jobs-ui/q-1/cancel" in r.text
+
+
+@pytest.mark.asyncio
+async def test_an_interrupted_question_offers_ask_again_with_its_own_text(ui_client):
+    r = await _poll(ui_client, _state(state="interrupted"))
+    assert t("ai.question_interrupted", "en") in r.text
+    assert "ai-msg__again" in r.text and "How many open invoices?" in r.text and "q-1" in r.text
+
+
+@pytest.mark.asyncio
+async def test_an_ended_question_is_swapped_for_its_reply(ui_client):
+    message = {"id": "a-1", "role": "assistant", "content": "You have 3.", "error": False,
+               "pending_actions": [], "help_pages": None}
+    r = await _poll(ui_client, _state(state="answered", message=message))
+    assert "You have 3." in r.text and "ai-msg--pending" not in r.text
+    failed = {**message, "content": "You stopped this question.", "error": True, "retryable": True}
+    r = await _poll(ui_client, _state(state="failed", message=failed))
+    assert "ai-msg--error" in r.text and "ai-msg__again" in r.text
+
+
+@pytest.mark.asyncio
+async def test_a_question_refused_in_its_job_is_shown_as_a_refused_send_is(ui_client):
+    message = {"id": "a-1", "role": "assistant", "content": "", "error": True,
+               "refusal": {"code": "quota_exceeded", "tier": "ai", "base_limit": 200}, "refusal_status": 402}
+    r = await _poll(ui_client, _state(state="failed", message=message))
+    assert "ai-upgrade-cta" in r.text
+    busy = {**message, "refusal": {"message": "rate limited"}, "refusal_status": 429}
+    r = await _poll(ui_client, _state(state="failed", message=busy))
+    assert t("ai.busy", "en") in r.text
+
+
+@pytest.mark.asyncio
+async def test_a_failed_state_read_keeps_the_bubble_polling_and_says_why(ui_client):
+    r = await _poll(ui_client, error=APIError(502, "The AI service is down"))
+    assert "ai-msg--pending" in r.text and "The AI service is down" in r.text
+    r = await _poll(ui_client, error=APIError(404, "gone"))
+    assert r.text == ""
+
+
+@pytest.mark.asyncio
+async def test_a_reading_job_has_stop_while_it_runs_and_continue_once_stopped(ui_client):
+    from fasthtml.common import to_xml
+
+    from celerp_ai.ui_routes import _job_bubble
+    running = {"id": "j-1", "status": "running", "total_files": 5, "completed_files": 1, "failed_files": 0}
+    html = to_xml(_job_bubble(running, "conv-1"))
+    assert "/ai/jobs-ui/j-1/cancel" in html and "/ai/jobs-ui/j-1/resume" not in html
+    html = to_xml(_job_bubble({**running, "status": "cancelled"}, "conv-1"))
+    assert "/ai/jobs-ui/j-1/resume" in html and "hx-get" not in html
+    assert t("ai.job_stopped", "en", done=1, total=5) in html

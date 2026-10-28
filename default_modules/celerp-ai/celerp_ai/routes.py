@@ -788,7 +788,7 @@ async def question_state(
     """Where a question of the conversation stands: ``running`` (with what it waits
     for, or that it was moved to the background), ``answered`` or ``failed`` with its
     assistant message, or ``interrupted`` (a restart ended it; asking again under its
-    id resumes it)."""
+    id resumes it). ``asked`` is the question's own message, so it can be asked again."""
     from celerp.ai import jobs
     from celerp.ai.conversations import get_conversation
     if await get_conversation(session, conversation_id, company_id, user.id) is None:
@@ -806,7 +806,9 @@ async def question_state(
     elif held and stored["promoted"]:
         notice = t("ai.question_promoted")
     message = stored["message"]
+    asked = await session.get(AIMessage, question_id)
     return {
+        "asked": _message_out(asked).model_dump(mode="json"),
         "state": "running" if held else stored["state"], "promoted": stored["promoted"], "waiting": waiting,
         "notice": notice, "message": None if held or message is None else _message_out(message).model_dump(mode="json"),
     }

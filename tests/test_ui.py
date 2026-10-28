@@ -21401,10 +21401,10 @@ class TestCommercialPartnerManagedInvariant:
         from fasthtml.common import to_xml
         from celerp_ai.ui_routes import _quota_exceeded_card
         detail = {"instance_id": "inst-1", "limit": 100, "tier": "ai"}
-        html = to_xml(_quota_exceeded_card(detail, user_bubble="", lang="en"))
+        html = to_xml(_quota_exceeded_card(detail, lang="en"))
         self._assert_clean(html, "AI quota card (ai tier)")
         detail_cloud = {"instance_id": "inst-1", "limit": 100, "tier": "cloud"}
-        html2 = to_xml(_quota_exceeded_card(detail_cloud, user_bubble="", lang="en"))
+        html2 = to_xml(_quota_exceeded_card(detail_cloud, lang="en"))
         self._assert_clean(html2, "AI quota card (cloud tier)")
 
     def test_ai_quota_card_prefers_relay_url_never(self):
@@ -21414,7 +21414,7 @@ class TestCommercialPartnerManagedInvariant:
         from celerp_ai.ui_routes import _quota_exceeded_card
         detail = {"instance_id": "inst-1", "limit": 100, "tier": "ai",
                   "upgrade_url": "https://celerp.com/subscribe?plan=ai"}
-        html = to_xml(_quota_exceeded_card(detail, user_bubble="", lang="en"))
+        html = to_xml(_quota_exceeded_card(detail, lang="en"))
         self._assert_clean(html, "AI quota card with relay upgrade_url")
 
     def test_session_gate_401_partner_clean(self):
@@ -21447,7 +21447,7 @@ class TestCommercialPartnerManagedInvariant:
         from fasthtml.common import to_xml
         from celerp_ai.ui_routes import _quota_exceeded_card
         detail = {"instance_id": "inst-1", "limit": 100, "tier": "ai"}
-        html = to_xml(_quota_exceeded_card(detail, user_bubble="", lang="en"))
+        html = to_xml(_quota_exceeded_card(detail, lang="en"))
         assert "/subscribe/topup" not in html
 
 

@@ -18,7 +18,6 @@ from ui.components.cloud_gate import (
     subscribe_url,
     topup_url,
     is_partner_managed,
-    direct_price,
 )
 from ui.components.shell import base_shell, load_error
 from ui.config import get_token as _token, get_role
@@ -92,7 +91,7 @@ def _credits_exhausted_text(detail: dict, lang: str) -> str:
     return t("ai.credits_exhausted", lang, limit=int(detail.get("base_limit", detail.get("limit", 0)) or 0))
 
 
-def _quota_exceeded_card(detail: dict, user_bubble: FT, lang: str = "en") -> tuple[FT, FT, FT]:
+def _quota_exceeded_card(detail: dict, lang: str = "en") -> tuple[FT, FT]:
     """The card shown when an AI query is refused for hitting the quota.
 
     Routes both destinations through the commercial policy: the top-up CTA via
@@ -105,7 +104,6 @@ def _quota_exceeded_card(detail: dict, user_bubble: FT, lang: str = "en") -> tup
     is_ai_tier = detail.get("tier") in PAID_TIERS
     if is_ai_tier:
         return (
-            user_bubble,
             _msg_bubble("ai", _credits_exhausted_text(detail, lang)),
             Div(
                 P(t("msg.need_more_topup_credits_never_expire", lang), cls="ai-upgrade-label"),
@@ -117,7 +115,6 @@ def _quota_exceeded_card(detail: dict, user_bubble: FT, lang: str = "en") -> tup
         )
     upgrade_label = t("msg.get_the_ai_plan", lang)
     return (
-        user_bubble,
         _msg_bubble("ai", _credits_exhausted_text(detail, lang)),
         Div(
             P(t("msg.upgrade_to_keep_your_ai_operator_working", lang), cls="ai-upgrade-label"),
@@ -150,24 +147,35 @@ def _refusal_text(status: int | None, data: dict, lang: str) -> tuple[str, bool]
 
 
 async def _refusal_reply(token: str, e: APIError, user_bubble: FT, query: str, lang: str) -> tuple:
-    """The reply to a question the AI service refused. The refusal code decides: a free
-    account out of questions or paused gets help pages that may answer it, a used-up
-    paid plan gets top-up, a free account the upgrade offer."""
+    """The reply to a send the API refused: the AI service's own refusal as
+    ``_refused`` explains it, any other error as a failed request."""
     data = e.data if isinstance(e.data, dict) else {}
-    explained = _refusal_text(e.status, data, lang)
-    if explained is None:
+    if _refusal_text(e.status, data, lang) is None:
         return _failed_reply(user_bubble, e, lang)
+    return (user_bubble, *await _refused(token, e.status, data, query, lang))
+
+
+async def _refused(token: str, status: int | None, data: dict, query: str, lang: str) -> tuple:
+    """The assistant's reply to a question the AI service refused, whether the send
+    or the question's job met the refusal. The refusal code decides: a free account
+    out of questions or paused gets help pages that may answer it, a used-up paid plan
+    gets top-up, a free account the upgrade offer, a busy service says so."""
+    explained = _refusal_text(status, data, lang)
+    if explained is None:
+        if status == 429:
+            return (_msg_bubble("ai", t("ai.busy", lang)),)
+        return (_msg_bubble("ai", str(data.get("message") or data.get("code") or ""), error=True),)
     text, is_error = explained
     bubble = _msg_bubble("ai", text, error=is_error)
     code = data.get("code")
-    if e.status == 402 and code == "quota_exceeded" and data.get("tier") == "free":
+    if status == 402 and code == "quota_exceeded" and data.get("tier") == "free":
         cards = _plan_cards(await _plan_counts(token), lang)
-        return (user_bubble, bubble, *await _help_hits(token, query, lang), cards)
-    if e.status == 402 and code not in ("not_available", "plan_limit"):
-        return _quota_exceeded_card(data, user_bubble, lang)
-    if e.status == 503 and code == "free_paused":
-        return (user_bubble, bubble, *await _help_hits(token, query, lang))
-    return (user_bubble, bubble)
+        return (bubble, *await _help_hits(token, query, lang), cards)
+    if status == 402 and code not in ("not_available", "plan_limit"):
+        return _quota_exceeded_card(data, lang)
+    if status == 503 and code == "free_paused":
+        return (bubble, *await _help_hits(token, query, lang))
+    return (bubble,)
 
 
 async def _help_hits(token: str, query: str, lang: str) -> list[FT]:
@@ -451,8 +459,8 @@ def setup_ui_routes(app) -> None:
         from celerp.gateway.state import get_session_token
         session_token = get_session_token()
 
-        # The composer keeps the question on every outcome but a confirmed answer
-        # or a started reading job, and holds the question's id, so sending it
+        # The composer keeps the question on every outcome but an answer or a
+        # started job (a failed job offers Ask again), and holds the question's id, so sending it
         # again asks the same question instead of a new one. A question id of None
         # (one the API will not take again) gives the composer a new id.
         def _reply(parts: tuple, *, done: bool, question_id: str | None, asked_again: bool = False) -> HTMLResponse:
@@ -505,7 +513,7 @@ def setup_ui_routes(app) -> None:
 
         question_id = str(result.get("message_id") or operation_id)
         asked_again = bool(result.get("asked_again"))
-        if result.get("job_id"):
+        if result.get("job_id") and document_mode == "receipts":
             # Receipts and invoices are read in the background: the thread shows
             # the job's progress and fetches the bill proposals when it finishes.
             job = {
@@ -513,6 +521,11 @@ def setup_ui_routes(app) -> None:
                 "total_files": len(file_ids or []), "completed_files": 0, "failed_files": 0,
             }
             return _reply((user_bubble, _job_bubble(job, conversation_id, lang)),
+                          done=True, question_id=question_id, asked_again=asked_again)
+        if result.get("job_id"):
+            # A question runs as a job: its bubble polls the question's state and is
+            # swapped for the answer, or for the failure with Ask again.
+            return _reply((user_bubble, _question_bubble({}, conversation_id, question_id, lang)),
                           done=True, question_id=question_id, asked_again=asked_again)
 
         error = result.get("error")
@@ -566,6 +579,55 @@ def setup_ui_routes(app) -> None:
         actions = result.get("pending_actions") or []
         groups = [_action_group(conversation_id, message_id, actions, lang)] if actions else []
         return (_job_done_line(job, lang), _msg_bubble("ai", result.get("answer", "")), *groups)
+
+    @app.get("/ai/question-ui")
+    async def ai_question_ui(request: Request):
+        """A question's pending bubble polls this until its job ends, then it is
+        swapped for the answer, or for the failure with what can follow it."""
+        from starlette.responses import Response as _R
+        token = _token(request)
+        if not token:
+            return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+        lang = get_lang(request)
+        conversation_id = (request.query_params.get("conversation") or "").strip()
+        question_id = (request.query_params.get("question") or "").strip()
+
+        from celerp.gateway.state import get_session_token
+        try:
+            state = await api.ai_question_state(token, get_session_token(), conversation_id, question_id)
+        except APIError as e:
+            if e.status == 404:
+                return HTMLResponse("")
+            # The question's state could not be read this time: say so and read it again.
+            return _question_bubble({"notice": _api_error_text(e)}, conversation_id, question_id, lang)
+        return await _question_view(token, state, conversation_id, question_id, lang)
+
+    @app.post("/ai/jobs-ui/{job_id}/{action}")
+    async def ai_job_action_ui(request: Request, job_id: str, action: str):
+        """Stop a running job or continue a stopped one, then show its bubble again:
+        a reading job's progress, or a question's pending bubble."""
+        from starlette.responses import Response as _R
+        token = _token(request)
+        if not token:
+            return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+        lang = get_lang(request)
+        form = await request.form()
+        conversation_id = (form.get("conversation_id") or "").strip()
+        is_question = form.get("kind") == "question"
+        send = {"cancel": api.ai_job_cancel, "resume": api.ai_job_resume}.get(action)
+        if send is None:
+            return _R("", status_code=404)
+
+        from celerp.gateway.state import get_session_token
+        session_token = get_session_token()
+        try:
+            await send(token, session_token, job_id)
+            if is_question:
+                state = await api.ai_question_state(token, session_token, conversation_id, job_id)
+                return await _question_view(token, state, conversation_id, job_id, lang)
+            return _job_bubble(await api.ai_batch_status(token, session_token, job_id), conversation_id, lang)
+        except APIError as e:
+            return _msg_bubble("ai", _api_error_text(e), error=True)
 
     @app.post("/ai/conversations")
     async def ai_conversation_new(request: Request):
@@ -1590,17 +1652,35 @@ def _job_done_line(job: dict, lang: str = "en") -> FT:
                cls="ai-msg ai-msg--ai ai-job ai-job--done", data_job_id=str(job.get("id", "")))
 
 
+def _pending_bubble(poll_url: str, delay_s: float, *children: FT, cls: str, also_on: str = "", **attrs) -> FT:
+    """A bubble that reads ``poll_url`` after ``delay_s`` seconds (at once for 0) and is
+    replaced by what it returns: the one way the thread follows a running job."""
+    poll = f"load delay:{delay_s:g}s" if delay_s else "load"
+    return Div(*children, cls=cls, hx_get=poll_url, hx_trigger=", ".join(filter(None, (poll, also_on))),
+               hx_swap="outerHTML", **attrs)
+
+
+def _job_button(job_id: str, action: str, label: str, conversation_id: str, *, target: str,
+                kind: str = "documents") -> FT:
+    """Stop a running job or continue a stopped one; the job's bubble is shown again."""
+    return Button(label, type="button", cls="btn btn--secondary btn--sm",
+                  hx_post=f"/ai/jobs-ui/{job_id}/{action}", hx_target=f"#{target}", hx_swap="outerHTML",
+                  hx_vals=json.dumps({"conversation_id": conversation_id, "kind": kind}))
+
+
 def _job_bubble(job: dict, conversation_id: str, lang: str = "en") -> FT:
     """The assistant-side bubble for a receipts reading job.
 
     While the job runs the bubble shows how many files are read, updates from
-    the notification stream, and polls the proposals route so the cards appear
-    without a reload. A failed job is an error bubble; a finished job whose
-    proposals already exist is the finished line.
+    the notification stream, polls the proposals route so the cards appear
+    without a reload, and offers Stop. A stopped job offers Continue. A failed job
+    is an error bubble; a finished job whose proposals already exist is the
+    finished line.
     """
     job_id = str(job.get("id", ""))
     status = job.get("status")
     ok, failed, total = _job_counts(job)
+    dom_id = f"ai-job-{job_id}"
     if status == "failed":
         return Div(
             Div(job.get("error") or t("ai.job_failed", lang)),
@@ -1611,24 +1691,68 @@ def _job_bubble(job: dict, conversation_id: str, lang: str = "en") -> FT:
     if status == "completed" and job.get("proposal_message_id"):
         return _job_done_line(job, lang)
     done = ok + failed
+    if status == "cancelled":
+        return Div(
+            Div(t("ai.job_stopped", lang, done=done, total=total), cls="ai-job__text"),
+            _job_button(job_id, "resume", t("btn.continue", lang), conversation_id, target=dom_id),
+            id=dom_id, cls="ai-msg ai-msg--ai ai-job", data_job_id=job_id,
+        )
     if status == "completed":
-        poll = "load"
+        delay = 0
     else:
-        poll = "load delay:1s" if total and done >= total else "load delay:5s"
+        delay = 1 if total and done >= total else 5
     pct = round(done / total * 100) if total else 0
-    return Div(
+    stop = [] if status == "completed" else [
+        _job_button(job_id, "cancel", t("ai.stop", lang), conversation_id, target=dom_id)]
+    return _pending_bubble(
+        f"/ai/proposals-ui?conversation={conversation_id}&job={job_id}", delay,
         Div(t("ai.job_reading", lang, done=done, total=total), cls="ai-job__text"),
         Div(Div(cls="ai-job__bar", style=f"width:{pct}%"), cls="ai-job__track"),
         P(t("ai.job_reading_hint", lang), cls="ai-job__hint"),
-        id=f"ai-job-{job_id}",
-        cls="ai-msg ai-msg--ai ai-job",
+        *stop,
+        cls="ai-msg ai-msg--ai ai-job", also_on="celerp:job-done",
+        id=dom_id,
         data_job_id=job_id,
         data_total=str(total),
         data_text=t("ai.job_reading", lang, done="{done}", total="{total}"),
-        hx_get=f"/ai/proposals-ui?conversation={conversation_id}&job={job_id}",
-        hx_trigger=f"{poll}, celerp:job-done",
-        hx_swap="outerHTML",
     )
+
+
+QUESTION_POLL_S = 2
+
+
+def _question_bubble(state: dict, conversation_id: str, question_id: str, lang: str = "en") -> FT:
+    """A running question: the typing dots, what it waits for or that it moved to the
+    background, and Stop once it did; it polls the question's state."""
+    dom_id = f"ai-q-{question_id}"
+    notice = state.get("notice")
+    stop = [_job_button(question_id, "cancel", t("ai.stop", lang), conversation_id, target=dom_id,
+                        kind="question")] if state.get("promoted") else []
+    return _pending_bubble(
+        f"/ai/question-ui?conversation={conversation_id}&question={question_id}", QUESTION_POLL_S,
+        Div(*(Span(cls="ai-typing__dot") for _ in range(3)), cls="ai-typing"),
+        *([P(notice, cls="ai-msg__notice")] if notice else []),
+        *stop,
+        cls="ai-msg ai-msg--ai ai-msg--pending", id=dom_id,
+    )
+
+
+async def _question_view(token: str, state: dict, conversation_id: str, question_id: str,
+                         lang: str = "en") -> FT | tuple:
+    """A question as its state says: running, interrupted by a restart (Ask again
+    continues it), refused by the AI service (as a refused send is shown), or ended
+    with its stored reply, shown as the thread shows it."""
+    asked = state.get("asked") or {"id": question_id}
+    if state.get("state") == "running":
+        return _question_bubble(state, conversation_id, question_id, lang)
+    if state.get("state") == "interrupted":
+        again = _ask_again(conversation_id, question_id, asked.get("content") or "", asked.get("file_ids"), lang)
+        return _msg_bubble("ai", t("ai.question_interrupted", lang), error=True, extra=again)
+    message = state["message"]
+    if message.get("refusal") is not None:
+        return await _refused(token, message.get("refusal_status"), message["refusal"],
+                              asked.get("content") or "", lang)
+    return tuple(_message_parts(message, conversation_id, asked, lang, offer_again=True))
 
 
 def _confirm_success_text(data, lang: str = "en") -> str:
@@ -1748,7 +1872,9 @@ def _showcase_view(lang: str = "en", *, offer: dict | None = None, owner: bool |
 
 def _thread(messages: list[dict], jobs: list[dict], conversation_id: str, lang: str) -> list[FT]:
     """Render a stored conversation in time order: message bubbles, reading-job
-    bubbles, and the action cards beneath the assistant turn that proposed them."""
+    bubbles, and the action cards beneath the assistant turn that proposed them. A
+    last question with no reply yet and no reading job is a running or interrupted
+    question job: its bubble reads its state."""
     entries = [("message", m) for m in messages] + [("job", j) for j in jobs]
     entries.sort(key=lambda entry: str(entry[1].get("created_at") or ""))
     out: list[FT] = []
@@ -1760,24 +1886,36 @@ def _thread(messages: list[dict], jobs: list[dict], conversation_id: str, lang: 
         if kind == "job":
             out.append(_job_bubble(entry, conversation_id, lang))
             continue
-        role = entry.get("role")
-        text = entry.get("content") or (t("ai.attached_files", lang) if entry.get("file_ids") else "")
-        error = bool(entry.get("error"))
-        if entry.get("refusal") is not None:
-            explained = _refusal_text(entry.get("refusal_status"), entry["refusal"], lang)
-            if explained is not None:
-                text, error = explained
-        again = None
-        if entry is last and error and asked is not None:
-            again = _failure_action(entry, conversation_id, str(asked.get("id", "")),
-                                    asked.get("content") or "", asked.get("file_ids"), lang)
-        out.append(_msg_bubble("user" if role == "user" else "ai", text, error=error,
-                               help_pages=entry.get("help_pages"), lang=lang, extra=again))
-        if role == "user":
+        out.extend(_message_parts(entry, conversation_id, asked, lang, offer_again=entry is last))
+        if entry.get("role") == "user":
             asked = entry
-        actions = entry.get("pending_actions") or []
-        if actions:
-            out.append(_action_group(conversation_id, str(entry.get("id", "")), actions, lang))
+    reading = {str(j.get("id")) for j in jobs}
+    if last is not None and last.get("role") == "user" and str(last.get("id")) not in reading:
+        out.append(_question_bubble({}, conversation_id, str(last.get("id")), lang))
+    return out
+
+
+def _message_parts(entry: dict, conversation_id: str, asked: dict | None, lang: str, *,
+                   offer_again: bool) -> list[FT]:
+    """A stored message as the thread shows it: its bubble (a refusal explained, a
+    failure with Ask again or Ask as new when ``offer_again`` and its question is
+    known), then the action cards it proposed."""
+    role = entry.get("role")
+    text = entry.get("content") or (t("ai.attached_files", lang) if entry.get("file_ids") else "")
+    error = bool(entry.get("error"))
+    if entry.get("refusal") is not None:
+        explained = _refusal_text(entry.get("refusal_status"), entry["refusal"], lang)
+        if explained is not None:
+            text, error = explained
+    again = None
+    if offer_again and error and asked is not None:
+        again = _failure_action(entry, conversation_id, str(asked.get("id", "")),
+                                asked.get("content") or "", asked.get("file_ids"), lang)
+    out = [_msg_bubble("user" if role == "user" else "ai", text, error=error,
+                       help_pages=entry.get("help_pages"), lang=lang, extra=again)]
+    actions = entry.get("pending_actions") or []
+    if actions:
+        out.append(_action_group(conversation_id, str(entry.get("id", "")), actions, lang))
     return out
 
 

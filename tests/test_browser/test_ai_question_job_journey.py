@@ -8,20 +8,24 @@ when the job ends; past the promotion time it says it keeps working in the
 background, with Stop. A reading job has Stop and, once stopped, Continue. After an
 app restart an interactive question shows its retryable failure with Ask again.
 
-The model is the scripted ``celerp.ai.service.complete`` of test_ai_chat_journey;
-a step can be held on a threading.Event so the journey sees it while it runs. The
-restart runs on the API server's own loop, captured from inside a model call.
+The question model is the scripted ``celerp.ai.service.complete`` of
+test_ai_chat_journey and the reading model is ``celerp.ai.llm.complete``; a call can
+be held on a threading.Event so the journey sees it while it runs. The restart runs
+on the API server's own loop, captured from inside a model call.
 """
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 
 import pytest
 from playwright.sync_api import Page, expect
 
+from celerp.ai.llm import ModelResult
+
 from .test_ai_chat_journey import _SCRIPT, _answer, _open_chat, _send, agent_env  # noqa: F401
-from .test_ai_documents_journey import _PNG, _attach, _send_receipts
+from .test_ai_documents_journey import _PNG, _RECEIPTS, _attach, _send_receipts
 
 pytestmark = pytest.mark.browser
 
@@ -49,6 +53,8 @@ def held_model(monkeypatch):
     holds: list[_Held] = []
 
     async def _complete(messages, **kw):
+        if kw.get("before_send") is not None:
+            await kw["before_send"](len(json.dumps(messages)))
         if holds and not holds[0].entered.is_set():
             h = holds[0]
             h.loop = asyncio.get_running_loop()
@@ -105,17 +111,39 @@ def test_a_long_question_says_it_keeps_working_in_the_background_with_stop(page:
     expect(page.locator(".ai-msg--ai", has_text="All done.")).to_be_visible(timeout=10_000)
 
 
-def test_a_reading_job_can_be_stopped_and_continued(page: Page, ui_server, held_model):
-    held = held_model(_answer('{"document_kind": "receipt", "vendor_name": "Northwind"}'))
+@pytest.fixture
+def held_reading(monkeypatch):
+    """The reading model: every call waits for ``released``, then answers with a receipt."""
+    import celerp.ai.llm as llm
+    released = threading.Event()
+    sent = threading.Event()
+    reply = ModelResult(message={"role": "assistant", "content": json.dumps(_RECEIPTS["northwind.png"])},
+                        model_used="fake-reader", usage={"credits": 1}, reservation_id=None, remaining=None)
+
+    async def _complete(messages, *, before_send=None, **_kw):
+        await before_send(len(json.dumps(messages)))
+        sent.set()
+        while not released.is_set():
+            await asyncio.sleep(0.05)
+        return reply
+    monkeypatch.setattr(llm, "complete", _complete)
+    yield sent, released
+    released.set()
+
+
+def test_a_reading_job_can_be_stopped_and_continued(page: Page, ui_server, held_reading):
+    sent, released = held_reading
     _open_chat(page, ui_server)
-    _attach(page, [{"name": f"r{i}.png", "mimeType": "image/png", "buffer": _PNG} for i in range(3)])
+    # More files than model slots, so some are still unsent when Stop is pressed.
+    _attach(page, [{"name": f"r{i}.png", "mimeType": "image/png", "buffer": _PNG} for i in range(5)])
     _send_receipts(page, "Enter these as bills")
     job = page.locator(".ai-job")
     expect(job).to_be_visible()
-    assert held.entered.wait(10)
-    job.get_by_role("button", name="Stop").click()
-    held.release()
-    expect(job.get_by_role("button", name="Continue")).to_be_visible(timeout=10_000)
+    assert sent.wait(10)
+    with page.expect_response(lambda r: r.url.endswith("/cancel") and r.request.method == "POST"):
+        job.get_by_role("button", name="Stop").click()
+    released.set()
+    expect(job.get_by_role("button", name="Continue")).to_be_visible(timeout=15_000)
     job.get_by_role("button", name="Continue").click()
     expect(page.locator(".ai-job--done")).to_be_visible(timeout=20_000)
 

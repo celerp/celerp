@@ -3324,6 +3324,18 @@ async def ai_batch_status(token: str, session_token: str, job_id: str) -> dict:
         return _raise(await c.get(f"/ai/batch/{job_id}")).json()
 
 
+async def ai_job_cancel(token: str, session_token: str, job_id: str) -> dict:
+    """POST /ai/jobs/{id}/cancel - stop a running job; what it finished is kept."""
+    async with _ai_api_client(token, session_token, timeout=deadlines.UI_REQUEST_S) as c:
+        return _raise(await c.post(f"/ai/jobs/{job_id}/cancel")).json()
+
+
+async def ai_job_resume(token: str, session_token: str, job_id: str) -> dict:
+    """POST /ai/jobs/{id}/resume - send what a stopped job left unsent."""
+    async with _ai_api_client(token, session_token, timeout=deadlines.UI_REQUEST_S) as c:
+        return _raise(await c.post(f"/ai/jobs/{job_id}/resume")).json()
+
+
 async def ai_conversations_list(token: str, session_token: str) -> list[dict]:
     """GET /ai/conversations - list conversations for sidebar."""
     async with _ai_api_client(token, session_token) as c:

@@ -136,7 +136,7 @@ _TOO_MUCH_DATA_TEXT = "Too much data was returned; ask a narrower question."
 # answer the service kept is returned, not asked for again).
 RETRYABLE_ERRORS = frozenset({
     "service_unavailable", "busy", "operation_in_progress",
-    "continuation_expired", "unexpected_reply", "gateway_error", "timeout",
+    "continuation_expired", "unexpected_reply", "gateway_error", "timeout", "stopped",
 })
 # Failures after which the service will not take the question id again: the outcome
 # of its first send is unknown (final for that id), the id expired, or the question
@@ -156,6 +156,8 @@ def _error_code(exc: BaseException) -> str:
         return exc.code
     if isinstance(exc, _SessionExpired):
         return "session_expired"
+    if isinstance(exc, jobs.Stopped):
+        return "stopped"
     return "unexpected"
 
 
@@ -166,6 +168,8 @@ def _user_error(exc: BaseException) -> str:
         return t("ai.err_timeout")
     if code == "session_expired":
         return t("error.session_expired")
+    if code == "stopped":
+        return t("ai.question_stopped")
     if code == "service_unavailable":
         return str(exc)
     if code in ("busy", "operation_in_progress"):
@@ -359,7 +363,7 @@ async def run_agent(
     except HTTPException as exc:
         raise AgentRefusal(exc, tally) from exc
     except Exception as exc:
-        if not isinstance(exc, _SessionExpired):
+        if not isinstance(exc, (_SessionExpired, jobs.Stopped)):
             log.error("AI agent run failed: %s", exc)
         result = tally.result(
             answer="", model_used="", tools_called=[], pending_actions=[],
