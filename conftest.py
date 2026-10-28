@@ -865,7 +865,17 @@ async def client(session: AsyncSession):
     # Set a mock relay client (used by relay-dependent code paths in tests).
     # The concurrent login gate is bypassed in tests because the tracker is
     # cleared at setup/teardown, so each test starts with an empty registry.
-    app.dependency_overrides[get_session] = lambda: session
+    # Every request shares the test's one session, which allows no concurrent use, while
+    # production gives each request a session of its own. A page that sends its API calls
+    # together (asyncio.gather), through any transport into the app, so takes the session
+    # one request at a time.
+    session_turn = asyncio.Lock()
+
+    async def _shared_request_session():
+        async with session_turn:
+            yield session
+
+    app.dependency_overrides[get_session] = _shared_request_session
 
     # Middleware (DrainMiddleware, SlidingTokenRefreshMiddleware) opens its own
     # session via get_session_ctx() rather than the injected request session. Each
