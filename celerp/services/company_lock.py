@@ -27,13 +27,15 @@ _REFUSED = "celerp_authority_refused"
 _PROOFS = "celerp_lock_proofs"
 
 
-def _prove(session, kind: str, key) -> None:
+def note(session, kind: str, key) -> None:
+    """Record *key* under *kind* for as long as the work of the current transaction or
+    savepoint lasts: gone when that savepoint rolls back or the transaction ends."""
     sync = getattr(session, "sync_session", session)
     taken_in = sync.get_nested_transaction() or sync.get_transaction()
     session.info.setdefault(_PROOFS, []).append((kind, key, taken_in))
 
 
-def _proven(session, kind: str) -> list:
+def noted(session, kind: str) -> list:
     return [key for k, key, _ in session.info.get(_PROOFS, ()) if k == kind]
 
 
@@ -63,7 +65,7 @@ async def lock_company(session: AsyncSession, company_id) -> None:
         select(Company.id).where(Company.id == company_id).with_for_update(key_share=True)
     )
     await _judge_authority_again(session, company_id)
-    _prove(session, "locked", company_id)
+    note(session, "locked", company_id)
 
 
 async def judge_module_writes(session: AsyncSession, company_id) -> None:
@@ -82,14 +84,14 @@ async def judge_module_writes(session: AsyncSession, company_id) -> None:
     names = modules_in_use(company_id)
     if not names:
         return
-    done = frozenset().union(*(n for c, n in _proven(session, "modules") if c == str(company_id)))
+    done = frozenset().union(*(n for c, n in noted(session, "modules") if c == str(company_id)))
     if names <= done:
         return
     try:
         if not done:
             with refused_past_lock_timeout(ModuleBusy(min(names))):
                 await share_company_modules(session, company_id)
-        _prove(session, "modules", (str(company_id), names - done))
+        note(session, "modules", (str(company_id), names - done))
         row = (await session.execute(select(Company.settings).where(Company.id == company_id))).first()
         require_on(None if row is None else dict(row[0] or {}), *sorted(names))
     except ModuleRefused as exc:
@@ -109,9 +111,9 @@ async def _judge_authority_again(session: AsyncSession, company_id) -> None:
     authority = session.info.get(AUTHORITY)
     if authority is None or str(authority.company_id) != str(company_id):
         return
-    if str(company_id) in _proven(session, "judged"):
+    if str(company_id) in noted(session, "judged"):
         return
-    _prove(session, "judged", str(company_id))
+    note(session, "judged", str(company_id))
     try:
         await authority.judge_again(session)
     except Exception as exc:
@@ -198,19 +200,19 @@ async def locked_company(session: AsyncSession, company_id) -> Company | None:
     await lock_company(session, company_id)
     company = await session.get(Company, company_id, populate_existing=True)
     if company is not None:
-        _prove(session, "loaded", company.id)
+        note(session, "loaded", company.id)
     return company
 
 
 def holds_company_lock(session, company_id) -> bool:
     """True when lock_company() for the company completed in this transaction, judging
     the request's authority again, and PostgreSQL still holds the lock it took."""
-    return str(company_id) in {str(c) for c in _proven(session, "locked")}
+    return str(company_id) in {str(c) for c in noted(session, "locked")}
 
 
 @event.listens_for(Session, "before_flush")
 def _settings_change_needs_the_lock(session: Session, flush_context, instances) -> None:
-    locked = _proven(session, "loaded")
+    locked = noted(session, "loaded")
     for obj in session.dirty:
         if isinstance(obj, Company) and obj.id not in locked and get_history(obj, "settings").has_changes():
             raise RuntimeError(

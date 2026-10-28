@@ -149,6 +149,13 @@ def pytest_unconfigure(config):
 
 from celerp.db import get_session
 from celerp.main import app
+import mutation_observer  # noqa: E402 - installs the write observer's listeners
+
+# Every request the app serves, through any test's transport, is request scope for the
+# write observer (mutation_observer.py): the outermost layer of the app's own stack.
+_build_middleware_stack = app.build_middleware_stack
+app.build_middleware_stack = lambda: mutation_observer.observed(_build_middleware_stack())
+app.middleware_stack = None
 # The `client` fixture patches celerp.gateway.state.get_session_token. The session
 # gate keeps its own reference from import time, so it is imported here, before any
 # patch is active, and checks the session a test actually seats.
@@ -474,6 +481,26 @@ def _one_current_event_loop():
     asyncio.set_event_loop(loop)
     yield
     loop.close()
+
+
+_CENSUS: list = []
+
+
+@pytest.fixture(autouse=True)
+def _mutation_census(request):
+    """One write-observer record per test, kept for the census file
+    (CELERP_MUTATION_CENSUS names its folder)."""
+    mutation_observer.reset(request.node.nodeid)
+    yield
+    census = mutation_observer.reset()
+    if census.routes or census.findings:
+        _CENSUS.append(census)
+
+
+def pytest_sessionfinish(session, exitstatus):
+    path = mutation_observer.census_path()
+    if path:
+        mutation_observer.write_census(path, _CENSUS)
 
 
 @pytest.fixture(autouse=True)
