@@ -71,6 +71,7 @@ async def _check_view(owner_ui, url: str, doc_type: str, view: str) -> tuple[str
     return tuple(chips)
 
 
+@pytest.mark.timeout(180)  # renders every type and view of both lists after each of seven steps
 async def test_the_chips_of_a_view_never_change_with_its_rows(owner_ui, monkeypatch):
     await _demo_contact(owner_ui, monkeypatch)
     api = owner_ui.api
