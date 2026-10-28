@@ -86,6 +86,9 @@ _EFFECT = frozenset({"pg_notify"})
 # Advisory lock families taken before the company lock by the canonical order (module
 # admission and the module-state boundary come first).
 _BEFORE_COMPANY = ("module-use:", "module-gate:")
+# The connector fences (celerp.connectors.ownership.lock_connector_key) rank before the
+# company lock too: the install-wide runtime fence, then one connector's ownership fence.
+_CONNECTOR_RUNTIME, _CONNECTOR_OWNER = "connector-runtime", "connector-owner:"
 _DDL = ("Create", "Alter", "Drop", "Rename", "Comment", "Grant", "Index", "View")
 _ROW_LOCK = {1: "row share key", 2: "row share", 3: "row update key", 4: "row update"}
 # Tables that hold no company's data, each with the infrastructure that writes it.
@@ -109,7 +112,7 @@ _REQUEST: ContextVar[dict | None] = ContextVar("mutation_observer_request", defa
 _SESSIONS: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
 _LIVE: "weakref.WeakSet" = weakref.WeakSet()
 _SERVING: dict[int, dict] = {}  # the requests being served now, by id
-_WRITE, _LOCK = "observed-write", "observed-lock"
+_WRITE, _LOCK, _FENCE = "observed-write", "observed-lock", "observed-fence"
 
 
 @dataclass
@@ -464,8 +467,23 @@ def _before_company(op: Op) -> bool:
     from celerp.modules.registry import _MODULE_STATE_LOCK_KEY
     if op.table in ("companies", "user_companies"):
         return True
-    return op.name == _MODULE_STATE_LOCK_KEY or (
+    return op.name == _MODULE_STATE_LOCK_KEY or _fence(op) or (
         isinstance(op.name, str) and op.name.startswith(_BEFORE_COMPANY))
+
+
+def _fence(op: Op) -> bool:
+    return isinstance(op.name, str) and (
+        op.name == _CONNECTOR_RUNTIME or op.name.startswith(_CONNECTOR_OWNER))
+
+
+def _fence_order(request: dict, session, op: Op) -> str | None:
+    """How a connector fence breaks the canonical order: taken under a company lock, or an
+    ownership fence taken without the runtime fence."""
+    if _here(request, session, "locked"):
+        return f"{op.name} after the company lock"
+    if op.name != _CONNECTOR_RUNTIME and _CONNECTOR_RUNTIME not in _here(request, session, _FENCE):
+        return f"{op.name} before {_CONNECTOR_RUNTIME}"
+    return None
 
 
 # -- session lookup ----------------------------------------------------------------
@@ -589,6 +607,10 @@ def _executed(conn, cursor, statement, parameters, context, executemany) -> None
     if session is None:
         return found("no-session") if op.kind == "write" else None
     if op.kind == "lock":
+        if _fence(op):
+            if inversion := _fence_order(request, session, op):
+                found("lock-order", inversion)
+            note(session, _FENCE, op.name)
         locked = company is not None and _holds(request, session, company)
         if not locked and not _before_company(op):
             note(session, _LOCK, f"{op.table or ''} {op.detail}".strip())

@@ -20,6 +20,7 @@ from sqlalchemy import delete, func, insert, select, text, update
 
 import mutation_observer
 from mutation_observer import serving
+from celerp.connectors.ownership import lock_connector_key
 from celerp.events.engine import emit_event
 from celerp.models.company import Company, Location, User
 from celerp.models.projections import Projection
@@ -96,12 +97,13 @@ async def test_lock_of_one_company_does_not_cover_another(session, auth):
     assert (finding.kind, finding.company) == ("cross-company", str(other))
 
 
-@pytest.mark.parametrize("narrower", ["chart", "projection"])
+@pytest.mark.parametrize("narrower", ["advisory", "projection"])
 async def test_a_narrower_lock_before_the_company_lock_is_reported(session, auth, narrower):
     with serving("POST", "/observed"):
         cid = _authorize(session, auth)
-        if narrower == "chart":
-            await lock_chart(session, cid)
+        if narrower == "advisory":
+            await session.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"),
+                                  {"k": f"external-link:{cid}"})
         else:
             await session.execute(select(Projection.entity_id).where(Projection.company_id == cid).with_for_update())
         await lock_company(session, cid)
@@ -109,6 +111,52 @@ async def test_a_narrower_lock_before_the_company_lock_is_reported(session, auth
         await session.commit()
     assert set(_kinds()) == {"lock-order"}
     assert all(f.earlier_locks for f in mutation_observer.CENSUS.findings)
+
+
+@pytest.mark.parametrize("exclusive", [False, True])
+async def test_the_connector_fences_rank_before_the_company_lock(session, auth, exclusive):
+    with serving("POST", "/observed"):
+        cid = _authorize(session, auth)
+        await lock_connector_key(session, "shopify", exclusive=exclusive)
+        await lock_company(session, cid)
+        await _event(session, cid)
+        await session.commit()
+    assert _kinds() == []
+
+
+async def test_a_connector_fence_after_the_company_lock_is_reported(session, auth):
+    with serving("POST", "/observed"):
+        cid = _authorize(session, auth)
+        await lock_company(session, cid)
+        await lock_connector_key(session, "shopify")
+        await _event(session, cid)
+        await session.commit()
+    assert set(_kinds()) == {"lock-order"}
+    assert {f.detail for f in mutation_observer.CENSUS.findings} == {
+        "connector-runtime after the company lock", "connector-owner:shopify after the company lock"}
+
+
+async def test_an_ownership_fence_without_the_runtime_fence_is_reported(session, auth):
+    with serving("POST", "/observed"):
+        cid = _authorize(session, auth)
+        await session.execute(text("SELECT pg_advisory_xact_lock_shared(hashtextextended(:k, 0))"),
+                              {"k": "connector-owner:shopify"})
+        await lock_company(session, cid)
+        await _event(session, cid)
+        await session.commit()
+    finding, = mutation_observer.CENSUS.findings
+    assert (finding.kind, finding.detail) == ("lock-order", "connector-owner:shopify before connector-runtime")
+
+
+@pytest.mark.parametrize("key", ["connector-runtime:shopify", "connector-sync:shopify", "connector-ownership"])
+async def test_only_the_two_connector_fences_rank_before_the_company_lock(session, auth, key):
+    with serving("POST", "/observed"):
+        cid = _authorize(session, auth)
+        await session.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"), {"k": key})
+        await lock_company(session, cid)
+        await _event(session, cid)
+        await session.commit()
+    assert set(_kinds()) == {"lock-order"}
 
 
 async def test_a_lock_rolled_back_with_its_savepoint_protects_nothing_after(session, auth):
