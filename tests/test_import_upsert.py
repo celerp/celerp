@@ -558,14 +558,15 @@ async def test_same_idempotency_key_allowed_for_different_companies(client, sess
     from celerp.models.accounting import UserCompany
     from celerp.models.company import Company, User
 
-    for cid, uid, name in [
-        (company_a_id, user_a_id, "CompanyA"),
-        (company_b_id, user_b_id, "CompanyB"),
-    ]:
+    seeds = [(company_a_id, user_a_id, "CompanyA"), (company_b_id, user_b_id, "CompanyB")]
+    # Every user before any company, as provisioning orders them; parents before membership.
+    for _, uid, _ in seeds:
         session.add(User(id=uid, email=f"admin-{uid.hex[:8]}@xco.test", name="Admin", auth_hash="x", is_active=True))
-        await session.flush()
+    await session.flush()
+    for cid, _, name in seeds:
         session.add(Company(id=cid, name=name, slug=f"co-{cid.hex[:8]}"))
-        await session.flush()  # parents before membership for Postgres FK checks
+    await session.flush()
+    for cid, uid, _ in seeds:
         session.add(UserCompany(id=uuid.uuid4(), user_id=uid, company_id=cid, role="admin", is_active=True))
     await session.commit()
 

@@ -82,7 +82,9 @@ async def seeded(engine, sessionmaker):
         user = User(email=f"race-{suffix}@example.com", name="Race User", auth_hash=None)
         company_a = Company(name="Company A", slug=f"company-a-{suffix}", settings={})
         company_b = Company(name="Company B", slug=f"company-b-{suffix}", settings={})
-        s.add_all([user, company_a, company_b])
+        s.add(user)
+        await s.flush()
+        s.add_all([company_a, company_b])
         await s.flush()
         s.add_all([
             UserCompany(user_id=user.id, company_id=company_a.id, role="owner", is_active=True),

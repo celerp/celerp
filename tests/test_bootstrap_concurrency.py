@@ -153,8 +153,9 @@ async def test_bootstrap_race_serializes_to_single_owner(real_engine):
                           settings={"fiscal_year_start": "01-01"})
         owner = User(id=uuid.uuid4(), email="a@example.com", name="Owner A",
                      auth_hash="x", is_active=True)
-        session_a.add(company)
         session_a.add(owner)
+        await session_a.flush()
+        session_a.add(company)
         await session_a.flush()
         session_a.add(UserCompany(id=uuid.uuid4(), user_id=owner.id, company_id=company.id, role="owner"))
         await session_a.commit()
@@ -203,7 +204,9 @@ async def test_bootstrapped_register_rejects_before_waiting_on_lock(real_engine)
             id=uuid.uuid4(), email="existing@example.com", name="Existing Owner",
             auth_hash="x", is_active=True,
         )
-        session_a.add_all([company, owner])
+        session_a.add(owner)
+        await session_a.flush()
+        session_a.add(company)
         await session_a.flush()
         session_a.add(UserCompany(
             id=uuid.uuid4(), user_id=owner.id, company_id=company.id, role="owner"

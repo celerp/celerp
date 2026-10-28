@@ -187,8 +187,9 @@ async def seed_member(session, role: str = "operator", *, active: bool = True):
     """Insert a company, a user and their membership with ``role``; return (company_id, user_id)."""
     import uuid as _uuid
     from celerp.models.accounting import UserCompany
-    company_id, user_id = await ensure_company(session), _uuid.uuid4()
+    user_id = _uuid.uuid4()
     await ensure_user(session, user_id)
+    company_id = await ensure_company(session)
     session.add(UserCompany(user_id=user_id, company_id=company_id, role=role, is_active=active))
     await session.flush()
     return company_id, user_id

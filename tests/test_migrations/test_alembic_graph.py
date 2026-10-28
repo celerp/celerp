@@ -221,10 +221,10 @@ def _populate(sync_url: str) -> dict[str, str]:
     eng = create_engine(sync_url)
     try:
         with eng.begin() as conn:
-            conn.execute(text("INSERT INTO companies (id, name, slug, settings, is_active, created_at) "
-                              "VALUES (:c, 'Kept', 'kept', '{}', true, now())"), {"c": ids["company"]})
             conn.execute(text("INSERT INTO users (id, email, name, auth_hash, is_active, created_at) "
                               "VALUES (:u, 'owner@example.test', 'Owner', 'x', true, now())"), {"u": ids["user"]})
+            conn.execute(text("INSERT INTO companies (id, name, slug, settings, is_active, created_at) "
+                              "VALUES (:c, 'Kept', 'kept', '{}', true, now())"), {"c": ids["company"]})
             conn.execute(text("INSERT INTO user_companies (id, user_id, company_id, role, is_active) "
                               "VALUES (gen_random_uuid(), :u, :c, 'owner', true)"),
                          {"u": ids["user"], "c": ids["company"]})

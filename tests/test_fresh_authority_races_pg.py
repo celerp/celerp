@@ -105,11 +105,12 @@ async def _seed(factory, *, grants: dict | None = None) -> dict:
     company_id = uuid.uuid4()
     ids = {role: uuid.uuid4() for role in ("owner", "manager", "operator")}
     async with factory() as s:
-        s.add(Company(id=company_id, name="Access", slug=f"acc-{company_id.hex[:8]}",
-                      settings={"role_grants": grants or {}}))
         for role, uid in ids.items():
             s.add(User(id=uid, email=f"{role}-{uid.hex[:8]}@example.test", name=role.title(),
                        auth_hash="x", is_active=True))
+        await s.flush()
+        s.add(Company(id=company_id, name="Access", slug=f"acc-{company_id.hex[:8]}",
+                      settings={"role_grants": grants or {}}))
         await s.flush()
         s.add(Location(id=uuid.uuid4(), company_id=company_id, name="Main", type="warehouse", is_default=True))
         for role, uid in ids.items():

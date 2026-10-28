@@ -100,8 +100,9 @@ async def test_inactive_company_without_staged_run_is_not_staged(real_engine):
     from celerp.services import provisioning
 
     async with maker(real_engine)() as s:
+        owner = await _owner(s)
         paused = await _plain_company(s, "Paused Co", active=False)
-        staged = await provisioning.provision_migration_company(s, owner=await _owner(s), company_name="Staged Co")
+        staged = await provisioning.provision_migration_company(s, owner=owner, company_name="Staged Co")
         await s.commit()
     assert await _staged(real_engine, paused.id) is False
     assert await _staged(real_engine, staged.id) is True
@@ -481,8 +482,9 @@ async def test_no_lifecycle_backfill_filters_on_is_active_alone(real_engine):
     assert declared == set(LIFECYCLE_BACKFILLS), "declare each on_modules_ready backfill's need and coverage here"
 
     async with maker(real_engine)() as s:
+        owner = await _owner(s)
         paused = await _plain_company(s, "Paused Co", active=False)
-        staged = await provisioning.provision_migration_company(s, owner=await _owner(s), company_name="Staged Co")
+        staged = await provisioning.provision_migration_company(s, owner=owner, company_name="Staged Co")
         for handler, (need, _) in sorted(LIFECYCLE_BACKFILLS.items()):
             await need(s, paused.id)
             if handler not in NOT_REACHABLE_WHEN_STAGED:

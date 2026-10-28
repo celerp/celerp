@@ -53,12 +53,12 @@ _OLD_NOTIFICATIONS = """
 
 def _seed(conn) -> dict[str, str]:
     ids = {k: str(uuid.uuid4()) for k in ("company", "alice", "bob", "carol", "read", "unread", "wide")}
-    conn.execute(text("INSERT INTO companies (id, name, slug, settings, is_active, created_at) "
-                      "VALUES (:c, 'Kept', 'kept', '{}', true, now())"), {"c": ids["company"]})
     for key in ("alice", "bob", "carol"):
         conn.execute(text("INSERT INTO users (id, email, name, auth_hash, is_active, created_at) "
                           "VALUES (:u, :e, 'User', 'x', true, now())"),
                      {"u": ids[key], "e": f"{key}@example.test"})
+    conn.execute(text("INSERT INTO companies (id, name, slug, settings, is_active, created_at) "
+                      "VALUES (:c, 'Kept', 'kept', '{}', true, now())"), {"c": ids["company"]})
     for key, user, read in (("read", ids["alice"], True), ("unread", ids["alice"], False), ("wide", None, True)):
         conn.execute(text(
             "INSERT INTO notifications (id, company_id, user_id, category, title, body, priority, read, created_at) "

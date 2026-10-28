@@ -30,24 +30,33 @@ from test_helpers import provision_company_books
 from migration_support import real_engine  # noqa: F401 - fixture
 
 
+async def _seed_companies(session, *names: str) -> list[uuid.UUID]:
+    """One owned company per name; every owner is inserted before any company, as
+    provisioning orders them."""
+    seeds = [(name, uuid.uuid4(), uuid.uuid4()) for name in names]
+    for name, _, uid in seeds:
+        session.add(User(
+            id=uid, email=f"{name.lower()}-{uid.hex[:8]}@example.test",
+            name=f"{name} Owner", auth_hash=None,
+        ))
+    await session.flush()
+    for name, cid, _ in seeds:
+        session.add(Company(
+            id=cid, name=name, slug=f"{name.lower()}-{cid.hex[:8]}",
+            settings={"currency": "USD"},
+        ))
+    await session.flush()
+    for _, cid, uid in seeds:
+        session.add(UserCompany(
+            user_id=uid, company_id=cid, role="owner", is_active=True,
+        ))
+    for _, cid, _ in seeds:
+        await provision_company_books(session, cid)
+    return [cid for _, cid, _ in seeds]
+
+
 async def _seed_company(session, name: str) -> uuid.UUID:
-    cid = uuid.uuid4()
-    uid = uuid.uuid4()
-    session.add(User(
-        id=uid, email=f"{name.lower()}-{uid.hex[:8]}@example.test",
-        name=f"{name} Owner", auth_hash=None,
-    ))
-    await session.flush()
-    session.add(Company(
-        id=cid, name=name, slug=f"{name.lower()}-{cid.hex[:8]}",
-        settings={"currency": "USD"},
-    ))
-    await session.flush()
-    session.add(UserCompany(
-        user_id=uid, company_id=cid, role="owner", is_active=True,
-    ))
-    await provision_company_books(session, cid)
-    return cid
+    return (await _seed_companies(session, name))[0]
 
 
 @contextlib.asynccontextmanager
@@ -256,8 +265,7 @@ async def test_contacts_create_for_all_platforms(use_test_session):
 async def test_contact_dedup_is_per_company(use_test_session):
     """Two companies importing the same WooCommerce customer id both succeed."""
     session = use_test_session
-    a = await _seed_company(session, "CoA")
-    b = await _seed_company(session, "CoB")
+    a, b = await _seed_companies(session, "CoA", "CoB")
     cust = {"id": 99, "first_name": "Same", "email": "same@x.test", "billing": {}}
     assert await woo_contact(str(a), cust) == "created"
     assert await woo_contact(str(b), cust) == "created"   # NOT blocked by A
@@ -1326,8 +1334,9 @@ async def _bank_on(session, cid, code: str, *, active: bool = True) -> None:
     await session.flush()
 
 
-async def _deposit_case(session, cid, case: str) -> str:
-    """Set up one way the WooCommerce deposit account cannot take a payment; its code."""
+async def _deposit_case(session, cid, other, case: str) -> str:
+    """Set up one way the WooCommerce deposit account cannot take a payment (``other`` is
+    another company); its code."""
     from celerp_accounting.models import Account
     company = await locked_company(session, cid)
     if case == "archived_cash":
@@ -1340,7 +1349,7 @@ async def _deposit_case(session, cid, case: str) -> str:
     if case == "archived_bank":
         await _bank_on(session, cid, code, active=False)
     elif case == "other_company":
-        await _bank_on(session, await _seed_company(session, "WooOther"), code)
+        await _bank_on(session, other, code)
     company.settings = {**(company.settings or {}), "woocommerce_deposit_account": code}
     await session.flush()
     return code
@@ -1356,8 +1365,8 @@ async def test_woocommerce_payment_waits_for_a_person_when_its_deposit_account_c
     from celerp_docs.doc_service import WooCommerceReconciliationRequired
 
     session = use_test_session
-    cid = await _seed_company(session, "WooBadDeposit")
-    code = await _deposit_case(session, cid, case)
+    cid, other = await _seed_companies(session, "WooBadDeposit", "WooOther")
+    code = await _deposit_case(session, cid, other, case)
     order = {**_WOO_PLAIN_ORDER, "id": 2003, "date_paid": "2024-06-02T10:00:00"}
 
     with pytest.raises(WooCommerceReconciliationRequired, match=code):
