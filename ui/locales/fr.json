@@ -3453,6 +3453,7 @@
   "error.stripe_disconnect_failed": "Celerp n'a pas pu joindre Stripe pour déconnecter votre compte. Vérifiez votre connexion Internet et réessayez dans quelques minutes.",
   "error.restore_disconnect_failed": "Celerp n'a pas pu déconnecter {names}. Vérifiez votre connexion Internet et réessayez, ou déconnectez-les depuis le site du service concerné.",
   "error.connector_not_here": "{service} n'est pas connecté à l'entreprise que vous utilisez. Passez à la bonne entreprise ou connectez-le dans Accès Web.",
+  "error.connector_sync_running_company": "Une synchronisation avec {service} est en cours pour cette entreprise. Annulez-la depuis la page Connecteurs ou réessayez lorsqu'elle sera terminée.",
   "error.connector_changed_while_disconnecting": "La connexion a changé pendant sa déconnexion. Sélectionnez « Réessayer ».",
   "error.connector_disconnect_unconfirmed": "Celerp n'a pas pu confirmer que {service} a été déconnecté. Vérifiez votre connexion Internet et réessayez.",
   "error.connector_disconnect_refused": "{service} n'a pas confirmé la déconnexion (erreur {status}). Réessayez dans quelques minutes.",

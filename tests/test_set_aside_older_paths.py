@@ -377,6 +377,12 @@ _WRITERS = {
     ("default_modules/celerp-admin/celerp_admin/routes.py", "proj.state = replayed"): "stale projection replayed from the judged ledger",
     ("celerp/connectors/outbound_queue.py", "self.state = state"): "an outbound delivery's own state, not a projection",
     ("ui/handoff_opening.py", "opening.state = READY"): "a company copy opening's own progress, not a projection",
+    ("celerp/connectors/sync_runner.py", 'row.state = "running"'): "a first sync's own progress, not a projection",
+    ("celerp/connectors/sync_runner.py", 'row.state = "completed" if synced == set(resources) else "failed"'):
+        "a first sync's own progress, not a projection",
+    ("celerp/connectors/sync_runner.py", 'row.state = "failed"'): "a first sync's own progress, not a projection",
+    ("default_modules/celerp-connectors/celerp_connectors/routes.py", 'first_sync.state = "starting"'):
+        "a first sync's own progress, not a projection",
     ("celerp/services/status_doc_backfill.py", "proj.state = new_state"): "writes only status_doc_id and status_doc_number",
     ("default_modules/celerp-docs/celerp_docs/legacy_receipts.py", "row.state = state"): "bill receipt fields; bills hold nothing",
     ("default_modules/celerp-docs/celerp_docs/received_legacy.py", "await ProjectionEngine.apply_event(session, entry)"): "imported received documents, not items",

@@ -48,9 +48,12 @@ def _production_files():
 
 def _channel_literals() -> list[tuple[str, int]]:
     """Every literal set, tuple or list naming exactly the two product channels (bare or
-    as key prefixes) in production code."""
+    as key prefixes) in production code. A migration revision is left out: it records
+    the values as they stood at its revision, which a later change must not rewrite."""
     hits = []
     for rel, path in _production_files():
+        if rel.parts[:3] == ("celerp", "migrations", "versions"):
+            continue
         tree = ast.parse(path.read_text())
         for node in ast.walk(tree):
             if not isinstance(node, (ast.Set, ast.Tuple, ast.List)) or len(node.elts) < 2:

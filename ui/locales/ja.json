@@ -3452,6 +3452,7 @@
   "error.stripe_disconnect_failed": "Celerp がアカウントの接続を解除するために Stripe に接続できませんでした。インターネット接続を確認し、数分後にもう一度お試しください。",
   "error.restore_disconnect_failed": "Celerp が {names} の接続を解除できませんでした。インターネット接続を確認してもう一度お試しいただくか、そのサービス自体のウェブサイトで接続を解除してください。",
   "error.connector_not_here": "{service} は現在お使いの会社に接続されていません。正しい会社に切り替えるか、Web アクセスで接続してください。",
+  "error.connector_sync_running_company": "この会社では {service} との同期が実行中です。コネクタページで取り消すか、終了してからもう一度お試しください。",
   "error.connector_changed_while_disconnecting": "接続の解除中に接続が変わりました。「再試行」を選んでください。",
   "error.connector_disconnect_unconfirmed": "Celerp は {service} の接続解除を確認できませんでした。インターネット接続を確認し、もう一度お試しください。",
   "error.connector_disconnect_refused": "{service} から接続解除の確認がありませんでした（エラー {status}）。数分後にもう一度お試しください。",

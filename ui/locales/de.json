@@ -3453,6 +3453,7 @@
   "error.stripe_disconnect_failed": "Celerp konnte Stripe nicht erreichen, um Ihr Konto zu trennen. Prüfen Sie Ihre Internetverbindung und versuchen Sie es in ein paar Minuten erneut.",
   "error.restore_disconnect_failed": "Celerp konnte {names} nicht trennen. Prüfen Sie Ihre Internetverbindung und versuchen Sie es erneut, oder trennen Sie die Verbindung auf der Website des jeweiligen Dienstes.",
   "error.connector_not_here": "{service} ist nicht mit dem Unternehmen verbunden, das Sie gerade verwenden. Wechseln Sie zum richtigen Unternehmen oder verbinden Sie es unter Webzugriff.",
+  "error.connector_sync_running_company": "Für dieses Unternehmen läuft eine Synchronisierung mit {service}. Brechen Sie sie auf der Seite Konnektoren ab oder versuchen Sie es erneut, wenn sie beendet ist.",
   "error.connector_changed_while_disconnecting": "Die Verbindung hat sich geändert, während sie getrennt wurde. Wählen Sie „Erneut versuchen“.",
   "error.connector_disconnect_unconfirmed": "Celerp konnte nicht bestätigen, dass {service} getrennt wurde. Prüfen Sie Ihre Internetverbindung und versuchen Sie es erneut.",
   "error.connector_disconnect_refused": "{service} hat die Trennung nicht bestätigt (Fehler {status}). Versuchen Sie es in ein paar Minuten erneut.",

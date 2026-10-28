@@ -3452,6 +3452,7 @@
   "error.stripe_disconnect_failed": "Celerp không kết nối được Stripe để ngắt kết nối tài khoản của bạn. Hãy kiểm tra kết nối internet và thử lại sau vài phút.",
   "error.restore_disconnect_failed": "Celerp không ngắt kết nối được {names}. Hãy kiểm tra kết nối internet và thử lại, hoặc ngắt kết nối trên trang web của chính dịch vụ đó.",
   "error.connector_not_here": "{service} chưa được kết nối với công ty bạn đang dùng. Hãy chuyển sang đúng công ty, hoặc kết nối trong Truy cập qua web.",
+  "error.connector_sync_running_company": "Đang đồng bộ với {service} cho công ty này. Hãy hủy trên trang Đầu nối, hoặc thử lại khi quá trình kết thúc.",
   "error.connector_changed_while_disconnecting": "Kết nối đã thay đổi trong lúc đang ngắt kết nối. Hãy chọn Thử lại.",
   "error.connector_disconnect_unconfirmed": "Celerp không xác nhận được {service} đã được ngắt kết nối. Hãy kiểm tra kết nối internet và thử lại.",
   "error.connector_disconnect_refused": "{service} không xác nhận việc ngắt kết nối (lỗi {status}). Hãy thử lại sau vài phút.",

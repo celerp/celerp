@@ -3452,6 +3452,7 @@
   "error.stripe_disconnect_failed": "تعذّر على Celerp الوصول إلى Stripe لقطع اتصال حسابك. تحقّق من اتصالك بالإنترنت وحاول مرة أخرى بعد بضع دقائق.",
   "error.restore_disconnect_failed": "تعذّر على Celerp قطع اتصال {names}. تحقّق من اتصالك بالإنترنت وحاول مرة أخرى، أو اقطع الاتصال من موقع تلك الخدمة نفسها.",
   "error.connector_not_here": "{service} غير متصل بالشركة التي تستخدمها. انتقل إلى الشركة الصحيحة، أو اربطه من الوصول عبر الويب.",
+  "error.connector_sync_running_company": "تجري مزامنة مع {service} لهذه الشركة. ألغِها من صفحة الموصلات، أو حاول مرة أخرى عند انتهائها.",
   "error.connector_changed_while_disconnecting": "تغيّر الاتصال أثناء قطعه. اختر إعادة المحاولة.",
   "error.connector_disconnect_unconfirmed": "تعذّر على Celerp التأكد من قطع اتصال {service}. تحقّق من اتصالك بالإنترنت وحاول مرة أخرى.",
   "error.connector_disconnect_refused": "لم يؤكد {service} قطع الاتصال (الخطأ {status}). حاول مرة أخرى بعد بضع دقائق.",

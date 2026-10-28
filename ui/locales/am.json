@@ -1863,6 +1863,7 @@
   "error.stripe_disconnect_failed": "Celerp መለያዎን ለማቋረጥ Stripeን ማግኘት አልቻለም። የኢንተርኔት ግንኙነትዎን ያረጋግጡና ከጥቂት ደቂቃዎች በኋላ እንደገና ይሞክሩ።",
   "error.restore_disconnect_failed": "Celerp {names}ን ማቋረጥ አልቻለም። የኢንተርኔት ግንኙነትዎን ያረጋግጡና እንደገና ይሞክሩ፣ ወይም ከአገልግሎቱ የራሱ ድር ጣቢያ ያቋርጧቸው።",
   "error.connector_not_here": "{service} እየተጠቀሙበት ካለው ኩባንያ ጋር አልተገናኘም። ወደ ትክክለኛው ኩባንያ ይቀይሩ፣ ወይም በየድር መዳረሻ ውስጥ ያገናኙት።",
+  "error.connector_sync_running_company": "ለዚህ ኩባንያ ከ{service} ጋር ማመሳሰል እየሄደ ነው። በአገናኞች ገጽ ላይ ይሰርዙት፣ ወይም ሲያልቅ እንደገና ይሞክሩ።",
   "error.connector_changed_while_disconnecting": "ግንኙነቱ እየተቋረጠ ሳለ ተቀይሯል። እንደገና ሞክር ይምረጡ።",
   "error.connector_disconnect_unconfirmed": "Celerp {service} መቋረጡን ማረጋገጥ አልቻለም። የኢንተርኔት ግንኙነትዎን ያረጋግጡና እንደገና ይሞክሩ።",
   "error.connector_disconnect_refused": "{service} መቋረጡን አላረጋገጠም (ስህተት {status})። ከጥቂት ደቂቃዎች በኋላ እንደገና ይሞክሩ።",

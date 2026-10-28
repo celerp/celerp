@@ -3452,6 +3452,7 @@
   "error.stripe_disconnect_failed": "Celerp tidak dapat menjangkau Stripe untuk memutuskan akun Anda. Periksa koneksi internet Anda dan coba lagi dalam beberapa menit.",
   "error.restore_disconnect_failed": "Celerp tidak dapat memutuskan {names}. Periksa koneksi internet Anda dan coba lagi, atau putuskan dari situs web layanan tersebut.",
   "error.connector_not_here": "{service} tidak terhubung ke perusahaan yang sedang Anda gunakan. Beralih ke perusahaan yang benar, atau hubungkan di Akses Web.",
+  "error.connector_sync_running_company": "Sinkronisasi dengan {service} sedang berjalan untuk perusahaan ini. Batalkan di halaman Konektor, atau coba lagi setelah selesai.",
   "error.connector_changed_while_disconnecting": "Koneksi berubah saat sedang diputuskan. Pilih Coba lagi.",
   "error.connector_disconnect_unconfirmed": "Celerp tidak dapat memastikan bahwa {service} sudah diputuskan. Periksa koneksi internet Anda dan coba lagi.",
   "error.connector_disconnect_refused": "{service} tidak mengonfirmasi pemutusan (galat {status}). Coba lagi dalam beberapa menit.",
