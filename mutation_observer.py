@@ -476,12 +476,22 @@ def _fence(op: Op) -> bool:
         op.name == _CONNECTOR_RUNTIME or op.name.startswith(_CONNECTOR_OWNER))
 
 
+def _exclusive(op: Op) -> bool:
+    return "_shared(" not in op.detail
+
+
 def _fence_order(request: dict, session, op: Op) -> str | None:
     """How a connector fence breaks the canonical order: taken under a company lock, or an
-    ownership fence taken without the runtime fence."""
+    ownership fence taken without the runtime fence. Taking a fence again in a mode this
+    transaction already holds (or a stronger one) never waits, so it is re-entry."""
+    held: dict[str, bool] = {}  # fence -> held exclusive
+    for name, exclusive in _here(request, session, _FENCE):
+        held[name] = held.get(name, False) or exclusive
+    if op.name in held and (held[op.name] or not _exclusive(op)):
+        return None
     if _here(request, session, "locked"):
         return f"{op.name} after the company lock"
-    if op.name != _CONNECTOR_RUNTIME and _CONNECTOR_RUNTIME not in _here(request, session, _FENCE):
+    if op.name != _CONNECTOR_RUNTIME and _CONNECTOR_RUNTIME not in held:
         return f"{op.name} before {_CONNECTOR_RUNTIME}"
     return None
 
@@ -610,7 +620,7 @@ def _executed(conn, cursor, statement, parameters, context, executemany) -> None
         if _fence(op):
             if inversion := _fence_order(request, session, op):
                 found("lock-order", inversion)
-            note(session, _FENCE, op.name)
+            note(session, _FENCE, (op.name, _exclusive(op)))
         locked = company is not None and _holds(request, session, company)
         if not locked and not _before_company(op):
             note(session, _LOCK, f"{op.table or ''} {op.detail}".strip())

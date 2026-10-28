@@ -148,6 +148,33 @@ async def test_an_ownership_fence_without_the_runtime_fence_is_reported(session,
     assert (finding.kind, finding.detail) == ("lock-order", "connector-owner:shopify before connector-runtime")
 
 
+@pytest.mark.parametrize("first,again", [(True, True), (True, False), (False, False)])
+async def test_a_connector_fence_taken_again_in_a_mode_held_is_re_entry(session, auth, first, again):
+    """A transaction never waits on a lock it holds in that mode or a stronger one, so
+    taking it again under the company lock cannot deadlock."""
+    with serving("POST", "/observed"):
+        cid = _authorize(session, auth)
+        await lock_connector_key(session, "shopify", exclusive=first)
+        await lock_company(session, cid)
+        await lock_connector_key(session, "shopify", exclusive=again)
+        await _event(session, cid)
+        await session.commit()
+    assert _kinds() == []
+
+
+async def test_a_connector_fence_made_exclusive_under_the_company_lock_is_reported(session, auth):
+    """Shared to exclusive waits for every other holder while the company lock is held."""
+    with serving("POST", "/observed"):
+        cid = _authorize(session, auth)
+        await lock_connector_key(session, "shopify")
+        await lock_company(session, cid)
+        await lock_connector_key(session, "shopify", exclusive=True)
+        await _event(session, cid)
+        await session.commit()
+    finding, = mutation_observer.CENSUS.findings
+    assert (finding.kind, finding.detail) == ("lock-order", "connector-owner:shopify after the company lock")
+
+
 @pytest.mark.parametrize("key", ["connector-runtime:shopify", "connector-sync:shopify", "connector-ownership"])
 async def test_only_the_two_connector_fences_rank_before_the_company_lock(session, auth, key):
     with serving("POST", "/observed"):
