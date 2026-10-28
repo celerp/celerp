@@ -21,8 +21,8 @@ one). Session-level advisory locks stay held until unlocked.
 
 Each acquisition while other classes are held adds an edge held -> acquired. ``RANKS`` is
 the one map: a class not in it, or an edge from a higher rank to a lower one, is a
-violation. The rank table in the design is generated from ``RANKS`` (``python lock_rank.py
-table``); the observed graph is merged with ``python lock_rank.py report <dir>``.
+violation. The rank table in the design is generated from ``RANKS`` (``python tests/lock_rank.py
+table``); the observed graph is merged with ``python tests/lock_rank.py report <dir>``.
 """
 
 from __future__ import annotations
@@ -251,7 +251,7 @@ def _deadlocks(forward: set[str], backward: set[str]) -> bool:
 
 
 RECORDER = Recorder()
-_ROOT = str(Path(__file__).resolve().parent)
+_ROOT = str(Path(__file__).resolve().parent.parent)
 
 
 def _site() -> str:
@@ -606,4 +606,4 @@ if __name__ == "__main__":
     elif sys.argv[1:2] == ["table"]:
         print(table(), end="")
     else:
-        raise SystemExit("usage: lock_rank.py report <dir> | check <dir> | table")
+        raise SystemExit("usage: tests/lock_rank.py report <dir> | check <dir> | table")

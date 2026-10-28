@@ -96,6 +96,8 @@ dev = [
     "pytest-playwright>=0.5",
     "pytest-timeout>=2.3",
     "pytest-xdist>=3.5",
+    # tests/lock_rank.py parses every lock statement with PostgreSQL's own grammar.
+    "pglast>=7.0",
     "testcontainers[postgres]>=4.15",
 ]
 prod = [

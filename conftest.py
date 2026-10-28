@@ -1038,11 +1038,17 @@ def relay_not_called_at_boot(no_connection_off_this_machine, monkeypatch):
     skip_relay_check_in(monkeypatch.setattr)
 
 
-# ── Lock rank recorder (lock_rank.py) ──────────────────────────────────────────
+# ── Lock rank recorder (tests/lock_rank.py) ────────────────────────────────────
 # CELERP_LOCK_RANK_DIR=<dir> records every lock the run takes and writes one graph per
-# worker there; `python lock_rank.py report <dir>` merges them.
+# worker there; `python tests/lock_rank.py report <dir>` merges them.
 if os.environ.get("CELERP_LOCK_RANK_DIR"):
-    import lock_rank as _lock_rank
+    import importlib.util
+    import sys
+
+    # Loaded once under its own name, so the checker's tests share this recorder.
+    _spec = importlib.util.spec_from_file_location("lock_rank", Path(__file__).parent / "tests" / "lock_rank.py")
+    _lock_rank = sys.modules["lock_rank"] = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(_lock_rank)
 
     _lock_rank.install()
 
