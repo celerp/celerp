@@ -17,6 +17,17 @@ from pathlib import Path
 os.environ.setdefault("PYTHONPYCACHEPREFIX", os.path.join(tempfile.gettempdir(), "celerp-test-pycache"))
 sys.pycache_prefix = sys.pycache_prefix or os.environ["PYTHONPYCACHEPREFIX"]
 
+# The tests and every process they start import this checkout's code. An environment
+# shared between checkouts can carry an editable install of another one, which a script
+# run as `python scripts/x.py` (its own folder first on the path, not the checkout) would
+# import instead.
+_CHECKOUT = os.path.dirname(os.path.abspath(__file__))
+os.environ["PYTHONPATH"] = os.pathsep.join(filter(None, (_CHECKOUT, os.environ.get("PYTHONPATH"))))
+import celerp  # noqa: E402
+
+assert os.path.dirname(os.path.dirname(os.path.abspath(celerp.__file__))) == _CHECKOUT, (
+    f"the tests import celerp from {celerp.__file__}, not from this checkout ({_CHECKOUT})")
+
 from conftest_support import (
     is_own_test_config, provision_worker_db, resolve_worker_config, resolve_worker_data_dir, skip_relay_check_in,
     worker_label)
