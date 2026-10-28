@@ -261,7 +261,6 @@ async def receive_payment(payload: dict) -> bool:
     (``record_unmatched_payment``) stays there."""
     from fastapi import HTTPException
     from celerp.models.projections import Projection
-    from celerp.services.company_lock import hold_company
     from celerp_docs.routes_payments import record_stripe_payment
     company_id, entity_id, reference = (str(payload.get(k) or "") for k in ("company_id", "entity_id", "reference"))
     amount_minor, currency = payload.get("amount_minor"), payload.get("currency")
@@ -284,8 +283,8 @@ async def receive_payment(payload: dict) -> bool:
             await _deliver_to_recorded(session, home, reference, origin=(company_id, entity_id))
             await session.commit()
             return True
-        # A reset waits for this hold; once it has deleted the company, the payment is unmatched.
-        row = await session.get(Projection, (cid, entity_id)) if cid and await hold_company(session, cid) else None
+        # A reset waits for this lock; once it has deleted the company, the payment is unmatched.
+        row = await session.get(Projection, (cid, entity_id)) if cid and await _lock_company_of(session, cid) else None
         if row is not None:
             kept = (await session.execute(delete(UnmatchedPayment).where(
                 UnmatchedPayment.reference == reference).returning(
@@ -329,7 +328,6 @@ async def receive_fees(payload: dict) -> bool:
     from datetime import timezone
     from celerp.events.engine import find_event_by_idempotency
     from celerp.models.projections import Projection
-    from celerp.services.company_lock import hold_company
     from celerp.services import auto_je
 
     if not isinstance(payload, dict):
@@ -365,7 +363,7 @@ async def receive_fees(payload: dict) -> bool:
         if home is not None:
             await _home_uses_documents(session, home)
         cid, target_doc = home if home is not None else (_company(origin), doc_id)
-        if not await hold_company(session, cid):
+        if not await _lock_company_of(session, cid):
             return True
         row = (await session.execute(select(Projection).where(
             Projection.company_id == cid,
@@ -502,12 +500,21 @@ async def _recorded_on(session, reference: str) -> tuple[uuid.UUID, str] | None:
     return (uuid.UUID(found.recorded_company), found.recorded_document) if found else None
 
 
-async def _hold_recorded(session, reference: str, home: tuple[uuid.UUID, str]) -> UnmatchedPayment | None:
-    """Hold the company of *home*, then lock the unmatched payment *reference*, still
-    recorded there: the order ``record_unmatched_payment`` takes them in. None when the
-    company is gone; raises _Moved when the payment was moved meanwhile."""
-    from celerp.services.company_lock import hold_company
-    if not await hold_company(session, home[0]):
+async def _lock_company_of(session, company_id) -> bool:
+    """Lock the company a payment is delivered to or recorded on, before its unmatched
+    payment and its documents: the order every writer of a payment takes (the company,
+    then unmatched_payments, then Projection rows), so a payment deleted from an invoice
+    under the company lock never waits on a delivery that waits on it. A reset waits for
+    the lock; False once a reset has deleted the company."""
+    from celerp.services.company_lock import locked_company
+    return await locked_company(session, company_id) is not None
+
+
+async def _lock_recorded(session, reference: str, home: tuple[uuid.UUID, str]) -> UnmatchedPayment | None:
+    """Lock the company of *home*, then the unmatched payment *reference*, still
+    recorded there (_lock_company_of). None when the company is gone; raises _Moved
+    when the payment was moved meanwhile."""
+    if not await _lock_company_of(session, home[0]):
         return None
     kept = await session.scalar(select(UnmatchedPayment).where(
         UnmatchedPayment.reference == reference).with_for_update(key_share=True))
@@ -521,7 +528,7 @@ async def _deliver_to_recorded(session, home: tuple[uuid.UUID, str], reference: 
     """A delivery of a payment a person recorded on the invoice *home*: it is already
     there, so only the refunds kept for it under the *origin* company and document it
     was delivered for apply, and its release when it has one."""
-    kept = await _hold_recorded(session, reference, home)
+    kept = await _lock_recorded(session, reference, home)
     if kept is None:
         return
     if kept.released_at is None:
@@ -604,7 +611,6 @@ async def receive_refund(payload: dict) -> bool:
     arrived), False for a delivery that names no refund. Raises when nothing could be
     recorded, so Cloud delivers it again. Recording the same change twice changes
     nothing."""
-    from celerp.services.company_lock import hold_company
     from celerp_docs.routes_payments import REFUND_TRANSITIONS
     company_id, entity_id, reference, refund_id, transition = (
         str(payload.get(k) or "") for k in ("company_id", "entity_id", "reference", "refund_id", "transition"))
@@ -621,13 +627,13 @@ async def receive_refund(payload: dict) -> bool:
         if home is not None:
             # A person recorded the payment on another invoice: the refund goes there.
             await _home_uses_documents(session, home)
-            if (await _hold_recorded(session, reference, home) is not None
+            if (await _lock_recorded(session, reference, home) is not None
                     and await _apply_refund(session, home[0], home[1], refund, recorded=True)):
                 await _apply_parked_refunds(session, home[0], home[1], reference, origin=(company_id, entity_id))
                 await session.commit()
                 return True
-        # A reset waits for this hold; once it has deleted the company, the refund is kept.
-        elif cid and await hold_company(session, cid) and await _apply_refund(session, cid, entity_id, refund):
+        # A reset waits for this lock; once it has deleted the company, the refund is kept.
+        elif cid and await _lock_company_of(session, cid) and await _apply_refund(session, cid, entity_id, refund):
             # A reversal that arrived before its refund was applied follows it now.
             await _apply_parked_refunds(session, cid, entity_id, reference)
             await session.commit()
@@ -675,7 +681,6 @@ async def receive_release(payload: dict) -> bool:
     yet, so Cloud delivers it again after the payment. Recording it twice changes
     nothing."""
     from sqlalchemy import update
-    from celerp.services.company_lock import hold_company
     company_id, entity_id, reference = (str(payload.get(k) or "") for k in ("company_id", "entity_id", "reference"))
     released_at = _instant(payload.get("released_at"))
     if not (company_id and entity_id and reference and released_at):
@@ -685,8 +690,8 @@ async def receive_release(payload: dict) -> bool:
         home = await _recorded_on(session, reference)
         if home is not None:
             await _home_uses_documents(session, home)
-        held = bool(await hold_company(session, home[0]) if home else cid and await hold_company(session, cid))
-        # The unmatched payment first, in the same order as the payment intake.
+        held = bool(await _lock_company_of(session, home[0]) if home else cid and await _lock_company_of(session, cid))
+        # The unmatched payment before the documents, in the same order as the payment intake.
         kept = (await session.execute(update(UnmatchedPayment).where(UnmatchedPayment.reference == reference)
                                       .values(released_at=func.coalesce(UnmatchedPayment.released_at, released_at))
                                       .returning(UnmatchedPayment.recorded_company,
@@ -762,9 +767,9 @@ async def record_unmatched_payment(session, company_id: uuid.UUID, reference: st
     twice changes nothing. Deleting the payment from the invoice puts it back
     (``return_unmatched``)."""
     from fastapi import HTTPException
-    from celerp.services.company_lock import hold_company, lock_projections
+    from celerp.services.company_lock import lock_projections
     from celerp_docs.routes_payments import payment_books, record_stripe_payment, unmatched_refusal
-    if not await hold_company(session, company_id):
+    if not await _lock_company_of(session, company_id):
         raise UnmatchedRefused("gone")
     kept = await session.scalar(select(UnmatchedPayment).where(
         UnmatchedPayment.reference == reference).with_for_update())
