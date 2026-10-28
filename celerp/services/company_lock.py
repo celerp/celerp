@@ -15,15 +15,26 @@ from sqlalchemy.orm.attributes import get_history
 from celerp.models.company import Company
 from celerp.models.projections import Projection
 
-# Ids of the companies loaded with locked_company() in the session's current transaction.
-_LOCKED = "celerp_locked_companies"
 # The request's authorization (permissions.RequestAuthority), judged again the first time
 # each transaction takes its company's lock; the refusal, once raised, blocks the commit.
 AUTHORITY = "celerp_request_authority"
-_JUDGED = "celerp_authority_judged"
 _REFUSED = "celerp_authority_refused"
-# The modules each company's running work relies on, judged in this transaction.
-_MODULES_JUDGED = "celerp_module_use_judged"
+# What the locks taken in this transaction proved, each with the (sub)transaction that
+# took it: "locked" (lock_company completed, company id), "loaded" (locked_company,
+# company id), "judged" (the authority judged again, company id as text) and "modules"
+# (the modules judged, (company id as text, names)). PostgreSQL releases a lock taken in a
+# savepoint when that savepoint rolls back, so what it proved goes with it (_proofs_released).
+_PROOFS = "celerp_lock_proofs"
+
+
+def _prove(session, kind: str, key) -> None:
+    sync = getattr(session, "sync_session", session)
+    taken_in = sync.get_nested_transaction() or sync.get_transaction()
+    session.info.setdefault(_PROOFS, []).append((kind, key, taken_in))
+
+
+def _proven(session, kind: str) -> list:
+    return [key for k, key, _ in session.info.get(_PROOFS, ()) if k == kind]
 
 
 async def lock_company(session: AsyncSession, company_id) -> None:
@@ -52,6 +63,7 @@ async def lock_company(session: AsyncSession, company_id) -> None:
         select(Company.id).where(Company.id == company_id).with_for_update(key_share=True)
     )
     await _judge_authority_again(session, company_id)
+    _prove(session, "locked", company_id)
 
 
 async def judge_module_writes(session: AsyncSession, company_id) -> None:
@@ -70,15 +82,14 @@ async def judge_module_writes(session: AsyncSession, company_id) -> None:
     names = modules_in_use(company_id)
     if not names:
         return
-    judged = session.info.setdefault(_MODULES_JUDGED, {})
-    done = judged.get(str(company_id), frozenset())
+    done = frozenset().union(*(n for c, n in _proven(session, "modules") if c == str(company_id)))
     if names <= done:
         return
     try:
         if not done:
             with refused_past_lock_timeout(ModuleBusy(min(names))):
                 await share_company_modules(session, company_id)
-        judged[str(company_id)] = done | names
+        _prove(session, "modules", (str(company_id), names - done))
         row = (await session.execute(select(Company.settings).where(Company.id == company_id))).first()
         require_on(None if row is None else dict(row[0] or {}), *sorted(names))
     except ModuleRefused as exc:
@@ -98,10 +109,9 @@ async def _judge_authority_again(session: AsyncSession, company_id) -> None:
     authority = session.info.get(AUTHORITY)
     if authority is None or str(authority.company_id) != str(company_id):
         return
-    judged = session.info.setdefault(_JUDGED, set())
-    if str(company_id) in judged:
+    if str(company_id) in _proven(session, "judged"):
         return
-    judged.add(str(company_id))
+    _prove(session, "judged", str(company_id))
     try:
         await authority.judge_again(session)
     except Exception as exc:
@@ -188,18 +198,19 @@ async def locked_company(session: AsyncSession, company_id) -> Company | None:
     await lock_company(session, company_id)
     company = await session.get(Company, company_id, populate_existing=True)
     if company is not None:
-        session.info.setdefault(_LOCKED, set()).add(company.id)
+        _prove(session, "loaded", company.id)
     return company
 
 
-def holds_company_lock(session: AsyncSession, company_id) -> bool:
-    """True when this transaction loaded the company with locked_company()."""
-    return company_id in session.info.get(_LOCKED, ())
+def holds_company_lock(session, company_id) -> bool:
+    """True when lock_company() for the company completed in this transaction, judging
+    the request's authority again, and PostgreSQL still holds the lock it took."""
+    return str(company_id) in {str(c) for c in _proven(session, "locked")}
 
 
 @event.listens_for(Session, "before_flush")
 def _settings_change_needs_the_lock(session: Session, flush_context, instances) -> None:
-    locked = session.info.get(_LOCKED, ())
+    locked = _proven(session, "loaded")
     for obj in session.dirty:
         if isinstance(obj, Company) and obj.id not in locked and get_history(obj, "settings").has_changes():
             raise RuntimeError(
@@ -219,7 +230,27 @@ def _refused_authority_never_commits(session: Session) -> None:
 @event.listens_for(Session, "after_transaction_end")
 def _lock_released(session: Session, transaction) -> None:
     if transaction.parent is None:
-        session.info.pop(_LOCKED, None)
-        session.info.pop(_JUDGED, None)
-        session.info.pop(_MODULES_JUDGED, None)
+        session.info.pop(_PROOFS, None)
         session.info.pop(_REFUSED, None)
+
+
+@event.listens_for(Session, "after_soft_rollback")
+def _proofs_released(session: Session, transaction) -> None:
+    """A rolled-back savepoint released the locks taken in it and in the savepoints it
+    contained, so the next lock judges again. A released savepoint's locks pass to its
+    parent, as its proofs do. A refusal stays until the outer transaction ends."""
+    boundary = transaction
+    while boundary.parent is not None and not boundary.nested:
+        boundary = boundary.parent
+    proofs = session.info.get(_PROOFS)
+    if not proofs:
+        return
+
+    def _inside(taken_in) -> bool:
+        while taken_in is not None:
+            if taken_in is boundary:
+                return True
+            taken_in = taken_in.parent
+        return False
+
+    proofs[:] = [p for p in proofs if not _inside(p[2])]
