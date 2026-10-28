@@ -18,7 +18,7 @@ import uuid
 from sqlalchemy import select
 
 from ai_fake_cloud import answer, cloud, tool_turn, until  # noqa: F401
-from celerp.ai import jobs, service
+from celerp.ai import jobs, service, tools
 from celerp.models.ai import AIBatchJob, AIMessage
 from celerp.services.auth import validate_access_token
 from celerp.services.company_lock import locked_company
@@ -43,6 +43,8 @@ async def _restarted_between_the_tool_call_and_its_read(client, token, cloud, mo
     qid = uuid.uuid4()
     cloud.script = lambda identity, body: tool_turn(SEARCH) if identity == str(qid) else answer("Done.")
     results: list[dict] = []
+    # The app's real tools: the read goes through the app as the user who asked.
+    monkeypatch.setattr(service, "compile_agent_capabilities", tools.compile_agent_capabilities)
     real = service.execute_agent_capability
     held = asyncio.Event()
 

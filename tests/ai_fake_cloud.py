@@ -155,7 +155,8 @@ def _refusal(status: int, code: str, **detail) -> httpx.Response:
 
 
 def install(monkeypatch, cloud: FakeCloud) -> FakeCloud:
-    """Route every app call to the AI service through ``cloud``."""
+    """Route every app call to the AI service through ``cloud``. A client given its
+    own transport (an agent tool reading the app in process) keeps it."""
     from celerp.ai import deadlines, llm
     from celerp.gateway.state import set_session_token
 
@@ -164,7 +165,7 @@ def install(monkeypatch, cloud: FakeCloud) -> FakeCloud:
     monkeypatch.setattr(llm, "relay_http_url", lambda: "https://relay.test")
     monkeypatch.setattr(deadlines, "relay_http_url", lambda: "https://relay.test")
     monkeypatch.setattr(httpx, "AsyncClient",
-                        lambda **kw: real(transport=httpx.MockTransport(cloud.handle), **kw))
+                        lambda **kw: real(**{"transport": httpx.MockTransport(cloud.handle), **kw}))
     deadlines.forget_limits()
     return cloud
 
