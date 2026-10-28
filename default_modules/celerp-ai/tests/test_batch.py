@@ -464,3 +464,26 @@ async def test_batch_notification_failure_handled(session, db_factory, company, 
     async with db_factory() as s:
         updated = await s.get(AIBatchJob, job.id)
         assert updated.status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_batch_writes_hold_the_company_lock(session, db_factory, company, user):
+    """The job runs after the response, still inside the request that started it; every
+    progress, final status and notification write takes the company lock first."""
+    import mutation_observer
+    from celerp.models.notification import Notification
+    from sqlalchemy import func, select
+    file_ids = _create_test_files(company.id, user.id, 2)
+    job = await create_batch_job(session, company.id, user.id, "analyze", file_ids)
+    await session.commit()
+
+    with mutation_observer.serving("POST", "/ai/conversations/{conversation_id}/query"):
+        with patch("celerp.ai.batch.call_llm", new_callable=AsyncMock, return_value=_model_result("Data")):
+            with patch("celerp.notifications.service.deliver"):
+                await run_batch(job.id, company.id, user.id, "analyze", file_ids, db_factory)
+    findings = mutation_observer.CENSUS.findings
+    assert findings == [], mutation_observer.explain(findings)
+
+    async with db_factory() as s:
+        assert (await s.get(AIBatchJob, job.id)).status == "completed"
+        assert await s.scalar(select(func.count()).select_from(Notification)) == 1

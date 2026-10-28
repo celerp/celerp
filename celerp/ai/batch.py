@@ -28,13 +28,14 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.ai.files import load_file_for_llm
 from celerp.ai.llm import RelayError, call_llm
 from celerp.ai.models import BULK_EXTRACTION
 from celerp.models.ai import AIBatchJob
+from celerp.services.company_lock import lock_company
 from ui.i18n import t
 
 log = logging.getLogger(__name__)
@@ -198,6 +199,19 @@ async def create_batch_job(
     return job
 
 
+async def _save_job(db_factory, job_id: uuid.UUID, company_id: uuid.UUID, values) -> AIBatchJob | None:
+    """Write ``values(job)`` to the company's job under the company lock, naming the company,
+    so the write waits for a reset or deletion of the company and finds no job once it is gone."""
+    mine = (AIBatchJob.id == job_id, AIBatchJob.company_id == company_id)
+    async with db_factory() as session:
+        await lock_company(session, company_id)
+        job = await session.scalar(select(AIBatchJob).where(*mine))
+        if job is not None:
+            await session.execute(update(AIBatchJob).where(*mine).values(**values(job)))
+            await session.commit()
+        return job
+
+
 async def run_batch(
     job_id: uuid.UUID,
     company_id: uuid.UUID,
@@ -220,13 +234,9 @@ async def run_batch(
     failed = 0
     credits = 0
 
-    async with db_factory() as session:
-        job = await session.get(AIBatchJob, job_id)
-        if job:
-            conversation_id = job.conversation_id
-            job.status = "running"
-            session.add(job)
-            await session.commit()
+    job = await _save_job(db_factory, job_id, company_id, lambda job: {"status": "running"})
+    if job:
+        conversation_id = job.conversation_id
 
     tasks = [
         _process_single_file(fid, query, company_id, user_id, semaphore)
@@ -243,22 +253,18 @@ async def run_batch(
             failed += 1
         credits += result.get("credits", 0)
 
-        async with db_factory() as session:
-            job = await session.get(AIBatchJob, job_id)
-            if job:
-                persisted = list(((job.results or {}).get("files") or []))
-                persisted.append(result)
-                # Preserve the user's attachment order even though extraction finishes
-                # concurrently. File ids are upload identities; repeated ids, if any,
-                # retain their completion order after the first matching position.
-                order = {file_id: index for index, file_id in enumerate(file_ids)}
-                persisted.sort(key=lambda item: order.get(item.get("file_id"), len(order)))
-                job.results = {**(job.results or {}), "files": persisted}
-                job.completed_files = completed
-                job.failed_files = failed
-                job.credits_consumed = credits
-                session.add(job)
-                await session.commit()
+        def _progress(job):
+            persisted = list(((job.results or {}).get("files") or []))
+            persisted.append(result)
+            # Preserve the user's attachment order even though extraction finishes
+            # concurrently. File ids are upload identities; repeated ids, if any,
+            # retain their completion order after the first matching position.
+            order = {file_id: index for index, file_id in enumerate(file_ids)}
+            persisted.sort(key=lambda item: order.get(item.get("file_id"), len(order)))
+            return {"results": {**(job.results or {}), "files": persisted}, "completed_files": completed,
+                    "failed_files": failed, "credits_consumed": credits}
+
+        await _save_job(db_factory, job_id, company_id, _progress)
 
         if on_progress:
             try:
@@ -268,16 +274,10 @@ async def run_batch(
 
     all_failed = failed == len(file_ids)
     final_status = "failed" if all_failed else "completed"
-    async with db_factory() as session:
-        job = await session.get(AIBatchJob, job_id)
-        if job:
-            job.status = final_status
-            job.credits_consumed = credits
-            job.completed_at = datetime.now(timezone.utc)
-            if all_failed:
-                job.error = t("ai.job_failed")
-            session.add(job)
-            await session.commit()
+    final = {"status": final_status, "credits_consumed": credits, "completed_at": datetime.now(timezone.utc)}
+    if all_failed:
+        final["error"] = t("ai.job_failed")
+    await _save_job(db_factory, job_id, company_id, lambda job: final)
 
     try:
         from celerp.notifications.service import create as create_notification
@@ -291,6 +291,7 @@ async def run_batch(
                     f"{completed} read, {failed} could not be read. "
                     "Open the conversation to review the proposed entries."
                 )
+            await lock_company(session, company_id)
             await create_notification(
                 session, company_id, "ai", title, body,
                 user_id=user_id,
