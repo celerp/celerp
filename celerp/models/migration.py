@@ -97,12 +97,12 @@ class MigrationRun(Base):
     mode: Mapped[str] = mapped_column(String(32), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default=MigrationStatus.READY.value)
     current_phase: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    phase_state: Mapped[dict] = mapped_column(sa.JSON, nullable=False, default=dict)
-    coverage: Mapped[dict] = mapped_column(sa.JSON, nullable=False, default=dict)
-    mapping_decisions: Mapped[dict] = mapped_column(sa.JSON, nullable=False, default=dict)
-    source_summary: Mapped[dict] = mapped_column(sa.JSON, nullable=False, default=dict)
-    reconciliation: Mapped[dict] = mapped_column(sa.JSON, nullable=False, default=dict)
-    error_summary: Mapped[dict] = mapped_column(sa.JSON, nullable=False, default=dict)
+    phase_state: Mapped[dict] = mapped_column(sa.JSON, nullable=False, default=dict, server_default="{}")
+    coverage: Mapped[dict] = mapped_column(sa.JSON, nullable=False, default=dict, server_default="{}")
+    mapping_decisions: Mapped[dict] = mapped_column(sa.JSON, nullable=False, default=dict, server_default="{}")
+    source_summary: Mapped[dict] = mapped_column(sa.JSON, nullable=False, default=dict, server_default="{}")
+    reconciliation: Mapped[dict] = mapped_column(sa.JSON, nullable=False, default=dict, server_default="{}")
+    error_summary: Mapped[dict] = mapped_column(sa.JSON, nullable=False, default=dict, server_default="{}")
     cancel_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
@@ -132,7 +132,7 @@ class MigrationEntityMap(Base):
     target_entity_id: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     # `metadata` is reserved on declarative classes; the column keeps the planned name.
-    meta: Mapped[dict] = mapped_column("metadata", sa.JSON, nullable=False, default=dict)
+    meta: Mapped[dict] = mapped_column("metadata", sa.JSON, nullable=False, default=dict, server_default="{}")
 
 
 class MigrationCleanupTask(Base):

@@ -23,7 +23,7 @@ class ConnectorFirstSync(Base):
 
     company_id: Mapped[str] = mapped_column(sa.String(64), primary_key=True)
     connector: Mapped[str] = mapped_column(sa.String(32), primary_key=True)
-    state: Mapped[str] = mapped_column(sa.String(16), nullable=False, default="pending")
+    state: Mapped[str] = mapped_column(sa.String(16), nullable=False, default="pending", server_default="pending")
     started_by: Mapped[str | None] = mapped_column(sa.String(64), nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
     watermark: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
@@ -31,10 +31,10 @@ class ConnectorFirstSync(Base):
     match: Mapped[str | None] = mapped_column(sa.String(16), nullable=True)
     preview_version: Mapped[str | None] = mapped_column(sa.String(64), nullable=True)
     batch_id: Mapped[str | None] = mapped_column(sa.String(64), nullable=True)
-    progress: Mapped[dict] = mapped_column(sa.JSON, nullable=False, default=dict)
+    progress: Mapped[dict] = mapped_column(sa.JSON, nullable=False, default=dict, server_default="{}")
     undo: Mapped[dict | None] = mapped_column(sa.JSON, nullable=True)
     error: Mapped[dict | None] = mapped_column(sa.JSON, nullable=True)
-    cancel_requested: Mapped[bool] = mapped_column(sa.Boolean, nullable=False, default=False)
+    cancel_requested: Mapped[bool] = mapped_column(sa.Boolean, nullable=False, default=False, server_default=sa.false())
     next_attempt_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now(), onupdate=sa.func.now()

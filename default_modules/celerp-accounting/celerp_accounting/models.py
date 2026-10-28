@@ -54,8 +54,8 @@ class BankAccount(Base):
     account_number: Mapped[str] = mapped_column(String(64), nullable=False)  # stored masked
     bank_type: Mapped[str] = mapped_column(String(32), nullable=False)  # checking|savings|credit_card
     currency: Mapped[str] = mapped_column(String(8), nullable=False)
-    opening_balance: Mapped[float] = mapped_column(Numeric(20, 4), default=0.0, nullable=False)
-    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    opening_balance: Mapped[float] = mapped_column(Numeric(20, 4), default=0.0, nullable=False, server_default="0")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, server_default=sa.true())
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
 
 
@@ -72,15 +72,15 @@ class ReconciliationSession(Base):
     bank_account_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("bank_accounts.id"), nullable=False)
     statement_date: Mapped[str] = mapped_column(String(16), nullable=False)  # ISO date "YYYY-MM-DD"
     statement_balance: Mapped[float] = mapped_column(Numeric(20, 4), nullable=False)
-    status: Mapped[str] = mapped_column(String(16), default="open", nullable=False)  # open|completed
-    reconciled_je_ids: Mapped[list] = mapped_column(sa.JSON, default=list, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), default="open", nullable=False, server_default="open")  # open|completed
+    reconciled_je_ids: Mapped[list] = mapped_column(sa.JSON, default=list, nullable=False, server_default="[]")
     # CSV import metadata
     csv_filename: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    csv_row_count: Mapped[int] = mapped_column(sa.Integer, default=0, nullable=False)
-    auto_matched_count: Mapped[int] = mapped_column(sa.Integer, default=0, nullable=False)
-    manual_matched_count: Mapped[int] = mapped_column(sa.Integer, default=0, nullable=False)
-    created_count: Mapped[int] = mapped_column(sa.Integer, default=0, nullable=False)
-    tolerance: Mapped[float] = mapped_column(Numeric(20, 4), default=1.00, nullable=False)
+    csv_row_count: Mapped[int] = mapped_column(sa.Integer, default=0, nullable=False, server_default="0")
+    auto_matched_count: Mapped[int] = mapped_column(sa.Integer, default=0, nullable=False, server_default="0")
+    manual_matched_count: Mapped[int] = mapped_column(sa.Integer, default=0, nullable=False, server_default="0")
+    created_count: Mapped[int] = mapped_column(sa.Integer, default=0, nullable=False, server_default="0")
+    tolerance: Mapped[float] = mapped_column(Numeric(20, 4), default=1.00, nullable=False, server_default="1.00")
     imported_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -103,10 +103,10 @@ class BankStatementLine(Base):
     amount: Mapped[float] = mapped_column(Numeric(20, 4), nullable=False)
     raw_balance: Mapped[float | None] = mapped_column(Numeric(20, 4), nullable=True)
     reference: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    status: Mapped[str] = mapped_column(String(16), default="unmatched", nullable=False)  # unmatched|matched|created|skipped
+    status: Mapped[str] = mapped_column(String(16), default="unmatched", nullable=False, server_default="unmatched")  # unmatched|matched|created|skipped
     matched_je_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    attachment_ids: Mapped[list] = mapped_column(sa.JSON, default=list, nullable=False)
-    raw_csv_row: Mapped[dict] = mapped_column(sa.JSON, default=dict, nullable=False)
+    attachment_ids: Mapped[list] = mapped_column(sa.JSON, default=list, nullable=False, server_default="[]")
+    raw_csv_row: Mapped[dict] = mapped_column(sa.JSON, default=dict, nullable=False, server_default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
 
 
@@ -122,12 +122,12 @@ class ReconciliationRule(Base):
     id: Mapped[uuid.UUID] = mapped_column(sa.Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
     company_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("companies.id"), nullable=False)
     bank_account_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("bank_accounts.id"), nullable=False)
-    match_field: Mapped[str] = mapped_column(String(32), nullable=False, default="description")
+    match_field: Mapped[str] = mapped_column(String(32), nullable=False, default="description", server_default="description")
     match_pattern: Mapped[str] = mapped_column(String(256), nullable=False)
-    match_type: Mapped[str] = mapped_column(String(16), nullable=False, default="contains")  # contains|exact|starts_with
+    match_type: Mapped[str] = mapped_column(String(16), nullable=False, default="contains", server_default="contains")  # contains|exact|starts_with
     target_account_code: Mapped[str] = mapped_column(String(32), nullable=False)
     default_memo: Mapped[str | None] = mapped_column(String(256), nullable=True)
     default_tax: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    times_applied: Mapped[int] = mapped_column(sa.Integer, default=0, nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, server_default=sa.true())
+    times_applied: Mapped[int] = mapped_column(sa.Integer, default=0, nullable=False, server_default="0")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)

@@ -41,8 +41,8 @@ class ConnectorConfig(Base):
     entity_directions: Mapped[dict] = mapped_column(
         sa.JSON, nullable=False, default=_default_directions
     )
-    sync_frequency: Mapped[str] = mapped_column(sa.String(16), nullable=False, default="realtime")
-    daily_sync_hour: Mapped[int] = mapped_column(sa.Integer, nullable=False, default=2)
+    sync_frequency: Mapped[str] = mapped_column(sa.String(16), nullable=False, default="realtime", server_default="realtime")
+    daily_sync_hour: Mapped[int] = mapped_column(sa.Integer, nullable=False, default=2, server_default="2")
     webhook_ids_json: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
     webhook_secret: Mapped[str | None] = mapped_column(sa.String(128), nullable=True)
     last_daily_sync_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
@@ -88,8 +88,8 @@ class OutboundQueue(Base):
     entity_type: Mapped[str] = mapped_column(sa.String(32), nullable=False)
     entity_id: Mapped[str] = mapped_column(sa.String(128), nullable=False)
     payload_json: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
-    status: Mapped[str] = mapped_column(sa.String(16), nullable=False, default="pending")
-    retry_count: Mapped[int] = mapped_column(sa.Integer, nullable=False, default=0)
+    status: Mapped[str] = mapped_column(sa.String(16), nullable=False, default="pending", server_default="pending")
+    retry_count: Mapped[int] = mapped_column(sa.Integer, nullable=False, default=0, server_default="0")
     next_retry_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
