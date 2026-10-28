@@ -260,7 +260,7 @@ async def test_sql_it_cannot_classify_is_flagged_never_read(session, auth, form)
     with serving("POST", "/observed"):
         _authorize(session, auth)
         if form == "function":
-            await session.execute(select(func.set_config("application_name", "observed", True)))
+            await session.execute(select(func.txid_current()))
         elif form == "procedural":
             await session.execute(text("DO $$ BEGIN PERFORM 1; END $$"))
         else:
@@ -278,6 +278,7 @@ async def test_statements_whose_effects_are_reviewed_are_not_flagged(session, au
         await session.execute(text("SELECT pg_notify('events', :p)"), {"p": "x"})
         await session.execute(text("SELECT id FROM ledger WHERE company_id = CAST(:c AS uuid)"), {"c": cid})
         await session.execute(text("EXPLAIN SELECT 1"))
+        await session.execute(select(func.set_config("application_name", "observed", True)))
         await session.execute(select(Location.id).where(Location.company_id == cid).with_for_update(read=True))
         await session.commit()
     assert _kinds() == []

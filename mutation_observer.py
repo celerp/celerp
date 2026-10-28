@@ -58,11 +58,26 @@ _PURE = frozenset({
     "jsonb_array_length", "jsonb_typeof", "least", "length", "lower", "max", "min", "now",
     "nullif", "round", "row_number", "string_agg", "substr", "substring", "sum", "trim",
     "upper", "current_date", "current_timestamp", "hashtext", "hashtextextended",
+    # string, json and set functions
+    "array_position", "convert_to", "encode", "format", "gen_random_uuid", "generate_series",
+    "json_array_elements", "json_array_length", "jsonb_populate_record", "like_escape",
+    "octet_length", "quote_ident", "reverse", "sha256", "strpos", "to_jsonb", "unnest",
+    # catalog and session information (pg_current_xact_id assigns the transaction an id,
+    # which changes no data)
+    "current_database", "current_schema", "current_schemas", "has_table_privilege",
+    "pg_backend_pid", "pg_current_xact_id", "pg_get_expr", "pg_my_temp_schema",
+    "pg_partition_root", "pg_relation_filenode", "pg_table_is_visible", "pg_xact_status",
+    "row_security_active", "to_regclass", "to_regnamespace",
 })
+# Transaction-scoped advisory locks, and the session-scoped ones a guard holds across
+# transactions and releases itself (_RELEASE).
 _ADVISORY = frozenset({
     "pg_advisory_xact_lock", "pg_advisory_xact_lock_shared",
     "pg_try_advisory_xact_lock", "pg_try_advisory_xact_lock_shared",
+    "pg_advisory_lock", "pg_advisory_lock_shared",
 })
+# Functions that change only this session's or transaction's settings or locks.
+_CONTROL = frozenset({"set_config", "pg_advisory_unlock", "pg_advisory_unlock_shared"})
 # A notice to listeners is an outbound effect, not a write of company data.
 _EFFECT = frozenset({"pg_notify"})
 # Advisory lock families taken before the company lock by the canonical order (module
@@ -319,7 +334,7 @@ def _parse(statement: str) -> Op:
         return op("unknown", detail=f"statement {kind}")
     parts = _Parts()
     parts(stmt)
-    unknown = parts.functions - _PURE - _ADVISORY - _EFFECT
+    unknown = parts.functions - _PURE - _ADVISORY - _EFFECT - _CONTROL
     if unknown:
         return op("unknown", detail=f"function {', '.join(sorted(unknown))}")
     tables = sorted({t for t, _ in parts.writes})
@@ -335,6 +350,8 @@ def _parse(statement: str) -> Op:
         return op("lock", ",".join(sorted({t for t, _ in parts.locks})), detail=" + ".join(modes))
     if parts.functions & _EFFECT:
         return op("effect")
+    if parts.functions & _CONTROL:
+        return op("control")
     return op("read")
 
 
