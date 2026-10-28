@@ -18,6 +18,7 @@ from fastapi import HTTPException
 
 from ai_fake_cloud import answer, cloud, until  # noqa: F401
 from celerp.ai import jobs
+from celerp.models.ai import AIBatchJob
 from test_ai_usage import _claims, _conversation, _settled, owner  # noqa: F401
 from test_helpers import invite_user, signed_request
 
@@ -28,14 +29,17 @@ ANSWER = {"answer": "The owner's figures.", "model_used": "m", "tools_called": [
 
 
 async def _one_off(session, monkeypatch, company_id, user_id, state: str) -> uuid.UUID:
-    """A question asked outside a thread: answered, or still running in the background."""
+    """A question asked outside a thread: answered, running in the background, or
+    interrupted (open, and no task of this process runs it)."""
     job_id = uuid.uuid4()
     job = jobs.question_job(job_id=job_id, request=jobs.JobRequest.question(
         company_id=company_id, user_id=user_id, query="What are this month's figures?"))
     if state == "completed":
         job.status, job.results = "completed", ANSWER
     else:
-        job.status, job.mode = "running", "background"
+        job.status = "running"
+    if state == "running":
+        job.mode = "background"
         monkeypatch.setattr(jobs, "_background", {job_id})
     session.add(job)
     await session.commit()
@@ -74,14 +78,15 @@ async def test_another_companys_question_is_not_found(owner, session, monkeypatc
     assert await jobs.question_result(job_id, uuid.uuid4(), user_id) is None
 
 
-async def test_the_module_api_reads_a_one_off_question(client, owner, session, monkeypatch):
+@pytest.mark.parametrize("state", ["completed", "running", "interrupted"])
+async def test_the_module_api_reads_a_one_off_question(client, owner, session, monkeypatch, state):
     from celerp.modules.api import ai_job
     _, company_id, user_id = owner
-    job_id = await _one_off(session, monkeypatch, company_id, user_id, "completed")
+    job_id = await _one_off(session, monkeypatch, company_id, user_id, state)
     async with signed_request(session, company_id, user_id):
         out = await ai_job(str(job_id), company_id=str(company_id), db_session=session)
-    assert out == {"status": "completed", "job_id": str(job_id), "answer": ANSWER["answer"],
-                   "model_used": "m", "tools_called": []}
+    answered = {"answer": ANSWER["answer"], "model_used": "m", "tools_called": []} if state == "completed" else {}
+    assert out == {"status": state, "job_id": str(job_id), **answered}
 
 
 async def test_a_thread_question_asked_for_through_the_module_api_is_not_found(client, owner, cloud, session):
@@ -132,6 +137,62 @@ async def test_a_runner_that_kept_failing_leaves_its_question_interrupted(owner,
     await until(lambda: len(runs) == 2 and not jobs.is_held(job_id))
     assert job_id not in jobs._background
     assert (await jobs.question_result(job_id, company_id, user_id))["status"] == "interrupted"
+
+
+@pytest.mark.parametrize("asker", ["the asker", "a colleague"])
+@pytest.mark.parametrize("mode", ["question", "receipts"])
+async def test_a_thread_send_under_a_one_off_questions_id_is_refused(
+        client, owner, cloud, session, monkeypatch, mode, asker):
+    """A thread send names its question by an id; an id that already names a job made
+    for another request (here a question asked outside a thread, the asker's own or a
+    colleague's) is ``operation_conflict``, and nothing is added to the thread."""
+    from test_ai_jobs import _files
+    token, company_id, user_id = owner
+    job_id = await _one_off(session, monkeypatch, company_id, user_id, "completed")
+    if asker == "a colleague":
+        token = await invite_user(client, session, AUTH(token), "colleague@perm.example", "manager")
+        company_id, user_id = _claims(token)
+    conv = await _conversation(client, token)
+    body = {"query": "What are this month's figures?", "operation_id": str(job_id)}
+    if mode == "receipts":
+        body |= {"file_ids": _files(company_id, user_id, 1), "document_mode": "receipts"}
+    r = await client.post(f"/ai/conversations/{conv}/query", headers=AUTH(token), json=body)
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"]["code"] == "operation_conflict"
+    thread = (await client.get(f"/ai/conversations/{conv}", headers=AUTH(token))).json()
+    assert thread["messages"] == [] and thread["jobs"] == []
+    assert not cloud.sends
+
+
+async def test_a_job_of_another_kind_is_not_found_where_it_is_read(client, owner, cloud, session, monkeypatch):
+    """A question asked outside a thread is not a thread's question, nor a reading job:
+    each route that reads one of those by its id answers 404 for it."""
+    token, company_id, user_id = owner
+    job_id = await _one_off(session, monkeypatch, company_id, user_id, "completed")
+    conv = await _conversation(client, token)
+    for method, path in (("GET", f"/ai/conversations/{conv}/questions/{job_id}"),
+                         ("GET", f"/ai/batch/{job_id}"),
+                         ("POST", f"/ai/conversations/{conv}/jobs/{job_id}/proposals")):
+        r = await client.request(method, path, headers=AUTH(token))
+        assert r.status_code == 404, (path, r.text)
+
+
+async def test_an_interrupted_question_asked_again_reads_under_the_askers_current_session(
+        client, owner, cloud, session, monkeypatch):
+    """Continued by its asker, a question's tools read the app under the session that
+    asked again, never under the one that asked first (which a sign-out may have ended)."""
+    from celerp.services.auth import decode_access_token
+    token, company_id, user_id = owner
+    job_id = await _one_off(session, monkeypatch, company_id, user_id, "interrupted")
+    job = await session.get(AIBatchJob, job_id)
+    job.auth_nonce = "a-session-since-ended"
+    await session.commit()
+    cloud.script = lambda identity, body: answer("This month's figures.")
+    r = await client.post("/ai/query", headers=AUTH(token),
+                          json={"query": "What are this month's figures?", "operation_id": str(job_id)})
+    assert r.status_code == 200, r.text
+    job = await session.get(AIBatchJob, job_id, populate_existing=True)
+    assert job.auth_nonce == decode_access_token(token)["snonce"]
 
 
 # ── Guard: one way to name a job ─────────────────────────────────────────────
