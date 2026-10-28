@@ -893,26 +893,39 @@ async def client(session: AsyncSession):
     # stay inside the rolled-back outer transaction.
     async def _request_scoped(scope, receive, send):
         # Production gives each request a session of its own, closed at the end, so a
-        # request never joins its caller's transaction and holds nothing once it ends.
-        # Requests here share the test's session, so each one gets a transaction of its
-        # own: what the test wrote first is committed, as a production client's data
-        # would be, and the request's transaction ends with it. It ends by commit (a
-        # savepoint release in the test's outer transaction): a rollback would also undo
-        # the work of lifecycle sessions nested inside it on this one connection, which
-        # production commits on connections of their own.
-        await _end_transaction()
-        try:
-            await app(scope, receive, send)
-        finally:
-            await _end_transaction()
+        # request never joins its caller's transaction and keeps nothing it did not
+        # commit. Requests here share the test's session, so each one gets a transaction
+        # of its own: what the test wrote first is committed, as a production client's
+        # data would be, and the request's transaction ends with it. A request that
+        # raised or answered an error ends by rollback, so its uncommitted writes are
+        # gone as in production. Any other ends by commit (a savepoint release in the
+        # test's outer transaction): a rollback would also undo the work of lifecycle
+        # sessions nested inside it on this one connection, which production commits
+        # on connections of their own.
+        status = 500
 
-    async def _end_transaction():
+        async def _send(message):
+            nonlocal status
+            if message["type"] == "http.response.start":
+                status = message["status"]
+            await send(message)
+
+        await _end_transaction(commit=True)
+        try:
+            await app(scope, receive, _send)
+        finally:
+            await _end_transaction(commit=status < 400)
+
+    async def _end_transaction(commit: bool):
         if not session.in_transaction():
             return
-        try:
-            await session.commit()
-        except Exception:
-            await session.rollback()
+        if commit:
+            try:
+                await session.commit()
+                return
+            except Exception:
+                pass
+        await session.rollback()
 
     lifecycle_factory = async_sessionmaker(
         bind=await session.connection(), class_=AsyncSession,

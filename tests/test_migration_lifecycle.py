@@ -247,6 +247,7 @@ async def test_migration_run_company_isolation(client, session, migration_env):
     assert r.status_code == 403 and r.json()["detail"] == OWNER_ONLY
 
     # Once finished, a member of the moved company still has no view of the run; the creator keeps it.
+    await session.refresh(run)  # the refused requests rolled back, which expires what the session held
     company = await session.get(Company, run.company_id)
     company.is_active, company.is_migration_staged = True, False
     run.status = "completed"
