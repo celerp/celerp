@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -651,6 +652,8 @@ async def _set_order_reconciled(
 
     if not order_id.isdigit():
         raise HTTPException(status_code=422, detail="order_id must be a WooCommerce order number")
+    from celerp.services.company_lock import lock_company
+    await lock_company(session, uuid.UUID(str(company_id)))
 
     def _apply(entry: dict) -> None:
         if not entry.get("signature"):

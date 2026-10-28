@@ -676,9 +676,12 @@ async def emit_event(
         await _refuse_stripe_payment_removal(session, kwargs)
 
     if kwargs.get("event_type") in {"shop.sync.enabled", "shop.sync.disabled"}:
-        from celerp.connectors.ownership import lock_connector_key
+        from celerp.connectors.ownership import holds_connector_fence
 
-        await lock_connector_key(session, "shopify")
+        # Opting an item in or out races a Shopify connect or disconnect unless the
+        # caller holds the Shopify fence, which ranks before the company lock.
+        if not holds_connector_fence(session, "shopify"):
+            raise RuntimeError(f"{kwargs['event_type']} needs the Shopify connector fence held first")
 
     # Physical codes (barcode, RFID / EPC) are unique per company among the codes a write
     # INTRODUCES: the item's code set after the event is compared with its set before, so

@@ -2920,6 +2920,10 @@ async def bulk_shopify_sync(payload: BulkShopifySyncBody, company_id=Depends(get
     shop.sync.enabled/disabled, which sets is_sync_to_shopify on each item's projection."""
     if not payload.entity_ids:
         raise HTTPException(status_code=422, detail=t("inventory.err_none_selected"))
+    from celerp.connectors.ownership import lock_connector_key
+
+    # Hold Shopify steady (connect and disconnect wait) before the company and item locks.
+    await lock_connector_key(session, "shopify")
     await _lock_selected_items(session, company_id, payload.entity_ids)
     event_type = "shop.sync.enabled" if payload.enable else "shop.sync.disabled"
     event_ids = []

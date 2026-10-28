@@ -2534,9 +2534,8 @@ async def deactivate_company(
     from celerp.models.connector_config import ConnectorConfig, OutboundQueue
 
     await lock_connector_maintenance(session)
-    company = await session.get(
-        Company, company_id, with_for_update=True, populate_existing=True
-    )
+    await lock_company(session, company_id)
+    company = await session.get(Company, company_id, populate_existing=True)
     if not company:
         raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
     company_id_str = str(company_id)

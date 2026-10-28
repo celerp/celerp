@@ -61,6 +61,10 @@ async def _snapshot(session, company_id, entity_id):
 
 
 async def _emit(session, company_id, entity_id, entity_type, event_type, data):
+    if event_type.startswith("shop.sync."):
+        # As the bulk opt-in route does: the Shopify fence first.
+        from celerp.connectors.ownership import lock_connector_key
+        await lock_connector_key(session, "shopify")
     return await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type=entity_type,
         event_type=event_type, data=data, actor_id=None, location_id=None, source="test",

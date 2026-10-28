@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import logging
+import uuid
 import os
 import re
 from datetime import datetime, timezone
@@ -1596,6 +1597,7 @@ def setup_routes(app):
             ConnectorOwnershipError,
             lock_connector_operation,
         )
+        from celerp.services.company_lock import lock_company
         from celerp.db import get_session_ctx
         from ui.config import RELAY_URL
         from ui.i18n import get_lang
@@ -1616,6 +1618,7 @@ def setup_routes(app):
             except ConnectorOwnershipError as exc:
                 await session.rollback()
                 return Span(str(exc), cls="flash flash--warning")
+            await lock_company(session, uuid.UUID(str(company_id)))
             config.sync_frequency = frequency
             await session.commit()
         if request.query_params.get("detail"):
@@ -1647,6 +1650,7 @@ def setup_routes(app):
             ConnectorOwnershipError,
             lock_connector_operation,
         )
+        from celerp.services.company_lock import lock_company
         from celerp.db import get_session_ctx
         from ui.config import RELAY_URL
         from ui.i18n import get_lang
@@ -1670,6 +1674,7 @@ def setup_routes(app):
                 from ui.components.shell import toast_header
                 return Response(headers={**toast_header(str(exc), "error", persist=True),
                                          "HX-Reswap": "none"})
+            await lock_company(session, uuid.UUID(str(company_id)))
             config.direction = direction
             await session.commit()
         if request.query_params.get("detail"):

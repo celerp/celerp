@@ -1684,10 +1684,13 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
             await session.execute(text("SET LOCAL TimeZone = 'UTC'"))
             # Before any lock that waits, so a restore started twice is refused at once.
             await _claim(session, backup_id, source)
+            from celerp.connectors.ownership import lock_connector_key, lock_connector_maintenance
             if replacing is not None:
                 # As a company reset takes it: before any other lock on the company.
-                from celerp.connectors.ownership import lock_connector_maintenance
                 await lock_connector_maintenance(session)
+            else:
+                # Restored items are opted out of Shopify (_turn_off_shop_sync) under its fence.
+                await lock_connector_key(session, "shopify")
             await hold_module_state(session)
             if replacing is not None:
                 # The company's lock after the module-state boundary, as every change to

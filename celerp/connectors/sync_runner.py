@@ -6,6 +6,7 @@ from __future__ import annotations
 import inspect
 import json
 import logging
+import uuid
 from datetime import datetime, timedelta, timezone
 
 from celerp.connectors.base import (
@@ -22,6 +23,7 @@ from celerp.connectors.ownership import ConnectorStoreChangedError
 from celerp.connectors.relay_token import ConnectorUpgradeRequired
 from celerp.modules.boundary import ModuleBusy, ModuleRefused
 from celerp.models.sync_run import SyncRun
+from celerp.services.company_lock import lock_company
 
 log = logging.getLogger(__name__)
 
@@ -228,6 +230,7 @@ async def _begin_run(company_id: str, connector: str, entity: str, direction_str
 
     try:
         async with get_session_ctx() as session:
+            await lock_company(session, uuid.UUID(str(company_id)))
             # Serialize check+insert itself. Without this lock, two workers can both
             # observe no running row and each insert one.
             await session.execute(
@@ -274,6 +277,7 @@ async def _finish_run(run_id, company_id, connector, entity, result, started_at,
     attention_json = json.dumps(result.attention) if result.attention is not None else None
     try:
         async with get_session_ctx() as session:
+            await lock_company(session, uuid.UUID(str(company_id)))
             if run_id is not None:
                 await session.execute(
                     sa.update(SyncRun).where(SyncRun.id == run_id).values(

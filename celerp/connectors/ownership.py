@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.config import ensure_instance_id
 from celerp.models.company import Company
 from celerp.models.connector_config import ConnectorConfig
-from celerp.services.company_lock import lock_company
+from celerp.services.company_lock import lock_company, note, noted
 from ui.i18n import t
 
 
@@ -77,8 +77,22 @@ def _resolve_connector_owner(
     return None
 
 
+# Proofs of the fences a transaction holds (company_lock.note), so work that relies on
+# one can check it is held instead of taking it out of order.
+_FENCE = "connector-fence"
+_MAINTENANCE = "connector-maintenance"
+
+
+def holds_connector_fence(session: AsyncSession, connector: str) -> bool:
+    """Whether this transaction holds the connector's ownership fence, or excludes all
+    connector work (lock_connector_maintenance)."""
+    fences = noted(session, _FENCE)
+    return _MAINTENANCE in fences or f"connector-owner:{connector}" in fences
+
+
 async def lock_connector_runtime(session: AsyncSession) -> None:
     """Join the shared connector-runtime fence for this transaction."""
+    note(session, _FENCE, "connector-runtime")
     if session.get_bind().dialect.name == "sqlite":
         return
     await session.execute(
@@ -89,6 +103,7 @@ async def lock_connector_runtime(session: AsyncSession) -> None:
 
 async def lock_connector_maintenance(session: AsyncSession) -> None:
     """Wait for connector work to finish and exclude new work."""
+    note(session, _FENCE, _MAINTENANCE)
     if session.get_bind().dialect.name == "sqlite":
         return
     await session.execute(
@@ -158,6 +173,7 @@ async def lock_connector_key(
     Connecting and disconnecting hold it EXCLUSIVE behind a bounded wait
     and raise ConnectorBusyError when work is still running."""
     await lock_connector_runtime(session)
+    note(session, _FENCE, f"connector-owner:{connector}")
     if session.get_bind().dialect.name == "sqlite":
         return
     key = {"k": f"connector-owner:{connector}"}
@@ -455,6 +471,7 @@ async def release_connector_ownership(
     company_id = str(company_id)
     legacy_id = ensure_instance_id()
     await lock_connector_key(session, connector, exclusive=True)
+    await lock_company(session, uuid.UUID(company_id))
     mine = await connector_release_scope(session, company_id, connector)
 
     for queue_owner in {company_id, legacy_id}:
