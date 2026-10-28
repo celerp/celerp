@@ -3710,7 +3710,6 @@
   "ai.err_step_expired": "Bước này của cuộc trò chuyện đã hết thời gian. Hãy đặt lại câu hỏi.",
   "ai.err_unavailable": "Celerp AI hiện không khả dụng. Hãy thử lại sau vài phút.",
   "ai.err_timeout": "Celerp AI trả lời quá lâu. Hãy hỏi lại; câu hỏi ngắn hơn hoặc ít tệp hơn có thể giúp ích.",
-  "ai.job_interrupted": "Celerp đã khởi động lại khi đang đọc các tệp này. Các tệp đã đọc vẫn được giữ. Hãy chỉ đính kèm các tệp chưa xong và gửi lại.",
   "ai.action_unfinished": "Celerp không xác định được thay đổi này đã được áp dụng chưa. Hãy thử lại: Celerp sẽ kiểm tra trước, nên thay đổi không bị áp dụng hai lần.",
   "ai.confirm_all_done": "Đã áp dụng {completed}.",
   "ai.memory_clear_failed": "Không thể xóa các ghi chú đã lưu của trợ lý. Hãy chọn Thử lại.",

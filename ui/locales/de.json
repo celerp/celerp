@@ -3710,7 +3710,6 @@
   "ai.err_step_expired": "Dieser Schritt der Unterhaltung ist abgelaufen. Stellen Sie Ihre Frage erneut.",
   "ai.err_unavailable": "Celerp AI ist gerade nicht verfügbar. Versuchen Sie es in ein paar Minuten erneut.",
   "ai.err_timeout": "Celerp AI hat zu lange für die Antwort gebraucht. Fragen Sie erneut; eine kürzere Frage oder weniger Dateien können helfen.",
-  "ai.job_interrupted": "Celerp wurde neu gestartet, während diese Dateien gelesen wurden. Bereits gelesene Dateien wurden behalten. Hängen Sie nur die nicht fertigen Dateien an und senden Sie sie erneut.",
   "ai.action_unfinished": "Celerp konnte nicht feststellen, ob diese Änderung übernommen wurde. Wiederholen Sie sie: Celerp prüft zuerst, sodass die Änderung nicht doppelt übernommen wird.",
   "ai.confirm_all_done": "{completed} übernommen.",
   "ai.memory_clear_failed": "Die gespeicherten Notizen des Assistenten konnten nicht gelöscht werden. Wählen Sie „Erneut versuchen“.",

@@ -37,6 +37,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.config import settings
 from celerp.db import get_session
 from celerp.main import app
+from celerp.ai import jobs
 from celerp.ai.service import AgentResult, PendingAction
 import celerp.gateway.state as gw_state
 from ui.i18n import t
@@ -485,7 +486,7 @@ async def test_confirm_action_unknown_message(auth_client):
 # ── GET /ai/batch/{id} ───────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_batch_submit_and_status(auth_client):
+async def test_batch_submit_and_status(auth_client, session):
     """Batch status returns job info, 404 for an unknown job."""
     c, h = auth_client
 
@@ -495,27 +496,18 @@ async def test_batch_submit_and_status(auth_client):
         r = await c.get(f"/ai/batch/{fake_id}", headers=h)
     assert r.status_code == 404
 
-    # Test batch status 200 with mock job
-    from datetime import datetime, timezone
-    mock_job = MagicMock()
-    mock_job.id = uuid.uuid4()
-    mock_job.conversation_id = None
-    mock_job.error = None
-    mock_job.status = "completed"
-    mock_job.total_files = 3
-    mock_job.completed_files = 3
-    mock_job.failed_files = 0
-    mock_job.credits_consumed = 3
-    mock_job.results = {"files": []}
-    mock_job.created_at = datetime.now(timezone.utc)
-    mock_job.completed_at = datetime.now(timezone.utc)
-
-    with patch("celerp.ai.batch.get_batch_job", AsyncMock(return_value=mock_job)):
-        r = await c.get(f"/ai/batch/{mock_job.id}", headers=h)
+    # Status 200: the counts are read from the job's steps.
+    conv_id = (await c.post("/ai/conversations", headers=h, json={"title": None})).json()["id"]
+    job_id = await _finished_job(session, c, h, conv_id, [
+        {"file_id": "ai_up_1", "filename": "r1.jpg", "status": "success", "answer": "", "credits": 1},
+        {"file_id": "ai_up_2", "filename": "r2.jpg", "status": "success", "answer": "", "credits": 1},
+        {"file_id": "ai_up_3", "filename": "r3.jpg", "status": "error", "error": "The file could not be read."},
+    ])
+    r = await c.get(f"/ai/batch/{job_id}", headers=h)
     assert r.status_code == 200
     data = r.json()
-    assert data["status"] == "completed"
-    assert data["total_files"] == 3
+    assert (data["status"], data["total_files"], data["completed_files"], data["failed_files"],
+            data["credits_consumed"]) == ("completed", 3, 2, 1, 2)
 
 
 @pytest.mark.asyncio
@@ -575,8 +567,8 @@ async def test_query_with_images_creates_job(auth_client):
     c, h = auth_client
     conv_id = (await c.post("/ai/conversations", headers=h, json={"title": None})).json()["id"]
     ids = [await _upload(c, h, f"r{i}.jpg", b"fake jpeg", "image/jpeg") for i in range(2)]
-    run_batch = AsyncMock()
-    with patch("celerp.ai.batch.run_batch", run_batch), \
+    start_job = MagicMock()
+    with patch("celerp.ai.jobs.start_job", start_job), \
          patch("celerp.ai.service.run_agent", AsyncMock(side_effect=AssertionError("agent must not run"))):
         r = await c.post(
             f"/ai/conversations/{conv_id}/query", headers=h,
@@ -584,8 +576,7 @@ async def test_query_with_images_creates_job(auth_client):
         )
     assert r.status_code == 202
     job_id = r.json()["job_id"]
-    assert run_batch.await_count == 1
-    assert list(run_batch.await_args.args[4]) == ids
+    start_job.assert_called_once_with(uuid.UUID(job_id))
 
     thread = (await c.get(f"/ai/conversations/{conv_id}", headers=h)).json()
     assert [m["role"] for m in thread["messages"]] == ["user"]
@@ -621,8 +612,11 @@ async def _finished_job(session, c, h, conv_id, files):
         conversation_id=conv.id,
     )
     job.status = "completed"
-    job.completed_files = len(files)
-    job.results = {"files": files}
+    state_of = {"success": "done", "error": "failed"}
+    steps = (await jobs.job_steps(session, [job.id]))[job.id]
+    for step, f in zip(steps, files):
+        step.state, step.credits = state_of[f["status"]], f.get("credits", 0)
+        step.result = {k: f[k] for k in ("filename", "answer", "extraction", "error") if k in f}
     await session.commit()
     return str(job.id)
 

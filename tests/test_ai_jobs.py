@@ -453,8 +453,9 @@ async def test_a_runner_that_cannot_record_a_failure_drains_its_steps_and_leaves
     await until(lambda: not jobs.is_held(job_id), 20.0)
 
     assert _step_tasks() == []
-    row = await session.get(AIBatchJob, job_id, populate_existing=True)
-    assert row.status == "running"
+    # A column read: an entity loaded here would sit stale in the identity map the
+    # routes share with this session in tests.
+    assert (await session.execute(select(AIBatchJob.status).where(AIBatchJob.id == job_id))).scalar_one() == "running"
     broken["on"] = False
     await jobs.recover_on_start()
     job = await _finished(client, token, job_id)

@@ -3710,7 +3710,6 @@
   "ai.err_step_expired": "Este paso de la conversación caducó. Vuelva a hacer su pregunta.",
   "ai.err_unavailable": "Celerp AI no está disponible ahora. Inténtelo de nuevo en unos minutos.",
   "ai.err_timeout": "Celerp AI tardó demasiado en responder. Vuelva a preguntar; una pregunta más corta o menos archivos pueden ayudar.",
-  "ai.job_interrupted": "Celerp se reinició mientras leía estos archivos. Los archivos ya leídos se conservaron. Adjunte solo los que no terminaron y envíelos de nuevo.",
   "ai.action_unfinished": "Celerp no pudo saber si este cambio se aplicó. Reinténtelo: Celerp lo comprueba primero, así que el cambio no se aplicará dos veces.",
   "ai.confirm_all_done": "{completed} aplicados.",
   "ai.memory_clear_failed": "No se pudieron borrar las notas guardadas del asistente. Seleccione Reintentar.",

@@ -511,7 +511,7 @@ async def test_a_reset_waits_until_the_assistant_has_finished_reading_files(real
     _local_files(monkeypatch, tmp_path)
     boss, a, b, files_a, files_b = await _harbor(real_engine)
     async with maker(real_engine)() as s:
-        s.add(AIBatchJob(company_id=a, user_id=boss, status=status, total_files=1, query="read these",
+        s.add(AIBatchJob(company_id=a, user_id=boss, status=status, query="read these",
                          file_ids=[]))
         await s.commit()
 

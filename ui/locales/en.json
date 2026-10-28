@@ -3711,7 +3711,6 @@
   "ai.err_step_expired": "This step of the conversation timed out. Ask your question again.",
   "ai.err_unavailable": "Celerp AI isn't available right now. Try again in a few minutes.",
   "ai.err_timeout": "Celerp AI took too long to answer. Ask again; a shorter question or fewer files can help.",
-  "ai.job_interrupted": "Celerp restarted while reading these files. Files already read were kept. Attach only the files that didn't finish and send them again.",
   "ai.action_unfinished": "Celerp couldn't tell whether this change was applied. Retry it: Celerp checks first, so the change won't be applied twice.",
   "ai.confirm_all_done": "{completed} applied.",
   "ai.memory_clear_failed": "The assistant's saved notes couldn't be cleared. Select Try again.",

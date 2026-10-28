@@ -661,7 +661,6 @@ async def test_history_includes_old_active_batch_job_beyond_limit(
         company_id=company.id,
         user_id=user.id,
         status=status,
-        total_files=1,
         query="read",
         file_ids=["f1"],
     ))

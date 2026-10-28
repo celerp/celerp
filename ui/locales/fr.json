@@ -3710,7 +3710,6 @@
   "ai.err_step_expired": "Cette étape de la conversation a expiré. Posez à nouveau votre question.",
   "ai.err_unavailable": "Celerp AI n'est pas disponible pour le moment. Réessayez dans quelques minutes.",
   "ai.err_timeout": "Celerp AI a mis trop de temps à répondre. Reposez la question ; une question plus courte ou moins de fichiers peuvent aider.",
-  "ai.job_interrupted": "Celerp a redémarré pendant la lecture de ces fichiers. Les fichiers déjà lus ont été conservés. Joignez seulement les fichiers non terminés et renvoyez-les.",
   "ai.action_unfinished": "Celerp n'a pas pu savoir si cette modification a été appliquée. Réessayez : Celerp vérifie d'abord, la modification ne sera donc pas appliquée deux fois.",
   "ai.confirm_all_done": "{completed} appliquées.",
   "ai.memory_clear_failed": "Les notes enregistrées de l'assistant n'ont pas pu être effacées. Sélectionnez « Réessayer ».",

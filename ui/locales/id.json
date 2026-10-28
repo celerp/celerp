@@ -3710,7 +3710,6 @@
   "ai.err_step_expired": "Langkah percakapan ini sudah habis waktunya. Ajukan pertanyaan Anda lagi.",
   "ai.err_unavailable": "Celerp AI sedang tidak tersedia. Coba lagi dalam beberapa menit.",
   "ai.err_timeout": "Celerp AI terlalu lama menjawab. Tanyakan lagi; pertanyaan yang lebih singkat atau lebih sedikit file bisa membantu.",
-  "ai.job_interrupted": "Celerp dimulai ulang saat membaca file ini. File yang sudah dibaca tetap disimpan. Lampirkan hanya file yang belum selesai dan kirim lagi.",
   "ai.action_unfinished": "Celerp tidak bisa memastikan apakah perubahan ini sudah diterapkan. Coba lagi: Celerp memeriksa dulu, jadi perubahan tidak akan diterapkan dua kali.",
   "ai.confirm_all_done": "{completed} diterapkan.",
   "ai.memory_clear_failed": "Catatan tersimpan asisten tidak bisa dihapus. Pilih Coba lagi.",

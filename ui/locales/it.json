@@ -3710,7 +3710,6 @@
   "ai.err_step_expired": "Questo passaggio della conversazione è scaduto. Fai di nuovo la tua domanda.",
   "ai.err_unavailable": "Celerp AI non è disponibile al momento. Riprova tra qualche minuto.",
   "ai.err_timeout": "Celerp AI ha impiegato troppo a rispondere. Chiedi di nuovo; una domanda più breve o meno file possono aiutare.",
-  "ai.job_interrupted": "Celerp si è riavviato mentre leggeva questi file. I file già letti sono stati conservati. Allega solo quelli non completati e inviali di nuovo.",
   "ai.action_unfinished": "Celerp non è riuscito a capire se questa modifica è stata applicata. Riprova: Celerp controlla prima, quindi la modifica non verrà applicata due volte.",
   "ai.confirm_all_done": "{completed} applicate.",
   "ai.memory_clear_failed": "Non è stato possibile cancellare le note salvate dell'assistente. Seleziona Riprova.",

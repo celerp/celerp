@@ -227,9 +227,8 @@ def test_unfinished_action_says_retry_is_safe():
 
 
 def test_batch_limit_says_remove_some():
-    from celerp.ai.batch import MAX_BATCH_FILES, interrupted_error
+    from celerp.ai.batch import MAX_BATCH_FILES
     assert "Remove some" in t("error.batch_too_many", "en", max=MAX_BATCH_FILES)
-    assert interrupted_error() == t("ai.job_interrupted", "en")
 
 
 # -- Copy -------------------------------------------------------------------

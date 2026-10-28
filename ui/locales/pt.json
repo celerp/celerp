@@ -3710,7 +3710,6 @@
   "ai.err_step_expired": "Esta etapa da conversa expirou. Faça sua pergunta novamente.",
   "ai.err_unavailable": "O Celerp AI não está disponível agora. Tente novamente em alguns minutos.",
   "ai.err_timeout": "O Celerp AI demorou demais para responder. Pergunte de novo; uma pergunta mais curta ou menos arquivos podem ajudar.",
-  "ai.job_interrupted": "O Celerp reiniciou enquanto lia estes arquivos. Os arquivos já lidos foram mantidos. Anexe só os que não terminaram e envie-os novamente.",
   "ai.action_unfinished": "O Celerp não conseguiu saber se esta alteração foi aplicada. Tente de novo: o Celerp verifica antes, então a alteração não será aplicada duas vezes.",
   "ai.confirm_all_done": "{completed} aplicadas.",
   "ai.memory_clear_failed": "Não foi possível apagar as notas salvas do assistente. Selecione Tentar novamente.",

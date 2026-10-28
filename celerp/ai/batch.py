@@ -240,22 +240,23 @@ async def create_batch_job(
 
 
 async def publish_progress(run: FileRun, file_id: str, state: str) -> None:
-    """Tell the user's open pages that one more file of the job has ended."""
+    """Tell the user's open pages that one more file of the job has ended. Best effort:
+    the file's result is already written, so a failure here never sends it again."""
     from celerp.notifications.sse import publish
-    async with jobs.SessionLocal() as session:
-        counts = dict((await session.execute(
-            select(AIJobStep.state, func.count()).where(AIJobStep.job_id == run.job_id).group_by(AIJobStep.state)
-        )).all())
-    open_steps = sum(counts.get(s, 0) for s in jobs.OPEN_STEPS)
-    completed = counts.get("done", 0)
     try:
+        async with jobs.SessionLocal() as session:
+            counts = dict((await session.execute(
+                select(AIJobStep.state, func.count()).where(AIJobStep.job_id == run.job_id).group_by(AIJobStep.state)
+            )).all())
+        open_steps = sum(counts.get(s, 0) for s in jobs.OPEN_STEPS)
+        completed = counts.get("done", 0)
         await publish(run.company_id, run.user_id, {
             "type": "batch_progress", "job_id": str(run.job_id), "completed": completed,
             "failed": sum(counts.values()) - completed - open_steps, "total": sum(counts.values()),
             "file_id": file_id, "status": jobs.FILE_STATUS[state],
         })
     except Exception:
-        log.debug("Progress event for job %s not published", run.job_id, exc_info=True)
+        log.warning("Progress event for job %s not published", run.job_id, exc_info=True)
 
 
 async def notify_finished(run: FileRun, completed: int, failed: int) -> None:
