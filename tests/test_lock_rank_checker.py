@@ -245,6 +245,16 @@ def test_rows_of_a_company_the_transaction_inserted_order_nothing(recorder):
     assert not recorder.violations
 
 
+@pytest.mark.parametrize("chart_of, violates", [("c1", False), ("c2", True)])
+def test_the_chart_lock_of_a_company_the_transaction_inserted_orders_nothing(recorder, chart_of, violates):
+    from celerp.services.company_lock import chart_key
+
+    recorder.statement(1, _COMPANY, ("c1", "Co", "co"), 0.0)
+    recorder.acquire(1, _lock("adv:chart", "xact exclusive wait", key=str(chart_key(chart_of))), 0.0)
+    recorder.acquire(1, _lock("row:user_auth_state", "no key update wait", key="u"), 0.0)
+    assert (("order", "row:user_auth_state") in _kinds(recorder)) is violates
+
+
 def test_rows_of_a_committed_company_still_order(recorder):
     recorder.statement(1, _ACCOUNT, ("a1", "c1", "1000"), 0.0)
     recorder.statement(1, _LOCK_COMPANY, ("c1",), 0.0)

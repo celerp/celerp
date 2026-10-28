@@ -85,8 +85,12 @@ async def lock_chart(session: AsyncSession, company_id) -> None:
     """
     if session.get_bind().dialect.name != "postgresql":
         return
-    key = int.from_bytes(hashlib.sha256(b"chart:" + str(company_id).encode()).digest()[:8], "big", signed=True)
-    await session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": key})
+    await session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": chart_key(company_id)})
+
+
+def chart_key(company_id) -> int:
+    """The advisory key ``lock_chart`` takes for one company."""
+    return int.from_bytes(hashlib.sha256(b"chart:" + str(company_id).encode()).digest()[:8], "big", signed=True)
 
 
 async def hold_company(session: AsyncSession, company_id) -> bool:

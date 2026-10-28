@@ -226,7 +226,12 @@ class Recorder:
         sees the company, so nobody holds, waits on or inserts a row naming it: its locks are
         granted at once and make nobody wait. An insert is own only on a table whose every
         unique key holds the company (``_row_locks`` names the company only then); the
-        company's own row is not (its slug is unique across companies)."""
+        company's own row is not (its slug is unique across companies). The chart lock of such
+        a company is its own too: its key is derived from the company id."""
+        if lock.cls == "adv:chart":
+            from celerp.services.company_lock import chart_key
+
+            return any(lock.key == str(chart_key(c)) for c in self.own[conn_key])
         if not lock.company or lock.company not in self.own[conn_key]:
             return False
         return lock.cls != "row:companies" or lock.mode != "insert"
