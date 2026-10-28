@@ -756,6 +756,7 @@
   "file_tag.disposal": "Abgang",
   "file_tag.valuations": "Bewertungen",
   "filter.all_time": "Gesamter Zeitraum",
+  "filter.date_range": "Zeitraum",
   "filter.last_12m": "Letzte 12 Monate",
   "filter.last_3m": "Letzte 3 Monate",
   "filter.last_6m": "Letzte 6 Monate",

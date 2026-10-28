@@ -756,6 +756,7 @@
   "file_tag.disposal": "Dismissione",
   "file_tag.valuations": "Valutazioni",
   "filter.all_time": "Tutto il periodo",
+  "filter.date_range": "Intervallo di date",
   "filter.last_12m": "Ultimi 12 mesi",
   "filter.last_3m": "Ultimi 3 mesi",
   "filter.last_6m": "Ultimi 6 mesi",

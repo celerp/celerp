@@ -491,6 +491,44 @@ class TestLiveSearchResults:
             assert export.group(0).count('id="') == 1
             assert ('hx-swap-oob="true"' in export.group(0)) is oob
             assert ('hx-swap-oob="true"' in dates.group(0)) is oob
-        presets = re.findall(rf'<a href="(/{base}\?preset=[^"]*)"', r.text)
-        assert presets and all("q=ruby" in u for u in presets), presets
+        form = re.search(rf'<form[^>]*action="/{base}"[^>]*class="date-range-form".*?</form>', r.text, re.S)
+        assert form, r.text[:300]
+        assert re.search(r'<input[^>]*name="q"[^>]*value="ruby"|<input[^>]*value="ruby"[^>]*name="q"', form.group(0))
         assert "q=ruby" in re.search(rf'href="(/{base}/export/csv\?[^"]*)"', r.text).group(1)
+
+
+class TestDateRangeDropdown:
+    """One date control per list page: a preset dropdown, with the from/to range only for Custom."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("page", ["/docs", "/lists"])
+    @pytest.mark.parametrize("query, shown", [
+        ("?preset=this_month", False),
+        ("?preset=custom&from=2026-01-01&to=2026-02-01", True),
+    ])
+    async def test_custom_range_only_for_custom(self, ui_client, page, query, shown):
+        listed = AsyncMock(return_value={"items": [_DOC], "total": 1})
+        ui_client.cookies.update(_cookies())
+        with patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)), \
+             patch("ui.api_client.list_docs", new=listed), patch("ui.api_client.list_lists", new=listed), \
+             patch("ui.api_client.get_doc_summary", new=AsyncMock(return_value=_SUMMARY)), \
+             patch("ui.api_client.get_list_summary", new=AsyncMock(return_value={"count_by_status": {}})):
+            r = await ui_client.get(page + query)
+        assert r.status_code == 200
+        assert "preset-btn" not in r.text  # the row of preset buttons is gone
+        assert r.text.count('name="preset"') == 1
+        range_tag = re.search(r'<span[^>]*class="date-range-custom"[^>]*>', r.text).group(0)
+        assert ("hidden" in range_tag) is not shown
+        selected = re.search(r'<option[^>]*selected[^>]*value="([^"]*)"|<option[^>]*value="([^"]*)"[^>]*selected', r.text)
+        assert (selected.group(1) or selected.group(2)) == query.split("preset=")[1].split("&")[0]
+
+    @pytest.mark.asyncio
+    async def test_search_shares_the_bar_with_the_dates(self, ui_client):
+        listed = AsyncMock(return_value={"items": [_DOC], "total": 1})
+        ui_client.cookies.update(_cookies())
+        with patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)), \
+             patch("ui.api_client.list_lists", new=listed), \
+             patch("ui.api_client.get_list_summary", new=AsyncMock(return_value={"count_by_status": {}})):
+            r = await ui_client.get("/lists")
+        bar = re.search(r'<div class="list-filter-bar".*?id="lists-dates"', r.text, re.S)
+        assert bar and 'id="search-input"' in bar.group(0)

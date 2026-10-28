@@ -756,6 +756,7 @@
   "file_tag.disposal": "Pelepasan",
   "file_tag.valuations": "Penilaian",
   "filter.all_time": "Sepanjang waktu",
+  "filter.date_range": "Rentang tanggal",
   "filter.last_12m": "12 bulan terakhir",
   "filter.last_3m": "3 bulan terakhir",
   "filter.last_6m": "6 bulan terakhir",

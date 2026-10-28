@@ -756,6 +756,7 @@
   "file_tag.disposal": "الاستبعاد",
   "file_tag.valuations": "التقييمات",
   "filter.all_time": "كل الوقت",
+  "filter.date_range": "النطاق الزمني",
   "filter.last_12m": "آخر 12 شهراً",
   "filter.last_3m": "آخر 3 أشهر",
   "filter.last_6m": "آخر 6 أشهر",
