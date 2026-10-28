@@ -38,7 +38,32 @@ from pathlib import Path
 
 # ── The one map ────────────────────────────────────────────────────────────────
 # class -> rank. Lower ranks are taken first. Filled from the measured graph.
-RANKS: dict[str, int] = {}
+RANKS: dict[str, int] = {
+    # Instance-wide: schema, version, bootstrap.
+    "adv:migration": 0, "adv:version-admit": 1, "adv:version-fence": 2, "adv:bootstrap": 3,
+    "adv:migration-scan": 4, "adv:jti-cleanup": 5,
+    # Whole-company backup and restore.
+    "adv:backup-names": 10, "adv:backup": 11, "adv:backup-landing": 12,
+    # Module state, then sign-in (auth.py hold_companyless_login: before any company row).
+    "adv:module-state": 15, "adv:direct-sign-in": 16, "row:users": 17,
+    # Connector guard (R0, R1) and the run lock.
+    "adv:connector-runtime": 20, "adv:connector-owner": 21, "adv:sync-run": 22,
+    # The company (R3) and what is read under it.
+    "row:companies": 30, "row:user_auth_state": 31, "row:user_companies": 32,
+    "row:company_peer_identities": 33, "row:locations": 34,
+    # Shop identity namespaces, after the company and before any item row.
+    "adv:woocommerce-order": 40, "adv:external-link": 41, "adv:external-product": 42,
+    "row:connector_configs": 43, "row:connector_first_syncs": 44, "row:sync_runs": 45,
+    # Chart and posting (R3a).
+    "adv:chart": 50, "row:accounts": 51, "row:bank_accounts": 52, "row:reconciliation_sessions": 53,
+    "row:bank_statement_lines": 54, "row:unmatched_payments": 55,
+    # Items (R6), then import batches (R7) and the outbound queue (R8).
+    "row:projections": 60, "row:import_batches": 61, "adv:outbound": 62, "row:outbound_queue": 63,
+    # Bookkeeping rows written last.
+    "row:migration_runs": 70, "row:migration_cleanup_tasks": 71, "row:migration_templates": 72,
+    "row:migration_attachment_fetches": 73, "adv:xero-attachments": 74, "adv:xero-attachments-round": 75,
+    "row:ai_messages": 80, "row:instance_meta": 81,
+}
 
 # Numeric advisory keys with a fixed value (module constant) -> class.
 NUMERIC_KEYS: dict[int, str] = {
@@ -82,6 +107,7 @@ class Lock:
     mode: str
     site: str
     origin: str = ""  # the test statement that made the call ("" outside a test)
+    key: str = ""     # what is locked: the advisory key, or a row lock's bound parameters
 
 
 @dataclass
@@ -106,6 +132,11 @@ class Recorder:
             self.contention.append({"cls": lock.cls, "mode": lock.mode, "site": lock.site,
                                     "seconds": round(waited, 3), "test": self.test})
         held = self.session_held[conn_key] + self.held[conn_key]
+        if any(h.cls == lock.cls and h.key == lock.key and _covers(h.mode, lock.mode) for h in held):
+            # A re-take of what this transaction already holds, at no greater strength, is
+            # granted at once: it waits for nothing, so it orders nothing.
+            info["retakes"] = info.get("retakes", 0) + 1
+            return
         waits = lock.mode.split(" ")[-1] not in ("nowait", "try", "skip")
         # A class already held is ordered where it was first taken (rows of one class are
         # taken in key order by their own helpers); a later take adds no edge.
@@ -168,6 +199,17 @@ class Recorder:
 
 def _exclusive(mode: str) -> bool:
     return "exclusive" in mode or mode.startswith(("update", "no key update", "delete"))
+
+
+_STRENGTH_ORDER = ("keyshare", "share", "nokey", "update")
+
+
+def _covers(held: str, wanted: str) -> bool:
+    """True when holding ``held`` already grants ``wanted`` on the same key."""
+    h, w = _strength(held), _strength(wanted)
+    if h in ("shared", "exclusive"):
+        return h == "exclusive" or w == "shared"
+    return _STRENGTH_ORDER.index(h) >= _STRENGTH_ORDER.index(w)
 
 
 def _strength(mode: str) -> str:
@@ -268,6 +310,18 @@ def _advisory_class(args: str, parameters) -> str:
     return CALLSITE_KEYS.get(caller, f"adv:?{caller}")
 
 
+def _key(cls: str, statement: str, parameters) -> str:
+    """The locked thing, as far as the statement shows it: an advisory lock's resolved
+    arguments, or a row lock's bound parameter values (the same values on the same table
+    select the same rows; different values are treated as different rows)."""
+    if cls.startswith("adv:"):
+        m = _ADVISORY.search(statement)
+        if m:
+            return ",".join(str(_param(p, parameters or ())) for p in m.group(5).split(","))
+    values = parameters.values() if isinstance(parameters, dict) else (parameters or ())
+    return repr(sorted(map(str, values)))
+
+
 def classify(statement: str, parameters) -> list[tuple[str, str]]:
     """(class, mode) for each lock the statement takes; ('-unlock', class) for an unlock."""
     out: list[tuple[str, str]] = []
@@ -313,7 +367,7 @@ def record_statement(conn_key: int, statement: str, parameters, waited: float) -
         if cls == "-unlock":
             RECORDER.release_session(conn_key, mode)
             continue
-        RECORDER.acquire(conn_key, Lock(cls, mode, site, origin), waited)
+        RECORDER.acquire(conn_key, Lock(cls, mode, site, origin, _key(cls, statement, parameters)), waited)
 
 
 _INSTALLED = False
@@ -517,6 +571,21 @@ def report(directory: Path) -> str:
     return "\n".join(lines) + "\n"
 
 
+def check(directory: Path) -> str:
+    """Judge a recorded graph against ``RANKS``: every class the suite locked must be ranked, and
+    every waiting acquisition one call made after a lock of a higher rank is a violation."""
+    g = _merge(directory)
+    lines = [f"Unranked classes: {sorted(c for c, v in g['classes'].items()
+                                          if c not in RANKS and set(v['modes']) - {'write', 'delete'}) or 'none'}", ""]
+    bad = sorted((a, b) for (a, b), v in g["edges"].items()
+                 if v["call_modes"] and RANKS.get(a, -1) > RANKS.get(b, 1 << 30))
+    lines.append(f"Decreasing edges taken inside one call: {len(bad)}")
+    for a, b in bad:
+        ex = g["edges"][(a, b)]["call_example"]
+        lines.append(f"- {a} ({RANKS[a]}) -> {b} ({RANKS[b]}): {ex['held']} -> {ex['acquired']} ({ex['test']})")
+    return "\n".join(lines) + "\n"
+
+
 def table() -> str:
     lines = ["| Rank | Lock class |", "|---|---|"]
     for cls, rank in sorted(RANKS.items(), key=lambda kv: (kv[1], kv[0])):
@@ -527,7 +596,9 @@ def table() -> str:
 if __name__ == "__main__":
     if sys.argv[1:2] == ["report"]:
         print(report(Path(sys.argv[2])), end="")
+    elif sys.argv[1:2] == ["check"]:
+        print(check(Path(sys.argv[2])), end="")
     elif sys.argv[1:2] == ["table"]:
         print(table(), end="")
     else:
-        raise SystemExit("usage: lock_rank.py report <dir> | table")
+        raise SystemExit("usage: lock_rank.py report <dir> | check <dir> | table")
