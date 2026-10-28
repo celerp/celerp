@@ -9,7 +9,8 @@ completed in the same transaction while this request was served (holding the row
 judging the request's authority again) and PostgreSQL still holds that lock (the proofs
 company_lock keeps), and no narrower lock (a chart, row or other advisory lock) was taken
 before the company lock; a write named in JUDGED_WITHOUT_LOCK is protected by the
-request's authority judged again without the lock. Each statement is judged on the Session that ran it. A write is
+request's authority judged again without the lock, and one named in UNDER_ROW_LOCK by its
+own row lock. Each statement is judged on the Session that ran it. A write is
 judged when its transaction commits: a write rolled back with its savepoint or transaction
 never became durable and is dropped, as the lock proofs are.
 
@@ -115,11 +116,32 @@ JUDGED_WITHOUT_LOCK: dict[tuple[str, str], str] = {
     ("migration_runs", "UPDATE"): "a migration cancel, saved while the runner holds the company lock through a "
                                   "batch: services/migrations.request_cancel",
 }
-# The writes protected by their own row, locked earlier in the transaction, by table and
-# statement type: rows that outlive their company, so no company lock can hold them.
-UNDER_OWN_ROW_LOCK: dict[tuple[str, str], str] = {
-    ("migration_cleanup_tasks", "DELETE"): "a cleanup task deleted once its files are, after its company was "
-                                           "discarded, reset or replaced: services/migrations._run_task",
+# The writes protected by a row lock taken earlier in the transaction instead of a company
+# lock, by table and statement type: rows that outlive their company or are one login's,
+# so no company lock can hold them. Each names the row lock it needs and the only
+# functions that may make it; the same write from anywhere else is judged as usual.
+@dataclass(frozen=True)
+class RowLocked:
+    table: str  # the table whose row is locked FOR UPDATE earlier
+    sites: tuple[str, ...]  # "<file> <function>" that make the write
+    reason: str
+
+
+_TOKEN_ISSUE = RowLocked(
+    "user_auth_state", ("celerp/credentials.py issue_token_pair",),
+    "a session token recorded for the company it is issued for, under the login's session state: the single "
+    "issuance point checks the login's membership under the company's row lock first")
+_TOKEN_REVOKE = RowLocked(
+    "user_auth_state",
+    ("celerp/services/session_tracker.py invalidate_sessions", "celerp/services/session_tracker.py _rotate_every_nonce"),
+    "a login's session tokens ended with its session state rotated: every company the login worked in")
+UNDER_ROW_LOCK: dict[tuple[str, str], RowLocked] = {
+    ("migration_cleanup_tasks", "DELETE"): RowLocked(
+        "migration_cleanup_tasks", ("celerp/services/migrations.py _run_task",),
+        "a cleanup task deleted once its files are, after its company was discarded, reset or replaced"),
+    ("session_registry", "INSERT"): _TOKEN_ISSUE,
+    ("session_registry", "UPDATE"): _TOKEN_ISSUE,
+    ("session_registry", "DELETE"): _TOKEN_REVOKE,
 }
 
 _ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -127,7 +149,7 @@ _REQUEST: ContextVar[dict | None] = ContextVar("mutation_observer_request", defa
 _SESSIONS: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
 _LIVE: "weakref.WeakSet" = weakref.WeakSet()
 _SERVING: dict[int, dict] = {}  # the requests being served now, by id
-_WRITE, _LOCK, _FENCE = "observed-write", "observed-lock", "observed-fence"
+_WRITE, _LOCK, _FENCE, _ROW = "observed-write", "observed-lock", "observed-fence", "observed-row-lock"
 
 
 @dataclass
@@ -500,6 +522,16 @@ def _unassigned_connector(request: dict, session, target) -> bool:
                for name, exclusive in _here(request, session, _FENCE)) and str(target) == ensure_instance_id()
 
 
+def _under_row_lock(request: dict, session, op: Op) -> bool:
+    """The write is one UNDER_ROW_LOCK names, made by one of its functions after its row lock."""
+    rule = UNDER_ROW_LOCK.get((op.table, op.detail))
+    if rule is None or not any(rule.table in tables.split(",") and "row update" in mode.split(" + ")
+                               for tables, mode in (held.split(" ", 1) for held in _here(request, session, _ROW))):
+        return False
+    made_in = {" ".join((frame.split(" ")[0].rsplit(":", 1)[0], frame.split(" ")[1])) for frame in _app_frames()}
+    return any(site in made_in for site in rule.sites)
+
+
 def _exclusive(op: Op) -> bool:
     return "_shared(" not in op.detail
 
@@ -645,6 +677,8 @@ def _executed(conn, cursor, statement, parameters, context, executemany) -> None
             if inversion := _fence_order(request, session, op):
                 found("lock-order", inversion)
             note(session, _FENCE, (op.name, _exclusive(op)))
+        if op.detail.startswith("row "):
+            note(session, _ROW, f"{op.table} {op.detail}")
         locked = company is not None and _holds(request, session, company)
         if locked and "users" in (op.table or "").split(",") and "row update" in op.detail.split(" + "):
             # A sign-in writes rows naming the login after it holds the login's session
@@ -665,18 +699,16 @@ def _executed(conn, cursor, statement, parameters, context, executemany) -> None
     targets, source = op.companies, "statement"
     if not targets and company:
         targets, source = (company,), "request"
-    if not targets:
+    row_locked = _under_row_lock(request, session, op)
+    if not targets and not row_locked:
         return found("unprotected", "no company for the write", None)
-    for target in targets:
-        if _unassigned_connector(request, session, target):
+    for target in targets or (None,):
+        if row_locked or _unassigned_connector(request, session, target):
             kind = None
         elif company is not None and target != company and not _holds(request, session, target):
             kind = "cross-company"
         elif (op.table, op.detail) in JUDGED_WITHOUT_LOCK and target in _here(request, session, "judged") \
                 and not _holds(request, session, target):
-            kind = None
-        elif (op.table, op.detail) in UNDER_OWN_ROW_LOCK and not _holds(request, session, target) \
-                and any(f"{op.table} row update" in held for held in _here(request, session, _LOCK)):
             kind = None
         elif not _holds(request, session, target):
             kind = "unprotected"

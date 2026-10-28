@@ -13,6 +13,7 @@ flagged, never taken as a read."""
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi import HTTPException
@@ -21,12 +22,16 @@ from sqlalchemy import delete, func, insert, select, text, update
 import mutation_observer
 from mutation_observer import serving
 from celerp.connectors.ownership import lock_connector_key
+from celerp.credentials import issue_token_pair
 from celerp.events.engine import emit_event
+from celerp.models.auth import SessionRegistry
 from celerp.models.company import Company, Location, User
 from celerp.models.migration import MigrationCleanupTask, MigrationRun
 from celerp.models.projections import Projection
 from celerp.services.company_lock import judge_without_company_lock, lock_chart, lock_company
+from celerp.services.migrations import run_cleanup_task
 from celerp.services.permissions import authorize_request
+from celerp.services.session_tracker import invalidate_sessions, lock_auth_state
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.observer_control]
 
@@ -363,18 +368,41 @@ async def test_a_judgment_without_the_lock_that_refuses_writes_nothing(session, 
     assert _kinds() == []
 
 
-@pytest.mark.parametrize("row_locked", [True, False])
-async def test_a_cleanup_task_is_deleted_under_its_own_row_lock(session, auth, row_locked):
+@pytest.mark.parametrize("deleter", ["the cleanup sweep", "row locked elsewhere", "unlocked"])
+async def test_a_cleanup_task_is_deleted_under_its_own_row_lock_by_the_sweep_only(session, auth, deleter):
     task = MigrationCleanupTask(company_id=auth["company_id"], run_ids=[])
     session.add(task)
     await session.commit()
     with serving("POST", "/observed"):
         _authorize(session, auth)
-        query = select(MigrationCleanupTask.id).where(MigrationCleanupTask.id == task.id)
-        await session.execute(query.with_for_update(skip_locked=True) if row_locked else query)
-        await session.execute(delete(MigrationCleanupTask).where(MigrationCleanupTask.id == task.id))
+        if deleter == "the cleanup sweep":
+            assert await run_cleanup_task(session, task.id)
+        else:
+            query = select(MigrationCleanupTask.id).where(MigrationCleanupTask.id == task.id)
+            await session.execute(query.with_for_update() if deleter == "row locked elsewhere" else query)
+            await session.execute(delete(MigrationCleanupTask).where(MigrationCleanupTask.id == task.id))
+            await session.commit()
+    assert _kinds() == ([] if deleter == "the cleanup sweep" else ["unprotected"])
+
+
+async def test_a_session_token_is_issued_and_ended_under_the_logins_session_state(session, auth):
+    user = await session.get(User, auth["user_id"])
+    with serving("POST", "/observed"):
+        await issue_token_pair(session, user=user, company_id=auth["company_id"], expected_snonce=None)
+        await invalidate_sessions(session, str(auth["user_id"]))
+    assert _kinds() == []
+    assert (await session.scalar(select(func.count()).select_from(SessionRegistry))) == 0
+
+
+@pytest.mark.parametrize("state_locked", [True, False])
+async def test_a_session_token_written_outside_issuance_is_reported(session, auth, state_locked):
+    with serving("POST", "/observed"):
+        if state_locked:
+            await lock_auth_state(session, str(auth["user_id"]))
+        session.add(SessionRegistry(jti=uuid.uuid4().hex, user_id=auth["user_id"], company_id=auth["company_id"],
+                                    expiry=datetime.now(timezone.utc) + timedelta(hours=1)))
         await session.commit()
-    assert _kinds() == ([] if row_locked else ["unprotected"])
+    assert _kinds() == ["unprotected"]
 
 
 async def test_the_previous_requests_lock_is_not_inherited_on_a_reused_session(session, auth):
