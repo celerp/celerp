@@ -8,6 +8,7 @@ by locks it never took."""
 
 from __future__ import annotations
 
+import pytest
 from sqlalchemy import delete, func, select, text, update
 
 from test_cost_restatement import _item
@@ -123,3 +124,16 @@ async def test_operations_sent_together_on_the_shared_session_take_turns(session
     results = await asyncio.gather(*[session.scalar(text(f"SELECT {n} FROM pg_sleep(0.01)")) for n in range(6)])
 
     assert results == list(range(6))
+
+
+async def test_a_patched_session_method_reaches_the_shared_session(session, monkeypatch):
+    """A test that makes the database refuse a commit patches AsyncSession; the shared
+    session's turn taking calls whatever AsyncSession holds at that moment."""
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    async def refused(self):
+        raise RuntimeError("the database refused the commit")
+
+    monkeypatch.setattr(AsyncSession, "commit", refused)
+    with pytest.raises(RuntimeError, match="refused the commit"):
+        await session.commit()

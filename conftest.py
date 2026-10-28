@@ -819,9 +819,12 @@ class _SharedSession(AsyncSession):
         self._turn_holder = None
 
 
-def _one_turn(method):
-    @functools.wraps(method)
+def _one_turn(name: str):
+    # AsyncSession's method is looked up at each call, so a test that patches it (a commit
+    # that fails) reaches the shared session too.
+    @functools.wraps(getattr(AsyncSession, name))
     async def call(self, *args, **kwargs):
+        method = getattr(AsyncSession, name)
         task = asyncio.current_task()
         if self._turn_holder is task:
             return await method(self, *args, **kwargs)
@@ -836,7 +839,7 @@ def _one_turn(method):
 
 for _name, _method in inspect.getmembers(AsyncSession, inspect.iscoroutinefunction):
     if not _name.startswith("_") and not isinstance(inspect.getattr_static(AsyncSession, _name), classmethod):
-        setattr(_SharedSession, _name, _one_turn(_method))
+        setattr(_SharedSession, _name, _one_turn(_name))
 
 
 @pytest_asyncio.fixture
