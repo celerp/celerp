@@ -31,8 +31,8 @@ PREVIEW = {
 }
 
 
-def _patches(preview=None, start=None, first_sync_at=None):
-    config = SimpleNamespace(entity_directions=dict(WOO), first_sync_at=first_sync_at)
+def _patches(preview=None, start=None, first_sync_state="pending"):
+    config = SimpleNamespace(entity_directions=dict(WOO), first_sync_state=first_sync_state)
     return [
         patch("ui.api_client.get_company", AsyncMock(return_value={
             "id": "00000000-0000-0000-0000-000000000002", "settings": {}, "current_role": "owner"})),
@@ -78,10 +78,7 @@ async def test_preview_shows_counts_tables_and_start():
 
 @pytest.mark.asyncio
 async def test_preview_after_first_sync_goes_to_the_connector():
-    from datetime import datetime, timezone
-
-    r = await _client_get("/settings/connectors/woocommerce/first-sync",
-                          first_sync_at=datetime.now(timezone.utc))
+    r = await _client_get("/settings/connectors/woocommerce/first-sync", first_sync_state="completed")
     assert r.status_code == 302 and r.headers["location"] == "/settings/connectors/woocommerce"
 
 
@@ -109,7 +106,7 @@ def test_summary_offers_every_way_back():
     from ui.routes.settings_connectors_first_sync import first_sync_summary_card
 
     html = to_xml(first_sync_summary_card("woocommerce", {
-        "first_sync_at": "2026-09-01T00:00:00+00:00", "batch": {"id": "b1", "rows": 3, "status": "active"},
+        "started_at": "2026-09-01T00:00:00+00:00", "batch": {"id": "b1", "rows": 3, "status": "active"},
         "links": 2, "links_undone_at": None,
         "invoices": [{"entity_id": "doc:woocommerce:order:10", "number": "INV-1", "total": 40.0, "status": "final"}],
     }, "en"))

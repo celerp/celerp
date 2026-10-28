@@ -9,7 +9,6 @@ with the request lock timeout every app connection carries.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
 from unittest.mock import AsyncMock
 
 import pytest
@@ -19,6 +18,7 @@ from celerp.connectors.base import ConnectorContext, SyncEntity, SyncResult
 from celerp.connectors.sync_runner import run_sync
 from celerp.models.connector_config import ConnectorConfig
 from celerp.models.connector_source import ConnectorSource
+from connector_test_support import record_first_sync
 from celerp.services.company_lock import lock_company
 from connector_test_support import add_item, seed_company
 
@@ -65,8 +65,10 @@ def get_session_ctx():
 async def _connect(cid, connector: str, store: str) -> ConnectorContext:
     async with get_session_ctx() as session:
         await session.execute(sa.delete(ConnectorConfig).where(ConnectorConfig.connector == connector))
-        session.add(ConnectorConfig(company_id=str(cid), connector=connector,
-                                    first_sync_at=datetime.now(timezone.utc)))
+        config = ConnectorConfig(company_id=str(cid), connector=connector)
+        session.add(config)
+        await session.flush()
+        await record_first_sync(session, config, "completed")
         await session.commit()
     return ConnectorContext(company_id=str(cid), access_token="k:s", store_handle=store)
 

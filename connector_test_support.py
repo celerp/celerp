@@ -55,8 +55,10 @@ async def item_state(session, company_id, entity_id: str) -> dict:
     return dict(row.state or {}) if row is not None else {}
 
 
-async def connect(session, company_id, connector: str, directions: dict | None = None, **fields):
-    """The company's connection to ``connector``, set to ``directions``."""
+async def connect(session, company_id, connector: str, directions: dict | None = None, *,
+                  first_sync: str = "pending", **fields):
+    """The company's connection to ``connector``, set to ``directions``, with its
+    first-sync record in state ``first_sync``."""
     from celerp.models.connector_config import ConnectorConfig
 
     config = ConnectorConfig(
@@ -65,7 +67,23 @@ async def connect(session, company_id, connector: str, directions: dict | None =
     )
     session.add(config)
     await session.flush()
+    await record_first_sync(session, config, first_sync)
     return config
+
+
+async def record_first_sync(session, config, state: str) -> None:
+    """Give ``config`` a first-sync record in ``state``; every resource of its
+    directions completed when the record is."""
+    from celerp import connectors
+    from celerp.connectors.execution import plan_resources
+    from celerp.models.connector_first_sync import ConnectorFirstSync
+
+    progress = ({r: {"state": "completed"} for r in plan_resources(
+        connectors.get(config.connector), config.entity_directions)} if state == "completed" else {})
+    session.add(ConnectorFirstSync(company_id=str(config.company_id), connector=config.connector,
+                                   state=state, progress=progress))
+    await session.flush()
+    await session.refresh(config, ["first_sync"])
 
 
 @pytest.fixture

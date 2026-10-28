@@ -67,7 +67,7 @@ def _owned_connector_boundary():
     ), patch(
         "celerp.connectors.ownership.lock_connector_operation",
         new=AsyncMock(return_value=SimpleNamespace(
-            webhook_ids=[], webhook_secret=None, first_sync_at=None,
+            webhook_ids=[], webhook_secret=None, first_sync_state="pending",
             entity_directions=dict(WOO_DEFAULTS))),
     ), patch(
         "celerp.connectors.ownership.release_connector_ownership",
@@ -88,12 +88,6 @@ def _owned_connector_boundary():
                 (2, 1, 6, "", ("93.184.216.34", 443))
             ])
         ),
-    ), patch(
-        "celerp.connectors.woocommerce.WooCommerceConnector.register_webhooks",
-        new=AsyncMock(return_value=["11"]),
-    ), patch(
-        "celerp.connectors.woocommerce.WooCommerceConnector.deregister_webhooks",
-        new=AsyncMock(),
     ):
         yield
 
@@ -218,77 +212,17 @@ async def test_store_unknown_connector_404():
 
 
 @pytest.mark.asyncio
-async def test_store_webhook_failure_rolls_back_the_connection():
-    url_p, hdr_p = _relay_state()
-    release = AsyncMock()
-    with patch(
-        "celerp.connectors.woocommerce.WooCommerceConnector.register_webhooks",
-        new=AsyncMock(side_effect=RuntimeError("webhook failed")),
-    ), patch(
-        "celerp.connectors.ownership.release_connector_ownership", release
-    ), url_p, hdr_p, respx.mock:
-        respx.get(f"{STORE}/wp-json/wc/v3/products").mock(
-            return_value=httpx.Response(200, json=[]))
-        respx.post(f"{RELAY}/tokens/woocommerce").mock(
-            return_value=httpx.Response(200, json={"stored": True}))
-        _revision()
-        delete = respx.delete(f"{RELAY}/tokens/woocommerce").mock(
-            return_value=httpx.Response(200))
-        result = await store_credentials(
-            "woocommerce", _creds(), "company-test", None, _session()
-        )
-
-    assert result["ok"] is False
-    assert delete.called
-    release.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_store_webhook_failure_removes_hooks_created_before_it():
-    """Hooks created before a failure, even ones whose ids never came back, are
-    removed by where they deliver before the connection is dropped."""
-    from celerp.connectors.woocommerce import WooCommerceConnector
-
-    url_p, hdr_p = _relay_state()
-    with patch(
-        "celerp.connectors.woocommerce.WooCommerceConnector.register_webhooks",
-        new=AsyncMock(side_effect=httpx.ReadTimeout("no response")),
-    ), url_p, hdr_p, respx.mock:
-        respx.get(f"{STORE}/wp-json/wc/v3/products").mock(
-            return_value=httpx.Response(200, json=[]))
-        respx.post(f"{RELAY}/tokens/woocommerce").mock(
-            return_value=httpx.Response(200, json={"stored": True}))
-        _revision()
-        delete = respx.delete(f"{RELAY}/tokens/woocommerce").mock(
-            return_value=httpx.Response(200))
-        result = await store_credentials(
-            "woocommerce", _creds(), "company-test", None, _session()
-        )
-        cleanup = WooCommerceConnector.deregister_webhooks
-
-    assert result["ok"] is False
-    assert delete.called
-    delivery_urls = {call.args[1] for call in cleanup.await_args_list}
-    assert delivery_urls == {f"{RELAY}/webhooks/woocommerce/events"}
-    # Once to clear hooks left by an earlier connection, once after the failure.
-    assert cleanup.await_count == 3
-
-
-@pytest.mark.asyncio
-async def test_store_webhook_failure_keeps_owner_when_revoke_is_ambiguous():
+async def test_store_failure_keeps_owner_when_revoke_is_ambiguous():
     url_p, hdr_p = _relay_state()
     release = AsyncMock()
     session = _session()
     with patch(
-        "celerp.connectors.woocommerce.WooCommerceConnector.register_webhooks",
-        new=AsyncMock(side_effect=RuntimeError("webhook failed")),
-    ), patch(
         "celerp.connectors.ownership.release_connector_ownership", release
     ), url_p, hdr_p, respx.mock:
         respx.get(f"{STORE}/wp-json/wc/v3/products").mock(
             return_value=httpx.Response(200, json=[]))
         respx.post(f"{RELAY}/tokens/woocommerce").mock(
-            return_value=httpx.Response(200, json={"stored": True}))
+            return_value=httpx.Response(402, json={"detail": "subscription required"}))
         _revision()
         respx.delete(f"{RELAY}/tokens/woocommerce").mock(
             side_effect=[httpx.Response(404), httpx.Response(500)])
@@ -636,41 +570,41 @@ def _store_ok():
 
 
 @pytest.mark.asyncio
-async def test_connect_registers_paused_webhooks_for_the_directions():
-    from celerp.connectors.woocommerce import WooCommerceConnector
-
-    register = AsyncMock(return_value=["11", "12"])
+async def test_connect_makes_no_store_write():
+    """Connecting only reads the store: its webhooks are created by the first sync,
+    signed with the secret saved now."""
+    config = SimpleNamespace(webhook_ids=["9"], webhook_secret=None, first_sync_state="pending",
+                             entity_directions=dict(WOO_DEFAULTS))
     url_p, hdr_p = _relay_state()
-    with patch("celerp.connectors.woocommerce.WooCommerceConnector.register_webhooks", register), \
-            url_p, hdr_p, respx.mock:
+    with patch("celerp.connectors.ownership.lock_connector_operation", new=AsyncMock(return_value=config)), \
+            url_p, hdr_p, respx.mock(assert_all_called=False) as mock:
         _store_ok()
         result = await store_credentials("woocommerce", _creds(), "company-test", None, _session())
 
     assert result == {"ok": True}
-    assert register.await_args.kwargs["status"] == "paused"
-    assert register.await_args.kwargs["topics"] == WooCommerceConnector().webhook_topics(WOO_DEFAULTS)
+    store_calls = [c.request for c in mock.calls if str(c.request.url).startswith(STORE)]
+    assert store_calls and {r.method for r in store_calls} == {"GET"}
+    assert config.webhook_secret and config.webhook_ids == []
 
 
 @pytest.mark.asyncio
-async def test_read_only_key_message():
-    refused = httpx.Response(401, json={"code": "woocommerce_rest_cannot_create",
-                                        "message": "Sorry, you are not allowed to create resources."},
-                             request=httpx.Request("POST", f"{STORE}/wp-json/wc/v3/webhooks"))
-    register = AsyncMock(side_effect=httpx.HTTPStatusError(
-        "HTTP 401 woocommerce_rest_cannot_create", request=refused.request, response=refused))
-    release = AsyncMock()
-    url_p, hdr_p = _relay_state()
-    with patch("celerp.connectors.woocommerce.WooCommerceConnector.register_webhooks", register), \
-            patch("celerp.connectors.ownership.release_connector_ownership", release), \
-            url_p, hdr_p, respx.mock:
-        _store_ok()
-        result = await store_credentials("woocommerce", _creds(), "company-test", None, _session())
+async def test_a_key_the_store_will_not_let_write_stops_the_first_sync_with_its_reason(connector_session):
+    from celerp.connectors.sync_runner import fail_first_sync
+    from celerp.models.connector_first_sync import ConnectorFirstSync
+    from connector_test_support import connect, seed_company
 
-    assert result["ok"] is False
-    assert result["error"] == "read_only_key"
-    assert result["detail"] == t("connectors.err_read_only_key")
-    assert "Read/Write" in result["detail"]
-    release.assert_awaited_once()
+    session = connector_session
+    cid = await seed_company(session, "ReadOnlyKey")
+    await connect(session, cid, "woocommerce", dict(WOO_DEFAULTS), first_sync="running")
+    refused = httpx.Response(401, json={"code": "woocommerce_rest_cannot_create"},
+                             request=httpx.Request("POST", f"{STORE}/wp-json/wc/v3/webhooks"))
+    await fail_first_sync(cid, "woocommerce", httpx.HTTPStatusError(
+        "HTTP 401", request=refused.request, response=refused))
+
+    row = await session.get(ConnectorFirstSync, (str(cid), "woocommerce"), populate_existing=True)
+    assert row.state == "failed"
+    assert row.error == {"reason": t("connectors.err_read_only_key")}
+    assert "Read/Write" in row.error["reason"]
 
 
 def _ui_connect_patches(start):
@@ -679,7 +613,7 @@ def _ui_connect_patches(start):
     catalog = [{"id": "woocommerce", "name": "WooCommerce", "category": "website",
                 "connected": True, "auth_type": "api_key", "entities": []}]
     config = SimpleNamespace(connector="woocommerce", entity_directions=dict(WOO_DEFAULTS),
-                             first_sync_at=None, sync_frequency="realtime", connect_lapsed_at=None)
+                             first_sync_state="pending", sync_frequency="realtime", connect_lapsed_at=None)
     return (
         patch("ui.api_client.get_company", AsyncMock(return_value={
             "id": "00000000-0000-0000-0000-000000000002", "settings": {}, "current_role": "owner"})),
@@ -758,11 +692,12 @@ def test_first_sync_requires_preview_inputs():
 
 @pytest.mark.asyncio
 async def test_first_sync_runs_once(connector_session):
-    """Starting the first sync saves its choices, activates the store's webhooks and runs
-    it; a second start is refused."""
+    """Starting the first sync saves its choices on the first-sync record, asks for the
+    store's webhooks to be set up and runs it; a second start is refused."""
     from datetime import date, datetime, timezone
 
     from celerp.connectors.base import ConnectorContext
+    from celerp.models.connector_first_sync import ConnectorFirstSync
     from celerp.models.import_batch import ImportBatch
     from celerp_connectors.routes import FirstSyncRequest, start_first_sync
     from connector_test_support import connect, seed_company
@@ -771,17 +706,17 @@ async def test_first_sync_runs_once(connector_session):
     cid = await seed_company(session, "FirstOnce")
     config = await connect(session, cid, "woocommerce", dict(WOO_DEFAULTS), webhook_secret="s1")
     ctx = ConnectorContext(company_id=str(cid), access_token="k:s", store_handle=STORE)
-    resync, spawned = AsyncMock(), []
+    spawned = []
+    user = SimpleNamespace(id="user-1")
     request = FirstSyncRequest(directions={**WOO_DEFAULTS, "products": "both"}, match="take",
                                orders_from=date(2026, 9, 1))
     with patch("celerp.connectors.ownership.lock_connector_operation", new=AsyncMock(return_value=config)), \
             patch("celerp.connectors.relay_token.fetch_context", new=AsyncMock(return_value=ctx)), \
-            patch("celerp_connectors.routes.resync_webhook_topics", resync), \
             patch("celerp.services.background.spawn_background", spawned.append):
-        out = await start_first_sync("woocommerce", request, str(cid), None, session)
+        out = await start_first_sync("woocommerce", request, str(cid), user, None, session)
         assert out == {"ok": True}
         with pytest.raises(HTTPException) as again:
-            await start_first_sync("woocommerce", request, str(cid), None, session)
+            await start_first_sync("woocommerce", request, str(cid), user, None, session)
 
     for coro in spawned:
         coro.close()
@@ -789,16 +724,18 @@ async def test_first_sync_runs_once(connector_session):
     assert again.value.status_code == 409 and again.value.detail == t("connectors.err_first_sync_done")
     assert config.entity_directions["products"] == "both"
     assert config.orders_from == datetime(2026, 9, 1, tzinfo=timezone.utc)
-    assert config.first_sync_at is not None
-    resync.assert_awaited_once()
-    batch = await session.get(ImportBatch, __import__("uuid").UUID(config.first_sync_undo["batch_id"]))
+    assert config.webhooks_dirty
+    row = await session.get(ConnectorFirstSync, (str(cid), "woocommerce"), populate_existing=True)
+    assert row.state == "starting" and row.match == "take" and row.started_by == "user-1"
+    assert row.directions["products"] == "both" and row.started_at is not None
+    batch = await session.get(ImportBatch, __import__("uuid").UUID(row.batch_id))
     assert batch.reversible and batch.entity_ids == []
-    assert config.first_sync_undo["match"] == "take"
 
 
 @pytest.mark.asyncio
 async def test_first_sync_without_products_in_records_no_batch(connector_session):
     from celerp.connectors.base import ConnectorContext
+    from celerp.models.connector_first_sync import ConnectorFirstSync
     from celerp_connectors.routes import FirstSyncRequest, start_first_sync
     from connector_test_support import connect, seed_company
 
@@ -811,9 +748,10 @@ async def test_first_sync_without_products_in_records_no_batch(connector_session
             patch("celerp.connectors.relay_token.fetch_context", new=AsyncMock(return_value=ctx)), \
             patch("celerp.services.background.spawn_background", spawned.append):
         await start_first_sync("woocommerce", FirstSyncRequest(directions=WOO_DEFAULTS, match="keep"),
-                               str(cid), None, session)
+                               str(cid), SimpleNamespace(id="user-1"), None, session)
     for coro in spawned:
         coro.close()
-    assert config.first_sync_undo["batch_id"] is None
+    row = await session.get(ConnectorFirstSync, (str(cid), "woocommerce"), populate_existing=True)
+    assert row.batch_id is None
     # Orders start at the first sync by default: past orders are normally in the books already.
-    assert abs((config.orders_from - config.first_sync_at).total_seconds()) < 1
+    assert abs((config.orders_from - row.started_at).total_seconds()) < 1

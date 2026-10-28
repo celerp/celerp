@@ -21,6 +21,7 @@ from sqlalchemy import create_engine, text
 from .conftest import run_migration_ops
 
 MODULE = "h2a3b4c5d6e7_connector_entity_directions"
+FIRST_SYNC_MODULE = "i3b4c5d6e7f8_connector_execution_lease"
 
 # What each connector ran before, per old direction: inbound pulls, then outbound pushes.
 OLD_PLANS = {
@@ -149,6 +150,8 @@ def test_restored_inbound_row_stays_inbound_only(cfg_db):
 
 
 def test_first_sync_counts_as_done_for_a_connection_that_already_synced(cfg_db):
+    """The first-sync record (i3b4) of a connection made before reviewed first syncs:
+    completed when it synced since its last reset or needs no review, else pending."""
     early = datetime(2026, 3, 1, tzinfo=timezone.utc)
     with cfg_db.begin() as conn:
         synced = _add_config(conn, "woocommerce", "both")
@@ -161,13 +164,23 @@ def test_first_sync_counts_as_done_for_a_connection_that_already_synced(cfg_db):
         _add_run(conn, reset, "quickbooks", "__connector_reset__", early + timedelta(days=1))
 
     run_migration_ops(cfg_db, MODULE)
+    run_migration_ops(cfg_db, FIRST_SYNC_MODULE)
 
     with cfg_db.connect() as conn:
-        first = dict(conn.execute(text(
-            "SELECT company_id, first_sync_at FROM connector_configs")).all())
-    assert first[synced] == early
-    assert first[never] is None
-    assert first[reset] is None
+        first = {row[0]: row[1:] for row in conn.execute(text(
+            "SELECT company_id, state, started_at FROM connector_first_syncs")).all()}
+    assert first[synced] == ("completed", early)
+    assert first[never] == ("pending", None)
+    assert first[reset] == ("completed", None)
+
+
+def test_the_first_sync_backfill_names_every_reviewed_connector():
+    import importlib
+
+    from celerp import connectors
+
+    mig = importlib.import_module(f"celerp.migrations.versions.{FIRST_SYNC_MODULE}")
+    assert set(mig._REVIEWED) == {c.name for c in connectors.all_connectors() if c.reviewed_first_sync}
 
 
 def test_downgrade_restores_a_single_direction(cfg_db):

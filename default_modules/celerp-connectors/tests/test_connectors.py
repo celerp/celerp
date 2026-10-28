@@ -331,7 +331,7 @@ async def test_woocommerce_delete_webhook_rechecks_current_direction():
         "celerp.connectors.ownership.lock_connector_operation",
         new=AsyncMock(return_value=SimpleNamespace(
             entity_directions={"products": "off", "orders": "inbound"},
-            first_sync_at=object())),
+            first_sync_state="completed")),
     ), patch(
         "celerp.connectors.relay_token.fetch_context",
         new=AsyncMock(),
@@ -438,8 +438,12 @@ async def test_sync_asks_for_an_update_when_the_relay_requires_one(client, sessi
     headers = {"Authorization": f"Bearer {await register_admin(client)}",
                "X-Session-Token": _FAKE_SESSION_TOKEN}
     company_id = (await client.get("/companies/me", headers=headers)).json()["id"]
-    session.add(ConnectorConfig(company_id=str(company_id), connector="xero",
-                                first_sync_at=datetime.now(timezone.utc)))
+    from connector_test_support import record_first_sync
+
+    config = ConnectorConfig(company_id=str(company_id), connector="xero")
+    session.add(config)
+    await session.flush()
+    await record_first_sync(session, config, "completed")
     await session.commit()
     with patch("celerp.connectors.relay_token.fetch_context", new=AsyncMock(
             side_effect=ConnectorUpgradeRequired("Update Celerp to continue syncing Xero."))):

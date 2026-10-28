@@ -47,13 +47,15 @@ def connect_session(monkeypatch):
 
 
 async def test_sync_plan_runs_the_shared_sync_runner(client, session, connect_session):
-    from datetime import datetime, timezone
-
     from celerp.models.connector_config import ConnectorConfig
 
     h, cid = await _register(client)
-    session.add(ConnectorConfig(company_id=cid, connector="woocommerce",
-                                first_sync_at=datetime.now(timezone.utc)))
+    from connector_test_support import record_first_sync
+
+    config = ConnectorConfig(company_id=cid, connector="woocommerce")
+    session.add(config)
+    await session.flush()
+    await record_first_sync(session, config, "completed")
     await session.commit()
     ctx = object()
     runner = AsyncMock()
@@ -97,9 +99,6 @@ async def test_store_credentials_claims_the_connector_and_keeps_its_webhook_secr
          patch("celerp.services.outbound_url.fetch_public_bytes",
                AsyncMock(return_value=SimpleNamespace(status_code=200))), \
          patch("celerp.connectors.remote_state.revoke_connector_remote_state", AsyncMock()), \
-         patch("celerp.connectors.woocommerce.WooCommerceConnector.register_webhooks",
-               AsyncMock(return_value=["11"])), \
-         patch("celerp.connectors.woocommerce.WooCommerceConnector.deregister_webhooks", AsyncMock()), \
          respx.mock(assert_all_called=False) as relay:
         stored = relay.post(f"{RELAY}/tokens/woocommerce").mock(
             return_value=httpx.Response(200, json={"stored": True}))
@@ -114,4 +113,5 @@ async def test_store_credentials_claims_the_connector_and_keeps_its_webhook_secr
     rows = (await session.execute(select(ConnectorConfig).where(
         ConnectorConfig.connector == "woocommerce"))).scalars().all()
     assert [str(row.company_id) for row in rows] == [cid]
-    assert rows[0].webhook_ids == ["11"] and rows[0].webhook_secret
+    assert rows[0].webhook_ids == [] and rows[0].webhook_secret
+    assert rows[0].first_sync_state == "pending"

@@ -2386,10 +2386,13 @@ async def test_first_sync_import_is_undoable(use_test_session, monkeypatch):
                         row_count=0, entity_ids=[], idempotency_keys=[], reversible=True)
     session.add(batch)
     await session.flush()
-    await connect(session, cid, "woocommerce",
-                  {"products": "inbound", "stock": "off", "orders": "off", "customers": "off"},
-                  first_sync_at=datetime.now(timezone.utc),
-                  first_sync_undo={"batch_id": str(batch.id), "match": "take", "links": []})
+    config = await connect(session, cid, "woocommerce",
+                           {"products": "inbound", "stock": "off", "orders": "off", "customers": "off"},
+                           first_sync="starting")
+    config.first_sync.directions = dict(config.entity_directions)
+    config.first_sync.batch_id, config.first_sync.match = str(batch.id), "take"
+    config.first_sync.undo = {"links": []}
+    await session.flush()
     ctx = ConnectorContext(company_id=str(cid), access_token="ck:cs", store_handle="https://store.example.com")
     monkeypatch.setattr("celerp.connectors.relay_token.fetch_context", AsyncMock(return_value=ctx))
 

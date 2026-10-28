@@ -105,9 +105,17 @@ async def _connector_context(company_id: str, connector_name: str, **kwargs):
         raise HTTPException(status_code=402, detail=str(exc)) from exc
 
 
+async def _first_sync_row(session: AsyncSession, company_id, connector_name: str, *, for_update: bool = False):
+    """The connection's first-sync record (ConnectorFirstSync), None without one."""
+    from celerp.models.connector_first_sync import ConnectorFirstSync
+
+    return await session.get(
+        ConnectorFirstSync, (str(company_id), connector_name), with_for_update=for_update, populate_existing=True)
+
+
 async def _ready_config(session: AsyncSession, company_id, connector):
     """The company's connection, refused while it is not connected or its first sync
-    has not been started: the first sync is always started from its preview."""
+    has not completed: the first sync is always started from its preview."""
     from celerp.models.connector_config import ConnectorConfig
     from sqlalchemy import select
 
@@ -119,7 +127,8 @@ async def _ready_config(session: AsyncSession, company_id, connector):
     )
     if config is None:
         raise HTTPException(status_code=409, detail=t("error.connector_not_connected", service=connector.display_name))
-    if config.first_sync_at is None:
+    row = await _first_sync_row(session, company_id, connector.name)
+    if row is None or row.state != "completed":
         raise HTTPException(status_code=409, detail=t("connectors.err_first_sync_needed", service=connector.display_name))
     return config
 
@@ -467,18 +476,9 @@ async def store_credentials(
         revoke_connector_remote_state,
     )
 
-    async def _failure(
-        error: str,
-        detail: str,
-        *,
-        webhook_ids: list[str] | None = None,
-    ) -> dict:
+    async def _failure(error: str, detail: str) -> dict:
         try:
-            await revoke_connector_remote_state(
-                company_id,
-                connector_name,
-                webhook_ids=webhook_ids,
-            )
+            await revoke_connector_remote_state(company_id, connector_name)
         except ConnectorRemoteCleanupError:
             await session.rollback()
             suffix = (
@@ -521,51 +521,18 @@ async def store_credentials(
             return await _failure("subscription_required", "")
         return await _failure("relay_error", str(exc))
 
-    webhook_ids: list[str] = []
     if connector_name == "woocommerce":
         import secrets
 
-        from celerp.connectors.woocommerce import webhook_delivery_url
-
-        secret = secrets.token_hex(32)
-        delivery_url = webhook_delivery_url()
-        try:
-            # Hooks left by an earlier connection carry an old secret. The new ones
-            # are created paused, which also proves the key can write, and deliver
-            # once the first sync starts.
-            await connector.deregister_webhooks(store_ctx, delivery_url, [])
-            webhook_ids = await connector.register_webhooks(
-                store_ctx, delivery_url, secret=secret,
-                topics=connector.webhook_topics(config.entity_directions), status="paused",
-            )
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code in (401, 403):
-                return await _failure(
-                    "read_only_key", t("connectors.err_read_only_key"), webhook_ids=webhook_ids,
-                )
-            return await _failure(
-                "store_unreachable",
-                f"Webhook setup failed: {exc}",
-                webhook_ids=webhook_ids,
-            )
-        except Exception as exc:
-            return await _failure(
-                "store_unreachable",
-                f"Webhook setup failed: {exc}",
-                webhook_ids=webhook_ids,
-            )
-
-        config.webhook_secret = secret
-        config.webhook_ids = webhook_ids
+        # Connecting writes nothing to the store: the first sync creates the webhooks,
+        # signed with this secret, and retires any an earlier connection left.
+        config.webhook_secret = secrets.token_hex(32)
+        config.webhook_ids = []
 
     try:
         await session.commit()
     except Exception as exc:
-        return await _failure(
-            "local_cleanup_failed",
-            str(exc),
-            webhook_ids=webhook_ids,
-        )
+        return await _failure("local_cleanup_failed", str(exc))
     return {"ok": True}
 
 
@@ -818,8 +785,10 @@ async def preview_first_sync(
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=t("connectors.unknown_connector", platform=connector_name)) from exc
     config = await _owned_config(session, company_id, connector)
-    if config.first_sync_at is not None:
+    row = await _first_sync_row(session, company_id, connector_name)
+    if row is None or row.state != "pending":
         raise HTTPException(status_code=409, detail=t("connectors.err_first_sync_done"))
+    await session.commit()
     ctx = await _connector_context(str(company_id), connector_name)
     if ctx is None:
         raise HTTPException(status_code=409, detail=t("error.connector_not_connected", service=connector.display_name))
@@ -854,19 +823,22 @@ async def first_sync_summary(
         connector = connectors.get(connector_name)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=t("connectors.unknown_connector", platform=connector_name)) from exc
-    config = await _owned_config(session, company_id, connector)
-    undo = dict(config.first_sync_undo or {})
+    await _owned_config(session, company_id, connector)
+    first_sync = await _first_sync_row(session, company_id, connector_name)
+    undo = dict((first_sync.undo if first_sync is not None else None) or {})
     batch = None
-    if undo.get("batch_id"):
-        row = await session.get(ImportBatch, uuid.UUID(undo["batch_id"]))
+    batch_ids: list[str] = []
+    if first_sync is not None and first_sync.batch_id:
+        row = await session.get(ImportBatch, uuid.UUID(first_sync.batch_id))
         if row is not None:
             batch = {"id": str(row.id), "rows": row.row_count, "status": row.status}
+            batch_ids = list(row.entity_ids or [])
     invoices = []
-    if config.first_sync_at is not None and connector.imported_doc_marker:
+    if batch_ids and connector.imported_doc_marker:
         rows = (await session.execute(sa.select(Projection).where(
             Projection.company_id == uuid.UUID(str(company_id)),
             Projection.entity_type == "doc",
-            Projection.created_at >= config.first_sync_at,
+            Projection.entity_id.in_(batch_ids),
             Projection.state[connector.imported_doc_marker].as_string().is_not(None),
         ).order_by(Projection.created_at.desc()))).scalars().all()
         invoices = [{"entity_id": r.entity_id,
@@ -874,7 +846,7 @@ async def first_sync_summary(
                      "total": (r.state or {}).get("total"), "status": (r.state or {}).get("status")}
                     for r in rows]
     return {
-        "first_sync_at": config.first_sync_at.isoformat() if config.first_sync_at else None,
+        "started_at": first_sync.started_at.isoformat() if first_sync is not None and first_sync.started_at else None,
         "batch": batch,
         "links": len(undo.get("links") or []),
         "links_undone_at": undo.get("links_undone_at"),
@@ -907,20 +879,23 @@ async def start_first_sync(
     connector_name: str,
     payload: FirstSyncRequest,
     company_id: Annotated[str, Depends(get_current_company_id)],
+    user=Depends(get_current_user),
     _: None = require_permission("manage_integrations"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Start a connection's first sync with the choices reviewed on its preview: the
-    directions, the earliest order date and how SKU matches link. It runs once; the
-    store's webhooks start delivering with it. When the store refuses to turn them on,
-    nothing starts and the store's reason is returned."""
+    directions, the earliest order date and how SKU matches link. It runs once, in the
+    background: it first sets up the store's webhooks, and when the store refuses, the
+    first sync needs attention with the store's reason."""
     import uuid
     from datetime import datetime, time, timezone
 
     from celerp import connectors
     from celerp.connectors.base import DirectionError, entity_allowed, validate_directions
     from celerp.connectors.ownership import ConnectorOwnershipError, lock_connector_operation
-    from celerp.connectors.sync_runner import run_first_sync
+    from celerp.connectors.execution import WEBHOOKS, connector_execution, plan_resources
+    from celerp.connectors.sync_runner import fail_first_sync, run_first_sync
+    from celerp.connectors.webhook_reconcile import mark_webhooks_dirty, reconcile_webhooks
     from celerp.models.import_batch import ImportBatch
     from celerp.services.background import spawn_background
 
@@ -934,7 +909,8 @@ async def start_first_sync(
     except ConnectorOwnershipError as exc:
         await session.rollback()
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    if config.first_sync_at is not None:
+    first_sync = await _first_sync_row(session, company_id, connector_name, for_update=True)
+    if first_sync is None or first_sync.state != "pending":
         await session.rollback()
         raise HTTPException(status_code=409, detail=t("connectors.err_first_sync_done"))
     try:
@@ -949,7 +925,6 @@ async def start_first_sync(
 
     now = datetime.now(timezone.utc)
     config.entity_directions = directions
-    config.first_sync_at = now
     config.orders_from = (datetime.combine(payload.orders_from, time(), tzinfo=timezone.utc)
                           if payload.orders_from is not None else now)
     batch_id = None
@@ -962,19 +937,29 @@ async def start_first_sync(
         session.add(batch)
         await session.flush()
         batch_id = str(batch.id)
-    config.first_sync_undo = {"batch_id": batch_id, "match": payload.match, "links": []}
+    first_sync.state = "starting"
+    first_sync.directions = directions
+    first_sync.match = payload.match
+    first_sync.watermark = now
+    first_sync.started_by = str(user.id)
+    first_sync.started_at = now
+    first_sync.batch_id = batch_id
+    first_sync.undo = {"links": []}
+    first_sync.error = None
     if config.webhook_secret:
-        try:
-            await resync_webhook_topics(connector, config, ctx)
-        except Exception as exc:
-            await session.rollback()
-            raise HTTPException(status_code=502, detail=t(
-                "connectors.err_webhook_resync", service=connector.display_name, detail=exc)) from exc
+        await mark_webhooks_dirty(session, config)
     await session.commit()
+    resources = [*plan_resources(connector, directions), WEBHOOKS]
 
     async def _run() -> None:
         try:
-            await run_first_sync(connector, ctx)
+            async with connector_execution(company_id, connector_name, "first_sync", resources) as ex:
+                try:
+                    await reconcile_webhooks(ex)
+                    await run_first_sync(connector, ex.ctx)
+                except Exception as exc:
+                    await fail_first_sync(company_id, connector_name, exc)
+                    raise
         except Exception:
             log.exception("first sync failed: %s", connector_name)
 
@@ -1004,7 +989,8 @@ async def undo_first_sync_links(
     except ConnectorOwnershipError as exc:
         await session.rollback()
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    undo = dict(config.first_sync_undo or {})
+    first_sync = await _first_sync_row(session, company_id, connector_name, for_update=True)
+    undo = dict((first_sync.undo if first_sync is not None else None) or {})
     if undo.get("links_undone_at") or not undo.get("links"):
         await session.rollback()
         raise HTTPException(status_code=409, detail=t("connectors.err_no_links_to_undo"))
@@ -1030,7 +1016,7 @@ async def undo_first_sync_links(
                 metadata_={},
             )
     from datetime import datetime, timezone
-    config.first_sync_undo = {**undo, "links_undone_at": datetime.now(timezone.utc).isoformat()}
+    first_sync.undo = {**undo, "links_undone_at": datetime.now(timezone.utc).isoformat()}
     await session.commit()
     return {"undone": undone}
 

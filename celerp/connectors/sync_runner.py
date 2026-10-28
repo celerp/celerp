@@ -110,54 +110,84 @@ async def run_connector_sync(
 
 
 async def run_first_sync(connector: ConnectorBase, ctx: ConnectorContext) -> list[SyncResult]:
-    """Run a connection's first sync, once a person started it from its preview, with the
-    choices saved then (ConnectorConfig.first_sync_undo). The items it creates join its
+    """Run a connection's first sync, inside its first-sync execution, with the choices a
+    person saved on its preview (ConnectorFirstSync). The items it creates join its
     import batch and the items it links are recorded, so both can be undone; an import
-    batch that ends up empty is removed."""
+    batch that ends up empty is removed. The record becomes ``completed`` only when every
+    resource synced, else ``failed`` with the reason."""
     import uuid
 
+    from celerp.connectors.execution import plan_resources
     from celerp.db import get_session_ctx
-    from celerp.models.connector_config import ConnectorConfig
+    from celerp.models.connector_first_sync import ConnectorFirstSync
     from celerp.models.import_batch import ImportBatch
     from celerp_inventory.services import ExternalImportRecord
-    import sqlalchemy as sa
 
+    key = (str(ctx.company_id), connector.name)
     async with get_session_ctx() as session:
-        config = await session.scalar(sa.select(ConnectorConfig).where(
-            ConnectorConfig.company_id == str(ctx.company_id),
-            ConnectorConfig.connector == connector.name,
-        ))
-        if config is None or config.first_sync_at is None:
+        row = await session.get(ConnectorFirstSync, key, with_for_update=True)
+        if row is None or row.state not in ("starting", "running"):
             raise ValueError(f"The first sync of {connector.display_name} has not been started")
-        choices = dict(config.first_sync_undo or {})
-        create = entity_allowed(connector, "products", config.entity_directions)
-    first_sync = FirstSync(match=choices.get("match", "keep"), create=create,
-                           batch_id=choices.get("batch_id"), record=ExternalImportRecord())
+        row.state = "running"
+        directions = dict(row.directions or {})
+        resources = plan_resources(connector, directions)
+        row.progress = {r: {"state": "running"} for r in resources}
+        match, batch_id = row.match or "keep", row.batch_id
+        await session.commit()
+    first_sync = FirstSync(match=match, create=entity_allowed(connector, "products", directions),
+                           batch_id=batch_id, record=ExternalImportRecord())
     results = await run_connector_sync(connector, ctx, first_sync=first_sync)
 
     record = first_sync.record
     async with get_session_ctx() as session:
-        config = await session.scalar(sa.select(ConnectorConfig).where(
-            ConnectorConfig.company_id == str(ctx.company_id),
-            ConnectorConfig.connector == connector.name,
-        ).with_for_update())
-        if config is not None:
-            undo = dict(config.first_sync_undo or {})
-            undo["links"] = [*undo.get("links", []), *record.linked]
-            config.first_sync_undo = undo
+        row = await session.get(ConnectorFirstSync, key, with_for_update=True)
+        undo = dict(row.undo or {})
+        undo["links"] = [*undo.get("links", []), *record.linked]
+        row.undo = undo
         if first_sync.batch_id is not None:
             batch = await session.get(ImportBatch, uuid.UUID(first_sync.batch_id), with_for_update=True)
             if batch is not None and not record.created and not batch.entity_ids:
                 await session.delete(batch)
-                if config is not None:
-                    config.first_sync_undo = {**config.first_sync_undo, "batch_id": None}
+                row.batch_id = None
             elif batch is not None:
                 batch.entity_ids = [*batch.entity_ids, *(eid for eid, _ in record.created)]
                 batch.idempotency_keys = [*batch.idempotency_keys, *(key for _, key in record.created),
                                           *record.files]
                 batch.row_count = len(batch.entity_ids)
+        failed = [r for r in results if not r.ok]
+        failed_resources = {_resource_of(r.entity) for r in failed}
+        synced = {_resource_of(r.entity) for r in results} - failed_resources
+        row.progress = {r: {"state": "completed" if r in synced else "failed"} for r in resources}
+        row.state = "completed" if synced == set(resources) else "failed"
+        row.error = None if row.state == "completed" else {
+            "reason": "; ".join(e for f in failed for e in (f.errors or [])[:1])}
         await session.commit()
     return results
+
+
+def _resource_of(entity) -> str:
+    from celerp.connectors.execution import execution_resource
+
+    return execution_resource("entity", getattr(entity, "value", entity))
+
+
+async def fail_first_sync(company_id, connector_name: str, exc: BaseException) -> None:
+    """Record that a connection's first sync stopped on ``exc``: it needs attention,
+    with the store's reason. A key the store will not let write is named as such."""
+    import httpx
+
+    from celerp.db import get_session_ctx
+    from celerp.i18n import t
+    from celerp.models.connector_first_sync import ConnectorFirstSync
+
+    status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
+    reason = t("connectors.err_read_only_key") if status in (401, 403) else str(exc)
+    async with get_session_ctx() as session:
+        row = await session.get(ConnectorFirstSync, (str(company_id), connector_name), with_for_update=True)
+        if row is not None and row.state in ("starting", "running"):
+            row.state = "failed"
+            row.error = {"reason": reason}
+        await session.commit()
 
 
 def _since_reset(company_id: str, connector: str):

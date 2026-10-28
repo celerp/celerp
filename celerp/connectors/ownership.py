@@ -287,7 +287,46 @@ async def claim_connector_ownership(
 
     if current is not None:
         await session.flush()
+        await _ensure_first_sync(session, company_id, legacy_id, connector, current)
     return (current, created) if report_created else current
+
+
+async def _ensure_first_sync(session: AsyncSession, company_id: str, legacy_id: str, connector: str, config) -> None:
+    """Give the connection its first-sync record: the legacy one when it was adopted,
+    else a new one, ``pending`` until a person reviews it for stores and ``completed``
+    for connectors that import without a review."""
+    from celerp.connectors.execution import plan_resources
+    from celerp.connectors.registry import get as get_connector
+    from celerp.models.connector_first_sync import ConnectorFirstSync
+
+    keys = {
+        str(row.company_id): row
+        for row in (await session.execute(
+            sa.select(ConnectorFirstSync)
+            .where(ConnectorFirstSync.connector == connector,
+                   ConnectorFirstSync.company_id.in_({company_id, legacy_id}))
+            .with_for_update()
+        )).scalars()
+    }
+    current, legacy = keys.get(company_id), keys.get(legacy_id)
+    if legacy is not None and legacy_id != company_id:
+        if current is None:
+            legacy.company_id = company_id
+            current = legacy
+        else:
+            await session.delete(legacy)
+    if current is None:
+        spec = get_connector(connector)
+        if spec.reviewed_first_sync:
+            current = ConnectorFirstSync(company_id=company_id, connector=connector, state="pending", progress={})
+        else:
+            current = ConnectorFirstSync(
+                company_id=company_id, connector=connector, state="completed",
+                progress={r: {"state": "completed"} for r in plan_resources(spec, config.entity_directions)},
+            )
+        session.add(current)
+    await session.flush()
+    await session.refresh(config, ["first_sync"])
 
 
 OWNERSHIP_OWNED = "owned"

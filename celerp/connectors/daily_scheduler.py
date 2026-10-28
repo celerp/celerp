@@ -18,6 +18,7 @@ import sqlalchemy as sa
 
 from celerp.connectors.base import SyncFrequency
 from celerp.models.connector_config import ConnectorConfig
+from celerp.models.connector_first_sync import ConnectorFirstSync
 
 log = logging.getLogger(__name__)
 
@@ -68,9 +69,12 @@ async def check_and_run_daily_syncs(
         # write). A connection whose first sync a person has not started yet, or that
         # is set to sync by hand, is left alone.
         rows = await session.execute(
-            sa.select(ConnectorConfig).where(
+            sa.select(ConnectorConfig).join(ConnectorFirstSync, sa.and_(
+                ConnectorFirstSync.company_id == ConnectorConfig.company_id,
+                ConnectorFirstSync.connector == ConnectorConfig.connector,
+            )).where(
                 ConnectorConfig.company_id == company_id,
-                ConnectorConfig.first_sync_at.is_not(None),
+                ConnectorFirstSync.state == "completed",
                 ConnectorConfig.sync_frequency != SyncFrequency.MANUAL.value,
             )
         )

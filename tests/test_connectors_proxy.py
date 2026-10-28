@@ -375,7 +375,7 @@ async def test_pending_oauth_claim_renders_finish_or_cancel():
     """A connection whose authorization never finished is shown as in progress
     with Finish and Cancel, never as connected and never as a bare Connect."""
     from types import SimpleNamespace
-    cfg = SimpleNamespace(sync_frequency="manual", connector="quickbooks", first_sync_at=None,
+    cfg = SimpleNamespace(sync_frequency="manual", connector="quickbooks", first_sync_state="pending",
                           entity_directions={"products": "inbound", "orders": "inbound", "customers": "inbound"})
     html = await _card_html([{**_OAUTH, "connected": False, "ownership": "owned", "local_claim": True}], config=cfg)
     assert "Connection in progress" in html

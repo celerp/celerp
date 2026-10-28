@@ -5,7 +5,6 @@ are not set to sync by hand, with each kind of record in its own direction."""
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -14,6 +13,8 @@ from celerp.connectors.base import ConnectorContext, SyncEntity, SyncResult
 from celerp.connectors.daily_scheduler import check_and_run_daily_syncs
 from celerp.db import get_session_ctx
 from celerp.models.connector_config import ConnectorConfig
+from celerp.models.connector_first_sync import ConnectorFirstSync
+from connector_test_support import record_first_sync
 
 pytestmark = pytest.mark.asyncio
 
@@ -41,11 +42,15 @@ async def _config(_db_engine):
 
     made: list[str] = []
 
-    async def add(connector: str, **fields) -> str:
+    async def add(connector: str, *, first_sync: str, **fields) -> str:
         company_id = str(uuid.uuid4())
         async with get_session_ctx() as session:
             await session.execute(sa.delete(ConnectorConfig).where(ConnectorConfig.connector == connector))
-            session.add(ConnectorConfig(company_id=company_id, connector=connector, **fields))
+            await session.execute(sa.delete(ConnectorFirstSync).where(ConnectorFirstSync.connector == connector))
+            config = ConnectorConfig(company_id=company_id, connector=connector, **fields)
+            session.add(config)
+            await session.flush()
+            await record_first_sync(session, config, first_sync)
             await session.commit()
         made.append(company_id)
         return company_id
@@ -53,11 +58,12 @@ async def _config(_db_engine):
     yield add
     async with get_session_ctx() as session:
         await session.execute(sa.delete(ConnectorConfig).where(ConnectorConfig.company_id.in_(made)))
+        await session.execute(sa.delete(ConnectorFirstSync).where(ConnectorFirstSync.company_id.in_(made)))
         await session.commit()
 
 
 async def test_no_reconcile_before_first_sync(_config, run):
-    company_id = await _config("woocommerce", entity_directions=_WOO, first_sync_at=None)
+    company_id = await _config("woocommerce", entity_directions=_WOO, first_sync="pending")
     synced = await check_and_run_daily_syncs(company_id, token_fetcher=AsyncMock(return_value=MagicMock()))
     assert synced == []
     run.assert_not_awaited()
@@ -65,7 +71,7 @@ async def test_no_reconcile_before_first_sync(_config, run):
 
 async def test_manual_frequency_not_reconciled(_config, run):
     company_id = await _config(
-        "quickbooks", sync_frequency="manual", first_sync_at=datetime.now(timezone.utc),
+        "quickbooks", sync_frequency="manual", first_sync="completed",
         entity_directions={"products": "inbound", "invoices": "both", "contacts": "inbound"},
     )
     synced = await check_and_run_daily_syncs(company_id, token_fetcher=AsyncMock(return_value=MagicMock()))
@@ -83,7 +89,7 @@ async def test_reconcile_uses_entity_directions(_config, monkeypatch):
 
     monkeypatch.setattr("celerp.connectors.sync_runner.run_sync", run_sync)
     company_id = await _config(
-        "woocommerce", entity_directions=_WOO, first_sync_at=datetime.now(timezone.utc),
+        "woocommerce", entity_directions=_WOO, first_sync="completed",
     )
     ctx = ConnectorContext(company_id=company_id, access_token="k:s", store_handle="https://shop.example.com")
     synced = await check_and_run_daily_syncs(company_id, token_fetcher=AsyncMock(return_value=ctx))

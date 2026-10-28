@@ -50,7 +50,7 @@ async def _first_sync_started(company_id: str, platform: str) -> bool:
     async with get_session_ctx() as session:
         config = await session.scalar(sa.select(ConnectorConfig).where(
             ConnectorConfig.company_id == str(company_id), ConnectorConfig.connector == platform))
-    return config is None or config.first_sync_at is not None
+    return config is None or config.first_sync_state not in (None, "pending")
 
 
 async def _own_push(company_id: str, payload: dict) -> bool:

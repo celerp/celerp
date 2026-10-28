@@ -195,7 +195,7 @@ def first_sync_summary_card(platform: str, summary: dict, lang: str, error: str 
     created with their opening stock; Undo links detaches the products it linked and
     brings back values it took from the store; each imported invoice is voided on its
     own, which keeps its audit trail (posted accounting is never deleted)."""
-    if not summary.get("first_sync_at"):
+    if not summary.get("started_at"):
         return Span()
     service = get_connector(platform).display_name
     batch = summary.get("batch")
@@ -204,7 +204,7 @@ def first_sync_summary_card(platform: str, summary: dict, lang: str, error: str 
     invoices = summary.get("invoices") or []
     return Div(
         P(t("connectors.first_sync_title", lang), cls="settings-section-title"),
-        P(t("connectors.first_sync_started", lang, when=_when(summary["first_sync_at"]))),
+        P(t("connectors.first_sync_started", lang, when=_when(summary["started_at"]))),
         P(t("connectors.first_sync_created", lang, n=batch["rows"]), " ",
           A(t("connectors.first_sync_import_history", lang), href="/settings/inventory?tab=import-history"))
         if batch else Span(),
@@ -268,7 +268,7 @@ def setup_first_sync_routes(app) -> None:
         lang = get_lang(request)
         company_id = sc._request_company_id(request)
         config = await sc._get_connector_config(company_id, platform)
-        if config is None or config.first_sync_at is not None:
+        if config is None or config.first_sync_state != "pending":
             return RedirectResponse(f"/settings/connectors/{platform}", status_code=302)
         show = request.query_params.get("show", "")
         orders_from = request.query_params.get("orders_from", "")

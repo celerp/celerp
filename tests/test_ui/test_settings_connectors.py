@@ -88,7 +88,7 @@ def _post(body: bytes):
 
 @pytest.mark.asyncio
 async def test_entity_direction_change_saves_that_record_only(monkeypatch):
-    config = SimpleNamespace(entity_directions=dict(_WOO), first_sync_at=None)
+    config = SimpleNamespace(entity_directions=dict(_WOO), first_sync_state="pending")
     endpoint = _route(monkeypatch, config)
     html = _html(await endpoint(_post(b"entity=products&direction=both"), "woocommerce"))
     assert config.entity_directions == {**_WOO, "products": "both"}
@@ -97,7 +97,7 @@ async def test_entity_direction_change_saves_that_record_only(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_invalid_entity_direction_message(monkeypatch):
-    config = SimpleNamespace(entity_directions=dict(_WOO), first_sync_at=None)
+    config = SimpleNamespace(entity_directions=dict(_WOO), first_sync_state="pending")
     endpoint = _route(monkeypatch, config)
     html = _html(await endpoint(_post(b"entity=stock&direction=inbound"), "woocommerce"))
     assert config.entity_directions == _WOO

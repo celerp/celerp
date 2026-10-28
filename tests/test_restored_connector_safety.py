@@ -338,9 +338,6 @@ class _Connect:
                    AsyncMock(return_value=SimpleNamespace(status_code=200))), \
              patch("celerp.connectors.ownership.bind_connector_store", self.bind), \
              patch("celerp.connectors.remote_state.revoke_connector_remote_state", self.revoke), \
-             patch("celerp.connectors.woocommerce.WooCommerceConnector.register_webhooks",
-                   AsyncMock(return_value=["11"])), \
-             patch("celerp.connectors.woocommerce.WooCommerceConnector.deregister_webhooks", AsyncMock()), \
              respx.mock:
             respx.post(f"{RELAY}/tokens/woocommerce").mock(return_value=httpx.Response(200, json={"stored": True}))
             async with maker(self.engine)() as s:

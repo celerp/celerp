@@ -28,30 +28,20 @@ def _sign(body: bytes, secret: str) -> str:
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_register_webhooks_sets_secret_and_returns_ids():
+async def test_create_webhook_sets_secret_and_delivery_url():
     ctx = ConnectorContext(company_id="co", access_token="k:s", store_handle="https://shop.test")
     route = respx.post("https://shop.test/wp-json/wc/v3/webhooks").mock(
-        return_value=httpx.Response(201, json={"id": 7}))
-    ids = await WooCommerceConnector().register_webhooks(
-        ctx, "https://pub.test/connectors/woocommerce/webhook", secret="topsecret",
-        topics=["order.created", "order.deleted"])
-    assert ids == ["7"] * len(route.calls)
+        return_value=httpx.Response(201, json={"id": 7, "topic": "order.created"}))
+    hook = await WooCommerceConnector().create_webhook(
+        ctx, "https://pub.test/connectors/woocommerce/webhook", "order.created", "topsecret")
+    assert hook["id"] == 7
     sent = __import__("json").loads(route.calls[0].request.content)
-    assert sent["secret"] == "topsecret"
+    assert sent["secret"] == "topsecret" and sent["status"] == "active"
     assert sent["delivery_url"] == "https://pub.test/connectors/woocommerce/webhook"
 
 
-@pytest.mark.asyncio
-@respx.mock
-async def test_register_webhooks_includes_order_deletion():
-    ctx = ConnectorContext(company_id="co", access_token="k:s", store_handle="https://shop.test")
-    route = respx.post("https://shop.test/wp-json/wc/v3/webhooks").mock(
-        return_value=httpx.Response(201, json={"id": 7}))
-    woo = WooCommerceConnector()
-    await woo.register_webhooks(
-        ctx, "https://pub.test/connectors/woocommerce/webhook", secret="topsecret",
-        topics=woo.webhook_topics({"orders": "inbound", "products": "off"}))
-    topics = [__import__("json").loads(call.request.content)["topic"] for call in route.calls]
+def test_webhook_topics_include_order_deletion():
+    topics = WooCommerceConnector().webhook_topics({"orders": "inbound", "products": "off"})
     assert "order.deleted" in topics
 
 
@@ -158,63 +148,6 @@ def test_topics_follow_directions():
     assert woo.webhook_topics({**_WOO, "orders": "off", "products": "off"}) == []
 
 
-@pytest.mark.asyncio
-@respx.mock
-async def test_direction_change_resyncs_topics(connector_session):
-    import json
-    from datetime import datetime, timezone
-
-    from celerp_connectors.routes import DirectionRequest, set_connector_direction
-
-    session = connector_session
-    cid = await seed_company(session, "TopicResync")
-    config = await connect(session, cid, "woocommerce", dict(_WOO), webhook_secret="s3",
-                           first_sync_at=datetime.now(timezone.utc))
-    config.webhook_ids = ["1", "2"]
-    await session.flush()
-    ctx = ConnectorContext(company_id=str(cid), access_token="k:s", store_handle="https://shop.test")
-    respx.get("https://shop.test/wp-json/wc/v3/webhooks").mock(return_value=httpx.Response(200, json=[]))
-    removed = respx.delete(url__regex=r"https://shop\.test/wp-json/wc/v3/webhooks/\d+").mock(
-        return_value=httpx.Response(200, json={}))
-    added = respx.post("https://shop.test/wp-json/wc/v3/webhooks").mock(
-        side_effect=[httpx.Response(201, json={"id": 10 + i}) for i in range(10)])
-
-    with patch("celerp.connectors.relay_token.fetch_context", new=AsyncMock(return_value=ctx)), \
-         patch("celerp.connectors.woocommerce.webhook_delivery_url", return_value="https://relay.test/wh"):
-        out = await set_connector_direction(
-            "woocommerce", DirectionRequest(entity="products", direction="both"), str(cid),
-            None, session)
-
-    assert out["entity_directions"]["products"] == "both"
-    assert sorted(str(c.request.url).rsplit("/", 1)[1].split("?")[0] for c in removed.calls) == ["1", "2"]
-    bodies = [json.loads(c.request.content) for c in added.calls]
-    assert {b["topic"] for b in bodies} == {"order.created", "order.updated", "order.deleted",
-                                            "product.created", "product.updated", "product.deleted"}
-    assert {b["status"] for b in bodies} == {"active"} and {b["secret"] for b in bodies} == {"s3"}
-    assert config.webhook_ids == [str(10 + i) for i in range(6)]
-
-
-@pytest.mark.asyncio
-async def test_webhooks_registered_paused():
-    """Before the first sync the store's webhooks are paused; once it starts they deliver."""
-    from datetime import datetime, timezone
-    from types import SimpleNamespace
-
-    from celerp_connectors.routes import resync_webhook_topics
-
-    woo = WooCommerceConnector()
-    woo_register = AsyncMock(return_value=["1"])
-    config = SimpleNamespace(webhook_ids=[], webhook_secret="s", entity_directions=_WOO, first_sync_at=None)
-    ctx = ConnectorContext(company_id="co", access_token="k:s", store_handle="https://shop.test")
-    with patch.object(WooCommerceConnector, "register_webhooks", woo_register), \
-            patch.object(WooCommerceConnector, "deregister_webhooks", AsyncMock()), \
-            patch("celerp.connectors.woocommerce.webhook_delivery_url", return_value="https://relay.test/wh"):
-        await resync_webhook_topics(woo, config, ctx)
-        config.first_sync_at = datetime.now(timezone.utc)
-        await resync_webhook_topics(woo, config, ctx)
-    assert [c.kwargs["status"] for c in woo_register.await_args_list] == ["paused", "active"]
-
-
 def _signed_delivery(secret: str, payload: dict) -> tuple[bytes, str]:
     import json
 
@@ -247,8 +180,7 @@ async def test_own_push_does_not_trigger_inbound_run(connector_session):
 
     session = connector_session
     cid = await seed_company(session, "OwnEcho")
-    await connect(session, cid, "woocommerce", {**_WOO, "products": "both"},
-                  first_sync_at=datetime.now(timezone.utc))
+    await connect(session, cid, "woocommerce", {**_WOO, "products": "both"}, first_sync="completed")
     await add_item(session, cid, "item:echo", "ECHO-1", external_links={"woocommerce": {
         "product_id": "7", "sync_enabled": True, "remote_deleted": False,
         "last_pushed_modified": "2026-09-01T10:00:00"}})

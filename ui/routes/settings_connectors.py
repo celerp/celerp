@@ -748,7 +748,7 @@ def _connector_detail_body(
     if deposit is not None:
         config_rows.append(_deposit_select_row(cid, deposit["current"], deposit["bank_accounts"], lang))
 
-    if config is not None and config.first_sync_at is None:
+    if config is not None and config.first_sync_state in (None, "pending"):
         sync_btn = _first_sync_link(cid, lang)
     return Div(
         _connect_lapsed_notice(cid, config, lang),
@@ -780,7 +780,7 @@ def _connect_lapsed_notice(cid: str, config, lang: str) -> FT:
 async def _first_sync_summary(token: str, platform: str, config, lang: str) -> FT:
     """What the connection's first sync did, once it started; the page still renders
     when it cannot be read, saying so."""
-    if config is None or config.first_sync_at is None:
+    if config is None or config.first_sync_state in (None, "pending"):
         return ""
     from ui.api_client import APIError, get_first_sync_summary
     from ui.routes.settings_connectors_first_sync import first_sync_summary_card
@@ -902,7 +902,7 @@ def _connector_card(
         )
     elif connected:
         action_area = Div(
-            _first_sync_link(cid, lang) if config is not None and config.first_sync_at is None
+            _first_sync_link(cid, lang) if config is not None and config.first_sync_state in (None, "pending")
             else A(
                 t("connectors.open", lang),
                 href=f"/settings/connectors/{cid}",
@@ -2124,7 +2124,7 @@ def setup_routes(app):
                 msg = t("connectors.no_subscription", lang)
             elif err in ("store_rejected", "store_unreachable"):
                 msg = t("connectors.connect_check_failed", lang, detail=detail.rstrip("."))
-            elif err in ("already_connected", "store_changed", "read_only_key") and detail:
+            elif err in ("already_connected", "store_changed") and detail:
                 msg = detail
             else:
                 msg = t("connectors.connect_failed", lang)
