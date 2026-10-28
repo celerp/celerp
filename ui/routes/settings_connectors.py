@@ -5,13 +5,14 @@
 from __future__ import annotations
 
 import logging
-import uuid
 import os
 import re
+import uuid
 from datetime import datetime, timezone
 from urllib.parse import quote
 
 from fasthtml.common import *
+from starlette.exceptions import HTTPException
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, RedirectResponse
 
@@ -19,7 +20,7 @@ from ui.components.attrs import hx_vals
 from ui.components.shell import secret_input
 from ui.components.activity import relative_time
 from ui.i18n import get_lang, refusal_text, t
-from ui.routes.settings import _check_permission, _token
+from ui.routes.settings import _check_permission, _token, authorize_in_process
 from ui.security import is_safe_authorize_url
 
 from celerp.accounting_roles import PERIOD_LOCK_PATH
@@ -315,6 +316,12 @@ def _open_attention_by_entity(entries: list[dict]) -> dict[str, int]:
         if not e.get("reconciled"):
             counts[e.get("entity", "")] = counts.get(e.get("entity", ""), 0) + 1
     return counts
+
+
+def _refusal(exc: Exception) -> str:
+    """What a refused connector change tells the user: the ownership reason, or the
+    API's reason when the caller's access changed before the write (403)."""
+    return str(getattr(exc, "detail", None) or exc)
 
 
 def _request_company_id(request: Request) -> str:
@@ -1611,14 +1618,15 @@ def setup_routes(app):
             frequency = "manual"
 
         async with get_session_ctx() as session:
+            authorize_in_process(session, request, "manage_integrations")
             try:
                 config = await lock_connector_operation(
                     session, company_id, platform, require_owner=True
                 )
-            except ConnectorOwnershipError as exc:
+                await lock_company(session, uuid.UUID(str(company_id)))
+            except (ConnectorOwnershipError, HTTPException) as exc:
                 await session.rollback()
-                return Span(str(exc), cls="flash flash--warning")
-            await lock_company(session, uuid.UUID(str(company_id)))
+                return Span(_refusal(exc), cls="flash flash--warning")
             config.sync_frequency = frequency
             await session.commit()
         if request.query_params.get("detail"):
@@ -1663,18 +1671,19 @@ def setup_routes(app):
             return Span(t("connectors.invalid_direction", lang), cls="flash flash--warning")
 
         async with get_session_ctx() as session:
+            authorize_in_process(session, request, "manage_integrations")
             try:
                 config = await lock_connector_operation(
                     session, company_id, platform, require_owner=True
                 )
-            except ConnectorOwnershipError as exc:
+                await lock_company(session, uuid.UUID(str(company_id)))
+            except (ConnectorOwnershipError, HTTPException) as exc:
                 await session.rollback()
                 # Nothing is swapped, so the buttons stay; the reason is a toast.
                 from starlette.responses import Response
                 from ui.components.shell import toast_header
-                return Response(headers={**toast_header(str(exc), "error", persist=True),
+                return Response(headers={**toast_header(_refusal(exc), "error", persist=True),
                                          "HX-Reswap": "none"})
-            await lock_company(session, uuid.UUID(str(company_id)))
             config.direction = direction
             await session.commit()
         if request.query_params.get("detail"):

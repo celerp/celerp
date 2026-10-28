@@ -267,6 +267,39 @@ async def test_outbound_enable_requires_owner_and_is_per_connector(restored, rea
     assert await _queued(real_engine, restored.cid) == 0
 
 
+@pytest.mark.parametrize("path,form,column,before", [
+    ("direction", {"direction": "both"}, "direction", "inbound"),
+    ("frequency", {"sync_frequency": "daily"}, "sync_frequency", "manual"),
+])
+async def test_a_connector_change_after_access_was_revoked_is_refused(
+        restored, real_engine, ui, monkeypatch, path, form, column, before):
+    """The UI checks the permission through the API, then writes in its own session: the
+    company lock judges the caller again, so access revoked in between stops the write."""
+    import ui.routes.settings_connectors as settings_connectors
+    assert await _claim(real_engine, restored.cid, "woocommerce") == "inbound"
+    await _sql(real_engine, f"UPDATE connector_configs SET {column} = :v WHERE company_id = :c",
+               v=before, c=restored.cid)
+    checked = settings_connectors._check_permission
+
+    async def check_then_revoke(request, key, **kw):
+        denied = await checked(request, key, **kw)
+        await _sql(real_engine, "UPDATE user_companies SET role = 'viewer' WHERE company_id = :c",
+                   c=restored.cid)
+        return denied
+
+    monkeypatch.setattr(settings_connectors, "_check_permission", check_then_revoke)
+    ui.cookies.set("celerp_token", restored.tok)
+    r = await ui.post(f"/settings/connectors/woocommerce/{path}", data=form)
+
+    assert r.status_code == 200, r.text
+    assert t("error.access_changed") in (r.text + r.headers.get("HX-Trigger", "")), (r.text, r.headers)
+    async with real_engine.connect() as conn:
+        stored = (await conn.execute(text(
+            f"SELECT {column} FROM connector_configs WHERE company_id = :c AND connector = 'woocommerce'"),
+            {"c": restored.cid})).scalar_one()
+    assert stored == before
+
+
 async def test_restore_notice_says_integrations_disconnected(real_engine, real_client, ui, tmp_path, monkeypatch):
     """The page after restoring a company says its integrations are disconnected, links to
     Web Access to connect them again, and outbound sync is off."""
