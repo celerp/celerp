@@ -24,7 +24,11 @@ from ui.routes.settings import (
 )
 from ui.routes.settings_general import _section_breadcrumb
 
-_SALES_DOC_TYPES = frozenset({"invoice", "proforma", "memo", "receipt", "credit_note"})
+# The list types are numbered here too. Transfers and audits may move to an Inventory settings
+# tab when the Lists menu is split by type (SAL-001). The old shared "list" (LST) counter is not
+# shown: no list draws from it any more.
+_SALES_DOC_TYPES = frozenset({"invoice", "proforma", "memo", "receipt", "credit_note",
+                              "quotation", "transfer", "audit", "writeoff", "shipping_doc"})
 
 
 def _sales_tabs(active: str, lang: str = "en") -> FT:

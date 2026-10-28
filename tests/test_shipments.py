@@ -99,12 +99,12 @@ def test_shipment_fields_are_declared_on_the_payload():
 # ── numbering ────────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_shipping_doc_numbered_ship_and_lists_stay_lst(client: AsyncClient):
+async def test_shipping_doc_numbered_ship_and_quotations_quo(client: AsyncClient):
     tok = await _token(client)
     ship = await _make_list(client, tok, "shipping_doc")
     quote = await _make_list(client, tok, "quotation")
     assert ship["id"].startswith("list:SHIP-")
-    assert quote["id"].startswith("list:LST-")
+    assert quote["id"].startswith("list:QUO-")
 
 
 @pytest.mark.asyncio

@@ -61,7 +61,7 @@ class TestListCRUD:
         assert r.status_code == 200
         body = r.json()
         assert "id" in body
-        assert body["id"].startswith("list:LST-")
+        assert body["id"].startswith("list:QUO-")
         assert "event_id" in body
 
     @pytest.mark.asyncio
@@ -613,6 +613,51 @@ class TestListSequence:
         n1 = int(ref1.split("-")[-1])
         n2 = int(ref2.split("-")[-1])
         assert n2 == n1 + 1
+
+
+class TestListPrefixes:
+    """Each list type is numbered from its own counter and prefix (SAL-007)."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("list_type,prefix", [
+        ("quotation", "QUO"), ("transfer", "TRF"), ("audit", "AUD"),
+        ("writeoff", "WO"), ("shipping_doc", "SHIP"),
+    ])
+    async def test_each_type_takes_its_own_prefix(self, client, list_type, prefix):
+        token = await _register(client)
+        eid = await _create_list(client, token, list_type=list_type)
+        assert eid.startswith(f"list:{prefix}-")
+
+    @pytest.mark.asyncio
+    async def test_counters_do_not_share_numbers(self, client):
+        token = await _register(client)
+        quote = await _create_list(client, token, list_type="quotation")
+        transfer = await _create_list(client, token, list_type="transfer")
+        quote2 = await _create_list(client, token, list_type="quotation")
+        assert quote.endswith("-0001") and transfer.endswith("-0001") and quote2.endswith("-0002")
+
+    @pytest.mark.asyncio
+    async def test_duplicate_keeps_the_types_prefix(self, client):
+        token = await _register(client)
+        eid = await _create_list(client, token, list_type="transfer")
+        r = await client.post(f"/lists/{eid}/duplicate", headers=_h(token))
+        assert r.status_code == 200, r.text
+        assert r.json()["id"].startswith("list:TRF-")
+
+    @pytest.mark.asyncio
+    async def test_a_types_prefix_setting_applies_and_the_old_list_setting_does_not(self, client):
+        token = await _register(client)
+        for doc_type, body in (("list", {"prefix": "OLD"}), ("audit", {"prefix": "CNT"})):
+            r = await client.patch(f"/docs/sequences/{doc_type}", headers=_h(token), json=body)
+            assert r.status_code == 200, r.text
+        assert (await _create_list(client, token, list_type="audit")).startswith("list:CNT-")
+        assert (await _create_list(client, token, list_type="quotation")).startswith("list:QUO-")
+
+    @pytest.mark.asyncio
+    async def test_the_old_list_counter_is_still_in_the_api(self, client):
+        token = await _register(client)
+        rows = (await client.get("/docs/sequences", headers=_h(token))).json()
+        assert {"list", "quotation", "transfer", "audit", "writeoff", "shipping_doc"} <= {r["doc_type"] for r in rows}
 
 
 # ---------------------------------------------------------------------------
