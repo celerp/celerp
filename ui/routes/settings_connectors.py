@@ -900,7 +900,7 @@ def _connector_card(
                     cls="btn btn--sm btn--primary",
                     style="margin-left:8px;white-space:nowrap;",
                 ),
-                hx_get=f"/settings/connectors/{cid}/oauth-redirect",
+                hx_post=f"/settings/connectors/{cid}/oauth-redirect",
                 hx_target=f"#connector-card-{cid}",
                 hx_swap="outerHTML",
                 style="display:flex;align-items:center;gap:4px;",
@@ -909,7 +909,7 @@ def _connector_card(
             connect = Button(
                 connect_label,
                 cls="btn btn--sm btn--primary",
-                hx_get=f"/settings/connectors/{cid}/oauth-redirect",
+                hx_post=f"/settings/connectors/{cid}/oauth-redirect",
                 hx_target=f"#connector-card-{cid}",
                 hx_swap="outerHTML",
             )
@@ -1546,7 +1546,7 @@ def setup_routes(app):
         from ui import api_client as api
         return await _grant_action(request, grant_id, api.revoke_accountant_peer_grant)
 
-    @app.get("/settings/connectors/{platform}/oauth-redirect")
+    @app.post("/settings/connectors/{platform}/oauth-redirect")
     async def connector_oauth_redirect(request: Request, platform: str, shop: str = ""):
         """HTMX: get OAuth authorize URL and return JS to open it in a new tab."""
         token = _token(request)

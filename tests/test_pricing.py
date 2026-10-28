@@ -249,6 +249,30 @@ async def test_base_price_list_defaults_to_retail(client):
 
 
 @pytest.mark.asyncio
+async def test_reading_the_price_lists_shows_the_defaults_and_saves_nothing(client, session):
+    """A read is a read: a company that never saved price lists sees the defaults, its
+    settings stay untouched, and a default can still be made the base."""
+    from sqlalchemy import update
+
+    from celerp.models.company import Company
+    from celerp.services.auth import decode_access_token
+    token = await _register(client)
+    h = _auth(token)
+    company = await session.get(Company, uuid.UUID(decode_access_token(token)["company_id"]))
+    await session.execute(update(Company).where(Company.id == company.id).values(
+        settings={k: v for k, v in company.settings.items() if k != "price_lists"}))
+    await session.commit()
+    r = await client.get("/companies/me/price-lists", headers=h)
+    assert r.status_code == 200
+    assert [pl["name"] for pl in r.json()] == ["Retail", "Wholesale"]
+    await session.refresh(company)
+    assert "price_lists" not in company.settings
+    r = await client.patch("/companies/me/base-price-list", json={"name": "Wholesale"}, headers=h)
+    assert r.status_code == 200
+    assert (await client.get("/companies/me/base-price-list", headers=h)).json() == "Wholesale"
+
+
+@pytest.mark.asyncio
 async def test_patch_base_price_list_roundtrips(client):
     h = _auth(await _register(client))
     assert (await _set_config(client, h)).status_code == 200

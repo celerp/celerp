@@ -2660,6 +2660,12 @@ DEFAULT_PRICE_LISTS: list[dict] = [
 ]
 
 
+def _stored_price_lists(settings: dict) -> list[dict]:
+    """The company's price lists; the defaults until it saves its own."""
+    existing = settings.get("price_lists")
+    return copy.deepcopy(DEFAULT_PRICE_LISTS) if existing is None else existing
+
+
 class PriceListsPatch(BaseModel):
     price_lists: list[dict]
     # Set together with price_lists so renaming the base list stays consistent in one write.
@@ -2679,23 +2685,7 @@ async def get_price_lists(
     company = await session.get(Company, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
-    existing = company.settings.get("price_lists")
-    if existing is None:
-        company = await locked_company(session, company_id)
-        existing = company.settings.get("price_lists")
-    if existing is not None:
-        price_lists = existing
-    else:
-        # Lazy seed defaults on first access
-        import copy
-        seeded = copy.deepcopy(DEFAULT_PRICE_LISTS)
-        settings = dict(company.settings)
-        settings["price_lists"] = seeded
-        if "default_price_list" not in settings:
-            settings["default_price_list"] = DEFAULT_PRICE_LIST_NAME
-        company.settings = settings
-        await session.commit()
-        price_lists = seeded
+    price_lists = _stored_price_lists(company.settings)
     if not role_has_permission(company.settings, role, "view_inventory_costs"):
         # Without view_inventory_costs: no cost lists, and names/descriptions only. A
         # derived list's factor stays gated because price ÷ factor would reveal a
@@ -2721,7 +2711,7 @@ async def patch_price_lists(
     settings = dict(company.settings)
     error = price_config_error(payload.price_lists,
                                payload.base_price_list or settings.get("base_price_list"),
-                               settings.get("price_lists") or [])
+                               _stored_price_lists(settings))
     if error:
         raise HTTPException(status_code=422, detail=error)
     settings["price_lists"] = normalized_price_lists(payload.price_lists)
@@ -2754,7 +2744,7 @@ async def patch_base_price_list(
     if company is None:
         raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
     settings = dict(company.settings)
-    price_lists = settings.get("price_lists") or []
+    price_lists = _stored_price_lists(settings)
     target = next((pl for pl in price_lists if pl.get("name") == payload.name), None)
     if target is None:
         raise HTTPException(status_code=422, detail=t("company.err_price_list_missing", name=payload.name))

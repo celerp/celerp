@@ -425,6 +425,26 @@ async def test_a_judgment_without_the_lock_protects_only_the_named_write(session
     assert _kinds() == ["unprotected"]
 
 
+@pytest.mark.parametrize("columns, by", [("every", "named"), ("one", "named"), ("every", "another")])
+async def test_a_read_request_may_make_only_the_note_it_is_allowed(session, auth, monkeypatch, columns, by):
+    """A note READ_ROUTE_WRITES allows a read request is its columns only, written by its
+    functions only: a further column, or the same write from elsewhere, is reported."""
+    allowed = tuple(c.name for c in MigrationRun.__table__.columns) if columns == "every" else ("cancel_requested_at",)
+    monkeypatch.setitem(mutation_observer.READ_ROUTE_WRITES, ("migration_runs", "UPDATE"), mutation_observer.ReadNote(
+        allowed, ("celerp/services/migrations.py request_cancel",), "a note made while reading"))
+    run_id = await _migration_run(session, auth, "running")
+    with serving("GET", "/observed"):
+        _authorize(session, auth)
+        if by == "named":
+            await request_cancel(session, await session.get(MigrationRun, run_id))
+        else:
+            await judge_without_company_lock(session, auth["company_id"])
+            await session.execute(update(MigrationRun).where(MigrationRun.id == run_id).values(status="cancelled"))
+            await session.commit()
+    expected = ["read-route-write"] if (columns, by) != ("every", "named") else []
+    assert [k for k in _kinds() if k != "unprotected"] == expected
+
+
 async def test_a_judgment_without_the_lock_that_refuses_writes_nothing(session, auth):
     run_id = await _migration_run(session, auth)
     with serving("POST", "/observed"):

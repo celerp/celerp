@@ -636,7 +636,7 @@ async def test_connecting_a_store_without_inventory_shows_the_refusal():
              "id": "00000000-0000-0000-0000-000000000002", "settings": {}, "current_role": "owner"})):
         async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as ui:
             ui.cookies.update({"celerp_token": make_test_token(role="owner")})
-            r = await ui.get("/settings/connectors/woocommerce/oauth-redirect")
+            r = await ui.post("/settings/connectors/woocommerce/oauth-redirect")
     assert r.status_code == 200
     assert _OFF.format("Inventory") in r.text and "API 403" not in r.text
 
@@ -964,3 +964,26 @@ def test_every_connector_method_reaching_a_module_refuses_without_it():
                 if needs - _guarded(fn, {}):
                     missing[f"{path.name}:{cls.name}.{fn.name}"] = sorted(needs - _guarded(fn, {}))
     assert not missing, missing
+
+
+@pytest.mark.asyncio
+async def test_the_connect_button_posts_the_shop_it_authorizes():
+    """Connecting claims the connector, so the button posts: the shop typed
+    into its form reaches the claim, and a GET of the same path is refused."""
+    from unittest.mock import AsyncMock, patch
+
+    from httpx import ASGITransport, AsyncClient
+    from test_helpers import make_test_token
+    from ui.app import app as ui_app
+    authorize = AsyncMock(return_value={"authorize_url": "https://shop.example/oauth"})
+    with patch("ui.api_client.get_connector_authorize_url", authorize), \
+         patch("ui.api_client.get_company", AsyncMock(return_value={
+             "id": "00000000-0000-0000-0000-000000000002", "settings": {}, "current_role": "owner"})):
+        async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as ui:
+            ui.cookies.update({"celerp_token": make_test_token(role="owner")})
+            r = await ui.post("/settings/connectors/shopify/oauth-redirect",
+                              data={"shop": "my-store.myshopify.com"})
+            read = await ui.get("/settings/connectors/shopify/oauth-redirect")
+    assert r.status_code == 200 and "https://shop.example/oauth" in r.text
+    assert authorize.await_args.kwargs["shop"] == "my-store.myshopify.com"
+    assert read.status_code in (404, 405)

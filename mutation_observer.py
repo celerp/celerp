@@ -167,6 +167,28 @@ UNDER_ROW_LOCK: dict[tuple[str, str], RowLocked] = {
 # however it is locked, as a link, a prefetch or a page load can send it.
 READ_METHODS = ("GET", "HEAD")
 
+
+# The writes a read request may make, by table and statement type: a note that the read
+# happened, which a peer's protocol sends as a read. Each names the only columns it may
+# set and the only functions that may make it; any other write of a read request is a
+# finding.
+@dataclass(frozen=True)
+class ReadNote:
+    columns: tuple[str, ...]  # the only columns the UPDATE may set
+    sites: tuple[str, ...]  # "<file> <function>" that make the write
+    reason: str
+
+
+READ_ROUTE_WRITES: dict[tuple[str, str], ReadNote] = {
+    ("company_peer_grants", "UPDATE"): ReadNote(
+        ("last_used_at",), ("celerp/services/peer_journals.py journal_feed",),
+        "a connected company's key stamped with its last sync when that company reads the journal feed, "
+        "a GET in the peer protocol between installs"),
+    ("session_registry", "UPDATE"): ReadNote(
+        ("expiry",), ("celerp/credentials.py issue_token_pair",),
+        "a session's expiry slid forward when the middleware refreshes the token of any request, a read too"),
+}
+
 _ROOT = os.path.dirname(os.path.abspath(__file__))
 _REQUEST: ContextVar[dict | None] = ContextVar("mutation_observer_request", default=None)
 _SESSIONS: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
@@ -185,6 +207,7 @@ class Op:
     detail: str = ""
     name: object = None  # an advisory lock's key or name
     fingerprint: str = ""
+    columns: tuple[str, ...] = ()  # the columns an UPDATE sets
 
 
 @dataclass
@@ -202,6 +225,7 @@ class Finding:
     company_from: str = "statement"  # statement, or request when the SQL names no company
     fingerprint: str = ""  # the statement's shape, without its values (pglast)
     sites: list[str] = field(default_factory=list)  # every app frame of a write, for site coverage
+    read_write: bool = False  # a write READ_ROUTE_WRITES lets a read request make
 
 
 @dataclass
@@ -397,6 +421,7 @@ class _Parts(Visitor):
         super().__init__()
         self.functions: set[str] = set()
         self.writes: list[tuple[str, str]] = []
+        self.columns: list[str] = []
         self.locks: list[tuple[str, str]] = []
 
     def visit_FuncCall(self, ancestors, node) -> None:
@@ -410,6 +435,7 @@ class _Parts(Visitor):
 
     def visit_UpdateStmt(self, ancestors, node) -> None:
         self._write(node, "UPDATE")
+        self.columns += [target.name for target in node.targetList]
 
     def visit_DeleteStmt(self, ancestors, node) -> None:
         self._write(node, "DELETE")
@@ -499,7 +525,7 @@ def _parse(statement: str) -> Op:
         return op("unknown", detail=f"writes {', '.join(tables)} in one statement")
     if tables:
         verb = parts.writes[0][1] if kind != "Select" else f"{parts.writes[0][1]} in WITH"
-        return op("write", tables[0], detail=verb)
+        return op("write", tables[0], detail=verb, columns=tuple(sorted(set(parts.columns))))
     if parts.functions & _ADVISORY:
         return op("lock", detail=min(parts.functions & _ADVISORY))
     if parts.locks:
@@ -603,6 +629,14 @@ def _under_row_lock(request: dict, session, op: Op) -> bool:
                                for tables, mode in (held.split(" ", 1) for held in _here(request, session, _ROW))):
         return False
     return _made_by(rule.sites)
+
+
+def _read_note(request: dict, op: Op) -> bool:
+    """The write is one READ_ROUTE_WRITES lets a read request make: its columns only,
+    made by one of its functions."""
+    rule = READ_ROUTE_WRITES.get((op.table, op.detail))
+    return rule is not None and _reads(request) and bool(op.columns) \
+        and set(op.columns) <= set(rule.columns) and _made_by(rule.sites)
 
 
 def _made_by(sites: tuple[str, ...]) -> bool:
@@ -830,7 +864,7 @@ def _executed(conn, cursor, statement, parameters, context, executemany) -> None
             kind or "protected", route, target, op.table, statement[:300], op.detail,
             earlier_locks=before, transaction=f"{id(root):x}",
             where=_where() if kind or _reads(request) else [], test=CENSUS.test, company_from=source,
-            sites=frames, fingerprint=op.fingerprint))
+            sites=frames, fingerprint=op.fingerprint, read_write=_read_note(request, op)))
 
 
 @event.listens_for(Session, "after_commit")
@@ -844,7 +878,7 @@ def _committed(session) -> None:
             CENSUS.sites[site] = CENSUS.sites.get(site, 0) + 1
         if finding.kind != "protected":
             CENSUS.findings.append(finding)
-        if finding.route.split(" ")[-2] in READ_METHODS:
+        if finding.route.split(" ")[-2] in READ_METHODS and not finding.read_write:
             CENSUS.findings.append(replace(finding, kind="read-route-write"))
 
 

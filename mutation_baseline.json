@@ -55,6 +55,24 @@
  },
  {
   "route": "api GET /api/labels/sources/{source}",
+  "kind": "read-route-write",
+  "table": "label_templates",
+  "fingerprint": "66666111f73d39ef",
+  "where": [
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "default_modules/celerp-labels/celerp_labels/routes.py get_source",
+   "default_modules/celerp-labels/celerp_labels/routes.py _source_templates"
+  ],
+  "test": "default_modules/celerp-fixed-assets/tests/test_files_tags.py::test_u49_the_first_print_tag_prints_on_the_shipped_asset_tag",
+  "issue": "https://github.com/celerp/celerp/issues/405",
+  "owner": "celerp-labels",
+  "remove_when": "the presets are seeded by a locked writer, never by a read route"
+ },
+ {
+  "route": "api GET /api/labels/sources/{source}",
   "kind": "unprotected",
   "table": "label_templates",
   "fingerprint": "66666111f73d39ef",
@@ -70,6 +88,24 @@
   "issue": "https://github.com/celerp/celerp/issues/405",
   "owner": "celerp-labels",
   "remove_when": "the write takes the company lock (lock_company) at its owning service"
+ },
+ {
+  "route": "api GET /api/labels/sources/{source}",
+  "kind": "read-route-write",
+  "table": "label_templates",
+  "fingerprint": "66666111f73d39ef",
+  "where": [
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "default_modules/celerp-labels/celerp_labels/routes.py get_source",
+   "default_modules/celerp-labels/celerp_labels/routes.py _source_templates",
+   "default_modules/celerp-labels/celerp_labels/routes.py _seed_presets"
+  ],
+  "test": "default_modules/celerp-fixed-assets/tests/test_files_tags.py::test_u49_the_first_print_tag_prints_on_the_shipped_asset_tag",
+  "issue": "https://github.com/celerp/celerp/issues/405",
+  "owner": "celerp-labels",
+  "remove_when": "the presets are seeded by a locked writer, never by a read route"
  },
  {
   "route": "api GET /api/labels/templates",
@@ -88,6 +124,24 @@
   "issue": "https://github.com/celerp/celerp/issues/405",
   "owner": "celerp-labels",
   "remove_when": "the write takes the company lock (lock_company) at its owning service"
+ },
+ {
+  "route": "api GET /api/labels/templates",
+  "kind": "read-route-write",
+  "table": "label_templates",
+  "fingerprint": "66666111f73d39ef",
+  "where": [
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "default_modules/celerp-labels/celerp_labels/routes.py list_templates",
+   "default_modules/celerp-labels/celerp_labels/routes.py _seed_presets"
+  ],
+  "test": "default_modules/celerp-labels/tests/test_labels.py::test_default_templates_seeded_on_first_read",
+  "issue": "https://github.com/celerp/celerp/issues/405",
+  "owner": "celerp-labels",
+  "remove_when": "the presets are seeded by a locked writer, never by a read route"
  },
  {
   "route": "api PATCH /ai/conversations/{conversation_id}",

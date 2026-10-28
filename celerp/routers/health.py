@@ -1243,7 +1243,7 @@ async def _relay_reports_connected(api_key: str, platform: str) -> bool | None:
     return False
 
 
-@settings_router.get("/connectors/{platform}/authorize-url", dependencies=[require_permission("manage_integrations")])
+@settings_router.post("/connectors/{platform}/authorize-url", dependencies=[require_permission("manage_integrations")])
 @needs_modules_for("platform", PRODUCT_CHANNEL_MODULES)
 async def connector_authorize_url(
     platform: str,
