@@ -6556,6 +6556,7 @@
   "ai.err_outcome_unknown": "Celerp AI's answer to this question was lost and can't be recovered. You can ask it as a new question, which counts as one more question.",
   "ai.err_question_expired": "This question can no longer be continued. You can ask it as a new question, which counts as one more question.",
   "ai.err_question_in_progress": "Celerp AI is still answering this question. Wait a moment, then ask again.",
+  "ai.err_conversation_busy": "Celerp AI is still working in this conversation. Wait for it to finish, then delete the conversation.",
   "ai.err_operation_conflict": "This question was already sent and cannot be sent again. Press Send to ask it as a new question; it counts as one more question.",
   "ai.err_operation_mismatch": "This question can't be sent again because its context has changed since it was first sent. You can ask it as a new question, which counts as one more question.",
   "ai.ask_again": "Ask again",

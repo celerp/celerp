@@ -6552,6 +6552,7 @@
   "ai.err_outcome_unknown": "La réponse de Celerp AI à cette question a été perdue et ne peut pas être récupérée. Vous pouvez la poser comme une nouvelle question, qui comptera comme une question supplémentaire.",
   "ai.err_question_expired": "Cette question ne peut plus être reprise. Vous pouvez la poser comme une nouvelle question, qui comptera comme une question supplémentaire.",
   "ai.err_question_in_progress": "Celerp AI répond encore à cette question. Patientez un instant, puis reposez-la.",
+  "ai.err_conversation_busy": "Celerp AI travaille encore dans cette conversation. Attendez qu'il ait terminé, puis supprimez la conversation.",
   "ai.err_operation_conflict": "Cette question a déjà été envoyée et ne peut pas être renvoyée. Cliquez sur « Envoyer » pour la poser comme une nouvelle question ; elle comptera comme une question supplémentaire.",
   "ai.err_operation_mismatch": "Cette question ne peut pas être renvoyée, car son contexte a changé depuis son premier envoi. Vous pouvez la poser comme une nouvelle question, qui comptera comme une question supplémentaire.",
   "ai.ask_again": "Poser de nouveau la question",

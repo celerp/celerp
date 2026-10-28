@@ -6552,6 +6552,7 @@
   "ai.err_outcome_unknown": "Câu trả lời của Celerp AI cho câu hỏi này đã bị mất và không thể khôi phục. Bạn có thể hỏi lại như một câu hỏi mới và sẽ bị tính thêm một lượt hỏi.",
   "ai.err_question_expired": "Không thể tiếp tục câu hỏi này nữa. Bạn có thể gửi lại dưới dạng câu hỏi mới và sẽ bị tính thêm một lượt hỏi.",
   "ai.err_question_in_progress": "Celerp AI vẫn đang trả lời câu hỏi này. Hãy đợi một lát rồi hỏi lại.",
+  "ai.err_conversation_busy": "Celerp AI vẫn đang làm việc trong cuộc trò chuyện này. Hãy đợi đến khi xong rồi xóa cuộc trò chuyện.",
   "ai.err_operation_conflict": "Câu hỏi này đã được gửi và không thể gửi lại. Nhấn \"Gửi\" để hỏi như một câu hỏi mới; câu hỏi đó sẽ được tính thêm một lượt.",
   "ai.err_operation_mismatch": "Không thể gửi lại câu hỏi này vì ngữ cảnh đã thay đổi kể từ lần gửi đầu tiên. Bạn có thể hỏi lại như một câu hỏi mới và sẽ bị tính thêm một lượt hỏi.",
   "ai.ask_again": "Hỏi lại",

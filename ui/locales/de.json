@@ -6552,6 +6552,7 @@
   "ai.err_outcome_unknown": "Die Antwort von Celerp AI auf diese Frage ist verloren gegangen und kann nicht wiederhergestellt werden. Sie können sie als neue Frage stellen; das zählt als eine weitere Frage.",
   "ai.err_question_expired": "Diese Frage kann nicht mehr fortgesetzt werden. Sie können sie als neue Frage stellen; das zählt als eine weitere Frage.",
   "ai.err_question_in_progress": "Celerp AI beantwortet diese Frage noch. Warten Sie einen Moment und fragen Sie dann erneut.",
+  "ai.err_conversation_busy": "Celerp AI arbeitet noch in dieser Unterhaltung. Warten Sie, bis es fertig ist, und löschen Sie die Unterhaltung dann.",
   "ai.err_operation_conflict": "Diese Frage wurde bereits gesendet und kann nicht erneut gesendet werden. Klicken Sie auf „Senden“, um sie als neue Frage zu stellen. Sie zählt dann als eine weitere Frage.",
   "ai.err_operation_mismatch": "Diese Frage kann nicht erneut gesendet werden, weil sich ihr Kontext seit dem ersten Senden geändert hat. Sie können sie als neue Frage stellen; das zählt als eine weitere Frage.",
   "ai.ask_again": "Erneut fragen",

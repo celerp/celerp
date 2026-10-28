@@ -6552,6 +6552,7 @@
   "ai.err_outcome_unknown": "La respuesta de Celerp AI a esta pregunta se perdió y no se puede recuperar. Puede volver a formularla como una pregunta nueva, que contará como una pregunta adicional.",
   "ai.err_question_expired": "Esta pregunta ya no puede reanudarse. Puede formularla como una pregunta nueva, que contará como una pregunta adicional.",
   "ai.err_question_in_progress": "Celerp AI todavía está respondiendo a esta pregunta. Espere un momento y vuelva a preguntar.",
+  "ai.err_conversation_busy": "Celerp AI todavía está trabajando en esta conversación. Espere a que termine y luego elimine la conversación.",
   "ai.err_operation_conflict": "Esta pregunta ya se envió y no puede volver a enviarse. Pulse «Enviar» para formularla como una pregunta nueva; contará como una pregunta adicional.",
   "ai.err_operation_mismatch": "Esta pregunta no puede volver a enviarse porque su contexto ha cambiado desde que se envió por primera vez. Puede formularla como una pregunta nueva, que contará como una pregunta adicional.",
   "ai.ask_again": "Volver a preguntar",

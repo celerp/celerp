@@ -647,7 +647,7 @@ async def delete_conv(
     from celerp.ai.conversations import delete_conversation
     rows = await list_conversation_jobs(session, conversation_id, company_id, user.id)
     if any(jobs.liveness(job) == "running" for job in rows):
-        raise _conflict("conversation_busy", "This conversation still has files being processed. Wait for the job to finish before deleting it.")
+        raise _conflict("conversation_busy", t("ai.err_conversation_busy"))
     found = await delete_conversation(session, conversation_id, company_id, user.id)
     if not found:
         raise HTTPException(status_code=404, detail=t("ai.err_conversation_not_found"))

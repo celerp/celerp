@@ -6552,6 +6552,7 @@
   "ai.err_outcome_unknown": "A resposta do Celerp AI a esta pergunta foi perdida e não pode ser recuperada. Você pode fazê-la como uma nova pergunta, que contará como mais uma pergunta.",
   "ai.err_question_expired": "Esta pergunta não pode mais ser continuada. Você pode fazê-la como uma nova pergunta, que contará como uma pergunta adicional.",
   "ai.err_question_in_progress": "O Celerp AI ainda está respondendo a esta pergunta. Aguarde um momento e pergunte novamente.",
+  "ai.err_conversation_busy": "O Celerp AI ainda está trabalhando nesta conversa. Aguarde até que termine e depois exclua a conversa.",
   "ai.err_operation_conflict": "Esta pergunta já foi enviada e não pode ser reenviada. Clique em \"Enviar\" para fazê-la como uma nova pergunta; ela contará como mais uma pergunta.",
   "ai.err_operation_mismatch": "Esta pergunta não pode ser reenviada porque seu contexto mudou desde o primeiro envio. Você pode fazê-la como uma nova pergunta, que contará como mais uma pergunta.",
   "ai.ask_again": "Perguntar novamente",

@@ -283,6 +283,31 @@ async def test_the_liveness_rule_and_its_sql_form_agree_on_every_state(owner, se
     assert {jobs.liveness(job) for job in rows.values()} == {"running", "unheld", "ended"}
 
 
+@pytest.mark.parametrize("status,held", [("pending", True), ("running", True), ("pending", False),
+                                         ("running", False), ("completed", False), ("failed", False),
+                                         ("cancelled", False)])
+async def test_a_conversation_with_open_work_stays_listed_and_is_deleted_only_once_nothing_runs_in_it(
+        client, owner, cloud, session, status, held):
+    """The history keeps a conversation while a job of it is open (running, or waiting
+    for Continue), and the conversation cannot be deleted while a runner works in it."""
+    from celerp.ai.conversations import _protected_conversation_ids
+    token, company_id, user_id = owner
+    conv = uuid.UUID(await _conversation(client, token))
+    job = AIBatchJob(conversation_id=conv, company_id=company_id, user_id=user_id, status=status,
+                     query="read", file_ids=["f1"])
+    if held:
+        job.runner_id, job.lease_until = "elsewhere", datetime.now(timezone.utc) + timedelta(minutes=5)
+    session.add(job)
+    await session.commit()
+    kept = await _protected_conversation_ids(session, [conv])
+    assert kept == ({conv} if status in ("pending", "running") else set())
+    await session.commit()      # the refused delete rolls back the request's shared session
+    r = await client.delete(f"/ai/conversations/{conv}", headers=AUTH(token))
+    assert r.status_code == (409 if held else 204), r.text
+    if held:
+        assert r.json()["detail"]["code"] == "conversation_busy"
+
+
 # ── Guard: nothing outside the job module reads liveness from the status column ──
 
 def _scanned() -> list[pathlib.Path]:

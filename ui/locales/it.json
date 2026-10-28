@@ -6552,6 +6552,7 @@
   "ai.err_outcome_unknown": "La risposta di Celerp AI a questa domanda è andata persa e non può essere recuperata. Puoi porla come una nuova domanda, che verrà conteggiata come un’ulteriore domanda.",
   "ai.err_question_expired": "Questa domanda non può più essere ripresa. Puoi porla come una nuova domanda, che conterà come una domanda aggiuntiva.",
   "ai.err_question_in_progress": "Celerp AI sta ancora rispondendo a questa domanda. Attendi un momento e riprova.",
+  "ai.err_conversation_busy": "Celerp AI sta ancora lavorando in questa conversazione. Attenda che finisca, poi elimini la conversazione.",
   "ai.err_operation_conflict": "Questa domanda è già stata inviata e non può essere inviata di nuovo. Premi «Invia» per porla come una nuova domanda: verrà conteggiata come un’ulteriore domanda.",
   "ai.err_operation_mismatch": "Questa domanda non può essere inviata di nuovo perché il suo contesto è cambiato rispetto al primo invio. Puoi porla come una nuova domanda, che verrà conteggiata come un’ulteriore domanda.",
   "ai.ask_again": "Chiedi di nuovo",
