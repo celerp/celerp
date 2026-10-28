@@ -166,3 +166,30 @@ async def test_help_for_route_matches_tab_routes(client, monkeypatch):
     assert await ids("/settings/general?x=1&tab=company") == ["core.companies"]
     assert await ids("/settings/general?tab=backup") == []
     assert await ids("/settings/general") == []
+
+
+async def test_every_first_party_screen_gets_its_module_help_on_both_routes(client):
+    """Over the pages that ship, not the fixed set: each sidebar and settings screen of
+    every first-party module (the AI page and its settings among them) is answered by
+    the route lookup with a page of that module, and that page opens on the read
+    route. A module the loader does not trust as first-party drops out here."""
+    from celerp.help import checks
+    registry.reset()
+    try:
+        headers = await _headers(client)
+        index = registry.get_index()
+        screens = checks.nav_screens()
+        assert {"/ai", "/ai/settings"} <= set(screens["celerp-ai"])
+        missing = []
+        for module, paths in sorted(screens.items()):
+            for path in dict.fromkeys(paths):
+                r = await client.get("/help/for-route", params={"path": path}, headers=headers)
+                assert r.status_code == 200
+                ids = [p["id"] for p in r.json()["pages"] if index.pages[p["id"]].module == module]
+                if not ids:
+                    missing.append(f"{module}: {path}")
+                for page_id in ids:
+                    assert (await client.get(f"/help/page/{page_id}", headers=headers)).status_code == 200
+        assert missing == []
+    finally:
+        registry.reset()
