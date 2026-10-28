@@ -818,9 +818,12 @@ async def _staff_reset_target(
     target_q = select(User).where(User.id == user_id)
     if lock:
         # The company, then the user's row, then the memberships: the order patch_user
-        # takes them in, so a role change made at the same moment waits or is seen.
+        # takes them in, so a role change made at the same moment waits or is seen. FOR NO
+        # KEY UPDATE, as patch_user: a sign-in of this user may hold their session state,
+        # which ending their sessions waits for, and still has to write its session record
+        # (a key share on the login).
         await lock_company(session, company_id)
-        target_q = target_q.with_for_update()
+        target_q = target_q.with_for_update(key_share=True)
     target = (await session.execute(target_q)).scalar_one_or_none()
     links = [] if target is None else (await session.execute(
         select(UserCompany).where(UserCompany.user_id == user_id, UserCompany.is_active.is_(True))
