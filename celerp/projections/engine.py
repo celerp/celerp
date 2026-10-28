@@ -281,7 +281,11 @@ class ProjectionEngine:
     async def rebuild(session, company_id=None) -> None:
         """Replace the projections with a replay of the ledger. Refused, before anything is
         deleted, when the ledger holds events of a module that is not enabled: replaying
-        without its handler would rebuild those records wrong (UnhandledEventsError)."""
+        without its handler would rebuild those records wrong (UnhandledEventsError).
+        A company's replay holds its company lock, so no write lands mid-replay and is lost."""
+        if company_id is not None:
+            from celerp.services.company_lock import lock_company
+            await lock_company(session, company_id)
         unknown = await ProjectionEngine.unreplayable(session, company_id)
         if unknown:
             raise UnhandledEventsError(unknown)

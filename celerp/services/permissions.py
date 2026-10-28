@@ -217,6 +217,14 @@ def authorize_request(session: AsyncSession, company_id, user_id, role: str,
     return authority
 
 
+def carry_authority(request_session: AsyncSession, session: AsyncSession) -> None:
+    """Register the request's authority on another session its handler writes through
+    (the unbounded lifecycle session), so that session's company lock judges it again too."""
+    authority = request_session.info.get(AUTHORITY)
+    if authority is not None:
+        session.info[AUTHORITY] = authority
+
+
 def end_request(session: AsyncSession, authority: RequestAuthority) -> None:
     if session.info.get(AUTHORITY) is authority:
         session.info.pop(AUTHORITY, None)
