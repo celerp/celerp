@@ -38,7 +38,8 @@ def _columns() -> list[sa.Column]:
         sa.Column("mode", sa.String(16), nullable=False, server_default="background"),
         sa.Column("question_id", sa.Uuid(as_uuid=True), nullable=True),
         *(sa.Column(name, sa.DateTime(timezone=True), nullable=True)
-          for name in ("started_at", "promoted_at", "cancel_requested_at")),
+          for name in ("started_at", "promoted_at", "cancel_requested_at", "lease_until")),
+        sa.Column("runner_id", sa.String(32), nullable=True),
         *(sa.Column(name, sa.String(64), nullable=True) for name in ("request_digest", "auth_nonce")),
     ]
 

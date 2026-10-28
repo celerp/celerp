@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp import db_catalog
 from celerp.accounting_roles import refusal
+from celerp.ai import jobs
 from celerp.db import sqlstate
 
 from celerp.models.accounting import UserCompany
@@ -49,7 +50,7 @@ INSTALL_WIDE = {
     "unmatched_refunds": "refunds of online payments kept until their payment is on its invoice",
 }
 
-AI_BATCH_ACTIVE = ("Wait for the assistant to finish reading files before resetting this company. "
+AI_BATCH_ACTIVE = ("Wait for the assistant to finish its work before resetting this company. "
                    "Nothing was deleted.")
 # Another transaction in the way: the reset rolls back and is refused as busy.
 _BUSY = ("40P01", "40001", "55P03")  # deadlock, serialization failure, lock wait timed out
@@ -304,9 +305,9 @@ async def reset(session: AsyncSession, company: Company, typed_name: str) -> Res
         raise ResetRefused(409, f"{', '.join(unassigned)} was set up before companies had their own "
                                 "connectors and belongs to no company yet. Connect it in the company it "
                                 "belongs to before resetting this one. Nothing was deleted.")
-    # A batch is created under the company's key lock, so none can start once this check passed.
+    # A job is created under the company's key lock, so none can start once this check passed.
     reading = await session.scalar(select(AIBatchJob.id).where(
-        AIBatchJob.company_id == company.id, AIBatchJob.status.in_(("pending", "running"))).limit(1))
+        AIBatchJob.company_id == company.id, jobs.runs_now()).limit(1))
     if reading is not None:
         raise ResetRefused(409, AI_BATCH_ACTIVE)
     run_ids = [str(r) for r in (await session.scalars(

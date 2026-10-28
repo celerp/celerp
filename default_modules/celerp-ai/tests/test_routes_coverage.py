@@ -529,7 +529,7 @@ async def test_query_with_images_creates_job(auth_client):
     assert [m["role"] for m in thread["messages"]] == ["user"]
     assert thread["messages"][0]["file_ids"] == ids
     assert [j["id"] for j in thread["jobs"]] == [job_id]
-    assert thread["jobs"][0]["status"] == "pending"
+    assert thread["jobs"][0]["status"] == "running"     # held by this process from its creation
     assert thread["jobs"][0]["total_files"] == 2
 
     status = (await c.get(f"/ai/batch/{job_id}", headers=h)).json()

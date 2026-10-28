@@ -4,7 +4,8 @@
 The older service is played over HTTP as it answers: it ignores the question's
 operation id, refuses a free account with its plain "not available" 402, answers no
 free question count, and has no /ai/operations route (404). The app shows its
-existing upgrade path, and its usage record settles on what the replies reported.
+existing upgrade path. Its status read failing is a failed read like any other: a
+row waiting on it stays awaiting confirmation.
 """
 from __future__ import annotations
 
@@ -16,7 +17,7 @@ import httpx
 from celerp.ai import llm, service, usage
 from celerp.gateway.state import set_session_token
 from celerp.routers.health import _ai_counts
-from test_ai_usage import _age, _asked, _claims, _conversation, _counts, _messages, _usage, owner  # noqa: F401
+from test_ai_usage import _age, _asked, _claims, _conversation, _messages, _usage, owner  # noqa: F401
 from test_ai_usage_reconcile import _rows
 
 
@@ -60,15 +61,21 @@ def _older_relay(monkeypatch, replies: list) -> _OlderRelay:
     return relay
 
 
-async def test_operation_status_from_an_older_service_is_none(monkeypatch):
+async def test_operation_status_from_an_older_service_is_a_failed_read(monkeypatch):
     relay = _older_relay(monkeypatch, [])
-    assert await llm.operations_status([uuid.uuid4()]) is None
+    try:
+        await llm.operations_status([uuid.uuid4()])
+    except llm.RelayError as exc:
+        assert exc.status == 404
+    else:
+        raise AssertionError("a 404 status read returned")
     assert relay.status_reads == 1
 
 
 async def test_a_free_account_is_shown_the_upgrade_path(client, session, owner, monkeypatch):
     """The older service has no free questions: its 402 is read as AI not on this plan,
-    the thread keeps the refusal, and nothing is counted."""
+    the thread keeps the refusal, and nothing is counted. It answers no status, so the
+    row stays awaiting confirmation at no charge."""
     token, _, _ = owner
     relay = _older_relay(monkeypatch, [_NOT_AVAILABLE])
     conv = await _conversation(client, token)
@@ -80,8 +87,8 @@ async def test_a_free_account_is_shown_the_upgrade_path(client, session, owner, 
     assert (reply["error_code"], reply["refusal_status"]) == ("not_available", 402)
     await _age(session)
     await usage.reconcile_usage(session)
-    assert (await _usage(client, token)).json()["users"] == []
-    assert await _rows(session) == {question: (0, False)}
+    assert all((u["query_count"], u["credits_used"]) == (0, 0) for u in (await _usage(client, token)).json()["users"])
+    assert await _rows(session) == {question: (0, True)}
 
 
 def test_no_free_question_count_from_an_older_service():
@@ -89,11 +96,10 @@ def test_no_free_question_count_from_an_older_service():
     assert _ai_counts({"google": True, "free_email_quota": 10})["free_ai_questions"] is None
 
 
-async def test_usage_settles_on_what_the_older_service_reported(client, session, owner, monkeypatch):
+async def test_usage_waits_while_the_older_service_answers_no_status(client, session, owner, monkeypatch):
     """A paid question answered by the older service names no operation charge, so its
-    row waits for reconcile; the batch status read finds no route and the row keeps the
-    credits the reply reported. A lost reply settles at 0: the older service keeps no
-    operation to read a charge from."""
+    row waits for reconcile. The status read finding no route is a failed read: no row
+    settles on a guess, each stays awaiting confirmation and is read again next pass."""
     token, _, _ = owner
     relay = _older_relay(monkeypatch, [_answered(credits=1), httpx.ReadTimeout("slow")])
     conv = await _conversation(client, token)
@@ -104,8 +110,7 @@ async def test_usage_settles_on_what_the_older_service_reported(client, session,
 
     await _age(session)
     await usage.reconcile_usage(session)
-    assert _counts((await _usage(client, token)).json()["users"]) == [(1, 1)]
-    assert await _rows(session) == {answered: (1, False), lost: (0, False)}
+    assert await _rows(session) == {answered: (1, True), lost: (0, True)}
     assert relay.status_reads == 1  # one batch read for both rows
     await usage.reconcile_usage(session)
-    assert relay.status_reads == 1  # settled rows are never read again
+    assert relay.status_reads == 2  # still pending, so read again

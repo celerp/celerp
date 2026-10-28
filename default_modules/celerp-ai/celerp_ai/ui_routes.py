@@ -1682,7 +1682,8 @@ def _job_bubble(job: dict, conversation_id: str, lang: str = "en") -> FT:
 
     While the job runs the bubble shows how many files are read, updates from
     the notification stream, polls the proposals route so the cards appear
-    without a reload, and offers Stop. A stopped job offers Continue. A failed job
+    without a reload, and offers Stop. A stopped job, or one nobody runs any
+    more, offers Continue. A failed job
     is an error bubble; a finished job whose proposals already exist is the
     finished line.
     """
@@ -1700,9 +1701,11 @@ def _job_bubble(job: dict, conversation_id: str, lang: str = "en") -> FT:
     if status == "completed" and job.get("proposal_message_id"):
         return _job_done_line(job, lang)
     done = ok + failed
-    if status == "cancelled":
+    if status in ("cancelled", "interrupted"):
+        # Stopped by its user, or left by a runner that is gone: either continues.
+        said = "ai.job_stopped" if status == "cancelled" else "ai.job_interrupted"
         return Div(
-            Div(t("ai.job_stopped", lang, done=done, total=total), cls="ai-job__text"),
+            Div(t(said, lang, done=done, total=total), cls="ai-job__text"),
             _job_button(job_id, "resume", t("btn.continue", lang), conversation_id, target=dom_id),
             id=dom_id, cls="ai-msg ai-msg--ai ai-job", data_job_id=job_id,
         )

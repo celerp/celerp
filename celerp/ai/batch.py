@@ -194,8 +194,8 @@ async def create_batch_job(
     conversation_id: uuid.UUID | None = None,
     job_id: uuid.UUID | None = None,
 ) -> AIBatchJob:
-    """Create a pending reading job and one step per file; the caller commits and
-    then starts it (celerp.ai.jobs.start_job).
+    """Create a pending reading job, held by this process, and one step per file; the
+    caller commits and then starts it (celerp.ai.jobs.start_job).
 
     ``job_id`` is the id of the question that asked for the job, when there is one."""
     request = jobs.JobRequest(company_id=company_id, user_id=user_id, kind="documents",
@@ -218,6 +218,7 @@ async def create_batch_job(
         status="pending",
         request_digest=request.digest(),
     )
+    jobs.hold(job)      # running from its creation: the caller starts it after the commit
     session.add(job)
     await session.flush()
     for seq, file_id in enumerate(file_ids):

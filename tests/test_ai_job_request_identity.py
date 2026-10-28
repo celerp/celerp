@@ -104,7 +104,7 @@ async def test_every_field_of_the_request_identity_is_held_to_its_id(client, own
             await jobs.ask(**asked, job_id=job_id, started=time.monotonic())
         assert refused.value.status_code == 409, name
         assert refused.value.detail["code"] == "operation_conflict", name
-        assert not jobs.is_held(job_id), name
+        assert not jobs.task_alive(job_id), name
     assert not cloud.sends
 
 

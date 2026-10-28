@@ -18,6 +18,16 @@ replay, which ends the step without running it again. Sending a step under a new
 identity is always the user's explicit retry, which says what it counts as. The steps
 are the job's progress; nothing else counts files.
 
+Whether a job runs now is its runner lease, read by one rule (``liveness``): the
+process running a job holds a lease on its row, renews it while it works and lets it
+go when the job ends. A job is ``running`` while its lease holds, ``unheld`` (open, run
+by nobody: its process is gone) once the lease lapsed, and ``ended`` once its status is
+final. Every reader asks that rule, or its query forms ``runs_now`` and ``is_open``.
+Stop ends an unheld job at once, as stopped; Continue or asking again resumes it. A
+runner that raises is never given up on while its process lives: it runs again after
+a growing delay and keeps its lease meanwhile, so the job reads as running and Stop
+ends it.
+
 A question is a job too, so no request waits on the model: the thread route answers
 202 and the browser polls the question's state, and a synchronous caller (``/ai/query``,
 the module API) waits at most ``deadlines.SYNC_WAIT_S`` from its start. A question
@@ -48,10 +58,11 @@ import time
 import uuid
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import httpx
-from sqlalchemy import select, update
+import sqlalchemy as sa
+from sqlalchemy import and_, or_, select, update
 
 from celerp.ai import deadlines
 from celerp.db import SessionLocal
@@ -128,8 +139,8 @@ gate = ModelGate(int(os.getenv("AI_MAX_CONCURRENT", "3")))
 # leaves their rows for later.
 _held_operations: set[uuid.UUID] = set()
 _tasks: dict[uuid.UUID, asyncio.Task] = {}
-# Consecutive unexpected failures of a job's runner in this process.
-_failures: dict[uuid.UUID, int] = {}
+# Jobs reopened while their task was ending: the task runs them once more.
+_again: set[uuid.UUID] = set()
 # What a question waits for at the gate (``documents`` or ``questions``), while it waits.
 _waiting: dict[uuid.UUID, str] = {}
 # The questions running in background mode in this process (see ``promote``).
@@ -137,12 +148,16 @@ _background: set[uuid.UUID] = set()
 
 # A step that raised something unexpected is run again under its own identity (the
 # service replays what it already answered), then ends failed, which the user may
-# retry. A runner that raised is started again after a growing delay, and after
-# RUNNER_RESTARTS failures in a row the job is left open for the next start.
+# retry. A runner that raised runs again after a growing delay, at most
+# RUNNER_RESTART_MAX_DELAY_S apart, for as long as its process lives.
 STEP_ATTEMPTS = 3
 STEP_RETRY_DELAY_S = 1.0
-RUNNER_RESTARTS = 5
 RUNNER_RESTART_MAX_DELAY_S = 60.0
+# The runner lease: this process's id, how long a claim holds, and how often a
+# running job renews it (well inside the lease, so a slow renewal never lapses it).
+RUNNER_ID = uuid.uuid4().hex
+LEASE_S = 30.0
+LEASE_RENEW_S = 10.0
 # Sends of a background step under its own identity after the service surely did not
 # run it, or after no reply came back in the call's budget.
 RESEND_LIMIT = 3
@@ -151,6 +166,22 @@ OPEN_STEPS = ("pending", "running")
 # A step that ended without an answer, which the user may run again under a new identity.
 RETRYABLE_STEPS = ("failed", "unknown", "expired")
 TERMINAL_JOBS = ("completed", "failed", "cancelled")
+
+# The refusals the app's authorization answers a read with because of who asked at that
+# moment (signed out, a permission taken away, a module turned off), by the code the
+# question ends with. Such a result says nothing about the request, so it is never
+# journaled: asking again reads again, under the session that asks.
+CALLER_REFUSALS = {401: "session_expired", 403: "read_refused"}
+
+
+def caller_refusal(result: dict) -> str | None:
+    """The one rule for whether a read's result is a refusal of its caller: the code
+    the question ends with, or None for a result the request itself decided."""
+    if result.get("ok"):
+        return None
+    if (result.get("error") or {}).get("code") == "missing_authorization":
+        return "session_expired"
+    return CALLER_REFUSALS.get(result.get("status"))
 
 
 @dataclasses.dataclass(frozen=True)
@@ -204,13 +235,20 @@ async def owned_job(session, job_id: uuid.UUID, *, company_id: uuid.UUID, user_i
 
 
 async def reused_job(session, job_id: uuid.UUID, request: JobRequest):
-    """The one way a send reuses a job by its id: None when no job has the id, the job
-    when it was created for ``request``, else ``operation_conflict``. A job stored
-    without an identity is never reused."""
+    """The one way a send reuses a job by its id, and the one comparison it is held to
+    (the request digest): None when no job has the id, the job when it was created for
+    ``request``. Another user's job is not found, as ``owned_job``; this user's job of
+    another request is ``operation_conflict``. A job stored without an identity is
+    never reused."""
+    from fastapi import HTTPException
+
     from celerp.models.ai import AIBatchJob
     job = await session.get(AIBatchJob, job_id)
-    if job is not None and job.request_digest != request.digest():
-        from fastapi import HTTPException
+    if job is None:
+        return None
+    if (job.company_id, job.user_id) != (request.company_id, request.user_id):
+        raise HTTPException(status_code=404, detail=t("ai.err_job_not_found"))
+    if job.request_digest != request.digest():
         raise HTTPException(status_code=409, detail={"code": "operation_conflict",
                                                      "message": t("ai.err_operation_conflict")})
     return job
@@ -232,48 +270,149 @@ def step_id(question_id: uuid.UUID, *, turn: int, generation: int = 0) -> uuid.U
     return uuid.uuid5(question_id, f"{turn}:{generation}")
 
 
-def is_held(job_id: uuid.UUID) -> bool:
-    """Whether a task of this process is running the job."""
+# ── Liveness: the runner lease ────────────────────────────────────────────────
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def liveness(job, now: datetime | None = None) -> str:
+    """Whether a job runs now: ``running`` while a runner's lease on it holds,
+    ``unheld`` when it is open and nobody runs it, ``ended`` once its status is final.
+    The one rule every reader asks (``runs_now`` and ``is_open`` are its query forms)."""
+    if job.status in TERMINAL_JOBS:
+        return "ended"
+    return "running" if job.lease_until is not None and job.lease_until > (now or _now()) else "unheld"
+
+
+def is_open():
+    """The query form of ``liveness(job) != "ended"``."""
+    from celerp.models.ai import AIBatchJob
+    return AIBatchJob.status.not_in(TERMINAL_JOBS)
+
+
+def runs_now():
+    """The query form of ``liveness(job) == "running"``."""
+    from celerp.models.ai import AIBatchJob
+    return and_(is_open(), AIBatchJob.lease_until > _now())
+
+
+def _lease_end() -> datetime:
+    return _now() + timedelta(seconds=LEASE_S)
+
+
+def hold(job) -> None:
+    """Give this process the lease on a job row it writes."""
+    job.runner_id, job.lease_until = RUNNER_ID, _lease_end()
+
+
+def release(job) -> None:
+    job.runner_id = job.lease_until = None
+
+
+async def _claim(session, job_id: uuid.UUID, where=None, *, own: bool = False, **values) -> bool:
+    """Take the lease on a job nobody runs (with ``own``, also renew this process's
+    own: only the job's task asks that), with ``values`` in the same update, when the
+    job matches ``where`` (by default: open). False, and nothing written, otherwise: a
+    stop or a reopen never takes a job a runner holds, this process's included."""
+    from celerp.models.ai import AIBatchJob
+    free = or_(AIBatchJob.lease_until.is_(None), AIBatchJob.lease_until <= _now(),
+               *([AIBatchJob.runner_id == RUNNER_ID] if own else []))
+    claimed = await session.execute(update(AIBatchJob).where(AIBatchJob.id == job_id, free,
+                                                             is_open() if where is None else where)
+                                    .values(runner_id=RUNNER_ID, lease_until=_lease_end(), **values))
+    return claimed.rowcount == 1
+
+
+def task_alive(job_id: uuid.UUID) -> bool:
     task = _tasks.get(job_id)
     return task is not None and not task.done()
 
 
-def start_job(job_id: uuid.UUID, *, delay_s: float = 0.0) -> bool:
-    """Run the job's open steps in a task of this process. False, and nothing
-    started, while a task already runs it.
-
-    The task is supervised: when its runner raises, the job keeps its open steps and
-    is started again, after ``delay_s`` growing with each failure in a row."""
-    if is_held(job_id):
+def start_job(job_id: uuid.UUID) -> bool:
+    """Run the job in a task of this process. False when a task of this process
+    already runs it: that task runs it once more when its current run ends, as the
+    job may have been reopened meanwhile."""
+    if task_alive(job_id):
+        _again.add(job_id)
         return False
-    task = asyncio.create_task(_run_job_after(job_id, delay_s), name=f"ai-job-{job_id}")
-    _tasks[job_id] = task
-
-    def _supervise(done: asyncio.Task) -> None:
-        if _tasks.get(job_id) is done:
-            del _tasks[job_id]
-        if done.cancelled():
-            return
-        if done.exception() is None:
-            _failures.pop(job_id, None)
-            return
-        failures = _failures[job_id] = _failures.get(job_id, 0) + 1
-        if failures > RUNNER_RESTARTS:
-            # No task runs it now: it reads as interrupted, never as running in the background.
-            _failures.pop(job_id, None)
-            _background.discard(job_id)
-            log.error("AI job %s stopped %d times; it resumes at the next start", job_id, failures,
-                      exc_info=done.exception())
-            return
-        log.error("AI job %s stopped; starting it again", job_id, exc_info=done.exception())
-        start_job(job_id, delay_s=min(STEP_RETRY_DELAY_S * 2 ** failures, RUNNER_RESTART_MAX_DELAY_S))
-    task.add_done_callback(_supervise)
+    _tasks[job_id] = asyncio.create_task(_supervise(job_id), name=f"ai-job-{job_id}")
     return True
 
 
-async def _run_job_after(job_id: uuid.UUID, delay_s: float) -> None:
-    if delay_s:
-        await asyncio.sleep(delay_s)
+async def _supervise(job_id: uuid.UUID) -> None:
+    """The job's task: it holds the job's lease and renews it, runs the job, and when
+    the run raises runs it again after a growing delay, for as long as the process
+    lives. Meanwhile the job reads as running: a question is moved to the background
+    so the thread offers Stop, and a Stop ends the job at the next failure."""
+    stop = asyncio.Event()
+    beat = asyncio.create_task(_heartbeat(job_id, stop))
+    failures = 0
+    try:
+        while True:
+            async with SessionLocal() as session:
+                claimed = await _claim(session, job_id, own=True)
+                await session.commit()
+            if not claimed:
+                return      # ended, or another process runs it
+            try:
+                await _run(job_id)
+            except Exception:
+                failures += 1
+                log.exception("AI job %s stopped (%d in a row); running it again", job_id, failures)
+                await _after_failure(job_id)
+                await asyncio.sleep(min(STEP_RETRY_DELAY_S * 2 ** failures, RUNNER_RESTART_MAX_DELAY_S))
+                continue
+            failures = 0
+            if job_id not in _again:
+                return
+            _again.discard(job_id)
+    finally:
+        # Never cancelled mid-query: the renewal in flight ends, then the heartbeat does.
+        stop.set()
+        await asyncio.gather(beat, return_exceptions=True)
+        if _tasks.get(job_id) is asyncio.current_task():
+            del _tasks[job_id]
+
+
+async def _heartbeat(job_id: uuid.UUID, stop: asyncio.Event) -> None:
+    """Renew this process's lease on the job every LEASE_RENEW_S until ``stop``. A
+    renewal that fails is tried again at the next beat."""
+    from celerp.models.ai import AIBatchJob
+    while True:
+        try:
+            await asyncio.wait_for(stop.wait(), LEASE_RENEW_S)
+            return
+        except TimeoutError:
+            pass
+        try:
+            async with SessionLocal() as session:
+                await session.execute(update(AIBatchJob).where(
+                    AIBatchJob.id == job_id, AIBatchJob.runner_id == RUNNER_ID, is_open()
+                ).values(lease_until=_lease_end()))
+                await session.commit()
+        except Exception:
+            log.warning("AI job %s: its lease was not renewed", job_id, exc_info=True)
+
+
+async def _after_failure(job_id: uuid.UUID) -> None:
+    """After a run raised: a job its user stopped ends as stopped; a question moves to
+    the background, where the thread offers Stop and a restart resumes it. Best effort:
+    the next run tries again."""
+    from celerp.models.ai import AIBatchJob
+    try:
+        async with SessionLocal() as session:
+            job = await session.get(AIBatchJob, job_id)
+            stopped, question = job.cancel_requested_at is not None, job.kind == "question"
+        if stopped:
+            await _end_stopped(job_id)
+        elif question:
+            await promote(job_id)
+    except Exception:
+        log.warning("AI job %s: its failure could not be recorded", job_id, exc_info=True)
+
+
+async def _run(job_id: uuid.UUID) -> None:
     from celerp.models.ai import AIBatchJob
     async with SessionLocal() as session:
         kind = (await session.execute(select(AIBatchJob.kind).where(AIBatchJob.id == job_id))).scalar_one_or_none()
@@ -287,13 +426,14 @@ def running_tasks() -> list[asyncio.Task]:
 
 async def shutdown() -> None:
     """Cancel every job task and wait for it. A step cut off mid-call keeps its state,
-    so the next start resumes it under its own identity."""
+    so the next start resumes it under its own identity. Leases are left to lapse, as
+    a crash leaves them; the next start lets them go (``recover_on_start``)."""
     tasks = list(_tasks.values())
     for task in tasks:
         task.cancel()
     await asyncio.gather(*tasks, return_exceptions=True)
     _tasks.clear()
-    _failures.clear()
+    _again.clear()
     _held_operations.clear()
     _waiting.clear()
     _background.clear()
@@ -314,20 +454,23 @@ async def _refusal(session, company_id: uuid.UUID, user_id: uuid.UUID) -> str | 
 
 
 async def recover_on_start() -> int:
-    """Run once at start-up, before the usage reconcile loop. Every open background
-    job resumes: its open steps are registered as held before this returns, so no
-    reconcile pass asks the service about a step this process is about to send, and
-    then its task starts. A job whose user may no longer use the assistant ends
-    failed with that reason. An interactive question is left as it was, which reads
-    as interrupted: it is never sent again but by the user asking again under its
-    id. Returns how many jobs resumed."""
+    """Run once at start-up, before the usage reconcile loop. This process is the one
+    that runs AI jobs, so a lease no task of it holds belongs to a process that is
+    gone: it is let go. Every open background job then resumes under this process's
+    lease: its open steps are registered as held before this returns, so no reconcile
+    pass asks the service about a step this process is about to send, and then its
+    task starts. A job whose user may no longer use the assistant ends failed with
+    that reason. An interactive question is left unheld, which reads as interrupted:
+    it is never sent again but by the user asking again under its id. Returns how
+    many jobs resumed."""
     from celerp.models.ai import AIBatchJob, AIJobStep
     resumed: list[uuid.UUID] = []
     async with SessionLocal() as session:
-        rows = (await session.execute(
-            select(AIBatchJob).where(AIBatchJob.status.in_(("pending", "running")))
-        )).scalars().all()
+        rows = (await session.execute(select(AIBatchJob).where(is_open()))).scalars().all()
         for job in rows:
+            if task_alive(job.id):
+                continue
+            release(job)
             if job.mode == "interactive":
                 continue
             # A question is admitted before each of its model steps, and stores a refusal
@@ -335,7 +478,7 @@ async def recover_on_start() -> int:
             refusal = await _refusal(session, job.company_id, job.user_id) if job.kind == "documents" else None
             if refusal is not None:
                 job.status, job.error = "failed", t(refusal)
-                job.completed_at = datetime.now(timezone.utc)
+                job.completed_at = _now()
                 continue
             ops = (await session.execute(
                 select(AIJobStep.operation_id).where(AIJobStep.job_id == job.id, AIJobStep.state.in_(OPEN_STEPS))
@@ -343,6 +486,7 @@ async def recover_on_start() -> int:
             _held_operations.update(op for op in ops if op is not None)
             if job.kind == "question":
                 _held_operations.add(job.id)
+            hold(job)
             resumed.append(job.id)
         await session.commit()
     for job_id in resumed:
@@ -354,10 +498,10 @@ async def _reopen(job_id: uuid.UUID, company_id: uuid.UUID, user_id: uuid.UUID, 
     """Mark a job running again and start it; with ``retry``, every step that ended
     without an answer first moves to its next generation (a new identity). Returns the
     number of steps reopened, or None when the job is not this user's or still runs."""
-    from celerp.models.ai import AIBatchJob, AIJobStep
+    from celerp.models.ai import AIJobStep
     async with SessionLocal() as session:
         job = await owned_job(session, job_id, company_id=company_id, user_id=user_id)
-        if job is None or is_held(job_id):
+        if job is None or liveness(job) == "running":
             return None
         steps = (await session.execute(
             select(AIJobStep).where(AIJobStep.job_id == job_id,
@@ -370,7 +514,10 @@ async def _reopen(job_id: uuid.UUID, company_id: uuid.UUID, user_id: uuid.UUID, 
                 step.generation += 1
                 step.operation_id = step.step_id = file_operation_id(job_id, step.key, step.generation)
                 step.state, step.result, step.charge_known = "pending", None, False
-        job.status, job.error, job.completed_at, job.cancel_requested_at = "running", None, None, None
+        if not await _claim(session, job_id, sa.true(), status="running", error=None, completed_at=None,
+                            cancel_requested_at=None):
+            await session.rollback()        # another send took it first
+            return None
         await session.commit()
     start_job(job_id)
     return len(steps)
@@ -388,28 +535,52 @@ async def retry_failed(job_id: uuid.UUID, company_id: uuid.UUID, user_id: uuid.U
 
 
 async def cancel(job_id: uuid.UUID, company_id: uuid.UUID, user_id: uuid.UUID) -> bool:
-    """Ask a running job to stop: steps not yet sent stay pending (``resume`` sends
-    them), a step already sent finishes inside its own bound and is kept."""
+    """Stop a job. One that runs stops at its next step: steps not yet sent stay
+    pending (``resume`` sends them), a step already sent finishes inside its own bound
+    and is kept. One nobody runs ends now, as stopped. False when the job is not this
+    user's or has ended."""
+    async with SessionLocal() as session:
+        job = await owned_job(session, job_id, company_id=company_id, user_id=user_id)
+        if job is None or liveness(job) == "ended":
+            return False
+        job.cancel_requested_at = _now()
+        unheld = liveness(job) == "unheld"
+        await session.commit()
+        claimed = unheld and await _claim(session, job_id)
+        await session.commit()
+    if claimed:
+        await _end_stopped(job_id)
+    return True
+
+
+async def _end_stopped(job_id: uuid.UUID) -> None:
+    """End a job its user stopped, from its rows, as its runner would have: a reading
+    job with steps left is cancelled (Continue sends them), a question ends failed as
+    stopped (asking again continues it)."""
+    from celerp.ai import service
     from celerp.models.ai import AIBatchJob
     async with SessionLocal() as session:
-        result = await session.execute(
-            update(AIBatchJob)
-            .where(AIBatchJob.id == job_id, AIBatchJob.company_id == company_id, AIBatchJob.user_id == user_id,
-                   AIBatchJob.status.in_(("pending", "running")))
-            .values(cancel_requested_at=datetime.now(timezone.utc))
-        )
-        await session.commit()
-    return result.rowcount == 1
+        job = await session.get(AIBatchJob, job_id)
+        run = _file_run(job) if job.kind == "documents" else None
+    if run is None:
+        await _finish_question(job_id, service.failure(Stopped(), service.RunTally()), None)
+    else:
+        await _end_job(run)
+
+
+def _file_run(job):
+    from celerp.ai import batch
+    return batch.FileRun(job_id=job.id, company_id=job.company_id, user_id=job.user_id,
+                         conversation_id=job.conversation_id, query=job.query)
 
 
 # ── The runner ────────────────────────────────────────────────────────────────
 
 async def _run_job(job_id: uuid.UUID) -> None:
-    from celerp.ai import batch
     from celerp.models.ai import AIBatchJob, AIJobStep
     async with SessionLocal() as session:
         job = await session.get(AIBatchJob, job_id)
-        if job is None or job.status in TERMINAL_JOBS:
+        if job is None or liveness(job) == "ended":
             return
         rows = (await session.execute(
             select(AIJobStep).where(AIJobStep.job_id == job_id, AIJobStep.state.in_(OPEN_STEPS))
@@ -418,8 +589,7 @@ async def _run_job(job_id: uuid.UUID) -> None:
         job.status = "running"
         job.started_at = job.started_at or datetime.now(timezone.utc)
         await session.commit()
-        run = batch.FileRun(job_id=job.id, company_id=job.company_id, user_id=job.user_id,
-                            conversation_id=job.conversation_id, query=job.query)
+        run = _file_run(job)
         steps = [(s.id, s.key, s.operation_id) for s in rows]
     _held_operations.update(op for _, _, op in steps)
     try:
@@ -521,7 +691,8 @@ async def _end_job(run) -> None:
         else:
             job.status = "completed"
         job.cancel_requested_at = None
-        job.completed_at = datetime.now(timezone.utc)
+        job.completed_at = _now()
+        release(job)
         status = job.status
         await session.commit()
     if status != "cancelled":
@@ -727,31 +898,32 @@ async def promote(job_id: uuid.UUID) -> None:
 
 
 def question_job(*, job_id: uuid.UUID, request: JobRequest, auth_nonce: str | None = None):
-    """A new question job for ``request``; the caller adds it to its session, commits,
-    then starts it. A thread question's job takes the question's id, which its first
-    model step is sent under; a question asked outside a thread proposes no changes.
-    ``auth_nonce`` is the asker's session nonce, which its tools read the app under;
-    a question asked without a user session reads nothing."""
+    """A new question job for ``request``, held by this process; the caller adds it to
+    its session, commits, then starts it. A thread question's job takes the question's
+    id, which its first model step is sent under; a question asked outside a thread
+    proposes no changes. ``auth_nonce`` is the asker's session nonce, which its tools
+    read the app under; a question asked without a user session reads nothing."""
     from celerp.models.ai import AIBatchJob
-    return AIBatchJob(id=job_id, company_id=request.company_id, user_id=request.user_id,
-                      conversation_id=request.conversation_id,
-                      question_id=job_id if request.conversation_id else None, kind="question", mode="interactive",
-                      status="pending", query=request.query, file_ids=list(request.file_ids),
-                      request_digest=request.digest(), auth_nonce=auth_nonce)
+    job = AIBatchJob(id=job_id, company_id=request.company_id, user_id=request.user_id,
+                     conversation_id=request.conversation_id,
+                     question_id=job_id if request.conversation_id else None, kind="question", mode="interactive",
+                     status="pending", query=request.query, file_ids=list(request.file_ids),
+                     request_digest=request.digest(), auth_nonce=auth_nonce)
+    hold(job)
+    return job
 
 
 async def reopen_question(session, job_id: uuid.UUID, auth_nonce: str | None) -> bool:
     """Ask a question again under its id: its ended steps are kept, so the run is
     answered from them, and any other step is sent again under its own identity. Its
     tools read the app under the session of whoever asks it again (``auth_nonce``).
-    One conditional update, so a send that read the question before its job answered
-    it never reopens the answer; False when the question is answered."""
+    One conditional update, which takes the job's lease for this process, so a send
+    that read the question before its job answered it never reopens the answer and
+    one that runs is never reopened; False then."""
     from celerp.models.ai import AIBatchJob
-    reopened = await session.execute(
-        update(AIBatchJob).where(AIBatchJob.id == job_id, AIBatchJob.status != "completed")
-        .values(status="pending", results=None, error=None, completed_at=None, cancel_requested_at=None,
-                auth_nonce=auth_nonce))
-    return reopened.rowcount == 1
+    return await _claim(session, job_id, AIBatchJob.status != "completed",
+                        status="pending", results=None, error=None, completed_at=None, cancel_requested_at=None,
+                        auth_nonce=auth_nonce)
 
 
 def _bearer(job, role: str) -> Callable[[], str] | None:
@@ -792,7 +964,7 @@ async def _run_question(job_id: uuid.UUID) -> None:
     from celerp.models.ai import AIBatchJob, AIJobStep
     async with SessionLocal() as session:
         job = await session.get(AIBatchJob, job_id)
-        if job is None or job.status in TERMINAL_JOBS:
+        if job is None or liveness(job) == "ended":
             return
         steps = (await session.execute(
             select(AIJobStep).where(AIJobStep.job_id == job_id).order_by(AIJobStep.seq))).scalars().all()
@@ -817,7 +989,7 @@ async def _run_question(job_id: uuid.UUID) -> None:
 
 
 async def _finish_question(job_id: uuid.UUID, result, refusal) -> None:
-    """Store how the question ended, before its task leaves the registry: in its
+    """Store how the question ended, in the same commit that ends its lease: in its
     thread, the answer, the failure or the refusal as the assistant message; for a
     question outside a thread, on the job. Then a promoted question notifies."""
     from dataclasses import asdict
@@ -858,7 +1030,8 @@ async def _finish_question(job_id: uuid.UUID, result, refusal) -> None:
                                "error": result.error, "error_code": result.error_code}
         failed = refusal is not None or bool(result.error)
         job.status = "failed" if failed else "completed"
-        job.completed_at = datetime.now(timezone.utc)
+        job.completed_at = _now()
+        release(job)
         promoted = job.promoted_at is not None
         company_id, user_id, conversation_id = job.company_id, job.user_id, job.conversation_id
         await session.commit()
@@ -869,10 +1042,11 @@ async def _finish_question(job_id: uuid.UUID, result, refusal) -> None:
 
 
 async def wait_for_job(job_id: uuid.UUID, *, started: float) -> bool:
-    """Wait for the job until ``deadlines.SYNC_WAIT_S`` after ``started`` (a monotonic
-    instant: the request's start, so time queued at the gate counts). True when it
-    ended; otherwise it is promoted, as the caller is told it keeps running."""
-    while is_held(job_id):
+    """Wait for this process's task running the job until ``deadlines.SYNC_WAIT_S``
+    after ``started`` (a monotonic instant: the request's start, so time queued at the
+    gate counts). True when no such task runs any more; otherwise the job is promoted,
+    as the caller is told it keeps running."""
+    while task_alive(job_id):
         left = deadlines.SYNC_WAIT_S - (time.monotonic() - started)
         if left <= 0:
             await promote(job_id)
@@ -886,55 +1060,62 @@ async def ask(*, company_id: uuid.UUID, user_id: uuid.UUID, query: str, file_ids
     """A question from a synchronous caller, outside any thread: its result within
     ``deadlines.SYNC_WAIT_S`` of ``started``, or ``{"status": "running", "job_id"}``.
     The same ``job_id`` with the same request asks it again: a finished answer is
-    returned as it is. ``auth_nonce`` is the asker's session nonce (``question_job``)."""
+    returned as it is, one that failed or that nobody runs continues under this
+    asker's session (``auth_nonce``, as ``question_job``). Two first sends under one id
+    both get the one question."""
+    from sqlalchemy.exc import IntegrityError
     job_id = job_id or uuid.uuid4()
     request = JobRequest.question(company_id=company_id, user_id=user_id, query=query, file_ids=file_ids)
     async with SessionLocal() as session:
         job = await reused_job(session, job_id, request)
+        started_here = False
         if job is None:
             session.add(question_job(job_id=job_id, request=request, auth_nonce=auth_nonce))
-        else:
-            if job.status not in TERMINAL_JOBS and not is_held(job_id):
-                job.auth_nonce = auth_nonce     # an interrupted question, continued by this asker
-        reopened = job is not None and job.status == "failed" and not is_held(job_id) and (
-            await reopen_question(session, job_id, auth_nonce))
-        await session.commit()
-    if job is None or reopened or job.status not in TERMINAL_JOBS:
+            try:
+                await session.commit()
+                started_here = True
+            except IntegrityError:
+                await session.rollback()
+                job = await reused_job(session, job_id, request)     # another send created it first
+        if job is not None and liveness(job) != "running":
+            started_here = await reopen_question(session, job_id, auth_nonce)
+            await session.commit()
+    if started_here:
         start_job(job_id)
-        await wait_for_job(job_id, started=started)
+    await wait_for_job(job_id, started=started)
     return await question_result(job_id, company_id, user_id)
 
 
 async def question_result(job_id: uuid.UUID, company_id: uuid.UUID, user_id: uuid.UUID) -> dict | None:
     """Where a question this user asked outside a thread stands: ``running``,
-    ``interrupted`` (no task of this process runs it: a restart, or a runner that kept
-    failing, ended it; asking again under its id resumes it), or ended (``completed``
-    or ``failed``) with what it returned. None for no such question of this user's."""
-    held = is_held(job_id)
+    ``interrupted`` (nobody runs it: asking again under its id continues it), or ended
+    (``completed`` or ``failed``) with what it returned. None for no such question of
+    this user's."""
     async with SessionLocal() as session:
         row = await owned_job(session, job_id, company_id=company_id, user_id=user_id, shape="one_off")
     if row is None:
         return None
-    if row.status in TERMINAL_JOBS:
+    state = liveness(row)
+    if state == "ended":
         return {"status": row.status, "job_id": str(job_id), **(row.results or {})}
-    return {"status": "running" if held or job_id in _background else "interrupted", "job_id": str(job_id)}
+    return {"status": "running" if state == "running" else "interrupted", "job_id": str(job_id)}
 
 
 async def stored_question_state(session, question_id: uuid.UUID, *, company_id: uuid.UUID, user_id: uuid.UUID,
                                 conversation_id: uuid.UUID) -> dict | None:
-    """A thread question's state as stored: ``answered`` or ``failed`` with its
-    assistant message once its job ended, else ``interrupted`` (no task holds it: a
-    restart, or a runner that kept failing, ended it). Read after the registry (``is_held``): a job commits
-    its message before it leaves the registry, so a held question is never read as
-    interrupted. None when the conversation has no such question job."""
+    """A thread question's state: ``running``, ``interrupted`` (nobody runs it: asking
+    again under its id continues it), or ``answered`` or ``failed`` with its assistant
+    message once its job ended. None when the conversation has no such question job."""
     from celerp.ai.conversations import message_failure
     from celerp.models.ai import AIMessage
     row = await owned_job(session, question_id, company_id=company_id, user_id=user_id, shape="conversation",
                           conversation_id=conversation_id)
     if row is None:
         return None
-    out = {"state": "interrupted", "promoted": row.promoted_at is not None, "message": None}
-    if row.status in TERMINAL_JOBS:
+    state = liveness(row)
+    out = {"state": "interrupted" if state == "unheld" else "running", "promoted": row.promoted_at is not None,
+           "message": None}
+    if state == "ended":
         msg = await session.get(AIMessage, uuid.UUID(row.results["message_id"]))
         out.update(state="failed" if message_failure(msg.tools_called) else "answered", message=msg)
     return out

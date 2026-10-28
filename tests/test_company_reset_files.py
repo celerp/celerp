@@ -504,23 +504,29 @@ async def test_an_assistant_upload_after_the_reset_is_never_stored(real_engine, 
     assert _company_files(tmp_path, a) == []
 
 
-@pytest.mark.parametrize("status", ["pending", "running", "completed", "failed"])
+# A job runs while its runner holds its lease (celerp.ai.jobs.liveness); one nobody
+# runs any more does not hold a reset back.
+@pytest.mark.parametrize("status,held", [("pending", True), ("running", True), ("running", False),
+                                         ("completed", False), ("failed", False)])
 async def test_a_reset_waits_until_the_assistant_has_finished_reading_files(real_engine, real_client, tmp_path,
-                                                                            monkeypatch, status):
+                                                                            monkeypatch, status, held):
+    from datetime import datetime, timedelta, timezone
+
     from celerp.models.ai import AIBatchJob
+    from celerp.services.company_reset import AI_BATCH_ACTIVE
     _local_files(monkeypatch, tmp_path)
     boss, a, b, files_a, files_b = await _harbor(real_engine)
     async with maker(real_engine)() as s:
-        s.add(AIBatchJob(company_id=a, user_id=boss, status=status, query="read these",
-                         file_ids=[]))
+        s.add(AIBatchJob(company_id=a, user_id=boss, status=status, query="read these", file_ids=[],
+                         runner_id="elsewhere" if held else None,
+                         lease_until=datetime.now(timezone.utc) + timedelta(minutes=5) if held else None))
         await s.commit()
 
     r = await _reset(real_client, real_engine, boss, a)
 
-    if status in ("pending", "running"):
+    if held:
         assert r.status_code == 409
-        assert r.json()["detail"] == ("Wait for the assistant to finish reading files before resetting this "
-                                      "company. Nothing was deleted.")
+        assert r.json()["detail"] == AI_BATCH_ACTIVE
         assert await count(real_engine, "companies", "id = :c", c=str(a)) == 1
         assert _left(files_a) == set(SCOPES)
     else:

@@ -26,8 +26,8 @@ def _status(op, state, credits=0) -> dict:
 
 
 def _batch(monkeypatch, answer) -> list[list[uuid.UUID]]:
-    """Answer llm.operations_status with ``answer(ids)`` (a list, None for an older
-    service, or an exception); returns the id lists asked."""
+    """Answer llm.operations_status with ``answer(ids)`` (a list or an exception);
+    returns the id lists asked."""
     asked: list = []
 
     async def _operations_status(ids):
@@ -128,17 +128,8 @@ async def test_each_state_settles_as_the_contract_says(session, owner, monkeypat
                                     running: (0, True), unknown: (0, True)}
 
 
-async def test_an_older_service_settles_on_what_the_replies_reported(session, owner, monkeypatch):
-    _, company_id, user_id = owner
-    (op,) = await _pending(session, company_id, user_id, 1)
-    await session.execute(update(AIUsage).values(credits=1))
-    await session.commit()
-    _batch(monkeypatch, lambda ids: None)
-    await usage.reconcile_usage(session)
-    assert await _rows(session) == {op: (1, False)}
-
-
-@pytest.mark.parametrize("failure", [llm.RelayError("gateway_error", "x", status=500), TimeoutError()])
+@pytest.mark.parametrize("failure", [llm.RelayError("gateway_error", "x", status=500),
+                                     llm.RelayError("gateway_error", "x", status=404), TimeoutError()])
 async def test_any_error_changes_nothing(session, owner, monkeypatch, failure):
     _, company_id, user_id = owner
     ops = await _pending(session, company_id, user_id, 3)

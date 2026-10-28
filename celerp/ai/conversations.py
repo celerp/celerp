@@ -20,6 +20,7 @@ from typing import Literal, Sequence
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from celerp.ai import jobs
 from celerp.models.ai import AIBatchJob, AIConversation, AIMessage
 from celerp.ai.service import NEW_QUESTION_ERRORS
 from celerp.ai.usage import record_usage
@@ -51,7 +52,7 @@ async def _protected_conversation_ids(
     active_ids = set((await session.execute(
         select(AIBatchJob.conversation_id).where(
             AIBatchJob.conversation_id.in_(ids),
-            AIBatchJob.status.in_(("pending", "running")),
+            jobs.is_open(),
         )
     )).scalars().all())
     action_rows = await session.execute(
@@ -377,35 +378,35 @@ def message_error(tools_called: list | None) -> bool:
 
 
 class QuestionIdConflict(Exception):
-    """The question id already names a question this send cannot be: another question,
-    another conversation, or one that can no longer be asked under it."""
+    """The question id already names a message this send cannot be: one no question job
+    holds, or a question that can no longer be asked under it."""
 
 
 async def find_question(
     session: AsyncSession,
     conversation_id: uuid.UUID,
     question_id: uuid.UUID,
-    query: str,
-    file_ids: list[str] | None,
-) -> tuple[AIMessage | None, AIMessage | None]:
-    """The user message ``question_id`` names, and the answer it already has.
+    request: jobs.JobRequest,
+) -> tuple[AIBatchJob | None, AIMessage | None, AIMessage | None]:
+    """The job ``question_id`` names for ``request`` (``jobs.reused_job``, the one
+    comparison of a send with what the question asked), its user message, and the
+    answer it already has.
 
-    An id is never given to a different question. (None, None) when nothing holds the
-    id yet: a new question. Otherwise the id must name a user message of this
-    conversation with the same text and files, else ``QuestionIdConflict``. Its answer
-    is the first reply after it, before the next question, that is not a failure; a
-    question with an answer returns it however many questions came after. Without an
-    answer the question is asked again only while it is the conversation's latest and
-    the AI service still takes its id; otherwise ``QuestionIdConflict``.
+    The message is read before the job: both are committed together, so a send that
+    finds the message finds its job. (None, None, None) when nothing holds the id yet:
+    a new question. A message under the id without a job is not a question this send
+    can be: ``QuestionIdConflict``. The answer is the first reply after the
+    question, before the next question, that is not a failure; a question with an
+    answer returns it however many questions came after. Without an answer the question
+    is asked again only while it is the conversation's latest and the AI service still
+    takes its id; otherwise ``QuestionIdConflict``.
     """
     asked = await session.get(AIMessage, question_id)
-    if asked is None:
-        return None, None
-    if (
-        asked.conversation_id != conversation_id or asked.role != "user"
-        or asked.content != query or (asked.file_ids or None) != (file_ids or None)
-    ):
-        raise QuestionIdConflict
+    job = await jobs.reused_job(session, question_id, request)
+    if job is None:
+        if asked is not None:
+            raise QuestionIdConflict
+        return None, None, None
     later = (await session.execute(
         select(AIMessage)
         .where(AIMessage.conversation_id == conversation_id, AIMessage.created_at > asked.created_at)
@@ -415,12 +416,12 @@ async def find_question(
     replies = later[:next_question]
     for reply in replies:
         if not message_error(reply.tools_called):
-            return asked, reply
+            return job, asked, reply
     if next_question < len(later) or (
         replies and (message_failure(replies[-1].tools_called) or {}).get("code") in NEW_QUESTION_ERRORS
     ):
         raise QuestionIdConflict
-    return asked, None
+    return job, asked, None
 
 
 def help_record(pages: list[str] | None) -> list[dict]:

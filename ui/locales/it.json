@@ -6576,6 +6576,8 @@
   "ai.question_stopped": "Hai interrotto questa domanda. Chiedi di nuovo per riprenderla. Conta comunque come una sola domanda.",
   "ai.question_interrupted": "Questa domanda si è interrotta al riavvio di Celerp. Chiedi di nuovo per riprenderla. Conta comunque come una sola domanda.",
   "ai.job_stopped": "Interrotto dopo aver letto {done} file su {total}. Riprendi per leggere i rimanenti.",
+  "ai.job_interrupted": "La lettura si è interrotta dopo {done} file su {total}. Continua per leggere i restanti.",
+  "ai.err_read_refused": "L'assistente non ha avuto l'autorizzazione a leggere i dati necessari a questa domanda. Chiedi di nuovo quando avrai accesso.",
   "th.unconfirmed": "Non ancora confermato",
   "ai.usage_unconfirmed_note": "Non ancora confermato: domande il cui addebito non è stato ancora confermato dal servizio IA. Non vengono conteggiate in «Crediti utilizzati» finché non arriva la conferma.",
   "ai.usage_unresolved_note": "Per {count} di queste non è più possibile ottenere conferma, perché il servizio IA conserva i dati di addebito di una domanda solo per un giorno. Restano non confermate e non vengono conteggiate in «Crediti utilizzati».",

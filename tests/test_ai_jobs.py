@@ -403,14 +403,15 @@ async def test_a_runner_that_raises_is_started_again_and_finishes_without_resend
     assert all(cloud.executions[_op(job_id, f)] == 1 for f in file_ids)
 
 
-async def test_a_runner_that_cannot_record_a_failure_drains_its_steps_and_leaves_the_job_to_resume(
+async def test_a_runner_that_cannot_record_a_failure_drains_its_steps_and_runs_the_job_again(
         client, owner, cloud, session, monkeypatch):
-    """No step outlives its runner: when a step's failure cannot even be written, every
-    other step of the job is cancelled and awaited, the job stays open, and the next
-    start finishes it without running any file twice."""
+    """No step outlives its run: when a step's failure cannot even be written, every
+    other step of the job is cancelled and awaited before the run ends. The job is
+    never left stranded: its runner keeps it, reading as running, and runs it again
+    until it finishes, without running any file twice."""
     from celerp.ai import batch
     monkeypatch.setattr(jobs, "STEP_RETRY_DELAY_S", 0.01)
-    monkeypatch.setattr(jobs, "RUNNER_RESTARTS", 0)
+    monkeypatch.setattr(jobs, "RUNNER_RESTART_MAX_DELAY_S", 0.01)
     monkeypatch.setattr(jobs, "gate", jobs.ModelGate(4))
     token, company_id, user_id = owner
     conv = await _conversation(client, token)
@@ -431,19 +432,21 @@ async def test_a_runner_that_cannot_record_a_failure_drains_its_steps_and_leaves
         if values.get("state") == "failed" and broken["on"]:
             raise RuntimeError("database write refused")
         return await real_set_step(session_, step_pk, **values)
+    left_running: list[list] = []
+    real_after_failure = jobs._after_failure
+
+    async def _after_failure(job_id_):
+        left_running.append(_step_tasks())
+        broken["on"] = False                    # the next run can write again
+        await real_after_failure(job_id_)
     monkeypatch.setattr(batch, "read_file", _read)
     monkeypatch.setattr(jobs, "_set_step", _set_step)
+    monkeypatch.setattr(jobs, "_after_failure", _after_failure)
     await client.post(f"/ai/conversations/{conv}/query", headers=AUTH(token), json={
         "query": "Read", "file_ids": file_ids, "document_mode": "receipts", "operation_id": str(job_id)})
-    await until(lambda: not jobs.is_held(job_id), 20.0)
-
-    assert _step_tasks() == []
-    # A column read: an entity loaded here would sit stale in the identity map the
-    # routes share with this session in tests.
-    assert (await session.execute(select(AIBatchJob.status).where(AIBatchJob.id == job_id))).scalar_one() == "running"
-    broken["on"] = False
-    await jobs.recover_on_start()
     job = await _finished(client, token, job_id)
+
+    assert left_running == [[]]
     assert [f["status"] for f in job["files"]] == ["success"] * 3
     assert all(cloud.executions[_op(job_id, f)] == 1 for f in file_ids)
 
@@ -503,7 +506,7 @@ async def test_ai_access_lost_mid_job_stops_the_unsent_files_and_resume_sends_th
     await until(lambda: first in cloud.arrived)
     access["on"] = False
     cloud.release(first)
-    await until(lambda: not jobs.is_held(job_id))
+    await until(lambda: not jobs.task_alive(job_id))
     access["on"] = True  # the routes are admitted by the same rule
     job = await _job(client, token, job_id)
     assert job["status"] == "failed"

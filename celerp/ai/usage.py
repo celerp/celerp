@@ -70,11 +70,10 @@ async def reconcile_usage(session: AsyncSession) -> None:
     """One pass: mark unresolved every pending row the service can no longer confirm,
     then settle up to RECONCILE_BATCH other pending rows whose reconcile time has
     passed, from ONE status read of their operations, then commit. A charged one
-    takes its charge; one never charged takes 0; one an older service keeps no status
-    for keeps what its replies reported. One still running, or with no terminal
+    takes its charge; one never charged takes 0. One still running, or with no terminal
     status (not yet known to the service, or past its fencing capacity), is asked
     again after RECONCILE_RETRY_S so the next due rows get their turn; every row stays
-    as it was when the service cannot be asked. A row sent again after the read has a
+    as it was when the service cannot be asked or answers no status. A row sent again after the read has a
     new reconcile time and is left for a later pass; so is a row a job in this
     process still holds."""
     now = datetime.now(timezone.utc)
@@ -100,17 +99,14 @@ async def reconcile_usage(session: AsyncSession) -> None:
         log.info("AI usage reconcile skipped: %s", type(exc).__name__)
         await session.commit()
         return
-    by_id = None if statuses is None else {s["operation_id"]: s for s in statuses}
+    by_id = {s["operation_id"]: s for s in statuses}
     for row in rows:
-        if by_id is None:
-            settled = {"pending": False}
+        status = by_id.get(str(row.operation_id))
+        if status is None or status["state"] not in ("charged", "not_charged"):
+            settled = {"reconcile_at": now + timedelta(seconds=deadlines.RECONCILE_RETRY_S)}
         else:
-            status = by_id.get(str(row.operation_id))
-            if status is None or status["state"] not in ("charged", "not_charged"):
-                settled = {"reconcile_at": now + timedelta(seconds=deadlines.RECONCILE_RETRY_S)}
-            else:
-                settled = {"pending": False,
-                           "credits": status["credits"] if status["state"] == "charged" else 0}
+            settled = {"pending": False,
+                       "credits": status["credits"] if status["state"] == "charged" else 0}
         await session.execute(
             update(AIUsage)
             .where(AIUsage.id == row.id, AIUsage.pending, AIUsage.reconcile_at == row.reconcile_at)

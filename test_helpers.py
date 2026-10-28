@@ -80,7 +80,7 @@ async def settled_question(client, headers: dict, conversation_id: str, question
     test's requests and the job share one connection, which runs one query at a time,
     so the state is read once the job's task has ended, never while it runs."""
     from celerp.ai import jobs
-    await until(lambda: not jobs.is_held(uuid.UUID(str(question_id))))
+    await until(lambda: not jobs.task_alive(uuid.UUID(str(question_id))))
     r = await client.get(f"/ai/conversations/{conversation_id}/questions/{question_id}", headers=headers)
     assert r.status_code == 200, r.text
     state = r.json()

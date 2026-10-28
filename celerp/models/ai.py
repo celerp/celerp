@@ -111,6 +111,10 @@ class AIBatchJob(Base):
     request_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
     # The asker's session nonce, which a question's tools read the app under.
     auth_nonce: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # The runner lease (celerp.ai.jobs.liveness): the process running the job, and until
+    # when its claim holds unless renewed.
+    runner_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),

@@ -342,21 +342,6 @@ async def test_tool_404_surfaces_to_model_not_as_run_error(monkeypatch):
     assert result.answer == "I could not find that item."
 
 
-@pytest.mark.asyncio
-async def test_tool_403_surfaces_to_model_not_as_run_error(monkeypatch):
-    _install(
-        monkeypatch,
-        [
-            tool_result(calls=[tool_call("list_items", {"query": {"q": "x"}}, "d1")]),
-            tool_result(content="You do not have permission to view inventory."),
-        ],
-        execute=_execute_returning({"ok": False, "status": 403, "data": {"detail": "Forbidden"}}),
-    )
-    result = await _run()
-    assert result.error is None
-    assert "permission" in result.answer
-
-
 # -- Caps -------------------------------------------------------------------
 
 @pytest.mark.asyncio
@@ -663,15 +648,22 @@ async def test_service_unavailable_message_survives_agent_boundary(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_tool_401_ends_run_with_session_expired(monkeypatch):
+@pytest.mark.parametrize("status,code", sorted(jobs.CALLER_REFUSALS.items()))
+async def test_a_read_refused_to_its_caller_ends_the_run_retryable_and_is_never_journaled(monkeypatch, status, code):
+    """Signed out (401) or refused by a permission or a module turned off (403): the
+    refusal is about who asked, not the request, so the run ends with it, the question
+    can be asked again, and the read is not kept as the tool call's result."""
     _install(
         monkeypatch,
         [tool_result(calls=[tool_call("list_items", {"query": {"q": "x"}}, "r1")])],
-        execute=_execute_returning({"ok": False, "status": 401, "error": {"code": "http_401", "message": "no"}}),
+        execute=_execute_returning({"ok": False, "status": status, "data": {"detail": "no"}}),
     )
-    result = await _run()
-    assert result.error == t("error.session_expired")
-    assert result.pending_actions == []
+    journal = jobs.Journal(uuid.uuid4())
+    result = await _run(journal=journal, operation_id=journal.question_id)
+    assert (result.error_code, result.pending_actions) == (code, [])
+    assert code in service.RETRYABLE_ERRORS
+    assert result.error == t({"session_expired": "error.session_expired", "read_refused": "ai.err_read_refused"}[code])
+    assert journal.stored("tool:r1") is None
 
 
 @pytest.mark.asyncio

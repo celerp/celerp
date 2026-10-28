@@ -138,6 +138,7 @@ _TOO_MUCH_DATA_TEXT = "Too much data was returned; ask a narrower question."
 RETRYABLE_ERRORS = frozenset({
     "service_unavailable", "busy", "operation_in_progress",
     "continuation_expired", "unexpected_reply", "gateway_error", "timeout", "stopped",
+    *jobs.CALLER_REFUSALS.values(),
 })
 # Failures after which the service will not take the question id again: the outcome
 # of its first send is unknown (final for that id), the id expired, or the question
@@ -145,18 +146,21 @@ RETRYABLE_ERRORS = frozenset({
 NEW_QUESTION_ERRORS = frozenset({"outcome_unknown", "operation_expired", "operation_mismatch"})
 
 
-class _SessionExpired(Exception):
-    """A capability answered 401 mid-run: the user's token is no longer valid."""
+class _CallerRefused(Exception):
+    """The app refused a read because of who asked (``jobs.caller_refusal``); ``code``
+    is what the question ends with."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
 
 
 def _error_code(exc: BaseException) -> str:
     """Name a failure by type, never by message substring."""
     if isinstance(exc, (asyncio.TimeoutError, httpx.TimeoutException)):
         return "timeout"
-    if isinstance(exc, RelayError):
+    if isinstance(exc, (RelayError, _CallerRefused)):
         return exc.code
-    if isinstance(exc, _SessionExpired):
-        return "session_expired"
     if isinstance(exc, jobs.Stopped):
         return "stopped"
     return "unexpected"
@@ -169,6 +173,8 @@ def _user_error(exc: BaseException) -> str:
         return t("ai.err_timeout")
     if code == "session_expired":
         return t("error.session_expired")
+    if code == "read_refused":
+        return t("ai.err_read_refused")
     if code == "stopped":
         return t("ai.question_stopped")
     if code == "service_unavailable":
@@ -365,14 +371,20 @@ async def run_agent(
     except HTTPException as exc:
         raise AgentRefusal(exc, tally) from exc
     except Exception as exc:
-        if not isinstance(exc, (_SessionExpired, jobs.Stopped)):
+        if not isinstance(exc, (_CallerRefused, jobs.Stopped)):
             log.error("AI agent run failed: %s", exc)
-        result = tally.result(
-            answer="", model_used="", tools_called=[], pending_actions=[],
-            error=_user_error(exc), error_code=_error_code(exc),
-        )
+        result = failure(exc, tally)
         _log_query(company_id, user_id, "", [], len(file_ids or []), t0, result.error)
         return result
+
+
+def failure(exc: BaseException, tally: RunTally) -> AgentResult:
+    """What a run that ended on ``exc`` returns: no answer, the user-safe reason, and
+    what the run was charged so far."""
+    return tally.result(
+        answer="", model_used="", tools_called=[], pending_actions=[],
+        error=_user_error(exc), error_code=_error_code(exc),
+    )
 
 
 async def _agent_loop(
@@ -510,8 +522,6 @@ async def _agent_loop(
                 ))
                 tools_called.append(name)
                 _cite(tally, name, arguments, tool_result)
-                if tool_result.get("status") == 401:
-                    raise _SessionExpired()
                 if not tool_result.get("ok") and (tool_result.get("error") or {}).get("code") == "invalid_arguments":
                     # Help the model self-correct by naming the accepted argument shape.
                     tool_result = {**tool_result, "expected_sections": _allowed_sections(capability)}
@@ -582,12 +592,17 @@ _STEP_STATES = {"outcome_unknown": "unknown", "operation_expired": "expired"}
 
 async def _tool_step(journal: jobs.Journal, call_id: str, run) -> dict:
     """One read tool call: what the journal holds for it, or its result, journaled.
-    The question is admitted before the read, as before every model step."""
+    The question is admitted before the read, as before every model step. A read the
+    app refused its caller is never journaled: the question ends with that refusal and
+    asking again reads again."""
     key = f"tool:{call_id}"
     stored = journal.stored(key)
     if stored is None:
         await journal.admit()
         stored = await run()
+        refused = jobs.caller_refusal(stored)
+        if refused is not None:
+            raise _CallerRefused(refused)
         await journal.ended(key, "done", stored)
     return stored
 

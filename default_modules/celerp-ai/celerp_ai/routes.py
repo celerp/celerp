@@ -170,12 +170,11 @@ def _conflict(code: str, message: str) -> HTTPException:
     return HTTPException(status_code=409, detail={"code": code, "message": message})
 
 
-async def _find_question(session: AsyncSession, conversation_id: uuid.UUID, question_id: uuid.UUID,
-                         body: "ConversationQueryRequest"):
+async def _find_question(session: AsyncSession, conversation_id: uuid.UUID, question_id: uuid.UUID, request):
     """``find_question`` for this send, its id conflict refused as ``operation_conflict``."""
     from celerp.ai.conversations import QuestionIdConflict, find_question
     try:
-        return await find_question(session, conversation_id, question_id, body.query, body.file_ids)
+        return await find_question(session, conversation_id, question_id, request)
     except QuestionIdConflict:
         raise _conflict("operation_conflict", t("ai.err_operation_conflict")) from None
 
@@ -521,6 +520,11 @@ def _answer_response(msg, *, question_id: uuid.UUID, asked_again: bool) -> Query
     )
 
 
+# A reading job as its user is told it stands: running while its runner holds it,
+# interrupted once nobody runs it (Continue sends the rest), else how it ended.
+JOB_STATUS = {"running": "running", "unheld": "interrupted"}
+
+
 def _job_out(job: AIBatchJob, steps: list) -> BatchJobOut:
     """A reading job as its user sees it; its progress is read from its steps."""
     from celerp.ai import jobs
@@ -528,7 +532,7 @@ def _job_out(job: AIBatchJob, steps: list) -> BatchJobOut:
     return BatchJobOut(
         id=job.id,
         conversation_id=job.conversation_id,
-        status=job.status,
+        status=JOB_STATUS.get(jobs.liveness(job), job.status),
         total_files=len(steps),
         completed_files=done,
         failed_files=sum(1 for s in steps if s.state in jobs.RETRYABLE_STEPS),
@@ -638,10 +642,11 @@ async def delete_conv(
     session: AsyncSession = Depends(get_session),
 ) -> None:
     """Delete a conversation and all its messages."""
+    from celerp.ai import jobs
     from celerp.ai.batch import list_conversation_jobs
     from celerp.ai.conversations import delete_conversation
-    jobs = await list_conversation_jobs(session, conversation_id, company_id, user.id)
-    if any(job.status in ("pending", "running") for job in jobs):
+    rows = await list_conversation_jobs(session, conversation_id, company_id, user.id)
+    if any(jobs.liveness(job) == "running" for job in rows):
         raise _conflict("conversation_busy", "This conversation still has files being processed. Wait for the job to finish before deleting it.")
     found = await delete_conversation(session, conversation_id, company_id, user.id)
     if not found:
@@ -715,19 +720,20 @@ async def query_in_conversation(
 
     # A caller that sends no id gets a new question; it is not promised a single charge.
     question_id = body.operation_id or uuid.uuid4()
-    asked, answered = await _find_question(session, conversation_id, question_id, body)
+    receipts = body.document_mode == "receipts"
+    request = (jobs.JobRequest(company_id=company_id, user_id=user.id, kind="documents",
+                               conversation_id=conversation_id, query=body.query, file_ids=tuple(body.file_ids or ()))
+               if receipts else jobs.JobRequest.question(company_id=company_id, user_id=user.id, query=body.query,
+                                                          file_ids=body.file_ids, conversation_id=conversation_id))
+    job, asked, answered = await _find_question(session, conversation_id, question_id, request)
 
-    if body.document_mode == "receipts":
+    if receipts:
         # A reading job takes its question's id, so sending the question again
         # returns the job already started for it.
-        job = await jobs.reused_job(session, question_id, jobs.JobRequest(
-            company_id=company_id, user_id=user.id, kind="documents", conversation_id=conversation_id,
-            query=body.query, file_ids=tuple(body.file_ids or ())))
         if job is None:
             try:
-                if asked is None:
-                    await add_message(session, conversation_id, "user", body.query,
-                                      file_ids=body.file_ids, message_id=question_id)
+                await add_message(session, conversation_id, "user", body.query,
+                                  file_ids=body.file_ids, message_id=question_id)
                 job = await create_batch_job(
                     session, company_id, user.id, body.query, body.file_ids or [],
                     conversation_id=conversation_id, job_id=question_id,
@@ -747,18 +753,13 @@ async def query_in_conversation(
 
     if answered is not None:
         return _answer_response(answered, question_id=question_id, asked_again=True)
-    if jobs.is_held(question_id):
-        raise _conflict("question_in_progress", t("ai.err_question_in_progress"))
-    asking = jobs.JobRequest.question(company_id=company_id, user_id=user.id, query=body.query,
-                                        file_ids=body.file_ids, conversation_id=conversation_id)
-    job = await jobs.reused_job(session, question_id, asking)
     try:
         if asked is None:
             await add_message(session, conversation_id, "user", body.query,
                               file_ids=body.file_ids, message_id=question_id)
         reopened = True
         if job is None:
-            session.add(jobs.question_job(job_id=question_id, request=asking, auth_nonce=auth.snonce))
+            session.add(jobs.question_job(job_id=question_id, request=request, auth_nonce=auth.snonce))
         else:
             reopened = await jobs.reopen_question(session, question_id, auth.snonce)
         await session.commit()
@@ -766,12 +767,14 @@ async def query_in_conversation(
         await session.rollback()
         raise _conflict("question_in_progress", t("ai.err_question_in_progress"))
     if not reopened:
-        # Answered after this send read the thread: that answer, never a second run.
+        # A runner holds it, or answered it after this send read the thread: that
+        # answer, never a second run.
         await session.refresh(job)
+        if job.status != "completed":
+            raise _conflict("question_in_progress", t("ai.err_question_in_progress"))
         answer = await session.get(AIMessage, uuid.UUID(job.results["message_id"]))
         return _answer_response(answer, question_id=question_id, asked_again=True)
-    if not jobs.start_job(question_id):
-        raise _conflict("question_in_progress", t("ai.err_question_in_progress"))
+    jobs.start_job(question_id)
     return JSONResponse(
         status_code=202,
         content={"job_id": str(question_id), "message_id": str(question_id), "asked_again": asked is not None},
@@ -794,13 +797,11 @@ async def question_state(
     from celerp.ai.conversations import get_conversation
     if await get_conversation(session, conversation_id, company_id, user.id) is None:
         raise HTTPException(status_code=404, detail=t("ai.err_conversation_not_found"))
-    # The registry first: a job stores its answer before it leaves it, so a question
-    # read as held and then stored is never read as interrupted.
-    held = jobs.is_held(question_id)
     stored = await jobs.stored_question_state(session, question_id, company_id=company_id, user_id=user.id,
                                               conversation_id=conversation_id)
     if stored is None:
         raise HTTPException(status_code=404, detail=t("ai.err_question_not_found"))
+    held = stored["state"] == "running"
     waiting = jobs.waiting_for(question_id) if held else None
     notice = None
     if waiting:
@@ -1514,7 +1515,7 @@ async def propose_from_job(
                                conversation_id=conversation_id)
     if job is None:
         raise HTTPException(status_code=404, detail=t("ai.err_job_not_found"))
-    if job.status in ("pending", "running"):
+    if jobs.liveness(job) != "ended":
         raise _conflict("job_not_finished", "The files are still being read.")
     result_files = [jobs.file_view(step) for step in (await jobs.job_steps(session, [job.id]))[job.id]]
     if job.status == "failed" and not any(entry.get("status") == "success" for entry in result_files):

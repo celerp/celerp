@@ -542,7 +542,7 @@ async def test_repeat_send_in_a_read_window_runs_once(client, owner, monkeypatch
         read = await real_find(*args, **kw)  # stored, not yet answered
         release.set()
         await first_send[0]
-        await until(lambda: not jobs.is_held(question))  # the job stored its answer
+        await until(lambda: not jobs.task_alive(question))  # the job stored its answer
         return read
 
     monkeypatch.setattr(conversations, "find_question", _read_while_first_send_moves_on)

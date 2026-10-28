@@ -74,34 +74,11 @@ async def _held_question(client, token, cloud):
     return conv, qid
 
 
-async def test_a_job_ending_between_the_registry_read_and_the_stored_read_reads_running(
+async def test_a_question_read_while_it_ends_is_running_then_answered_never_interrupted(
         client, owner, cloud, monkeypatch):
-    """V2, forced: the read finds the job held, then the job commits its answer and
-    leaves the registry before the read looks at the stored state."""
-    token, *_ = owner
-    conv, qid = await _held_question(client, token, cloud)
-    real_is_held, real_stored = jobs.is_held, jobs.stored_question_state
-    reads: list[bool] = []
-
-    def _is_held(job_id):
-        reads.append(real_is_held(job_id))
-        return reads[-1]
-
-    async def _stored_after_the_end(*args, **kwargs):
-        cloud.release(str(qid))
-        await until(lambda: not real_is_held(qid))
-        return await real_stored(*args, **kwargs)
-
-    monkeypatch.setattr(jobs, "is_held", _is_held)
-    monkeypatch.setattr(jobs, "stored_question_state", _stored_after_the_end)
-    state = await _state(client, token, conv, qid)
-    assert reads == [True]
-    assert state["state"] == "running"
-
-
-async def test_a_question_out_of_the_registry_always_has_its_answer_stored(client, owner, cloud, monkeypatch):
-    """V2, the other side: whenever the registry no longer holds the job, the stored
-    state is already terminal (the answer is committed before the job leaves)."""
+    """V2: the state is read from the job's row alone (``jobs.liveness``), and a job
+    stores its answer and lets its lease go in one commit, so a read never finds it
+    run by nobody on its way to the answer."""
     token, *_ = owner
     conv, qid = await _held_question(client, token, cloud)
     seen: list[str] = []

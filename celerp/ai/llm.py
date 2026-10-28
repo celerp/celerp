@@ -216,17 +216,14 @@ def _count(value) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
 
 
-async def operations_status(operation_ids: list[uuid.UUID]) -> list[dict] | None:
+async def operations_status(operation_ids: list[uuid.UUID]) -> list[dict]:
     """What the service charged for questions this install asked, read only: one
     {operation_id, state, outcome, credits, charged_at} per id, state one of
-    OPERATION_STATES. None from an older service that keeps no operation status.
-    Raises RelayError, or httpx errors, when the service cannot be asked or does not
+    OPERATION_STATES. Raises RelayError, or httpx errors, when the service cannot be asked or does not
     answer as described."""
     body = {"operation_ids": [str(i) for i in operation_ids]}
     budget = deadlines.status_budget(await deadlines.limits(), len(jsonlib.dumps(body)))
     resp = await _relay_request("POST", "/ai/operations/status", body=body, budget=budget)
-    if resp.status_code == 404:
-        return None
     if resp.status_code != 200:
         raise RelayError("gateway_error", f"LLM gateway error {resp.status_code}", status=resp.status_code)
     reply = resp.json()

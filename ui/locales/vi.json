@@ -6576,6 +6576,8 @@
   "ai.question_stopped": "Bạn đã dừng câu hỏi này. Hãy hỏi lại để tiếp tục. Câu hỏi vẫn chỉ được tính là một lượt.",
   "ai.question_interrupted": "Câu hỏi này đã dừng khi Celerp khởi động lại. Hãy hỏi lại để tiếp tục. Câu hỏi vẫn chỉ được tính là một lượt.",
   "ai.job_stopped": "Đã dừng sau khi đọc {done} trong tổng số {total} tệp. Tiếp tục để đọc các tệp còn lại.",
+  "ai.job_interrupted": "Việc đọc bị gián đoạn sau {done} trên {total} tệp. Tiếp tục để đọc phần còn lại.",
+  "ai.err_read_refused": "Trợ lý không được phép đọc dữ liệu mà câu hỏi này cần. Hãy hỏi lại khi bạn có quyền truy cập dữ liệu đó.",
   "th.unconfirmed": "Chưa được xác nhận",
   "ai.usage_unconfirmed_note": "Chưa được xác nhận: những câu hỏi mà dịch vụ AI chưa xác nhận khoản phí. Chúng chưa được tính vào «Tín dụng đã sử dụng» cho đến khi được xác nhận.",
   "ai.usage_unresolved_note": "Có {count} câu hỏi trong số đó không thể xác nhận được nữa vì dịch vụ AI chỉ lưu thông tin khoản phí của mỗi câu hỏi trong một ngày. Chúng tiếp tục ở trạng thái chưa được xác nhận và không được tính vào «Tín dụng đã sử dụng».",

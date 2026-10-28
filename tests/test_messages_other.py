@@ -216,9 +216,10 @@ async def test_long_search_says_how_long(client):
 
 def test_ai_errors_are_translated():
     import asyncio
-    from celerp.ai.service import _SessionExpired, _user_error
+    from celerp.ai.service import _CallerRefused, _user_error
     assert _user_error(asyncio.TimeoutError()) == t("ai.err_timeout", "en")
-    assert _user_error(_SessionExpired()) == t("error.session_expired", "en")
+    assert _user_error(_CallerRefused("session_expired")) == t("error.session_expired", "en")
+    assert _user_error(_CallerRefused("read_refused")) == t("ai.err_read_refused", "en")
 
 
 def test_unfinished_action_says_retry_is_safe():
