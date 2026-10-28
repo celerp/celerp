@@ -375,3 +375,15 @@ def test_a_statement_sent_through_a_conftest_wrapper_is_sited_at_its_caller():
     wrapper = compiled("conftest.py", "def call(f):\n    return f()\n", "call")
     caller = compiled("celerp/x.py", "def caller(call, probe):\n    return call(probe)\n", "caller")
     assert caller(wrapper, probe) == "celerp/x.py:2 caller"
+
+
+def test_a_test_statement_sent_through_a_conftest_wrapper_is_sited_at_the_test():
+    """With no application frame, the site is the test that sent it, not the wrapper."""
+    def compiled(path: str, source: str, name: str):
+        namespace = {"site": lock_rank._site}
+        exec(compile(source, f"{lock_rank._ROOT}/{path}", "exec"), namespace)
+        return namespace[name]
+    probe = compiled(".venv/lib/driver.py", "def probe():\n    return site()\n", "probe")
+    wrapper = compiled("conftest.py", "def call(f):\n    return f()\n", "call")
+    caller = compiled("tests/test_x.py", "def test_y(call, probe):\n    return call(probe)\n", "test_y")
+    assert caller(wrapper, probe) == "tests/test_x.py:2 test_y"

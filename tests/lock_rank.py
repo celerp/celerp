@@ -524,22 +524,21 @@ _ROOT = str(Path(__file__).resolve().parent.parent)
 
 
 def _site() -> str:
-    """The innermost application frame (file:line function) that sent the statement; test
-    files and conftest.py wrappers (the shared session's turn taking) are never the site."""
-    frame = sys._getframe(2)
-    while frame is not None:
-        path = frame.f_code.co_filename
-        name = path.rsplit("/", 1)[-1]
-        if path.startswith(_ROOT) and "/.venv/" not in path and not path.endswith("lock_rank.py") \
-                and "/tests/" not in path and not name.startswith("test_") and name != "conftest.py":
-            return f"{os.path.relpath(path, _ROOT)}:{frame.f_lineno} {frame.f_code.co_name}"
-        frame = frame.f_back
+    """The innermost application frame (file:line function) that sent the statement, else
+    the innermost test frame; a conftest.py wrapper (the shared session's turn taking) is
+    the site only when nothing else in the project sent it."""
+    frames = []
     frame = sys._getframe(2)
     while frame is not None:
         path = frame.f_code.co_filename
         if path.startswith(_ROOT) and "/.venv/" not in path and not path.endswith("lock_rank.py"):
-            return f"{os.path.relpath(path, _ROOT)}:{frame.f_lineno} {frame.f_code.co_name}"
+            frames.append((path, path.rsplit("/", 1)[-1], frame))
         frame = frame.f_back
+    for chosen in ((f for p, n, f in frames if "/tests/" not in p and not n.startswith("test_") and n != "conftest.py"),
+                   (f for p, n, f in frames if n != "conftest.py"),
+                   (f for p, n, f in frames)):
+        for frame in chosen:
+            return f"{os.path.relpath(frame.f_code.co_filename, _ROOT)}:{frame.f_lineno} {frame.f_code.co_name}"
     return "?"
 
 
