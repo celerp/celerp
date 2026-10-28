@@ -15,7 +15,9 @@ process, so the folders of all CI shards together give the whole suite) and writ
   observer could not classify, and writes to tables that hold no company's data;
 - mutation-site coverage: the places in the bundled source that write (emit_event, a
   session add, delete or merge, an INSERT, UPDATE or DELETE construct executed) and
-  whether any observed durable write passed through each.
+  whether any observed durable write passed through each. A write is sent where its SQL
+  runs (an added row at the later flush or commit), so it counts for every site of the
+  function it was sent from that comes before that line.
 
 - the baseline: each accepted finding (mutation_baseline.json) with its tracking issue, and
   every entry no finding matched or its own reproducing test did not see.
@@ -89,11 +91,11 @@ def static_inventory():
                         # the line the function's source starts on, the first decorator's
                         decorators.append((rel, fn.decorator_list[0].lineno, fn.name, _called(deco).upper(),
                                            _receiver(deco)))
-            owner = {}
-            for fn in functions:
+            owner = {}  # node -> the innermost function holding it, the frame its write runs in
+            for fn in functions:  # outer functions first (ast.walk is breadth first)
                 for child in ast.walk(fn):
                     if hasattr(child, "lineno"):
-                        owner.setdefault(id(child), fn)
+                        owner[id(child)] = fn
             for node in ast.walk(tree):
                 if not isinstance(node, ast.Call):
                     continue
@@ -104,9 +106,11 @@ def static_inventory():
                     and isinstance(node.args[0], ast.Call) and _called(node.args[0]) in ("insert", "update", "delete"))
                 if write:
                     fn = owner.get(id(node))
+                    # The function's span from its first decorator, the line its code object starts on.
+                    first = min([fn.lineno] + [d.lineno for d in fn.decorator_list]) if fn else node.lineno
                     sites.append((rel, node.lineno, node.end_lineno or node.lineno,
                                   fn.name if fn else "<module>", name,
-                                  (fn.lineno, fn.end_lineno) if fn else (node.lineno, node.end_lineno)))
+                                  (first, fn.end_lineno) if fn else (node.lineno, node.end_lineno)))
     return decorators, sites
 
 
@@ -154,6 +158,13 @@ def _coverage(path):
     data = json.loads(_read(path))["files"]
     return {rel: (set(f["executed_lines"]), f.get("executed_branches", []), f.get("missing_branches", []))
             for rel, f in data.items()}
+
+
+def _passed_through(site, sent) -> bool:
+    """A durable write was sent from the site's function at or after the site's line."""
+    _, start, _, fn, _, (first, last) = site
+    return any(name == fn and start <= line <= last and (begins is None or begins == first)
+               for line, name, begins in sent)
 
 
 def report(folders, out, coverage_path=None, baseline=mutation_baseline.PATH):
@@ -231,14 +242,15 @@ def report(folders, out, coverage_path=None, baseline=mutation_baseline.PATH):
     lines.append("")
 
     # -- mutation sites --------------------------------------------------------
-    hit = defaultdict(set)
+    sent = defaultdict(set)  # file -> (line, function, the line its function starts on or None)
     for site in sites:
-        location = site.split(" ", 1)[0]
+        location, _, function = site.partition(" ")
         path, _, line = location.rpartition(":")
-        hit[path].add(int(line))
+        name, _, first = function.partition("@")
+        sent[path].add((int(line), name, int(first) if first else None))
     covered, missed = [], []
-    for rel, start, end, fn, name, span in static_sites:
-        (covered if any(start <= n <= end for n in hit.get(rel, ())) else missed).append((rel, start, end, fn, name, span))
+    for site in static_sites:
+        (covered if _passed_through(site, sent.get(site[0], ())) else missed).append(site)
     lines += ["## Mutation sites", "",
               f"- Write sites in the bundled source: {len(static_sites)}; passed through by an observed durable "
               f"write in a request: {len(covered)}; not: {len(missed)}.",

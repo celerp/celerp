@@ -424,6 +424,14 @@ async def share_import_url(session: AsyncSession, row: DocShareToken | None,
     return import_accept_url(view_url) if view_url else None
 
 
+def _shareable(row: Projection | None) -> None:
+    """Refuse a share of anything but a shareable document or list."""
+    if row is None or row.entity_type not in ("doc", "list"):
+        raise HTTPException(status_code=404, detail=t("documents.document_not_found"))
+    if not is_shareable(row.entity_type, row.state or {}):
+        raise HTTPException(status_code=422, detail=t("documents.err_share_type_not_shareable"))
+
+
 async def _share_status(session: AsyncSession, row: DocShareToken | None) -> dict:
     """Uniform share-state payload for the UI: status/create/revoke all return it."""
     if row is None:
@@ -467,17 +475,10 @@ async def share_status(
     company_id: _uuid.UUID = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Share state for a document or list. Mints the (deactivated) token on
-    first call so the UI always shows the document's stable URL; never
-    activates anything."""
-    row = await session.get(Projection, (company_id, entity_id))
-    if row is None or row.entity_type not in ("doc", "list"):
-        raise HTTPException(status_code=404, detail=t("documents.document_not_found"))
-    if not is_shareable(row.entity_type, row.state or {}):
-        raise HTTPException(status_code=422, detail=t("documents.err_share_type_not_shareable"))
-    share_row = await get_or_create_share_token(session, company_id, entity_id)
-    await session.commit()
-    return await _share_status(session, share_row)
+    """Share state for a document or list. Read-only: a document never shared
+    reports no link, and Share (POST) mints its stable token."""
+    _shareable(await session.get(Projection, (company_id, entity_id)))
+    return await _share_status(session, await _find_share_row(session, company_id, entity_id))
 
 
 @router.post("/docs/{entity_id}/share")
@@ -490,12 +491,6 @@ async def create_share_link(
 ) -> dict:
     """Create the public share token for a document or list (or update the
     expiry of the existing one)."""
-    row = await session.get(Projection, (company_id, entity_id))
-    if row is None or row.entity_type not in ("doc", "list"):
-        raise HTTPException(status_code=404, detail=t("documents.document_not_found"))
-    if not is_shareable(row.entity_type, row.state or {}):
-        raise HTTPException(status_code=422, detail=t("documents.err_share_type_not_shareable"))
-
     expires = None
     if body and body.expires_at:
         try:
@@ -506,6 +501,9 @@ async def create_share_link(
         if expires <= datetime.now(timezone.utc):
             raise HTTPException(status_code=422, detail=t("documents.err_share_expiry_past"))
 
+    # Judged under the company lock, so a void that lands first is the state it sees.
+    await lock_company(session, company_id)
+    _shareable(await session.get(Projection, (company_id, entity_id), populate_existing=True))
     share_row = await get_or_create_share_token(session, company_id, entity_id)
     share_row.revoked_at = None
     share_row.expires_at = expires

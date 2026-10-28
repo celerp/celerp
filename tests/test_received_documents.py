@@ -686,6 +686,7 @@ async def test_legacy_untouched_import_moves_to_received_and_survives_rebuild(cl
     from celerp.migrations._data_reconcile import set_meta
     from celerp.models.projections import Projection
     from celerp.projections.engine import ProjectionEngine
+    from celerp.services.company_lock import lock_company
     from celerp_docs.received import received_id
     from celerp_docs.received_legacy import LEGACY_RECEIVED_KEY, move_legacy_imports
 
@@ -711,6 +712,7 @@ async def test_legacy_untouched_import_moves_to_received_and_survives_rebuild(cl
     assert (await move_legacy_imports(session))["changed"] is False
 
     rid = received_id("legacy", "", untouched)
+    await lock_company(session, company_id)
     await ProjectionEngine.rebuild(session, company_id)
     await session.commit()
     rows = {p.entity_id: p for p in (await session.execute(

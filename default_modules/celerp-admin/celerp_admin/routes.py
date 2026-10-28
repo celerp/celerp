@@ -1204,6 +1204,8 @@ async def run_doctor(
             await session.commit()
 
         if rebuild and fix:
+            # The repairs' commit released the lock; the replay takes it again.
+            await lock_company(session, company_id)
             await ProjectionEngine.rebuild(session, company_id=company_id)
             await session.commit()
 

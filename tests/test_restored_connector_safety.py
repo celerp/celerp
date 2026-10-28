@@ -148,11 +148,13 @@ async def _patch_qty(client, tok: str, eid: str, old: float, new: float) -> None
 
 async def test_restored_shopify_opt_ins_off_after_restore_and_rebuild(restored, real_engine):
     from celerp.projections.engine import ProjectionEngine
+    from celerp.services.company_lock import lock_company
     state, column = await _projection(real_engine, restored.cid, restored.a)
     assert state.get("is_sync_to_shopify") is False and column is False
     assert await count(real_engine, "ledger", "company_id = :c AND entity_id = :e AND event_type = 'shop.sync.disabled'",
                        c=uuid.UUID(restored.cid), e=restored.a) == 1
     async with maker(real_engine)() as s:
+        await lock_company(s, uuid.UUID(restored.cid))
         await ProjectionEngine.rebuild(s, uuid.UUID(restored.cid))
         await s.commit()
     state, column = await _projection(real_engine, restored.cid, restored.a)

@@ -196,7 +196,7 @@ class Census:
     """What one run saw: per route, protected and unprotected writes, and findings."""
     findings: list[Finding] = field(default_factory=list)
     routes: dict[str, dict[str, int]] = field(default_factory=dict)
-    sites: dict[str, int] = field(default_factory=dict)  # "file:line function" -> durable writes made there
+    sites: dict[str, int] = field(default_factory=dict)  # "file:line function@first" -> durable writes made there
     test: str = ""
 
     def count(self, route: str, what: str) -> None:
@@ -677,16 +677,19 @@ def _relative(filename: str) -> str | None:
     return _RELATIVE[filename]
 
 
-def _app_frames() -> list[str]:
+def _app_frames(first_line: bool = False) -> list[str]:
     """The app's own frames that led to the statement, outermost first, through the
-    greenlets the async session runs its database work in."""
+    greenlets the async session runs its database work in. With *first_line*, each
+    names the line its function starts on too ("file:line name@first"), so the census
+    tells apart two functions of one name in a file."""
     chains, frame, child = [], sys._getframe(1), greenlet.getcurrent()
     while frame is not None:
         chain = []
         while frame is not None:
             path = _relative(frame.f_code.co_filename)
             if path:
-                chain.append(f"{path}:{frame.f_lineno} {frame.f_code.co_name}")
+                chain.append(f"{path}:{frame.f_lineno} {frame.f_code.co_name}"
+                             + (f"@{frame.f_code.co_firstlineno}" if first_line else ""))
             frame = frame.f_back
         chains.append(chain)
         child = child.parent
@@ -800,11 +803,11 @@ def _executed(conn, cursor, statement, parameters, context, executemany) -> None
         else:
             kind = None
         root = session.get_transaction()
-        frames = _app_frames()
+        frames = _app_frames(first_line=True)
         note(session, _WRITE, Finding(
             kind or "protected", route, target, op.table, statement[:300], op.detail,
             earlier_locks=before, transaction=f"{id(root):x}",
-            where=frames[-6:] if kind else [], test=CENSUS.test, company_from=source, sites=frames,
+            where=_where() if kind else [], test=CENSUS.test, company_from=source, sites=frames,
             fingerprint=op.fingerprint))
 
 

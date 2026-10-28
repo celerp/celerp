@@ -24,6 +24,7 @@ from celerp.models.connector_config import OutboundQueue
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.projections.engine import ProjectionEngine
+from celerp.services.company_lock import lock_company
 from test_helpers import perm_setup
 from ui.i18n import t
 
@@ -281,9 +282,11 @@ async def test_rebuild_with_a_historical_crossed_row_is_deterministic(client, se
         )).scalars().all()
         return {r.entity_id: (r.entity_type, r.state, r.version) for r in rows}
 
+    await lock_company(session, company_id)
     await ProjectionEngine.rebuild(session, company_id)
     await session.flush()
     first = await _states()
+    await lock_company(session, company_id)
     await ProjectionEngine.rebuild(session, company_id)
     await session.flush()
     assert await _states() == first

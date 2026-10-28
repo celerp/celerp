@@ -56,7 +56,9 @@ async def _as_saved_by_earlier_version(session, company_id, lid) -> dict:
 async def _rebuild(session, company_id) -> None:
     """What Rebuild (POST /ledger/rebuild) runs: every record replayed from the ledger."""
     from celerp.projections.engine import ProjectionEngine
+    from celerp.services.company_lock import lock_company
 
+    await lock_company(session, company_id)
     await ProjectionEngine.rebuild(session, company_id=company_id)
     await session.commit()
 

@@ -1593,6 +1593,8 @@ async def _check_replay(session: AsyncSession, company_id) -> None:
     restored records keep their own times and versions."""
     from celerp.projections.engine import ProjectionEngine
     restored = await _projection_states(session, company_id)
+    # Taken outside the savepoint, so the replay's rollback keeps the lock.
+    await lock_company(session, company_id)
     savepoint = await session.begin_nested()
     try:
         await ProjectionEngine.rebuild(session, company_id)

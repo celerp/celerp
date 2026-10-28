@@ -15,6 +15,7 @@ from celerp.services.activity_redaction import (
 )
 from celerp.services.ledger_display import display_fields, entry_ts
 from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
+from celerp.services.company_lock import lock_company
 from ui.i18n import t
 from celerp.services.permissions import carry_authority, get_current_company_settings, require_permission
 
@@ -105,6 +106,7 @@ async def rebuild(
     # subuser cannot open concurrent full replays outside the request pool budget.
     async with get_lifecycle_session_ctx() as session:
         carry_authority(request_session, session)
+        await lock_company(session, company_id)
         await ProjectionEngine.rebuild(session, company_id=company_id)
         await session.commit()
     return {"ok": True}
