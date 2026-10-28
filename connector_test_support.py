@@ -124,6 +124,28 @@ def connector_session(session, monkeypatch):
     return session
 
 
+CONNECTOR_SESSION_TOKEN = "test-session-token-abc123"
+
+
+@pytest.fixture
+def connector_routes(connector_session, monkeypatch):
+    """The /connectors routes as on an install signed in to Celerp Cloud: they need the
+    X-Session-Token this yields, the relay gives a store context, and the connector
+    services' own sessions are the test session."""
+    from unittest.mock import AsyncMock
+
+    import celerp.gateway.state as gw_state
+    from celerp.connectors.base import ConnectorContext
+
+    async def _context(company_id, connector_name, **_kwargs):
+        return ConnectorContext(company_id=str(company_id), access_token="tok", store_handle="test.myshopify.com")
+
+    monkeypatch.setattr("celerp.connectors.relay_token.fetch_context", AsyncMock(side_effect=_context))
+    gw_state.set_session_token(CONNECTOR_SESSION_TOKEN)
+    yield CONNECTOR_SESSION_TOKEN
+    gw_state.set_session_token("")
+
+
 def stand_in_execution(monkeypatch, ctx=None):
     """Run connector work against the test's session without a lease: the stand-in
     reads the connection and its first-sync record and gives the real eligibility

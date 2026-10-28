@@ -15,7 +15,7 @@ os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 
 import pytest
 
-from connector_test_support import record_first_sync
+from connector_test_support import connector_routes, connector_session, record_first_sync  # noqa: F401
 
 
 # ── helper ────────────────────────────────────────────────────────────────────
@@ -293,50 +293,15 @@ async def test_health_system(client):
 
 # ── /connectors sync success path ─────────────────────────────────────────────
 
-_FAKE_SESSION_TOKEN = "test-session-token-abc123"
-
-
-@pytest.fixture(autouse=False)
-def patch_session_token(session):
-    from contextlib import asynccontextmanager
-    from unittest.mock import AsyncMock, patch
-    from celerp.connectors.base import ConnectorContext
-    import celerp.gateway.state as gw_state
-
-    async def _context(company_id, connector_name, **_kwargs):
-        return ConnectorContext(
-            company_id=str(company_id),
-            access_token="tok",
-            store_handle="test.myshopify.com",
-        )
-
-    @asynccontextmanager
-    async def _shared_session_ctx():
-        yield session
-
-    gw_state.set_session_token(_FAKE_SESSION_TOKEN)
-    with patch(
-        "celerp.connectors.relay_token.fetch_context",
-        new=AsyncMock(side_effect=_context),
-    ), patch(
-        "celerp.db.get_session_ctx",
-        new=_shared_session_ctx,
-    ), patch(
-        "celerp.db.SessionLocal",
-        new=_shared_session_ctx,
-    ):
-        yield
-    gw_state.set_session_token("")
-
 
 @pytest.mark.asyncio
-async def test_connector_sync_success(client, session, patch_session_token):
+async def test_connector_sync_success(client, session, connector_routes):
     """POST /connectors/shopify/sync with mocked connector returns 200 SyncResponse."""
     from unittest.mock import AsyncMock, patch
     from celerp.connectors.base import SyncResult, SyncEntity
 
     base_headers = await _register(client, "conn_sync")
-    headers = {**base_headers, "X-Session-Token": _FAKE_SESSION_TOKEN}
+    headers = {**base_headers, "X-Session-Token": connector_routes}
     company_id = (await client.get("/companies/me", headers=base_headers)).json()["id"]
     from celerp.models.connector_config import ConnectorConfig
     config = ConnectorConfig(company_id=str(company_id), connector="shopify")
