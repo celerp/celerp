@@ -22,7 +22,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp import db_catalog
 from celerp.accounting_roles import refusal
-from celerp.ai import jobs
 from celerp.db import sqlstate
 
 from celerp.models.accounting import UserCompany
@@ -306,6 +305,7 @@ async def reset(session: AsyncSession, company: Company, typed_name: str) -> Res
                                 "connectors and belongs to no company yet. Connect it in the company it "
                                 "belongs to before resetting this one. Nothing was deleted.")
     # A job is created under the company's key lock, so none can start once this check passed.
+    from celerp.ai import jobs
     reading = await session.scalar(select(AIBatchJob.id).where(
         AIBatchJob.company_id == company.id, jobs.runs_now()).limit(1))
     if reading is not None:
