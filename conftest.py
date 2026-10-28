@@ -1028,3 +1028,23 @@ def relay_not_called_at_boot(no_connection_off_this_machine, monkeypatch):
     """Boot without checking in with the relay (skip_relay_check_in). A test that wants the
     check-in patches it again itself."""
     skip_relay_check_in(monkeypatch.setattr)
+
+
+# ── Lock rank recorder (lock_rank.py) ──────────────────────────────────────────
+# CELERP_LOCK_RANK_DIR=<dir> records every lock the run takes and writes one graph per
+# worker there; `python lock_rank.py report <dir>` merges them.
+if os.environ.get("CELERP_LOCK_RANK_DIR"):
+    import lock_rank as _lock_rank
+
+    _lock_rank.install()
+
+    def pytest_runtest_setup(item):
+        _lock_rank.RECORDER.test = item.nodeid
+
+    def pytest_sessionfinish(session, exitstatus):
+        _lock_rank.dump(Path(os.environ["CELERP_LOCK_RANK_DIR"]) / f"lock-graph-{_worker}.json")
+
+    def pytest_runtest_call(item):
+        # Fixture setup runs in the test's one outer transaction; production commits
+        # between setup-like work and a request, so the body starts holding nothing.
+        _lock_rank.RECORDER.held.clear()
