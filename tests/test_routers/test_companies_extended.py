@@ -321,6 +321,9 @@ def patch_session_token(session):
     ), patch(
         "celerp.db.get_session_ctx",
         new=_shared_session_ctx,
+    ), patch(
+        "celerp.db.SessionLocal",
+        new=_shared_session_ctx,
     ):
         yield
     gw_state.set_session_token("")
