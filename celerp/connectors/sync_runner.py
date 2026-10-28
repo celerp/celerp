@@ -215,9 +215,13 @@ async def _attention_run(
     """The run holding the current attention list for one entity: the latest
     finished run since the last reset whose sync returned a list. A run that
     stopped before its sync produced one (a failed fetch, a guard, a crash)
-    records none, so it never replaces the list."""
+    records none, so it never replaces the list. Locking it takes the company
+    first (lock order: companies before sync_runs)."""
     import sqlalchemy as sa
 
+    if for_update:
+        from celerp.services.company_lock import lock_company
+        await lock_company(session, company_id)
     query = (
         sa.select(SyncRun)
         .where(

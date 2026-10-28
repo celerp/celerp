@@ -278,13 +278,22 @@ class WooCommerceReconciliationChanged(ValueError):
 
 
 async def _lock_woocommerce_order(session, cid, order_id: str) -> None:
-    """Serialize every change to one external order (webhook, sync, a person)."""
+    """Serialize every change to one external order (webhook, sync, a person).
+
+    Lock order: the company, then this order, then the WooCommerce link namespace, all
+    before any doc or item row, because holding or posting the order may change the
+    links of the products it touches."""
     from sqlalchemy import text
 
+    from celerp.services.company_lock import lock_company
+    from celerp_inventory.services import _lock_external_identity_namespace
+
+    await lock_company(session, cid)
     await session.execute(
         text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"),
         {"k": f"woocommerce-order:{cid}:{order_id}"},
     )
+    await _lock_external_identity_namespace(session, cid, "woocommerce")
 
 
 # The source state of an imported order WooCommerce no longer returns (deleted,
@@ -582,7 +591,6 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
         deposit_account,
         require_online_deposit_account,
     )
-    from celerp.services.company_lock import lock_company
     from celerp_docs.routes import (
         finalize_document,
         _fulfill_lines_impl,
@@ -637,9 +645,6 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
         # One external order may arrive simultaneously by webhook, manual sync, and
         # scheduled reconciliation. Serialize its full materialize/post transition.
         await _lock_woocommerce_order(session, cid, order_id)
-        # The company before any doc row: posting the order finalizes it, which
-        # draws the next invoice number.
-        await lock_company(session, cid)
 
         existing = await session.get(
             Projection, {"company_id": cid, "entity_id": entity_id}, with_for_update=True

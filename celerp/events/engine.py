@@ -664,11 +664,6 @@ async def emit_event(
     if kwargs.get("entity_type") == "doc" and kwargs.get("event_type") in PAYMENT_REMOVAL_EVENTS:
         await _refuse_stripe_payment_removal(session, kwargs)
 
-    if kwargs.get("event_type") in {"shop.sync.enabled", "shop.sync.disabled"}:
-        from celerp.connectors.ownership import lock_connector_key
-
-        await lock_connector_key(session, "shopify")
-
     # Physical codes (barcode, RFID / EPC) are unique per company among the codes a write
     # INTRODUCES: the item's code set after the event is compared with its set before, so
     # a duplicate already in the data never blocks an unrelated edit. An exact replay is

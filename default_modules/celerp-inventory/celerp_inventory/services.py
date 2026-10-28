@@ -838,6 +838,9 @@ class ExternalLinkConflictError(ValueError):
 async def _lock_external_identity_namespace(
     session: AsyncSession, company_id, platform: str
 ) -> None:
+    """The company lock comes first (lock order: companies, then the external-link and
+    external-product namespaces, then item rows), so no caller can take it after."""
+    await lock_company(session, company_id)
     if session.get_bind().dialect.name == "sqlite":
         return
     await session.execute(
@@ -1143,7 +1146,6 @@ async def upsert_external_product(
             )
             selected_by_identity = False
         if row is not None:
-            await lock_company(session, cid)  # before the row lock (company_lock lock order)
             row = await session.get(
                 Projection,
                 {"company_id": cid, "entity_id": row.entity_id},
@@ -1716,6 +1718,7 @@ async def stamp_catalog_family_members(
 ) -> int:
     """Persist currently unambiguous family membership before anchor identity changes."""
     cid = uuid.UUID(str(company_id))
+    await lock_company(session, cid)
     anchor = await session.get(
         Projection, {"company_id": cid, "entity_id": anchor_entity_id},
         with_for_update=True, populate_existing=True,
