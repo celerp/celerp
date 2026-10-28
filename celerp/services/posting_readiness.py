@@ -131,11 +131,14 @@ async def notify_unmapped(session: AsyncSession, company_id, refused=()) -> bool
     and the company's workflows need it, a posting was just refused for it (``refused``),
     or the notice already names it. Deduped on the standing notice so a restart never
     stacks them and kept current with the roles still wrong; withdrawn once none is.
-    Returns whether a notice was created. The caller commits."""
+    Returns whether a notice was created. The caller commits. Holds the company lock
+    before the accounts it judges, so a concurrent notifier waits and reads this one's."""
     from celerp.models.notification import Notification
     from celerp.notifications import service as notification_service
+    from celerp.services.company_lock import lock_company
     from celerp.services.journal_accounts import lock_accounts
 
+    await lock_company(session, company_id)
     settings = await current_settings(session, company_id)
     named = (await session.execute(select(Notification.i18n).where(
         Notification.company_id == company_id, Notification.category == NOTICE_CATEGORY,
