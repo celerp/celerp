@@ -69,8 +69,36 @@ def test_a_table_lock_is_recorded_as_its_own_class(statement, tables, mode):
 def test_an_insert_takes_key_share_on_every_row_it_references():
     found = classify("INSERT INTO user_companies (id, user_id, company_id, role) VALUES ($1, $2, $3, $4)",
                      ("i", "u", "c", "owner"))
-    assert ("row:companies", "key share wait") in found
-    assert ("row:users", "key share wait") in found
+    assert ("key:companies", "key share wait") in found
+    assert ("key:users", "key share wait") in found
+
+
+def test_a_foreign_key_share_after_a_higher_rank_is_not_ordered():
+    recorder = Recorder()
+    recorder.acquire(1, _lock("row:projections", "write", key="item"), 0.0)
+    recorder.acquire(1, _lock("key:companies", "key share wait", key="c"), 0.0)
+    assert not recorder.violations
+    assert ("row:projections", "key:companies") not in recorder.edges
+
+
+@pytest.mark.parametrize("statement", [
+    "SELECT id FROM companies WHERE id = $1 FOR UPDATE",
+    "DELETE FROM companies WHERE id = $1",
+])
+def test_taking_a_parent_key_exclusively_is_recorded_as_the_key(statement):
+    assert any(c == "key:companies" for c, _ in classify(statement, ("c",)))
+
+
+def test_a_lock_after_a_parent_key_taken_exclusively_is_an_order_violation():
+    recorder = Recorder()
+    recorder.acquire(1, _lock("key:companies", "update wait", key="c"), 0.0)
+    recorder.acquire(1, _lock("row:projections", "write", key="item"), 0.0)
+    assert ("order", "row:projections") in _kinds(recorder)
+
+
+def test_no_key_update_on_a_parent_leaves_its_key_alone():
+    assert not any(c.startswith("key:") for c, _ in
+                   classify("SELECT id FROM companies WHERE id = $1 FOR NO KEY UPDATE", ("c",)))
 
 
 def test_an_insert_waits_on_its_own_table_for_a_unique_key():

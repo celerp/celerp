@@ -77,7 +77,25 @@ RANKS: dict[str, int] = {
 TEST_RANKS: dict[str, int] = {}
 
 
+# LOCK TABLE runs only in the whole-company protocols (company_reset, db_catalog._hold), each
+# locking every table it names in one statement, after the company row (30): one rank for
+# every table lock, given to a table exactly when its rows are ranked.
+TABLE_LOCK_RANK = 36
+
+
+# A parent row's key (PostgreSQL row locks are two locks: the key, which KEY SHARE shares
+# and FOR UPDATE, DELETE or a key change take exclusively, and the rest of the row). A
+# foreign-key check shares the parent's key, so it can wait only on a transaction holding
+# that key exclusively; that holder takes it last and waits on nothing after it, so a key
+# share closes no cycle and is never ordered.
+KEY_RANK = 95
+
+
 def rank(cls: str) -> int | None:
+    if cls.startswith("tbl:"):
+        return TABLE_LOCK_RANK if rank("row:" + cls[4:]) is not None else None
+    if cls.startswith("key:"):
+        return KEY_RANK if rank("row:" + cls[4:]) is not None else None
     return RANKS.get(cls, TEST_RANKS.get(cls))
 
 
@@ -142,8 +160,31 @@ class Recorder:
     task_conns: weakref.WeakKeyDictionary = field(default_factory=weakref.WeakKeyDictionary)
     conn_task: dict[int, weakref.ref] = field(default_factory=dict)
 
+    # Per transaction (connection): what it holds by (class, key) -> strengths, the
+    # strengths of its explicit locks per class, and the last explicit key per class.
+    taken: dict[int, dict[tuple[str, str], set[str]]] = field(default_factory=lambda: defaultdict(dict))
+    explicit: dict[int, dict[str, set[str]]] = field(default_factory=lambda: defaultdict(dict))
+    last_key: dict[int, dict[str, str]] = field(default_factory=lambda: defaultdict(dict))
+
     def end(self, conn_key: int) -> None:
-        self.held.pop(conn_key, None)
+        for state in (self.held, self.taken, self.explicit, self.last_key):
+            state.pop(conn_key, None)
+
+    def clear_transactions(self) -> None:
+        for state in (self.held, self.taken, self.explicit, self.last_key):
+            state.clear()
+
+    def _retake(self, conn_key: int, lock: Lock) -> bool:
+        """Whether this connection already holds what ``lock`` asks for: the same key at no
+        less strength, or (for an implicit write) an explicit lock of the class that covers
+        it. A statement does not show which rows an UPDATE touches, and the helpers lock
+        the rows they then write."""
+        w = _strength(lock)
+        held = set(self.taken[conn_key].get((lock.cls, lock.key), ()))
+        held |= {_strength(h) for h in self.session_held.get(conn_key, ()) if h.cls == lock.cls and h.key == lock.key}
+        if not _explicit(lock.mode):
+            held = held | self.explicit[conn_key].get(lock.cls, set())
+        return any(_covers(h, w) for h in held)
 
     def acquire(self, conn_key: int, lock: Lock, waited: float) -> None:
         info = self.classes.setdefault(lock.cls, {"count": 0, "modes": set(), "sites": set()})
@@ -155,20 +196,23 @@ class Recorder:
                                     "seconds": round(waited, 3), "test": self.test})
         if rank(lock.cls) is None:
             self._violate("unknown", lock)
-        held = self.session_held[conn_key] + self.held[conn_key]
-        if any(h.cls == lock.cls and _covers(h, lock) for h in held):
-            # A re-take of what this transaction already holds, at no greater strength, is
-            # granted at once: it waits for nothing, so it orders nothing.
+        if lock.cls.startswith("key:") and _strength(lock) == "keyshare":
+            return
+        if self._retake(conn_key, lock):
+            # Granted at once: it waits for nothing, so it orders nothing.
             info["retakes"] = info.get("retakes", 0) + 1
             return
         waits = lock.mode.split(" ")[-1] not in ("nowait", "try", "skip")
         if waits:
             self._other_connections(conn_key, lock)
-        decreasing = False
-        same = [h for h in held if h.cls == lock.cls]
+        # One entry per run of a class, in the order taken: a class taken again with nothing
+        # else between adds no order, so the list stays as short as the order is.
+        held = self.session_held[conn_key] + self.held[conn_key]
+        decreasing, seen = False, {lock.cls}
         for i, h in enumerate(held):
-            if h.cls == lock.cls:
+            if h.cls in seen:
                 continue
+            seen.add(h.cls)
             # Classes this transaction held exclusively before h: a gate every other
             # transaction taking them waits on, so it cannot interleave with this edge.
             gate = {g.cls for g in held[:i] if _exclusive(g.mode)} - {h.cls, lock.cls}
@@ -176,15 +220,24 @@ class Recorder:
             if waits and rank(lock.cls) is not None and rank(h.cls) is not None and rank(lock.cls) < rank(h.cls):
                 decreasing = True
                 self._violate("order", lock, held_lock=h)
-        if same and waits and _explicit(lock.mode):
+        last = self.last_key[conn_key].get(lock.cls)
+        if last is not None and last != lock.key and waits and _explicit(lock.mode):
             # Another key of a class this transaction holds, with nothing higher taken since:
             # keys of one class are taken in sorted order (by their helper), or two
             # transactions taking two keys in opposite orders wait on each other.
-            self._edge(same[-1], lock, waits, set())
-            if not decreasing and lock.key < same[-1].key:
-                self._violate("unsorted", lock, held_lock=same[-1])
-        target = self.session_held if lock.mode.startswith("session") else self.held
-        target[conn_key].append(lock)
+            self._edge(lock, lock, waits, set())
+            if not decreasing and lock.key < last:
+                self._violate("unsorted", lock)
+        if lock.mode.startswith("session"):
+            self.session_held[conn_key].append(lock)
+            return
+        self.taken[conn_key].setdefault((lock.cls, lock.key), set()).add(_strength(lock))
+        if _explicit(lock.mode):
+            self.explicit[conn_key].setdefault(lock.cls, set()).add(_strength(lock))
+            self.last_key[conn_key][lock.cls] = lock.key
+        runs = self.held[conn_key]
+        if not runs or runs[-1].cls != lock.cls or _exclusive(lock.mode) and not _exclusive(runs[-1].mode):
+            runs.append(lock)
 
     def _edge(self, h: Lock, lock: Lock, waits: bool, gate: set[str]) -> None:
         edge = self.edges.get((h.cls, lock.cls))
@@ -271,19 +324,13 @@ _TABLE_CONFLICTS = {1: {8}, 2: {7, 8}, 3: {5, 6, 7, 8}, 4: {4, 5, 6, 7, 8}, 5: {
                     6: {3, 4, 5, 6, 7, 8}, 7: {2, 3, 4, 5, 6, 7, 8}, 8: {1, 2, 3, 4, 5, 6, 7, 8}}
 
 
-def _covers(held: Lock, wanted: Lock) -> bool:
-    """True when holding ``held`` already grants ``wanted``: the same key, and every lock
-    another transaction can hold beside ``held`` leaves ``wanted`` free too. An implicit
-    write after an explicit lock of its class counts as the same key: a statement does not
-    show which rows an UPDATE touches, and the helpers lock the rows they then write."""
-    if held.key != wanted.key and not (_explicit(held.mode) and not _explicit(wanted.mode)):
-        return False
-    h, w = _strength(held), _strength(wanted)
+def _covers(h: str, w: str) -> bool:
+    """True when holding strength ``h`` already grants ``w`` on the same thing: every lock
+    another transaction can hold beside ``h`` leaves ``w`` free too."""
     if h == w:
         return True
     if h.startswith("t") and w.startswith("t"):
-        hn, wn = int(h[1:]), int(w[1:])
-        return all(m in _TABLE_CONFLICTS[hn] for m in _TABLE_CONFLICTS[wn])
+        return all(m in _TABLE_CONFLICTS[int(h[1:])] for m in _TABLE_CONFLICTS[int(w[1:])])
     if h in ("shared", "exclusive"):
         return h == "exclusive" and w == "shared"
     if h in _STRENGTH_ORDER and w in _STRENGTH_ORDER:
@@ -491,6 +538,14 @@ def _foreign_keys(table: str) -> dict[str, str]:
     return {fk.parent.name: fk.column.table.name for fk in mapped.foreign_keys}
 
 
+def _parents() -> set[str]:
+    """Every table a foreign key of the app references."""
+    from celerp.models.base import Base
+    import celerp.models  # noqa: F401
+
+    return {fk.column.table.name for t in Base.metadata.tables.values() for fk in t.foreign_keys}
+
+
 @functools.lru_cache(maxsize=8192)
 def _row_locks(statement: str) -> tuple[tuple[tuple[str, str, tuple[int, ...] | None], ...], tuple]:
     """(class, mode, parameter numbers of the key) for each row or table lock the statement
@@ -511,6 +566,8 @@ def _row_locks(statement: str) -> tuple[tuple[tuple[str, str, tuple[int, ...] | 
                 named = [r["RangeVar"]["relname"] for r in c.get("lockedRels", ())]
                 for t in ([tables.get(n, n) for n in named] if named else list(tables.values())):
                     out.append((f"row:{t}", mode, key))
+                    if mode.startswith("update ") and t in _parents():
+                        out.append((f"key:{t}", mode, key))
         elif kind == "LockStmt":
             mode = f"{TABLE_MODES[body['mode']]} {'nowait' if body.get('nowait') else 'wait'}"
             out += [(f"tbl:{r['RangeVar']['relname']}", mode, None) for r in body["relations"]]
@@ -521,9 +578,12 @@ def _row_locks(statement: str) -> tuple[tuple[tuple[str, str, tuple[int, ...] | 
             for target in body.get("targetList", ()):
                 t = target["ResTarget"]
                 if t.get("name") in fks:
-                    out.append((f"row:{fks[t['name']]}", "key share wait", _params(t.get("val"))))
+                    out.append((f"key:{fks[t['name']]}", "key share wait", _params(t.get("val"))))
         elif kind == "DeleteStmt":
-            out.append((f"row:{body['relation']['relname']}", "delete", _params(body.get("whereClause"))))
+            table, key = body["relation"]["relname"], _params(body.get("whereClause"))
+            out.append((f"row:{table}", "delete", key))
+            if table in _parents():
+                out.append((f"key:{table}", "delete", key))
         elif kind == "InsertStmt":
             table = body["relation"]["relname"]
             out.append((f"row:{table}", "insert", None))
@@ -534,7 +594,7 @@ def _row_locks(statement: str) -> tuple[tuple[tuple[str, str, tuple[int, ...] | 
                 if cols and col not in cols:
                     continue
                 values = [r["List"]["items"][cols.index(col)] for r in rows if cols] or None
-                out.append((f"row:{ref}", "key share wait", _params(values) if values else None))
+                out.append((f"key:{ref}", "key share wait", _params(values) if values else None))
             if body.get("onConflictClause", {}).get("action") == "ONCONFLICT_UPDATE":
                 out.append((f"row:{table}", "write", None))
     return tuple(dict.fromkeys(out)), names

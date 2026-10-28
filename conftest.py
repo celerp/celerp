@@ -1061,4 +1061,4 @@ if os.environ.get("CELERP_LOCK_RANK_DIR"):
     def pytest_runtest_call(item):
         # Fixture setup runs in the test's one outer transaction; production commits
         # between setup-like work and a request, so the body starts holding nothing.
-        _lock_rank.RECORDER.held.clear()
+        _lock_rank.RECORDER.clear_transactions()
