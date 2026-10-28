@@ -1767,6 +1767,13 @@ async def create_doc(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    return await create_doc_record(payload, company_id, role, settings, user, session)
+
+
+async def create_doc_record(payload: DocCreatePayload, company_id, role: str, settings: dict, user,
+                            session: AsyncSession, *, commit: bool = True) -> dict:
+    """Create a document (create_doc). ``commit=False`` leaves the transaction open, so a
+    caller that creates inside a larger change keeps it atomic."""
     from celerp.services import auto_je
 
     idem_key = payload.idempotency_key or str(uuid.uuid4())
@@ -1890,7 +1897,8 @@ async def create_doc(
     if getattr(entry, "was_deduped", False):
         return {"event_id": entry.id, "id": entry.entity_id}
 
-    await session.commit()
+    if commit:
+        await session.commit()
     return {"event_id": entry.id, "id": entry.entity_id}
 
 
@@ -8590,6 +8598,13 @@ async def create_list(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    return await create_list_record(payload, company_id, role, settings, user, session)
+
+
+async def create_list_record(payload: ListCreatePayload, company_id, role: str, settings: dict, user,
+                             session: AsyncSession, *, commit: bool = True) -> dict:
+    """Create a List (create_list). ``commit=False`` leaves the transaction open, so a
+    caller that creates inside a larger change keeps it atomic."""
     idem_key = payload.idempotency_key or str(uuid.uuid4())
     digest = _request_digest("list", None, None, payload.model_dump(mode="json", exclude={"idempotency_key"}))
 
@@ -8641,7 +8656,8 @@ async def create_list(
         )
     entry = await _emit_list(session, company_id, entity_id, "list.created", data, user, idem_key,
                              meta={"request": digest})
-    await session.commit()
+    if commit:
+        await session.commit()
     return {"event_id": entry.id, "id": entity_id}
 
 

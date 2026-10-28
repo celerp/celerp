@@ -11,10 +11,9 @@ from typing import Annotated
 
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, StrictInt
-from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import Session
 
+from celerp.db import one_unit
 from celerp.importers.results import failure_reason
 from celerp.services import peer_access, peer_attention
 
@@ -24,16 +23,6 @@ PEER_ONLY = "Only a connected company's integration key may send a source revisi
 UNEXPECTED = "The receiving company could not apply this record. Its owner can see why in the server log."
 # The field every import record model carries for a connected company's records.
 SourceRevision = Annotated[int | None, Field(ge=1, le=2**63 - 1)]
-# Set on the session while one record applies: the record commits whole or not at all.
-_APPLYING = "peer_record_applying"
-
-
-@event.listens_for(Session, "before_commit")
-def _a_record_commits_whole(session: Session) -> None:
-    if session.info.get(_APPLYING) and not session.in_nested_transaction():
-        raise RuntimeError("A connected company's record committed part of itself; it applies whole or not at all")
-
-
 class ContactData(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     company_name: str | None = Field(default=None, max_length=255)
@@ -175,13 +164,10 @@ async def receive_records(session: AsyncSession, peer: peer_access.PeerCaller, r
             if record.source_revision is None:
                 raise HTTPException(422, "A connected company's record needs its source revision.")
             grant = await _grant(session, peer)
-            session.info[_APPLYING] = True
-            try:
+            with one_unit(session):  # a record applies whole or not at all
                 status = await receive(session, grant=grant, source_entity_id=record.entity_id,
                                        source_revision=record.source_revision, data=record.data)
                 await peer_attention.clear(session, **where, source_entity_id=record.entity_id)
-            finally:
-                session.info.pop(_APPLYING, None)
             await session.commit()
         except Exception as exc:
             await session.rollback()

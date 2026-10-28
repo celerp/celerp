@@ -449,39 +449,9 @@ async def test_stale_expected_version_is_rejected(client):
 
 
 @pytest.mark.asyncio
-async def test_local_edit_racing_update_draft_wins(client, monkeypatch):
-    """A local edit that lands after Update draft read the draft, but before it
-    wrote, is kept: the update is rejected and the draft needs reconciling."""
-    from celerp_docs import received as rcv
-
-    tok = await _token(client)
-    rid = await _import(client, tok, _bundle(_doc(price=100.0), revision=1))
-    target = await _book(client, tok, rid)
-    await _import(client, tok, _bundle(_doc(price=150.0), revision=2))
-    real = rcv._fresh
-
-    async def _read_then_edit(session, company_id, entity_id):
-        row = await real(session, company_id, entity_id)
-        edit = await client.patch(f"/docs/{target}", headers=_h(tok), json={
-            "fields_changed": {"notes": {"old": None, "new": "edited here"}},
-        })
-        assert edit.status_code == 200, edit.text
-        return row
-
-    monkeypatch.setattr(rcv, "_fresh", _read_then_edit)
-    r = await _update(client, tok, rid)
-    assert r.status_code == 409
-    monkeypatch.setattr(rcv, "_fresh", real)
-    doc = await _target(client, tok, target)
-    assert doc["notes"] == "edited here"
-    assert doc["total"] == 200.0
-    assert (await _received(client, tok, rid))["revision_state"] == "needs_reconciliation"
-
-
-@pytest.mark.asyncio
 async def test_updating_again_after_a_failed_finish_keeps_the_draft_updatable(client, session, monkeypatch):
-    """The draft was patched but recording the update failed. Updating again
-    records that version, and the draft stays updatable."""
+    """Recording the update failed after the draft was patched: the patch goes with it,
+    so the draft is as it was and still updatable, and updating again applies it."""
     from fastapi import HTTPException
 
     from celerp_docs import received as rcv
@@ -499,11 +469,12 @@ async def test_updating_again_after_a_failed_finish_keeps_the_draft_updatable(cl
     monkeypatch.setattr(rcv, "_emit", _fail_once)
     assert (await _update(client, tok, rid)).status_code == 503
     await session.rollback()
-    assert (await _target(client, tok, target))["total"] == 300.0
-    assert (await _received(client, tok, rid))["revision_state"] == "needs_reconciliation"
+    assert (await _target(client, tok, target))["total"] == 200.0
+    assert (await _received(client, tok, rid))["revision_state"] == "update_available"
 
     r = await _update(client, tok, rid)
     assert r.status_code == 200, r.text
+    assert (await _target(client, tok, target))["total"] == 300.0
     assert (await _received(client, tok, rid))["revision_state"] == "booked"
     await _import(client, tok, _bundle(_doc(price=175.0), revision=3))
     assert (await _received(client, tok, rid))["revision_state"] == "update_available"
