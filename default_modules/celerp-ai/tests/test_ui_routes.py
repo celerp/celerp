@@ -887,9 +887,30 @@ async def test_usage_table_states_period_and_right_aligns_numbers(ui_client):
     assert 'class="data-table' in html
     for cls in ("td-right", "td-left", "th-center"):
         assert cls not in html
-    assert html.count("cell--number") == 6  # two headers, two figures per row
+    assert html.count("cell--number") == 9  # three headers, three figures per row
     assert ">--<" in html  # missing last question
     assert html.index("Staff") < html.index("Owner")
+
+
+@pytest.mark.asyncio
+async def test_usage_table_marks_questions_not_yet_confirmed(ui_client):
+    """Questions whose charge is not confirmed are shown beside confirmed usage,
+    never folded into it; those the service can no longer confirm are named."""
+    users = [{**_USAGE["users"][0], "pending_count": 2, "unresolved_count": 1},
+             {**_USAGE["users"][1], "pending_count": 0, "unresolved_count": 0}]
+    r, _, _ = await _settings_content(ui_client, usage={**_USAGE, "users": users})
+    html = r.text
+    assert t("th.unconfirmed", "en") in html
+    assert ">3<" in html  # 2 awaiting + 1 unresolved, its own column
+    assert t("ai.usage_unconfirmed_note", "en") in html
+    assert t("ai.usage_unresolved_note", "en", count=1) in html
+
+
+@pytest.mark.asyncio
+async def test_usage_table_without_unconfirmed_questions_adds_no_note(ui_client):
+    r, _, _ = await _settings_content(ui_client)
+    assert t("ai.usage_unconfirmed_note", "en") not in r.text
+    assert t("ai.usage_unresolved_note", "en", count=1).split("1")[0] not in r.text
 
 
 @pytest.mark.asyncio

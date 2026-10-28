@@ -218,3 +218,79 @@ def test_the_reconcile_loop_starts_after_recovery():
     src = (Path(__file__).resolve().parents[1] / "celerp" / "main.py").read_text()
     assert "recover_on_start" in src and "reconcile_usage_loop" in src
     assert src.index("await jobs.recover_on_start(") < src.index("reconcile_usage_loop(")
+
+
+# ── N7: a row the service can no longer confirm is unresolved, never zero ─────
+
+async def _aged(session, company_id, user_id, *, credits: int, age: timedelta) -> uuid.UUID:
+    now = datetime.now(timezone.utc)
+    op = uuid.uuid4()
+    session.add(AIUsage(company_id=company_id, user_id=user_id, operation_id=op, credits=credits,
+                        pending=True, created_at=now - age, reconcile_at=now - timedelta(seconds=1)))
+    await session.commit()
+    return op
+
+
+async def _state(session, op) -> tuple[int, bool, bool]:
+    session.expire_all()
+    row = (await session.execute(select(AIUsage).where(AIUsage.operation_id == op))).scalar_one()
+    return row.credits, row.pending, row.unresolved
+
+
+async def test_a_row_past_the_services_retry_window_is_unresolved_never_zero(
+        client, session, owner, monkeypatch):
+    """The service keeps a question for its retry window only; after it, an id it
+    forgot reads as never charged. Such a row is never asked about and never set
+    to zero: it is unresolved, keeps what its replies reported, and the report
+    counts it apart from confirmed usage."""
+    token, company_id, user_id = owner
+    window = timedelta(seconds=deadlines.CURRENT_RELAY_DEFAULTS.retry_window_s)
+    old = await _aged(session, company_id, user_id, credits=2, age=window + timedelta(minutes=1))
+    fresh = await _aged(session, company_id, user_id, credits=0, age=timedelta(minutes=10))
+    asked = _batch(monkeypatch, lambda ids: [_status(i, "not_charged") for i in ids])
+    await usage.reconcile_usage(session)
+    assert asked == [[fresh]]
+    assert await _state(session, old) == (2, True, True)
+    assert await _state(session, fresh) == (0, False, False)
+    (row,) = (await _usage(client, token)).json()["users"]
+    assert (row["query_count"], row["credits_used"], row["pending_count"],
+            row["unresolved_count"]) == (1, 0, 0, 1)
+    await usage.reconcile_usage(session)
+    assert asked == [[fresh]]  # an unresolved row is never asked about again
+
+
+async def test_rows_with_no_terminal_status_make_way_for_the_next_due_rows(session, owner, monkeypatch):
+    """The service answers unknown_id (its fencing capacity spent) or in_progress
+    for a full batch: those rows wait RECONCILE_RETRY_S before they are asked
+    again, so the next due rows are asked on the next pass."""
+    _, company_id, user_id = owner
+    stuck = await _pending(session, company_id, user_id, deadlines.RECONCILE_BATCH)
+    rest = await _pending(session, company_id, user_id, 5)
+    asked = _batch(monkeypatch, lambda ids: [_status(i, "unknown_id" if i in stuck else "charged", 1)
+                                             for i in ids])
+    await usage.reconcile_usage(session)
+    await usage.reconcile_usage(session)
+    assert set(asked[0]) | set(asked[1]) == set(stuck) | set(rest)
+    rows = await _rows(session)
+    assert all(rows[op] == (1, False) for op in rest)
+    session.expire_all()
+    later = (await session.execute(select(AIUsage.reconcile_at).where(
+        AIUsage.operation_id.in_(stuck)))).scalars().all()
+    floor = datetime.now(timezone.utc) + timedelta(seconds=deadlines.RECONCILE_RETRY_S - 60)
+    assert all(_utc(t) > floor for t in later)
+
+
+async def test_a_charge_named_later_resolves_an_unresolved_row(session, owner):
+    _, company_id, user_id = owner
+    window = timedelta(seconds=deadlines.CURRENT_RELAY_DEFAULTS.retry_window_s)
+    op = await _aged(session, company_id, user_id, credits=2, age=window + timedelta(minutes=1))
+    await session.execute(update(AIUsage).where(AIUsage.operation_id == op).values(unresolved=True))
+    await session.commit()
+    await usage.record_usage(session, company_id=company_id, user_id=user_id, operation_id=op,
+                             credits=3, known=True)
+    await session.commit()
+    assert await _state(session, op) == (3, False, False)
+
+
+def _utc(value: datetime) -> datetime:
+    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
