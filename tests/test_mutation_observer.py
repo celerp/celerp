@@ -136,6 +136,18 @@ async def test_a_connector_fence_after_the_company_lock_is_reported(session, aut
         "connector-runtime after the company lock", "connector-owner:shopify after the company lock"}
 
 
+@pytest.mark.parametrize("no_key", [False, True])
+async def test_a_login_locked_for_update_under_the_company_lock_is_reported(session, auth, no_key):
+    with serving("PATCH", "/observed"):
+        cid = _authorize(session, auth)
+        await lock_company(session, cid)
+        await session.execute(select(User.id).where(User.id == auth["user_id"]).with_for_update(key_share=no_key))
+        await _event(session, cid)
+        await session.commit()
+    assert [(f.kind, f.detail) for f in mutation_observer.CENSUS.findings] == (
+        [] if no_key else [("lock-order", "a login locked FOR UPDATE under the company lock")])
+
+
 async def test_an_ownership_fence_without_the_runtime_fence_is_reported(session, auth):
     with serving("POST", "/observed"):
         cid = _authorize(session, auth)

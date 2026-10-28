@@ -764,10 +764,12 @@ async def transfer_install_owner(
     """Transfer installation-wide authority to an active user in this company.
 
     The company lock comes before the login rows, as in every company request that
-    locks a login, and holds the company for the notice the transfer leaves there."""
+    locks a login, and holds the company for the notice the transfer leaves there. Logins
+    are locked FOR NO KEY UPDATE: a sign-in holding the login's session state still writes
+    the rows that name the login, so this never waits on it while it waits here."""
     await lock_company(session, company_id)
     current = (await session.execute(
-        select(User).where(User.is_install_owner.is_(True)).with_for_update()
+        select(User).where(User.is_install_owner.is_(True)).with_for_update(key_share=True)
     )).scalar_one_or_none()
     if current is None or current.id != owner.id:
         raise HTTPException(status_code=403, detail="Installation owner access required")
@@ -775,7 +777,7 @@ async def transfer_install_owner(
         return {"ok": True}
 
     target = (await session.execute(
-        select(User).where(User.id == user_id).with_for_update()
+        select(User).where(User.id == user_id).with_for_update(key_share=True)
     )).scalar_one_or_none()
     membership = (await session.execute(
         select(UserCompany).where(
@@ -961,8 +963,11 @@ async def patch_user(
     from sqlalchemy import func as _func
 
     await lock_company(session, company_id)
+    # FOR NO KEY UPDATE: a sign-in of this user may hold their session state, which
+    # invalidate_sessions below waits for, and still has to write its session record (a
+    # key share on the login).
     user = (await session.execute(
-        select(User).where(User.id == user_id).with_for_update()
+        select(User).where(User.id == user_id).with_for_update(key_share=True)
     )).scalar_one_or_none()
     link = (await session.execute(
         select(UserCompany).where(

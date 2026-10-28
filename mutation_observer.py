@@ -631,6 +631,11 @@ def _executed(conn, cursor, statement, parameters, context, executemany) -> None
                 found("lock-order", inversion)
             note(session, _FENCE, (op.name, _exclusive(op)))
         locked = company is not None and _holds(request, session, company)
+        if locked and "users" in (op.table or "").split(",") and "row update" in op.detail.split(" + "):
+            # A sign-in writes rows naming the login after it holds the login's session
+            # state; a company request that then rotates that state must not hold the
+            # login FOR UPDATE, which those rows' foreign keys wait for.
+            found("lock-order", "a login locked FOR UPDATE under the company lock")
         if not locked and not _before_company(op):
             note(session, _LOCK, f"{op.table or ''} {op.detail}".strip())
         return
