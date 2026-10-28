@@ -202,6 +202,31 @@ async def clear_sample_items(session, company_id) -> None:
     await session.commit()
 
 
+async def remove_company(factory, company_ids, *user_ids) -> None:
+    """Delete everything committed for ``company_ids`` (one id or a list), then the companies,
+    then ``user_ids``. Each table is deleted in a transaction of its own, children first, so a
+    cleanup never holds one table's rows while it takes another's (no lock-order edge)."""
+    from sqlalchemy import Uuid, delete
+
+    from celerp.models.base import Base
+    from celerp.models.company import Company, User
+    ids = [uuid.UUID(str(c)) for c in (
+        company_ids if isinstance(company_ids, (list, tuple, set)) else [company_ids])]
+    tables = [t for t in reversed(Base.metadata.sorted_tables)
+              if "company_id" in t.c and t.name != "companies"]
+    async with factory() as s:
+        for t in tables:
+            col = t.c.company_id
+            await s.execute(delete(t).where(
+                col.in_(ids if isinstance(col.type, Uuid) else [str(i) for i in ids])))
+            await s.commit()
+        await s.execute(delete(Company).where(Company.id.in_(ids)))
+        await s.commit()
+        if user_ids:
+            await s.execute(delete(User).where(User.id.in_([uuid.UUID(str(u)) for u in user_ids])))
+            await s.commit()
+
+
 async def doc_version(client, headers: dict, doc_id: str) -> int:
     """The document's current version: a PATCH that replaces line_items names the version it read."""
     r = await client.get(f"/docs/{doc_id}", headers=headers)

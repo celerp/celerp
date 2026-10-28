@@ -20,15 +20,14 @@ import types
 import uuid
 
 import pytest
-from sqlalchemy import delete, text
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from celerp.events.engine import emit_event
 from celerp_accounting.routes import seed_chart_of_accounts_hook
-from celerp_accounting.models import Account, BankAccount
 from celerp.models.company import Company, User
-from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
+from test_helpers import remove_company
 
 
 def _factory(engine):
@@ -46,18 +45,6 @@ async def _seed_company(factory):
         await seed_chart_of_accounts_hook(session=s, company_id=company_id)
         await s.commit()
     return company_id, user_id, types.SimpleNamespace(id=user_id)
-
-
-async def _cleanup(factory, company_id, user_id):
-    async with factory() as s:
-        await s.execute(delete(Projection).where(Projection.company_id == company_id))
-        await s.execute(delete(LedgerEntry).where(LedgerEntry.company_id == company_id))
-        await s.execute(delete(BankAccount).where(BankAccount.company_id == company_id))
-        await s.execute(delete(Account).where(Account.company_id == company_id))
-        await s.execute(delete(Company).where(Company.id == company_id))
-        await s.commit()
-        await s.execute(delete(User).where(User.id == user_id))
-        await s.commit()
 
 
 async def _seed_invoice(factory, company_id, user, *, ref_id, total, contact_id) -> str:
@@ -136,7 +123,7 @@ async def test_bulk_payment_pays_what_a_payment_in_flight_left(_db_engine):
         assert (result["total_allocated"], result["remaining"]) == (40.0, 60.0)
         assert await _outstanding(factory, company_id, inv) == 0
     finally:
-        await _cleanup(factory, company_id, user_id)
+        await remove_company(factory, company_id, user_id)
 
 
 @pytest.mark.asyncio
@@ -169,7 +156,7 @@ async def test_stripe_overpay_is_refused_whole(_db_engine):
         assert abs(await _outstanding(factory, company_id, inv) - 50.0) < 0.01
         assert not [p for p in (st.get("payments") or []) if p.get("status") != "deleted"]
     finally:
-        await _cleanup(factory, company_id, user_id)
+        await remove_company(factory, company_id, user_id)
 
 
 @pytest.mark.asyncio
@@ -201,7 +188,7 @@ async def test_bulk_payment_that_cannot_take_a_document_records_nothing(_db_engi
         assert await _outstanding(factory, company_id, held) == 100.0
         assert await _outstanding(factory, company_id, other) == 100.0
     finally:
-        await _cleanup(factory, company_id, user_id)
+        await remove_company(factory, company_id, user_id)
 
 
 @pytest.mark.asyncio
@@ -230,4 +217,4 @@ async def test_bulk_payments_in_opposite_order_both_finish(_db_engine):
         assert await _outstanding(factory, company_id, d0) == 0
         assert await _outstanding(factory, company_id, d1) == 0
     finally:
-        await _cleanup(factory, company_id, user_id)
+        await remove_company(factory, company_id, user_id)

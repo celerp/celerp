@@ -35,19 +35,18 @@ import types
 import uuid
 
 import pytest
-from sqlalchemy import delete, text
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from celerp.events.engine import emit_event
 from celerp.inventory_codes import BarcodeConflictError  # noqa: F401 - imported for parity with services
 from celerp.models.company import Company, User
-from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 
-from celerp_accounting.models import Account, BankAccount
 from celerp_accounting.routes import seed_chart_of_accounts_hook
 from celerp_inventory.services import lock_item_code_namespace
 from celerp.services.lot_origin import recognize_opening_lots
+from test_helpers import remove_company
 
 
 def _is_deadlock(exc: BaseException) -> bool:
@@ -81,18 +80,6 @@ async def _someone_waits_on(engine, pid: int) -> bool:
         return bool((await conn.execute(text(
             "SELECT count(*) FROM pg_stat_activity WHERE :pid = ANY(pg_blocking_pids(pid))"
         ), {"pid": pid})).scalar_one())
-
-
-async def _cleanup(factory, company_id, user_id) -> None:
-    async with factory() as s:
-        await s.execute(delete(Projection).where(Projection.company_id == company_id))
-        await s.execute(delete(LedgerEntry).where(LedgerEntry.company_id == company_id))
-        await s.execute(delete(BankAccount).where(BankAccount.company_id == company_id))
-        await s.execute(delete(Account).where(Account.company_id == company_id))
-        await s.execute(delete(Company).where(Company.id == company_id))
-        await s.commit()
-        await s.execute(delete(User).where(User.id == user_id))
-        await s.commit()
 
 
 async def _seed_company(factory) -> tuple[uuid.UUID, uuid.UUID, types.SimpleNamespace]:
@@ -162,7 +149,7 @@ async def test_company_lock_upgrade_serializes_without_deadlock(_db_engine):
             "the namespace lock did not make the second holder wait for the first"
         )
     finally:
-        await _cleanup(factory, company_id, user_id)
+        await remove_company(factory, company_id, user_id)
 
 
 async def _seed_buildable(factory, company_id, user, i: int) -> str:
@@ -257,4 +244,4 @@ async def test_concurrent_one_tap_builds_no_deadlock(_db_engine):
                 assert order.state["status"] == "completed", f"build {label} did not complete"
     finally:
         movements.lock_company = orig_lock
-        await _cleanup(factory, company_id, user_id)
+        await remove_company(factory, company_id, user_id)

@@ -19,13 +19,12 @@ import uuid
 
 import pytest
 from fastapi import HTTPException
-from sqlalchemy import delete, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from celerp.accounting_roles import LOT_ACCOUNT_FIELD
 from celerp.events.engine import emit_event
 from celerp.models.company import Company, User
-from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 
 import celerp_inventory.routes as inventory_routes
@@ -39,6 +38,7 @@ from celerp_inventory.routes import (
     split_item,
     transform_item,
 )
+from test_helpers import remove_company
 
 
 async def _seed_company(factory):
@@ -66,16 +66,6 @@ async def _seed_item(factory, company_id, user, sku: str, quantity: float) -> st
         )
         await s.commit()
     return entity_id
-
-
-async def _cleanup(factory, company_id, user_id) -> None:
-    async with factory() as s:
-        await s.execute(delete(Projection).where(Projection.company_id == company_id))
-        await s.execute(delete(LedgerEntry).where(LedgerEntry.company_id == company_id))
-        await s.execute(delete(Company).where(Company.id == company_id))
-        await s.commit()
-        await s.execute(delete(User).where(User.id == user_id))
-        await s.commit()
 
 
 async def _items(factory, company_id) -> list[dict]:
@@ -167,7 +157,7 @@ async def test_concurrent_splits_cannot_oversell_parent(_db_engine, monkeypatch)
         assert [float(c["quantity"]) for c in children] == [6]
         assert sum(float(i["quantity"]) for i in items) == 10
     finally:
-        await _cleanup(factory, company_id, user_id)
+        await remove_company(factory, company_id, user_id)
 
 
 @pytest.mark.asyncio
@@ -185,7 +175,7 @@ async def test_concurrent_splits_that_fit_both_apply(_db_engine, monkeypatch):
         assert float(parent["quantity"]) == 4
         assert sorted(float(c["quantity"]) for c in children) == [3, 3]
     finally:
-        await _cleanup(factory, company_id, user_id)
+        await remove_company(factory, company_id, user_id)
 
 
 @pytest.mark.asyncio
@@ -209,7 +199,7 @@ async def test_concurrent_transforms_consume_parent_once(_db_engine, monkeypatch
         assert parent["status"] == "archived"
         assert len([i for i in items if i["entity_id"] != parent_id]) == 1
     finally:
-        await _cleanup(factory, company_id, user_id)
+        await remove_company(factory, company_id, user_id)
 
 
 @pytest.mark.asyncio
@@ -234,7 +224,7 @@ async def test_concurrent_merges_consume_sources_once(_db_engine, monkeypatch):
         assert len(results_created) == 1
         assert float(results_created[0]["quantity"]) == 5
     finally:
-        await _cleanup(factory, company_id, user_id)
+        await remove_company(factory, company_id, user_id)
 
 
 @pytest.mark.asyncio
@@ -253,4 +243,4 @@ async def test_merge_rejects_duplicate_source_ids(_db_engine):
         assert len(items) == 1
         assert items[0]["status"] == "available" and float(items[0]["quantity"]) == 2
     finally:
-        await _cleanup(factory, company_id, user_id)
+        await remove_company(factory, company_id, user_id)
