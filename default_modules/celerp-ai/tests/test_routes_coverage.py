@@ -445,8 +445,7 @@ async def test_batch_submit_and_status(auth_client, session):
 
     # Test batch status 404 for unknown job (covers the GET route)
     fake_id = str(uuid.uuid4())
-    with patch("celerp.ai.batch.get_batch_job", AsyncMock(return_value=None)):
-        r = await c.get(f"/ai/batch/{fake_id}", headers=h)
+    r = await c.get(f"/ai/batch/{fake_id}", headers=h)
     assert r.status_code == 404
 
     # Status 200: the counts are read from the job's steps.

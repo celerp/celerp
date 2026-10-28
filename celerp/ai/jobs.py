@@ -157,7 +157,7 @@ TERMINAL_JOBS = ("completed", "failed", "cancelled")
 class JobRequest:
     """What a job was asked: everything the asker sends that its answer depends on.
     A job keeps its digest, and every path that reuses a job by its id holds the new
-    request to it (``hold_to_request``)."""
+    request to it (``reused_job``)."""
     company_id: uuid.UUID
     user_id: uuid.UUID
     kind: str
@@ -176,13 +176,44 @@ class JobRequest:
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def hold_to_request(job, request: JobRequest) -> None:
-    """Refuse ``operation_conflict`` unless ``job`` was created for ``request``. A job
-    stored without an identity is never reused."""
-    if job.request_digest != request.digest():
+# What a caller names a job as: a question asked outside a thread, a question of a
+# thread, or a reading job.
+JOB_SHAPES = ("one_off", "conversation", "documents")
+
+
+def job_shape(job) -> str:
+    if job.kind == "documents":
+        return "documents"
+    return "one_off" if job.conversation_id is None else "conversation"
+
+
+async def owned_job(session, job_id: uuid.UUID, *, company_id: uuid.UUID, user_id: uuid.UUID,
+                    shape: str | None = None, conversation_id: uuid.UUID | None = None):
+    """The one way a caller reads a job by its id: the row when it is this company's
+    and this user's, of ``shape`` when given and of ``conversation_id`` when given.
+    Otherwise None, which every caller answers alike as not found, so a job id never
+    tells one user whether another's job exists."""
+    from celerp.models.ai import AIBatchJob
+    job = await session.get(AIBatchJob, job_id)
+    if job is None or (job.company_id, job.user_id) != (company_id, user_id):
+        return None
+    if (shape is not None and job_shape(job) != shape) or (
+            conversation_id is not None and job.conversation_id != conversation_id):
+        return None
+    return job
+
+
+async def reused_job(session, job_id: uuid.UUID, request: JobRequest):
+    """The one way a send reuses a job by its id: None when no job has the id, the job
+    when it was created for ``request``, else ``operation_conflict``. A job stored
+    without an identity is never reused."""
+    from celerp.models.ai import AIBatchJob
+    job = await session.get(AIBatchJob, job_id)
+    if job is not None and job.request_digest != request.digest():
         from fastapi import HTTPException
         raise HTTPException(status_code=409, detail={"code": "operation_conflict",
                                                      "message": t("ai.err_operation_conflict")})
+    return job
 
 
 def held_operation_ids() -> set[uuid.UUID]:
@@ -228,7 +259,9 @@ def start_job(job_id: uuid.UUID, *, delay_s: float = 0.0) -> bool:
             return
         failures = _failures[job_id] = _failures.get(job_id, 0) + 1
         if failures > RUNNER_RESTARTS:
+            # No task runs it now: it reads as interrupted, never as running in the background.
             _failures.pop(job_id, None)
+            _background.discard(job_id)
             log.error("AI job %s stopped %d times; it resumes at the next start", job_id, failures,
                       exc_info=done.exception())
             return
@@ -323,8 +356,8 @@ async def _reopen(job_id: uuid.UUID, company_id: uuid.UUID, user_id: uuid.UUID, 
     number of steps reopened, or None when the job is not this user's or still runs."""
     from celerp.models.ai import AIBatchJob, AIJobStep
     async with SessionLocal() as session:
-        job = await session.get(AIBatchJob, job_id)
-        if job is None or (job.company_id, job.user_id) != (company_id, user_id) or is_held(job_id):
+        job = await owned_job(session, job_id, company_id=company_id, user_id=user_id)
+        if job is None or is_held(job_id):
             return None
         steps = (await session.execute(
             select(AIJobStep).where(AIJobStep.job_id == job_id,
@@ -854,15 +887,13 @@ async def ask(*, company_id: uuid.UUID, user_id: uuid.UUID, query: str, file_ids
     ``deadlines.SYNC_WAIT_S`` of ``started``, or ``{"status": "running", "job_id"}``.
     The same ``job_id`` with the same request asks it again: a finished answer is
     returned as it is. ``auth_nonce`` is the asker's session nonce (``question_job``)."""
-    from celerp.models.ai import AIBatchJob
     job_id = job_id or uuid.uuid4()
     request = JobRequest.question(company_id=company_id, user_id=user_id, query=query, file_ids=file_ids)
     async with SessionLocal() as session:
-        job = await session.get(AIBatchJob, job_id)
+        job = await reused_job(session, job_id, request)
         if job is None:
             session.add(question_job(job_id=job_id, request=request, auth_nonce=auth_nonce))
         else:
-            hold_to_request(job, request)
             if job.status not in TERMINAL_JOBS and not is_held(job_id):
                 job.auth_nonce = auth_nonce     # an interrupted question, continued by this asker
         reopened = job is not None and job.status == "failed" and not is_held(job_id) and (
@@ -871,39 +902,36 @@ async def ask(*, company_id: uuid.UUID, user_id: uuid.UUID, query: str, file_ids
     if job is None or reopened or job.status not in TERMINAL_JOBS:
         start_job(job_id)
         await wait_for_job(job_id, started=started)
-    return await question_result(job_id, company_id)
+    return await question_result(job_id, company_id, user_id)
 
 
-async def question_result(job_id: uuid.UUID, company_id: uuid.UUID) -> dict | None:
-    """Where a question asked outside a thread stands: ``running``, ``interrupted``
-    (a restart ended it before it was promoted; asking again under its id resumes it),
-    or ended (``completed`` or ``failed``) with what it returned. None for another
-    company's job or no job."""
-    from celerp.models.ai import AIBatchJob
+async def question_result(job_id: uuid.UUID, company_id: uuid.UUID, user_id: uuid.UUID) -> dict | None:
+    """Where a question this user asked outside a thread stands: ``running``,
+    ``interrupted`` (no task of this process runs it: a restart, or a runner that kept
+    failing, ended it; asking again under its id resumes it), or ended (``completed``
+    or ``failed``) with what it returned. None for no such question of this user's."""
     held = is_held(job_id)
     async with SessionLocal() as session:
-        row = (await session.execute(
-            select(AIBatchJob.status, AIBatchJob.results, AIBatchJob.company_id, AIBatchJob.kind)
-            .where(AIBatchJob.id == job_id))).one_or_none()
-    if row is None or row.company_id != company_id or row.kind != "question":
+        row = await owned_job(session, job_id, company_id=company_id, user_id=user_id, shape="one_off")
+    if row is None:
         return None
     if row.status in TERMINAL_JOBS:
         return {"status": row.status, "job_id": str(job_id), **(row.results or {})}
     return {"status": "running" if held or job_id in _background else "interrupted", "job_id": str(job_id)}
 
 
-async def stored_question_state(session, conversation_id: uuid.UUID, question_id: uuid.UUID) -> dict | None:
+async def stored_question_state(session, question_id: uuid.UUID, *, company_id: uuid.UUID, user_id: uuid.UUID,
+                                conversation_id: uuid.UUID) -> dict | None:
     """A thread question's state as stored: ``answered`` or ``failed`` with its
-    assistant message once its job ended, else ``interrupted`` (no task holds it,
-    which only a restart causes). Read after the registry (``is_held``): a job commits
+    assistant message once its job ended, else ``interrupted`` (no task holds it: a
+    restart, or a runner that kept failing, ended it). Read after the registry (``is_held``): a job commits
     its message before it leaves the registry, so a held question is never read as
     interrupted. None when the conversation has no such question job."""
     from celerp.ai.conversations import message_failure
-    from celerp.models.ai import AIBatchJob, AIMessage
-    row = (await session.execute(
-        select(AIBatchJob.status, AIBatchJob.results, AIBatchJob.promoted_at, AIBatchJob.conversation_id,
-               AIBatchJob.kind).where(AIBatchJob.id == question_id))).one_or_none()
-    if row is None or row.conversation_id != conversation_id or row.kind != "question":
+    from celerp.models.ai import AIMessage
+    row = await owned_job(session, question_id, company_id=company_id, user_id=user_id, shape="conversation",
+                          conversation_id=conversation_id)
+    if row is None:
         return None
     out = {"state": "interrupted", "promoted": row.promoted_at is not None, "message": None}
     if row.status in TERMINAL_JOBS:

@@ -258,19 +258,6 @@ async def notify_finished(run: FileRun, completed: int, failed: int) -> None:
     await jobs.notify(run.company_id, run.user_id, run.conversation_id, title, body)
 
 
-async def get_batch_job(
-    session: AsyncSession,
-    job_id: uuid.UUID,
-    company_id: uuid.UUID,
-    user_id: uuid.UUID,
-) -> AIBatchJob | None:
-    """Get a reading job by ID, scoped to company and owning user."""
-    job = await session.get(AIBatchJob, job_id)
-    if job is None or job.kind != "documents" or job.company_id != company_id or job.user_id != user_id:
-        return None
-    return job
-
-
 async def list_conversation_jobs(
     session: AsyncSession,
     conversation_id: uuid.UUID,

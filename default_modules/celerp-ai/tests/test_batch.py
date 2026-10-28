@@ -24,7 +24,8 @@ from celerp.models.company import Company, User
 from celerp.models.ai import AIBatchJob
 from celerp.config import settings
 from celerp.ai import jobs
-from celerp.ai.batch import MAX_BATCH_FILES, create_batch_job, get_batch_job, parse_extraction
+from celerp.ai.batch import MAX_BATCH_FILES, create_batch_job, parse_extraction
+from celerp.ai.jobs import owned_job
 from celerp.ai.llm import ModelResult, RelayError
 from celerp.models.accounting import UserCompany
 from ui.i18n import t
@@ -331,14 +332,14 @@ async def test_batch_missing_file_handled(session, db_factory, company, user):
     assert [(s.state, s.credits, s.result["error"]) for s in steps] == [("failed", 0, t("error.file_gone"))] * 2
 
 
-# ── get_batch_job ────────────────────────────────────────────────────────────
+# ── owned_job ──────────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
 async def test_batch_status_endpoint(session, company, user):
     job = await create_batch_job(session, company.id, user.id, "test", ["f1", "f2"])
     await session.commit()
 
-    result = await get_batch_job(session, job.id, company.id, user.id)
+    result = await owned_job(session, job.id, company_id=company.id, user_id=user.id, shape="documents")
     assert result is not None
     assert result.id == job.id
 
@@ -348,7 +349,7 @@ async def test_batch_status_wrong_company(session, company, user):
     job = await create_batch_job(session, company.id, user.id, "test", ["f1", "f2"])
     await session.commit()
 
-    result = await get_batch_job(session, job.id, uuid.uuid4(), user.id)
+    result = await owned_job(session, job.id, company_id=uuid.uuid4(), user_id=user.id, shape="documents")
     assert result is None
 
 
@@ -357,7 +358,7 @@ async def test_batch_status_wrong_user(session, company, user):
     job = await create_batch_job(session, company.id, user.id, "test", ["f1"])
     await session.commit()
 
-    result = await get_batch_job(session, job.id, company.id, uuid.uuid4())
+    result = await owned_job(session, job.id, company_id=company.id, user_id=uuid.uuid4(), shape="documents")
     assert result is None
 
 

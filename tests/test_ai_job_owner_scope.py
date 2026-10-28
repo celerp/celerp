@@ -1,0 +1,181 @@
+# Copyright (c) 2026 Noah Severs
+# SPDX-License-Identifier: LicenseRef-Proprietary
+"""A job is read by the user who asked it. Every caller that names a job by its id
+reads it through ``jobs.owned_job`` (company, user and what the job is), or reuses it
+through ``jobs.reused_job`` (the whole request), so another user's job in the same
+company, another company's job and a thread's question asked for through the one-off
+module API are all not found alike. A runner that kept failing leaves nothing that
+reads as running.
+"""
+from __future__ import annotations
+
+import ast
+import pathlib
+import uuid
+
+import pytest
+from fastapi import HTTPException
+
+from ai_fake_cloud import answer, cloud, until  # noqa: F401
+from celerp.ai import jobs
+from test_ai_usage import _claims, _conversation, _settled, owner  # noqa: F401
+from test_helpers import invite_user, signed_request
+
+AUTH = lambda token: {"Authorization": f"Bearer {token}"}  # noqa: E731
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+ANSWER = {"answer": "The owner's figures.", "model_used": "m", "tools_called": [], "help_pages": None,
+          "error": None, "error_code": None}
+
+
+async def _one_off(session, monkeypatch, company_id, user_id, state: str) -> uuid.UUID:
+    """A question asked outside a thread: answered, or still running in the background."""
+    job_id = uuid.uuid4()
+    job = jobs.question_job(job_id=job_id, request=jobs.JobRequest.question(
+        company_id=company_id, user_id=user_id, query="What are this month's figures?"))
+    if state == "completed":
+        job.status, job.results = "completed", ANSWER
+    else:
+        job.status, job.mode = "running", "background"
+        monkeypatch.setattr(jobs, "_background", {job_id})
+    session.add(job)
+    await session.commit()
+    return job_id
+
+
+async def _colleague(client, session, token) -> uuid.UUID:
+    other = await invite_user(client, session, AUTH(token), "colleague@perm.example", "manager")
+    return _claims(other)[1]
+
+
+@pytest.mark.parametrize("state", ["completed", "running"])
+async def test_a_colleague_in_the_same_company_never_reads_another_users_question(
+        client, owner, session, monkeypatch, state):
+    """The audit's reproduction: a second user allowed to use the assistant, in the
+    same company, holding the asker's job id, gets 404 from the module API, never the
+    asker's answer or its state."""
+    from celerp.modules.api import ai_job
+    token, company_id, user_id = owner
+    job_id = await _one_off(session, monkeypatch, company_id, user_id, state)
+    colleague = await _colleague(client, session, token)
+
+    async with signed_request(session, company_id, user_id):
+        assert (await ai_job(str(job_id), company_id=str(company_id), db_session=session))["status"] == state
+    async with signed_request(session, company_id, colleague, role="manager"):
+        with pytest.raises(HTTPException) as refused:
+            await ai_job(str(job_id), company_id=str(company_id), db_session=session)
+    assert refused.value.status_code == 404
+    assert await jobs.question_result(job_id, company_id, colleague) is None
+
+
+async def test_another_companys_question_is_not_found(owner, session, monkeypatch):
+    _, company_id, user_id = owner
+    job_id = await _one_off(session, monkeypatch, company_id, user_id, "completed")
+    assert (await jobs.question_result(job_id, company_id, user_id))["answer"] == ANSWER["answer"]
+    assert await jobs.question_result(job_id, uuid.uuid4(), user_id) is None
+
+
+async def test_the_module_api_reads_a_one_off_question(client, owner, session, monkeypatch):
+    from celerp.modules.api import ai_job
+    _, company_id, user_id = owner
+    job_id = await _one_off(session, monkeypatch, company_id, user_id, "completed")
+    async with signed_request(session, company_id, user_id):
+        out = await ai_job(str(job_id), company_id=str(company_id), db_session=session)
+    assert out == {"status": "completed", "job_id": str(job_id), "answer": ANSWER["answer"],
+                   "model_used": "m", "tools_called": []}
+
+
+async def test_a_thread_question_asked_for_through_the_module_api_is_not_found(client, owner, cloud, session):
+    """A thread question's job stores a message id, not an answer: the one-off module
+    API never reads it (404), and it stays behind its conversation's routes."""
+    from celerp.modules.api import ai_job
+    token, company_id, user_id = owner
+    cloud.script = lambda identity, body: answer("Open Contacts and choose New.")
+    conv, qid = await _conversation(client, token), uuid.uuid4()
+    r = await client.post(f"/ai/conversations/{conv}/query", headers=AUTH(token),
+                          json={"query": "How do I add a supplier?", "operation_id": str(qid)})
+    assert r.status_code == 202, r.text
+    assert (await _settled(client, token, conv, qid))["state"] == "answered"
+    async with signed_request(session, company_id, user_id):
+        with pytest.raises(HTTPException) as refused:
+            await ai_job(str(qid), company_id=str(company_id), db_session=session)
+    assert refused.value.status_code == 404
+
+
+@pytest.mark.parametrize("action", ["cancel", "resume", "retry-failed"])
+async def test_another_users_job_is_not_found_by_its_actions(client, owner, cloud, session, monkeypatch, action):
+    """Stop, continue and retry name a job by its id: another user's is 404, as a job
+    that does not exist is, never told apart from one that is only not open."""
+    token, company_id, user_id = owner
+    job_id = await _one_off(session, monkeypatch, company_id, user_id, "running")
+    other = await invite_user(client, session, AUTH(token), "colleague@perm.example", "manager")
+    for headers, job in ((AUTH(other), job_id), (AUTH(token), uuid.uuid4())):
+        r = await client.post(f"/ai/jobs/{job}/{action}", headers=headers)
+        assert r.status_code == 404, (action, r.text)
+
+
+async def test_a_runner_that_kept_failing_leaves_its_question_interrupted(owner, session, monkeypatch):
+    """Past its restarts the runner gives up until the next start: the promoted
+    question no longer reads as running in the background but as interrupted, which
+    asking again under its id resumes."""
+    _, company_id, user_id = owner
+    job_id = await _one_off(session, monkeypatch, company_id, user_id, "running")
+    monkeypatch.setattr(jobs, "RUNNER_RESTARTS", 1)
+    monkeypatch.setattr(jobs, "STEP_RETRY_DELAY_S", 0)
+    runs: list[uuid.UUID] = []
+
+    async def _broken(job_id):
+        runs.append(job_id)
+        raise RuntimeError("runner broke")
+    monkeypatch.setattr(jobs, "_run_question", _broken)
+
+    assert jobs.start_job(job_id)
+    await until(lambda: len(runs) == 2 and not jobs.is_held(job_id))
+    assert job_id not in jobs._background
+    assert (await jobs.question_result(job_id, company_id, user_id))["status"] == "interrupted"
+
+
+# ── Guard: one way to name a job ─────────────────────────────────────────────
+
+JOB_TABLES = {"AIBatchJob", "AIJobStep"}
+QUERIES = {"get", "select", "update", "delete"}
+# Reads of the job tables that never name one job by its id, with why each is allowed.
+ALLOWED = {
+    ("celerp/ai/batch.py", "publish_progress"): "the runner counts its own job's steps",
+    ("celerp/ai/batch.py", "list_conversation_jobs"): "lists by company, user and conversation",
+    ("celerp/ai/conversations.py", "_protected_conversation_ids"): "conversation ids the caller already owns",
+    ("celerp/services/company_reset.py", "reset"): "whether the company has any open job",
+}
+
+
+def _job_queries(path: pathlib.Path):
+    tree = ast.parse(path.read_text())
+    for fn in ast.walk(tree):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for node in ast.walk(fn):
+            if not (isinstance(node, ast.Call) and node.args):
+                continue
+            name = node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", None)
+            target = node.args[1] if name == "get" and len(node.args) > 1 else node.args[0]
+            while isinstance(target, ast.Attribute):
+                target = target.value
+            if name in QUERIES and isinstance(target, ast.Name) and target.id in JOB_TABLES:
+                yield fn.name, node.lineno
+
+
+def test_only_the_job_module_names_a_job_by_its_id():
+    """Outside ``celerp/ai/jobs.py`` (the accessors and the runner) no code reads or
+    writes the job tables but the listed few that never name one job by its id, so a
+    new caller cannot read a job without its owner."""
+    found, seen = [], set()
+    for top in ("celerp", "ui", "default_modules"):
+        for path in sorted((ROOT / top).rglob("*.py")):
+            rel = path.relative_to(ROOT).as_posix()
+            if "/tests/" in rel or rel == "celerp/ai/jobs.py" or "/migrations/" in rel:
+                continue
+            for fn, line in _job_queries(path):
+                seen.add((rel, fn))
+                if (rel, fn) not in ALLOWED:
+                    found.append(f"{rel}:{line} in {fn}")
+    assert not found, "read or reuse a job through jobs.owned_job or jobs.reused_job:\n" + "\n".join(found)
+    assert seen >= set(ALLOWED), f"stale allowances: {set(ALLOWED) - seen}"

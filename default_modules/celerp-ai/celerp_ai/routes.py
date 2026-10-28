@@ -720,11 +720,9 @@ async def query_in_conversation(
     if body.document_mode == "receipts":
         # A reading job takes its question's id, so sending the question again
         # returns the job already started for it.
-        job = await session.get(AIBatchJob, question_id) if asked is not None else None
-        if job is not None:
-            jobs.hold_to_request(job, jobs.JobRequest(
-                company_id=company_id, user_id=user.id, kind="documents", conversation_id=conversation_id,
-                query=body.query, file_ids=tuple(body.file_ids or ())))
+        job = await jobs.reused_job(session, question_id, jobs.JobRequest(
+            company_id=company_id, user_id=user.id, kind="documents", conversation_id=conversation_id,
+            query=body.query, file_ids=tuple(body.file_ids or ())))
         if job is None:
             try:
                 if asked is None:
@@ -751,11 +749,9 @@ async def query_in_conversation(
         return _answer_response(answered, question_id=question_id, asked_again=True)
     if jobs.is_held(question_id):
         raise _conflict("question_in_progress", t("ai.err_question_in_progress"))
-    job = await session.get(AIBatchJob, question_id) if asked is not None else None
     asking = jobs.JobRequest.question(company_id=company_id, user_id=user.id, query=body.query,
                                         file_ids=body.file_ids, conversation_id=conversation_id)
-    if job is not None:
-        jobs.hold_to_request(job, asking)
+    job = await jobs.reused_job(session, question_id, asking)
     try:
         if asked is None:
             await add_message(session, conversation_id, "user", body.query,
@@ -801,7 +797,8 @@ async def question_state(
     # The registry first: a job stores its answer before it leaves it, so a question
     # read as held and then stored is never read as interrupted.
     held = jobs.is_held(question_id)
-    stored = await jobs.stored_question_state(session, conversation_id, question_id)
+    stored = await jobs.stored_question_state(session, question_id, company_id=company_id, user_id=user.id,
+                                              conversation_id=conversation_id)
     if stored is None:
         raise HTTPException(status_code=404, detail=t("ai.err_question_not_found"))
     waiting = jobs.waiting_for(question_id) if held else None
@@ -1507,18 +1504,18 @@ async def propose_from_job(
     vendor action and resolves its returned id only when confirmation executes. Nothing
     is written until the user confirms a card. Calling again returns the same proposals.
     """
-    from celerp.ai.batch import get_batch_job
+    from celerp.ai import jobs
     from celerp.ai.conversations import add_message, get_conversation, get_message, pending_actions
     from celerp.ai.tools import compile_agent_capabilities
     conv = await get_conversation(session, conversation_id, company_id, user.id)
     if conv is None:
         raise HTTPException(status_code=404, detail=t("ai.err_conversation_not_found"))
-    job = await get_batch_job(session, job_id, company_id, user.id)
-    if job is None or job.conversation_id != conversation_id or job.user_id != user.id:
+    job = await jobs.owned_job(session, job_id, company_id=company_id, user_id=user.id, shape="documents",
+                               conversation_id=conversation_id)
+    if job is None:
         raise HTTPException(status_code=404, detail=t("ai.err_job_not_found"))
     if job.status in ("pending", "running"):
         raise _conflict("job_not_finished", "The files are still being read.")
-    from celerp.ai import jobs
     result_files = [jobs.file_view(step) for step in (await jobs.job_steps(session, [job.id]))[job.id]]
     if job.status == "failed" and not any(entry.get("status") == "success" for entry in result_files):
         raise _conflict("job_failed", job.error or "None of the files could be read.")
@@ -1672,14 +1669,17 @@ async def batch_status(
     session: AsyncSession = Depends(get_session),
 ) -> BatchJobOut:
     """Get batch job status and results."""
-    from celerp.ai.batch import get_batch_job
-    job = await get_batch_job(session, job_id, company_id, user.id)
+    from celerp.ai import jobs
+    job = await jobs.owned_job(session, job_id, company_id=company_id, user_id=user.id, shape="documents")
     if job is None:
         raise HTTPException(status_code=404, detail=t("ai.err_batch_not_found"))
     return (await _jobs_out(session, [job]))[0]
 
 
-async def _job_action(action, job_id: uuid.UUID, company_id, user) -> JSONResponse:
+async def _job_action(action, job_id: uuid.UUID, company_id, user, session: AsyncSession) -> JSONResponse:
+    from celerp.ai import jobs
+    if await jobs.owned_job(session, job_id, company_id=company_id, user_id=user.id) is None:
+        raise HTTPException(status_code=404, detail=t("ai.err_job_not_found"))
     if await action(job_id, company_id, user.id) in (None, False):
         raise _conflict("job_not_open", t("ai.err_job_not_open"))
     return JSONResponse(status_code=202, content={"job_id": str(job_id)})
@@ -1687,23 +1687,26 @@ async def _job_action(action, job_id: uuid.UUID, company_id, user) -> JSONRespon
 
 @router.post("/jobs/{job_id}/cancel")
 async def cancel_job(job_id: uuid.UUID, company_id=Depends(get_current_company_id),
-                     user=Depends(get_current_user)) -> JSONResponse:
+                     user=Depends(get_current_user),
+                     session: AsyncSession = Depends(get_session)) -> JSONResponse:
     """Stop a running job: files not yet sent wait for Resume, the files in the model finish."""
     from celerp.ai import jobs
-    return await _job_action(jobs.cancel, job_id, company_id, user)
+    return await _job_action(jobs.cancel, job_id, company_id, user, session)
 
 
 @router.post("/jobs/{job_id}/resume")
 async def resume_job(job_id: uuid.UUID, company_id=Depends(get_current_company_id),
-                     user=Depends(get_current_user)) -> JSONResponse:
+                     user=Depends(get_current_user),
+                     session: AsyncSession = Depends(get_session)) -> JSONResponse:
     """Send the files a cancelled job did not send, each under its own id."""
     from celerp.ai import jobs
-    return await _job_action(jobs.resume, job_id, company_id, user)
+    return await _job_action(jobs.resume, job_id, company_id, user, session)
 
 
 @router.post("/jobs/{job_id}/retry-failed")
 async def retry_failed_job(job_id: uuid.UUID, company_id=Depends(get_current_company_id),
-                           user=Depends(get_current_user)) -> JSONResponse:
+                           user=Depends(get_current_user),
+                           session: AsyncSession = Depends(get_session)) -> JSONResponse:
     """Send again, each as a new question, the files that ended without an answer."""
     from celerp.ai import jobs
-    return await _job_action(jobs.retry_failed, job_id, company_id, user)
+    return await _job_action(jobs.retry_failed, job_id, company_id, user, session)

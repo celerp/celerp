@@ -140,11 +140,12 @@ async def ai_query(
 
 async def ai_job(job_id: str, *, company_id: str, db_session: "AsyncSession | None" = None) -> dict:
     """Where a question ``ai_query`` left running stands, in the same shape: the same
-    signed-in request checks apply. An unknown job id, or another company's, is 404."""
+    signed-in request checks apply. Only the caller's own question asked through
+    ``ai_query`` is read: any other job id is 404 alike."""
     from celerp.ai import jobs
 
     caller = await _ai_caller(company_id, db_session)
-    out = await jobs.question_result(uuid.UUID(str(job_id)), caller.company_id)
+    out = await jobs.question_result(uuid.UUID(str(job_id)), caller.company_id, caller.user.id)
     if out is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such AI question.")
     return _ai_outcome(out)
