@@ -686,10 +686,6 @@
   "GET /search": {
     "query:q": "Search text used to filter matching records."
   },
-  "GET /settings/connectors/{platform}/authorize-url": {
-    "path:platform": "External connector platform name.",
-    "query:shop": "Store or shop identifier used by the connector authorization flow."
-  },
   "GET /share/{token}": {
     "path:token": "Opaque public token identifying the shared or payment resource."
   },
@@ -1451,6 +1447,10 @@
   },
   "POST /notifications/{notification_id}/read": {
     "path:notification_id": "Identifier of the notification."
+  },
+  "POST /settings/connectors/{platform}/authorize-url": {
+    "path:platform": "External connector platform name.",
+    "query:shop": "Store or shop identifier used by the connector authorization flow."
   },
   "POST /subscriptions/{entity_id}/activate": {
     "path:entity_id": "Identifier of the requested Celerp record."
