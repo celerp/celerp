@@ -748,6 +748,34 @@ def _admin_conn(dbname: str):
     return conn
 
 
+@pytest.fixture(autouse=True)
+def _worker_database_left_empty(request):
+    """A test on the worker DB leaves no committed user or company behind. The shared
+    session rolls back; a test that commits through the app's own sessions cleans up
+    after itself (real_engine truncates). A leftover install makes every later test on
+    the worker see a bootstrapped system, so the test that left it fails here, and the
+    rows are cleared so only that test fails."""
+    yield
+    if "_db_engine" not in request.fixturenames:
+        return
+    from urllib.parse import urlsplit
+
+    conn = _admin_conn(urlsplit(DATABASE_URL).path.lstrip("/"))
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SET lock_timeout = '10s'")
+            cur.execute("SELECT (SELECT array_agg(email) FROM users), "
+                        "(SELECT array_agg(name) FROM companies)")
+            users, companies = cur.fetchone()
+            if users or companies:
+                cur.execute("TRUNCATE users, companies RESTART IDENTITY CASCADE")
+    finally:
+        conn.close()
+    if users or companies:
+        pytest.fail(f"the test left committed rows on the worker database: users {users}, "
+                    f"companies {companies}")
+
+
 @pytest_asyncio.fixture
 async def committed_engine():
     """An engine on a database of the test's own, for row-lock race tests."""

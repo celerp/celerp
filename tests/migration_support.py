@@ -304,13 +304,12 @@ async def real_engine(_db_engine, monkeypatch):
 
     from celerp.services.runtime_state import _drain_cache_bust
 
-    # migration_cleanup_tasks, connector_configs and the payment tables have no foreign keys, so
-    # the cascade from companies misses them; system_runtime_state is the installation's own
-    # state (the star card dismissal), which a reset keeps.
-    tables = ", ".join(t for t in ("users", "companies", "migration_cleanup_tasks", "connector_configs",
-                                   "payment_closures", "payment_recoveries", "unmatched_payments",
-                                   "unmatched_refunds", "system_runtime_state")
-                       if t in Base.metadata.tables)
+    # A table whose company_id has no foreign key (connector state, the payment tables) is
+    # missed by the cascade from companies, so each is named; system_runtime_state is the
+    # installation's own state (the star card dismissal), which a reset keeps.
+    tables = ", ".join(["users", "companies", "system_runtime_state", *(
+        t.name for t in Base.metadata.sorted_tables
+        if "company_id" in t.c and not t.c.company_id.foreign_keys)])
 
     async def _truncate():
         async with engine.begin() as conn:

@@ -27,6 +27,7 @@ from celerp.models.company import Company, User
 import celerp.connectors.upsert as u
 
 from test_helpers import provision_company_books
+from migration_support import real_engine  # noqa: F401 - fixture
 
 
 async def _seed_company(session, name: str) -> uuid.UUID:
@@ -2151,28 +2152,17 @@ async def test_conflict_choice_settles_the_field(use_test_session, monkeypatch, 
 
 
 @pytest.mark.asyncio
-async def test_first_sync_import_is_undoable(_db_engine, monkeypatch):
+async def test_first_sync_import_is_undoable(real_engine, monkeypatch):
     """A first sync records the items it creates as an import batch that Import History
     undoes with their opening stock, and its links can be undone, restoring the values
     it took from the store."""
-    import sqlalchemy as sa
-
     from celerp.db import get_session_ctx
-    from celerp.models.connector_config import ConnectorConfig
-    from celerp.models.connector_first_sync import ConnectorFirstSync
 
-    seeded: dict = {}
     async with get_session_ctx() as session:
-        try:
-            await _first_sync_then_undo(session, monkeypatch, seeded)
-        finally:
-            await session.rollback()
-            for model in (ConnectorConfig, ConnectorFirstSync):
-                await session.execute(sa.delete(model).where(model.company_id == seeded.get("cid")))
-            await session.commit()
+        await _first_sync_then_undo(session, monkeypatch)
 
 
-async def _first_sync_then_undo(session, monkeypatch, seeded: dict) -> None:
+async def _first_sync_then_undo(session, monkeypatch) -> None:
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
 
@@ -2193,7 +2183,6 @@ async def _first_sync_then_undo(session, monkeypatch, seeded: dict) -> None:
     monkeypatch.setattr("celerp.connectors.woocommerce.validate_public_base_url",
                         AsyncMock(side_effect=lambda value, **_kw: value.rstrip("/")))
     cid = await _seed_company(session, "FirstUndo")
-    seeded["cid"] = str(cid)
     user_id = await session.scalar(select(UserCompany.user_id).where(UserCompany.company_id == cid))
     await add_item(session, cid, "item:match", "MATCH-1", name="Celerp name", sale_price=10.0)
     batch = ImportBatch(company_id=cid, entity_type="item", filename="WooCommerce first sync",
