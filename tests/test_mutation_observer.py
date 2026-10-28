@@ -532,6 +532,61 @@ async def test_sql_it_cannot_classify_is_flagged_never_read(session, auth, form)
     assert finding.kind == "unknown-sql" and finding.detail and finding.fingerprint
 
 
+async def test_a_sync_drivers_statements_are_classified_with_their_parameters(session, auth):
+    """psycopg2 sends %(name)s and %s placeholders and %% for a literal percent sign, which
+    are no PostgreSQL syntax: they are read as parameters, so its writes and reads are
+    judged as the asyncpg driver's are, never as unparsable SQL."""
+    from sqlalchemy import create_engine
+    from test_helpers import DATABASE_URL
+    engine = create_engine(DATABASE_URL.replace("+asyncpg", "+psycopg2"))
+    try:
+        with serving("POST", "/observed"), engine.connect() as conn:
+            conn.exec_driver_sql("SELECT id FROM companies WHERE name LIKE 'a%%' AND slug = %(s)s", {"s": "x"})
+            conn.exec_driver_sql("SELECT id FROM companies WHERE slug = %s", ("x",))
+            conn.execute(text("SELECT 1 FROM companies WHERE slug = :s"), {"s": "x"})
+            conn.exec_driver_sql(
+                "INSERT INTO companies (id, name, slug, settings, is_active, created_at) "
+                "VALUES (%(i)s, '100%%', %(i)s, '{}', true, now())", {"i": str(uuid.uuid4())})
+            conn.rollback()
+    finally:
+        engine.dispose()
+    assert [(f.kind, f.table, f.detail) for f in mutation_observer.CENSUS.findings] == \
+        [("no-session", "companies", "INSERT")]
+
+
+@pytest.mark.parametrize("migrating", ["held", "released", "other key", "with a session"])
+async def test_the_migrators_writes_are_its_own_only_under_the_migration_lock(session, auth, migrating):
+    """A System Recovery runs the schema migrator inside its request: the migrator's writes on
+    its own connections, made while the request holds the migration lock, are the
+    migrator's; a write once the lock is released, under another lock, or on a Session is
+    judged as usual."""
+    from sqlalchemy import create_engine
+    from celerp.db import _MIGRATION_LOCK_KEY
+    from test_helpers import DATABASE_URL
+    key = _MIGRATION_LOCK_KEY if migrating != "other key" else _MIGRATION_LOCK_KEY + 1
+    engine = create_engine(DATABASE_URL.replace("+asyncpg", "+psycopg2"), isolation_level="AUTOCOMMIT")
+    try:
+        with serving("POST", "/observed"), engine.connect() as lock_conn, engine.connect() as conn:
+            lock_conn.execute(text("SELECT pg_advisory_lock(:key)"), {"key": key})
+            if migrating == "released":
+                lock_conn.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": key})
+            if migrating == "with a session":
+                cid = _authorize(session, auth)
+                await session.execute(update(Company).where(Company.id == cid).values(name="Migrating"))
+                await session.commit()
+            else:
+                with conn.begin() as tx:
+                    conn.execute(text("INSERT INTO companies (id, name, slug, settings, is_active, created_at) "
+                                      "VALUES (:i, 'Migrated', :i, '{}', true, now())"), {"i": str(uuid.uuid4())})
+                    tx.rollback()
+            if migrating != "released":
+                lock_conn.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": key})
+    finally:
+        engine.dispose()
+    expected = {"held": [], "with a session": [("unprotected", "companies")]}.get(migrating, [("no-session", "companies")])
+    assert [(f.kind, f.table) for f in mutation_observer.CENSUS.findings] == expected
+
+
 async def test_statements_whose_effects_are_reviewed_are_not_flagged(session, auth):
     with serving("POST", "/observed"):
         cid = _authorize(session, auth)

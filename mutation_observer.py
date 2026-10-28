@@ -11,7 +11,8 @@ company_lock keeps), and no narrower lock (a chart, row or other advisory lock) 
 before that company's lock; a write named in JUDGED_WITHOUT_LOCK is protected by the
 request's authority judged again without the lock, one named in UNDER_ROW_LOCK by its
 own row lock, and a write to a company this transaction created by that company being
-invisible to every other transaction until it commits. Each statement is judged on the Session that ran it. A write is
+invisible to every other transaction until it commits; a write on a connection no Session
+uses while the request holds the migration lock is the schema migrator's. Each statement is judged on the Session that ran it. A write is
 judged when its transaction commits: a write rolled back with its savepoint or transaction
 never became durable and is dropped, as the lock proofs are.
 
@@ -33,6 +34,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import weakref
 from contextlib import contextmanager
@@ -76,6 +78,9 @@ _PURE = frozenset({
     "pg_backend_pid", "pg_current_xact_id", "pg_get_expr", "pg_my_temp_schema",
     "pg_partition_root", "pg_relation_filenode", "pg_table_is_visible", "pg_xact_status",
     "row_security_active", "to_regclass", "to_regnamespace",
+    # the catalog reads and formatting of the schema migrator
+    "format_type", "generate_subscripts", "pg_collation_is_visible", "pg_get_indexdef",
+    "pg_get_serial_sequence", "timezone", "to_char",
 })
 # Transaction-scoped advisory locks, and the session-scoped ones a guard holds across
 # transactions and releases itself (_RELEASE).
@@ -85,7 +90,8 @@ _ADVISORY = frozenset({
     "pg_advisory_lock", "pg_advisory_lock_shared",
 })
 # Functions that change only this session's or transaction's settings or locks.
-_CONTROL = frozenset({"set_config", "pg_advisory_unlock", "pg_advisory_unlock_shared"})
+_UNLOCK = frozenset({"pg_advisory_unlock", "pg_advisory_unlock_shared"})
+_CONTROL = frozenset({"set_config"}) | _UNLOCK
 # A notice to listeners is an outbound effect, not a write of company data.
 _EFFECT = frozenset({"pg_notify"})
 # Advisory lock families taken before the company lock by the canonical order (module
@@ -397,6 +403,20 @@ def _relations(node) -> list:
 _SYNTAX: dict[str, Op] = {}
 
 
+# A placeholder of the format and pyformat parameter styles (psycopg2), or its escaped
+# literal percent sign.
+_PERCENT = re.compile(r"%(?:\(\w+\))?s|%%")
+
+
+def _postgres_text(statement: str, paramstyle: str | None) -> str:
+    """*statement* as PostgreSQL syntax: a driver's percent placeholders become $n
+    parameters and %% the percent sign it stands for."""
+    if paramstyle not in ("format", "pyformat"):
+        return statement
+    numbers = iter(range(1, statement.count("%") + 1))
+    return _PERCENT.sub(lambda m: "%" if m.group() == "%%" else f"${next(numbers)}", statement)
+
+
 def _syntax(statement: str) -> Op:
     """What the SQL text does, from its PostgreSQL syntax tree, once per distinct text."""
     op = _SYNTAX.get(statement)
@@ -453,6 +473,8 @@ def _parse(statement: str) -> Op:
         return op("lock", ",".join(sorted({t for t, _ in parts.locks})), detail=" + ".join(modes))
     if parts.functions & _EFFECT:
         return op("effect")
+    if parts.functions & _UNLOCK:
+        return op("control", detail=min(parts.functions & _UNLOCK))
     if parts.functions & _CONTROL:
         return op("control")
     return op("read")
@@ -461,11 +483,11 @@ def _parse(statement: str) -> Op:
 def classify(context, statement: str, parameters=None) -> Op:
     """The statement's syntax says what it does; a write's construct, when SQLAlchemy built
     one, says which companies it names; an advisory lock's parameters name the lock."""
-    op = _syntax(statement)
+    op = _syntax(_postgres_text(statement, getattr(getattr(context, "dialect", None), "paramstyle", None)))
     if op.kind == "write":
         return replace(op, companies=_named_companies(context, op.table))
-    if op.kind == "lock" and op.detail in _ADVISORY:
-        return replace(_advisory(context, parameters, op.detail), fingerprint=op.fingerprint)
+    if op.detail in _ADVISORY or op.detail in _UNLOCK:
+        return replace(_advisory(context, parameters, op.detail), kind=op.kind, fingerprint=op.fingerprint)
     return op
 
 
@@ -664,6 +686,21 @@ def _request_company(request: dict, session) -> str | None:
     return request["company"]
 
 
+def _migrating(request: dict, conn, op: Op) -> None:
+    """Keep the connections on which this request holds the migration lock (the session
+    lock celerp.cli._migration_lock takes): while one does, a write made on a connection no
+    Session uses is the schema migrator's, which System Recovery runs inside its request
+    on a database it has just replaced, with writes paused."""
+    from celerp.db import _MIGRATION_LOCK_KEY
+    if op.name != _MIGRATION_LOCK_KEY:
+        return
+    held = request.setdefault("migrating", set())
+    if op.detail.startswith("pg_advisory_lock("):
+        held.add(id(conn.connection.dbapi_connection))
+    elif op.detail.startswith("pg_advisory_unlock("):
+        held.discard(id(conn.connection.dbapi_connection))
+
+
 @event.listens_for(Engine, "after_cursor_execute")
 def _executed(conn, cursor, statement, parameters, context, executemany) -> None:
     if context is None:
@@ -677,6 +714,7 @@ def _executed(conn, cursor, statement, parameters, context, executemany) -> None
     if session is not None:
         request["sessions"].add(session)
     op = classify(context, statement, parameters)
+    _migrating(request, conn, op)
     if op.kind in ("read", "ddl", "control", "effect"):
         return
     company = _request_company(request, session)
@@ -689,7 +727,7 @@ def _executed(conn, cursor, statement, parameters, context, executemany) -> None
     if op.kind == "unknown":
         return found("unknown-sql")
     if session is None:
-        return found("no-session") if op.kind == "write" else None
+        return found("no-session") if op.kind == "write" and not request.get("migrating") else None
     if op.kind == "lock":
         if _fence(op):
             if inversion := _fence_order(request, session, op):
