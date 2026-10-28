@@ -105,6 +105,10 @@ def store(committed_engine, monkeypatch):
 
     monkeypatch.setattr("celerp.connectors.relay_token.fetch_context", AsyncMock(side_effect=_context))
     monkeypatch.setattr("celerp.connectors.woocommerce.webhook_delivery_url", lambda: _DELIVERY)
+    monkeypatch.setattr(
+        "celerp.connectors.woocommerce.validate_public_base_url",
+        AsyncMock(side_effect=lambda value, **_k: value.rstrip("/")),
+    )
     with respx.mock(assert_all_called=False) as router:
         fake.mount(router)
         yield fake, factory
@@ -214,8 +218,12 @@ async def test_a_direction_change_never_writes_to_the_store_and_a_disconnect_lea
     dirty, reruns = await _webhook_state(factory, company_id)
     assert dirty and "webhooks" in reruns
 
-    async with factory() as s:
-        await revoke_credentials("woocommerce", str(company_id), None, s, force=False)
+    from unittest.mock import AsyncMock, patch
+    # The relay's own copy of the key is not under test: the local disconnect is.
+    with patch("celerp.connectors.remote_state.revoke_connector_remote_state", AsyncMock()):
+        async with factory() as s:
+            revoked = await revoke_credentials("woocommerce", str(company_id), None, s, force=False)
+    assert revoked == {"ok": True}, revoked
     after_disconnect = len(fake.writes)
 
     from celerp.connectors.webhook_reconcile import run_webhook_reconcile
