@@ -1602,6 +1602,7 @@ async def create_manual_journal_entry(
 ) -> dict:
     """Post a manual journal entry. Validates accounts and balance; the period
     lock is enforced by the event engine on the entry's date."""
+    await lock_company(session, company_id)
     _require_iso_date(payload.ts or "", t("acct.field_entry_date"))
     if len(payload.entries) < 2:
         raise HTTPException(status_code=422, detail=t("acct.err_je_two_lines"))
@@ -2661,6 +2662,7 @@ async def create_bank_account(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    await lock_company(session, company_id)
     if payload.bank_type not in _BANK_TYPES:
         raise HTTPException(status_code=422, detail=t("acct.err_bank_type", types=_enum_labels("bank_type", sorted(_BANK_TYPES))))
     currency = payload.currency.upper()
@@ -2749,9 +2751,11 @@ async def patch_bank_account(
     _: None = require_permission("manage_accounting"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    await lock_company(session, company_id)
     b = (
         await session.execute(
             select(BankAccount).where(BankAccount.id == bank_id, BankAccount.company_id == company_id)
+            .execution_options(populate_existing=True)
         )
     ).scalar_one_or_none()
     if not b:
@@ -2803,6 +2807,7 @@ async def create_transfer(
 ) -> dict:
     if payload.amount <= 0:
         raise HTTPException(status_code=422, detail="Transfer amount must be positive")
+    await lock_company(session, company_id)
 
     from_bank = (
         await session.execute(

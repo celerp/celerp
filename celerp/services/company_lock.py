@@ -128,10 +128,11 @@ async def lock_chart(session: AsyncSession, company_id) -> None:
     pointing a posting role at one each read other accounts (a parent, the children)
     before writing. Taking this lock first makes those changes happen one at a time
     for a company, so each one checks the chart the previous one left. Postings
-    never take it. Lock order: the company lock, when the caller holds it, then this
-    lock, then account rows. Held until the transaction ends; SQLite writes one
-    transaction at a time already.
+    never take it. A chart change is a company write, so this takes the company lock
+    first (judging the request again), then this lock; account rows come after. Held
+    until the transaction ends; SQLite writes one transaction at a time already.
     """
+    await lock_company(session, company_id)
     if session.get_bind().dialect.name != "postgresql":
         return
     key = int.from_bytes(hashlib.sha256(b"chart:" + str(company_id).encode()).digest()[:8], "big", signed=True)
