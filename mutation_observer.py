@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import json
 import os
-import traceback
+import sys
 import weakref
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field
@@ -111,6 +111,7 @@ class Finding:
     where: list[str] = field(default_factory=list)
     test: str = ""
     company_from: str = "statement"  # statement, or request when the SQL names no company
+    sites: list[str] = field(default_factory=list)  # every app frame of a write, for site coverage
 
 
 @dataclass
@@ -118,6 +119,7 @@ class Census:
     """What one run saw: per route, protected and unprotected writes, and findings."""
     findings: list[Finding] = field(default_factory=list)
     routes: dict[str, dict[str, int]] = field(default_factory=dict)
+    sites: dict[str, int] = field(default_factory=dict)  # "file:line function" -> durable writes made there
     test: str = ""
 
     def count(self, route: str, what: str) -> None:
@@ -137,16 +139,19 @@ def reset(test: str = "") -> Census:
 
 # -- request scope -----------------------------------------------------------------
 
-def observed(app):
-    """The app, with each HTTP request it serves marked as request scope."""
+def observed(app, label: str):
+    """The app, with each HTTP request it serves marked as request scope; its routes are
+    recorded under *label*, as the API and the UI serve some of the same paths."""
     async def _app(scope, receive, send):
         if scope.get("type") != "http":
             return await app(scope, receive, send)
-        token = _REQUEST.set({"scope": scope, "company": None})
+        request = {"scope": scope, "company": None, "app": label}
+        token = _REQUEST.set(request)
         try:
             return await app(scope, receive, send)
         finally:
             _REQUEST.reset(token)
+            CENSUS.count(_route(request), "requests")
     return _app
 
 
@@ -167,7 +172,8 @@ class serving:
 def _route(request: dict) -> str:
     scope = request["scope"]
     route = scope.get("route")
-    return f"{scope.get('method', '?')} {getattr(route, 'path', None) or scope.get('path', '?')}"
+    key = f"{scope.get('method', '?')} {getattr(route, 'path', None) or scope.get('path', '?')}"
+    return f"{request['app']} {key}" if request.get("app") else key
 
 
 # -- classification ----------------------------------------------------------------
@@ -294,17 +300,38 @@ def _ended(session, transaction) -> None:
 
 # -- observation -------------------------------------------------------------------
 
-def _where() -> list[str]:
-    """The app's own frames that led to the statement, through the greenlet the async
-    session runs its database work in."""
-    frames = traceback.extract_stack()[:-3]
-    child = greenlet.getcurrent()
-    while child.parent is not None and child.parent.gr_frame is not None:
-        frames = traceback.extract_stack(child.parent.gr_frame) + frames
+_RELATIVE: dict[str, str | None] = {}
+
+
+def _relative(filename: str) -> str | None:
+    """The app source file a frame runs in, relative to the repository; None for tests,
+    this observer, and anything outside the repository."""
+    if filename not in _RELATIVE:
+        mine = filename.startswith(_ROOT) and "/tests/" not in filename \
+            and not filename.endswith("mutation_observer.py")
+        _RELATIVE[filename] = os.path.relpath(filename, _ROOT) if mine else None
+    return _RELATIVE[filename]
+
+
+def _app_frames() -> list[str]:
+    """The app's own frames that led to the statement, outermost first, through the
+    greenlets the async session runs its database work in."""
+    chains, frame, child = [], sys._getframe(1), greenlet.getcurrent()
+    while frame is not None:
+        chain = []
+        while frame is not None:
+            path = _relative(frame.f_code.co_filename)
+            if path:
+                chain.append(f"{path}:{frame.f_lineno} {frame.f_code.co_name}")
+            frame = frame.f_back
+        chains.append(chain)
         child = child.parent
-    mine = [f for f in frames if f.filename.startswith(_ROOT) and "/tests/" not in f.filename
-            and not f.filename.endswith("mutation_observer.py")]
-    return [f"{os.path.relpath(f.filename, _ROOT)}:{f.lineno} {f.name}" for f in mine[-6:]]
+        frame = child.gr_frame if child is not None else None
+    return [f for chain in reversed(chains) for f in reversed(chain)]
+
+
+def _where() -> list[str]:
+    return _app_frames()[-6:]
 
 
 def _request_company(request: dict, session) -> str | None:
@@ -362,10 +389,11 @@ def _executed(conn, cursor, statement, parameters, context, executemany) -> None
         else:
             kind = None
         root = session.get_transaction()
+        frames = _app_frames()
         note(session, _WRITE, Finding(
             kind or "protected", route, target, op.table, statement[:300], op.detail,
             earlier_locks=list(noted(session, _LOCK)), transaction=f"{id(root):x}",
-            where=_where() if kind else [], test=CENSUS.test, company_from=source))
+            where=frames[-6:] if kind else [], test=CENSUS.test, company_from=source, sites=frames))
     if not targets:
         CENSUS.findings.append(Finding("unprotected", route, None, op.table, statement[:300],
                                        "no company for the write", where=_where(), test=CENSUS.test))
@@ -378,18 +406,75 @@ def _committed(session) -> None:
     for finding in noted(session, _WRITE):
         CENSUS.count(finding.route, finding.kind)
         CENSUS.count(finding.route, f"company from {finding.company_from}")
+        for site in set(finding.sites):
+            CENSUS.sites[site] = CENSUS.sites.get(site, 0) + 1
         if finding.kind != "protected":
             CENSUS.findings.append(finding)
 
 
 # -- census files ------------------------------------------------------------------
 
-def write_census(path: str, census_by_test: list[Census]) -> None:
-    """Append one JSON line per test."""
-    with open(path, "a", encoding="utf-8") as out:
-        for census in census_by_test:
-            out.write(json.dumps({"test": census.test, "routes": census.routes,
-                                  "findings": [asdict(f) for f in census.findings]}, default=str) + "\n")
+class Totals:
+    """Everything one test process saw, merged across its tests: request and write counts
+    per route, durable writes per app frame, and each distinct finding once, with how
+    often it was seen and the first tests that saw it."""
+
+    def __init__(self) -> None:
+        self.routes: dict[str, dict[str, int]] = {}
+        self.sites: dict[str, int] = {}
+        self.findings: dict[tuple, dict] = {}
+
+    def add(self, census: Census) -> None:
+        for route, counts in census.routes.items():
+            bucket = self.routes.setdefault(route, {})
+            for what, n in counts.items():
+                bucket[what] = bucket.get(what, 0) + n
+        for site, n in census.sites.items():
+            self.sites[site] = self.sites.get(site, 0) + n
+        for f in census.findings:
+            key = (f.kind, f.route, f.table, f.detail, f.sql[:200], tuple(f.where))
+            seen = self.findings.get(key)
+            if seen is None:
+                self.findings[key] = {**asdict(f), "sites": [], "count": 1, "tests": [census.test]}
+            else:
+                seen["count"] += 1
+                if len(seen["tests"]) < 3 and census.test not in seen["tests"]:
+                    seen["tests"].append(census.test)
+
+    def write(self, path: str) -> None:
+        with open(path, "w", encoding="utf-8") as out:
+            json.dump({"routes": self.routes, "sites": self.sites,
+                       "findings": list(self.findings.values())}, out, default=str)
+
+
+def write_routes(path: str, apps) -> None:
+    """The routes the test apps serve: method, path template and the endpoint's source."""
+    import inspect
+    def walk(routes, prefix=""):
+        for route in routes:
+            included = getattr(route, "original_router", None)  # a router FastAPI includes lazily
+            if included is not None:
+                yield from walk(included.routes, prefix + route.include_context.prefix)
+            else:
+                yield prefix, route
+
+    rows = []
+    for app in apps:
+        for prefix, route in walk(getattr(app, "routes", ())):
+            endpoint = getattr(route, "endpoint", None)
+            methods = sorted(getattr(route, "methods", None) or ())
+            if endpoint is None or not methods:
+                continue
+            fn = inspect.unwrap(endpoint)
+            try:
+                source = f"{_relative(inspect.getsourcefile(fn)) or inspect.getsourcefile(fn)}:" \
+                         f"{inspect.getsourcelines(fn)[1]}"
+            except (OSError, TypeError):
+                source = "?"
+            rows.append({"app": type(app).__name__, "methods": methods, "path": prefix + route.path,
+                         "endpoint": f"{fn.__module__}.{fn.__qualname__}", "source": source})
+    with open(path, "w", encoding="utf-8") as out:
+        json.dump(rows, out)
 
 
 def census_path() -> str | None:
@@ -398,4 +483,4 @@ def census_path() -> str | None:
         return None
     os.makedirs(folder, exist_ok=True)
     worker = os.environ.get("PYTEST_XDIST_WORKER", "main")
-    return os.path.join(folder, f"census-{os.getpid()}-{worker}.jsonl")
+    return os.path.join(folder, f"census-{os.getpid()}-{worker}")

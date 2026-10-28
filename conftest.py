@@ -151,16 +151,18 @@ from celerp.db import get_session
 from celerp.main import app
 import mutation_observer  # noqa: E402 - installs the write observer's listeners
 
-# Every request the app serves, through any test's transport, is request scope for the
-# write observer (mutation_observer.py): the outermost layer of the app's own stack.
-_build_middleware_stack = app.build_middleware_stack
-app.build_middleware_stack = lambda: mutation_observer.observed(_build_middleware_stack())
-app.middleware_stack = None
 # The `client` fixture patches celerp.gateway.state.get_session_token. The session
 # gate keeps its own reference from import time, so it is imported here, before any
 # patch is active, and checks the session a test actually seats.
 import celerp.session_gate  # noqa: E402,F401
 from ui.app import app as _ui_app
+
+# Every request the apps serve, through any test's transport, is request scope for the
+# write observer (mutation_observer.py): the outermost layer of each app's own stack.
+for _label, _observed_app in (("api", app), ("ui", _ui_app)):
+    _observed_app.build_middleware_stack = (
+        lambda built=_observed_app.build_middleware_stack, label=_label: mutation_observer.observed(built(), label))
+    _observed_app.middleware_stack = None
 
 import sys as _sys, os as _os
 from pathlib import Path
@@ -483,7 +485,7 @@ def _one_current_event_loop():
     loop.close()
 
 
-_CENSUS: list = []
+_CENSUS = mutation_observer.Totals()
 
 
 @pytest.fixture(autouse=True)
@@ -492,15 +494,14 @@ def _mutation_census(request):
     (CELERP_MUTATION_CENSUS names its folder)."""
     mutation_observer.reset(request.node.nodeid)
     yield
-    census = mutation_observer.reset()
-    if census.routes or census.findings:
-        _CENSUS.append(census)
+    _CENSUS.add(mutation_observer.reset())
 
 
 def pytest_sessionfinish(session, exitstatus):
     path = mutation_observer.census_path()
     if path:
-        mutation_observer.write_census(path, _CENSUS)
+        _CENSUS.write(f"{path}.json")
+        mutation_observer.write_routes(f"{path}.routes.json", [app, _ui_app])
 
 
 @pytest.fixture(autouse=True)
