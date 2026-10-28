@@ -854,3 +854,30 @@ async def test_fallback_journal_keeps_its_representation_when_its_coverage_row_i
             MigrationEntityMap.migration_run_id == run_id,
             MigrationEntityMap.source_external_id == "pay-1:journal"))).scalars().all()
     assert journal.meta["representation"] == "journal_fallback"
+
+
+async def test_the_runner_is_work_of_its_own_not_the_starting_requests(monkeypatch):
+    """The runner outlives the request that starts it: it carries none of that request's
+    state (its module admissions and refusals, the write tracking of its retry) and keeps
+    only the starter's language for the messages it records."""
+    from celerp.middleware import _WRITES
+    from celerp.modules.boundary import _IN_USE, _REFUSALS
+    from celerp.services import migrations
+    from ui.i18n import current_lang, set_lang
+    seen = []
+
+    async def runner(run_id):
+        seen.append((_IN_USE.get(), _REFUSALS.get(), _WRITES.get(), current_lang()))
+
+    monkeypatch.setattr(migrations, "run_migration", runner)
+
+    async def request():
+        set_lang("de")
+        _IN_USE.set({"company": frozenset({"celerp-docs"})})
+        _REFUSALS.set([])
+        _WRITES.set(object())
+        migrations.schedule_run(uuid.uuid4())
+
+    await asyncio.create_task(request())
+    await asyncio.gather(*migrations.running_tasks())
+    assert seen == [({}, None, None, "de")]

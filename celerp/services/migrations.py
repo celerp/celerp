@@ -20,6 +20,7 @@ record took, as its CIF record states it, in the entity map metadata.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import csv
 import io
 import logging
@@ -93,7 +94,7 @@ from celerp.services.lot_origin import place_company_stock
 from celerp.services.csv_export import csv_safe
 from celerp.services.permissions import act_for, role_has_permission
 from celerp.services.provisioning import add_missing_required_defaults
-from ui.i18n import t
+from ui.i18n import current_lang, set_lang, t
 
 logger = logging.getLogger(__name__)
 
@@ -608,8 +609,14 @@ _TASKS: set[asyncio.Task] = set()
 
 
 def schedule_run(run_id: uuid.UUID) -> None:
-    """Start the runner in this process. The run row, not the task, is authoritative."""
-    task = asyncio.get_running_loop().create_task(run_migration(run_id))
+    """Start the runner in this process. The run row, not the task, is authoritative.
+
+    The runner outlives the request that starts it, so it runs in a context of its own:
+    none of the request's state (its module admissions, its write tracking) carries over,
+    only the starter's language for the messages the run records."""
+    context = contextvars.Context()
+    context.run(set_lang, current_lang())
+    task = context.run(asyncio.get_running_loop().create_task, run_migration(run_id))
     _TASKS.add(task)
     task.add_done_callback(_TASKS.discard)
 
