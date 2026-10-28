@@ -317,3 +317,48 @@ def test_each_edge_keeps_every_site_pair_one_call_takes_it_by(recorder):
     assert recorder.edges[("row:projections", "row:companies")]["call_sites"] == {
         "celerp/x.py:1 f -> celerp/x.py:1 f": {"update>update"},
         "celerp/y.py:2 g -> celerp/y.py:3 h": {"share>update", "update>update"}}
+
+
+def _projection(recorder: Recorder, conn: int, entity: str, company: str = "c1") -> None:
+    recorder.statement(conn, _PROJECTION, (company, entity), 0.0)
+
+
+@pytest.mark.parametrize("locked, violates", [("c1", False), ("c2", True), (None, True)])
+def test_an_unsorted_take_under_its_companys_lock_records_no_violation(recorder, locked, violates):
+    # Two takers holding one company's lock never interleave, whatever order they take its rows in.
+    if locked:
+        recorder.statement(1, _LOCK_COMPANY, (locked,), 0.0)
+    _projection(recorder, 1, "item-b")
+    _projection(recorder, 1, "item-a")
+    assert (("unsorted", "row:projections") in _kinds(recorder)) is violates
+
+
+@pytest.mark.parametrize("second, listed", [
+    ([("item-a", None), ("item-b", None)], True),   # two rows without the company lock
+    ([("item-a", "c1"), ("item-b", "c1")], False),  # two rows under it
+    ([("item-a", None)], False),                    # one row: it waits on one thing only
+])
+def test_the_offline_check_fails_a_gated_unsorted_class_with_an_ungated_multi_row_taker(
+        recorder, tmp_path, second, listed):
+    recorder.statement(1, _LOCK_COMPANY, ("c1",), 0.0)
+    _projection(recorder, 1, "item-b")
+    _projection(recorder, 1, "item-a")
+    for entity, locked in second:
+        if locked:
+            recorder.statement(2, _LOCK_COMPANY, (locked,), 0.0)
+        _projection(recorder, 2, entity)
+    (tmp_path / "lock-graph-gw0.json").write_text(json.dumps(recorder.dump()))
+    assert ("- row:projections:" in lock_rank.check(tmp_path)) is listed
+
+
+@pytest.mark.parametrize("strength, listed", [("FOR SHARE", False), ("FOR UPDATE", True)])
+def test_the_offline_check_passes_an_ungated_multi_row_taker_that_conflicts_with_no_unsorted_take(
+        recorder, tmp_path, strength, listed):
+    shared = _PROJECTION.replace("FOR UPDATE", "FOR SHARE")
+    recorder.statement(1, _LOCK_COMPANY, ("c1",), 0.0)
+    recorder.statement(1, shared, ("c1", "item-b"), 0.0)
+    recorder.statement(1, shared, ("c1", "item-a"), 0.0)
+    for entity in ("item-a", "item-b"):
+        recorder.statement(2, _PROJECTION.replace("FOR UPDATE", strength), ("c1", entity), 0.0)
+    (tmp_path / "lock-graph-gw0.json").write_text(json.dumps(recorder.dump()))
+    assert ("- row:projections:" in lock_rank.check(tmp_path)) is listed

@@ -241,7 +241,12 @@ class Recorder:
         such inserters of one key (every unique key holds the company) run one at a time, so
         it waits on, and makes wait, only an inserter that does not take the company lock;
         the offline check fails a decreasing edge through it when its table has one."""
-        if lock.mode != "insert" or not lock.company:
+        return lock.mode == "insert" and self._company_held(conn_key, lock)
+
+    def _company_held(self, conn_key: int, lock: Lock) -> bool:
+        """Whether this transaction holds the row of ``lock``'s company exclusively (NO KEY
+        UPDATE or stronger): every other transaction that takes it waits for this one."""
+        if not lock.company:
             return False
         held = self.taken[conn_key].get(("row:companies", repr((lock.company,))), ())
         return bool(set(held) & {"nokey", "update"})
@@ -314,8 +319,19 @@ class Recorder:
             # keys of one class are taken in sorted order (by their helper), or two
             # transactions taking two keys in opposite orders wait on each other.
             self._edge(lock, lock, waits, set())
-            if not decreasing and lock.key < last:
-                self._violate("unsorted", lock)
+            if self._company_held(conn_key, lock):
+                # R3: two takers holding the company's lock never interleave, so the order of
+                # their keys orders nothing; the offline check fails the class when it has a
+                # taker of more than one key without that lock.
+                if not decreasing and lock.key < last:
+                    info["gated_unsorted"] = info.get("gated_unsorted", 0) + 1
+                    info.setdefault("unsorted_strengths", set()).add(_strength(lock))
+            else:
+                info["ungated_multi"] = info.get("ungated_multi", 0) + 1
+                info.setdefault("multi_sites", set()).add(f"{lock.site} [{_strength(lock)}]")
+                info.setdefault("multi_strengths", set()).add(_strength(lock))
+                if not decreasing and lock.key < last:
+                    self._violate("unsorted", lock)
         if lock.mode.startswith("session"):
             self.session_held[conn_key].append(lock)
             return
@@ -423,7 +439,7 @@ class Recorder:
                        "call_sites": {k: sorted(m) for k, m in v["call_sites"].items()}}
                       for (a, b), v in self.edges.items()],
             "classes": {k: {"count": v["count"], "modes": sorted(v["modes"]), "sites": sorted(v["sites"]),
-                            "ungated": v.get("ungated", 0)}
+                            **{c: v.get(c, 0) for c in _COUNTS}, **{c: sorted(v.get(c, ())) for c in _SETS}}
                         for k, v in self.classes.items()},
             "contention": self.contention,
             "violations": list({**self.seen, **{violation_key(v): v for v in self.violations}}.values()),
@@ -915,6 +931,13 @@ def dump(path: Path) -> None:
 
 # ── Report: merge worker dumps into one graph ─────────────────────────────────
 
+# Per class counts the offline check judges: inserts without their company's lock (R2), keys
+# taken out of order under it, and second keys taken without it (R3).
+_COUNTS = ("ungated", "gated_unsorted", "ungated_multi")
+# The strengths of those R3 takes, and where each second key without the lock was taken.
+_SETS = ("unsorted_strengths", "multi_strengths", "multi_sites")
+
+
 def _merge(directory: Path) -> dict:
     edges: dict[tuple[str, str], dict] = {}
     classes: dict[str, dict] = {}
@@ -936,9 +959,12 @@ def _merge(directory: Path) -> dict:
             cur["count"] += e["count"]
             cur["waits"] = cur["waits"] or e["waits"]
         for k, v in d["classes"].items():
-            cur = classes.setdefault(k, {"count": 0, "modes": set(), "sites": set(), "ungated": 0})
+            cur = classes.setdefault(k, {"count": 0, "modes": set(), "sites": set(), **dict.fromkeys(_COUNTS, 0)})
             cur["count"] += v["count"]
-            cur["ungated"] += v.get("ungated", 0)
+            for c in _COUNTS:
+                cur[c] += v.get(c, 0)
+            for c in _SETS:
+                cur.setdefault(c, set()).update(v.get(c, ()))
             cur["modes"].update(v["modes"])
             cur["sites"].update(v["sites"])
         contention += d["contention"]
@@ -1065,7 +1091,9 @@ def check(directory: Path) -> str:
     referenced must be ranked, and every waiting acquisition after a lock of a higher rank
     is a violation, whether one call or two test statements took the two. An edge through an
     insert made under its company's lock (R2) waits only when its table also has an insert
-    made without that lock."""
+    made without that lock; keys of a class taken out of order under the company lock (R3)
+    fail only when the class has a taker of more than one key without that lock, at a
+    strength that conflicts."""
     g = _merge(directory)
     lines = [f"Unranked classes: {sorted(c for c in g['classes'] if rank(c) is None) or 'none'}", ""]
 
@@ -1078,6 +1106,16 @@ def check(directory: Path) -> str:
         e = g["edges"][(a, b)]
         ex = e["call_example"] or e["example"]
         lines.append(f"- {a} ({rank(a)}) -> {b} ({rank(b)}): {ex['held']} -> {ex['acquired']} ({ex['test']})")
+    # R3: a class whose keys a transaction took out of order under the company lock, and that
+    # another transaction takes more than one key of without it: each can hold the key the
+    # other waits on, when the key one asks for conflicts with what the other holds of it.
+    mixed = sorted(c for c, v in g["classes"].items()
+                   if any((a, b) in _CONFLICTS for a in v["unsorted_strengths"] for b in v["multi_strengths"]))
+    lines += ["", f"Unsorted under the company lock, with a multi-key taker without it: {len(mixed)}"]
+    for c in mixed:
+        v = g["classes"][c]
+        lines.append(f"- {c}: {v['gated_unsorted']} unsorted, {v['ungated_multi']} ungated: "
+                     + ", ".join(sorted(v["multi_sites"])))
     # Rule (e): the debt list only shrinks, so an entry the run no longer hits must go.
     hit = {violation_key(v) for v in g["violations"]}
     stale = sorted(set(debt()) - hit)
