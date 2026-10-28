@@ -11903,6 +11903,13 @@ async def undo_receive(
     already returned to the supplier keep the receipt in place: undoing it would orphan the
     posted return. Undoing a receipt already undone reports that instead of failing.
     """
+    return await undo_receive_record(entity_id, company_id, user, session, commit=True)
+
+
+async def undo_receive_record(entity_id: str, company_id: str, user, session: AsyncSession, *,
+                              commit: bool = True) -> dict:
+    """Undo everything received on a bill (undo_receive). ``commit=False`` leaves the
+    transaction open, so a caller that undoes inside a larger change keeps it atomic."""
     from celerp.services import auto_je
 
     row = await _get_doc(session, company_id, entity_id, for_update=True)
@@ -12074,7 +12081,8 @@ async def undo_receive(
               if "lot_quantity_added" in x and 0 <= x.get("po_line_index", -1) < len(lines)],
     )
 
-    await session.commit()
+    if commit:
+        await session.commit()
     return {"undone": True, "item_ids": received_item_ids}
 
 

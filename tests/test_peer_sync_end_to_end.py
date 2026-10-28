@@ -280,6 +280,37 @@ async def test_undone_receipt_and_taken_back_shipment_follow_the_client(
     assert await _books(real_client, firm_tok) == await _books(real_client, tok)
 
 
+async def test_an_undone_receipt_that_fails_later_in_its_record_leaves_the_copy_as_it_was(
+        real_client, real_engine, monkeypatch):
+    """The accountant's copy undoes the client's undone receipt inside the bill's own record:
+    when the record then fails, the undo rolls back with it, and the next run applies it whole."""
+    from celerp.services import peer_documents
+
+    tok, firm_tok, client_company, credential, contacts = await _paired(real_client, real_engine)
+    done = await _client_activity(real_client, real_engine, tok, contacts)
+    _route_to_app(monkeypatch, [])
+    await _sync(client_company, credential)
+    before = await _stock(real_client, firm_tok)
+    r = await real_client.delete(f"/docs/{done['received']}/receive", headers=auth(tok))
+    assert r.status_code == 200, r.text
+    assert await _stock(real_client, tok) != before
+
+    real_commit = peer_documents.commit_peer_revision
+
+    async def fails_once(session, **kwargs):
+        monkeypatch.setattr(peer_documents, "commit_peer_revision", real_commit)
+        raise ValueError("The record failed after its receipt was undone.")
+
+    monkeypatch.setattr(peer_documents, "commit_peer_revision", fails_once)
+    results = await _sync(client_company, credential)
+
+    assert any(r.errors for r in results)
+    assert await _stock(real_client, firm_tok) == before
+    results = await _sync(client_company, credential)
+    assert [(r.entity.value, r.attention) for r in results if r.errors or r.attention] == []
+    assert await _stock(real_client, firm_tok) == await _stock(real_client, tok)
+
+
 async def test_receipt_before_the_copy_is_not_received_twice(real_client, real_engine, monkeypatch):
     """Goods received before the copy was taken are already in the copy; the bill's next
     change does not receive them again."""

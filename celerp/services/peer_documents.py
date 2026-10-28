@@ -391,7 +391,7 @@ async def _replay_receipts(session: AsyncSession, grant, target_id: str, receipt
     remaining ones are then received again); each receipt is received once per undo."""
     from sqlalchemy import select
     from celerp.models.ledger import LedgerEntry
-    from celerp_docs.routes import undo_receive
+    from celerp_docs.routes import undo_receive_record
 
     company_id = grant.company_id
     prefix = f"peer:receive:{grant.source_company_id}:"
@@ -411,8 +411,8 @@ async def _replay_receipts(session: AsyncSession, grant, target_id: str, receipt
     source = {str(receipt["event_id"]): receipt.get("key") for receipt in receipts}
     held = {key[len(prefix):].split(":")[0] if key.startswith(prefix) else key for key in here}
     if held - set(source) - set(source.values()):
-        await undo_receive(entity_id=target_id, company_id=str(company_id), _=None,
-                           user=SimpleNamespace(id=actor_id), session=session)
+        await undo_receive_record(target_id, str(company_id), SimpleNamespace(id=actor_id), session,
+                                  commit=False)
         cycle, held = cycle + 1, set()
     for receipt in receipts:
         if str(receipt["event_id"]) not in held and receipt.get("key") not in held:
