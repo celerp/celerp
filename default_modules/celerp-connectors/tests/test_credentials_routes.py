@@ -88,6 +88,9 @@ def _owned_connector_boundary():
                 (2, 1, 6, "", ("93.184.216.34", 443))
             ])
         ),
+    ), patch(
+        "celerp.connectors.woocommerce.WooCommerceConnector.deregister_webhooks",
+        new=AsyncMock(),
     ):
         yield
 
@@ -571,18 +574,19 @@ def _store_ok():
 
 @pytest.mark.asyncio
 async def test_connect_makes_no_store_write():
-    """Connecting only reads the store: its webhooks are created by the first sync,
-    signed with the secret saved now."""
+    """Connecting creates nothing on the store (it only reads it, after retiring an
+    earlier connection's hooks): its webhooks are created by the first sync, signed
+    with the secret saved now."""
     config = SimpleNamespace(webhook_ids=["9"], webhook_secret=None, first_sync_state="pending",
                              entity_directions=dict(WOO_DEFAULTS))
     url_p, hdr_p = _relay_state()
     with patch("celerp.connectors.ownership.lock_connector_operation", new=AsyncMock(return_value=config)), \
-            url_p, hdr_p, respx.mock(assert_all_called=False) as mock:
+            url_p, hdr_p, respx.mock:
         _store_ok()
         result = await store_credentials("woocommerce", _creds(), "company-test", None, _session())
+        store_calls = [c.request for c in respx.calls if str(c.request.url).startswith(STORE)]
 
     assert result == {"ok": True}
-    store_calls = [c.request for c in mock.calls if str(c.request.url).startswith(STORE)]
     assert store_calls and {r.method for r in store_calls} == {"GET"}
     assert config.webhook_secret and config.webhook_ids == []
 
@@ -603,8 +607,8 @@ async def test_a_key_the_store_will_not_let_write_stops_the_first_sync_with_its_
 
     row = await session.get(ConnectorFirstSync, (str(cid), "woocommerce"), populate_existing=True)
     assert row.state == "failed"
-    assert row.error == {"reason": t("connectors.err_read_only_key")}
-    assert "Read/Write" in row.error["reason"]
+    assert row.error == {"key": "connectors.err_read_only_key"}
+    assert "Read/Write" in t(row.error["key"])
 
 
 def _ui_connect_patches(start):
@@ -722,6 +726,7 @@ async def test_first_sync_runs_once(connector_session):
         coro.close()
     assert len(spawned) == 1
     assert again.value.status_code == 409 and again.value.detail == t("connectors.err_first_sync_done")
+    await session.refresh(config)
     assert config.entity_directions["products"] == "both"
     assert config.orders_from == datetime(2026, 9, 1, tzinfo=timezone.utc)
     assert config.webhooks_dirty

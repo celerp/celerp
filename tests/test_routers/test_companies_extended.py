@@ -8,13 +8,14 @@ Targets: locations PATCH, BOM CRUD, taxes batch import, payment terms batch impo
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
 import os
 import uuid as _uuid
 
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 
 import pytest
+
+from connector_test_support import record_first_sync
 
 
 # ── helper ────────────────────────────────────────────────────────────────────
@@ -335,10 +336,10 @@ async def test_connector_sync_success(client, session, patch_session_token):
     headers = {**base_headers, "X-Session-Token": _FAKE_SESSION_TOKEN}
     company_id = (await client.get("/companies/me", headers=base_headers)).json()["id"]
     from celerp.models.connector_config import ConnectorConfig
-    session.add(ConnectorConfig(
-        company_id=str(company_id), connector="shopify",
-        first_sync_at=datetime.now(timezone.utc),
-    ))
+    config = ConnectorConfig(company_id=str(company_id), connector="shopify")
+    session.add(config)
+    await session.flush()
+    await record_first_sync(session, config, "completed")
     await session.commit()
 
     mock_result = SyncResult(

@@ -461,6 +461,14 @@ def _reset_hot_path_caches():
 
 
 @pytest.fixture(autouse=True)
+def _restore_session_bindings():
+    from conftest_support import restore_session_bindings
+
+    yield
+    restore_session_bindings()
+
+
+@pytest.fixture(autouse=True)
 def _forget_temp_imports(tmp_path_factory):
     """Drop every package a test imported from a pytest temp directory.
 

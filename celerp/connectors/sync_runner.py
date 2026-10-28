@@ -173,20 +173,20 @@ def _resource_of(entity) -> str:
 
 async def fail_first_sync(company_id, connector_name: str, exc: BaseException) -> None:
     """Record that a connection's first sync stopped on ``exc``: it needs attention,
-    with the store's reason. A key the store will not let write is named as such."""
+    with the store's reason (a locale key for a key the store will not let write, the
+    store's own text otherwise)."""
     import httpx
 
     from celerp.db import get_session_ctx
-    from celerp.i18n import t
     from celerp.models.connector_first_sync import ConnectorFirstSync
 
     status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
-    reason = t("connectors.err_read_only_key") if status in (401, 403) else str(exc)
+    reason = {"key": "connectors.err_read_only_key"} if status in (401, 403) else {"detail": str(exc)}
     async with get_session_ctx() as session:
         row = await session.get(ConnectorFirstSync, (str(company_id), connector_name), with_for_update=True)
         if row is not None and row.state in ("starting", "running"):
             row.state = "failed"
-            row.error = {"reason": reason}
+            row.error = reason
         await session.commit()
 
 

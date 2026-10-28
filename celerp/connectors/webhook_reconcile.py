@@ -80,8 +80,6 @@ async def _read(ex: Execution):
 
 async def reconcile_webhooks(ex: Execution) -> None:
     """Inside an execution holding the webhooks resource."""
-    from celerp import connectors
-    from celerp.connectors.woocommerce import webhook_delivery_url
     from celerp.db import SessionLocal
     from celerp.models.connector_config import ConnectorConfig
 
@@ -90,6 +88,23 @@ async def reconcile_webhooks(ex: Execution) -> None:
     if read is None or ex.ctx is None:
         return
     config_id, version, secret, desired = read
+    kept: dict[str, dict] = {}
+    if secret:  # only a connection that signs its hooks has any to reconcile
+        kept = await _reconcile_store(ex, secret, desired)
+    ids = [str(kept[topic]["id"]) for topic in desired if topic in kept]
+    async with SessionLocal() as s:
+        await s.execute(sa.update(ConnectorConfig).where(
+            ConnectorConfig.id == config_id, ConnectorConfig.webhooks_version == version,
+        ).values(webhooks_dirty=False, webhook_ids_json=json.dumps(ids) if ids else None))
+        await s.commit()
+
+
+async def _reconcile_store(ex: Execution, secret: str, desired: list[str]) -> dict[str, dict]:
+    """Create, activate and verify one hook per desired topic; delete every other
+    hook delivering to Celerp. Returns the kept hook per topic."""
+    from celerp import connectors
+    from celerp.connectors.woocommerce import webhook_delivery_url
+
     connector = connectors.get(ex.connector)
     url = webhook_delivery_url()
     hooks = sorted(await connector.list_webhooks(ex.ctx, url), key=lambda h: int(h["id"]))
@@ -109,9 +124,4 @@ async def reconcile_webhooks(ex: Execution) -> None:
     for hook in hooks:
         if str(hook["id"]) not in keep_ids:
             await connector.delete_webhook(ex.ctx, hook["id"])
-    ids = [str(kept[topic]["id"]) for topic in desired]
-    async with SessionLocal() as s:
-        await s.execute(sa.update(ConnectorConfig).where(
-            ConnectorConfig.id == config_id, ConnectorConfig.webhooks_version == version,
-        ).values(webhooks_dirty=False, webhook_ids_json=json.dumps(ids) if ids else None))
-        await s.commit()
+    return kept

@@ -5,10 +5,11 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 import uuid
 
 import pytest
+
+from connector_test_support import record_first_sync
 
 from celerp.services.je_keys import je_idempotency_key
 from stock_books import SAMPLE_STOCK_ENTRY
@@ -777,10 +778,10 @@ async def test_connector_sync_not_implemented(client, session, patch_connector_s
 
     company_id = (await client.get("/companies/me", headers=headers)).json()["id"]
     from celerp.models.connector_config import ConnectorConfig
-    session.add(ConnectorConfig(
-        company_id=str(company_id), connector="shopify",
-        first_sync_at=datetime.now(timezone.utc),
-    ))
+    config = ConnectorConfig(company_id=str(company_id), connector="shopify")
+    session.add(config)
+    await session.flush()
+    await record_first_sync(session, config, "completed")
     await session.commit()
 
     connector = conn_module.get("shopify")
@@ -813,10 +814,10 @@ async def test_connector_sync_generic_exception(client, session, patch_connector
 
     company_id = (await client.get("/companies/me", headers=headers)).json()["id"]
     from celerp.models.connector_config import ConnectorConfig
-    session.add(ConnectorConfig(
-        company_id=str(company_id), connector="shopify",
-        first_sync_at=datetime.now(timezone.utc),
-    ))
+    config = ConnectorConfig(company_id=str(company_id), connector="shopify")
+    session.add(config)
+    await session.flush()
+    await record_first_sync(session, config, "completed")
     await session.commit()
 
     connector = conn_module.get("shopify")
@@ -849,10 +850,10 @@ async def test_connector_sync_contacts(client, session, patch_connector_session_
 
     company_id = (await client.get("/companies/me", headers=headers)).json()["id"]
     from celerp.models.connector_config import ConnectorConfig
-    session.add(ConnectorConfig(
-        company_id=str(company_id), connector="shopify",
-        first_sync_at=datetime.now(timezone.utc),
-    ))
+    config = ConnectorConfig(company_id=str(company_id), connector="shopify")
+    session.add(config)
+    await session.flush()
+    await record_first_sync(session, config, "completed")
     await session.commit()
 
     mock_result = SyncResult(entity=SyncEntity.CONTACTS)
