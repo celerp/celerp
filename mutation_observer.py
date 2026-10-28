@@ -174,7 +174,7 @@ READ_METHODS = ("GET", "HEAD")
 # finding.
 @dataclass(frozen=True)
 class ReadNote:
-    columns: tuple[str, ...]  # the only columns the UPDATE may set
+    columns: tuple[str, ...]  # the only columns the statement may set
     sites: tuple[str, ...]  # "<file> <function>" that make the write
     reason: str
 
@@ -187,6 +187,9 @@ READ_ROUTE_WRITES: dict[tuple[str, str], ReadNote] = {
     ("session_registry", "UPDATE"): ReadNote(
         ("expiry",), ("celerp/credentials.py issue_token_pair",),
         "a session's expiry slid forward when the middleware refreshes the token of any request, a read too"),
+    ("session_registry", "INSERT"): ReadNote(
+        ("company_id", "expiry", "jti", "user_id"), ("celerp/credentials.py issue_token_pair",),
+        "a session registered again when the middleware refreshes the token of a request whose slot is gone"),
 }
 
 _ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -207,7 +210,7 @@ class Op:
     detail: str = ""
     name: object = None  # an advisory lock's key or name
     fingerprint: str = ""
-    columns: tuple[str, ...] = ()  # the columns an UPDATE sets
+    columns: tuple[str, ...] = ()  # the columns an INSERT or UPDATE sets
 
 
 @dataclass
@@ -432,6 +435,10 @@ class _Parts(Visitor):
 
     def visit_InsertStmt(self, ancestors, node) -> None:
         self._write(node, "INSERT")
+        self.columns += [target.name for target in node.cols or ()]
+
+    def visit_OnConflictClause(self, ancestors, node) -> None:
+        self.columns += [target.name for target in node.targetList or ()]
 
     def visit_UpdateStmt(self, ancestors, node) -> None:
         self._write(node, "UPDATE")

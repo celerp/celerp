@@ -485,15 +485,32 @@ async def test_a_session_token_is_issued_and_ended_under_the_logins_session_stat
     assert (await session.scalar(select(func.count()).select_from(SessionRegistry))) == 0
 
 
+@pytest.mark.parametrize("slot", ["registered", "gone"])
+async def test_a_read_requests_token_refresh_slides_or_registers_its_session(session, auth, slot):
+    """The middleware refreshes the token of any request, a read too: issuance slides the
+    session's expiry forward, or registers the session again when its slot is gone."""
+    user = await session.get(User, auth["user_id"])
+    jti = uuid.uuid4().hex
+    if slot == "registered":
+        session.add(SessionRegistry(jti=jti, user_id=auth["user_id"], company_id=auth["company_id"],
+                                    expiry=datetime.now(timezone.utc) + timedelta(minutes=5)))
+        await session.commit()
+    with serving("GET", "/observed"):
+        await issue_token_pair(session, user=user, company_id=auth["company_id"], jti=jti, expected_snonce=None)
+    assert _kinds() == []
+    assert (await session.get(SessionRegistry, jti)).expiry > datetime.now(timezone.utc) + timedelta(minutes=5)
+
+
+@pytest.mark.parametrize("method", ["POST", "GET"])
 @pytest.mark.parametrize("state_locked", [True, False])
-async def test_a_session_token_written_outside_issuance_is_reported(session, auth, state_locked):
-    with serving("POST", "/observed"):
+async def test_a_session_token_written_outside_issuance_is_reported(session, auth, state_locked, method):
+    with serving(method, "/observed"):
         if state_locked:
             await lock_auth_state(session, str(auth["user_id"]))
         session.add(SessionRegistry(jti=uuid.uuid4().hex, user_id=auth["user_id"], company_id=auth["company_id"],
                                     expiry=datetime.now(timezone.utc) + timedelta(hours=1)))
         await session.commit()
-    assert _kinds() == ["unprotected"]
+    assert sorted(_kinds()) == (["read-route-write", "unprotected"] if method == "GET" else ["unprotected"])
 
 
 @pytest.mark.parametrize("created", ["in this transaction", "earlier in this request", "before this request"])
