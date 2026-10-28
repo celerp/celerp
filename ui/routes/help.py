@@ -17,7 +17,7 @@ from starlette.responses import HTMLResponse, RedirectResponse, Response
 import ui.api_client as api
 from celerp.help.registry import MAX_ADDRESS_LEN, get_index
 from celerp.modules.loader import module_label
-from ui.api_client import APIError
+from ui.api_client import APIError, refusal_response
 from ui.components.shell import base_shell, load_error, page_header
 from ui.config import get_role
 from ui.config import get_token as _token
@@ -166,9 +166,7 @@ def setup_routes(app):
         try:
             data = await api.help_image(token, page_id, step)
         except APIError as e:
-            if e.status == 401:
-                raise
-            return Response(status_code=404 if e.status == 404 else 502)
+            return refusal_response(e)
         return Response(data, media_type="image/webp", headers={"X-Content-Type-Options": "nosniff"})
 
     @app.get("/help/{page_id}")
