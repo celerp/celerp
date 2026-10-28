@@ -42,7 +42,7 @@ from celerp.modules.loader import (
     load_all,
     register_api_routes,
 )
-from test_helpers import perm_setup
+from test_helpers import asked_in_thread, perm_setup
 
 from _fixtures import tool_call, tool_result
 
@@ -78,7 +78,9 @@ class ScriptedModel:
         self._i = 0
         self.seen: list[list[dict]] = []
 
-    async def __call__(self, messages, *, tools=None, reservation_id=None, operation_id=None):
+    async def __call__(self, messages, *, tools=None, reservation_id=None, operation_id=None, before_send=None, **_kw):
+        if before_send is not None:
+            await before_send(0)
         self.seen.append([dict(m) for m in messages])
         step = self._steps[self._i]
         self._i += 1
@@ -148,7 +150,7 @@ def xlsx_upload():
 # ── Conversation helpers# ── Conversation helpers ──────────────────────────────────────────────────────
 
 @pytest.fixture
-def ai_session(client):
+def ai_session(client, drained_jobs):
     """Seat a live gateway session token so the cloud-gated ``/ai/*`` routes pass
     ``require_ai_access``, which reads the in-process gateway state directly.
     The ``client`` fixture restores the prior token at teardown."""
@@ -190,15 +192,10 @@ async def test_inventory_search(client, session, agent_caps, ai_session):
     )
     conv_id = await _new_conversation(client, admin)
     with patch("celerp.ai.service.complete", scripted):
-        r = await client.post(
-            f"/ai/conversations/{conv_id}/query", headers=admin,
-            json={"query": "how many widgets do I have?"},
-        )
-    assert r.status_code == 200, r.text
-    body = r.json()
+        body = await asked_in_thread(client, admin, conv_id, {"query": "how many widgets do I have?"})
     assert body["pending_actions"] == []
     assert list_op in body["tools_called"]
-    assert body["answer"] == "You have 8 Blue Widget in stock."
+    assert body["content"] == "You have 8 Blue Widget in stock."
 
     # Read parity: the tool result fed to the model equals a direct API read.
     fed = _last_tool_data(scripted.seen[-1])
@@ -248,12 +245,7 @@ async def test_restock_with_reorder_suggestion(client, session, agent_caps, ai_s
     )
     conv_id = await _new_conversation(client, admin)
     with patch("celerp.ai.service.complete", scripted):
-        r = await client.post(
-            f"/ai/conversations/{conv_id}/query", headers=admin,
-            json={"query": "restock what is running low"},
-        )
-    assert r.status_code == 200, r.text
-    body = r.json()
+        body = await asked_in_thread(client, admin, conv_id, {"query": "restock what is running low"})
 
     # The reorder read really ran and returned a positive, velocity-derived number.
     fed = _last_tool_data(scripted.seen[-1])
@@ -268,7 +260,7 @@ async def test_restock_with_reorder_suggestion(client, session, agent_caps, ai_s
     # Confirming lands the draft purchase order.
     r2 = await client.post(
         f"/ai/conversations/{conv_id}/confirm", headers=admin,
-        json={"message_id": pa["message_id"], "tool_call_id": pa["id"]},
+        json={"message_id": body["id"], "tool_call_id": pa["id"]},
     )
     assert r2.status_code == 200, r2.text
     confirmed = r2.json()
@@ -295,12 +287,7 @@ async def test_draft_document_requires_confirmation(client, session, agent_caps,
     )
     conv_id = await _new_conversation(client, admin)
     with patch("celerp.ai.service.complete", scripted):
-        r = await client.post(
-            f"/ai/conversations/{conv_id}/query", headers=admin,
-            json={"query": "draft an invoice for 250 of consulting"},
-        )
-    assert r.status_code == 200, r.text
-    body = r.json()
+        body = await asked_in_thread(client, admin, conv_id, {"query": "draft an invoice for 250 of consulting"})
     assert len(body["pending_actions"]) == 1
     pa = body["pending_actions"][0]
     assert pa["name"] == create_doc_op
@@ -311,7 +298,7 @@ async def test_draft_document_requires_confirmation(client, session, agent_caps,
     # Confirming writes exactly one document.
     r2 = await client.post(
         f"/ai/conversations/{conv_id}/confirm", headers=admin,
-        json={"message_id": pa["message_id"], "tool_call_id": pa["id"]},
+        json={"message_id": body["id"], "tool_call_id": pa["id"]},
     )
     assert r2.status_code == 200, r2.text
     assert r2.json()["ok"] is True
@@ -337,16 +324,11 @@ async def test_stock_discrepancy_audit_read_only(client, session, agent_caps, ai
     )
     conv_id = await _new_conversation(client, admin)
     with patch("celerp.ai.service.complete", scripted):
-        r = await client.post(
-            f"/ai/conversations/{conv_id}/query", headers=admin,
-            json={"query": "audit my stock for discrepancies"},
-        )
-    assert r.status_code == 200, r.text
-    body = r.json()
+        body = await asked_in_thread(client, admin, conv_id, {"query": "audit my stock for discrepancies"})
     assert body["pending_actions"] == []
     assert list_op in body["tools_called"]
     assert get_op in body["tools_called"]
-    assert body["answer"] == "No discrepancies: on-hand matches the ledger."
+    assert body["content"] == "No discrepancies: on-hand matches the ledger."
 
     # A read-only audit writes nothing.
     assert (await client.get("/docs", headers=admin)).json()["total"] == docs_before
@@ -381,12 +363,7 @@ async def test_supplier_catalog_xlsx_preview_then_commit(client, session, agent_
     )
     conv_id = await _new_conversation(client, admin)
     with patch("celerp.ai.service.complete", scripted):
-        r = await client.post(
-            f"/ai/conversations/{conv_id}/query", headers=admin,
-            json={"query": "import this supplier catalog"},
-        )
-    assert r.status_code == 200, r.text
-    body = r.json()
+        body = await asked_in_thread(client, admin, conv_id, {"query": "import this supplier catalog"})
 
     # The commit call carries the hash the preview produced - the model chained on
     # live data, not a canned value.
@@ -401,7 +378,7 @@ async def test_supplier_catalog_xlsx_preview_then_commit(client, session, agent_
     # Confirming commits the import: one item created.
     r2 = await client.post(
         f"/ai/conversations/{conv_id}/confirm", headers=admin,
-        json={"message_id": pa["message_id"], "tool_call_id": pa["id"]},
+        json={"message_id": body["id"], "tool_call_id": pa["id"]},
     )
     assert r2.status_code == 200, r2.text
     confirmed = r2.json()

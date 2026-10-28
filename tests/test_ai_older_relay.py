@@ -12,13 +12,12 @@ import json
 import uuid
 
 import httpx
-import pytest
 
 from celerp.ai import llm, service, usage
 from celerp.gateway.state import set_session_token
 from celerp.routers.health import _ai_counts
-from test_ai_usage import _ask, _claims, _conversation, _counts, _messages, _usage, owner  # noqa: F401
-from test_ai_usage_reconcile import _age, _rows
+from test_ai_usage import _age, _asked, _claims, _conversation, _counts, _messages, _usage, owner  # noqa: F401
+from test_ai_usage_reconcile import _rows
 
 
 class _OlderRelay:
@@ -74,9 +73,7 @@ async def test_a_free_account_is_shown_the_upgrade_path(client, session, owner, 
     relay = _older_relay(monkeypatch, [_NOT_AVAILABLE])
     conv = await _conversation(client, token)
     question = uuid.uuid4()
-    r = await _ask(client, token, conv, question)
-    assert r.status_code == 402, r.text
-    assert r.json()["detail"]["code"] == "not_available"
+    await _asked(client, token, conv, question)
     assert relay.bodies[0]["operation_id"] == str(question)  # sent, and ignored by the older service
 
     _, reply = await _messages(client, token, conv)
@@ -101,8 +98,8 @@ async def test_usage_settles_on_what_the_older_service_reported(client, session,
     relay = _older_relay(monkeypatch, [_answered(credits=1), httpx.ReadTimeout("slow")])
     conv = await _conversation(client, token)
     answered, lost = uuid.uuid4(), uuid.uuid4()
-    assert (await _ask(client, token, conv, answered)).status_code == 200
-    assert (await _ask(client, token, conv, lost)).json()["error_code"] == "timeout"
+    assert (await _asked(client, token, conv, answered))[1]["error_code"] is None
+    assert (await _asked(client, token, conv, lost))[1]["error_code"] == "timeout"
     assert await _rows(session) == {answered: (1, True), lost: (0, True)}
 
     await _age(session)

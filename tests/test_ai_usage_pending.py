@@ -155,8 +155,7 @@ async def test_a_send_after_the_read_keeps_the_row_pending(session, owner, monke
     (op,) = await _pending(session, company_id, user_id, 1)
 
     async def _operations_status(ids):
-        await usage.record_usage_now(session.bind, company_id=company_id, user_id=user_id, operation_id=op,
-                                     send_bytes=0)
+        await usage.record_usage(session, company_id=company_id, user_id=user_id, operation_id=op, send_bytes=0)
         return [_status(op, "not_charged")]
     monkeypatch.setattr(llm, "operations_status", _operations_status)
     await usage.reconcile_usage(session)

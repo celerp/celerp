@@ -21,7 +21,7 @@ import httpx
 import pytest
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from celerp.ai import jobs, llm, service, usage
 from celerp.ai.conversations import record_credits
@@ -31,7 +31,7 @@ from celerp.gateway.state import set_session_token
 from celerp.models.ai import AIConversation, AIMessage, AIUsage
 from celerp.services.auth import decode_access_token
 from celerp.services.business_time import business_today
-from test_helpers import invite_user, register_admin, signed_request, until
+from test_helpers import invite_user, register_admin, settled_question, signed_request, until
 
 
 def _claims(token: str) -> tuple[uuid.UUID, uuid.UUID]:
@@ -67,11 +67,14 @@ def _answer(content: str = "Open Contacts and choose New.", credits: int = 1,
 
 
 def _relay(monkeypatch, replies: list) -> list:
-    """Answer model calls from ``replies`` in order (a reply, or an exception to raise);
-    returns the operation id each call sent."""
+    """Answer model calls from ``replies`` in order (a reply, or an exception to raise),
+    each after the caller's ``before_send`` ran, as the model client calls it; returns
+    the operation id each call sent."""
     sent: list = []
 
-    async def _complete(messages, *, tools=None, reservation_id=None, operation_id=None, **_kw):
+    async def _complete(messages, *, tools=None, reservation_id=None, operation_id=None, before_send=None, **_kw):
+        if before_send is not None:
+            await before_send(0)
         sent.append(operation_id)
         reply = replies.pop(0)
         if isinstance(reply, BaseException):
@@ -100,13 +103,7 @@ async def _state(client, token: str, conversation_id: str, question_id) -> dict:
 
 async def _settled(client, token: str, conversation_id: str, question_id) -> dict:
     """The question's state once its job has ended."""
-    holder: dict = {}
-
-    async def _ended():
-        holder["s"] = await _state(client, token, conversation_id, question_id)
-        return holder["s"]["state"] != "running"
-    await until(_ended)
-    return holder["s"]
+    return await settled_question(client, {"Authorization": f"Bearer {token}"}, conversation_id, question_id)
 
 
 async def _asked(client, token: str, conversation_id: str, operation_id: uuid.UUID,
@@ -116,6 +113,13 @@ async def _asked(client, token: str, conversation_id: str, operation_id: uuid.UU
     r = await _ask(client, token, conversation_id, operation_id, query)
     assert r.status_code == 202, r.text
     return r.json(), (await _settled(client, token, conversation_id, operation_id))["message"]
+
+
+async def _age(session, minutes: int = 5) -> None:
+    """Let every row pass its reconcile time, as time would."""
+    past = datetime.now(timezone.utc) - timedelta(minutes=minutes)
+    await session.execute(update(AIUsage).values(created_at=past, reconcile_at=past))
+    await session.commit()
 
 
 async def _conversation(client, token: str) -> str:
@@ -429,6 +433,7 @@ async def test_refusal_is_kept_in_the_thread(client, session, owner, monkeypatch
         return [{"operation_id": str(i), "state": "not_charged", "credits": 0} for i in ids]
 
     monkeypatch.setattr(llm, "operations_status", _operations_status)
+    await _age(session)
     await usage.reconcile_usage(session)
     assert (await _usage(client, token)).json()["users"] == []
 

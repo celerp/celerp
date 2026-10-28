@@ -33,6 +33,7 @@ from celerp.config import settings
 from celerp.ai import jobs
 from celerp.ai.service import AgentResult, PendingAction
 from ui.i18n import t
+from test_helpers import asked_in_thread
 
 
 # `session` (Postgres, rollback-isolated) comes from the root conftest.
@@ -260,13 +261,10 @@ async def test_conversation_query_reads_only(auth_client):
         answer="42 items in stock", model_used="glm", tools_called=["dashboard_kpis"],
         pending_actions=[],
     )
-    with patch("celerp.ai.service.run_agent", AsyncMock(return_value=result)):
-        r = await c.post(f"/ai/conversations/{conv_id}/query", headers=h, json={"query": "how many items"})
-    assert r.status_code == 200
-    data = r.json()
-    assert data["answer"] == "42 items in stock"
-    assert data["tools_called"] == ["dashboard_kpis"]
-    assert data["pending_actions"] == []
+    reply = await asked_in_thread(c, h, conv_id, {"query": "how many items"}, AsyncMock(return_value=result))
+    assert reply["content"] == "42 items in stock"
+    assert reply["tools_called"] == ["dashboard_kpis"]
+    assert reply["pending_actions"] == []
 
     r2 = await c.get(f"/ai/conversations/{conv_id}", headers=h)
     msgs = r2.json()["messages"]
@@ -277,7 +275,7 @@ async def test_conversation_query_reads_only(auth_client):
 
 @pytest.mark.asyncio
 async def test_conversation_query_returns_pending_action(auth_client):
-    """A proposed mutation comes back as a pending action carrying its message_id."""
+    """A proposed mutation is kept on the question's assistant message as a pending action."""
     c, h = auth_client
     r = await c.post("/ai/conversations", headers=h, json={"title": None})
     conv_id = r.json()["id"]
@@ -286,15 +284,10 @@ async def test_conversation_query_returns_pending_action(auth_client):
         answer="I can create that contact.", model_used="glm", tools_called=[],
         pending_actions=[_pending()],
     )
-    with patch("celerp.ai.service.run_agent", AsyncMock(return_value=result)):
-        r = await c.post(f"/ai/conversations/{conv_id}/query", headers=h, json={"query": "add Acme"})
-    assert r.status_code == 200
-    data = r.json()
-    assert len(data["pending_actions"]) == 1
-    pa = data["pending_actions"][0]
+    reply = await asked_in_thread(c, h, conv_id, {"query": "add Acme"}, AsyncMock(return_value=result))
+    (pa,) = reply["pending_actions"]
     assert pa["name"] == "create_contact"
     assert pa["id"] == "call_1"
-    assert pa["message_id"]
 
     # The stored assistant message projects the proposed action for the UI.
     r2 = await c.get(f"/ai/conversations/{conv_id}", headers=h)
@@ -330,11 +323,8 @@ async def test_conversation_query_error(auth_client):
         answer="", model_used="glm", tools_called=[], pending_actions=[],
         error="The AI service took too long to respond. Please try again.",
     )
-    with patch("celerp.ai.service.run_agent", AsyncMock(return_value=result)):
-        r = await c.post(f"/ai/conversations/{conv_id}/query", headers=h, json={"query": "test"})
-    assert r.status_code == 200
-    assert r.json()["error"] == result.error
-    assert r.json()["answer"] == ""
+    reply = await asked_in_thread(c, h, conv_id, {"query": "test"}, AsyncMock(return_value=result))
+    assert (reply["error"], reply["content"]) == (True, result.error)
 
     # The failure is kept in the thread as an assistant message flagged as an error.
     thread = (await c.get(f"/ai/conversations/{conv_id}", headers=h)).json()
@@ -352,10 +342,8 @@ async def _propose_action(c, h, conv_id, name="create_contact", call_id="call_1"
         answer="I can create that contact.", model_used="glm", tools_called=[],
         pending_actions=[_pending(name=name, call_id=call_id)],
     )
-    with patch("celerp.ai.service.run_agent", AsyncMock(return_value=result)):
-        r = await c.post(f"/ai/conversations/{conv_id}/query", headers=h, json={"query": "add Acme"})
-    pa = r.json()["pending_actions"][0]
-    return pa["message_id"], pa["id"]
+    reply = await asked_in_thread(c, h, conv_id, {"query": "add Acme"}, AsyncMock(return_value=result))
+    return reply["id"], reply["pending_actions"][0]["id"]
 
 
 @pytest.mark.asyncio
@@ -515,12 +503,7 @@ async def test_mixed_attachments_run_agent_in_chat_mode(auth_client):
     mocked = AsyncMock(return_value=AgentResult(
         answer="Reviewed both files.", model_used="fake", tools_called=[], pending_actions=[],
     ))
-    with patch("celerp.ai.service.run_agent", mocked):
-        r = await c.post(
-            f"/ai/conversations/{conv_id}/query", headers=h,
-            json={"query": "review these together", "file_ids": [jpg, csv]},
-        )
-    assert r.status_code == 200, r.text
+    await asked_in_thread(c, h, conv_id, {"query": "review these together", "file_ids": [jpg, csv]}, mocked)
     assert mocked.await_args.kwargs["file_ids"] == [jpg, csv]
     thread = (await c.get(f"/ai/conversations/{conv_id}", headers=h)).json()
     assert [m["role"] for m in thread["messages"]] == ["user", "assistant"]
@@ -796,11 +779,7 @@ async def test_dismiss_all_is_atomic_and_idempotent(auth_client):
         answer="Three changes.", model_used="glm", tools_called=[],
         pending_actions=[_pending(call_id="call_a"), _pending(call_id="call_b"), _pending(call_id="call_c")],
     )
-    with patch("celerp.ai.service.run_agent", AsyncMock(return_value=result)):
-        created = await c.post(
-            f"/ai/conversations/{conv_id}/query", headers=h, json={"query": "do all"},
-        )
-    message_id = created.json()["pending_actions"][0]["message_id"]
+    message_id = (await asked_in_thread(c, h, conv_id, {"query": "do all"}, AsyncMock(return_value=result)))["id"]
     url = f"/ai/conversations/{conv_id}/dismiss-all"
     first = await c.post(url, headers=h, json={
         "message_id": message_id, "tool_call_ids": ["call_a", "call_c"],
@@ -849,9 +828,7 @@ async def test_confirm_all_executes_in_order(auth_client):
         pending_actions=[_pending(name="create_contact", call_id="call_a"),
                          _pending(name="create_doc", call_id="call_b")],
     )
-    with patch("celerp.ai.service.run_agent", AsyncMock(return_value=result)):
-        r = await c.post(f"/ai/conversations/{conv_id}/query", headers=h, json={"query": "do both"})
-    message_id = r.json()["pending_actions"][0]["message_id"]
+    message_id = (await asked_in_thread(c, h, conv_id, {"query": "do both"}, AsyncMock(return_value=result)))["id"]
 
     from celerp_ai.routes import _confirmed_action_identity
     expected_a = _confirmed_action_identity(uuid.UUID(message_id), "call_a")
@@ -892,9 +869,7 @@ async def test_confirm_all_selection_runs_only_selected_in_order(auth_client):
         answer="Three changes.", model_used="glm", tools_called=[],
         pending_actions=[_pending(call_id="call_a"), _pending(call_id="call_b"), _pending(call_id="call_c")],
     )
-    with patch("celerp.ai.service.run_agent", AsyncMock(return_value=result)):
-        r = await c.post(f"/ai/conversations/{conv_id}/query", headers=h, json={"query": "do all"})
-    message_id = r.json()["pending_actions"][0]["message_id"]
+    message_id = (await asked_in_thread(c, h, conv_id, {"query": "do all"}, AsyncMock(return_value=result)))["id"]
 
     from celerp_ai.routes import _confirmed_action_identity
     expected_a = _confirmed_action_identity(uuid.UUID(message_id), "call_a")
@@ -935,7 +910,6 @@ async def test_list_conversations_reports_pending_count(auth_client):
         answer="Two changes.", model_used="glm", tools_called=[],
         pending_actions=[_pending(call_id="call_a"), _pending(call_id="call_b")],
     )
-    with patch("celerp.ai.service.run_agent", AsyncMock(return_value=result)):
-        await c.post(f"/ai/conversations/{busy}/query", headers=h, json={"query": "do both"})
+    await asked_in_thread(c, h, busy, {"query": "do both"}, AsyncMock(return_value=result))
     counts = {x["id"]: x["pending_count"] for x in (await c.get("/ai/conversations", headers=h)).json()}
     assert counts[busy] == 2 and counts[quiet] == 0

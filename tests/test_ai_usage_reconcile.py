@@ -10,16 +10,14 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from datetime import datetime, timedelta, timezone
 
 import httpx
-import pytest
 from sqlalchemy import select, update
 
 from celerp.ai import llm, usage
 from celerp.ai.llm import ModelResult, RelayError
 from celerp.models.ai import AIUsage
-from test_ai_usage import _answer, _ask, _claims, _conversation, _counts, _relay, _usage, owner  # noqa: F401
+from test_ai_usage import _age, _answer, _asked, _claims, _conversation, _counts, _relay, _usage, owner  # noqa: F401
 from test_helpers import invite_user
 
 
@@ -56,13 +54,6 @@ def _state(op: uuid.UUID, state: str) -> dict:
     return {"operation_id": str(op), "state": state, "outcome": None, "credits": 0, "charged_at": None}
 
 
-async def _age(session, minutes: int = 5) -> None:
-    """Let every row pass its reconcile time, as time would."""
-    past = datetime.now(timezone.utc) - timedelta(minutes=minutes)
-    await session.execute(update(AIUsage).values(created_at=past, reconcile_at=past))
-    await session.commit()
-
-
 async def _rows(session) -> dict:
     session.expire_all()
     rows = (await session.execute(select(AIUsage))).scalars().all()
@@ -77,7 +68,7 @@ async def test_lost_reply_is_reconciled_from_the_service_after_a_restart(client,
     _relay(monkeypatch, [httpx.ReadTimeout("slow")])
     conv = await _conversation(client, token)
     question = uuid.uuid4()
-    assert (await _ask(client, token, conv, question)).json()["error_code"] == "timeout"
+    assert (await _asked(client, token, conv, question))[1]["error_code"] == "timeout"
     assert await _rows(session) == {question: (0, True)}
     (row,) = (await _usage(client, token)).json()["users"]
     assert (row["query_count"], row["pending_count"]) == (0, 1)  # awaiting confirmation
@@ -97,8 +88,8 @@ async def test_retry_after_a_lost_reply_records_the_operation_charge(client, ses
     read = _status(monkeypatch, {})
     conv = await _conversation(client, token)
     question = uuid.uuid4()
-    await _ask(client, token, conv, question)
-    await _ask(client, token, conv, question)
+    await _asked(client, token, conv, question)
+    await _asked(client, token, conv, question)
     await _age(session)
     await usage.reconcile_usage(session)
     assert read == []  # the retry's reply named the charge: no status read
@@ -138,7 +129,7 @@ async def test_reconcile_follows_each_state_of_the_operation(client, session, ow
     conv = await _conversation(client, token)
     ops = [uuid.uuid4() for _ in range(4)]
     for op in ops:
-        await _ask(client, token, conv, op)
+        await _asked(client, token, conv, op)
     charged, refused, running, unreported = ops
     await _age(session)
     _status(monkeypatch, {}, error=RelayError("no_session", "signed out"))
@@ -166,8 +157,8 @@ async def test_each_user_keeps_their_own_charges(client, session, owner, monkeyp
     answered.operation_credits = 1
     _relay(monkeypatch, [httpx.ReadTimeout("slow"), answered])
     mine, theirs = uuid.uuid4(), uuid.uuid4()
-    await _ask(client, token, await _conversation(client, token), mine)
-    await _ask(client, member, await _conversation(client, member), theirs)
+    await _asked(client, token, await _conversation(client, token), mine)
+    await _asked(client, member, await _conversation(client, member), theirs)
     _status(monkeypatch, {mine: _charged(mine, 3)})
     await _age(session)
     await usage.reconcile_usage(session)
@@ -176,7 +167,7 @@ async def test_each_user_keeps_their_own_charges(client, session, owner, monkeyp
         str(owner_id): (1, 3), str(member_id): (1, 1)}
 
 
-async def test_a_module_query_cut_short_is_held_for_reconcile(session, monkeypatch):
+async def test_a_module_query_cut_short_is_held_for_reconcile(client, session, drained_jobs, monkeypatch):
     """The app stopped while a module's question was with the service: its row was
     written before the question left, so the charge is not lost."""
     from celerp.modules.api import ai_query
@@ -186,6 +177,6 @@ async def test_a_module_query_cut_short_is_held_for_reconcile(session, monkeypat
     _relay(monkeypatch, [asyncio.CancelledError()])  # the app shutting down
     company_id, user_id = await seed_member(session)
     async with signed_request(session, company_id, user_id):
-        with pytest.raises(asyncio.CancelledError):
-            await ai_query(query="hello", company_id=str(company_id), session_token="session-1", db_session=session)
+        out = await ai_query(query="hello", company_id=str(company_id), session_token="session-1", db_session=session)
+    assert out["status"] != "completed", out
     assert list((await _rows(session)).values()) == [(0, True)]

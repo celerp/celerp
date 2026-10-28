@@ -73,6 +73,31 @@ async def until(predicate, timeout: float = 10.0) -> None:
     await asyncio.wait_for(_wait(), timeout)
 
 
+async def settled_question(client, headers: dict, conversation_id: str, question_id) -> dict:
+    """A thread question's state (GET .../questions/{id}) once its job has ended. The
+    test's requests and the job share one connection, which runs one query at a time,
+    so the state is read once the job's task has ended, never while it runs."""
+    from celerp.ai import jobs
+    await until(lambda: not jobs.is_held(uuid.UUID(str(question_id))))
+    r = await client.get(f"/ai/conversations/{conversation_id}/questions/{question_id}", headers=headers)
+    assert r.status_code == 200, r.text
+    state = r.json()
+    assert state["state"] != "running", state
+    return state
+
+
+async def asked_in_thread(client, headers: dict, conversation_id: str, body: dict, run_agent=None) -> dict:
+    """Send a thread question and wait for its job: the send answers 202, the
+    question's assistant message is returned. ``run_agent`` (a mock) stands in for the
+    agent run when given."""
+    from contextlib import nullcontext
+    from unittest.mock import patch
+    with patch("celerp.ai.service.run_agent", run_agent) if run_agent is not None else nullcontext():
+        r = await client.post(f"/ai/conversations/{conversation_id}/query", headers=headers, json=body)
+        assert r.status_code == 202, r.text
+        return (await settled_question(client, headers, conversation_id, r.json()["job_id"]))["message"]
+
+
 async def drain_jobs(release=lambda: None) -> None:
     """Let every running AI job finish, then shut the runner down. A task cancelled in
     the middle of a query would leave the test's one shared connection unusable for
