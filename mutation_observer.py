@@ -21,8 +21,10 @@ not named here is flagged as unknown, never taken as a read. A write is judged f
 companies its construct names, else for the request's company, and the census says which.
 
 Writes are judged only inside a request (``observed`` wraps the app) and only for tables
-that hold company data: a table with a company_id column, or companies itself. A write to
-any other table is either in INFRASTRUCTURE or flagged as an unowned table."""
+that hold company data: companies itself, a table with a company_id column, or one whose
+rows belong to company data through a foreign key or as a partition (for a table the tests
+make while running, as its CREATE TABLE says). A write to any other table is either in
+INFRASTRUCTURE or flagged as an unowned table."""
 
 from __future__ import annotations
 
@@ -43,6 +45,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.sql import visitors
 from sqlalchemy.sql.dml import Insert, UpdateBase
 from sqlalchemy.sql.elements import BinaryExpression, BindParameter
+from sqlalchemy.util import greenlet_spawn
 
 import sqlalchemy.orm.session as _orm_session
 from celerp.services.company_lock import _PROOFS, note, noted
@@ -85,12 +88,27 @@ _EFFECT = frozenset({"pg_notify"})
 _BEFORE_COMPANY = ("module-use:", "module-gate:")
 _DDL = ("Create", "Alter", "Drop", "Rename", "Comment", "Grant", "Index", "View")
 _ROW_LOCK = {1: "row share key", 2: "row share", 3: "row update key", 4: "row update"}
-# Tables that hold no company's data, each written by named infrastructure.
-INFRASTRUCTURE: dict[str, str] = {}
+# Tables that hold no company's data, each with the infrastructure that writes it.
+INFRASTRUCTURE: dict[str, str] = {
+    "system_runtime_state": "the install's runtime state (drain flag, star prompt): services/runtime_state.py",
+    "users": "user accounts: services/provisioning.py, routers/companies.py create_user, services/session_tracker.py",
+    "user_auth_state": "a user's session nonce, under its own row lock: services/session_tracker.py",
+    "password_resets": "a user's password resets: services/password_reset.py",
+    "password_reset_notices": "who is told of a password reset: services/password_reset.py, routers/auth.py",
+    "migration_templates": "a user's remembered migration answers: services/migration_templates.py",
+    "migration_batch_files": "a user's migration files staged before any company exists: services/migration_batches.py",
+    "supporter_badges": "a user's supporter badge: services/supporter_badge.py",
+    "payment_closures": "a request to Celerp Cloud to close a company's payments, kept past the company: services/payments.py",
+    "payment_recoveries": "a System Recovery restore of the install, for Celerp Cloud: services/payments.py",
+    "unmatched_payments": "payments received for no company the install holds: services/payments.py",
+    "unmatched_refunds": "refunds received for no company the install holds: services/payments.py",
+}
 
 _ROOT = os.path.dirname(os.path.abspath(__file__))
 _REQUEST: ContextVar[dict | None] = ContextVar("mutation_observer_request", default=None)
 _SESSIONS: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
+_LIVE: "weakref.WeakSet" = weakref.WeakSet()
+_SERVING: dict[int, dict] = {}  # the requests being served now, by id
 _WRITE, _LOCK = "observed-write", "observed-lock"
 
 
@@ -152,11 +170,14 @@ def observed(app, label: str):
     async def _app(scope, receive, send):
         if scope.get("type") != "http":
             return await app(scope, receive, send)
-        request = {"scope": scope, "company": None, "app": label, "inherited": weakref.WeakKeyDictionary()}
+        await _settle()
+        request = {"scope": scope, "company": None, "app": label, "inherited": _held(), "sessions": weakref.WeakSet()}
         token = _REQUEST.set(request)
+        _SERVING[id(request)] = request
         try:
             return await app(scope, receive, send)
         finally:
+            del _SERVING[id(request)]
             _REQUEST.reset(token)
             CENSUS.count(_route(request), "requests")
     return _app
@@ -169,11 +190,38 @@ class serving:
         self.scope = {"type": "http", "method": method, "path": path}
 
     def __enter__(self):
-        self._token = _REQUEST.set({"scope": self.scope, "company": None, "inherited": weakref.WeakKeyDictionary()})
+        self._token = _REQUEST.set({"scope": self.scope, "company": None, "inherited": _held(),
+                                    "sessions": weakref.WeakSet()})
         return self
 
     def __exit__(self, *exc) -> None:
         _REQUEST.reset(self._token)
+
+
+def _open_sessions() -> list:
+    """Every session that has begun work and still exists, in or between transactions."""
+    return list(_LIVE)
+
+
+async def _settle() -> None:
+    """A request starts where the work before it ended: a session the tests reuse is
+    handed to the request with their edits still unflushed, and whichever statement of
+    the request flushes them, they are the tests' writes, so they are flushed first. A
+    session another request is serving with at the same time is that request's."""
+    busy = {session for request in list(_SERVING.values()) for session in request["sessions"]}
+    for session in _open_sessions():
+        if session not in busy and (session.new or session.dirty or session.deleted):
+            await greenlet_spawn(session.flush)
+
+
+def _held() -> "weakref.WeakKeyDictionary":
+    """The lock proofs each open session holds as a request starts: a session the tests
+    reuse can carry an open transaction, and the proofs in it, from earlier work; those
+    are not the request's evidence. Holding them keeps their ids from being reused while
+    the request lasts. A session that begins later holds none (proofs end with the
+    outer transaction)."""
+    return weakref.WeakKeyDictionary(
+        {session: {id(p): p for p in session.info.get(_PROOFS, ())} for session in _open_sessions()})
 
 
 def _route(request: dict) -> str:
@@ -366,11 +414,48 @@ def classify(context, statement: str, parameters=None) -> Op:
     return op
 
 
-def _owned(table: str) -> bool:
-    """Company data: companies itself, or a table with a company_id column."""
+# Tables made while the tests run (extension tables a test creates to prove backup and
+# reset carry them): name -> (has a company_id column, the tables it references or extends).
+_MADE: dict[str, tuple[bool, frozenset[str]]] = {}
+
+
+def _learn(statement: str) -> None:
+    """Remember what each CREATE TABLE in *statement* says about company data."""
+    try:
+        raws = pglast.parse_sql(statement)
+    except pglast.parser.ParseError:
+        return
+    for raw in raws:
+        stmt = raw.stmt
+        if type(stmt).__name__ != "CreateStmt":
+            continue
+        columns = {getattr(e, "colname", None) for e in stmt.tableElts or ()}
+        refs = {r.relname for r in stmt.inhRelations or ()}
+
+        class _Refs(Visitor):
+            def visit_Constraint(self, ancestors, node) -> None:
+                if node.pktable is not None:
+                    refs.add(node.pktable.relname)
+        _Refs()(stmt)
+        _MADE[stmt.relation.relname] = ("company_id" in columns, frozenset(refs))
+
+
+def _owned(table: str, seen: frozenset = frozenset()) -> bool:
+    """Company data: companies itself, a table with a company_id column, or a table whose
+    rows belong to company data through a foreign key or as its partition."""
     from celerp.models.base import Base
+    if table == "companies":
+        return True
+    if table in seen:
+        return False
     model = Base.metadata.tables.get(table)
-    return table == "companies" or (model is not None and "company_id" in model.c)
+    if model is not None:
+        direct, refs = "company_id" in model.c, {fk.column.table.name for fk in model.foreign_keys}
+    elif table in _MADE:
+        direct, refs = _MADE[table]
+    else:
+        return False
+    return direct or any(_owned(ref, seen | {table}) for ref in refs)
 
 
 def _before_company(op: Op) -> bool:
@@ -401,9 +486,7 @@ def _session_for(conn) -> Session | None:
 
 
 def _proofs(request: dict, session) -> list:
-    """The lock proofs the session holds that were taken while this request was served.
-    A session the tests reuse across requests can carry an open transaction, and the
-    proofs in it, from an earlier request; those are not this request's evidence."""
+    """The lock proofs the session holds that were taken while this request was served."""
     inherited = request["inherited"].get(session, {})
     return [p for p in session.info.get(_PROOFS, ()) if id(p) not in inherited]
 
@@ -418,6 +501,10 @@ def _holds(request: dict, session, company) -> bool:
 
 @event.listens_for(Session, "after_begin")
 def _begun(session, transaction, connection) -> None:
+    _LIVE.add(session)
+    request = _REQUEST.get()
+    if request is not None:
+        request["sessions"].add(session)
     stack = _SESSIONS.setdefault(connection, [])
     if session not in stack:
         stack.append(session)
@@ -477,13 +564,16 @@ def _request_company(request: dict, session) -> str | None:
 
 @event.listens_for(Engine, "after_cursor_execute")
 def _executed(conn, cursor, statement, parameters, context, executemany) -> None:
+    if context is None:
+        return
+    if statement.lstrip()[:6].upper() == "CREATE":
+        _learn(statement)
     request = _REQUEST.get()
-    if request is None or context is None:
+    if request is None:
         return
     session = _session_for(conn)
-    if session is not None and session not in request["inherited"]:
-        # Holding the proofs keeps their ids from being reused while the request lasts.
-        request["inherited"][session] = {id(p): p for p in session.info.get(_PROOFS, ())}
+    if session is not None:
+        request["sessions"].add(session)
     op = classify(context, statement, parameters)
     if op.kind in ("read", "ddl", "control", "effect"):
         return

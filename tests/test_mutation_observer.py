@@ -297,12 +297,52 @@ async def test_one_unknown_statement_shape_is_one_finding():
 
 
 async def test_a_table_without_company_data_must_be_named(session, auth):
+    await session.execute(text("CREATE TEMP TABLE observed_unnamed (id integer PRIMARY KEY, note text)"))
     with serving("PATCH", "/observed"):
         _authorize(session, auth)
+        await session.execute(text("INSERT INTO observed_unnamed VALUES (1, 'x')"))
         await session.execute(update(User).where(User.id == auth["user_id"]).values(name="Renamed"))
         await session.commit()
     finding, = mutation_observer.CENSUS.findings
-    assert (finding.kind, finding.table) == ("unowned-table", "users")
+    assert (finding.kind, finding.table) == ("unowned-table", "observed_unnamed")
+    assert "users" in mutation_observer.INFRASTRUCTURE
+
+
+@pytest.mark.parametrize("shape", ["column", "reference", "partition"])
+async def test_a_table_the_tests_make_holds_company_data_as_its_definition_says(session, auth, shape):
+    """A table made while the tests run is company data when it has a company_id column,
+    references company data, or is a partition of such a table (made in the test's
+    transaction, so it is gone after it)."""
+    made = {
+        "column": ["CREATE TABLE observed_made (id integer PRIMARY KEY, company_id uuid)"],
+        "reference": ["CREATE TABLE observed_made (id integer PRIMARY KEY, "
+                      "location_id uuid REFERENCES locations(id))"],
+        "partition": ["CREATE TABLE observed_parent (id integer, company_id uuid) PARTITION BY LIST (id)",
+                      "CREATE TABLE observed_made PARTITION OF observed_parent FOR VALUES IN (1)"],
+    }[shape]
+    for ddl in made:
+        await session.execute(text(ddl))
+    with serving("POST", "/observed"):
+        cid = _authorize(session, auth)
+        await session.execute(text("INSERT INTO observed_made (id) VALUES (1)"))
+        await session.commit()
+    finding, = mutation_observer.CENSUS.findings
+    assert (finding.kind, finding.table, finding.company) == ("unprotected", "observed_made", str(cid))
+
+
+async def test_a_row_under_company_data_is_company_data(session, auth):
+    """A table without a company_id column whose rows hang off company data (a message of
+    a company's conversation) is judged as the company's write."""
+    from celerp.models.ai import AIConversation, AIMessage
+    conversation = AIConversation(company_id=auth["company_id"], user_id=auth["user_id"], title="Observed")
+    session.add(conversation)
+    await session.commit()
+    with serving("POST", "/observed"):
+        cid = _authorize(session, auth)
+        session.add(AIMessage(conversation_id=conversation.id, role="user", content="hello"))
+        await session.commit()
+    finding, = mutation_observer.CENSUS.findings
+    assert (finding.kind, finding.table, finding.company) == ("unprotected", "ai_messages", str(cid))
 
 
 async def test_a_route_of_an_included_router_is_counted_under_the_path_the_inventory_lists(tmp_path):
@@ -326,6 +366,72 @@ async def test_a_route_of_an_included_router_is_counted_under_the_path_the_inven
     mutation_observer.write_routes(str(tmp_path / "routes.json"), [app])
     row, = [r for r in json.loads((tmp_path / "routes.json").read_text()) if r["path"].startswith("/pre/")]
     assert row["path"] == "/pre/in/things/{thing_id}" and row["source"].startswith(f"{__file__}:")
+
+
+@pytest.mark.parametrize("who", ["test", "request"])
+async def test_a_change_the_test_left_unflushed_is_not_the_next_requests_write(session, auth, who):
+    """A test edits a row on the session it then hands to a request; whichever statement
+    of the request flushes that edit, the edit is the test's. The same edit made by the
+    request is the request's."""
+    import httpx
+    from fastapi import FastAPI
+
+    app = FastAPI()
+    place = Location(company_id=auth["company_id"], name="Handed over", type="warehouse")
+    session.add(place)
+    await session.commit()
+
+    @app.post("/observed")
+    async def endpoint() -> dict:
+        _authorize(session, auth)
+        if who == "request":
+            place.name = who
+        await session.execute(select(Location.id).where(Location.company_id == auth["company_id"]))
+        await session.commit()
+        return {}
+
+    if who == "test":
+        place.name = who
+    transport = httpx.ASGITransport(app=mutation_observer.observed(app, "api"))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        assert (await client.post("/observed")).status_code == 200
+    assert [(f.kind, f.table) for f in mutation_observer.CENSUS.findings] == (
+        [] if who == "test" else [("unprotected", "locations")])
+
+
+async def test_a_request_starting_meanwhile_leaves_another_requests_edit_to_it(session, auth):
+    """Settling the sessions a request inherits never reaches into a request being served
+    at the same time: its unflushed edit stays its own write."""
+    import asyncio
+
+    import httpx
+    from fastapi import FastAPI
+
+    app, added, other_began = FastAPI(), asyncio.Event(), asyncio.Event()
+
+    @app.post("/first")
+    async def first() -> dict:
+        _authorize(session, auth)
+        await session.execute(select(Location.id).where(Location.company_id == auth["company_id"]))
+        session.add(Location(company_id=auth["company_id"], name="Meanwhile", type="warehouse"))
+        added.set()
+        await other_began.wait()
+        await session.commit()
+        return {}
+
+    @app.post("/second")
+    async def second() -> dict:
+        other_began.set()
+        return {}
+
+    transport = httpx.ASGITransport(app=mutation_observer.observed(app, "api"))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        async def later():
+            await added.wait()
+            return await client.post("/second")
+        replies = await asyncio.gather(client.post("/first"), later())
+    assert [r.status_code for r in replies] == [200, 200]
+    assert [(f.kind, f.route) for f in mutation_observer.CENSUS.findings] == [("unprotected", "api POST /first")]
 
 
 async def test_a_cached_statement_is_judged_for_the_company_it_names_now(session, auth):
