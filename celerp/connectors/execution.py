@@ -571,7 +571,10 @@ async def _credentials(ex: Execution):
     from celerp.connectors import relay_token
 
     with _internal():
-        return await relay_token.fetch_context(ex.company_id, ex.connector)
+        ctx = await relay_token.fetch_context(ex.company_id, ex.connector)
+    if ctx is None:  # no relay session: nothing can reach the store
+        raise ExecutionRefused("not_connected")
+    return ctx
 
 
 @contextlib.asynccontextmanager

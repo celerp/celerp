@@ -113,28 +113,6 @@ async def test_handle_shopify_webhook_triggers_handle_webhook():
     assert event.topic == "orders/create"
 
 
-@pytest.mark.asyncio
-async def test_handle_shopify_webhook_skips_when_no_token():
-    from celerp.gateway.client import GatewayClient
-    gw = GatewayClient(gateway_token="t", instance_id="i", gateway_url="wss://x")
-
-    sess = MagicMock()
-    res = MagicMock()
-    res.all = MagicMock(return_value=[("co-1",)])
-    sess.execute = AsyncMock(return_value=res)
-    cm = MagicMock()
-    cm.__aenter__ = AsyncMock(return_value=sess)
-    cm.__aexit__ = AsyncMock(return_value=False)
-
-    hw = AsyncMock()
-    with patch("celerp.db.get_session_ctx", return_value=cm), \
-         patch("celerp.connectors.relay_token.fetch_context", new=AsyncMock(return_value=None)), \
-         patch("celerp.connectors.webhooks.handle_webhook", new=hw):
-        await gw._handle_shopify_webhook({"topic": "orders/create", "data": {}})
-
-    hw.assert_not_awaited()  # no relay token → skip (reconcile backstops)
-
-
 # ── scheduler reconciles all connectors (not just DAILY) ─────────────────────
 
 @pytest.mark.asyncio
@@ -162,7 +140,7 @@ async def test_scheduler_reconciles_realtime_config():
     with patch("celerp.db.get_session_ctx", return_value=cm), \
          patch("celerp.connectors.sync_runner.run_connector_sync", new=run_sync_mock), \
          patch("celerp.connectors.ownership.lock_connector_operation", new=lock):
-        synced = await check_and_run_daily_syncs("co-1", token_fetcher=AsyncMock(return_value=MagicMock()))
+        synced = await check_and_run_daily_syncs("co-1")
 
     assert "shopify" in synced                # realtime connector was reconciled
     run_sync_mock.assert_awaited_once()
@@ -192,9 +170,7 @@ async def test_scheduler_does_not_stamp_reconnected_generation():
              "celerp.connectors.ownership.lock_connector_operation",
              new=AsyncMock(return_value=replacement),
          ):
-        synced = await check_and_run_daily_syncs(
-            "co-1", token_fetcher=AsyncMock(return_value=MagicMock())
-        )
+        synced = await check_and_run_daily_syncs("co-1")
 
     assert synced == []
     assert replacement.last_daily_sync_at is None
@@ -229,7 +205,7 @@ async def test_scheduler_skips_when_latest_occurrence_already_ran():
     run = AsyncMock()
     with patch("celerp.db.get_session_ctx", return_value=cm), \
          patch("celerp.connectors.sync_runner.run_connector_sync", new=run):
-        synced = await check_and_run_daily_syncs("co", token_fetcher=AsyncMock())
+        synced = await check_and_run_daily_syncs("co")
     assert synced == [] and run.await_count == 0
 
 
@@ -246,7 +222,7 @@ async def test_scheduler_catches_up_a_missed_daily_hour():
     with patch("celerp.db.get_session_ctx", return_value=cm), \
          patch("celerp.connectors.sync_runner.run_connector_sync", new=run), \
          patch("celerp.connectors.ownership.lock_connector_operation", new=AsyncMock(return_value=config)):
-        synced = await check_and_run_daily_syncs("co", token_fetcher=AsyncMock(return_value=MagicMock()))
+        synced = await check_and_run_daily_syncs("co")
     assert run.await_count == 1
     assert synced == ["shopify"]
 
@@ -269,29 +245,20 @@ async def test_scheduler_skips_unknown_connector():
     from celerp.connectors.daily_scheduler import check_and_run_daily_syncs
     cm = _sched_session(_sched_config(connector="bogus"))
     with patch("celerp.db.get_session_ctx", return_value=cm):
-        synced = await check_and_run_daily_syncs("co", token_fetcher=AsyncMock())
+        synced = await check_and_run_daily_syncs("co")
     assert synced == []
 
 
 @pytest.mark.asyncio
-async def test_scheduler_due_but_no_token_fetcher_skips():
+async def test_scheduler_skips_on_a_failed_sync():
     from celerp.connectors.daily_scheduler import check_and_run_daily_syncs
-    cm = _sched_session(_sched_config())               # due
-    with patch("celerp.db.get_session_ctx", return_value=cm):
-        synced = await check_and_run_daily_syncs("co", token_fetcher=None)
-    assert synced == []                                # logged, not marked synced
-
-
-@pytest.mark.asyncio
-async def test_scheduler_skips_on_token_fetch_error():
-    from celerp.connectors.daily_scheduler import check_and_run_daily_syncs
-    cm = _sched_session(_sched_config())
-    run = AsyncMock()
+    config = _sched_config()
+    cm = _sched_session(config)
     with patch("celerp.db.get_session_ctx", return_value=cm), \
-         patch("celerp.connectors.sync_runner.run_sync", new=run):
-        synced = await check_and_run_daily_syncs(
-            "co", token_fetcher=AsyncMock(side_effect=RuntimeError("relay down")))
-    assert synced == [] and run.await_count == 0       # token fetch failed → no sync
+         patch("celerp.connectors.sync_runner.run_connector_sync",
+               new=AsyncMock(side_effect=RuntimeError("relay down"))):
+        synced = await check_and_run_daily_syncs("co")
+    assert synced == [] and config.last_daily_sync_at is None
 
 
 @pytest.mark.asyncio
@@ -300,12 +267,11 @@ async def test_scheduler_stays_due_when_relay_requires_update():
     from celerp.connectors.relay_token import ConnectorUpgradeRequired
     config = _sched_config()
     cm = _sched_session(config)
-    run = AsyncMock()
     with patch("celerp.db.get_session_ctx", return_value=cm), \
-         patch("celerp.connectors.sync_runner.run_sync", new=run):
-        synced = await check_and_run_daily_syncs(
-            "co", token_fetcher=AsyncMock(side_effect=ConnectorUpgradeRequired("Update Celerp")))
-    assert synced == [] and run.await_count == 0
+         patch("celerp.connectors.sync_runner.run_connector_sync",
+               new=AsyncMock(side_effect=ConnectorUpgradeRequired("Update Celerp"))):
+        synced = await check_and_run_daily_syncs("co")
+    assert synced == []
     assert config.last_daily_sync_at is None           # still due next check
 
 
@@ -336,7 +302,7 @@ async def test_scheduler_loop_all_runs_each_company_then_exits():
          patch("celerp.connectors.daily_scheduler.asyncio.sleep",
                new=AsyncMock(side_effect=asyncio.CancelledError())):
         with pytest.raises(asyncio.CancelledError):
-            await daily_scheduler.scheduler_loop_all(token_fetcher=AsyncMock())
+            await daily_scheduler.scheduler_loop_all()
     assert check.await_count == 2                       # one run per company
 
 
@@ -350,7 +316,7 @@ async def test_scheduler_loop_single_company_then_exits():
          patch("celerp.connectors.daily_scheduler.asyncio.sleep",
                new=AsyncMock(side_effect=asyncio.CancelledError())):
         with pytest.raises(asyncio.CancelledError):
-            await daily_scheduler.scheduler_loop("co-1", token_fetcher=AsyncMock())
+            await daily_scheduler.scheduler_loop("co-1")
     assert check.await_count == 1
 
 
@@ -404,8 +370,6 @@ async def test_scheduler_runs_the_reconciliation_pass():
              "celerp.connectors.ownership.lock_connector_operation",
              new=AsyncMock(return_value=config),
          ):
-        await check_and_run_daily_syncs(
-            "co", token_fetcher=AsyncMock(return_value=MagicMock())
-        )
+        await check_and_run_daily_syncs("co")
 
     assert run.await_args.kwargs["reconcile"] is True

@@ -55,31 +55,45 @@ async def item_state(session, company_id, entity_id: str) -> dict:
     return dict(row.state or {}) if row is not None else {}
 
 
-async def connect(session, company_id, connector: str, directions: dict | None = None, *,
+async def connect(session, company_id, connector, directions: dict | None = None, *,
                   first_sync: str = "pending", **fields):
-    """The company's connection to ``connector``, set to ``directions``, with its
-    first-sync record in state ``first_sync``."""
+    """The company's connection to ``connector`` (a registered name or a connector),
+    set to ``directions``, with its first-sync record in state ``first_sync``."""
     from celerp.models.connector_config import ConnectorConfig
 
     config = ConnectorConfig(
-        company_id=str(company_id), connector=connector,
+        company_id=str(company_id), connector=getattr(connector, "name", connector),
         **({"entity_directions": directions} if directions is not None else {}), **fields,
     )
     session.add(config)
     await session.flush()
-    await record_first_sync(session, config, first_sync)
+    await record_first_sync(session, config, first_sync, connector=connector)
     return config
 
 
-async def record_first_sync(session, config, state: str) -> None:
+async def connected(company_id, connector, directions: dict | None = None, *,
+                    first_sync: str = "completed", **fields):
+    """``connect``, committed through the app's own sessions, for tests that run
+    connector work through its execution on the real database."""
+    from celerp.db import get_session_ctx
+
+    async with get_session_ctx() as session:
+        config = await connect(session, company_id, connector, directions, first_sync=first_sync, **fields)
+        await session.commit()
+    return config
+
+
+async def record_first_sync(session, config, state: str, *, connector=None) -> None:
     """Give ``config`` a first-sync record in ``state``; every resource of its
     directions completed when the record is."""
     from celerp import connectors
     from celerp.connectors.execution import plan_resources
     from celerp.models.connector_first_sync import ConnectorFirstSync
 
+    if connector is None or isinstance(connector, str):
+        connector = connectors.get(config.connector)
     progress = ({r: {"state": "completed"} for r in plan_resources(
-        connectors.get(config.connector), config.entity_directions)} if state == "completed" else {})
+        connector, config.entity_directions)} if state == "completed" else {})
     session.add(ConnectorFirstSync(company_id=str(config.company_id), connector=config.connector,
                                    state=state, progress=progress))
     await session.flush()

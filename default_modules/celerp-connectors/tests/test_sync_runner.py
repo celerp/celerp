@@ -8,7 +8,7 @@ import os
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import httpx
 import pytest
@@ -57,12 +57,9 @@ async def test_connect_lapse_pauses_with_notice(connector_session, relay):
     config = await connect(session, cid, "woocommerce", WOO, first_sync="completed")
     _token(402)
 
-    run = AsyncMock()
-    with patch("celerp.connectors.sync_runner.run_connector_sync", run):
-        assert await check_and_run_daily_syncs(str(cid), token_fetcher=fetch_context) == []
-        with pytest.raises(ConnectRequired) as paused:
-            await fetch_context(str(cid), "woocommerce")
-    run.assert_not_awaited()
+    assert await check_and_run_daily_syncs(str(cid)) == []
+    with pytest.raises(ConnectRequired) as paused:
+        await fetch_context(str(cid), "woocommerce")
     assert str(paused.value) == t("connectors.connect_lapsed", service="WooCommerce")
     await session.refresh(config)
     assert config.connect_lapsed_at is not None

@@ -5,7 +5,7 @@ are not set to sync by hand, with each kind of record in its own direction."""
 from __future__ import annotations
 
 import uuid
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -64,7 +64,7 @@ async def _config(_db_engine):
 
 async def test_no_reconcile_before_first_sync(_config, run):
     company_id = await _config("woocommerce", entity_directions=_WOO, first_sync="pending")
-    synced = await check_and_run_daily_syncs(company_id, token_fetcher=AsyncMock(return_value=MagicMock()))
+    synced = await check_and_run_daily_syncs(company_id)
     assert synced == []
     run.assert_not_awaited()
 
@@ -74,7 +74,7 @@ async def test_manual_frequency_not_reconciled(_config, run):
         "quickbooks", sync_frequency="manual", first_sync="completed",
         entity_directions={"products": "inbound", "invoices": "both", "contacts": "inbound"},
     )
-    synced = await check_and_run_daily_syncs(company_id, token_fetcher=AsyncMock(return_value=MagicMock()))
+    synced = await check_and_run_daily_syncs(company_id)
     assert synced == []
     run.assert_not_awaited()
 
@@ -82,7 +82,7 @@ async def test_manual_frequency_not_reconciled(_config, run):
 async def test_reconcile_uses_entity_directions(_config, monkeypatch):
     ran: list[str] = []
 
-    async def run_sync(connector, ctx, entity, **kwargs):
+    async def run_sync(connector, company_id, entity, **kwargs):
         ran.append(entity)
         assert kwargs["reconcile"] is True
         return SyncResult(entity=entity, created=1)
@@ -92,6 +92,7 @@ async def test_reconcile_uses_entity_directions(_config, monkeypatch):
         "woocommerce", entity_directions=_WOO, first_sync="completed",
     )
     ctx = ConnectorContext(company_id=company_id, access_token="k:s", store_handle="https://shop.example.com")
-    synced = await check_and_run_daily_syncs(company_id, token_fetcher=AsyncMock(return_value=ctx))
+    monkeypatch.setattr("celerp.connectors.relay_token.fetch_context", AsyncMock(return_value=ctx))
+    synced = await check_and_run_daily_syncs(company_id)
     assert synced == ["woocommerce"]
     assert ran == ["orders", "products_out", "inventory_out"]

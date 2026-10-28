@@ -117,7 +117,8 @@ def _execution_refusals(connector):
     except ExecutionBusy as exc:
         raise HTTPException(status_code=409, detail=t("connectors.fail_busy")) from exc
     except ExecutionRefused as exc:
-        key = "connectors.fail_direction" if exc.reason == "direction_off" else "connectors.err_first_sync_needed"
+        key = {"direction_off": "connectors.fail_direction",
+               "not_connected": "error.connector_not_connected"}.get(exc.reason, "connectors.err_first_sync_needed")
         raise HTTPException(status_code=409, detail=t(key, service=connector.display_name)) from exc
     except ConnectorUpgradeRequired as exc:
         raise HTTPException(status_code=426, detail=str(exc)) from exc
