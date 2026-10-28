@@ -13,6 +13,7 @@ import pytest
 from fasthtml.common import to_xml
 
 from celerp.models.company import Company
+from connector_test_support import stand_in_connector
 
 from ui.routes.settings_connectors import (
     _any_in_progress,
@@ -83,7 +84,7 @@ async def test_entity_runs_returns_latest_per_entity(_db_engine):
 
 
 @pytest.mark.asyncio
-async def test_release_connector_ownership_clears_work_and_resets_cursor(_db_engine):
+async def test_release_connector_ownership_clears_work_and_resets_cursor(_db_engine, monkeypatch):
     import sqlalchemy as sa
     from celerp.connectors.ownership import (
         ConnectorOwnershipError,
@@ -98,7 +99,7 @@ async def test_release_connector_ownership_clears_work_and_resets_cursor(_db_eng
 
     company_uuid = uuid.uuid4()
     cid = str(company_uuid)
-    connector = f"release-{uuid.uuid4().hex[:10]}"
+    connector = stand_in_connector(monkeypatch, "release")
     async with get_session_ctx() as session:
         session.add(Company(
             id=company_uuid,
@@ -213,7 +214,7 @@ async def test_get_connector_config_adopts_legacy_instance_row(_db_engine):
 
 
 @pytest.mark.asyncio
-async def test_connector_in_use_elsewhere_is_refused(_db_engine):
+async def test_connector_in_use_elsewhere_is_refused(_db_engine, monkeypatch):
     from celerp.connectors.ownership import ConnectorOwnershipError, claim_connector_ownership
     from celerp.db import get_session_ctx
     from celerp.models.company import Company
@@ -223,7 +224,7 @@ async def test_connector_in_use_elsewhere_is_refused(_db_engine):
     second_company_uuid = uuid.uuid4()
     first_company = str(first_company_uuid)
     second_company = str(second_company_uuid)
-    connector = f"owner-reject-{uuid.uuid4().hex[:10]}"
+    connector = stand_in_connector(monkeypatch, "owner-reject")
     async with get_session_ctx() as session:
         session.add_all([
             Company(
@@ -255,7 +256,7 @@ async def test_connector_in_use_elsewhere_is_refused(_db_engine):
 
 
 @pytest.mark.asyncio
-async def test_connector_ownership_merges_legacy_operational_state(_db_engine):
+async def test_connector_ownership_merges_legacy_operational_state(_db_engine, monkeypatch):
     import json
     from unittest.mock import patch
     import sqlalchemy as sa
@@ -268,7 +269,7 @@ async def test_connector_ownership_merges_legacy_operational_state(_db_engine):
     company_uuid = uuid.uuid4()
     company_id = str(company_uuid)
     legacy_id = f"inst-{uuid.uuid4().hex[:10]}"
-    connector = f"ownership-merge-{uuid.uuid4().hex[:10]}"
+    connector = stand_in_connector(monkeypatch, "ownership-merge")
     async with get_session_ctx() as session:
         session.add_all([
             Company(
@@ -503,7 +504,7 @@ async def test_connector_work_shares_the_fence_and_only_ownership_changes_wait(_
 
 
 @pytest.mark.asyncio
-async def test_orders_from_a_different_store_do_not_mix_with_imported_ones(_db_engine):
+async def test_orders_from_a_different_store_do_not_mix_with_imported_ones(_db_engine, monkeypatch):
     """A company's imported orders keep the store's own numbers, so a sync
     against a different store stops before it imports anything; a company with
     nothing imported yet may move to a new store."""
@@ -515,9 +516,14 @@ async def test_orders_from_a_different_store_do_not_mix_with_imported_ones(_db_e
     from celerp.connectors.sync_runner import run_sync
     from celerp.db import get_session_ctx
     from celerp.models.company import Company
+    from unittest.mock import AsyncMock
+
+    from celerp.models.connector_config import ConnectorConfig
+    from celerp.models.connector_first_sync import ConnectorFirstSync
     from celerp.models.connector_source import ConnectorSource
     from celerp.models.projections import Projection
     from celerp.models.sync_run import SyncRun
+    from connector_test_support import connected
 
     class _Store:
         name = "woocommerce"
@@ -542,14 +548,21 @@ async def test_orders_from_a_different_store_do_not_mix_with_imported_ones(_db_e
             id=cid_uuid, name="Store Move", slug=f"store-move-{cid_uuid.hex[:8]}", settings={},
         ))
         await session.commit()
+    await connected(cid, "woocommerce", {"orders": "inbound"})
 
-    def _ctx(store):
-        return ConnectorContext(company_id=cid, access_token="k:s", store_handle=store)
+    relay = {"store": None}
+    monkeypatch.setattr("celerp.connectors.relay_token.fetch_context", AsyncMock(
+        side_effect=lambda *_a, **_k: ConnectorContext(
+            company_id=cid, access_token="k:s", store_handle=relay["store"])))
+
+    async def _sync(store):
+        relay["store"] = store
+        return await run_sync(_Store(), cid, "orders", purpose="manual_sync", use_watermark=False)
 
     try:
-        first = await run_sync(_Store(), _ctx("https://first.example"), "orders", use_watermark=False)
+        first = await _sync("https://first.example")
         assert not first.errors
-        moved = await run_sync(_Store(), _ctx("https://second.example"), "orders", use_watermark=False)
+        moved = await _sync("https://second.example")
         assert not moved.errors
 
         async with get_session_ctx() as session:
@@ -560,15 +573,15 @@ async def test_orders_from_a_different_store_do_not_mix_with_imported_ones(_db_e
             await session.commit()
 
         _Store.calls = 0
-        other = await run_sync(_Store(), _ctx("https://third.example"), "orders", use_watermark=False)
+        other = await _sync("https://third.example")
         assert other.errors and "https://second.example" in other.errors[0]
         assert _Store.calls == 0
-        same = await run_sync(_Store(), _ctx("https://second.example"), "orders", use_watermark=False)
+        same = await _sync("https://second.example")
         assert not same.errors and _Store.calls == 1
     finally:
         async with get_session_ctx() as session:
-            await session.execute(sa.delete(SyncRun).where(SyncRun.company_id == cid))
-            await session.execute(sa.delete(ConnectorSource).where(ConnectorSource.company_id == cid))
+            for model in (SyncRun, ConnectorSource, ConnectorConfig, ConnectorFirstSync):
+                await session.execute(sa.delete(model).where(model.company_id == cid))
             await session.execute(sa.delete(Projection).where(Projection.company_id == cid_uuid))
             await session.execute(sa.delete(Company).where(Company.id == cid_uuid))
             await session.commit()

@@ -51,7 +51,7 @@ async def _stub_connections(_db_engine):
     from celerp.models.connector_first_sync import ConnectorFirstSync
 
     yield
-    names = ("stub_lifecycle", "stub_attention")
+    names = ("stub_lifecycle", "stub_attention", "stub_products")
     async with get_session_ctx() as s:
         await s.execute(sa.delete(ConnectorConfig).where(ConnectorConfig.connector.in_(names)))
         await s.execute(sa.delete(ConnectorFirstSync).where(ConnectorFirstSync.connector.in_(names)))
@@ -292,3 +292,71 @@ async def test_update_attention_entry_edits_the_current_list(_db_engine):
         await s.commit()
     assert entry == {**waiting[0], "reconciled": True}
     assert await attention_entries(cid, stub.name, "orders") == [entry, waiting[1]]
+
+
+class _ProductsStub:
+    """Products both ways; records the context and ``since`` each call receives."""
+    name = "stub_products"
+    store_scoped_ids = False
+    entity_flows = {"products": EntityFlow(inbound=("products",), outbound=("products_out",))}
+    default_directions = {"products": "both"}
+
+    def __init__(self):
+        self.calls: list[tuple] = []
+
+    async def sync_products(self, ctx, since=None):
+        self.calls.append(("products", ctx.access_token, since))
+        return SyncResult(entity=SyncEntity.PRODUCTS, created=1)
+
+    async def sync_products_out(self, ctx):
+        self.calls.append(("products_out", ctx.access_token))
+        return SyncResult(entity=SyncEntity.PRODUCTS, created=1)
+
+
+async def test_run_sync_feeds_the_watermark_as_since(_db_engine):
+    """An incremental pull starts from the last successful run, so a scheduled or
+    webhook sync never degrades to a full pull."""
+    cid = _cid()
+    stub = _ProductsStub()
+    watermark = datetime(2026, 5, 1, tzinfo=timezone.utc)
+    async with get_session_ctx() as s:
+        s.add(SyncRun(company_id=cid, connector=stub.name, entity="products", direction="inbound",
+                      started_at=watermark, finished_at=watermark, status="success"))
+        await s.commit()
+    await _run(stub, cid, "products")
+    assert stub.calls == [("products", "t", watermark)]
+
+
+async def test_run_sync_dispatches_the_outbound_entity_and_its_direction_gates_it(_db_engine):
+    """An outbound entity runs its *_out method while its direction pushes, and is
+    blocked, without the method running, once the direction is inbound only."""
+    from celerp.connectors.sync_runner import run_sync
+    from celerp.models.connector_config import ConnectorConfig
+
+    cid = _cid()
+    stub = _ProductsStub()
+    pushed = await _run(stub, cid, "products_out")
+    assert pushed.created == 1 and stub.calls == [("products_out", "t")]
+
+    async with get_session_ctx() as s:
+        await s.execute(sa.update(ConnectorConfig).where(
+            ConnectorConfig.company_id == cid, ConnectorConfig.connector == stub.name,
+        ).values(entity_directions={"products": "inbound"}))
+        await s.commit()
+    blocked = await run_sync(stub, cid, "products_out", purpose="manual_sync")
+    assert blocked.errors and "blocked by direction" in blocked.errors[0]
+    assert stub.calls == [("products_out", "t")]
+
+
+async def test_run_sync_reads_the_store_context_from_its_execution(_db_engine, monkeypatch):
+    """The sync method gets the context the execution fetched for this run, never
+    one a caller carried in."""
+    from unittest.mock import AsyncMock
+
+    cid = _cid()
+    fetch = AsyncMock(return_value=ConnectorContext(company_id=cid, access_token="fresh"))
+    monkeypatch.setattr("celerp.connectors.relay_token.fetch_context", fetch)
+    stub = _ProductsStub()
+    await _run(stub, cid, "products", use_watermark=False)
+    assert stub.calls == [("products", "fresh", None)]
+    fetch.assert_awaited_once_with(cid, stub.name)

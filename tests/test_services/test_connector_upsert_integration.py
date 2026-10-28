@@ -463,209 +463,6 @@ async def test_invoice_push_writeback_prevents_duplicate(use_test_session, monke
 
 
 @pytest.mark.asyncio
-async def test_run_sync_feeds_watermark_as_since(session, monkeypatch):
-    """run_sync must pass the last-successful watermark into the connector as `since=`
-    — the incremental-pull wiring. Without it every scheduled/webhook sync silently
-    degrades to a full pull on each tick."""
-    import contextlib
-    from datetime import datetime, timezone
-
-    from celerp.connectors import sync_runner
-    from celerp.connectors.base import (
-        ConnectorBase, ConnectorContext, EntityFlow, SyncDirection, SyncEntity, SyncResult,
-    )
-    from celerp.models.sync_run import SyncRun
-
-    @contextlib.asynccontextmanager
-    async def _ctx():
-        yield session
-    monkeypatch.setattr("celerp.db.get_session_ctx", _ctx)
-
-    co = str(await _seed_company(session, "WatermarkSync"))
-    watermark = datetime(2026, 5, 1, tzinfo=timezone.utc)
-    session.add(SyncRun(company_id=co, connector="shopify", entity="products",
-                        direction="inbound", started_at=watermark, finished_at=watermark, status="success"))
-    await session.flush()
-
-    seen: dict = {}
-
-    class _Stub(ConnectorBase):
-        name = "shopify"
-        display_name = "Stub"
-        category = None
-        entity_flows = {"products": EntityFlow(inbound=("products",), outbound=("products_out",))}
-        conflict_strategy: dict = {}
-
-        async def sync_products(self, ctx, since=None):
-            seen["since"] = since
-            return SyncResult(entity=SyncEntity.PRODUCTS, created=1)
-
-        async def sync_orders(self, ctx, since=None):
-            return SyncResult(entity=SyncEntity.ORDERS)
-
-    ctx = ConnectorContext(company_id=co, access_token="t", store_handle="s.myshopify.com")
-    await sync_runner.run_sync(_Stub(), ctx, "products")  # since defaults to the watermark
-    assert seen["since"] == watermark
-
-
-@pytest.mark.asyncio
-async def test_run_sync_dispatches_and_gates_outbound_entity(session, monkeypatch):
-    """run_sync must route an outbound entity to its *_out method, and the direction
-    gate must BLOCK it when the connector is inbound-only. Regression for both the
-    'outbound never wired' bug and the direction filter."""
-    import contextlib
-
-    from celerp.connectors import sync_runner
-    from celerp.connectors.base import (
-        ConnectorBase, ConnectorContext, EntityFlow, SyncDirection, SyncEntity, SyncResult,
-    )
-
-    @contextlib.asynccontextmanager
-    async def _ctx():
-        yield session
-    monkeypatch.setattr("celerp.db.get_session_ctx", _ctx)
-
-    calls: list[str] = []
-
-    class _Stub(ConnectorBase):
-        name = "stub_out"
-        display_name = "Stub"
-        category = None
-        entity_flows = {"products": EntityFlow(inbound=("products",), outbound=("products_out",))}
-        conflict_strategy: dict = {}
-
-        async def sync_products(self, ctx, since=None):
-            return SyncResult(entity=SyncEntity.PRODUCTS)
-
-        async def sync_orders(self, ctx, since=None):
-            return SyncResult(entity=SyncEntity.ORDERS)
-
-        async def sync_products_out(self, ctx):
-            calls.append("products_out")
-            return SyncResult(entity=SyncEntity.PRODUCTS, direction=SyncDirection.OUTBOUND, created=1)
-
-    from celerp.models.connector_config import ConnectorConfig
-
-    co = str(await _seed_company(session, "OutboundSync"))
-    ctx = ConnectorContext(company_id=co, access_token="t", store_handle="s")
-
-    # Products both ways -> the outbound method IS dispatched.
-    r1 = await sync_runner.run_sync(_Stub(), ctx, "products_out")
-    assert calls == ["products_out"] and r1.created == 1
-
-    # Products inbound only -> the outbound entity is BLOCKED (method not called again).
-    session.add(ConnectorConfig(company_id=co, connector="stub_out",
-                                entity_directions={"products": "inbound"}))
-    await session.flush()
-    r2 = await sync_runner.run_sync(_Stub(), ctx, "products_out")
-    assert calls == ["products_out"]  # unchanged: the push did not run
-    assert r2.errors and "blocked by direction" in r2.errors[0]
-
-
-@pytest.mark.asyncio
-async def test_run_sync_uses_current_connector_context_and_direction(
-    use_test_session, monkeypatch
-):
-    from unittest.mock import AsyncMock
-
-    from celerp.connectors import sync_runner
-    from celerp.connectors.base import (
-        ConnectorBase,
-        ConnectorContext,
-        EntityFlow,
-        SyncDirection,
-        SyncEntity,
-        SyncResult,
-    )
-    from celerp.models.connector_config import ConnectorConfig
-
-    session = use_test_session
-    cid = await _seed_company(session, "FreshSync")
-    connector_name = "fresh_ctx_stub"
-    config = ConnectorConfig(
-        company_id=str(cid),
-        connector=connector_name,
-        entity_directions={"products": "inbound"},
-    )
-    session.add(config)
-    await session.commit()
-
-    seen: list[str] = []
-
-    class _Stub(ConnectorBase):
-        name = connector_name
-        display_name = "Fresh Context Stub"
-        category = None
-        entity_flows = {"products": EntityFlow(inbound=("products",), outbound=("products_out",))}
-        conflict_strategy: dict = {}
-
-        async def sync_products(self, ctx, since=None):
-            seen.append(ctx.access_token)
-            return SyncResult(entity=SyncEntity.PRODUCTS, created=1)
-
-        async def sync_orders(self, ctx, since=None):
-            return SyncResult(entity=SyncEntity.ORDERS)
-
-        async def sync_products_out(self, ctx):
-            seen.append("outbound")
-            return SyncResult(
-                entity=SyncEntity.PRODUCTS,
-                direction=SyncDirection.OUTBOUND,
-                created=1,
-            )
-
-    fresh = ConnectorContext(
-        company_id=str(cid),
-        access_token="new-token",
-        store_handle="new-store",
-    )
-    fetch = AsyncMock(return_value=fresh)
-    monkeypatch.setattr("celerp.connectors.relay_token.fetch_context", fetch)
-
-    stale = ConnectorContext(
-        company_id=str(cid),
-        access_token="old-token",
-        store_handle="old-store",
-    )
-    inbound = await sync_runner.run_sync(_Stub(), stale, "products")
-    assert inbound.created == 1
-    assert seen == ["new-token"]
-    fetch.assert_awaited_once_with(
-        str(cid), connector_name, ownership_session=session
-    )
-
-    changed = await sync_runner.run_sync(
-        _Stub(),
-        stale,
-        "products",
-        expected_config_id=config.id + 1000,
-    )
-    assert changed.errors and "connection changed" in changed.errors[0]
-    assert seen == ["new-token"]
-    assert fetch.await_count == 1
-
-    blocked = await sync_runner.run_sync(_Stub(), stale, "products_out")
-    assert blocked.errors and "blocked by direction" in blocked.errors[0]
-    assert seen == ["new-token"]
-
-    config.entity_directions = {"products": "outbound"}
-    await session.commit()
-
-    allowed = await sync_runner.run_sync(_Stub(), stale, "products_out")
-    assert allowed.created == 1
-    assert seen == ["new-token", "outbound"]
-
-    replaced = await sync_runner.run_sync(
-        _Stub(),
-        stale,
-        "products_out",
-        expected_store_handle="old-store",
-    )
-    assert replaced.errors and "connection changed" in replaced.errors[0]
-    assert seen == ["new-token", "outbound"]
-
-
-@pytest.mark.asyncio
 async def test_woocommerce_processing_order_reserves_across_lots(use_test_session):
     from datetime import datetime, timezone
 
@@ -2354,11 +2151,28 @@ async def test_conflict_choice_settles_the_field(use_test_session, monkeypatch, 
 
 
 @pytest.mark.asyncio
-async def test_first_sync_import_is_undoable(use_test_session, monkeypatch):
+async def test_first_sync_import_is_undoable(_db_engine, monkeypatch):
     """A first sync records the items it creates as an import batch that Import History
     undoes with their opening stock, and its links can be undone, restoring the values
     it took from the store."""
-    from datetime import datetime, timezone
+    import sqlalchemy as sa
+
+    from celerp.db import get_session_ctx
+    from celerp.models.connector_config import ConnectorConfig
+    from celerp.models.connector_first_sync import ConnectorFirstSync
+
+    seeded: dict = {}
+    async with get_session_ctx() as session:
+        try:
+            await _first_sync_then_undo(session, monkeypatch, seeded)
+        finally:
+            await session.rollback()
+            for model in (ConnectorConfig, ConnectorFirstSync):
+                await session.execute(sa.delete(model).where(model.company_id == seeded.get("cid")))
+            await session.commit()
+
+
+async def _first_sync_then_undo(session, monkeypatch, seeded: dict) -> None:
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
 
@@ -2366,6 +2180,7 @@ async def test_first_sync_import_is_undoable(use_test_session, monkeypatch):
     import respx
 
     from celerp.connectors.base import ConnectorContext
+    from celerp.connectors.execution import connector_execution, plan_resources
     from celerp.connectors.sync_runner import run_first_sync
     from celerp.connectors.woocommerce import WooCommerceConnector
     from celerp.models.accounting import UserCompany
@@ -2375,11 +2190,10 @@ async def test_first_sync_import_is_undoable(use_test_session, monkeypatch):
     from celerp_inventory.services import external_link_for_state
     from connector_test_support import add_item, connect, item_state
 
-    session = use_test_session
-    monkeypatch.setattr("celerp.db.get_session_ctx", lambda: _same(session))
     monkeypatch.setattr("celerp.connectors.woocommerce.validate_public_base_url",
                         AsyncMock(side_effect=lambda value, **_kw: value.rstrip("/")))
     cid = await _seed_company(session, "FirstUndo")
+    seeded["cid"] = str(cid)
     user_id = await session.scalar(select(UserCompany.user_id).where(UserCompany.company_id == cid))
     await add_item(session, cid, "item:match", "MATCH-1", name="Celerp name", sale_price=10.0)
     batch = ImportBatch(company_id=cid, entity_type="item", filename="WooCommerce first sync",
@@ -2392,7 +2206,7 @@ async def test_first_sync_import_is_undoable(use_test_session, monkeypatch):
     config.first_sync.directions = dict(config.entity_directions)
     config.first_sync.batch_id, config.first_sync.match = str(batch.id), "take"
     config.first_sync.undo = {"links": []}
-    await session.flush()
+    await session.commit()
     ctx = ConnectorContext(company_id=str(cid), access_token="ck:cs", store_handle="https://store.example.com")
     monkeypatch.setattr("celerp.connectors.relay_token.fetch_context", AsyncMock(return_value=ctx))
 
@@ -2411,7 +2225,9 @@ async def test_first_sync_import_is_undoable(use_test_session, monkeypatch):
         monkeypatch.setattr("celerp.services.attachments.store_upload", AsyncMock(return_value={
             "id": "pulled1", "filename": "new", "mime": "image/jpeg", "size": 3,
             "url": f"/static/attachments/{cid}/pulled1.jpg"}))
-        results = await run_first_sync(WooCommerceConnector(), ctx)
+        async with connector_execution(cid, "woocommerce", "first_sync", plan_resources(
+                WooCommerceConnector(), config.entity_directions)) as ex:
+            results = await run_first_sync(WooCommerceConnector(), ex.ctx)
 
     assert [r.entity for r in results] and all(r.ok for r in results), results
     await session.refresh(batch)

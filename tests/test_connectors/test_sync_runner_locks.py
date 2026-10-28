@@ -18,9 +18,8 @@ from celerp.connectors.base import ConnectorContext, SyncEntity, SyncResult
 from celerp.connectors.sync_runner import run_sync
 from celerp.models.connector_config import ConnectorConfig
 from celerp.models.connector_source import ConnectorSource
-from connector_test_support import record_first_sync
 from celerp.services.company_lock import lock_company
-from connector_test_support import add_item, seed_company
+from connector_test_support import add_item, connect, seed_company
 
 pytestmark = pytest.mark.asyncio
 
@@ -65,10 +64,7 @@ def get_session_ctx():
 async def _connect(cid, connector: str, store: str) -> ConnectorContext:
     async with get_session_ctx() as session:
         await session.execute(sa.delete(ConnectorConfig).where(ConnectorConfig.connector == connector))
-        config = ConnectorConfig(company_id=str(cid), connector=connector)
-        session.add(config)
-        await session.flush()
-        await record_first_sync(session, config, "completed")
+        await connect(session, cid, connector, first_sync="completed")
         await session.commit()
     return ConnectorContext(company_id=str(cid), access_token="k:s", store_handle=store)
 
@@ -91,7 +87,7 @@ async def _run_with(monkeypatch, connector, ctx, entity: str, probe) -> SyncResu
 
     monkeypatch.setattr(type(connector), f"sync_{entity}", sync)
     monkeypatch.setattr("celerp.connectors.relay_token.fetch_context", AsyncMock(return_value=ctx))
-    result = await run_sync(connector, ctx, entity)
+    result = await run_sync(connector, ctx.company_id, entity, purpose="manual_sync")
     assert "error" not in seen, seen.get("error")
     return result
 

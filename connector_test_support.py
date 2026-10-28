@@ -83,6 +83,17 @@ async def connected(company_id, connector, directions: dict | None = None, *,
     return config
 
 
+def stand_in_connector(monkeypatch, prefix: str, *, like: str = "xero") -> str:
+    """A registered connector of a name no other test uses, behaving as ``like``, so a
+    test's connection never collides with another's."""
+    from celerp.connectors import registry
+
+    name = f"{prefix}-{uuid.uuid4().hex[:10]}"
+    base = type(registry.get(like))
+    monkeypatch.setitem(registry._registry, name, type(base.__name__, (base,), {"name": name})())
+    return name
+
+
 async def record_first_sync(session, config, state: str, *, connector=None) -> None:
     """Give ``config`` a first-sync record in ``state``; every resource of its
     directions completed when the record is."""
