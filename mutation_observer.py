@@ -476,6 +476,15 @@ def _fence(op: Op) -> bool:
         op.name == _CONNECTOR_RUNTIME or op.name.startswith(_CONNECTOR_OWNER))
 
 
+def _unassigned_connector(request: dict, session, target) -> bool:
+    """A connector set up before companies had their own keeps its rows under the install
+    id, which is no company; its exclusive ownership fence protects them
+    (ownership.lock_unassigned_connector)."""
+    from celerp.config import ensure_instance_id
+    return any(exclusive and name.startswith(_CONNECTOR_OWNER)
+               for name, exclusive in _here(request, session, _FENCE)) and str(target) == ensure_instance_id()
+
+
 def _exclusive(op: Op) -> bool:
     return "_shared(" not in op.detail
 
@@ -639,7 +648,9 @@ def _executed(conn, cursor, statement, parameters, context, executemany) -> None
     if not targets:
         return found("unprotected", "no company for the write", None)
     for target in targets:
-        if company is not None and target != company and not _holds(request, session, target):
+        if _unassigned_connector(request, session, target):
+            kind = None
+        elif company is not None and target != company and not _holds(request, session, target):
             kind = "cross-company"
         elif not _holds(request, session, target):
             kind = "unprotected"

@@ -503,11 +503,12 @@ async def release_unassigned_connector(
     from celerp.connectors.outbound_queue import release_connector_queue
 
     legacy_id = ensure_instance_id()
-    rows = await lock_unassigned_connector(session, connector)
+    await lock_unassigned_connector(session, connector)
     await release_connector_queue(session, legacy_id, connector)
     record_connector_reset(session, legacy_id, connector, status=status)
-    for row in rows:
-        await session.delete(row)
+    await session.execute(sa.delete(ConnectorConfig).where(
+        ConnectorConfig.company_id == legacy_id, ConnectorConfig.connector == connector,
+    ).execution_options(synchronize_session="fetch"))
     await session.flush()
 
 

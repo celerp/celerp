@@ -175,6 +175,35 @@ async def test_a_connector_fence_made_exclusive_under_the_company_lock_is_report
     assert (finding.kind, finding.detail) == ("lock-order", "connector-owner:shopify after the company lock")
 
 
+async def _run_row(session, company: str) -> None:
+    from celerp.models.sync_run import SyncRun
+    await session.execute(insert(SyncRun).values(company_id=company, connector="shopify", entity="reset",
+                                                 direction="inbound", started_at=func.now(),
+                                                 status="disconnected"))
+
+
+@pytest.mark.parametrize("exclusive", [True, False])
+async def test_the_unassigned_connectors_rows_need_its_exclusive_ownership_fence(session, auth, exclusive):
+    """A connector set up before companies had their own is kept under the install id,
+    which is no company: its exclusive ownership fence is the lock that protects it."""
+    from celerp.config import ensure_instance_id
+    with serving("DELETE", "/observed"):
+        _authorize(session, auth)
+        await lock_connector_key(session, "shopify", exclusive=exclusive)
+        await _run_row(session, ensure_instance_id())
+        await session.commit()
+    assert _kinds() == ([] if exclusive else ["cross-company"])
+
+
+async def test_the_exclusive_ownership_fence_protects_no_companys_rows(session, auth):
+    with serving("DELETE", "/observed"):
+        cid = _authorize(session, auth)
+        await lock_connector_key(session, "shopify", exclusive=True)
+        await _run_row(session, str(cid))
+        await session.commit()
+    assert _kinds() == ["unprotected"]
+
+
 @pytest.mark.parametrize("key", ["connector-runtime:shopify", "connector-sync:shopify", "connector-ownership"])
 async def test_only_the_two_connector_fences_rank_before_the_company_lock(session, auth, key):
     with serving("POST", "/observed"):
