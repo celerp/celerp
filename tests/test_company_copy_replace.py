@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 from sqlalchemy import text
 
+import mutation_observer
 from company_backup_support import download, manifest, member, owner, read, token
 from migration_support import auth, real_client, real_engine  # noqa: F401
 from test_company_backup_lifecycle import _data_dir  # noqa: F401
@@ -246,11 +247,12 @@ async def test_a_change_made_after_the_backup_is_kept_stops_the_replace(real_cli
                                        headers=auth(tok))
             assert r.status_code == 200, r.text
         elif change == "other_table":
-            async with real_engine.begin() as conn:
-                await conn.execute(text(
-                    "UPDATE projections SET state = CAST(CAST(state AS jsonb) || '{\"name\": \"Renamed\"}' AS json) "
-                    "WHERE company_id = :c AND entity_id = (SELECT min(entity_id) FROM projections "
-                    "WHERE company_id = :c AND entity_type = 'item')"), {"c": uuid.UUID(cid)})
+            with mutation_observer.another_client():
+                async with real_engine.begin() as conn:
+                    await conn.execute(text(
+                        "UPDATE projections SET state = CAST(CAST(state AS jsonb) || '{\"name\": \"Renamed\"}' "
+                        "AS json) WHERE company_id = :c AND entity_id = (SELECT min(entity_id) FROM projections "
+                        "WHERE company_id = :c AND entity_type = 'item')"), {"c": uuid.UUID(cid)})
         else:
             name = attachments.company_file_name(cid, url)
             (_data_dir / "static" / "attachments" / cid / name).write_bytes(_PNG + b"rewritten")
@@ -278,7 +280,7 @@ async def test_records_checked_for_the_replace_cannot_change_until_it_commits(re
     reset = cb._reset_replaced
     edits: list[str] = []
 
-    async def edit_then_reset(session, company, typed_name):
+    async def edit_then_reset(session, company, *args):
         async with real_engine.connect() as conn:
             await conn.execute(text("SET lock_timeout = '300ms'"))
             try:
@@ -290,7 +292,7 @@ async def test_records_checked_for_the_replace_cannot_change_until_it_commits(re
             except DBAPIError:
                 edits.append("waited")
             await conn.rollback()
-        return await reset(session, company, typed_name)
+        return await reset(session, company, *args)
 
     monkeypatch.setattr(cb, "_reset_replaced", edit_then_reset)
     r = await real_client.post("/company-backups/replace", json=_replace_request(preview), headers=auth(tok))

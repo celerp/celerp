@@ -21,8 +21,9 @@ AUTHORITY = "celerp_request_authority"
 _REFUSED = "celerp_authority_refused"
 # What the locks taken in this transaction proved, each with the (sub)transaction that
 # took it: "locked" (lock_company completed, company id), "loaded" (locked_company,
-# company id), "judged" (the authority judged again, company id as text) and "modules"
-# (the modules judged, (company id as text, names)). PostgreSQL releases a lock taken in a
+# company id), "deleting" (lock_company_for_deletion holds its row, company id), "judged"
+# (the authority judged again, company id as text) and "modules" (the modules judged,
+# (company id as text, names)). PostgreSQL releases a lock taken in a
 # savepoint when that savepoint rolls back, so what it proved goes with it (_proofs_released).
 _PROOFS = "celerp_lock_proofs"
 
@@ -168,8 +169,11 @@ async def lock_company_for_deletion(session: AsyncSession, company_id) -> bool:
     Taken before any other lock on the company: a deleter that first held FOR NO KEY
     UPDATE and then asked for FOR UPDATE would deadlock with a holder (``hold_company``,
     or any ledger insert) that goes on to take ``lock_company`` for its own write."""
-    return (await session.execute(
+    found = (await session.execute(
         select(Company.id).where(Company.id == company_id).with_for_update())).first() is not None
+    if found:
+        note(session, "deleting", company_id)
+    return found
 
 
 async def lock_projections(session: AsyncSession, company_id, entity_ids) -> dict[str, Projection]:

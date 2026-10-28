@@ -28,7 +28,8 @@ from celerp.models.auth import SessionRegistry
 from celerp.models.company import Company, Location, User
 from celerp.models.migration import MigrationCleanupTask, MigrationRun
 from celerp.models.projections import Projection
-from celerp.services.company_lock import judge_without_company_lock, lock_chart, lock_company
+from celerp.services.company_lock import (
+    judge_without_company_lock, lock_chart, lock_company, lock_company_for_deletion)
 from celerp.services.migrations import run_cleanup_task
 from celerp.services.permissions import authorize_request
 from celerp.services.session_tracker import invalidate_sessions, lock_auth_state
@@ -119,6 +120,27 @@ async def test_a_narrower_lock_before_the_company_lock_is_reported(session, auth
     assert all(f.earlier_locks for f in mutation_observer.CENSUS.findings)
 
 
+@pytest.mark.parametrize("taken_under", ["written", "deleting", "another"])
+async def test_a_narrower_lock_is_judged_against_the_lock_of_the_company_written(session, auth, taken_under):
+    """A narrower lock taken under the written company's lock, or its deletion lock, is in
+    order, even when the request's own company is not locked; one taken under another
+    company's lock and before the written company's is not."""
+    written = uuid.uuid4()
+    session.add(Company(id=written, name="Written", slug=f"written-{written.hex[:8]}", settings={}))
+    await session.commit()
+    with serving("POST", "/observed"):
+        cid = _authorize(session, auth)
+        if taken_under == "deleting":
+            assert await lock_company_for_deletion(session, written)
+        else:
+            await lock_company(session, written if taken_under == "written" else cid)
+        await session.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"), {"k": f"narrower:{cid}"})
+        await lock_company(session, written)
+        await _event(session, written)
+        await session.commit()
+    assert set(_kinds()) == ({"lock-order"} if taken_under == "another" else set())
+
+
 @pytest.mark.parametrize("exclusive", [False, True])
 async def test_the_connector_fences_rank_before_the_company_lock(session, auth, exclusive):
     with serving("POST", "/observed"):
@@ -128,6 +150,23 @@ async def test_the_connector_fences_rank_before_the_company_lock(session, auth, 
         await _event(session, cid)
         await session.commit()
     assert _kinds() == []
+
+
+@pytest.mark.parametrize("taken,reported", [("schema", False), ("claim", False), ("names", True)])
+async def test_the_schema_key_and_a_restore_claim_rank_before_the_company_lock(session, auth, taken, reported):
+    from celerp.db import share_schema
+    from celerp.services.company_backup import CLAIM
+    with serving("POST", "/observed"):
+        cid = _authorize(session, auth)
+        if taken == "schema":
+            assert await share_schema(session)
+        else:
+            await session.execute(text("SELECT pg_try_advisory_xact_lock(hashtextextended(:k, 0))"),
+                                  {"k": f"{CLAIM}{uuid.uuid4()}" if taken == "claim" else f"restore-names:{cid}"})
+        await lock_company(session, cid)
+        await _event(session, cid)
+        await session.commit()
+    assert set(_kinds()) == ({"lock-order"} if reported else set())
 
 
 async def test_a_connector_fence_after_the_company_lock_is_reported(session, auth):
@@ -655,6 +694,18 @@ async def test_a_request_starting_meanwhile_leaves_another_requests_edit_to_it(s
         replies = await asyncio.gather(client.post("/first"), later())
     assert [r.status_code for r in replies] == [200, 200]
     assert [(f.kind, f.route) for f in mutation_observer.CENSUS.findings] == [("unprotected", "api POST /first")]
+
+
+async def test_another_clients_edit_staged_in_a_request_is_not_the_requests(session, auth):
+    """An edit a test stages as another client's is left out; the request's own edit after
+    it is still judged."""
+    with serving("POST", "/observed"):
+        cid = _authorize(session, auth)
+        with mutation_observer.another_client():
+            await session.execute(insert(Location).values(company_id=cid, name="Elsewhere", type="warehouse"))
+        session.add(Location(company_id=cid, name="Unlocked", type="warehouse"))
+        await session.commit()
+    assert [(f.kind, f.table) for f in mutation_observer.CENSUS.findings] == [("unprotected", "locations")]
 
 
 async def test_a_cached_statement_is_judged_for_the_company_it_names_now(session, auth):

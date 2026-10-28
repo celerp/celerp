@@ -8,7 +8,7 @@ A write is protected when, before it ran, lock_company() for the company it writ
 completed in the same transaction while this request was served (holding the row lock and
 judging the request's authority again) and PostgreSQL still holds that lock (the proofs
 company_lock keeps), and no narrower lock (a chart, row or other advisory lock) was taken
-before the company lock; a write named in JUDGED_WITHOUT_LOCK is protected by the
+before that company's lock; a write named in JUDGED_WITHOUT_LOCK is protected by the
 request's authority judged again without the lock, one named in UNDER_ROW_LOCK by its
 own row lock, and a write to a company this transaction created by that company being
 invisible to every other transaction until it commits. Each statement is judged on the Session that ran it. A write is
@@ -35,6 +35,7 @@ import json
 import os
 import sys
 import weakref
+from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field, replace
 
@@ -238,6 +239,17 @@ class serving:
 
     def __exit__(self, *exc) -> None:
         _REQUEST.reset(self._token)
+
+
+@contextmanager
+def another_client():
+    """Work a test stages inside a request as another client's (a concurrent edit a patched
+    step makes on its own connection): outside request scope, so not the request's."""
+    token = _REQUEST.set(None)
+    try:
+        yield
+    finally:
+        _REQUEST.reset(token)
 
 
 def _open_sessions() -> list:
@@ -502,12 +514,15 @@ def _owned(table: str, seen: frozenset = frozenset()) -> bool:
 
 def _before_company(op: Op) -> bool:
     """The company lock itself (its row, the membership judged under it) and the locks
-    the canonical order takes before it (module admission, the module-state boundary)."""
+    the canonical order takes before it (module admission, the module-state boundary, the
+    schema key a backup or restore shares, a restore's claim of its backup)."""
+    from celerp.db import _MIGRATION_LOCK_KEY
     from celerp.modules.registry import _MODULE_STATE_LOCK_KEY
+    from celerp.services.company_backup import CLAIM
     if op.table in ("companies", "user_companies"):
         return True
-    return op.name == _MODULE_STATE_LOCK_KEY or _fence(op) or (
-        isinstance(op.name, str) and op.name.startswith(_BEFORE_COMPANY))
+    return op.name in (_MODULE_STATE_LOCK_KEY, _MIGRATION_LOCK_KEY) or _fence(op) or (
+        isinstance(op.name, str) and op.name.startswith((*_BEFORE_COMPANY, CLAIM)))
 
 
 def _fence(op: Op) -> bool:
@@ -687,8 +702,11 @@ def _executed(conn, cursor, statement, parameters, context, executemany) -> None
             # state; a company request that then rotates that state must not hold the
             # login FOR UPDATE, which those rows' foreign keys wait for.
             found("lock-order", "a login locked FOR UPDATE under the company lock")
-        if not locked and not _before_company(op):
-            note(session, _LOCK, f"{op.table or ''} {op.detail}".strip())
+        if not _before_company(op):
+            # With the companies whose lock, or deletion lock, it was taken under: it is
+            # out of order for a write to any other company.
+            held = frozenset(str(c) for kind in ("locked", "deleting") for c in _here(request, session, kind))
+            note(session, _LOCK, (f"{op.table or ''} {op.detail}".strip(), held))
         return
     if op.detail in ("UPDATE", "DELETE", "MERGE") and getattr(cursor, "rowcount", -1) == 0:
         return  # matched nothing: no mutation
@@ -708,6 +726,7 @@ def _executed(conn, cursor, statement, parameters, context, executemany) -> None
     if not targets and not row_locked:
         return found("unprotected", "no company for the write", None)
     for target in targets or (None,):
+        before = [lock for lock, held in _here(request, session, _LOCK) if str(target) not in held]
         if row_locked or target in _here(request, session, _CREATED) \
                 or _unassigned_connector(request, session, target):
             kind = None
@@ -718,7 +737,7 @@ def _executed(conn, cursor, statement, parameters, context, executemany) -> None
             kind = None
         elif not _holds(request, session, target):
             kind = "unprotected"
-        elif _here(request, session, _LOCK):
+        elif before:
             kind = "lock-order"
         else:
             kind = None
@@ -726,7 +745,7 @@ def _executed(conn, cursor, statement, parameters, context, executemany) -> None
         frames = _app_frames()
         note(session, _WRITE, Finding(
             kind or "protected", route, target, op.table, statement[:300], op.detail,
-            earlier_locks=list(_here(request, session, _LOCK)), transaction=f"{id(root):x}",
+            earlier_locks=before, transaction=f"{id(root):x}",
             where=frames[-6:] if kind else [], test=CENSUS.test, company_from=source, sites=frames,
             fingerprint=op.fingerprint))
 
