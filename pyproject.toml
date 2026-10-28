@@ -96,6 +96,9 @@ dev = [
     "pytest-playwright>=0.5",
     "pytest-timeout>=2.3",
     "pytest-xdist>=3.5",
+    # The test-only write observer (mutation_observer.py) classifies SQL by its PostgreSQL
+    # syntax tree. Pinned: a parser release can change how a statement is classified.
+    "pglast==8.7",
     "testcontainers[postgres]>=4.15",
 ]
 prod = [

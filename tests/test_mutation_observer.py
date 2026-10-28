@@ -16,7 +16,7 @@ import uuid
 
 import pytest
 from fastapi import HTTPException
-from sqlalchemy import func, insert, select, text, update
+from sqlalchemy import delete, func, insert, select, text, update
 
 import mutation_observer
 from mutation_observer import serving
@@ -237,20 +237,62 @@ async def test_writes_outside_a_request_are_not_judged(session, auth):
     assert _kinds() == [] and mutation_observer.CENSUS.routes == {}
 
 
-@pytest.mark.parametrize("form", ["text", "function", "writable-cte"])
-async def test_sql_it_cannot_classify_is_flagged_never_read(session, auth, form):
+@pytest.mark.parametrize("form", ["text", "driver", "writable-cte"])
+async def test_raw_sql_and_cte_writes_without_the_lock_are_reported(session, auth, form):
     with serving("POST", "/observed"):
         cid = _authorize(session, auth)
         if form == "text":
             await session.execute(text("UPDATE companies SET name = 'Raw' WHERE id = :i"), {"i": cid})
-        elif form == "function":
-            await session.execute(select(func.pg_notify("observed", "x")))
+        elif form == "driver":
+            await (await session.connection()).exec_driver_sql(
+                f"UPDATE companies SET name = 'Driver' WHERE id = '{cid}'")
         else:
             written = update(Company).where(Company.id == cid).values(name="CTE").returning(Company.id).cte()
             await session.execute(select(written.c.id))
         await session.commit()
     finding, = mutation_observer.CENSUS.findings
-    assert finding.kind == "unknown-sql" and finding.detail
+    assert (finding.kind, finding.table, finding.company) == ("unprotected", "companies", str(cid))
+    assert finding.company_from == ("statement" if form == "writable-cte" else "request")
+
+
+@pytest.mark.parametrize("form", ["function", "procedural", "explain-analyze"])
+async def test_sql_it_cannot_classify_is_flagged_never_read(session, auth, form):
+    with serving("POST", "/observed"):
+        _authorize(session, auth)
+        if form == "function":
+            await session.execute(select(func.set_config("application_name", "observed", True)))
+        elif form == "procedural":
+            await session.execute(text("DO $$ BEGIN PERFORM 1; END $$"))
+        else:
+            await session.execute(text("EXPLAIN ANALYZE SELECT 1"))
+        await session.commit()
+    finding, = mutation_observer.CENSUS.findings
+    assert finding.kind == "unknown-sql" and finding.detail and finding.fingerprint
+
+
+async def test_statements_whose_effects_are_reviewed_are_not_flagged(session, auth):
+    with serving("POST", "/observed"):
+        cid = _authorize(session, auth)
+        await lock_company(session, cid)
+        await session.execute(text("SET LOCAL lock_timeout = 0"))
+        await session.execute(text("SELECT pg_notify('events', :p)"), {"p": "x"})
+        await session.execute(text("SELECT id FROM ledger WHERE company_id = CAST(:c AS uuid)"), {"c": cid})
+        await session.execute(text("EXPLAIN SELECT 1"))
+        await session.execute(select(Location.id).where(Location.company_id == cid).with_for_update(read=True))
+        await session.commit()
+    assert _kinds() == []
+
+
+async def test_one_unknown_statement_shape_is_one_finding():
+    totals = mutation_observer.Totals()
+    for value in ("a", "b"):
+        census = mutation_observer.Census(test="t")
+        op = mutation_observer.classify(None, f"DO $$ BEGIN RAISE NOTICE '{value}'; END $$")
+        census.findings.append(mutation_observer.Finding(
+            "unknown-sql", "POST /observed", None, None, "DO", op.detail, fingerprint=op.fingerprint))
+        totals.add(census)
+    finding, = totals.findings.values()
+    assert finding["count"] == 2
 
 
 async def test_a_table_without_company_data_must_be_named(session, auth):
@@ -283,3 +325,60 @@ async def test_a_route_of_an_included_router_is_counted_under_the_path_the_inven
     mutation_observer.write_routes(str(tmp_path / "routes.json"), [app])
     row, = [r for r in json.loads((tmp_path / "routes.json").read_text()) if r["path"].startswith("/pre/")]
     assert row["path"] == "/pre/in/things/{thing_id}" and row["source"].startswith(f"{__file__}:")
+
+
+async def test_a_cached_statement_is_judged_for_the_company_it_names_now(session, auth):
+    """SQLAlchemy reuses the statement it compiled first; the WHERE company is the one
+    bound to this execution, not the first execution's."""
+    other = uuid.uuid4()
+    session.add(Company(id=other, name="Other", slug=f"other-{other.hex[:8]}", settings={}))
+    for c in (other, auth["company_id"]):
+        session.add(Location(company_id=c, name="Cached", type="warehouse"))
+    await session.commit()
+    for c in (other, auth["company_id"]):
+        with serving("DELETE", "/observed"):
+            _authorize(session, auth)
+            await lock_company(session, c)
+            await session.execute(delete(Location).where(Location.company_id == c, Location.name == "Cached"))
+            await session.commit()
+    assert _kinds() == []
+    assert mutation_observer.CENSUS.routes["DELETE /observed"]["protected"] == 2
+
+
+async def test_a_narrower_lock_left_by_an_earlier_request_is_not_this_requests(session, auth):
+    with serving("GET", "/first"):
+        cid = _authorize(session, auth)
+        await lock_chart(session, cid)
+    with serving("POST", "/second"):
+        _authorize(session, auth)
+        await lock_company(session, cid)
+        await _event(session, cid)
+        await session.commit()
+    assert _kinds() == []
+
+
+async def test_a_company_lock_left_by_an_earlier_request_does_not_protect_this_one(session, auth):
+    with serving("GET", "/first"):
+        cid = _authorize(session, auth)
+        await lock_company(session, cid)
+    with serving("POST", "/second"):
+        _authorize(session, auth)
+        await _event(session, cid)
+        await session.commit()
+    assert {(f.kind, f.route) for f in mutation_observer.CENSUS.findings} == {("unprotected", "POST /second")}
+
+
+async def test_a_write_is_judged_on_the_session_that_ran_it(session, auth):
+    """Two sessions on one connection (the tests' maintenance sessions join the test's
+    connection): a write is the writing session's, whichever began last."""
+    from sqlalchemy.ext.asyncio import AsyncSession
+    with serving("POST", "/observed"):
+        cid = _authorize(session, auth)
+        await session.execute(select(1))
+        bystander = AsyncSession(bind=session.bind, join_transaction_mode="create_savepoint")
+        await bystander.execute(select(1))
+        session.add(Location(company_id=cid, name="Mine", type="warehouse"))
+        await session.flush()
+        await bystander.close()  # its savepoint is the inner one, so it ends first
+        await session.commit()
+    assert _kinds() == ["unprotected"]

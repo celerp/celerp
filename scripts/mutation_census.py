@@ -117,7 +117,7 @@ def load(folders):
             for site, n in data["sites"].items():
                 sites[site] += n
             for f in data["findings"]:
-                key = (f["kind"], f["route"], f["table"], f["detail"], f["sql"][:200], tuple(f["where"]))
+                key = f["key"]
                 if key in findings:
                     findings[key]["count"] += f["count"]
                     findings[key]["tests"] = (findings[key]["tests"] + f["tests"])[:3]
