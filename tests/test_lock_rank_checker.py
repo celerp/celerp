@@ -214,3 +214,94 @@ def test_the_guard_then_a_lease_taken_nowait_then_written_passes():
     recorder.acquire(1, _lock("row:connector_execution_leases", "update nowait"), 0.0)
     recorder.acquire(1, _lock("row:connector_execution_leases", "write"), 0.0)
     assert not recorder.violations
+
+
+# ── R1: rows of a company the transaction inserted; R2: inserts under the company lock ──
+
+_COMPANY = "INSERT INTO companies (id, name, slug) VALUES ($1::UUID, $2, $3)"
+_LOCK_COMPANY = "SELECT companies.id FROM companies WHERE companies.id = $1::UUID FOR NO KEY UPDATE"
+_ACCOUNT = "INSERT INTO accounts (id, company_id, code) VALUES ($1::UUID, $2::UUID, $3)"
+_TOKEN = "INSERT INTO doc_share_tokens (id, company_id, token) VALUES ($1::UUID, $2::UUID, $3)"
+_PROJECTION = ("SELECT projections.entity_id FROM projections WHERE projections.company_id = $1::UUID "
+               "AND projections.entity_id = $2 FOR UPDATE")
+_LEDGER = "INSERT INTO ledger (id, company_id, entity_id) VALUES ($1::UUID, $2::UUID, $3)"
+
+
+@pytest.fixture
+def recorder() -> Recorder:
+    return Recorder()
+
+
+def _chart(recorder: Recorder, conn: int = 1) -> None:
+    recorder.acquire(conn, _lock("adv:chart", "xact exclusive wait", key="chart"), 0.0)
+
+
+def test_rows_of_a_company_the_transaction_inserted_order_nothing(recorder):
+    # Provisioning: nobody else can see the new company, so no lock on its rows waits.
+    recorder.statement(1, _COMPANY, ("c1", "Co", "co"), 0.0)
+    recorder.statement(1, _ACCOUNT, ("a1", "c1", "1000"), 0.0)
+    recorder.statement(1, _LOCK_COMPANY, ("c1",), 0.0)
+    _chart(recorder)
+    assert not recorder.violations
+
+
+def test_rows_of_a_committed_company_still_order(recorder):
+    recorder.statement(1, _ACCOUNT, ("a1", "c1", "1000"), 0.0)
+    recorder.statement(1, _LOCK_COMPANY, ("c1",), 0.0)
+    _chart(recorder)
+    assert ("order", "row:companies") in _kinds(recorder)
+    assert ("order", "adv:chart") in _kinds(recorder)
+
+
+def test_an_own_companys_insert_under_a_unique_key_without_the_company_still_orders(recorder):
+    # Another transaction can insert the same token, whatever company it names.
+    recorder.statement(1, _COMPANY, ("c1", "Co", "co"), 0.0)
+    recorder.statement(1, _TOKEN, ("t1", "c1", "tok"), 0.0)
+    _chart(recorder)
+    assert ("order", "adv:chart") in _kinds(recorder)
+
+
+def test_another_companys_rows_are_not_the_transactions_own(recorder):
+    recorder.statement(1, _COMPANY, ("c1", "Co", "co"), 0.0)
+    recorder.statement(1, _ACCOUNT, ("a1", "c2", "1000"), 0.0)
+    _chart(recorder)
+    assert ("order", "adv:chart") in _kinds(recorder)
+
+
+def test_an_insert_under_the_company_lock_records_no_order_violation(recorder):
+    recorder.statement(1, _LOCK_COMPANY, ("c1",), 0.0)
+    recorder.statement(1, _PROJECTION, ("c1", "item"), 0.0)
+    recorder.statement(1, _LEDGER, ("l1", "c1", "item"), 0.0)
+    assert not recorder.violations
+
+
+@pytest.mark.parametrize("locked", ["c2", None])
+def test_an_insert_not_under_its_companys_lock_is_an_order_violation(recorder, locked):
+    if locked:
+        recorder.statement(1, _LOCK_COMPANY, (locked,), 0.0)
+    recorder.statement(1, _PROJECTION, ("c1", "item"), 0.0)
+    recorder.statement(1, _LEDGER, ("l1", "c1", "item"), 0.0)
+    assert ("order", "row:ledger") in _kinds(recorder)
+
+
+@pytest.mark.parametrize("ungated", [True, False])
+def test_the_offline_check_judges_a_gated_insert_against_the_tables_ungated_inserters(
+        recorder, tmp_path, ungated):
+    recorder.statement(1, _LOCK_COMPANY, ("c1",), 0.0)
+    recorder.statement(1, _PROJECTION, ("c1", "item"), 0.0)
+    recorder.statement(1, _LEDGER, ("l1", "c1", "item"), 0.0)
+    if ungated:
+        recorder.statement(2, _LEDGER, ("l2", "c1", "other"), 0.0)
+    (tmp_path / "lock-graph-gw0.json").write_text(json.dumps(recorder.dump()))
+    listed = "row:projections (60) -> row:ledger (59)" in lock_rank.check(tmp_path)
+    assert listed is ungated
+
+
+def test_each_edge_keeps_an_example_per_mode_pair(recorder):
+    recorder.acquire(1, _lock("row:projections", "update wait", key="a"), 0.0)
+    recorder.acquire(1, _lock("row:companies", "update wait", key="a"), 0.0)
+    recorder.acquire(2, Lock("row:projections", "share wait", "celerp/y.py:2 g", "t", "b"), 0.0)
+    recorder.acquire(2, Lock("row:companies", "update wait", "celerp/y.py:3 h", "t", "b"), 0.0)
+    sites = recorder.edges[("row:projections", "row:companies")]["mode_sites"]
+    assert sites == {"update>update": "celerp/x.py:1 f -> celerp/x.py:1 f",
+                     "share>update": "celerp/y.py:2 g -> celerp/y.py:3 h"}

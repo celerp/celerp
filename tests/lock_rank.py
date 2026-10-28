@@ -149,6 +149,8 @@ class Lock:
     origin: str = ""  # the test statement that made the call ("" outside a test)
     key: str = ""     # what is locked: the advisory key, or a row lock's bound parameters
     in_execution: bool = False  # sent from a connector execution's body (not its own lease work)
+    company: str = ""  # the one company whose rows the statement names (R1, R2), "" when it names none
+    gated: bool = False  # an insert made under its company's exclusive lock (R2)
 
 
 # The connector guard (rule (c)): an execution takes 20 and 21 only in its guard + acquire
@@ -185,14 +187,59 @@ class Recorder:
     taken: dict[int, dict[tuple[str, str], set[str]]] = field(default_factory=lambda: defaultdict(dict))
     explicit: dict[int, dict[str, set[str]]] = field(default_factory=lambda: defaultdict(dict))
     last_key: dict[int, dict[str, str]] = field(default_factory=lambda: defaultdict(dict))
+    # Per transaction: the companies it inserted, uncommitted (R1).
+    own: dict[int, set[str]] = field(default_factory=lambda: defaultdict(set))
+
+    def _transaction_state(self) -> tuple:
+        return self.held, self.taken, self.explicit, self.last_key, self.own
 
     def end(self, conn_key: int) -> None:
-        for state in (self.held, self.taken, self.explicit, self.last_key):
+        for state in self._transaction_state():
             state.pop(conn_key, None)
 
     def clear_transactions(self) -> None:
-        for state in (self.held, self.taken, self.explicit, self.last_key):
+        for state in self._transaction_state():
             state.clear()
+
+    def statement(self, conn_key: int, statement: str, parameters, waited: float) -> None:
+        head = statement.lstrip()[:20].upper()
+        if head.startswith(("COMMIT", "ROLLBACK", "END")) and "SAVEPOINT" not in head and "TO " not in head:
+            self.end(conn_key)
+            return
+        try:
+            found = _locks(statement, parameters)
+        except Exception as exc:  # an unparseable lock statement is itself a finding
+            found = [(f"?unparsed:{type(exc).__name__}", "wait", "", "")]
+        if not found:
+            return
+        site, origin = _site(), _origin()
+        execution = sys.modules.get("celerp.connectors.execution")
+        in_execution = execution is not None and execution.current() is not None
+        for cls, mode, key, company in found:
+            if cls == "-unlock":
+                self.release_session(conn_key, mode)
+                continue
+            self.acquire(conn_key, Lock(cls, mode, site, origin, key, in_execution, company), waited)
+
+    def _own(self, conn_key: int, lock: Lock) -> bool:
+        """R1: a row of a company this transaction inserted and has not committed. Nobody else
+        sees the company, so nobody holds, waits on or inserts a row naming it: its locks are
+        granted at once and make nobody wait. An insert is own only on a table whose every
+        unique key holds the company (``_row_locks`` names the company only then); the
+        company's own row is not (its slug is unique across companies)."""
+        if not lock.company or lock.company not in self.own[conn_key]:
+            return False
+        return lock.cls != "row:companies" or lock.mode != "insert"
+
+    def _gated(self, conn_key: int, lock: Lock) -> bool:
+        """R2: an insert made while this transaction holds its company's row exclusively. Two
+        such inserters of one key (every unique key holds the company) run one at a time, so
+        it waits on, and makes wait, only an inserter that does not take the company lock;
+        the offline check fails a decreasing edge through it when its table has one."""
+        if lock.mode != "insert" or not lock.company:
+            return False
+        held = self.taken[conn_key].get(("row:companies", repr((lock.company,))), ())
+        return bool(set(held) & {"nokey", "update"})
 
     def _retake(self, conn_key: int, lock: Lock) -> bool:
         """Whether this connection already holds what ``lock`` asks for: the same key at no
@@ -222,6 +269,15 @@ class Recorder:
             self._lease(conn_key, lock)
         if lock.cls.startswith("key:") and _strength(lock) == "keyshare":
             return
+        if self._own(conn_key, lock):
+            info["own"] = info.get("own", 0) + 1
+            return
+        if lock.mode == "insert":
+            lock.gated = self._gated(conn_key, lock)
+            kind = "gated" if lock.gated else "ungated"
+            info[kind] = info.get(kind, 0) + 1
+        if lock.cls == "row:companies" and lock.mode == "insert" and lock.company:
+            self.own[conn_key].add(lock.company)
         if self._retake(conn_key, lock):
             # Granted at once: it waits for nothing, so it orders nothing.
             info["retakes"] = info.get("retakes", 0) + 1
@@ -240,7 +296,10 @@ class Recorder:
             # Classes this transaction held exclusively before h: a gate every other
             # transaction taking them waits on, so it cannot interleave with this edge.
             gate = {g.cls for g in held[:i] if _exclusive(g.mode)} - {h.cls, lock.cls}
-            self._edge(h, lock, waits, gate)
+            gated = {x.cls for x in (h, lock) if x.gated}
+            self._edge(h, lock, waits, gate, gated)
+            if gated:
+                continue
             if waits and rank(lock.cls) is not None and rank(h.cls) is not None and rank(lock.cls) < rank(h.cls):
                 decreasing = True
                 self._violate("order", lock, held_lock=h)
@@ -260,7 +319,8 @@ class Recorder:
             self.explicit[conn_key].setdefault(lock.cls, set()).add(_strength(lock))
             self.last_key[conn_key][lock.cls] = lock.key
         runs = self.held[conn_key]
-        if not runs or runs[-1].cls != lock.cls or _exclusive(lock.mode) and not _exclusive(runs[-1].mode):
+        if not runs or runs[-1].cls != lock.cls or _exclusive(lock.mode) and not _exclusive(runs[-1].mode) \
+                or runs[-1].gated and not lock.gated:
             runs.append(lock)
 
     def _lease(self, conn_key: int, lock: Lock) -> None:
@@ -280,17 +340,23 @@ class Recorder:
                 and not lock.mode.endswith("nowait"):
             self._violate("lease-wait", lock)
 
-    def _edge(self, h: Lock, lock: Lock, waits: bool, gate: set[str]) -> None:
+    def _edge(self, h: Lock, lock: Lock, waits: bool, gate: set[str], gated: set[str] = frozenset()) -> None:
         edge = self.edges.get((h.cls, lock.cls))
         if edge is None:
             edge = self.edges[(h.cls, lock.cls)] = {
-                "count": 0, "example": None, "waits": False, "gate": gate, "modes": set()}
+                "count": 0, "example": None, "waits": False, "gate": gate, "modes": set(),
+                "mode_sites": {}, "gated": set()}
         edge["gate"] = edge["gate"] & gate
         edge["count"] += 1
+        if waits and gated:
+            # R2: judged offline against the inserted tables' ungated inserters.
+            edge["gated"] |= gated
+            waits = False
         edge["waits"] = edge["waits"] or waits
         if waits:
             combo = f"{_strength(h)}>{_strength(lock)}"
             edge["modes"].add(combo)
+            edge["mode_sites"].setdefault(combo, f"{h.site} -> {lock.site}")
             # Both taken by one call: the order production runs. Taken by two test
             # statements sharing the suite's one outer transaction: recorded apart.
             if h.origin == lock.origin:
@@ -346,9 +412,10 @@ class Recorder:
     def dump(self) -> dict:
         return {
             "edges": [{"from": a, "to": b, **v, "gate": sorted(v["gate"]), "modes": sorted(v["modes"]),
-                       "call_modes": sorted(v.get("call_modes", ()))}
+                       "call_modes": sorted(v.get("call_modes", ())), "gated": sorted(v["gated"])}
                       for (a, b), v in self.edges.items()],
-            "classes": {k: {"count": v["count"], "modes": sorted(v["modes"]), "sites": sorted(v["sites"])}
+            "classes": {k: {"count": v["count"], "modes": sorted(v["modes"]), "sites": sorted(v["sites"]),
+                            "ungated": v.get("ungated", 0)}
                         for k, v in self.classes.items()},
             "contention": self.contention,
             "violations": list({**self.seen, **{violation_key(v): v for v in self.violations}}.values()),
@@ -611,102 +678,146 @@ def _parents() -> frozenset[str]:
                      for fk in t.foreign_keys)
 
 
+def _company_column(table: str) -> str:
+    return "id" if table == "companies" else "company_id"
+
+
+@functools.lru_cache(maxsize=None)
+def _company_keyed(table: str) -> bool:
+    """Whether every unique key of the table, its primary key aside, holds the company: two
+    inserts of one such key name one company. A primary key is a generated id."""
+    from sqlalchemy import UniqueConstraint
+
+    mapped = _app_tables().get(table)
+    col = _company_column(table)
+    if mapped is None or col not in mapped.c:
+        return False
+    keys = [c.columns for c in mapped.constraints if isinstance(c, UniqueConstraint)]
+    keys += [i.columns for i in mapped.indexes if i.unique]
+    keys += [[c] for c in mapped.columns if c.unique]
+    return all(col in [c.name for c in k] for k in keys)
+
+
+def _company_param(table: str, where) -> tuple[int, ...] | None:
+    """The parameter a WHERE clause binds the table's company column to, when that equality
+    is the whole clause or one of its top-level AND terms: every row it selects names that
+    company. None when no such term exists."""
+    if where is None:
+        return None
+    (kind, body), = where.items()
+    terms = body["args"] if kind == "BoolExpr" and body["boolop"] == "AND_EXPR" else [where]
+    for term in terms:
+        (kind, body), = term.items()
+        if kind != "A_Expr" or body.get("kind") != "AEXPR_OP" or body["name"][0]["String"]["sval"] != "=":
+            continue
+        for col, val in ((body.get("lexpr"), body.get("rexpr")), (body.get("rexpr"), body.get("lexpr"))):
+            fields = (col or {}).get("ColumnRef", {}).get("fields", [])
+            if fields and fields[-1].get("String", {}).get("sval") == _company_column(table):
+                numbers = _params(val)
+                if numbers and len(numbers) == 1:
+                    return numbers
+    return None
+
+
 @functools.lru_cache(maxsize=8192)
-def _row_locks(statement: str) -> tuple[tuple[tuple[str, str, tuple[int, ...] | None], ...], tuple]:
-    """(class, mode, parameter numbers of the key) for each row or table lock the statement
-    takes, and the placeholder map. A statement the parser rejects raises."""
+def _row_locks(statement: str) -> tuple[tuple[tuple[str, str, tuple[int, ...] | None, tuple[int, ...] | None], ...],
+                                        tuple]:
+    """(class, mode, parameter numbers of the key, parameter numbers of the company) for each
+    row or table lock the statement takes, and the placeholder map. A statement the parser
+    rejects raises."""
     from pglast.parser import parse_sql_json
 
     text, names = _numbered(statement)
     tree = json.loads(parse_sql_json(text))
     ctes = {body["ctename"] for kind, body in _nodes(tree) if kind == "CommonTableExpr"}
-    out: list[tuple[str, str, tuple[int, ...] | None]] = []
+    out: list[tuple[str, str, tuple[int, ...] | None, tuple[int, ...] | None]] = []
     for kind, body in _nodes(tree):
         if kind == "SelectStmt" and body.get("lockingClause"):
             tables = _from_tables(body.get("fromClause"), ctes)
-            key = _params(body.get("whereClause"))
+            where = body.get("whereClause")
+            key = _params(where)
             for clause in body["lockingClause"]:
                 c = clause["LockingClause"]
                 mode = f"{_ROW_STRENGTH[c['strength']]} {_WAIT_POLICY[c.get('waitPolicy', 'LockWaitBlock')]}"
                 named = [r["RangeVar"]["relname"] for r in c.get("lockedRels", ())]
                 for t in ([tables.get(n, n) for n in named] if named else list(tables.values())):
-                    out.append((f"row:{t}", mode, key))
+                    company = _company_param(t, where) if len(tables) == 1 else None
+                    out.append((f"row:{t}", mode, key, company))
                     if mode.startswith("update ") and t in _parents():
-                        out.append((f"key:{t}", mode, key))
+                        out.append((f"key:{t}", mode, key, company))
         elif kind == "LockStmt":
             mode = f"{TABLE_MODES[body['mode']]} {'nowait' if body.get('nowait') else 'wait'}"
-            out += [(f"tbl:{r['RangeVar']['relname']}", mode, None) for r in body["relations"]]
+            out += [(f"tbl:{r['RangeVar']['relname']}", mode, None, None) for r in body["relations"]]
         elif kind == "UpdateStmt":
-            table = body["relation"]["relname"]
-            out.append((f"row:{table}", "write", _params(body.get("whereClause"))))
+            table, where = body["relation"]["relname"], body.get("whereClause")
+            company = _company_param(table, where) if not body.get("fromClause") else None
+            out.append((f"row:{table}", "write", _params(where), company))
             fks = _foreign_keys(table)
             for target in body.get("targetList", ()):
                 t = target["ResTarget"]
                 if t.get("name") in fks:
-                    out.append((f"key:{fks[t['name']]}", "key share wait", _params(t.get("val"))))
+                    out.append((f"key:{fks[t['name']]}", "key share wait", _params(t.get("val")), None))
         elif kind == "DeleteStmt":
-            table, key = body["relation"]["relname"], _params(body.get("whereClause"))
-            out.append((f"row:{table}", "delete", key))
+            table, where = body["relation"]["relname"], body.get("whereClause")
+            key = _params(where)
+            company = _company_param(table, where) if not body.get("usingClause") else None
+            out.append((f"row:{table}", "delete", key, company))
             if table in _parents():
-                out.append((f"key:{table}", "delete", key))
+                out.append((f"key:{table}", "delete", key, company))
         elif kind == "InsertStmt":
             table = body["relation"]["relname"]
-            out.append((f"row:{table}", "insert", None))
             fks = _foreign_keys(table)
             cols = [c["ResTarget"]["name"] for c in body.get("cols", ())]
             rows = body.get("selectStmt", {}).get("SelectStmt", {}).get("valuesLists") or []
+            company = None
+            if _company_column(table) in cols and (table == "companies" or _company_keyed(table)):
+                values = [r["List"]["items"][cols.index(_company_column(table))] for r in rows]
+                numbers = [_params(v) for v in values]
+                if numbers and all(n and len(n) == 1 for n in numbers):
+                    company = tuple(n[0] for n in numbers)
+            out.append((f"row:{table}", "insert", None, company))
             for col, ref in fks.items():
                 if cols and col not in cols:
                     continue
                 values = [r["List"]["items"][cols.index(col)] for r in rows if cols] or None
-                out.append((f"key:{ref}", "key share wait", _params(values) if values else None))
+                out.append((f"key:{ref}", "key share wait", _params(values) if values else None, None))
             if body.get("onConflictClause", {}).get("action") == "ONCONFLICT_UPDATE":
-                out.append((f"row:{table}", "write", None))
+                out.append((f"row:{table}", "write", None, company if table != "companies" else None))
     return tuple(dict.fromkeys(out)), names
 
 
-def _locks(statement: str, parameters) -> list[tuple[str, str, str]]:
-    """(class, mode, key) for each lock the statement takes; ('-unlock', class, '') for an unlock."""
-    out: list[tuple[str, str, str]] = []
+def _company(numbers: tuple[int, ...] | None, names: tuple, parameters) -> str:
+    """The one company the bound parameters name; "" when they name none or several."""
+    values = {str(_bound(n, names, parameters)) for n in numbers or ()}
+    return values.pop() if len(values) == 1 and "None" not in values else ""
+
+
+def _locks(statement: str, parameters) -> list[tuple[str, str, str, str]]:
+    """(class, mode, key, company) for each lock the statement takes; ('-unlock', class, '', '')
+    for an unlock."""
+    out: list[tuple[str, str, str, str]] = []
     for m in _ADVISORY.finditer(statement):
         try_, xact, verb, shared, args = m.groups()
         cls = _advisory_class(args, parameters or ())
         if verb.lower() == "unlock":
-            out.append(("-unlock", cls, ""))
+            out.append(("-unlock", cls, "", ""))
             continue
         mode = ("xact" if xact else "session") + (" shared" if shared else " exclusive")
-        out.append((cls, mode + (" try" if try_ else " wait"), _advisory_key(statement, parameters)))
+        out.append((cls, mode + (" try" if try_ else " wait"), _advisory_key(statement, parameters), ""))
     if out or not _LOCKING.search(statement):
         return out
     found, names = _row_locks(statement)
-    return [(cls, mode, _row_key(numbers, names, parameters)) for cls, mode, numbers in found
-            if cls.split(":", 1)[1] in _app_tables()]
+    return [(cls, mode, _row_key(numbers, names, parameters), _company(company, names, parameters))
+            for cls, mode, numbers, company in found if cls.split(":", 1)[1] in _app_tables()]
 
 
 def classify(statement: str, parameters) -> list[tuple[str, str]]:
     """(class, mode) for each lock the statement takes; ('-unlock', class) for an unlock."""
-    return [(cls, mode) for cls, mode, _ in _locks(statement, parameters)]
+    return [(cls, mode) for cls, mode, _, _ in _locks(statement, parameters)]
 
 
 def record_statement(conn_key: int, statement: str, parameters, waited: float) -> None:
-    head = statement.lstrip()[:20].upper()
-    if head.startswith(("COMMIT", "ROLLBACK", "END")) and "SAVEPOINT" not in head and "TO " not in head:
-        RECORDER.end(conn_key)
-        return
-    try:
-        found = _locks(statement, parameters)
-    except Exception as exc:  # an unparseable lock statement is itself a finding
-        found = [(f"?unparsed:{type(exc).__name__}", "wait", "")]
-    if not found:
-        return
-    site, origin = _site(), _origin()
-    execution = sys.modules.get("celerp.connectors.execution")
-    in_execution = execution is not None and execution.current() is not None
-    for cls, mode, key in found:
-        if cls == "-unlock":
-            RECORDER.release_session(conn_key, mode)
-            continue
-        RECORDER.acquire(conn_key, Lock(cls, mode, site, origin, key, in_execution), waited)
+    RECORDER.statement(conn_key, statement, parameters, waited)
 
 
 _INSTALLED = False
@@ -805,16 +916,20 @@ def _merge(directory: Path) -> dict:
         for e in d["edges"]:
             cur = edges.setdefault((e["from"], e["to"]),
                                    {"count": 0, "example": e["example"], "waits": False, "gate": set(e["gate"]),
-                                    "modes": set(), "call_modes": set(), "call_example": None})
+                                    "modes": set(), "call_modes": set(), "call_example": None,
+                                    "mode_sites": {}, "gated": set()})
             cur["gate"] &= set(e["gate"])
+            cur["gated"].update(e.get("gated", ()))
+            cur["mode_sites"] = {**e.get("mode_sites", {}), **cur["mode_sites"]}
             cur["modes"].update(e["modes"])
             cur["call_modes"].update(e.get("call_modes", ()))
             cur["call_example"] = cur["call_example"] or e.get("call_example")
             cur["count"] += e["count"]
             cur["waits"] = cur["waits"] or e["waits"]
         for k, v in d["classes"].items():
-            cur = classes.setdefault(k, {"count": 0, "modes": set(), "sites": set()})
+            cur = classes.setdefault(k, {"count": 0, "modes": set(), "sites": set(), "ungated": 0})
             cur["count"] += v["count"]
+            cur["ungated"] += v.get("ungated", 0)
             cur["modes"].update(v["modes"])
             cur["sites"].update(v["sites"])
         contention += d["contention"]
@@ -939,11 +1054,16 @@ def new_violations() -> list[dict]:
 def check(directory: Path) -> str:
     """Judge a recorded graph against ``RANKS``: every class the suite locked, wrote or
     referenced must be ranked, and every waiting acquisition after a lock of a higher rank
-    is a violation, whether one call or two test statements took the two."""
+    is a violation, whether one call or two test statements took the two. An edge through an
+    insert made under its company's lock (R2) waits only when its table also has an insert
+    made without that lock."""
     g = _merge(directory)
     lines = [f"Unranked classes: {sorted(c for c in g['classes'] if rank(c) is None) or 'none'}", ""]
+
+    def waits(v: dict) -> bool:
+        return v["waits"] or any(g["classes"].get(c, {}).get("ungated") for c in v["gated"])
     bad = sorted((a, b) for (a, b), v in g["edges"].items()
-                 if v["waits"] and rank(a) is not None and rank(b) is not None and rank(a) > rank(b))
+                 if waits(v) and rank(a) is not None and rank(b) is not None and rank(a) > rank(b))
     lines.append(f"Decreasing waiting edges: {len(bad)}")
     for a, b in bad:
         e = g["edges"][(a, b)]
