@@ -203,6 +203,22 @@ async def clear_sample_items(session, company_id) -> None:
     await session.commit()
 
 
+def worker_state_tables() -> list[str]:
+    """users, companies and every table no foreign-key chain reaches from them, so that
+    TRUNCATE of these tables CASCADE empties the whole database. Reachability, never a
+    column name: the payment tables name a company as a plain value (former_company,
+    target_company) and connector state carries a company_id with no foreign key."""
+    from celerp.models.base import Base
+
+    reached, grew = {"users", "companies"}, True
+    while grew:
+        found = {t.name for t in Base.metadata.sorted_tables
+                 if any(fk.column.table.name in reached for fk in t.foreign_keys)}
+        grew = not found <= reached
+        reached |= found
+    return ["users", "companies", *(t.name for t in Base.metadata.sorted_tables if t.name not in reached)]
+
+
 async def remove_company(factory, company_ids, *user_ids) -> None:
     """Delete everything committed for ``company_ids`` (one id or a list), then the companies,
     then ``user_ids``. Each table is deleted in a transaction of its own, children first, so a

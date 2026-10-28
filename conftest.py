@@ -750,30 +750,33 @@ def _admin_conn(dbname: str):
 
 @pytest.fixture(autouse=True)
 def _worker_database_left_empty(request):
-    """A test on the worker DB leaves no committed user or company behind. The shared
-    session rolls back; a test that commits through the app's own sessions cleans up
-    after itself (real_engine truncates). A leftover install makes every later test on
-    the worker see a bootstrapped system, so the test that left it fails here, and the
-    rows are cleared so only that test fails."""
+    """A test on the worker DB leaves no committed row behind. The shared session rolls
+    back; a test that commits through the app's own sessions cleans up after itself
+    (real_engine truncates). A leftover install makes every later test on the worker see
+    a bootstrapped system, and a leftover kept refund or connector row shows up in a later
+    test's reads, so the test that left it fails here, and the rows are cleared so only
+    that test fails. users, companies and the tables their cascade misses
+    (test_helpers.worker_state_tables) cover every table."""
     yield
     if "_db_engine" not in request.fixturenames:
         return
     from urllib.parse import urlsplit
 
+    from test_helpers import worker_state_tables
+
+    tables = worker_state_tables()
     conn = _admin_conn(urlsplit(DATABASE_URL).path.lstrip("/"))
     try:
         with conn.cursor() as cur:
             cur.execute("SET lock_timeout = '10s'")
-            cur.execute("SELECT (SELECT array_agg(email) FROM users), "
-                        "(SELECT array_agg(name) FROM companies)")
-            users, companies = cur.fetchone()
-            if users or companies:
-                cur.execute("TRUNCATE users, companies RESTART IDENTITY CASCADE")
+            cur.execute("SELECT " + ", ".join(f"(SELECT count(*) FROM {t})" for t in tables))
+            left = {t: n for t, n in zip(tables, cur.fetchone()) if n}
+            if left:
+                cur.execute(f"TRUNCATE {', '.join(tables)} RESTART IDENTITY CASCADE")
     finally:
         conn.close()
-    if users or companies:
-        pytest.fail(f"the test left committed rows on the worker database: users {users}, "
-                    f"companies {companies}")
+    if left:
+        pytest.fail(f"the test left committed rows on the worker database (rows per table): {left}")
 
 
 @pytest_asyncio.fixture
