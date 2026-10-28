@@ -101,6 +101,7 @@ async def seeded(committed_maker):
     async with committed_maker() as s:
         await s.execute(delete(AIConversation).where(AIConversation.id == conv_id))
         await s.execute(delete(Company).where(Company.id == company_id))
+        await s.commit()
         await s.execute(delete(User).where(User.id == user_id))
         await s.commit()
 

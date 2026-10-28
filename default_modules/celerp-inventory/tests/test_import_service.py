@@ -44,11 +44,12 @@ async def _seed(session, *, locations, currency=None) -> tuple[uuid.UUID, uuid.U
     settings: dict = {}
     if currency:
         settings["currency"] = currency
-    session.add(Company(id=company_id, name="ImportCo", slug=f"importco-{company_id.hex[:8]}", settings=settings))
     session.add(User(
         id=user_id, email=f"actor-{user_id.hex[:8]}@example.com", name="Actor",
         auth_hash="x", is_active=True,
     ))
+    await session.flush()
+    session.add(Company(id=company_id, name="ImportCo", slug=f"importco-{company_id.hex[:8]}", settings=settings))
     await session.flush()  # parents before location FK rows for Postgres
     loc_rows: list[Location] = []
     for spec in locations:

@@ -125,8 +125,9 @@ async def test_selection_waits_for_a_merge_or_delete_in_progress(_db_engine, ret
     factory = async_sessionmaker(bind=_db_engine, class_=AsyncSession, expire_on_commit=False)
     company_id, user_id = uuid.uuid4(), uuid.uuid4()
     async with factory() as s:
-        s.add(Company(id=company_id, name="RetireCo", slug=f"retire-{company_id.hex[:8]}"))
         s.add(User(id=user_id, email=f"retire-{user_id.hex[:8]}@example.test", name="Editor"))
+        await s.flush()
+        s.add(Company(id=company_id, name="RetireCo", slug=f"retire-{company_id.hex[:8]}"))
         await s.commit()
     await _seed(factory, company_id, [
         ("contact:A", "contact", "crm.contact.created", {"name": "Alpha", "contact_type": "customer"}),
@@ -171,6 +172,7 @@ async def test_selection_waits_for_a_merge_or_delete_in_progress(_db_engine, ret
             await s.execute(delete(Projection).where(Projection.company_id == company_id))
             await s.execute(delete(LedgerEntry).where(LedgerEntry.company_id == company_id))
             await s.execute(delete(Company).where(Company.id == company_id))
+            await s.commit()
             await s.execute(delete(User).where(User.id == user_id))
             await s.commit()
 

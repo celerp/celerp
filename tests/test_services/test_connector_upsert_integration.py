@@ -33,13 +33,14 @@ from migration_support import real_engine  # noqa: F401 - fixture
 async def _seed_company(session, name: str) -> uuid.UUID:
     cid = uuid.uuid4()
     uid = uuid.uuid4()
-    session.add(Company(
-        id=cid, name=name, slug=f"{name.lower()}-{cid.hex[:8]}",
-        settings={"currency": "USD"},
-    ))
     session.add(User(
         id=uid, email=f"{name.lower()}-{uid.hex[:8]}@example.test",
         name=f"{name} Owner", auth_hash=None,
+    ))
+    await session.flush()
+    session.add(Company(
+        id=cid, name=name, slug=f"{name.lower()}-{cid.hex[:8]}",
+        settings={"currency": "USD"},
     ))
     await session.flush()
     session.add(UserCompany(

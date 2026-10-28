@@ -462,9 +462,10 @@ async def _seed_race_company(factory) -> tuple[uuid.UUID, uuid.UUID]:
     from celerp.models.company import Company, Location, User
     company_id, user_id = uuid.uuid4(), uuid.uuid4()
     async with factory() as s:
-        s.add(Company(id=company_id, name="RaceCo", slug=f"race-{company_id.hex[:8]}", settings={}))
         s.add(User(id=user_id, email=f"owner-{user_id.hex[:8]}@example.test", name="Owner",
                    auth_hash="x", is_active=True))
+        await s.flush()
+        s.add(Company(id=company_id, name="RaceCo", slug=f"race-{company_id.hex[:8]}", settings={}))
         await s.flush()
         s.add(Location(id=uuid.uuid4(), company_id=company_id, name="Main",
                        type="warehouse", is_default=True))

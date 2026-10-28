@@ -20,12 +20,13 @@ async def seed_company(session, name: str = "Store") -> uuid.UUID:
     from celerp.models.company import Company, User
 
     cid, uid = uuid.uuid4(), uuid.uuid4()
-    session.add(Company(
-        id=cid, name=name, slug=f"{name.lower()}-{cid.hex[:8]}", settings={"currency": "USD"},
-    ))
     session.add(User(
         id=uid, email=f"{name.lower()}-{uid.hex[:8]}@example.test", name=f"{name} Owner",
         auth_hash=None,
+    ))
+    await session.flush()
+    session.add(Company(
+        id=cid, name=name, slug=f"{name.lower()}-{cid.hex[:8]}", settings={"currency": "USD"},
     ))
     await session.flush()
     session.add(UserCompany(user_id=uid, company_id=cid, role="owner", is_active=True))

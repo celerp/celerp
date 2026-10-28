@@ -91,8 +91,9 @@ async def _company(engine) -> tuple[uuid.UUID, str]:
 
     cid, uid = uuid.uuid4(), uuid.uuid4()
     async with maker(engine)() as s:
-        s.add(Company(id=cid, name="Draft Race", slug=f"draft-race-{cid.hex[:8]}", settings={"currency": "USD"}))
         s.add(User(id=uid, email=f"owner-{cid.hex[:8]}@example.com", name="Owner", auth_hash="x", is_active=True))
+        await s.flush()
+        s.add(Company(id=cid, name="Draft Race", slug=f"draft-race-{cid.hex[:8]}", settings={"currency": "USD"}))
         await s.flush()
         s.add(UserCompany(id=uuid.uuid4(), user_id=uid, company_id=cid, role="owner", is_active=True))
         await provision_company_books(s, cid)

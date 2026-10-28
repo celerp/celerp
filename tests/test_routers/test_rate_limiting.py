@@ -441,8 +441,9 @@ async def test_concurrent_wrong_passwords_reopening_a_restore_check_only_the_fre
     email = f"reopen-{uuid.uuid4().hex[:6]}@test.example"
     company_id, user_id = uuid.uuid4(), uuid.uuid4()
     async with maker(real_engine)() as s:
-        s.add(Company(id=company_id, name="R Co", slug=f"r-{company_id.hex[:8]}"))
         s.add(User(id=user_id, email=email, name="U", auth_hash=hash_password("pwvalid1"), is_active=True))
+        await s.flush()
+        s.add(Company(id=company_id, name="R Co", slug=f"r-{company_id.hex[:8]}"))
         await s.flush()
         s.add(UserCompany(user_id=user_id, company_id=company_id, role="owner", is_active=True))
         await s.commit()

@@ -23,7 +23,6 @@ from test_helpers import make_authed_token
 async def _company_admin(session):
     company_id = uuid.uuid4()
     user_id = uuid.uuid4()
-    session.add(Company(id=company_id, name="TestCo", slug="testco"))
     session.add(User(
         id=user_id,
         email=f"admin-{uuid.uuid4().hex[:8]}",  # synthetic; deliberately not email-shaped
@@ -31,6 +30,8 @@ async def _company_admin(session):
         auth_hash="x",
         is_active=True,
     ))
+    await session.flush()
+    session.add(Company(id=company_id, name="TestCo", slug="testco"))
     await session.flush()  # parents before membership for Postgres FK checks
     session.add(UserCompany(id=uuid.uuid4(), user_id=user_id, company_id=company_id, role="admin", is_active=True))
     await session.commit()

@@ -25,8 +25,9 @@ from ui.i18n import t
 
 async def _auth_company(session, currency: str = "USD") -> dict:
     cid, uid = uuid.uuid4(), uuid.uuid4()
-    session.add(Company(id=cid, name="InvariantCo", slug=f"inv-{cid.hex[:8]}", settings={"currency": currency}))
     session.add(User(id=uid, email=f"inv-{uid.hex[:8]}@example.test", name="Admin", auth_hash="x", is_active=True))
+    await session.flush()
+    session.add(Company(id=cid, name="InvariantCo", slug=f"inv-{cid.hex[:8]}", settings={"currency": currency}))
     await session.flush()
     session.add(UserCompany(id=uuid.uuid4(), user_id=uid, company_id=cid, role="admin", is_active=True))
     await provision_company_books(session, cid)
@@ -196,6 +197,7 @@ async def _cleanup(factory, company_id, user_id) -> None:
         await s.execute(delete(BankAccount).where(BankAccount.company_id == company_id))
         await s.execute(delete(Account).where(Account.company_id == company_id))
         await s.execute(delete(Company).where(Company.id == company_id))
+        await s.commit()
         await s.execute(delete(User).where(User.id == user_id))
         await s.commit()
 

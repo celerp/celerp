@@ -440,8 +440,9 @@ async def test_concurrent_selections_have_one_coherent_winner(_db_engine, kind):
     factory = async_sessionmaker(bind=_db_engine, class_=AsyncSession, expire_on_commit=False)
     company_id, user_id = uuid.uuid4(), uuid.uuid4()
     async with factory() as s:
-        s.add(Company(id=company_id, name="RaceCo", slug=f"race-{company_id.hex[:8]}"))
         s.add(User(id=user_id, email=f"race-{user_id.hex[:8]}@example.test", name="Editor"))
+        await s.flush()
+        s.add(Company(id=company_id, name="RaceCo", slug=f"race-{company_id.hex[:8]}"))
         await s.commit()
     entity_id = f"{kind}:RACE-SEL"
     base = {"status": "draft", "currency": "USD", "price_list": "Retail", "line_items": [],
@@ -484,5 +485,6 @@ async def test_concurrent_selections_have_one_coherent_winner(_db_engine, kind):
             await s.execute(delete(Projection).where(Projection.company_id == company_id))
             await s.execute(delete(LedgerEntry).where(LedgerEntry.company_id == company_id))
             await s.execute(delete(Company).where(Company.id == company_id))
+            await s.commit()
             await s.execute(delete(User).where(User.id == user_id))
             await s.commit()

@@ -46,9 +46,10 @@ def _factory(engine):
 async def _seed_company(factory):
     company_id, user_id = uuid.uuid4(), uuid.uuid4()
     async with factory() as s:
-        s.add(Company(id=company_id, name="Lifecycle Co", slug=f"life-{company_id.hex[:8]}"))
         s.add(User(id=user_id, email=f"race-{user_id.hex[:8]}@life.test", name="Race User",
                    auth_hash="x"))
+        await s.flush()
+        s.add(Company(id=company_id, name="Lifecycle Co", slug=f"life-{company_id.hex[:8]}"))
         await s.flush()
         await seed_chart_of_accounts_hook(session=s, company_id=company_id)
         await s.commit()
@@ -62,6 +63,7 @@ async def _cleanup(factory, company_id, user_id):
         await s.execute(delete(BankAccount).where(BankAccount.company_id == company_id))
         await s.execute(delete(Account).where(Account.company_id == company_id))
         await s.execute(delete(Company).where(Company.id == company_id))
+        await s.commit()
         await s.execute(delete(User).where(User.id == user_id))
         await s.commit()
 

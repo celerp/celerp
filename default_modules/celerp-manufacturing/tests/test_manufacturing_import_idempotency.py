@@ -20,7 +20,6 @@ async def test_manufacturing_import_batch_idempotency(client, session):
     # Commit Company + User before UserCompany: SQLAlchemy has no mapped relationship
     # between them, so a single flush can emit the FK child first and violate
     # user_companies_user_id_fkey.
-    session.add(Company(id=company_id, name="TestCo", slug="testco"))
     session.add(User(
         id=user_id,
         email="admin@test.co",
@@ -28,6 +27,8 @@ async def test_manufacturing_import_batch_idempotency(client, session):
         auth_hash="x",
         is_active=True,
     ))
+    await session.flush()
+    session.add(Company(id=company_id, name="TestCo", slug="testco"))
     await session.commit()
     session.add(UserCompany(id=uuid.uuid4(), user_id=user_id, company_id=company_id, role="admin", is_active=True))
     await session.commit()

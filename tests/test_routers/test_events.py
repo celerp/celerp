@@ -52,8 +52,9 @@ async def _bearer(session, snonce: str = "stream-nonce") -> tuple[str, uuid.UUID
     """
     company_id = uuid.uuid4()
     user_id = uuid.uuid4()
-    session.add(Company(id=company_id, name="Stream Co", slug=f"stream-{company_id}"))
     session.add(User(id=user_id, email=f"stream-{user_id}@test.local", name="Stream User"))
+    await session.flush()
+    session.add(Company(id=company_id, name="Stream Co", slug=f"stream-{company_id}"))
     # Flush the parent rows before the membership and auth state so their foreign
     # keys resolve against committed users/companies rows.
     await session.flush()

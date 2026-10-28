@@ -321,8 +321,9 @@ async def _company(factory):
     from celerp.models.company import Company, User
     company_id, user_id = uuid.uuid4(), uuid.uuid4()
     async with factory() as s:
-        s.add(Company(id=company_id, name="DoorCo", slug=f"door-{company_id.hex[:8]}"))
         s.add(User(id=user_id, email=f"door-{user_id.hex[:8]}@example.test", name="Editor"))
+        await s.flush()
+        s.add(Company(id=company_id, name="DoorCo", slug=f"door-{company_id.hex[:8]}"))
         await s.commit()
     return company_id, user_id
 
@@ -337,6 +338,7 @@ async def _cleanup(factory, company_id, user_id):
         await s.execute(delete(Projection).where(Projection.company_id == company_id))
         await s.execute(delete(LedgerEntry).where(LedgerEntry.company_id == company_id))
         await s.execute(delete(Company).where(Company.id == company_id))
+        await s.commit()
         await s.execute(delete(User).where(User.id == user_id))
         await s.commit()
 
