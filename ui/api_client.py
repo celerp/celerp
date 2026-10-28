@@ -11,7 +11,6 @@ from urllib.parse import quote
 
 import httpx
 
-from celerp.ai import deadlines
 from celerp.capacity import REQUEST_DB_POOL_SIZE
 from celerp.services.auth import CALLER_HEADER, CONNECT_HEADER, connect_caller, is_loopback
 from celerp.services.company_settings import BOOKS_KEYS, GENERAL
@@ -3243,6 +3242,7 @@ async def ai_conversation_query(token: str, session_token: str, conversation_id:
         payload["document_mode"] = document_mode
     if operation_id:
         payload["operation_id"] = operation_id
+    from celerp.ai import deadlines
     async with _ai_api_client(token, session_token, timeout=deadlines.UI_REQUEST_S) as c:
         return _raise(await c.post(f"/ai/conversations/{conversation_id}/query", json=payload)).json()
 
@@ -3251,6 +3251,7 @@ async def ai_question_state(token: str, session_token: str, conversation_id: str
     """GET /ai/conversations/{id}/questions/{question} - where a question stands:
     {"state": "running" | "answered" | "failed" | "interrupted", "promoted", "waiting",
     "notice", "message"}; ``message`` is the stored reply once the question ended."""
+    from celerp.ai import deadlines
     async with _ai_api_client(token, session_token, timeout=deadlines.UI_REQUEST_S) as c:
         return _raise(await c.get(f"/ai/conversations/{conversation_id}/questions/{question_id}")).json()
 
@@ -3262,6 +3263,7 @@ async def ai_confirm_action(token: str, session_token: str, conversation_id: str
     Sends IDs only, never business arguments.
     Returns {"tool_call_id", "title", "ok", "status", "data", "error"}.
     """
+    from celerp.ai import deadlines
     async with _ai_api_client(token, session_token, timeout=deadlines.ACTIONS_TIMEOUT_S) as c:
         return _raise(await c.post(
             f"/ai/conversations/{conversation_id}/confirm",
@@ -3272,6 +3274,7 @@ async def ai_confirm_action(token: str, session_token: str, conversation_id: str
 async def ai_dismiss_action(token: str, session_token: str, conversation_id: str,
                             message_id: str, tool_call_id: str) -> dict:
     """POST /ai/conversations/{id}/dismiss - persist dismissal of one proposal."""
+    from celerp.ai import deadlines
     async with _ai_api_client(token, session_token, timeout=deadlines.UI_REQUEST_S) as c:
         return _raise(await c.post(
             f"/ai/conversations/{conversation_id}/dismiss",
@@ -3290,6 +3293,7 @@ async def ai_confirm_all(token: str, session_token: str, conversation_id: str,
     body: dict = {"message_id": message_id}
     if tool_call_ids is not None:
         body["tool_call_ids"] = tool_call_ids
+    from celerp.ai import deadlines
     async with _ai_api_client(token, session_token, timeout=deadlines.ACTIONS_TIMEOUT_S) as c:
         return _raise(await c.post(
             f"/ai/conversations/{conversation_id}/confirm-all", json=body,
@@ -3300,6 +3304,7 @@ async def ai_confirm_all(token: str, session_token: str, conversation_id: str,
 async def ai_dismiss_all(token: str, session_token: str, conversation_id: str,
                          message_id: str, tool_call_ids: list[str]) -> dict:
     """POST /ai/conversations/{id}/dismiss-all - dismiss selected proposals."""
+    from celerp.ai import deadlines
     async with _ai_api_client(token, session_token, timeout=deadlines.UI_REQUEST_S) as c:
         return _raise(await c.post(
             f"/ai/conversations/{conversation_id}/dismiss-all",
@@ -3312,6 +3317,7 @@ async def ai_job_proposals(token: str, session_token: str, conversation_id: str,
 
     Returns {"message_id", "answer", "pending_actions"}; calling again returns the same.
     """
+    from celerp.ai import deadlines
     async with _ai_api_client(token, session_token, timeout=deadlines.ACTIONS_TIMEOUT_S) as c:
         return _raise(await c.post(
             f"/ai/conversations/{conversation_id}/jobs/{job_id}/proposals",
@@ -3326,12 +3332,14 @@ async def ai_batch_status(token: str, session_token: str, job_id: str) -> dict:
 
 async def ai_job_cancel(token: str, session_token: str, job_id: str) -> dict:
     """POST /ai/jobs/{id}/cancel - stop a running job; what it finished is kept."""
+    from celerp.ai import deadlines
     async with _ai_api_client(token, session_token, timeout=deadlines.UI_REQUEST_S) as c:
         return _raise(await c.post(f"/ai/jobs/{job_id}/cancel")).json()
 
 
 async def ai_job_resume(token: str, session_token: str, job_id: str) -> dict:
     """POST /ai/jobs/{id}/resume - send what a stopped job left unsent."""
+    from celerp.ai import deadlines
     async with _ai_api_client(token, session_token, timeout=deadlines.UI_REQUEST_S) as c:
         return _raise(await c.post(f"/ai/jobs/{job_id}/resume")).json()
 
@@ -3361,6 +3369,7 @@ async def ai_upload(token: str, session_token: str, files: list[tuple[str, bytes
     Returns {"file_ids": [...]}.
     """
     multipart = [("files", (name, data, ct)) for name, data, ct in files]
+    from celerp.ai import deadlines
     budget = deadlines.upload_budget_s(sum(len(data) for _, data, _ in files))
     async with _ai_api_client(token, session_token, timeout=budget, bulk=True) as c:
         return _raise(await c.post("/ai/upload", files=multipart)).json()
@@ -3876,6 +3885,7 @@ async def ai_offer(token: str) -> dict:
 
     The API bounds its relay read to 2 seconds; the short client timeout keeps a
     slow answer from holding up the page that asked."""
+    from celerp.ai import deadlines
     async with _api_client(token, timeout=deadlines.QUOTA_READ_S) as c:
         return _raise(await c.get("/settings/ai-offer")).json()
 
