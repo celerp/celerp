@@ -160,7 +160,7 @@ async def run_first_sync(connector: ConnectorBase, ctx: ConnectorContext) -> lis
         row.progress = {r: {"state": "completed" if r in synced else "failed"} for r in resources}
         row.state = "completed" if synced == set(resources) else "failed"
         row.error = None if row.state == "completed" else {
-            "reason": "; ".join(e for f in failed for e in (f.errors or [])[:1])}
+            "detail": "; ".join(e for f in failed for e in (f.errors or [])[:1])}
         await session.commit()
     return results
 
