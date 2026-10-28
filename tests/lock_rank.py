@@ -967,7 +967,10 @@ if __name__ == "__main__":
     if sys.argv[1:2] == ["report"]:
         print(report(Path(sys.argv[2])), end="")
     elif sys.argv[1:2] == ["check"]:
-        print(check(Path(sys.argv[2])), end="")
+        out = check(Path(sys.argv[2]))
+        print(out, end="")
+        if "\nStale debt entries: 0\n" not in out:
+            raise SystemExit(1)
     elif sys.argv[1:2] == ["table"]:
         print(table(), end="")
     else:
