@@ -106,6 +106,17 @@ gate = ModelGate(int(os.getenv("AI_MAX_CONCURRENT", "3")))
 # leaves their rows for later.
 _held_operations: set[uuid.UUID] = set()
 _tasks: dict[uuid.UUID, asyncio.Task] = {}
+# Consecutive unexpected failures of a job's runner in this process.
+_failures: dict[uuid.UUID, int] = {}
+
+# A step that raised something unexpected is run again under its own identity (the
+# service replays what it already answered), then ends failed, which the user may
+# retry. A runner that raised is started again after a growing delay, and after
+# RUNNER_RESTARTS failures in a row the job is left open for the next start.
+STEP_ATTEMPTS = 3
+STEP_RETRY_DELAY_S = 1.0
+RUNNER_RESTARTS = 5
+RUNNER_RESTART_MAX_DELAY_S = 60.0
 
 OPEN_STEPS = ("pending", "running")
 # A step that ended without an answer, which the user may run again under a new identity.
@@ -129,19 +140,39 @@ def is_held(job_id: uuid.UUID) -> bool:
     return task is not None and not task.done()
 
 
-def start_job(job_id: uuid.UUID) -> None:
-    """Run the job's open steps in a task of this process (no-op while one runs)."""
+def start_job(job_id: uuid.UUID, *, delay_s: float = 0.0) -> None:
+    """Run the job's open steps in a task of this process (no-op while one runs).
+
+    The task is supervised: when its runner raises, the job keeps its open steps and
+    is started again, after ``delay_s`` growing with each failure in a row."""
     if is_held(job_id):
         return
-    task = asyncio.create_task(_run_job(job_id), name=f"ai-job-{job_id}")
+    task = asyncio.create_task(_run_job_after(job_id, delay_s), name=f"ai-job-{job_id}")
     _tasks[job_id] = task
 
-    def _forget(done: asyncio.Task) -> None:
+    def _supervise(done: asyncio.Task) -> None:
         if _tasks.get(job_id) is done:
             del _tasks[job_id]
-        if not done.cancelled() and done.exception() is not None:
-            log.error("AI job %s stopped", job_id, exc_info=done.exception())
-    task.add_done_callback(_forget)
+        if done.cancelled():
+            return
+        if done.exception() is None:
+            _failures.pop(job_id, None)
+            return
+        failures = _failures[job_id] = _failures.get(job_id, 0) + 1
+        if failures > RUNNER_RESTARTS:
+            _failures.pop(job_id, None)
+            log.error("AI job %s stopped %d times; it resumes at the next start", job_id, failures,
+                      exc_info=done.exception())
+            return
+        log.error("AI job %s stopped; starting it again", job_id, exc_info=done.exception())
+        start_job(job_id, delay_s=min(STEP_RETRY_DELAY_S * 2 ** failures, RUNNER_RESTART_MAX_DELAY_S))
+    task.add_done_callback(_supervise)
+
+
+async def _run_job_after(job_id: uuid.UUID, delay_s: float) -> None:
+    if delay_s:
+        await asyncio.sleep(delay_s)
+    await _run_job(job_id)
 
 
 def running_tasks() -> list[asyncio.Task]:
@@ -157,13 +188,22 @@ async def shutdown() -> None:
         task.cancel()
     await asyncio.gather(*tasks, return_exceptions=True)
     _tasks.clear()
+    _failures.clear()
     _held_operations.clear()
 
 
-async def _may_use_ai(session, job) -> bool:
+async def _refusal(session, company_id: uuid.UUID, user_id: uuid.UUID) -> str | None:
+    """Why a job may not send its next step, as the job's error key, or None. The one
+    admission rule for a job's work, checked at start-up and before every step is sent:
+    the same permission and AI access rules that admit an AI route."""
     from celerp.services.permissions import read_authority, role_has_permission
-    role, settings = await read_authority(session, job.company_id, job.user_id)
-    return bool(role) and role_has_permission(settings, role, "use_ai_assistant")
+    from celerp.session_gate import ai_access_available
+    role, settings = await read_authority(session, company_id, user_id)
+    if not (role and role_has_permission(settings, role, "use_ai_assistant")):
+        return "ai.job_permission_lost"
+    if not await ai_access_available():
+        return "ai.job_ai_unavailable"
+    return None
 
 
 async def recover_on_start() -> int:
@@ -179,8 +219,9 @@ async def recover_on_start() -> int:
             select(AIBatchJob).where(AIBatchJob.status.in_(("pending", "running")))
         )).scalars().all()
         for job in rows:
-            if not await _may_use_ai(session, job):
-                job.status, job.error = "failed", t("ai.job_permission_lost")
+            refusal = await _refusal(session, job.company_id, job.user_id)
+            if refusal is not None:
+                job.status, job.error = "failed", t(refusal)
                 job.completed_at = datetime.now(timezone.utc)
                 continue
             ops = (await session.execute(
@@ -267,10 +308,34 @@ async def _run_job(job_id: uuid.UUID) -> None:
         steps = [(s.id, s.key, s.operation_id) for s in rows]
     _held_operations.update(op for _, _, op in steps)
     try:
-        await asyncio.gather(*(_document_step(run, *step) for step in steps))
+        # The group owns every step task: a cancelled or failed runner cancels and
+        # drains them all before it ends, so no step outlives its job's runner.
+        async with asyncio.TaskGroup() as group:
+            for step in steps:
+                group.create_task(_supervised_step(run, *step))
     finally:
         _held_operations.difference_update(op for _, _, op in steps)
     await _end_job(run)
+
+
+async def _supervised_step(run, step_pk: uuid.UUID, file_id: str, operation_id: uuid.UUID) -> None:
+    """Run one step to an end without stopping the others: an unexpected error runs it
+    again under its own identity, then ends it failed for the user to retry. Only when
+    even that cannot be written does the error stop the runner (the step stays open
+    and the supervised restart sends it again under its identity)."""
+    for attempt in range(1, STEP_ATTEMPTS + 1):
+        try:
+            await _document_step(run, step_pk, file_id, operation_id)
+            return
+        except Exception:
+            log.exception("Step %s of AI job %s failed (attempt %d)", file_id, run.job_id, attempt)
+            if attempt < STEP_ATTEMPTS:
+                await asyncio.sleep(STEP_RETRY_DELAY_S * attempt)
+    async with SessionLocal() as session:
+        await _set_step(session, step_pk, state="failed",
+                        result={"filename": file_id, "error": t("ai.err_file_unexpected")})
+        await session.commit()
+    _held_operations.discard(operation_id)
 
 
 async def _cancel_requested(job_id: uuid.UUID) -> bool:
@@ -295,7 +360,14 @@ async def _document_step(run, step_pk: uuid.UUID, file_id: str, operation_id: uu
             await session.commit()
 
     async with gate.slot("documents"):
-        if await _cancel_requested(run.job_id):
+        if run.stop_reason is not None or await _cancel_requested(run.job_id):
+            return
+        async with SessionLocal() as session:
+            refusal = await _refusal(session, run.company_id, run.user_id)
+            await session.commit()
+        if refusal is not None:
+            # Unsent steps stay pending and uncharged; finished ones keep their results.
+            run.stop_reason = refusal
             return
         outcome = await batch.read_file(run, file_id, operation_id, before_send=_before_send)
     async with SessionLocal() as session:
@@ -325,7 +397,9 @@ async def _end_job(run) -> None:
         job = await session.get(AIBatchJob, run.job_id)
         states = (await session.execute(
             select(AIJobStep.state).where(AIJobStep.job_id == run.job_id))).scalars().all()
-        if job.cancel_requested_at is not None and any(s in OPEN_STEPS for s in states):
+        if run.stop_reason is not None:
+            job.status, job.error = "failed", t(run.stop_reason)
+        elif job.cancel_requested_at is not None and any(s in OPEN_STEPS for s in states):
             job.status = "cancelled"
         elif all(s in RETRYABLE_STEPS for s in states):
             job.status, job.error = "failed", t("ai.job_failed")

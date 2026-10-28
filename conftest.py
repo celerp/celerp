@@ -932,8 +932,12 @@ async def client(session: AsyncSession):
     job_factory = async_sessionmaker(
         bind=await session.connection(), class_=AsyncSession,
         expire_on_commit=False, join_transaction_mode="rollback_only")
+    # The model gate's condition binds to the event loop that first waits on it, and
+    # every test runs on its own loop: each test gets a gate of its own.
+    from celerp.ai import jobs
 
-    with patch("celerp.gateway.client._client", MagicMock()), \
+    with patch("celerp.ai.jobs.gate", jobs.ModelGate(jobs.gate.size)), \
+         patch("celerp.gateway.client._client", MagicMock()), \
          patch("celerp.gateway.state.get_session_token", return_value="test-session-token"), \
          patch("celerp.middleware.get_session_ctx", _shared_session_ctx), \
          patch("celerp.db.LifecycleSessionLocal", lifecycle_factory), \

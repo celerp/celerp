@@ -218,6 +218,11 @@ def test_ai_charges_from_before_the_usage_record_are_carried_over():
                              {"u": ids["user"]})
                 for table in ai:
                     table.create(conn)
+                # The jobs table as the app of that time created it, with its counters.
+                conn.execute(text("ALTER TABLE ai_batch_jobs ADD COLUMN total_files integer NOT NULL DEFAULT 0, "
+                                  "ADD COLUMN completed_files integer NOT NULL DEFAULT 0, "
+                                  "ADD COLUMN failed_files integer NOT NULL DEFAULT 0, "
+                                  "ADD COLUMN credits_consumed integer NOT NULL DEFAULT 0"))
                 conversations, messages, jobs = ai
                 conn.execute(conversations.insert().values(
                     id=ids["conversation"], company_id=ids["company"], user_id=ids["user"]))

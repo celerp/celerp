@@ -58,14 +58,20 @@ async def require_ai_access(request: Request) -> None:
     if supplied:
         validate_session_token(supplied)
         return
-    if get_session_token():
-        return
-
-    from celerp.config import settings
-    from celerp.services.cloud_entitlement import stored_api_key
-    if not settings.cloud_disconnected and await stored_api_key():
+    if await ai_access_available():
         return
     raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=_NO_SESSION_DETAIL)
+
+
+async def ai_access_available() -> bool:
+    """Whether this install may reach the AI service without a request: an active
+    session, or a connected install holding an account key. AI routes and every step
+    of a running AI job are admitted by this one rule."""
+    if get_session_token():
+        return True
+    from celerp.config import settings
+    from celerp.services.cloud_entitlement import stored_api_key
+    return not settings.cloud_disconnected and bool(await stored_api_key())
 
 
 async def require_active_session() -> None:

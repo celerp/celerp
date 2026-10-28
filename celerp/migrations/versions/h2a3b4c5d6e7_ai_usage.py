@@ -44,7 +44,10 @@ def upgrade() -> None:
             "WHERE m.role = 'user' AND m.credits_used > 0 "
             "ON CONFLICT ON CONSTRAINT uq_ai_usage_operation DO NOTHING"
         )
-    if inspector.has_table("ai_batch_jobs"):
+    # A jobs table created at startup by a release that already keeps this record has
+    # no charge counter, and nothing to carry over.
+    if inspector.has_table("ai_batch_jobs") and any(
+            c["name"] == "credits_consumed" for c in inspector.get_columns("ai_batch_jobs")):
         op.execute(
             "INSERT INTO ai_usage (id, company_id, user_id, operation_id, credits, pending, created_at) "
             "SELECT j.id, j.company_id, j.user_id, j.id, j.credits_consumed, false, j.created_at "

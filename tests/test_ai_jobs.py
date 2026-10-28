@@ -27,8 +27,8 @@ from ai_fake_cloud import FakeCloud, answer, install, tool_turn, until
 from celerp.ai import deadlines, jobs, llm, service, usage
 from celerp.config import settings
 from celerp.models.ai import AIBatchJob, AIJobStep, AIUsage
-from celerp.models.company import Company
 from celerp.models.notification import Notification
+from celerp.services.company_lock import locked_company
 from test_ai_usage import _conversation, owner  # noqa: F401
 
 AUTH = lambda token: {"Authorization": f"Bearer {token}"}  # noqa: E731
@@ -305,15 +305,232 @@ async def test_a_resumed_job_whose_user_lost_the_permission_ends_failed(client, 
         "query": "Read", "file_ids": file_ids, "document_mode": "receipts", "operation_id": str(job_id)})
     await until(lambda: _op(job_id, file_ids[0]) in cloud.arrived)
     await jobs.shutdown()
-    company = await session.get(Company, company_id)
+    company = await locked_company(session, company_id)
     company.settings = {**(company.settings or {}), "role_grants": {"use_ai_assistant": []}}
     await session.commit()
 
     await jobs.recover_on_start()
-    job = await _finished(client, token, job_id)
-    assert job["status"] == "failed"
-    assert job["error"] == "This job stopped because you no longer have permission to use the AI assistant."
+    # The batch route itself needs the permission, so the job is read from its row.
+    async def _ended():
+        row = await session.get(AIBatchJob, job_id, populate_existing=True)
+        return row.status in TERMINAL
+    await until(_ended)
+    row = await session.get(AIBatchJob, job_id)
+    assert row.status == "failed"
+    assert row.error == "This job stopped because you no longer have permission to use the AI assistant."
     assert cloud.sends[_op(job_id, file_ids[1])] == 0
+
+
+# ── Owner audit N1: a supervised runner ──────────────────────────────────────
+
+def _step_tasks() -> list[asyncio.Task]:
+    return [t for t in asyncio.all_tasks() if t.get_coro().__name__ == "_supervised_step"]
+
+
+async def test_a_result_write_that_fails_once_resends_the_file_under_its_id_and_the_job_finishes(
+        client, owner, cloud, monkeypatch):
+    """The database refuses the write of one file's answer once: the file is sent again
+    under its own id (the service replays it, it is not run twice) and every other
+    file still finishes."""
+    monkeypatch.setattr(jobs, "STEP_RETRY_DELAY_S", 0.01)
+    token, company_id, user_id = owner
+    conv = await _conversation(client, token)
+    file_ids = _files(company_id, user_id, 3)
+    job_id = uuid.uuid4()
+    target = _step_pk(job_id, file_ids[1])
+    real_set_step = jobs._set_step
+    failed = []
+
+    async def _set_step(session, step_pk, **values):
+        if values.get("state") == "done" and step_pk == await target() and not failed:
+            failed.append(step_pk)
+            raise RuntimeError("database write refused")
+        return await real_set_step(session, step_pk, **values)
+    monkeypatch.setattr(jobs, "_set_step", _set_step)
+    await client.post(f"/ai/conversations/{conv}/query", headers=AUTH(token), json={
+        "query": "Read", "file_ids": file_ids, "document_mode": "receipts", "operation_id": str(job_id)})
+    job = await _finished(client, token, job_id)
+
+    assert failed
+    assert job["status"] == "completed"
+    assert [f["status"] for f in job["files"]] == ["success"] * 3
+    op = _op(job_id, file_ids[1])
+    assert (cloud.executions[op], cloud.sends[op]) == (1, 2)
+
+
+def _step_pk(job_id, key):
+    """Reads the primary key of the job's step for ``key`` once the step exists."""
+    cache: dict = {}
+
+    async def _pk():
+        if "pk" not in cache:
+            async with jobs.SessionLocal() as s:
+                cache["pk"] = (await s.execute(select(AIJobStep.id).where(
+                    AIJobStep.job_id == job_id, AIJobStep.key == key))).scalar_one_or_none()
+        return cache["pk"]
+    return _pk
+
+
+async def test_a_file_that_keeps_raising_ends_retryable_and_the_other_files_finish(
+        client, owner, cloud, monkeypatch):
+    from celerp.ai import batch
+    monkeypatch.setattr(jobs, "STEP_RETRY_DELAY_S", 0.01)
+    token, company_id, user_id = owner
+    conv = await _conversation(client, token)
+    file_ids = _files(company_id, user_id, 3)
+    real_read = batch.read_file
+    tries = []
+
+    async def _read(run, file_id, operation_id, **kw):
+        if file_id == file_ids[1]:
+            tries.append(file_id)
+            raise RuntimeError("unexpected")
+        return await real_read(run, file_id, operation_id, **kw)
+    monkeypatch.setattr(batch, "read_file", _read)
+    r = await client.post(f"/ai/conversations/{conv}/query", headers=AUTH(token), json={
+        "query": "Read", "file_ids": file_ids, "document_mode": "receipts", "operation_id": str(uuid.uuid4())})
+    job = await _finished(client, token, uuid.UUID(r.json()["job_id"]))
+
+    assert len(tries) == jobs.STEP_ATTEMPTS
+    files = _by_file(job)
+    assert [files[f]["status"] for f in file_ids] == ["success", "error", "success"]
+    assert files[file_ids[1]]["error"] == "Something went wrong while reading this file. Retry it to read it again."
+    assert (job["status"], job["retry_failed"]["count"]) == ("completed", 1)
+
+
+async def test_a_runner_that_raises_is_started_again_and_finishes_without_resending_a_file(
+        client, owner, cloud, monkeypatch):
+    monkeypatch.setattr(jobs, "STEP_RETRY_DELAY_S", 0.01)
+    token, company_id, user_id = owner
+    real_end = jobs._end_job
+    ends = []
+
+    async def _end_job(run):
+        ends.append(run.job_id)
+        if len(ends) == 1:
+            raise RuntimeError("database gone for a moment")
+        return await real_end(run)
+    monkeypatch.setattr(jobs, "_end_job", _end_job)
+    job_id, file_ids, _ = await _reading_job(client, token, company_id, user_id, 3)
+    job = await _finished(client, token, job_id)
+
+    assert len(ends) == 2 and job["status"] == "completed"
+    assert all(cloud.executions[_op(job_id, f)] == 1 for f in file_ids)
+
+
+async def test_a_runner_that_cannot_record_a_failure_drains_its_steps_and_leaves_the_job_to_resume(
+        client, owner, cloud, session, monkeypatch):
+    """No step outlives its runner: when a step's failure cannot even be written, every
+    other step of the job is cancelled and awaited, the job stays open, and the next
+    start finishes it without running any file twice."""
+    from celerp.ai import batch
+    monkeypatch.setattr(jobs, "STEP_RETRY_DELAY_S", 0.01)
+    monkeypatch.setattr(jobs, "RUNNER_RESTARTS", 0)
+    monkeypatch.setattr(jobs, "gate", jobs.ModelGate(4))
+    token, company_id, user_id = owner
+    conv = await _conversation(client, token)
+    file_ids = _files(company_id, user_id, 3)
+    job_id = uuid.uuid4()
+    held = _op(job_id, file_ids[0])
+    cloud.held(held, end="store")
+    real_read, real_set_step = batch.read_file, jobs._set_step
+    broken = {"on": True}
+
+    async def _read(run, file_id, operation_id, **kw):
+        if file_id == file_ids[1] and broken["on"]:
+            await until(lambda: held in cloud.arrived)
+            raise RuntimeError("unexpected")
+        return await real_read(run, file_id, operation_id, **kw)
+
+    async def _set_step(session_, step_pk, **values):
+        if values.get("state") == "failed" and broken["on"]:
+            raise RuntimeError("database write refused")
+        return await real_set_step(session_, step_pk, **values)
+    monkeypatch.setattr(batch, "read_file", _read)
+    monkeypatch.setattr(jobs, "_set_step", _set_step)
+    await client.post(f"/ai/conversations/{conv}/query", headers=AUTH(token), json={
+        "query": "Read", "file_ids": file_ids, "document_mode": "receipts", "operation_id": str(job_id)})
+    await until(lambda: not jobs.is_held(job_id), 20.0)
+
+    assert _step_tasks() == []
+    row = await session.get(AIBatchJob, job_id, populate_existing=True)
+    assert row.status == "running"
+    broken["on"] = False
+    await jobs.recover_on_start()
+    job = await _finished(client, token, job_id)
+    assert [f["status"] for f in job["files"]] == ["success"] * 3
+    assert all(cloud.executions[_op(job_id, f)] == 1 for f in file_ids)
+
+
+# ── Owner audit N2: every step is admitted before it is sent ─────────────────
+
+async def test_a_permission_revoked_mid_job_stops_the_unsent_files_and_keeps_the_finished_one(
+        client, owner, cloud, session, monkeypatch):
+    token, company_id, user_id = owner
+    monkeypatch.setattr(jobs, "gate", jobs.ModelGate(2))  # documents take one slot: one file at a time
+    conv = await _conversation(client, token)
+    file_ids = _files(company_id, user_id, 3)
+    job_id = uuid.uuid4()
+    first = _op(job_id, file_ids[0])
+    cloud.held(first, end="store")
+    await client.post(f"/ai/conversations/{conv}/query", headers=AUTH(token), json={
+        "query": "Read", "file_ids": file_ids, "document_mode": "receipts", "operation_id": str(job_id)})
+    await until(lambda: first in cloud.arrived)
+    company = await locked_company(session, company_id)
+    company.settings = {**(company.settings or {}), "role_grants": {"use_ai_assistant": []}}
+    await session.commit()
+    cloud.release(first)
+
+    async def _ended():
+        return (await session.get(AIBatchJob, job_id, populate_existing=True)).status in TERMINAL
+    await until(_ended)
+    row = await session.get(AIBatchJob, job_id)
+    steps = {s.key: s for s in (await session.execute(
+        select(AIJobStep).where(AIJobStep.job_id == job_id).execution_options(populate_existing=True))).scalars()}
+    assert (row.status, row.error) == (
+        "failed", "This job stopped because you no longer have permission to use the AI assistant.")
+    assert (steps[file_ids[0]].state, steps[file_ids[0]].credits) == ("done", 1)
+    assert [steps[f].state for f in file_ids[1:]] == ["pending", "pending"]
+    assert all(cloud.sends[_op(job_id, f)] == 0 for f in file_ids[1:])
+    usage_ops = set((await session.execute(select(AIUsage.operation_id).where(
+        AIUsage.company_id == company_id))).scalars())
+    assert uuid.UUID(first) in usage_ops and uuid.UUID(_op(job_id, file_ids[1])) not in usage_ops
+
+
+async def test_ai_access_lost_mid_job_stops_the_unsent_files_and_resume_sends_them(
+        client, owner, cloud, monkeypatch):
+    from celerp import session_gate
+    token, company_id, user_id = owner
+    monkeypatch.setattr(jobs, "gate", jobs.ModelGate(2))
+    conv = await _conversation(client, token)
+    file_ids = _files(company_id, user_id, 3)
+    job_id = uuid.uuid4()
+    first = _op(job_id, file_ids[0])
+    cloud.held(first, end="store")
+    access = {"on": True}
+
+    async def _available():
+        return access["on"]
+    monkeypatch.setattr(session_gate, "ai_access_available", _available)
+    await client.post(f"/ai/conversations/{conv}/query", headers=AUTH(token), json={
+        "query": "Read", "file_ids": file_ids, "document_mode": "receipts", "operation_id": str(job_id)})
+    await until(lambda: first in cloud.arrived)
+    access["on"] = False
+    cloud.release(first)
+    await until(lambda: not jobs.is_held(job_id))
+    access["on"] = True  # the routes are admitted by the same rule
+    job = await _job(client, token, job_id)
+    assert job["status"] == "failed"
+    assert job["error"] == ("This job stopped because Celerp is no longer connected to the AI service. "
+                            "Reconnect, then resume the job.")
+    assert [f["status"] for f in job["files"]] == ["success", "pending", "pending"]
+    assert all(cloud.sends[_op(job_id, f)] == 0 for f in file_ids[1:])
+
+    r = await client.post(f"/ai/jobs/{job_id}/resume", headers=AUTH(token))
+    assert r.status_code == 202, r.text
+    job = await _finished(client, token, job_id)
+    assert job["status"] == "completed" and [f["status"] for f in job["files"]] == ["success"] * 3
+    assert all(cloud.executions[_op(job_id, f)] == 1 for f in file_ids)
 
 
 # ── Red 25: questions as jobs ─────────────────────────────────────────────────

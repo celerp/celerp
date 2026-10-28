@@ -6516,6 +6516,8 @@
   "ai.ask_as_new": "Ask as a new question",
   "ai.free_terms": "Each free question can include one file. Free AI may pause until the next month when the monthly free-usage budget is reached.",
   "ai.job_permission_lost": "This job stopped because you no longer have permission to use the AI assistant.",
+  "ai.job_ai_unavailable": "This job stopped because Celerp is no longer connected to the AI service. Reconnect, then resume the job.",
+  "ai.err_file_unexpected": "Something went wrong while reading this file. Retry it to read it again.",
   "ai.retry_files": "Retry {n} files",
   "ai.retry_files_confirm": "This counts as {n} questions, one per file.",
   "ai.retry_one_file": "Retry 1 file",

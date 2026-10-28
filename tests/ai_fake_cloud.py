@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import uuid
 from collections import Counter
 from typing import Awaitable, Callable
 
@@ -69,7 +70,7 @@ class FakeCloud:
         assert (request.method, path) == ("POST", "/ai/complete"), path
         body = json.loads(request.content)
         self.bodies.append(body)
-        identity = body.get("step_id") or body["operation_id"]
+        identity = body.get("step_id") or body.get("operation_id") or str(uuid.uuid4())
         self.sends[identity] += 1
         return await self._complete(identity, body)
 

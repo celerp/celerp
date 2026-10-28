@@ -126,6 +126,8 @@ class FileRun:
     user_id: uuid.UUID
     conversation_id: uuid.UUID | None
     query: str
+    # The admission refusal that stopped the job's unsent steps (an i18n key).
+    stop_reason: str | None = None
 
 
 @dataclass
