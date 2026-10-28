@@ -43,8 +43,6 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field, model_validator
-from slowapi import Limiter
-from slowapi.util import get_remote_address
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.ai.files import AGENT_UPLOAD_TYPES, XLSX_CONTENT_TYPE
@@ -52,6 +50,7 @@ from celerp.ai.service import PROPOSAL_TTL_S
 from celerp.config import settings
 from celerp.db import get_session
 from celerp.models.ai import AIBatchJob, AIMessage
+from celerp.routers.auth import limiter as _limiter
 from celerp.services.auth import (
     AuthContext, get_auth_context, get_current_company_id, get_current_role, get_current_user,
 )
@@ -59,9 +58,8 @@ from celerp.services.company_lock import hold_company
 from celerp.services.permissions import get_current_company_settings, require_permission
 from ui.i18n import t
 
-# AI-specific rate limiter: tighter than the global 60/min default.
-# LLM queries are expensive; uploads have file-size costs.
-_limiter = Limiter(key_func=get_remote_address)
+# AI routes count on Celerp's one limiter, per caller: tighter limits than the global
+# 60/min default, as LLM queries are expensive and uploads have file-size costs.
 
 
 async def _require_ai_access(request: Request) -> None:
