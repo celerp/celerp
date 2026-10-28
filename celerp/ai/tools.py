@@ -15,6 +15,7 @@ import fastapi.routing
 import httpx
 from fastapi.routing import APIRoute
 
+from celerp.ai import deadlines
 from celerp.modules.loader import loaded_modules
 from celerp.modules.registry import uses_module
 from celerp.services.permissions import role_has_permission
@@ -28,9 +29,6 @@ from ui.i18n import current_lang
 _AGENT_METHODS = frozenset({"GET", "POST", "PUT", "PATCH"})
 _AGENT_MUTATIONS = frozenset({"POST", "PUT", "PATCH"})
 AGENT_RESULT_MAX_BYTES = 64 * 1024
-# The in-process ASGI transport ignores httpx timeouts, so the executor bounds
-# each capability call itself.
-CAPABILITY_TIMEOUT_S = 30.0
 _LOCAL_REF_PREFIX = "#/components/schemas/"
 
 
@@ -398,12 +396,12 @@ async def execute_agent_capability(
                     headers={"Authorization": authorization, "Accept-Language": current_lang()},
                     follow_redirects=False,
                 ),
-                timeout=CAPABILITY_TIMEOUT_S,
+                timeout=deadlines.TOOL_STEP_S,
             )
         except asyncio.TimeoutError:
             return _agent_error(
                 "capability_timeout",
-                f"The operation did not finish within {int(CAPABILITY_TIMEOUT_S)} seconds.",
+                f"The operation did not finish within {int(deadlines.TOOL_STEP_S)} seconds.",
             )
 
     try:

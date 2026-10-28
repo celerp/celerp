@@ -11,12 +11,21 @@ free slot ahead of every waiting document step, so a question never waits behind
 queue of files. ``llm.complete`` refuses to run outside a slot.
 
 A job is an ``AIBatchJob`` row and its ``AIJobStep`` rows: one step per file of a
-reading job. A step's operation id is the identity the AI service answers it by, so a
+reading job, one per model turn and tool call of a question. A step's operation id is the identity the AI service answers it by, so a
 job that resumes after a restart sends a step again only under the identity it was
 sent under: the service replays a stored reply, or reports an outcome it cannot
 replay, which ends the step without running it again. Sending a step under a new
 identity is always the user's explicit retry, which says what it counts as. The steps
 are the job's progress; nothing else counts files.
+
+A question is a job too, so no request waits on the model: the thread route answers
+202 and the browser polls the question's state, and a synchronous caller (``/ai/query``,
+the module API) waits at most ``deadlines.SYNC_WAIT_S`` from its start. A question
+starts ``interactive``: a restart leaves it interrupted, for the user to ask again
+under its id. One still running ``deadlines.PROMOTE_AFTER_S`` after its first model
+step took a slot, or past a synchronous caller's wait, moves to ``background``: it
+resumes after a restart and leaves a notification when it ends. Nothing bounds a
+job's wall clock, only each step.
 """
 
 from __future__ import annotations
@@ -25,13 +34,16 @@ import asyncio
 import contextvars
 import logging
 import os
+import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
+import httpx
 from sqlalchemy import select, update
 
+from celerp.ai import deadlines
 from celerp.db import SessionLocal
 from ui.i18n import t
 
@@ -108,6 +120,13 @@ _held_operations: set[uuid.UUID] = set()
 _tasks: dict[uuid.UUID, asyncio.Task] = {}
 # Consecutive unexpected failures of a job's runner in this process.
 _failures: dict[uuid.UUID, int] = {}
+# The bearer a question's tools read the app with, held in memory only: a question
+# resumed after a restart has none, so it is offered no tools.
+_authorization: dict[uuid.UUID, str] = {}
+# What a question waits for at the gate (``documents`` or ``questions``), while it waits.
+_waiting: dict[uuid.UUID, str] = {}
+# The questions running in background mode in this process (see ``promote``).
+_background: set[uuid.UUID] = set()
 
 # A step that raised something unexpected is run again under its own identity (the
 # service replays what it already answered), then ends failed, which the user may
@@ -117,6 +136,9 @@ STEP_ATTEMPTS = 3
 STEP_RETRY_DELAY_S = 1.0
 RUNNER_RESTARTS = 5
 RUNNER_RESTART_MAX_DELAY_S = 60.0
+# Sends of a background step under its own identity after the service surely did not
+# run it, or after no reply came back in the call's budget.
+RESEND_LIMIT = 3
 
 OPEN_STEPS = ("pending", "running")
 # A step that ended without an answer, which the user may run again under a new identity.
@@ -134,19 +156,29 @@ def file_operation_id(job_id: uuid.UUID, file_id: str, generation: int = 0) -> u
     return uuid.uuid5(job_id, file_id if generation == 0 else f"{file_id}:{generation}")
 
 
+def step_id(question_id: uuid.UUID, *, turn: int, generation: int = 0) -> uuid.UUID:
+    """The identity of a question's model step after its first (which is sent under
+    the question's own id)."""
+    return uuid.uuid5(question_id, f"{turn}:{generation}")
+
+
 def is_held(job_id: uuid.UUID) -> bool:
     """Whether a task of this process is running the job."""
     task = _tasks.get(job_id)
     return task is not None and not task.done()
 
 
-def start_job(job_id: uuid.UUID, *, delay_s: float = 0.0) -> None:
-    """Run the job's open steps in a task of this process (no-op while one runs).
+def start_job(job_id: uuid.UUID, *, delay_s: float = 0.0, authorization: str | None = None) -> bool:
+    """Run the job's open steps in a task of this process. False, and nothing
+    started, while a task already runs it. ``authorization`` is the bearer a
+    question's tools read the app with.
 
     The task is supervised: when its runner raises, the job keeps its open steps and
     is started again, after ``delay_s`` growing with each failure in a row."""
     if is_held(job_id):
-        return
+        return False
+    if authorization:
+        _authorization[job_id] = authorization
     task = asyncio.create_task(_run_job_after(job_id, delay_s), name=f"ai-job-{job_id}")
     _tasks[job_id] = task
 
@@ -167,12 +199,16 @@ def start_job(job_id: uuid.UUID, *, delay_s: float = 0.0) -> None:
         log.error("AI job %s stopped; starting it again", job_id, exc_info=done.exception())
         start_job(job_id, delay_s=min(STEP_RETRY_DELAY_S * 2 ** failures, RUNNER_RESTART_MAX_DELAY_S))
     task.add_done_callback(_supervise)
+    return True
 
 
 async def _run_job_after(job_id: uuid.UUID, delay_s: float) -> None:
     if delay_s:
         await asyncio.sleep(delay_s)
-    await _run_job(job_id)
+    from celerp.models.ai import AIBatchJob
+    async with SessionLocal() as session:
+        kind = (await session.execute(select(AIBatchJob.kind).where(AIBatchJob.id == job_id))).scalar_one_or_none()
+    await (_run_question(job_id) if kind == "question" else _run_job(job_id))
 
 
 def running_tasks() -> list[asyncio.Task]:
@@ -190,6 +226,9 @@ async def shutdown() -> None:
     _tasks.clear()
     _failures.clear()
     _held_operations.clear()
+    _authorization.clear()
+    _waiting.clear()
+    _background.clear()
 
 
 async def _refusal(session, company_id: uuid.UUID, user_id: uuid.UUID) -> str | None:
@@ -207,11 +246,13 @@ async def _refusal(session, company_id: uuid.UUID, user_id: uuid.UUID) -> str | 
 
 
 async def recover_on_start() -> int:
-    """Run once at start-up, before the usage reconcile loop. Every open job resumes:
-    its open steps are registered as held before this returns, so no reconcile pass
-    asks the service about a step this process is about to send, and then its task
-    starts. A job whose user may no longer use the assistant ends failed with that
-    reason. Returns how many jobs resumed."""
+    """Run once at start-up, before the usage reconcile loop. Every open background
+    job resumes: its open steps are registered as held before this returns, so no
+    reconcile pass asks the service about a step this process is about to send, and
+    then its task starts. A job whose user may no longer use the assistant ends
+    failed with that reason. An interactive question is left as it was, which reads
+    as interrupted: it is never sent again but by the user asking again under its
+    id. Returns how many jobs resumed."""
     from celerp.models.ai import AIBatchJob, AIJobStep
     resumed: list[uuid.UUID] = []
     async with SessionLocal() as session:
@@ -219,7 +260,11 @@ async def recover_on_start() -> int:
             select(AIBatchJob).where(AIBatchJob.status.in_(("pending", "running")))
         )).scalars().all()
         for job in rows:
-            refusal = await _refusal(session, job.company_id, job.user_id)
+            if job.mode == "interactive":
+                continue
+            # A question is admitted before each of its model steps, and stores a refusal
+            # as its answer (``_JobJournal.admit``).
+            refusal = await _refusal(session, job.company_id, job.user_id) if job.kind == "documents" else None
             if refusal is not None:
                 job.status, job.error = "failed", t(refusal)
                 job.completed_at = datetime.now(timezone.utc)
@@ -228,6 +273,8 @@ async def recover_on_start() -> int:
                 select(AIJobStep.operation_id).where(AIJobStep.job_id == job.id, AIJobStep.state.in_(OPEN_STEPS))
             )).scalars().all()
             _held_operations.update(op for op in ops if op is not None)
+            if job.kind == "question":
+                _held_operations.add(job.id)
             resumed.append(job.id)
         await session.commit()
     for job_id in resumed:
@@ -412,6 +459,382 @@ async def _end_job(run) -> None:
     if status != "cancelled":
         done = states.count("done")
         await batch.notify_finished(run, done, len(states) - done)
+
+
+# ── Sending a step ────────────────────────────────────────────────────────────
+
+async def send_step(call: Callable[[], Awaitable], *, resend: bool,
+                    on_refusal: Callable[[BaseException], None] | None = None):
+    """Send one model step (the caller holds its gate slot) and return the reply. The
+    step is sent again only under its own identity: while its first send still runs on
+    the service, and, when ``resend`` (a background step), after the service surely did
+    not run it or no reply came back, at most RESEND_LIMIT times. Anything else is
+    raised. ``on_refusal`` is told every refusal, with the credits it reports."""
+    from celerp.ai.llm import RelayError
+    resends = 0
+    while True:
+        try:
+            return await call()
+        except RelayError as exc:
+            if on_refusal is not None:
+                on_refusal(exc)
+            if exc.code == "operation_in_progress":
+                await asyncio.sleep(min(exc.retry_after or deadlines.RESEND_DELAY_S, deadlines.IN_PROGRESS_POLL_S))
+                continue
+            if resend and exc.code in ("service_unavailable", "busy") and resends < RESEND_LIMIT:
+                resends += 1
+                await asyncio.sleep(deadlines.RESEND_DELAY_S)
+                continue
+            raise
+        except (httpx.TimeoutException, httpx.TransportError):
+            if resend and resends < RESEND_LIMIT:
+                resends += 1
+                continue
+            raise
+
+
+async def notify(company_id: uuid.UUID, user_id: uuid.UUID, conversation_id: uuid.UUID | None,
+                 title: str, body: str) -> None:
+    """The notification a finished background job leaves for its user (best effort)."""
+    try:
+        from celerp.notifications.service import create as create_notification
+        async with SessionLocal() as session:
+            await create_notification(
+                session, company_id, "ai", title, body, user_id=user_id,
+                action_url=f"/ai?conversation={conversation_id}" if conversation_id else "/ai",
+                priority="high",
+            )
+            await session.commit()
+    except Exception:
+        log.warning("Failed to create an AI job notification", exc_info=True)
+
+
+# ── Questions ─────────────────────────────────────────────────────────────────
+
+class Journal:
+    """What each step of one question returned, by key (``model:{turn}`` or
+    ``tool:{call_id}``). The agent loop asks it before it runs a step, so a question
+    run again is answered from what its ended steps returned: no model step that
+    ended is sent again, no tool runs twice, and a model step is sent again only
+    under its identity. This one keeps the journal for one run in memory;
+    ``_JobJournal`` keeps it in the job's steps."""
+
+    def __init__(self, question_id: uuid.UUID) -> None:
+        self.question_id = question_id
+        self._done: dict[str, dict] = {}
+        self._generation: dict[str, int] = {}
+
+    @property
+    def background(self) -> bool:
+        """Whether nobody waits on the question (its steps are resent on their own)."""
+        return False
+
+    def stored(self, key: str) -> dict | None:
+        return self._done.get(key)
+
+    def identity(self, turn: int) -> dict:
+        """What model turn ``turn`` is sent under: the question's id on the first turn,
+        its step id after."""
+        if turn == 0:
+            return {"operation_id": self.question_id}
+        generation = self._generation.get(f"model:{turn}", 0)
+        return {"step_id": step_id(self.question_id, turn=turn, generation=generation)}
+
+    async def admit(self) -> None:
+        """Raise when the question may not send its next model step."""
+
+    def on_wait(self, what: str | None) -> None:
+        """Told what the next model step waits for at the gate, and None once it holds a slot."""
+
+    async def sending(self, key: str, identity: dict, nbytes: int) -> None:
+        """Called just before a model step leaves, with its body's size."""
+
+    async def ended(self, key: str, state: str, result: dict | None = None) -> None:
+        """A step ended: ``done`` with what it returned, or without an answer."""
+        if state == "done":
+            self._done[key] = result
+
+
+class _JobJournal(Journal):
+    def __init__(self, job_id: uuid.UUID, company_id: uuid.UUID, user_id: uuid.UUID, steps: list) -> None:
+        super().__init__(job_id)
+        self.job_id, self.company_id, self.user_id = job_id, company_id, user_id
+        self._pk: dict[str, uuid.UUID] = {}
+        self._seq = max((step.seq for step in steps), default=-1) + 1
+        self._promoter: asyncio.Task | None = None
+        for step in steps:
+            self._pk[step.key], self._generation[step.key] = step.id, step.generation
+            if step.state == "done":
+                self._done[step.key] = step.result
+
+    @property
+    def background(self) -> bool:
+        return self.job_id in _background
+
+    async def admit(self) -> None:
+        from fastapi import HTTPException
+        async with SessionLocal() as session:
+            refusal = await _refusal(session, self.company_id, self.user_id)
+            await session.commit()
+        if refusal is not None:
+            raise HTTPException(status_code=403, detail={"code": refusal.removeprefix("ai."), "message": t(refusal)})
+
+    def on_wait(self, what: str | None) -> None:
+        if what is not None:
+            _waiting[self.job_id] = what
+            return
+        _waiting.pop(self.job_id, None)
+        if self._promoter is None and not self.background:
+            # P counts from the first model step's slot, never from time spent queued.
+            self._promoter = asyncio.create_task(self._promote_later())
+
+    async def _promote_later(self) -> None:
+        await asyncio.sleep(deadlines.PROMOTE_AFTER_S)
+        await promote(self.job_id)
+
+    async def _step(self, session, key: str, state: str, identity: dict | None = None) -> uuid.UUID:
+        from celerp.models.ai import AIJobStep
+        if key in self._pk:
+            await _set_step(session, self._pk[key], state=state)
+            return self._pk[key]
+        identity = identity or {}
+        step = AIJobStep(job_id=self.job_id, seq=self._seq, key=key, state=state,
+                         operation_id=self.question_id if key.startswith("model:") else None,
+                         step_id=identity.get("step_id") or identity.get("operation_id"))
+        session.add(step)
+        await session.flush()
+        self._seq += 1
+        self._pk[key] = step.id
+        return step.id
+
+    async def sending(self, key: str, identity: dict, nbytes: int) -> None:
+        from celerp.ai import usage
+        async with SessionLocal() as session:
+            await self._step(session, key, "running", identity)
+            await usage.record_usage(session, company_id=self.company_id, user_id=self.user_id,
+                                     operation_id=self.question_id, send_bytes=nbytes)
+            await session.commit()
+
+    async def ended(self, key: str, state: str, result: dict | None = None) -> None:
+        await super().ended(key, state, result)
+        if state != "done" and key not in self._pk:
+            return      # never sent: nothing to record
+        async with SessionLocal() as session:
+            pk = await self._step(session, key, state)
+            await _set_step(session, pk, state=state, result=result, credits=(result or {}).get("credits") or None)
+            await session.commit()
+
+    def close(self) -> None:
+        if self._promoter is not None:
+            self._promoter.cancel()
+        _waiting.pop(self.job_id, None)
+
+
+def waiting_for(job_id: uuid.UUID) -> str | None:
+    """What a running question waits for at the gate (``documents`` or ``questions``), or None."""
+    return _waiting.get(job_id)
+
+
+async def promote(job_id: uuid.UUID) -> None:
+    """Move a question to background mode: it resumes after a restart, its steps are
+    resent on their own, and it leaves a notification when it ends."""
+    from celerp.models.ai import AIBatchJob
+    _background.add(job_id)
+    async with SessionLocal() as session:
+        await session.execute(
+            update(AIBatchJob).where(AIBatchJob.id == job_id, AIBatchJob.promoted_at.is_(None))
+            .values(mode="background", promoted_at=datetime.now(timezone.utc)))
+        await session.commit()
+
+
+def question_job(*, job_id: uuid.UUID, company_id: uuid.UUID, user_id: uuid.UUID, query: str,
+                 file_ids: list[str] | None = None, conversation_id: uuid.UUID | None = None):
+    """A new question job; the caller adds it to its session, commits, then starts it.
+    A thread question's job takes the question's id, which its first model step is
+    sent under; a question asked outside a thread proposes no changes."""
+    from celerp.models.ai import AIBatchJob
+    return AIBatchJob(id=job_id, company_id=company_id, user_id=user_id, conversation_id=conversation_id,
+                      question_id=job_id if conversation_id else None, kind="question", mode="interactive",
+                      status="pending", query=query, file_ids=list(file_ids or []))
+
+
+def reopen_question(job) -> None:
+    """Ask a question again under its id: its ended steps are kept, so the run is
+    answered from them, and any other step is sent again under its own identity."""
+    job.status, job.results, job.error, job.completed_at = "pending", None, None, None
+
+
+async def _run_question(job_id: uuid.UUID) -> None:
+    from celerp.ai import service
+    from celerp.ai.conversations import build_history_context, get_messages
+    from celerp.ai.memory import get_memory
+    from celerp.main import app
+    from celerp.models.ai import AIBatchJob, AIJobStep, AIMessage
+    from celerp.services.permissions import read_authority
+    async with SessionLocal() as session:
+        job = await session.get(AIBatchJob, job_id)
+        if job is None or job.status in TERMINAL_JOBS:
+            return
+        steps = (await session.execute(
+            select(AIJobStep).where(AIJobStep.job_id == job_id).order_by(AIJobStep.seq))).scalars().all()
+        role, company_settings = await read_authority(session, job.company_id, job.user_id)
+        history: list[dict] = []
+        if job.conversation_id is not None:
+            asked = await session.get(AIMessage, job.question_id)
+            prior = await get_messages(session, job.conversation_id)
+            history = build_history_context([m for m in prior if m.created_at < asked.created_at])
+        ask = dict(query=job.query, company_id=job.company_id, user_id=job.user_id, company_settings=company_settings,
+                   role=role or "", memory=await get_memory(session, job.company_id), file_ids=job.file_ids or None,
+                   history=history, read_only=job.conversation_id is None)
+        if job.mode == "background":
+            _background.add(job_id)
+        job.status = "running"
+        job.started_at = job.started_at or datetime.now(timezone.utc)
+        journal = _JobJournal(job_id, job.company_id, job.user_id, steps)
+        await session.commit()
+    _held_operations.add(job_id)
+    try:
+        refusal = None
+        try:
+            result = await service.run_agent(app=app, authorization=_authorization.get(job_id, ""),
+                                             operation_id=job_id, journal=journal, **ask)
+        except service.AgentRefusal as exc:
+            result, refusal = None, exc
+        await _finish_question(job_id, result, refusal)
+    finally:
+        journal.close()
+        _held_operations.discard(job_id)
+
+
+async def _finish_question(job_id: uuid.UUID, result, refusal) -> None:
+    """Store how the question ended, before its task leaves the registry: in its
+    thread, the answer, the failure or the refusal as the assistant message; for a
+    question outside a thread, on the job. Then a promoted question notifies."""
+    from dataclasses import asdict
+
+    from celerp.ai import usage
+    from celerp.ai.conversations import add_message, failure_record, help_record, record_credits
+    from celerp.models.ai import AIBatchJob, AIMessage
+    ended = refusal or result
+    async with SessionLocal() as session:
+        job = await session.get(AIBatchJob, job_id)
+        if job.conversation_id is not None:
+            asked = await session.get(AIMessage, job.question_id)
+            await record_credits(session, asked, ended.credits, known=ended.charge_known,
+                                 company_id=job.company_id, user_id=job.user_id)
+            if refusal is not None:
+                detail = refusal.detail if isinstance(refusal.detail, dict) else {"message": str(refusal.detail)}
+                msg = await add_message(session, job.conversation_id, "assistant", str(detail.get("message") or ""),
+                                        tools_called=[failure_record(detail.get("code"), status=refusal.status_code,
+                                                                     refusal=detail)])
+            else:
+                if result.error:
+                    tools_called = [*result.tools_called, failure_record(result.error_code)]
+                else:
+                    tools_called = [*result.tools_called, *[asdict(p) for p in result.pending_actions],
+                                    *help_record(result.help_pages)]
+                msg = await add_message(session, job.conversation_id, "assistant", result.error or result.answer,
+                                        model_used=result.model_used, tools_called=tools_called)
+            job.results = {"message_id": str(msg.id)}
+        else:
+            await usage.record_usage(session, company_id=job.company_id, user_id=job.user_id, operation_id=job_id,
+                                     credits=ended.credits, known=ended.charge_known)
+            if refusal is not None:
+                job.results = {"refusal": {"status": refusal.status_code, "detail": refusal.detail,
+                                           "headers": dict(refusal.headers or {})}}
+            else:
+                job.results = {"answer": result.answer, "model_used": result.model_used,
+                               "tools_called": result.tools_called, "help_pages": result.help_pages,
+                               "error": result.error, "error_code": result.error_code}
+        failed = refusal is not None or bool(result.error)
+        job.status = "failed" if failed else "completed"
+        job.completed_at = datetime.now(timezone.utc)
+        promoted = job.promoted_at is not None
+        company_id, user_id, conversation_id = job.company_id, job.user_id, job.conversation_id
+        await session.commit()
+    _authorization.pop(job_id, None)
+    _background.discard(job_id)
+    if promoted:
+        key = "ai.question_failed_title" if failed else "ai.question_answered_title"
+        await notify(company_id, user_id, conversation_id, t(key), t("ai.question_done_body"))
+
+
+async def wait_for_job(job_id: uuid.UUID, *, started: float) -> bool:
+    """Wait for the job until ``deadlines.SYNC_WAIT_S`` after ``started`` (a monotonic
+    instant: the request's start, so time queued at the gate counts). True when it
+    ended; otherwise it is promoted, as the caller is told it keeps running."""
+    while is_held(job_id):
+        left = deadlines.SYNC_WAIT_S - (time.monotonic() - started)
+        if left <= 0:
+            await promote(job_id)
+            return False
+        await asyncio.wait({_tasks[job_id]}, timeout=left)
+    return True
+
+
+async def ask(*, company_id: uuid.UUID, user_id: uuid.UUID, query: str, file_ids: list[str] | None = None,
+              job_id: uuid.UUID | None = None, authorization: str | None = None, started: float) -> dict:
+    """A question from a synchronous caller, outside any thread: its result within
+    ``deadlines.SYNC_WAIT_S`` of ``started``, or ``{"status": "running", "job_id"}``.
+    The same ``job_id`` asks it again: a finished answer is returned as it is."""
+    from fastapi import HTTPException
+
+    from celerp.models.ai import AIBatchJob
+    job_id = job_id or uuid.uuid4()
+    async with SessionLocal() as session:
+        job = await session.get(AIBatchJob, job_id)
+        if job is None:
+            session.add(question_job(job_id=job_id, company_id=company_id, user_id=user_id, query=query,
+                                     file_ids=file_ids))
+        elif (job.company_id, job.user_id, job.kind, job.conversation_id, job.query) != (
+                company_id, user_id, "question", None, query):
+            raise HTTPException(status_code=409, detail={"code": "operation_conflict",
+                                                         "message": t("ai.err_operation_conflict")})
+        elif job.status == "failed" and not is_held(job_id):
+            reopen_question(job)
+        await session.commit()
+    if job is None or job.status not in TERMINAL_JOBS:
+        start_job(job_id, authorization=authorization)
+        await wait_for_job(job_id, started=started)
+    return await question_result(job_id, company_id)
+
+
+async def question_result(job_id: uuid.UUID, company_id: uuid.UUID) -> dict | None:
+    """Where a question asked outside a thread stands: ``running``, ``interrupted``
+    (a restart ended it before it was promoted; asking again under its id resumes it),
+    or ended (``completed`` or ``failed``) with what it returned. None for another
+    company's job or no job."""
+    from celerp.models.ai import AIBatchJob
+    held = is_held(job_id)
+    async with SessionLocal() as session:
+        row = (await session.execute(
+            select(AIBatchJob.status, AIBatchJob.results, AIBatchJob.company_id, AIBatchJob.kind)
+            .where(AIBatchJob.id == job_id))).one_or_none()
+    if row is None or row.company_id != company_id or row.kind != "question":
+        return None
+    if row.status in TERMINAL_JOBS:
+        return {"status": row.status, "job_id": str(job_id), **(row.results or {})}
+    return {"status": "running" if held or job_id in _background else "interrupted", "job_id": str(job_id)}
+
+
+async def stored_question_state(session, conversation_id: uuid.UUID, question_id: uuid.UUID) -> dict | None:
+    """A thread question's state as stored: ``answered`` or ``failed`` with its
+    assistant message once its job ended, else ``interrupted`` (no task holds it,
+    which only a restart causes). Read after the registry (``is_held``): a job commits
+    its message before it leaves the registry, so a held question is never read as
+    interrupted. None when the conversation has no such question job."""
+    from celerp.ai.conversations import message_failure
+    from celerp.models.ai import AIBatchJob, AIMessage
+    row = (await session.execute(
+        select(AIBatchJob.status, AIBatchJob.results, AIBatchJob.promoted_at, AIBatchJob.conversation_id,
+               AIBatchJob.kind).where(AIBatchJob.id == question_id))).one_or_none()
+    if row is None or row.conversation_id != conversation_id or row.kind != "question":
+        return None
+    out = {"state": "interrupted", "promoted": row.promoted_at is not None, "message": None}
+    if row.status in TERMINAL_JOBS:
+        msg = await session.get(AIMessage, uuid.UUID(row.results["message_id"]))
+        out.update(state="failed" if message_failure(msg.tools_called) else "answered", message=msg)
+    return out
 
 
 # ── What a job shows ──────────────────────────────────────────────────────────

@@ -36,6 +36,11 @@ FLOOR_UPLOAD_BYTES_PER_S = 250_000
 UI_REQUEST_S = 10.0
 # One tool call of the agent.
 TOOL_STEP_S = 30.0
+# A step whose first send the service still runs is sent again after its retry_after,
+# never later than this.
+IN_PROGRESS_POLL_S = 10.0
+# The pause before a background step the service refused as busy is sent again.
+RESEND_DELAY_S = 1.0
 # A question still running this long after its first model step took a gate slot
 # keeps working in the background.
 PROMOTE_AFTER_S = 120.0

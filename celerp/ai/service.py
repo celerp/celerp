@@ -3,12 +3,11 @@
 
 """AI service - query orchestration.
 
-Two entry points:
-  - run_query: a legacy stateless text/file completion with company memory, no ERP tools.
-  - run_agent: the tool-calling agent loop. It compiles the live FastAPI app
-    into model tools, reads data by re-entering the app with the user's bearer
-    token, and turns any proposed write into a pending action the user must
-    confirm.
+run_agent is the tool-calling agent loop, run as a question job (celerp.ai.jobs). It
+compiles the live FastAPI app into model tools, reads data by re-entering the app
+with the user's bearer token, and turns any proposed write into a pending action the
+user must confirm. Each model turn and tool call is a step of the job's journal, so a
+question run again is answered from the steps that already ended.
 
 The service never touches quota or gateway directly - that lives in the router.
 """
@@ -16,7 +15,6 @@ The service never touches quota or gateway directly - that lives in the router.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import logging
 import time
@@ -30,7 +28,6 @@ from fastapi import HTTPException
 from celerp.ai import jobs
 from celerp.ai.files import load_file_for_llm
 from celerp.ai.llm import ModelResult, RelayError, _build_user_content, complete
-from celerp.ai.models import select_model
 from celerp.ai.tools import (
     AGENT_RESULT_MAX_BYTES,
     _agent_error,
@@ -53,8 +50,6 @@ MAX_RESULT_BYTES = AGENT_RESULT_MAX_BYTES  # per tool call result
 # Text one model call may carry: messages without their file parts, plus the
 # tool definitions, as JSON. Kept under the AI service's request size limit.
 REQUEST_TEXT_BUDGET = 240 * 1024
-MAX_IN_PROGRESS_WAIT_S = 10.0   # longest single wait for a first attempt still running
-AGENT_RUN_TIMEOUT_S = 120.0     # whole run; wider than one model call
 PENDING_ACTION_TTL_S = 15 * 60  # interactive proposals
 PROPOSAL_TTL_S = 24 * 60 * 60   # proposals built from an extraction job
 
@@ -63,16 +58,6 @@ _EMPTY_ANSWER = "I could not find an answer to that. Please try rephrasing your 
 
 
 # -- Response types ---------------------------------------------------------
-
-@dataclass
-class AIResponse:
-    answer: str
-    model_used: str
-    tools_called: list[str]
-    error: str | None = None
-    credits: int = 0             # relay credits the question was charged
-    charge_known: bool = False   # the service named the question's whole charge
-
 
 @dataclass
 class PendingAction:
@@ -294,60 +279,6 @@ def _load_files(file_ids: list[str] | None, company_id: uuid.UUID, user_id: uuid
     return files
 
 
-# -- Text-only query --------------------------------------------------------
-
-async def run_query(
-    query: str,
-    session,
-    company_id: uuid.UUID,
-    file_ids: list[str] | None = None,
-    history: list[dict[str, str]] | None = None,
-    user_id: uuid.UUID | None = None,
-    *,
-    operation_id: uuid.UUID,
-) -> AIResponse:
-    """Run a text-only AI completion. Returns AIResponse - raises only the relay refusals llm.complete raises.
-
-    Serves legacy/module callers such as celerp.modules.api.ai_query: company
-    memory plus any uploaded files, no ERP tools. The HTTP /ai/query route uses
-    ``run_agent(..., read_only=True)`` for canonical ERP grounding.
-    ``operation_id`` names the question; see ask_unattended.
-    """
-    from celerp.ai.memory import get_memory
-
-    t0 = time.monotonic()
-    file_count = len(file_ids) if file_ids else 0
-    model = select_model(query, file_count=file_count, is_batch=file_count > 1)
-
-    memory = await get_memory(session, company_id)
-    user_message = f"<user_query>\n{query}\n</user_query>"
-
-    tally = RunTally()
-    try:
-        files = _load_files(file_ids, company_id, user_id)
-        reply = await asyncio.wait_for(
-            ask_unattended(
-                _SYSTEM_PROMPT + _memory_block(memory), user_message,
-                operation_id=operation_id, tally=tally, files=files, history=history,
-            ),
-            timeout=AGENT_RUN_TIMEOUT_S,
-        )
-        result = AIResponse(
-            answer=reply.message.get("content") or "", model_used=model, tools_called=[],
-            credits=tally.credits, charge_known=tally.known,
-        )
-    except HTTPException:
-        raise
-    except Exception as exc:
-        log.error("AI query failed: %s", exc)
-        result = AIResponse(
-            answer="", model_used=model, tools_called=[], error=_user_error(exc), credits=tally.credits,
-            charge_known=tally.known,
-        )
-    _log_query(company_id, user_id, model, [], file_count, t0, result.error)
-    return result
-
-
 # -- Agent loop -------------------------------------------------------------
 
 def _allowed_sections(capability: dict) -> list[str]:
@@ -404,31 +335,31 @@ async def run_agent(
     file_ids: list[str] | None,
     history: list[dict],
     operation_id: uuid.UUID,
+    journal: jobs.Journal,
     read_only: bool = False,
 ) -> AgentResult:
     """Run the tool-calling agent loop. Returns AgentResult - raises AgentRefusal for the relay refusals llm.complete raises.
 
     ``operation_id`` names the question: asking the same question again under the
-    same id after a failure is charged at most once.
+    same id after a failure is charged at most once. ``journal`` holds what the
+    question's steps returned; each step is bounded on its own, the run as a whole is
+    not. Without an ``authorization`` no tools are offered.
     """
     t0 = time.monotonic()
     tally = RunTally()
     try:
-        result = await asyncio.wait_for(
-            _agent_loop(
-                app=app, authorization=authorization, query=query,
-                company_id=company_id, company_settings=company_settings, role=role,
-                user_id=user_id, memory=memory, file_ids=file_ids, history=history,
-                operation_id=operation_id, read_only=read_only, tally=tally,
-            ),
-            timeout=AGENT_RUN_TIMEOUT_S,
+        result = await _agent_loop(
+            app=app, authorization=authorization, query=query,
+            company_id=company_id, company_settings=company_settings, role=role,
+            user_id=user_id, memory=memory, file_ids=file_ids, history=history,
+            read_only=read_only, tally=tally, journal=journal,
         )
         _log_query(company_id, user_id, result.model_used, result.tools_called, len(file_ids or []), t0, result.error)
         return result
     except HTTPException as exc:
         raise AgentRefusal(exc, tally) from exc
     except Exception as exc:
-        if not isinstance(exc, (asyncio.TimeoutError, _SessionExpired)):
+        if not isinstance(exc, _SessionExpired):
             log.error("AI agent run failed: %s", exc)
         result = tally.result(
             answer="", model_used="", tools_called=[], pending_actions=[],
@@ -450,11 +381,11 @@ async def _agent_loop(
     memory: dict,
     file_ids: list[str] | None,
     history: list[dict],
-    operation_id: uuid.UUID,
     read_only: bool = False,
     tally: RunTally,
+    journal: jobs.Journal,
 ) -> AgentResult:
-    capabilities = compile_agent_capabilities(app, company_settings, role)
+    capabilities = compile_agent_capabilities(app, company_settings, role) if authorization else {}
     if read_only:
         capabilities = {
             name: capability for name, capability in capabilities.items()
@@ -490,10 +421,8 @@ async def _agent_loop(
                 pending_actions=[], error=_TOO_MUCH_DATA_TEXT, error_code="too_much_data",
             )
         try:
-            result = await _model_turn(
-                messages, tools, reservation_id=reservation_id,
-                operation_id=operation_id if turn == 0 else None, tally=tally,
-            )
+            result = await _model_turn(messages, tools, turn=turn, journal=journal,
+                                       reservation_id=reservation_id, tally=tally)
         except HTTPException as exc:
             if turn and exc.status_code == 413:
                 # The question itself was accepted; the data read for it outgrew a model call.
@@ -502,9 +431,9 @@ async def _agent_loop(
                     pending_actions=[], error=_TOO_MUCH_DATA_TEXT, error_code="too_much_data",
                 )
             raise
-        reservation_id = result.reservation_id
-        model_used = result.model_used or model_used
-        message = result.message
+        reservation_id = result["reservation_id"]
+        model_used = result["model_used"] or model_used
+        message = result["message"]
         content = message.get("content") or ""
         calls = message.get("tool_calls") or []
 
@@ -569,10 +498,10 @@ async def _agent_loop(
                     "from this turn, then propose the change again.",
                 )
             else:
-                tool_result = await execute_agent_capability(
+                tool_result = await _tool_step(journal, call_id, lambda: execute_agent_capability(
                     app, authorization, capability, arguments, call_id,
                     result_max_bytes=MAX_RESULT_BYTES,
-                )
+                ))
                 tools_called.append(name)
                 _cite(tally, name, arguments, tool_result)
                 if tool_result.get("status") == 401:
@@ -601,69 +530,58 @@ async def _agent_loop(
     )
 
 
-def _model_slot():
-    """The caller's gate slot when it holds one (a reading job), else an interactive one."""
-    return contextlib.nullcontext() if jobs.holding_slot() else jobs.gate.slot("interactive")
-
-
 async def _model_turn(
     messages: list[dict],
     tools: list[dict] | None,
     *,
+    turn: int,
+    journal: jobs.Journal,
     reservation_id: str | None,
-    operation_id: uuid.UUID | None,
     tally: RunTally,
-    **request,
-):
-    """One model call; ``request`` carries any further fields of the call. Every
-    charge it reports is added to ``tally`` before anything else happens,
-    including the charge of a call whose answer was lost. A first attempt that is still running is waited for and asked again under the
-    same id; the run's own time limit bounds the waiting."""
-    while True:
+) -> dict:
+    """Model turn ``turn``: what the journal holds for it, or one model call sent
+    under the turn's identity inside an ``interactive`` gate slot and journaled.
+    Every charge it reports is added to ``tally`` before anything else happens,
+    including the charge of a call whose answer was lost."""
+    key = f"model:{turn}"
+    stored = journal.stored(key)
+    if stored is None:
+        identity = journal.identity(turn)
+        await journal.admit()
+
+        async def _call() -> ModelResult:
+            return await complete(messages, tools=tools, reservation_id=reservation_id,
+                                  before_send=lambda nbytes: journal.sending(key, identity, nbytes), **identity)
         try:
-            async with _model_slot():
-                result = await complete(
-                    messages, tools=tools, reservation_id=reservation_id, operation_id=operation_id, **request,
-                )
+            async with jobs.gate.slot("interactive", on_wait=journal.on_wait):
+                result = await jobs.send_step(_call, resend=journal.background,
+                                              on_refusal=lambda exc: tally.charge(exc.credits, exc.operation_credits))
         except RelayError as exc:
-            tally.charge(exc.credits, exc.operation_credits)
-            if exc.code != "operation_in_progress":
-                raise
-            await asyncio.sleep(min(exc.retry_after or 1.0, MAX_IN_PROGRESS_WAIT_S))
-            continue
-        tally.charge(int((result.usage or {}).get("credits") or 0), result.operation_credits)
-        return result
-
-
-
-
-async def ask_unattended(
-    system: str,
-    user_text: str,
-    *,
-    operation_id: uuid.UUID,
-    tally: RunTally,
-    files: list[dict] | None = None,
-    history: list[dict[str, str]] | None = None,
-) -> ModelResult:
-    """One text question with nobody to press Ask again: a module's query, or one
-    file of a reading job. It is sent under ``operation_id``, as a conversation
-    question's first turn is, and an answer that timed out is asked again once under
-    that id, which returns the answer the service kept without charging twice. An
-    unknown outcome is not asked again: the service reports it again for that id.
-    Charges are added to ``tally``."""
-    messages: list[dict] = [{"role": "system", "content": system}, *(history or []),
-                            {"role": "user", "content": _build_user_content(user_text, files)}]
-    file_count = len(files) if files else 0
-    hints = {"query": user_text[:500], "file_count": file_count, "is_batch": file_count > 1}
-    turn = dict(reservation_id=None, operation_id=operation_id, tally=tally, hints=hints)
-    try:
-        return await _model_turn(messages, None, **turn)
-    except (RelayError, asyncio.TimeoutError, httpx.TimeoutException) as exc:
-        if _error_code(exc) != "timeout":
+            await journal.ended(key, _STEP_STATES.get(exc.code, "failed"))
             raise
-        log.info("AI answer timed out; asking again under operation %s", operation_id)
-        return await _model_turn(messages, None, **turn)
+        except Exception:
+            await journal.ended(key, "failed")
+            raise
+        stored = {"message": result.message, "reservation_id": result.reservation_id,
+                  "model_used": result.model_used, "credits": int((result.usage or {}).get("credits") or 0),
+                  "operation_credits": result.operation_credits}
+        await journal.ended(key, "done", stored)
+    tally.charge(stored["credits"], stored["operation_credits"])
+    return stored
+
+
+# How a model step ends when the service refuses it without an answer.
+_STEP_STATES = {"outcome_unknown": "unknown", "operation_expired": "expired"}
+
+
+async def _tool_step(journal: jobs.Journal, call_id: str, run) -> dict:
+    """One read tool call: what the journal holds for it, or its result, journaled."""
+    key = f"tool:{call_id}"
+    stored = journal.stored(key)
+    if stored is None:
+        stored = await run()
+        await journal.ended(key, "done", stored)
+    return stored
 
 
 def _cite(tally: RunTally, name: str, arguments: dict, tool_result: dict) -> None:
