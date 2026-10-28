@@ -1831,6 +1831,11 @@ async def get_extended_journal(token: str, params: dict | None = None) -> dict:
         return _raise(await c.get("/accounting/extended-journal", params=params or {})).json()
 
 
+async def get_doc_gl_impact(token: str, doc_id: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.get(f"/accounting/journal/by-doc/{doc_id}")).json()
+
+
 async def get_general_ledger(token: str, params: dict | None = None) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.get("/accounting/general-ledger", params=params or {})).json()

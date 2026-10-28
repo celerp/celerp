@@ -4235,6 +4235,23 @@ celerpUpdateBulkAlloc();
             return files_error(error_message(e), e.status)
         return _doc_files_section("doc", entity_id, _enrich_doc_files(doc))
 
+    @app.get("/docs/{entity_id}/gl-impact")
+    async def doc_gl_impact(request: Request, entity_id: str):
+        from starlette.responses import Response as _R
+        token = _token(request)
+        if not token:
+            return _R("", status_code=401)
+        try:
+            company = await api.get_company(token)
+            if not role_has_permission(company.get("settings") or {}, _get_role(request), "view_financial_reports"):
+                return _R("", status_code=403)
+            data = await api.get_doc_gl_impact(token, entity_id)
+        except APIError:
+            # The books are not available to this document (accounting off, or the
+            # document is gone): show nothing rather than a section that errors.
+            return Div(id=_gl_impact_dom_id(entity_id))
+        return _doc_gl_impact_section(data, entity_id, data.get("currency"))
+
     @app.get("/docs/{entity_id}/history")
     async def doc_history_paginated(request: Request, entity_id: str):
         from starlette.responses import Response as _R
@@ -10704,6 +10721,12 @@ async function celerpCsvImport(input, entityId) {{
             _doc_files_section("doc", entity_id, _enrich_doc_files(doc)),
             cls="doc-internal",
         ),
+        # --- GL Impact section (accounting permission only) ---
+        (Div(id=_gl_impact_dom_id(entity_id),
+             hx_get=f"/docs/{entity_id}/gl-impact",
+             hx_trigger="load",
+             hx_swap="outerHTML")
+         if role_has_permission(settings or {}, role, "view_financial_reports") and doc.get("doc_type") != "list" else ""),
         # --- History / Activity section ---
         Div(id=f"doc-history-{entity_id.replace(':', '-').replace('/', '-')}",
             hx_get=f"/docs/{entity_id}/history?page=1",
@@ -10711,6 +10734,53 @@ async function celerpCsvImport(input, entityId) {{
             hx_swap="outerHTML"),
         cls="doc-detail doc-detail--gc",
     )
+
+
+def _gl_impact_dom_id(entity_id: str) -> str:
+    return "doc-gl-impact-" + entity_id.replace(":", "-").replace("/", "-")
+
+
+# Drafts of these post when they are issued; a draft of anything else (a quotation, a
+# list) never reaches the books, so it gets the plain "does not affect" message.
+_POSTING_DOC_TYPES = ("invoice", "credit_note", "debit_note", "bill")
+
+
+def _doc_gl_impact_section(data: dict, entity_id: str, currency: str | None) -> FT:
+    """The journal entries a document posted, as the books hold them: one table per
+    entry, so each balances on its own and links back to the journal."""
+    entries = data.get("entries") or []
+    heading = Div(H3(t("documents.gl_impact"), cls="section-title"), cls="section-header")
+    if not entries:
+        draft = str(data.get("status") or "").lower() == "draft" and data.get("doc_type") in _POSTING_DOC_TYPES
+        body = P(t("documents.gl_impact_not_posted" if draft else "documents.gl_impact_none"), cls="empty-state-msg")
+        return Div(heading, body, id=_gl_impact_dom_id(entity_id), cls="doc-section")
+    tables = []
+    for e in entries:
+        voided = e.get("status") == "void"
+        rows = []
+        for ln in e.get("lines") or []:
+            memo = e.get("memo") or ""
+            if ln.get("item"):
+                memo = f"{ln['item']} x {ln.get('quantity')}" if ln.get("quantity") is not None else str(ln["item"])
+            rows.append(Tr(
+                Td(f"{ln.get('account')} {ln.get('name') or ''}".strip()),
+                Td(fmt_money(ln["debit"], currency) if ln.get("debit") else EMPTY, cls="cell--number"),
+                Td(fmt_money(ln["credit"], currency) if ln.get("credit") else EMPTY, cls="cell--number"),
+                Td(ln.get("party_name") or ln.get("party_id") or EMPTY),
+                Td(memo or EMPTY),
+            ))
+        link = A(e.get("je_id") or "", href="/accounting?q=" + quote_plus(str((e.get("source_doc") or {}).get("doc_ref") or e.get("je_id") or "")),
+                 cls="table-link")
+        tables.append(Div(
+            Div(link, Span(f" {e.get('ts') or ''}"),
+                Span(f" {t('documents.gl_impact_void')}", cls="badge") if voided else "", cls="gl-impact-entry"),
+            Table(
+                Thead(Tr(Th(t("documents.gl_impact_account")), Th(t("documents.gl_impact_debit"), cls="cell--number"),
+                         Th(t("documents.gl_impact_credit"), cls="cell--number"), Th(t("documents.gl_impact_party")),
+                         Th(t("documents.gl_impact_memo")))),
+                Tbody(*rows), cls="data-table"),
+            cls="gl-impact-block"))
+    return Div(heading, *tables, id=_gl_impact_dom_id(entity_id), cls="doc-section")
 
 
 def _doc_history_section(ledger: list[dict]) -> FT:
