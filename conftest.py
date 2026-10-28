@@ -891,6 +891,29 @@ async def client(session: AsyncSession):
     # shared connection routes every lifecycle session (each a fresh session that
     # closes on exit) into this transaction: it sees the seeded data and its commits
     # stay inside the rolled-back outer transaction.
+    async def _request_scoped(scope, receive, send):
+        # Production gives each request a session of its own, closed at the end, so a
+        # request never joins its caller's transaction and holds nothing once it ends.
+        # Requests here share the test's session, so each one gets a transaction of its
+        # own: what the test wrote first is committed, as a production client's data
+        # would be, and the request's transaction ends with it. It ends by commit (a
+        # savepoint release in the test's outer transaction): a rollback would also undo
+        # the work of lifecycle sessions nested inside it on this one connection, which
+        # production commits on connections of their own.
+        await _end_transaction()
+        try:
+            await app(scope, receive, send)
+        finally:
+            await _end_transaction()
+
+    async def _end_transaction():
+        if not session.in_transaction():
+            return
+        try:
+            await session.commit()
+        except Exception:
+            await session.rollback()
+
     lifecycle_factory = async_sessionmaker(
         bind=await session.connection(), class_=AsyncSession,
         expire_on_commit=False, join_transaction_mode="create_savepoint")
@@ -899,7 +922,7 @@ async def client(session: AsyncSession):
          patch("celerp.gateway.state.get_session_token", return_value="test-session-token"), \
          patch("celerp.middleware.get_session_ctx", _shared_session_ctx), \
          patch("celerp.db.LifecycleSessionLocal", lifecycle_factory):
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        async with AsyncClient(transport=ASGITransport(app=_request_scoped), base_url="http://test") as c:
             yield c
         # Work a request left running (an email send and its receipt) finishes on this
         # test's loop: cut off by the loop closing, it would leave its connection open.
