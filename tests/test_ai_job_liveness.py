@@ -308,6 +308,36 @@ async def test_a_conversation_with_open_work_stays_listed_and_is_deleted_only_on
         assert r.json()["detail"]["code"] == "conversation_busy"
 
 
+@pytest.mark.parametrize("status,held,answers", [
+    ("running", True, {"cancel": 202, "resume": 409, "retry-failed": 409}),
+    ("completed", False, {"cancel": 409, "resume": 409}),
+])
+async def test_continue_never_reopens_a_job_a_runner_holds_and_stop_never_acts_on_an_ended_one(
+        client, owner, cloud, session, status, held, answers):
+    """A job another process runs takes a Stop (its runner ends it at the next step)
+    but is never reopened under it; a job that ended takes neither."""
+    from celerp.models.ai import AIJobStep
+    token, company_id, user_id = owner
+    job = AIBatchJob(company_id=company_id, user_id=user_id, status=status, query="read", file_ids=["f1", "f2"])
+    if held:
+        job.runner_id, job.lease_until = "elsewhere", datetime.now(timezone.utc) + timedelta(minutes=5)
+    session.add(job)
+    await session.flush()
+    session.add_all([AIJobStep(job_id=job.id, seq=0, key="f1", operation_id=uuid.uuid4(),
+                               state="pending" if held else "done"),
+                     AIJobStep(job_id=job.id, seq=1, key="f2", operation_id=uuid.uuid4(), state="failed")])
+    await session.commit()
+    for action, code in answers.items():
+        await session.commit()      # a refused action rolls back the request's shared session
+        r = await client.post(f"/ai/jobs/{job.id}/{action}", headers=AUTH(token))
+        assert r.status_code == code, (action, r.text)
+        if code == 409:
+            assert r.json()["detail"]["code"] == "job_not_open"
+    row = (await session.execute(select(AIBatchJob).where(AIBatchJob.id == job.id)
+                                 .execution_options(populate_existing=True))).scalar_one()
+    assert (row.status, row.runner_id) == (status, job.runner_id)
+
+
 # ── Guard: nothing outside the job module reads liveness from the status column ──
 
 def _scanned() -> list[pathlib.Path]:
