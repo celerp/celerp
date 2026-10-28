@@ -524,12 +524,14 @@ _ROOT = str(Path(__file__).resolve().parent.parent)
 
 
 def _site() -> str:
-    """The innermost application frame (file:line function) that sent the statement."""
+    """The innermost application frame (file:line function) that sent the statement; test
+    files and conftest.py wrappers (the shared session's turn taking) are never the site."""
     frame = sys._getframe(2)
     while frame is not None:
         path = frame.f_code.co_filename
+        name = path.rsplit("/", 1)[-1]
         if path.startswith(_ROOT) and "/.venv/" not in path and not path.endswith("lock_rank.py") \
-                and "/tests/" not in path and "/test_" not in path.rsplit("/", 1)[-1][:5]:
+                and "/tests/" not in path and not name.startswith("test_") and name != "conftest.py":
             return f"{os.path.relpath(path, _ROOT)}:{frame.f_lineno} {frame.f_code.co_name}"
         frame = frame.f_back
     frame = sys._getframe(2)

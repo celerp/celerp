@@ -362,3 +362,16 @@ def test_the_offline_check_passes_an_ungated_multi_row_taker_that_conflicts_with
         recorder.statement(2, _PROJECTION.replace("FOR UPDATE", strength), ("c1", entity), 0.0)
     (tmp_path / "lock-graph-gw0.json").write_text(json.dumps(recorder.dump()))
     assert ("- row:projections:" in lock_rank.check(tmp_path)) is listed
+
+
+def test_a_statement_sent_through_a_conftest_wrapper_is_sited_at_its_caller():
+    """The suite's shared session wraps every operation in a conftest.py; the site is the
+    application frame that called it, or every lock would carry the wrapper's line."""
+    def compiled(path: str, source: str, name: str):
+        namespace = {"site": lock_rank._site}
+        exec(compile(source, f"{lock_rank._ROOT}/{path}", "exec"), namespace)
+        return namespace[name]
+    probe = compiled(".venv/lib/driver.py", "def probe():\n    return site()\n", "probe")
+    wrapper = compiled("conftest.py", "def call(f):\n    return f()\n", "call")
+    caller = compiled("celerp/x.py", "def caller(call, probe):\n    return call(probe)\n", "caller")
+    assert caller(wrapper, probe) == "celerp/x.py:2 caller"
