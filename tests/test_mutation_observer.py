@@ -405,6 +405,21 @@ async def test_a_session_token_written_outside_issuance_is_reported(session, aut
     assert _kinds() == ["unprotected"]
 
 
+@pytest.mark.parametrize("created", ["in this transaction", "earlier in this request", "before this request"])
+async def test_a_company_is_written_unlocked_only_inside_the_transaction_that_creates_it(session, auth, created):
+    cid = uuid.uuid4()
+    if created == "before this request":
+        session.add(Company(id=cid, name="Made before", slug=f"made-{cid.hex[:8]}"))
+        await session.commit()
+    with serving("POST", "/observed"):
+        if created != "before this request":
+            session.add(Company(id=cid, name="Made here", slug=f"made-{cid.hex[:8]}"))
+            await (session.flush() if created == "in this transaction" else session.commit())
+        session.add(Location(company_id=cid, name="Seeded", type="warehouse"))
+        await session.commit()
+    assert _kinds() == ([] if created == "in this transaction" else ["unprotected"])
+
+
 async def test_the_previous_requests_lock_is_not_inherited_on_a_reused_session(session, auth):
     with serving("POST", "/first"):
         cid = _authorize(session, auth)

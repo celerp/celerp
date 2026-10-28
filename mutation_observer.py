@@ -9,8 +9,9 @@ completed in the same transaction while this request was served (holding the row
 judging the request's authority again) and PostgreSQL still holds that lock (the proofs
 company_lock keeps), and no narrower lock (a chart, row or other advisory lock) was taken
 before the company lock; a write named in JUDGED_WITHOUT_LOCK is protected by the
-request's authority judged again without the lock, and one named in UNDER_ROW_LOCK by its
-own row lock. Each statement is judged on the Session that ran it. A write is
+request's authority judged again without the lock, one named in UNDER_ROW_LOCK by its
+own row lock, and a write to a company this transaction created by that company being
+invisible to every other transaction until it commits. Each statement is judged on the Session that ran it. A write is
 judged when its transaction commits: a write rolled back with its savepoint or transaction
 never became durable and is dropped, as the lock proofs are.
 
@@ -150,6 +151,7 @@ _SESSIONS: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
 _LIVE: "weakref.WeakSet" = weakref.WeakSet()
 _SERVING: dict[int, dict] = {}  # the requests being served now, by id
 _WRITE, _LOCK, _FENCE, _ROW = "observed-write", "observed-lock", "observed-fence", "observed-row-lock"
+_CREATED = "observed-created"  # companies this transaction inserted: no other can see them before it commits
 
 
 @dataclass
@@ -699,11 +701,15 @@ def _executed(conn, cursor, statement, parameters, context, executemany) -> None
     targets, source = op.companies, "statement"
     if not targets and company:
         targets, source = (company,), "request"
+    if (op.table, op.detail) == ("companies", "INSERT"):
+        for created in op.companies:
+            note(session, _CREATED, created)
     row_locked = _under_row_lock(request, session, op)
     if not targets and not row_locked:
         return found("unprotected", "no company for the write", None)
     for target in targets or (None,):
-        if row_locked or _unassigned_connector(request, session, target):
+        if row_locked or target in _here(request, session, _CREATED) \
+                or _unassigned_connector(request, session, target):
             kind = None
         elif company is not None and target != company and not _holds(request, session, target):
             kind = "cross-company"
