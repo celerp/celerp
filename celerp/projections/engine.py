@@ -18,11 +18,13 @@ from celerp.inventory_codes import (
     is_barcode_unique_violation,
     is_rfid_epc_unique_violation,
 )
+from celerp.models.company import Company
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from ui.i18n import t
 from celerp.projections.handlers.system import apply_system_event
 from celerp.projections.retired import RETIRED
+from celerp.services.company_lock import lock_companies, lock_company
 
 log = logging.getLogger(__name__)
 
@@ -285,6 +287,13 @@ class ProjectionEngine:
         unknown = await ProjectionEngine.unreplayable(session, company_id)
         if unknown:
             raise UnhandledEventsError(unknown)
+        # Each company's lock before its first record: the replay takes the records one by
+        # one, in ledger order, which only the company lock keeps from meeting a writer's
+        # records in the other order.
+        if company_id is None:
+            await lock_companies(session, (await session.execute(select(Company.id))).scalars().all())
+        else:
+            await lock_company(session, company_id)
         await session.execute(delete(Projection) if company_id is None else delete(Projection).where(Projection.company_id == company_id))
         query = select(LedgerEntry).order_by(LedgerEntry.id.asc())
         if company_id:

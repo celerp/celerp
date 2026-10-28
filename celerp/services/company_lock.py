@@ -107,6 +107,13 @@ async def hold_company(session: AsyncSession, company_id) -> bool:
     return held is not None
 
 
+async def lock_companies(session: AsyncSession, company_ids) -> None:
+    """``lock_company`` for several companies, in id order, so two callers taking an
+    overlapping set meet in the same order."""
+    for company_id in sorted(set(company_ids), key=str):
+        await lock_company(session, company_id)
+
+
 async def lock_company_for_deletion(session: AsyncSession, company_id) -> bool:
     """Take the company FOR UPDATE ahead of deleting it, waiting for every holder.
     False when the company is no longer there once the lock is free.

@@ -95,6 +95,7 @@ async def move_legacy_imports(session: AsyncSession) -> dict:
     from celerp.models.share import DocShareToken
     from celerp.models.projections import Projection
     from celerp.projections.engine import ProjectionEngine
+    from celerp.services.company_lock import lock_companies
     from celerp_docs.received import ENTITY_TYPE, received_id, revision_key
 
     conn = await session.connection()
@@ -126,6 +127,8 @@ async def move_legacy_imports(session: AsyncSession) -> dict:
         )).scalars().all()
         kept.update((company_id, doc) for doc in referenced)
 
+    # Each company's lock before its first record (company_lock.lock_company).
+    await lock_companies(session, by_company)
     moved = 0
     for entry in imported:
         if (entry.company_id, entry.entity_id) in kept:
