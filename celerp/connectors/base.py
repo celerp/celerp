@@ -279,6 +279,10 @@ class ConnectorBase(ABC):
         can carry it. A connector whose first sync should start narrower overrides this."""
         return {key: flow.widest().value for key, flow in self.entity_flows.items()}
 
+    # A person reviews and starts this connector's first sync; until it completes,
+    # nothing runs on a schedule, from a webhook or from the outbound queue.
+    reviewed_first_sync: bool = False
+
     # The document state key naming the platform record an imported invoice came from.
     imported_doc_marker: str | None = None
 
@@ -340,12 +344,22 @@ class ConnectorBase(ABC):
 
     # -- Webhook lifecycle (override for e-commerce connectors) ----------------
 
-    async def register_webhooks(
-        self, ctx: ConnectorContext, webhook_url: str, secret: str | None = None,
-        *, topics: list[str], status: str = "active",
-    ) -> list[str]:
-        """Register platform webhooks for ``topics``. Returns list of webhook IDs. Override if supported."""
+    async def list_webhooks(self, ctx: ConnectorContext, webhook_url: str) -> list[dict]:
+        """Celerp's hooks on the platform delivering to `webhook_url`. Override if supported."""
         return []
+
+    async def create_webhook(self, ctx: ConnectorContext, webhook_url: str, topic: str,
+                             secret: str | None) -> dict:
+        raise NotImplementedError(f"{self.name} has no webhooks")
+
+    async def activate_webhook(self, ctx: ConnectorContext, webhook_id) -> dict:
+        raise NotImplementedError(f"{self.name} has no webhooks")
+
+    async def get_webhook(self, ctx: ConnectorContext, webhook_id) -> dict | None:
+        raise NotImplementedError(f"{self.name} has no webhooks")
+
+    async def delete_webhook(self, ctx: ConnectorContext, webhook_id) -> None:
+        raise NotImplementedError(f"{self.name} has no webhooks")
 
     async def deregister_webhooks(
         self, ctx: ConnectorContext, webhook_url: str, webhook_ids: list[str]

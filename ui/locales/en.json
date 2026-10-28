@@ -793,6 +793,7 @@
   "error.stripe_disconnect_failed": "Celerp couldn't reach Stripe to disconnect your account. Check your internet connection and try again in a few minutes.",
   "error.restore_disconnect_failed": "Celerp couldn't disconnect {names}. Check your internet connection and try again, or disconnect them from that service's own website.",
   "error.connector_not_here": "{service} isn't connected to the company you are using. Switch to the right company, or connect it in Web Access.",
+  "error.connector_sync_running_company": "A sync with {service} is running for this company. Cancel it on the Connectors page, or try again when it ends.",
   "error.connector_changed_while_disconnecting": "The connection changed while it was being disconnected. Select Try again.",
   "error.connector_disconnect_unconfirmed": "Celerp couldn't confirm that {service} was disconnected. Check your internet connection and try again.",
   "error.connector_disconnect_refused": "{service} didn't confirm the disconnect (error {status}). Try again in a few minutes.",

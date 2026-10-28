@@ -8,6 +8,7 @@ from datetime import date
 from typing import Annotated, Literal
 
 import httpx
+import sqlalchemy as sa
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
@@ -230,21 +231,6 @@ class DirectionRequest(BaseModel):
     direction: str
 
 
-async def resync_webhook_topics(connector, config, ctx) -> None:
-    """Replace the store's webhooks with the topics the connection's directions call
-    for. Before the first sync they stay paused; after it they deliver."""
-    from celerp.connectors.woocommerce import webhook_delivery_url
-
-    delivery_url = webhook_delivery_url()
-    await connector.deregister_webhooks(ctx, delivery_url, list(config.webhook_ids))
-    config.webhook_ids = []
-    config.webhook_ids = await connector.register_webhooks(
-        ctx, delivery_url, secret=config.webhook_secret,
-        topics=connector.webhook_topics(config.entity_directions),
-        status="active" if config.first_sync_at is not None else "paused",
-    )
-
-
 @open_router.post("/{connector_name}/directions")
 async def set_connector_direction(
     connector_name: str,
@@ -255,10 +241,14 @@ async def set_connector_direction(
 ) -> dict:
     """Set the direction one kind of record syncs in. A direction the connector cannot
     sync that record in is refused, naming both. A store whose webhooks follow the
-    directions has them replaced to match."""
+    directions has them marked for reconciling; the execution holding the webhooks
+    changes them, never this request."""
     from celerp import connectors
     from celerp.connectors.base import DirectionError, validate_directions
+    from celerp.connectors.execution import first_sync_state
     from celerp.connectors.ownership import ConnectorOwnershipError, lock_connector_operation
+    from celerp.connectors.webhook_reconcile import mark_webhooks_dirty
+    from celerp.models.connector_config import ConnectorConfig
 
     try:
         connector = connectors.get(connector_name)
@@ -266,6 +256,8 @@ async def set_connector_direction(
         raise HTTPException(status_code=404, detail=t("connectors.unknown_connector", platform=connector_name)) from exc
     try:
         config = await lock_connector_operation(session, company_id, connector_name, require_owner=True)
+        config = await session.scalar(sa.select(ConnectorConfig).where(
+            ConnectorConfig.id == config.id).with_for_update().execution_options(populate_existing=True))
     except ConnectorOwnershipError as exc:
         await session.rollback()
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -278,17 +270,9 @@ async def set_connector_direction(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     changed = directions != config.entity_directions
     config.entity_directions = directions
-    if changed and config.webhook_secret:
-        ctx = await _connector_context(str(company_id), connector_name, ownership_session=session)
-        if ctx is None:
-            await session.rollback()
-            raise HTTPException(status_code=409, detail=t("error.connector_not_connected", service=connector.display_name))
-        try:
-            await resync_webhook_topics(connector, config, ctx)
-        except Exception as exc:
-            await session.rollback()
-            raise HTTPException(status_code=502, detail=t(
-                "connectors.err_webhook_resync", service=connector.display_name, detail=exc)) from exc
+    if changed and config.webhook_secret and await first_sync_state(
+            session, company_id, connector_name) not in (None, "pending"):
+        await mark_webhooks_dirty(session, config)
     await session.commit()
     return {"entity_directions": directions}
 

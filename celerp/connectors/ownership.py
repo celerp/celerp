@@ -451,12 +451,15 @@ async def release_connector_ownership(
 ) -> None:
     """Release one company's connector state: its own row plus any legacy
     row with no company, so a disconnect also works while ownership is ambiguous."""
+    from celerp.connectors.execution import forget_executions, refuse_live_execution
     from celerp.connectors.outbound_queue import release_connector_queue
 
     company_id = str(company_id)
     legacy_id = ensure_instance_id()
     await lock_connector_key(session, connector, exclusive=True)
     mine = await connector_release_scope(session, company_id, connector)
+    await refuse_live_execution(session, company_id, connector)
+    await forget_executions(session, {company_id, legacy_id}, connector)
 
     for queue_owner in {company_id, legacy_id}:
         await release_connector_queue(session, queue_owner, connector)

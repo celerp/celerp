@@ -98,6 +98,7 @@ def store(committed_engine, monkeypatch):
     fake = FakeStore()
     factory = _factory(committed_engine)
     monkeypatch.setattr("celerp.db.SessionLocal", factory)
+    monkeypatch.setattr("celerp.db.LifecycleSessionLocal", factory)
 
     async def _context(company_id, *_a, **_k):
         return ConnectorContext(company_id=str(company_id), access_token="k:s", store_handle=_STORE)

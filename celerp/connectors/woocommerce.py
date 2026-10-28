@@ -173,6 +173,7 @@ def _link_matches_deleted_product(
 class WooCommerceConnector(ConnectorBase):
     name = "woocommerce"
     display_name = "WooCommerce"
+    reviewed_first_sync = True
     category = ConnectorCategory.WEBSITE
     # The store's customer list is never imported: a customer is created only as the
     # customer of an imported order.
@@ -1190,44 +1191,11 @@ class WooCommerceConnector(ConnectorBase):
                 await session.commit()
 
 
-    async def register_webhooks(
-        self, ctx: ConnectorContext, webhook_url: str, secret: str | None = None,
-        *, topics: list[str], status: str = "active",
-    ) -> list[str]:
-        """Register one WooCommerce webhook per topic, in ``status``. A failure part
-        way leaves hooks behind; callers remove them with `deregister_webhooks`, which
-        finds them by delivery address even when their ids were never returned."""
+    async def list_webhooks(self, ctx: ConnectorContext, webhook_url: str) -> list[dict]:
+        """Every hook named by Celerp on the store that delivers to `webhook_url`."""
         base_url = _base_url(ctx)
         auth = _auth(ctx)
-        ids: list[str] = []
-        async with _http_client() as client:
-            for topic in topics:
-                body = {
-                    "name": f"{_WEBHOOK_NAME_PREFIX}{topic}",
-                    "topic": topic,
-                    "delivery_url": webhook_url,
-                    "status": status,
-                }
-                if secret:
-                    body["secret"] = secret
-                resp = await client.post(f"{base_url}/webhooks", auth=auth, json=body)
-                _raise_for_status(resp)
-                webhook_id = str(resp.json().get("id") or "")
-                if not webhook_id:
-                    raise RuntimeError(f"WooCommerce did not return a webhook id for {topic}")
-                ids.append(webhook_id)
-        return ids
-
-    async def deregister_webhooks(
-        self, ctx: ConnectorContext, webhook_url: str, webhook_ids: list[str]
-    ) -> None:
-        """Delete every Celerp hook on the store: the known ids plus any hook
-        named by Celerp that delivers to `webhook_url`. Raises unless each one is
-        confirmed gone; 404 means it already was."""
-        base_url = _base_url(ctx)
-        auth = _auth(ctx)
-        targets = {str(wid) for wid in webhook_ids}
-        errors: list[str] = []
+        found: list[dict] = []
         async with _http_client() as client:
             page = 1
             while True:
@@ -1239,23 +1207,69 @@ class WooCommerceConnector(ConnectorBase):
                 hooks = resp.json()
                 if not isinstance(hooks, list):
                     raise RuntimeError("WooCommerce returned an invalid webhook list")
-                targets.update(
-                    str(hook["id"]) for hook in hooks
+                found += [
+                    hook for hook in hooks
                     if isinstance(hook, dict) and hook.get("id") is not None
                     and hook.get("delivery_url") == webhook_url
                     and str(hook.get("name") or "").startswith(_WEBHOOK_NAME_PREFIX)
-                )
+                ]
                 if len(hooks) < 100:
                     break
                 page += 1
-            for webhook_id in sorted(targets):
-                try:
-                    resp = await client.delete(
-                        f"{base_url}/webhooks/{webhook_id}", auth=auth, params={"force": "true"}
-                    )
-                    if resp.status_code not in (200, 204, 404):
-                        errors.append(f"{webhook_id}: HTTP {resp.status_code}")
-                except Exception as exc:
-                    errors.append(f"{webhook_id}: {exc}")
+        return found
+
+    async def create_webhook(
+        self, ctx: ConnectorContext, webhook_url: str, topic: str, secret: str | None,
+    ) -> dict:
+        """Create one active hook for `topic`."""
+        body = {"name": f"{_WEBHOOK_NAME_PREFIX}{topic}", "topic": topic,
+                "delivery_url": webhook_url, "status": "active"}
+        if secret:
+            body["secret"] = secret
+        async with _http_client() as client:
+            resp = await client.post(f"{_base_url(ctx)}/webhooks", auth=_auth(ctx), json=body)
+        _raise_for_status(resp)
+        hook = resp.json()
+        if not isinstance(hook, dict) or hook.get("id") is None:
+            raise RuntimeError(f"WooCommerce did not return a webhook id for {topic}")
+        return hook
+
+    async def activate_webhook(self, ctx: ConnectorContext, webhook_id) -> dict:
+        async with _http_client() as client:
+            resp = await client.put(f"{_base_url(ctx)}/webhooks/{webhook_id}", auth=_auth(ctx),
+                                    json={"status": "active"})
+        _raise_for_status(resp)
+        return resp.json()
+
+    async def get_webhook(self, ctx: ConnectorContext, webhook_id) -> dict | None:
+        async with _http_client() as client:
+            resp = await client.get(f"{_base_url(ctx)}/webhooks/{webhook_id}", auth=_auth(ctx))
+        if resp.status_code == 404:
+            return None
+        _raise_for_status(resp)
+        return resp.json()
+
+    async def delete_webhook(self, ctx: ConnectorContext, webhook_id) -> None:
+        """Delete one hook; one already gone counts as deleted."""
+        async with _http_client() as client:
+            resp = await client.delete(f"{_base_url(ctx)}/webhooks/{webhook_id}", auth=_auth(ctx),
+                                       params={"force": "true"})
+        if resp.status_code not in (200, 204, 404):
+            raise RuntimeError(f"WooCommerce webhook {webhook_id}: HTTP {resp.status_code}")
+
+    async def deregister_webhooks(
+        self, ctx: ConnectorContext, webhook_url: str, webhook_ids: list[str]
+    ) -> None:
+        """Delete every Celerp hook on the store: the known ids plus any hook
+        named by Celerp that delivers to `webhook_url`. Raises unless each one is
+        confirmed gone; 404 means it already was."""
+        targets = {str(wid) for wid in webhook_ids}
+        targets.update(str(hook["id"]) for hook in await self.list_webhooks(ctx, webhook_url))
+        errors: list[str] = []
+        for webhook_id in sorted(targets):
+            try:
+                await self.delete_webhook(ctx, webhook_id)
+            except Exception as exc:
+                errors.append(f"{webhook_id}: {exc}")
         if errors:
             raise RuntimeError("WooCommerce webhook cleanup failed: " + "; ".join(errors))

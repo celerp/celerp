@@ -9,6 +9,8 @@ from collections.abc import Awaitable, Callable
 
 import httpx
 
+from celerp.connectors.execution import before_remote_call
+
 log = logging.getLogger(__name__)
 
 _DEFAULT_MAX_RETRIES = 3
@@ -74,6 +76,7 @@ class RateLimitedClient:
         retryable = method.upper() != "POST"
         retry_status = self._GET_RETRY_STATUS if method.upper() == "GET" else self._RETRY_STATUS
         for attempt in range(self._max_retries + 1):
+            before_remote_call(method)
             if self._before_request is not None:
                 await self._before_request(url)
             try:

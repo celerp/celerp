@@ -69,6 +69,7 @@ def _headers(ctx: ConnectorContext) -> dict[str, str]:
 class ShopifyConnector(ConnectorBase):
     name = "shopify"
     display_name = "Shopify"
+    reviewed_first_sync = True
     store_scoped_ids = False  # Shopify ids are unique across all stores
     imported_doc_marker = "shopify_order_id"
     entity_flows = {

@@ -29,7 +29,10 @@ class ConnectorConfig(Base):
     started the first sync; nothing runs on a schedule, and webhooks deliver nothing,
     before it. ``orders_from`` is the earliest order date the connection imports.
     ``first_sync_undo`` records what the first sync linked and created, for its undo.
-    ``connect_lapsed_at`` is set while Celerp Connect has ended and syncing is paused."""
+    ``connect_lapsed_at`` is set while Celerp Connect has ended and syncing is paused.
+    ``webhooks_dirty`` is set while the store's webhooks may not match the directions;
+    ``webhooks_version`` changes with every change that asks for them to be reconciled,
+    so a reconcile that read an older configuration never clears the mark."""
     __tablename__ = "connector_configs"
 
     id: Mapped[int] = mapped_column(sa.Integer, primary_key=True, autoincrement=True)
@@ -47,6 +50,8 @@ class ConnectorConfig(Base):
     orders_from: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
     first_sync_undo: Mapped[dict | None] = mapped_column(sa.JSON, nullable=True)
     connect_lapsed_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
+    webhooks_dirty: Mapped[bool] = mapped_column(sa.Boolean, nullable=False, default=False)
+    webhooks_version: Mapped[int] = mapped_column(sa.BigInteger, nullable=False, default=0)
 
     __table_args__ = (
         sa.UniqueConstraint("company_id", "connector", name="uq_connector_config"),
