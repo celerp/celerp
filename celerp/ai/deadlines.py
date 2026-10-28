@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 
 import httpx
 
@@ -56,6 +57,9 @@ ACTIONS_TIMEOUT_S = 150.0
 RECONCILE_INTERVAL_S = 30.0
 # Pending usage rows asked about in one status read (the service's batch bound).
 RECONCILE_BATCH = 50
+# A pending row whose status is not terminal yet waits this long before it is asked
+# again, so a batch of such rows makes way for the next due rows.
+RECONCILE_RETRY_S = 300.0
 
 assert SYNC_WAIT_S + UI_REQUEST_S <= REMOTE_PROXY_TIMEOUT_S - 30
 
@@ -105,6 +109,14 @@ def call_budget(limits: Limits, nbytes: int) -> CallBudget:
 def reconcile_delay_s(limits: Limits, nbytes: int) -> float:
     """After this, the service has ended and settled every send of that size."""
     return call_budget(limits, nbytes).total_s + limits.guard_s
+
+
+def confirmable_since(limits: Limits, now: datetime) -> datetime:
+    """A question whose usage row was written before this can no longer be confirmed:
+    the service keeps an id for its retry window W, and a status read of an id it
+    forgot says never charged. The row is written before the first send, so it is
+    never later than the service's own record; G covers the clocks' skew."""
+    return now - timedelta(seconds=limits.retry_window_s - limits.guard_s)
 
 
 def status_timeout_s(limits: Limits) -> float:

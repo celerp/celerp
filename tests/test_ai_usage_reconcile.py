@@ -122,8 +122,8 @@ async def test_a_charge_is_never_counted_twice(client, session, owner, monkeypat
 
 async def test_reconcile_follows_each_state_of_the_operation(client, session, owner, monkeypatch):
     """Charged and not charged are final; a question still running, or one the service
-    does not report, stays pending and is read again; a service that cannot be reached
-    changes nothing."""
+    does not report, stays pending and is read again once its retry time has passed;
+    a service that cannot be reached changes nothing."""
     token, _, _ = owner
     _relay(monkeypatch, [httpx.ReadTimeout("slow")] * 4)
     conv = await _conversation(client, token)
@@ -145,6 +145,9 @@ async def test_reconcile_follows_each_state_of_the_operation(client, session, ow
     assert await _rows(session) == {charged: (2, False), refused: (0, False), running: (0, True),
                                     unreported: (0, True)}
     read.clear()
+    await usage.reconcile_usage(session)
+    assert read == []  # not before RECONCILE_RETRY_S
+    await _age(session)
     await usage.reconcile_usage(session)
     assert sorted(map(str, read)) == sorted(map(str, [running, unreported]))
 

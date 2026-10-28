@@ -12,7 +12,9 @@ adds the credits it reported and leaves the row pending. Each send sets the row'
 ``reconcile_at`` to when the service has surely ended and settled it; after that a
 pending row is settled from the operation's status by the background
 ``reconcile_usage`` pass, so a lost reply is counted once, never twice, and the
-usage report never waits on the service.
+usage report never waits on the service. A pending row the service can no longer
+confirm (past its retry window) is marked ``unresolved``: never asked about again,
+never set to zero, shown apart from confirmed usage, until a reply names its charge.
 """
 
 from __future__ import annotations
@@ -51,7 +53,7 @@ async def record_usage(
     now = datetime.now(timezone.utc)
     values: dict = {"credits": credits if known else AIUsage.credits + credits}
     if known:
-        values["pending"] = False
+        values.update(pending=False, unresolved=False)
     if send_bytes is not None:
         delay = deadlines.reconcile_delay_s(await deadlines.limits(), send_bytes)
         values.update(pending=True, reconcile_at=now + timedelta(seconds=delay))
@@ -65,41 +67,54 @@ async def record_usage(
 
 
 async def reconcile_usage(session: AsyncSession) -> None:
-    """One pass: settle up to RECONCILE_BATCH pending rows whose reconcile time has
+    """One pass: mark unresolved every pending row the service can no longer confirm,
+    then settle up to RECONCILE_BATCH other pending rows whose reconcile time has
     passed, from ONE status read of their operations, then commit. A charged one
     takes its charge; one never charged takes 0; one an older service keeps no status
-    for keeps what its replies reported. One still running, or not yet known to the
-    service, stays pending, and so does every row when the service cannot be asked.
-    A row sent again after the read has a new reconcile time and is left for a later
-    pass; so is a row a job in this process still holds."""
+    for keeps what its replies reported. One still running, or with no terminal
+    status (not yet known to the service, or past its fencing capacity), is asked
+    again after RECONCILE_RETRY_S so the next due rows get their turn; every row stays
+    as it was when the service cannot be asked. A row sent again after the read has a
+    new reconcile time and is left for a later pass; so is a row a job in this
+    process still holds."""
+    now = datetime.now(timezone.utc)
+    await session.execute(
+        update(AIUsage)
+        .where(AIUsage.pending, ~AIUsage.unresolved,
+               AIUsage.created_at < deadlines.confirmable_since(await deadlines.limits(), now))
+        .values(unresolved=True))
     held = jobs.held_operation_ids()
     rows = (await session.execute(
         select(AIUsage.id, AIUsage.operation_id, AIUsage.reconcile_at)
-        .where(AIUsage.pending, AIUsage.reconcile_at < datetime.now(timezone.utc),
+        .where(AIUsage.pending, ~AIUsage.unresolved, AIUsage.reconcile_at < now,
                *([AIUsage.operation_id.not_in(held)] if held else []))
         .order_by(AIUsage.reconcile_at)
         .limit(deadlines.RECONCILE_BATCH)
     )).all()
     if not rows:
+        await session.commit()
         return
     try:
         statuses = await llm.operations_status([r.operation_id for r in rows])
     except (llm.RelayError, httpx.HTTPError, ValueError, TimeoutError) as exc:
         log.info("AI usage reconcile skipped: %s", type(exc).__name__)
+        await session.commit()
         return
     by_id = None if statuses is None else {s["operation_id"]: s for s in statuses}
     for row in rows:
         if by_id is None:
-            settled = {}
+            settled = {"pending": False}
         else:
             status = by_id.get(str(row.operation_id))
             if status is None or status["state"] not in ("charged", "not_charged"):
-                continue
-            settled = {"credits": status["credits"] if status["state"] == "charged" else 0}
+                settled = {"reconcile_at": now + timedelta(seconds=deadlines.RECONCILE_RETRY_S)}
+            else:
+                settled = {"pending": False,
+                           "credits": status["credits"] if status["state"] == "charged" else 0}
         await session.execute(
             update(AIUsage)
             .where(AIUsage.id == row.id, AIUsage.pending, AIUsage.reconcile_at == row.reconcile_at)
-            .values(pending=False, **settled))
+            .values(**settled))
     await session.commit()
 
 

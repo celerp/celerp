@@ -910,7 +910,7 @@ async def test_usage_table_marks_questions_not_yet_confirmed(ui_client):
 async def test_usage_table_without_unconfirmed_questions_adds_no_note(ui_client):
     r, _, _ = await _settings_content(ui_client)
     assert t("ai.usage_unconfirmed_note", "en") not in r.text
-    assert t("ai.usage_unresolved_note", "en", count=1).split("1")[0] not in r.text
+    assert t("ai.usage_unresolved_note", "en", count=1).removeprefix("1") not in r.text
 
 
 @pytest.mark.asyncio

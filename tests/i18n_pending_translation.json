@@ -779,6 +779,20 @@
     "ai.err_question_expired": {
       "en": "This question can no longer be continued. You can ask it as a new question, which counts as one more question.",
       "params": []
+    },
+    "th.unconfirmed": {
+      "en": "Not Yet Confirmed",
+      "params": []
+    },
+    "ai.usage_unconfirmed_note": {
+      "en": "Not yet confirmed: questions whose charge the AI service has not confirmed yet. They are not counted in Credits Used until it is.",
+      "params": []
+    },
+    "ai.usage_unresolved_note": {
+      "en": "{count} of them can no longer be confirmed, because the AI service keeps a question's charge for one day only. They stay unconfirmed and are not counted in Credits Used.",
+      "params": [
+        "count"
+      ]
     }
   }
 }

@@ -156,11 +156,15 @@ class AIUsage(Base):
     charged for it. The row is written before the question leaves, and stays
     ``pending`` until the service has named the whole charge (in a reply, or in the
     operation's status read by celerp.ai.usage.reconcile_usage, once ``reconcile_at``
-    has passed)."""
+    has passed). A pending row the service can no longer confirm (past its retry
+    window, where a forgotten id reads as never charged) is ``unresolved``: it stays
+    pending, keeps what its replies reported and is never asked about again, until a
+    reply names its charge."""
 
     __tablename__ = "ai_usage"
     __table_args__ = (
         sa.UniqueConstraint("company_id", "user_id", "operation_id", name="uq_ai_usage_operation"),
+        sa.CheckConstraint("pending OR NOT unresolved", name="ck_ai_usage_unresolved_pending"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -175,6 +179,9 @@ class AIUsage(Base):
     operation_id: Mapped[uuid.UUID] = mapped_column(sa.Uuid(as_uuid=True), nullable=False)
     credits: Mapped[int] = mapped_column(Integer, nullable=False)
     pending: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    unresolved: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=sa.false(),
+    )
     # Written before every send under the id: after it the service has ended and
     # settled that send (celerp.ai.deadlines.reconcile_delay_s).
     reconcile_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

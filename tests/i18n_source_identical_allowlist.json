@@ -19,6 +19,8 @@
     "ai.retry_one_file",
     "ai.retry_one_file_confirm",
     "ai.stop",
+    "ai.usage_unconfirmed_note",
+    "ai.usage_unresolved_note",
     "ai.waiting_documents",
     "ai.waiting_questions",
     "btn.u00d7",
@@ -211,7 +213,8 @@
     "settings.tab_cloud_relay",
     "setup.cloud",
     "th.position",
-    "th.sku"
+    "th.sku",
+    "th.unconfirmed"
   ],
   "ar": [
     "account.email_placeholder",
@@ -233,6 +236,8 @@
     "ai.retry_one_file",
     "ai.retry_one_file_confirm",
     "ai.stop",
+    "ai.usage_unconfirmed_note",
+    "ai.usage_unresolved_note",
     "ai.waiting_documents",
     "ai.waiting_questions",
     "btn.u00d7",
@@ -413,7 +418,8 @@
     "settings.tab_cloud_relay",
     "setup.cloud",
     "th.position",
-    "th.sku"
+    "th.sku",
+    "th.unconfirmed"
   ],
   "de": [
     "acct.source_system",
@@ -436,6 +442,8 @@
     "ai.retry_one_file",
     "ai.retry_one_file_confirm",
     "ai.stop",
+    "ai.usage_unconfirmed_note",
+    "ai.usage_unresolved_note",
     "ai.waiting_documents",
     "ai.waiting_questions",
     "attr.form",
@@ -686,6 +694,7 @@
     "th.sku",
     "th.status",
     "th.text",
+    "th.unconfirmed",
     "th.version"
   ],
   "es": [
@@ -710,6 +719,8 @@
     "ai.retry_one_file",
     "ai.retry_one_file_confirm",
     "ai.stop",
+    "ai.usage_unconfirmed_note",
+    "ai.usage_unresolved_note",
     "ai.waiting_documents",
     "ai.waiting_questions",
     "attr.color",
@@ -932,7 +943,8 @@
     "th.factor",
     "th.position",
     "th.sku",
-    "th.total"
+    "th.total",
+    "th.unconfirmed"
   ],
   "fr": [
     "acct.tab_journal",
@@ -956,6 +968,8 @@
     "ai.retry_one_file",
     "ai.retry_one_file_confirm",
     "ai.stop",
+    "ai.usage_unconfirmed_note",
+    "ai.usage_unresolved_note",
     "ai.waiting_documents",
     "ai.waiting_questions",
     "attr.appellation_aoc",
@@ -1219,6 +1233,7 @@
     "th.sku",
     "th.source",
     "th.total",
+    "th.unconfirmed",
     "th.version"
   ],
   "id": [
@@ -1245,6 +1260,8 @@
     "ai.retry_one_file",
     "ai.retry_one_file_confirm",
     "ai.stop",
+    "ai.usage_unconfirmed_note",
+    "ai.usage_unresolved_note",
     "ai.waiting_documents",
     "ai.waiting_questions",
     "attr.diameter_mm",
@@ -1490,7 +1507,8 @@
     "th.ref",
     "th.sku",
     "th.status",
-    "th.total"
+    "th.total",
+    "th.unconfirmed"
   ],
   "it": [
     "ai.err_file_unexpected",
@@ -1511,6 +1529,8 @@
     "ai.retry_one_file",
     "ai.retry_one_file_confirm",
     "ai.stop",
+    "ai.usage_unconfirmed_note",
+    "ai.usage_unresolved_note",
     "ai.waiting_documents",
     "ai.waiting_questions",
     "attr.volume_l",
@@ -1733,7 +1753,8 @@
     "th.memo",
     "th.output",
     "th.position",
-    "th.sku"
+    "th.sku",
+    "th.unconfirmed"
   ],
   "ja": [
     "account.email_placeholder",
@@ -1755,6 +1776,8 @@
     "ai.retry_one_file",
     "ai.retry_one_file_confirm",
     "ai.stop",
+    "ai.usage_unconfirmed_note",
+    "ai.usage_unresolved_note",
     "ai.waiting_documents",
     "ai.waiting_questions",
     "attr.cpu",
@@ -1945,7 +1968,8 @@
     "settings.tab_cloud_relay",
     "setup.cloud",
     "th.position",
-    "th.sku"
+    "th.sku",
+    "th.unconfirmed"
   ],
   "pt": [
     "acct.source_manual",
@@ -1968,6 +1992,8 @@
     "ai.retry_one_file",
     "ai.retry_one_file_confirm",
     "ai.stop",
+    "ai.usage_unconfirmed_note",
+    "ai.usage_unresolved_note",
     "ai.waiting_documents",
     "ai.waiting_questions",
     "attr.material",
@@ -2202,7 +2228,8 @@
     "th.sku",
     "th.skuitem",
     "th.status",
-    "th.total"
+    "th.total",
+    "th.unconfirmed"
   ],
   "th": [
     "account.email_placeholder",
@@ -2224,6 +2251,8 @@
     "ai.retry_one_file",
     "ai.retry_one_file_confirm",
     "ai.stop",
+    "ai.usage_unconfirmed_note",
+    "ai.usage_unresolved_note",
     "ai.waiting_documents",
     "ai.waiting_questions",
     "btn.u00d7",
@@ -2412,7 +2441,8 @@
     "settings.tab_cloud_relay",
     "setup.cloud",
     "th.position",
-    "th.sku"
+    "th.sku",
+    "th.unconfirmed"
   ],
   "vi": [
     "ai.err_file_unexpected",
@@ -2433,6 +2463,8 @@
     "ai.retry_one_file",
     "ai.retry_one_file_confirm",
     "ai.stop",
+    "ai.usage_unconfirmed_note",
+    "ai.usage_unresolved_note",
     "ai.waiting_documents",
     "ai.waiting_questions",
     "btn.u00d7",
@@ -2626,6 +2658,7 @@
     "settings.tab_cloud_relay",
     "setup.cloud",
     "th.position",
-    "th.sku"
+    "th.sku",
+    "th.unconfirmed"
   ]
 }

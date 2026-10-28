@@ -1021,9 +1021,16 @@ async def _usage_table(token: str, session_token: str, status: dict | None) -> F
             Td(r.get("user_name", "--")),
             Td(str(r.get("query_count", 0)), cls="cell--number"),
             Td(str(r.get("credits_used", 0)), cls="cell--number"),
+            Td(str(r.get("pending_count", 0) + r.get("unresolved_count", 0)), cls="cell--number"),
             Td((r.get("last_query_at") or "")[:10] or "--"),
         )
         for r in rows
+    ]
+    unconfirmed = sum(r.get("pending_count", 0) + r.get("unresolved_count", 0) for r in rows)
+    unresolved = sum(r.get("unresolved_count", 0) for r in rows)
+    notes = [
+        *([P(t("ai.usage_unconfirmed_note"), cls="ai-settings__text")] if unconfirmed else []),
+        *([P(t("ai.usage_unresolved_note", count=unresolved), cls="ai-settings__text")] if unresolved else []),
     ]
 
     return Div(
@@ -1033,11 +1040,13 @@ async def _usage_table(token: str, session_token: str, status: dict | None) -> F
                 Th(t("th.user")),
                 Th(t("th.queries"), cls="cell--number"),
                 Th(t("th.credits_used"), cls="cell--number"),
+                Th(t("th.unconfirmed"), cls="cell--number"),
                 Th(t("th.last_query")),
             )),
             Tbody(*table_rows),
             cls="data-table ai-settings__usage-table",
         ),
+        *notes,
         P(t("ai.usage_scope_note"), cls="ai-settings__text"),
         cls="ai-settings__usage",
     )

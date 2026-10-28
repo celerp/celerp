@@ -6532,5 +6532,8 @@
   "ai.stop": "Stop",
   "ai.question_stopped": "You stopped this question. Ask again to continue it. It still counts as one question.",
   "ai.question_interrupted": "This question stopped when Celerp restarted. Ask again to continue it. It still counts as one question.",
-  "ai.job_stopped": "Stopped after reading {done} of {total} files. Continue to read the rest."
+  "ai.job_stopped": "Stopped after reading {done} of {total} files. Continue to read the rest.",
+  "th.unconfirmed": "Not Yet Confirmed",
+  "ai.usage_unconfirmed_note": "Not yet confirmed: questions whose charge the AI service has not confirmed yet. They are not counted in Credits Used until it is.",
+  "ai.usage_unresolved_note": "{count} of them can no longer be confirmed, because the AI service keeps a question's charge for one day only. They stay unconfirmed and are not counted in Credits Used."
 }

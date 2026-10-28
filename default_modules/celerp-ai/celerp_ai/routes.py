@@ -1590,10 +1590,11 @@ async def usage_stats(
     Read from the usage record only, one row per question with what the AI service
     charged for it; the background reconcile pass settles pending rows. A question
     counts when its charge is confirmed; ``pending_count`` is the user's questions
-    still awaiting confirmation. Returns ``period`` {kind, start} (start is the ISO
-    month start, null for all time) and ``users``, a list of {user_id, user_name,
-    query_count, credits_used, pending_count, last_query_at} with the latest question
-    first.
+    still awaiting confirmation and ``unresolved_count`` those the service can no
+    longer confirm. Returns ``period`` {kind, start} (start is the ISO month start,
+    null for all time) and ``users``, a list of {user_id, user_name, query_count,
+    credits_used, pending_count, unresolved_count, last_query_at} with the latest
+    question first.
     """
     from datetime import datetime
     from sqlalchemy import func, or_, select
@@ -1611,7 +1612,8 @@ async def usage_stats(
             AIUsage.user_id,
             func.count().filter(~AIUsage.pending).label("query_count"),
             func.sum(AIUsage.credits).filter(~AIUsage.pending).label("credits_used"),
-            func.count().filter(AIUsage.pending).label("pending_count"),
+            func.count().filter(AIUsage.pending, ~AIUsage.unresolved).label("pending_count"),
+            func.count().filter(AIUsage.unresolved).label("unresolved_count"),
             func.max(AIUsage.created_at).label("last_query_at"),
         )
         .where(AIUsage.company_id == company_id, or_(AIUsage.pending, AIUsage.credits > 0),
@@ -1623,6 +1625,7 @@ async def usage_stats(
             "query_count": int(r.query_count or 0),
             "credits_used": int(r.credits_used or 0),
             "pending_count": int(r.pending_count or 0),
+            "unresolved_count": int(r.unresolved_count or 0),
             "last_query_at": r.last_query_at,
         }
         for r in rows
@@ -1648,6 +1651,7 @@ async def usage_stats(
                 "query_count": row["query_count"],
                 "credits_used": row["credits_used"],
                 "pending_count": row["pending_count"],
+                "unresolved_count": row["unresolved_count"],
                 "last_query_at": row["last_query_at"].isoformat() if row["last_query_at"] else None,
             }
             for user_id, row in ordered

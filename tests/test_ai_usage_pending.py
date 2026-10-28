@@ -254,7 +254,7 @@ async def test_a_row_past_the_services_retry_window_is_unresolved_never_zero(
     assert await _state(session, fresh) == (0, False, False)
     (row,) = (await _usage(client, token)).json()["users"]
     assert (row["query_count"], row["credits_used"], row["pending_count"],
-            row["unresolved_count"]) == (1, 0, 0, 1)
+            row["unresolved_count"]) == (0, 0, 0, 1)  # the fresh one was never charged
     await usage.reconcile_usage(session)
     assert asked == [[fresh]]  # an unresolved row is never asked about again
 
