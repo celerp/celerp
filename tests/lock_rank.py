@@ -27,8 +27,11 @@ table``); the observed graph is merged with ``python tests/lock_rank.py report <
 
 from __future__ import annotations
 
+import asyncio
+import functools
 import json
 import os
+import weakref
 import re
 import sys
 import time
@@ -70,6 +73,14 @@ RANKS: dict[str, int] = {
     "row:ai_messages": 80, "row:instance_meta": 81,
 }
 
+# Tables that exist only in test fixtures: each fixture module ranks its own here.
+TEST_RANKS: dict[str, int] = {}
+
+
+def rank(cls: str) -> int | None:
+    return RANKS.get(cls, TEST_RANKS.get(cls))
+
+
 # Numeric advisory keys with a fixed value (module constant) -> class.
 NUMERIC_KEYS: dict[int, str] = {
     4207320001: "adv:migration",          # celerp/db.py _MIGRATION_LOCK_KEY
@@ -93,14 +104,11 @@ CALLSITE_KEYS: dict[str, str] = {
 
 _ADVISORY = re.compile(
     r"pg_(try_)?advisory_(xact_)?(lock|unlock)(_shared)?\s*\(([^()]*(?:\([^()]*\)[^()]*)*)\)", re.I)
-_ROW_LOCK = re.compile(
-    r"\bFOR\s+(NO\s+KEY\s+UPDATE|UPDATE|KEY\s+SHARE|SHARE)(?:\s+OF\s+([\w\",. ]+?))?"
-    r"(\s+NOWAIT|\s+SKIP\s+LOCKED)?\s*$", re.I)
-_FROM = re.compile(r"\b(?:FROM|JOIN)\s+\"?(\w+)\"?", re.I)
-_UPDATE = re.compile(r"^\s*UPDATE\s+\"?(\w+)\"?", re.I)
-_DELETE = re.compile(r"^\s*DELETE\s+FROM\s+\"?(\w+)\"?", re.I)
-_UPSERT = re.compile(r"^\s*INSERT\s+INTO\s+\"?(\w+)\"?.*\bON\s+CONFLICT\b.*\bDO\s+UPDATE\b", re.I | re.S)
 _PARAM = re.compile(r"\$(\d+)|%\((\w+)\)s|:(\w+)")
+# Driver placeholders other than asyncpg's $n, renumbered to $n before parsing.
+_NAMED = re.compile(r"%\((\w+)\)s|%s|(?<![:\w]):([A-Za-z_]\w*)")
+# Only a statement holding one of these words can take a row or table lock.
+_LOCKING = re.compile(r"\b(FOR|INSERT|UPDATE|DELETE|LOCK)\b", re.I)
 _INT = re.compile(r"^-?(\d+|0x[0-9a-fA-F]+)$")
 
 _CONTENDED_S = 0.05
@@ -115,6 +123,12 @@ class Lock:
     key: str = ""     # what is locked: the advisory key, or a row lock's bound parameters
 
 
+# Taken outside the task's other transactions by design (1.11): the outbound identity lock,
+# session-level, on the execution's own connection.
+def _own_connection(lock: Lock) -> bool:
+    return lock.cls == "adv:outbound" and lock.mode.startswith("session")
+
+
 @dataclass
 class Recorder:
     held: dict[int, list[Lock]] = field(default_factory=lambda: defaultdict(list))
@@ -124,6 +138,9 @@ class Recorder:
     contention: list[dict] = field(default_factory=list)
     violations: list[dict] = field(default_factory=list)
     test: str = ""
+    # The connections each task has used, and the task that last used each connection.
+    task_conns: weakref.WeakKeyDictionary = field(default_factory=weakref.WeakKeyDictionary)
+    conn_task: dict[int, weakref.ref] = field(default_factory=dict)
 
     def end(self, conn_key: int) -> None:
         self.held.pop(conn_key, None)
@@ -136,47 +153,82 @@ class Recorder:
         if waited >= _CONTENDED_S:
             self.contention.append({"cls": lock.cls, "mode": lock.mode, "site": lock.site,
                                     "seconds": round(waited, 3), "test": self.test})
+        if rank(lock.cls) is None:
+            self._violate("unknown", lock)
         held = self.session_held[conn_key] + self.held[conn_key]
-        if any(h.cls == lock.cls and h.key == lock.key and _covers(h.mode, lock.mode) for h in held):
+        if any(h.cls == lock.cls and _covers(h, lock) for h in held):
             # A re-take of what this transaction already holds, at no greater strength, is
             # granted at once: it waits for nothing, so it orders nothing.
             info["retakes"] = info.get("retakes", 0) + 1
             return
         waits = lock.mode.split(" ")[-1] not in ("nowait", "try", "skip")
-        # A class already held is ordered where it was first taken (rows of one class are
-        # taken in key order by their own helpers); a later take adds no edge.
-        if any(h.cls == lock.cls for h in held):
-            held = []
+        if waits:
+            self._other_connections(conn_key, lock)
+        decreasing = False
+        same = [h for h in held if h.cls == lock.cls]
         for i, h in enumerate(held):
             if h.cls == lock.cls:
                 continue
             # Classes this transaction held exclusively before h: a gate every other
             # transaction taking them waits on, so it cannot interleave with this edge.
             gate = {g.cls for g in held[:i] if _exclusive(g.mode)} - {h.cls, lock.cls}
-            edge = self.edges.get((h.cls, lock.cls))
-            if edge is None:
-                edge = self.edges[(h.cls, lock.cls)] = {
-                    "count": 0, "example": None, "waits": False, "gate": gate, "modes": set()}
-            edge["gate"] = edge["gate"] & gate
-            edge["count"] += 1
-            edge["waits"] = edge["waits"] or waits
-            if waits:
-                combo = f"{_strength(h.mode)}>{_strength(lock.mode)}"
-                edge["modes"].add(combo)
-                # Both taken by one call: the order production runs. Taken by two test
-                # statements sharing the suite's one outer transaction: an artifact.
-                if h.origin == lock.origin:
-                    edge.setdefault("call_modes", set()).add(combo)
-                    if edge.get("call_example") is None:
-                        edge["call_example"] = {"held": h.site, "acquired": lock.site, "test": self.test}
-            if edge["example"] is None:
-                edge["example"] = {"held": h.site, "acquired": lock.site, "test": self.test}
-            if RANKS and waits and lock.cls in RANKS and h.cls in RANKS and RANKS[lock.cls] < RANKS[h.cls]:
+            self._edge(h, lock, waits, gate)
+            if waits and rank(lock.cls) is not None and rank(h.cls) is not None and rank(lock.cls) < rank(h.cls):
+                decreasing = True
                 self._violate("order", lock, held_lock=h)
-        if RANKS and lock.cls not in RANKS and lock.mode not in ("write", "delete"):
-            self._violate("unknown", lock)
+        if same and waits and _explicit(lock.mode):
+            # Another key of a class this transaction holds, with nothing higher taken since:
+            # keys of one class are taken in sorted order (by their helper), or two
+            # transactions taking two keys in opposite orders wait on each other.
+            self._edge(same[-1], lock, waits, set())
+            if not decreasing and lock.key < same[-1].key:
+                self._violate("unsorted", lock, held_lock=same[-1])
         target = self.session_held if lock.mode.startswith("session") else self.held
         target[conn_key].append(lock)
+
+    def _edge(self, h: Lock, lock: Lock, waits: bool, gate: set[str]) -> None:
+        edge = self.edges.get((h.cls, lock.cls))
+        if edge is None:
+            edge = self.edges[(h.cls, lock.cls)] = {
+                "count": 0, "example": None, "waits": False, "gate": gate, "modes": set()}
+        edge["gate"] = edge["gate"] & gate
+        edge["count"] += 1
+        edge["waits"] = edge["waits"] or waits
+        if waits:
+            combo = f"{_strength(h)}>{_strength(lock)}"
+            edge["modes"].add(combo)
+            # Both taken by one call: the order production runs. Taken by two test
+            # statements sharing the suite's one outer transaction: recorded apart.
+            if h.origin == lock.origin:
+                edge.setdefault("call_modes", set()).add(combo)
+                if edge.get("call_example") is None:
+                    edge["call_example"] = {"held": h.site, "acquired": lock.site, "test": self.test}
+        if edge["example"] is None:
+            edge["example"] = {"held": h.site, "acquired": lock.site, "test": self.test}
+
+    def _other_connections(self, conn_key: int, lock: Lock) -> None:
+        """A task that waits on one connection while it holds a lock on another can wait on
+        itself: the lock it holds is released only when this wait ends."""
+        try:
+            task = asyncio.current_task()
+        except RuntimeError:
+            task = None
+        if task is None:
+            return
+        conns = self.task_conns.setdefault(task, set())
+        for other in sorted(conns - {conn_key}):
+            ref = self.conn_task.get(other)
+            if ref is None or ref() is not task:
+                continue
+            holding = [h for h in self.session_held.get(other, []) + self.held.get(other, []) if not _own_connection(h)]
+            if any(h.cls == lock.cls and h.key == lock.key and _conflict(h, lock) for h in holding):
+                self._violate("self-deadlock", lock, held_lock=holding[0])
+                break
+            if holding:
+                self._violate("cross-connection", lock, held_lock=holding[0])
+                break
+        conns.add(conn_key)
+        self.conn_task[conn_key] = weakref.ref(task)
 
     def release_session(self, conn_key: int, cls: str) -> None:
         locks = self.session_held.get(conn_key, [])
@@ -206,21 +258,46 @@ def _exclusive(mode: str) -> bool:
     return "exclusive" in mode or mode.startswith(("update", "no key update", "delete"))
 
 
+def _explicit(mode: str) -> bool:
+    """A lock the statement asks for by name (advisory, FOR ..., LOCK TABLE), whose key the
+    statement shows; an implicit write, delete or insert lock does not."""
+    return mode not in ("write", "delete", "insert")
+
+
 _STRENGTH_ORDER = ("keyshare", "share", "nokey", "update")
 
+# Table-lock conflicts (PostgreSQL 13.3.1), by mode number 1 (ACCESS SHARE) .. 8 (ACCESS EXCLUSIVE).
+_TABLE_CONFLICTS = {1: {8}, 2: {7, 8}, 3: {5, 6, 7, 8}, 4: {4, 5, 6, 7, 8}, 5: {3, 4, 6, 7, 8},
+                    6: {3, 4, 5, 6, 7, 8}, 7: {2, 3, 4, 5, 6, 7, 8}, 8: {1, 2, 3, 4, 5, 6, 7, 8}}
 
-def _covers(held: str, wanted: str) -> bool:
-    """True when holding ``held`` already grants ``wanted`` on the same key."""
+
+def _covers(held: Lock, wanted: Lock) -> bool:
+    """True when holding ``held`` already grants ``wanted``: the same key, and every lock
+    another transaction can hold beside ``held`` leaves ``wanted`` free too. An implicit
+    write after an explicit lock of its class counts as the same key: a statement does not
+    show which rows an UPDATE touches, and the helpers lock the rows they then write."""
+    if held.key != wanted.key and not (_explicit(held.mode) and not _explicit(wanted.mode)):
+        return False
     h, w = _strength(held), _strength(wanted)
+    if h == w:
+        return True
+    if h.startswith("t") and w.startswith("t"):
+        hn, wn = int(h[1:]), int(w[1:])
+        return all(m in _TABLE_CONFLICTS[hn] for m in _TABLE_CONFLICTS[wn])
     if h in ("shared", "exclusive"):
-        return h == "exclusive" or w == "shared"
-    return _STRENGTH_ORDER.index(h) >= _STRENGTH_ORDER.index(w)
+        return h == "exclusive" and w == "shared"
+    if h in _STRENGTH_ORDER and w in _STRENGTH_ORDER:
+        return _STRENGTH_ORDER.index(h) >= _STRENGTH_ORDER.index(w)
+    return False
 
 
-def _strength(mode: str) -> str:
+def _strength(lock: Lock) -> str:
     """The lock strength that decides conflicts: shared/exclusive for advisory locks,
     PostgreSQL's four row-lock strengths for rows (an UPDATE takes NO KEY UPDATE, a
-    DELETE takes UPDATE)."""
+    DELETE takes UPDATE), ``insert`` for a unique-key wait, t1..t8 for table modes."""
+    mode = lock.mode
+    if lock.cls.startswith("tbl:"):
+        return "t" + str(TABLE_MODES.index(mode.rsplit(" ", 1)[0]))
     if mode.startswith(("xact", "session")):
         return "shared" if "shared" in mode else "exclusive"
     for prefix, name in (("no key update", "nokey"), ("update", "update"), ("delete", "update"),
@@ -230,13 +307,19 @@ def _strength(mode: str) -> str:
     return mode
 
 
-# Row-lock conflict table (PostgreSQL 13.3.2) and advisory shared/exclusive.
+# Row-lock conflict table (PostgreSQL 13.3.2), advisory shared/exclusive, a unique-key wait
+# between two inserts, and table modes.
 _CONFLICTS = {
     ("shared", "exclusive"), ("exclusive", "shared"), ("exclusive", "exclusive"),
     ("keyshare", "update"), ("share", "nokey"), ("share", "update"),
     ("nokey", "share"), ("nokey", "nokey"), ("nokey", "update"),
     ("update", "keyshare"), ("update", "share"), ("update", "nokey"), ("update", "update"),
-}
+    ("insert", "insert"),
+} | {(f"t{a}", f"t{b}") for a, bs in _TABLE_CONFLICTS.items() for b in bs}
+
+
+def _conflict(a: Lock, b: Lock) -> bool:
+    return (_strength(a), _strength(b)) in _CONFLICTS
 
 
 def _deadlocks(forward: set[str], backward: set[str]) -> bool:
@@ -315,45 +398,168 @@ def _advisory_class(args: str, parameters) -> str:
     return CALLSITE_KEYS.get(caller, f"adv:?{caller}")
 
 
-def _key(cls: str, statement: str, parameters) -> str:
-    """The locked thing, as far as the statement shows it: an advisory lock's resolved
-    arguments, or a row lock's bound parameter values (the same values on the same table
-    select the same rows; different values are treated as different rows)."""
-    if cls.startswith("adv:"):
-        m = _ADVISORY.search(statement)
-        if m:
-            return ",".join(str(_param(p, parameters or ())) for p in m.group(5).split(","))
-    values = parameters.values() if isinstance(parameters, dict) else (parameters or ())
-    return repr(sorted(map(str, values)))
+def _advisory_key(statement: str, parameters) -> str:
+    m = _ADVISORY.search(statement)
+    return ",".join(str(_param(p, parameters or ())) for p in m.group(5).split(",")) if m else ""
 
 
-def classify(statement: str, parameters) -> list[tuple[str, str]]:
-    """(class, mode) for each lock the statement takes; ('-unlock', class) for an unlock."""
-    out: list[tuple[str, str]] = []
+def _bound(n: int, names: tuple, parameters):
+    ref = names[n - 1] if names else n
+    try:
+        return parameters[ref] if isinstance(ref, str) else parameters[ref - 1]
+    except (KeyError, IndexError, TypeError):
+        return None
+
+
+def _row_key(numbers: tuple[int, ...] | None, names: tuple, parameters) -> str:
+    """What a row lock locks, as far as the statement shows it: the bound values of the
+    parameters its WHERE clause (or the referencing column) uses, in order; every bound value
+    when it uses none. The same values on the same table select the same rows."""
+    if numbers:
+        values = [_bound(n, names, parameters) for n in numbers]
+    else:
+        values = list(parameters.values()) if isinstance(parameters, dict) else list(parameters or ())
+    return repr(tuple(map(str, values)))
+
+
+# ── Row and table locks, from the parse tree ───────────────────────────────────
+_ROW_STRENGTH = {"LCS_FORKEYSHARE": "key share", "LCS_FORSHARE": "share",
+                 "LCS_FORNOKEYUPDATE": "no key update", "LCS_FORUPDATE": "update"}
+_WAIT_POLICY = {"LockWaitBlock": "wait", "LockWaitSkip": "skip", "LockWaitError": "nowait"}
+TABLE_MODES = ("", "access share", "row share", "row exclusive", "share update exclusive", "share",
+               "share row exclusive", "exclusive", "access exclusive")
+
+
+def _numbered(statement: str) -> tuple[str, tuple]:
+    """The statement with every driver placeholder as $n, and what each $n binds: the
+    parameter's name (pyformat, named) or its position (format); () when it is already $n."""
+    names: list = []
+    if re.search(r"\$\d", statement):
+        return statement, ()
+
+    def number(m: re.Match) -> str:
+        names.append(m.group(1) or m.group(2) or len(names) + 1)
+        return f"${len(names)}"
+    return _NAMED.sub(number, statement), tuple(names)
+
+
+def _nodes(tree):
+    """Every parse-tree node, pre-order, as (node type, body)."""
+    stack = [tree]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, list):
+            stack.extend(reversed(item))
+        elif isinstance(item, dict):
+            if len(item) == 1:
+                (kind, body), = item.items()
+                if kind[:1].isupper() and isinstance(body, dict):
+                    yield kind, body
+                    stack.extend(reversed(list(body.values())))
+                    continue
+            stack.extend(reversed(list(item.values())))
+
+
+def _params(tree) -> tuple[int, ...] | None:
+    numbers = tuple(body["number"] for kind, body in _nodes(tree) if kind == "ParamRef" and "number" in body)
+    return numbers or None
+
+
+def _from_tables(from_clause, ctes: set[str]) -> dict[str, str]:
+    """alias or name -> table for every relation of one FROM list, through joins but not
+    into subqueries (a subquery's own locking clause is its own node)."""
+    found: dict[str, str] = {}
+    stack = list(from_clause or ())
+    while stack:
+        item = stack.pop()
+        (kind, body), = item.items()
+        if kind == "RangeVar" and body["relname"] not in ctes:
+            found[body.get("alias", {}).get("aliasname", body["relname"])] = body["relname"]
+        elif kind == "JoinExpr":
+            stack += [body["larg"], body["rarg"]]
+    return found
+
+
+def _foreign_keys(table: str) -> dict[str, str]:
+    """column -> referenced table, for one mapped table (empty for a table the app does not map)."""
+    from celerp.models.base import Base
+    import celerp.models  # noqa: F401 - every core table registers on Base
+
+    mapped = Base.metadata.tables.get(table)
+    if mapped is None:
+        return {}
+    return {fk.parent.name: fk.column.table.name for fk in mapped.foreign_keys}
+
+
+@functools.lru_cache(maxsize=8192)
+def _row_locks(statement: str) -> tuple[tuple[tuple[str, str, tuple[int, ...] | None], ...], tuple]:
+    """(class, mode, parameter numbers of the key) for each row or table lock the statement
+    takes, and the placeholder map. A statement the parser rejects raises."""
+    from pglast.parser import parse_sql_json
+
+    text, names = _numbered(statement)
+    tree = json.loads(parse_sql_json(text))
+    ctes = {body["ctename"] for kind, body in _nodes(tree) if kind == "CommonTableExpr"}
+    out: list[tuple[str, str, tuple[int, ...] | None]] = []
+    for kind, body in _nodes(tree):
+        if kind == "SelectStmt" and body.get("lockingClause"):
+            tables = _from_tables(body.get("fromClause"), ctes)
+            key = _params(body.get("whereClause"))
+            for clause in body["lockingClause"]:
+                c = clause["LockingClause"]
+                mode = f"{_ROW_STRENGTH[c['strength']]} {_WAIT_POLICY[c.get('waitPolicy', 'LockWaitBlock')]}"
+                named = [r["RangeVar"]["relname"] for r in c.get("lockedRels", ())]
+                for t in ([tables.get(n, n) for n in named] if named else list(tables.values())):
+                    out.append((f"row:{t}", mode, key))
+        elif kind == "LockStmt":
+            mode = f"{TABLE_MODES[body['mode']]} {'nowait' if body.get('nowait') else 'wait'}"
+            out += [(f"tbl:{r['RangeVar']['relname']}", mode, None) for r in body["relations"]]
+        elif kind == "UpdateStmt":
+            table = body["relation"]["relname"]
+            out.append((f"row:{table}", "write", _params(body.get("whereClause"))))
+            fks = _foreign_keys(table)
+            for target in body.get("targetList", ()):
+                t = target["ResTarget"]
+                if t.get("name") in fks:
+                    out.append((f"row:{fks[t['name']]}", "key share wait", _params(t.get("val"))))
+        elif kind == "DeleteStmt":
+            out.append((f"row:{body['relation']['relname']}", "delete", _params(body.get("whereClause"))))
+        elif kind == "InsertStmt":
+            table = body["relation"]["relname"]
+            out.append((f"row:{table}", "insert", None))
+            fks = _foreign_keys(table)
+            cols = [c["ResTarget"]["name"] for c in body.get("cols", ())]
+            rows = body.get("selectStmt", {}).get("SelectStmt", {}).get("valuesLists") or []
+            for col, ref in fks.items():
+                if cols and col not in cols:
+                    continue
+                values = [r["List"]["items"][cols.index(col)] for r in rows if cols] or None
+                out.append((f"row:{ref}", "key share wait", _params(values) if values else None))
+            if body.get("onConflictClause", {}).get("action") == "ONCONFLICT_UPDATE":
+                out.append((f"row:{table}", "write", None))
+    return tuple(dict.fromkeys(out)), names
+
+
+def _locks(statement: str, parameters) -> list[tuple[str, str, str]]:
+    """(class, mode, key) for each lock the statement takes; ('-unlock', class, '') for an unlock."""
+    out: list[tuple[str, str, str]] = []
     for m in _ADVISORY.finditer(statement):
         try_, xact, verb, shared, args = m.groups()
         cls = _advisory_class(args, parameters or ())
         if verb.lower() == "unlock":
-            out.append(("-unlock", cls))
+            out.append(("-unlock", cls, ""))
             continue
         mode = ("xact" if xact else "session") + (" shared" if shared else " exclusive")
-        out.append((cls, mode + (" try" if try_ else " wait")))
-    if out:
+        out.append((cls, mode + (" try" if try_ else " wait"), _advisory_key(statement, parameters)))
+    if out or not _LOCKING.search(statement):
         return out
-    m = _ROW_LOCK.search(statement)
-    if m and re.match(r"\s*(\(|SELECT\b|WITH\b)", statement, re.I):
-        strength, of, tail = m.group(1), m.group(2), (m.group(3) or "").strip().lower()
-        tables = [t.strip().strip('"').split(".")[-1] for t in of.split(",")] if of else _FROM.findall(statement)
-        mode = re.sub(r"\s+", " ", strength.lower()) + " " + (tail.replace("skip locked", "skip") or "wait")
-        for t in dict.fromkeys(tables):
-            out.append((f"row:{t}", mode))
-        return out
-    for pattern in (_UPDATE, _DELETE, _UPSERT):
-        w = pattern.match(statement)
-        if w:
-            out.append((f"row:{w.group(1)}", "delete" if pattern is _DELETE else "write"))
-            break
-    return out
+    found, names = _row_locks(statement)
+    return [(cls, mode, _row_key(numbers, names, parameters)) for cls, mode, numbers in found]
+
+
+def classify(statement: str, parameters) -> list[tuple[str, str]]:
+    """(class, mode) for each lock the statement takes; ('-unlock', class) for an unlock."""
+    return [(cls, mode) for cls, mode, _ in _locks(statement, parameters)]
 
 
 def record_statement(conn_key: int, statement: str, parameters, waited: float) -> None:
@@ -362,17 +568,17 @@ def record_statement(conn_key: int, statement: str, parameters, waited: float) -
         RECORDER.end(conn_key)
         return
     try:
-        found = classify(statement, parameters)
+        found = _locks(statement, parameters)
     except Exception as exc:  # an unparseable lock statement is itself a finding
-        found = [(f"?unparsed:{type(exc).__name__}", "wait")]
+        found = [(f"?unparsed:{type(exc).__name__}", "wait", "")]
     if not found:
         return
     site, origin = _site(), _origin()
-    for cls, mode in found:
+    for cls, mode, key in found:
         if cls == "-unlock":
             RECORDER.release_session(conn_key, mode)
             continue
-        RECORDER.acquire(conn_key, Lock(cls, mode, site, origin, _key(cls, statement, parameters)), waited)
+        RECORDER.acquire(conn_key, Lock(cls, mode, site, origin, key), waited)
 
 
 _INSTALLED = False
@@ -577,17 +783,18 @@ def report(directory: Path) -> str:
 
 
 def check(directory: Path) -> str:
-    """Judge a recorded graph against ``RANKS``: every class the suite locked must be ranked, and
-    every waiting acquisition one call made after a lock of a higher rank is a violation."""
+    """Judge a recorded graph against ``RANKS``: every class the suite locked, wrote or
+    referenced must be ranked, and every waiting acquisition after a lock of a higher rank
+    is a violation, whether one call or two test statements took the two."""
     g = _merge(directory)
-    lines = [f"Unranked classes: {sorted(c for c, v in g['classes'].items()
-                                          if c not in RANKS and set(v['modes']) - {'write', 'delete'}) or 'none'}", ""]
+    lines = [f"Unranked classes: {sorted(c for c in g['classes'] if rank(c) is None) or 'none'}", ""]
     bad = sorted((a, b) for (a, b), v in g["edges"].items()
-                 if v["call_modes"] and RANKS.get(a, -1) > RANKS.get(b, 1 << 30))
-    lines.append(f"Decreasing edges taken inside one call: {len(bad)}")
+                 if v["waits"] and rank(a) is not None and rank(b) is not None and rank(a) > rank(b))
+    lines.append(f"Decreasing waiting edges: {len(bad)}")
     for a, b in bad:
-        ex = g["edges"][(a, b)]["call_example"]
-        lines.append(f"- {a} ({RANKS[a]}) -> {b} ({RANKS[b]}): {ex['held']} -> {ex['acquired']} ({ex['test']})")
+        e = g["edges"][(a, b)]
+        ex = e["call_example"] or e["example"]
+        lines.append(f"- {a} ({rank(a)}) -> {b} ({rank(b)}): {ex['held']} -> {ex['acquired']} ({ex['test']})")
     return "\n".join(lines) + "\n"
 
 
