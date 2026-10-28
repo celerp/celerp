@@ -3,7 +3,7 @@
 
 """Report what the write observer (mutation_observer.py) saw across a test run.
 
-    python scripts/mutation_census.py <census folder>... [--out census.md] [--enforce]
+    python scripts/mutation_census.py <census folder>... [--out census.md] [--coverage coverage.json] [--enforce]
 
 Reads every census-*.json and census-*.routes.json under the folders (one pair per test
 process, so the folders of all CI shards together give the whole suite) and writes:
@@ -75,12 +75,14 @@ def static_inventory():
             for fn in functions:
                 for deco in fn.decorator_list:
                     if isinstance(deco, ast.Call) and _called(deco).upper() in MUTATING:
-                        decorators.append((rel, fn.lineno, fn.name, _called(deco).upper()))
+                        # the line the function's source starts on, the first decorator's
+                        decorators.append((rel, fn.decorator_list[0].lineno, fn.name, _called(deco).upper(),
+                                           _receiver(deco)))
             owner = {}
             for fn in functions:
                 for child in ast.walk(fn):
                     if hasattr(child, "lineno"):
-                        owner.setdefault(id(child), fn.name)
+                        owner.setdefault(id(child), fn)
             for node in ast.walk(tree):
                 if not isinstance(node, ast.Call):
                     continue
@@ -90,8 +92,10 @@ def static_inventory():
                     name == "execute" and "session" in receiver and node.args
                     and isinstance(node.args[0], ast.Call) and _called(node.args[0]) in ("insert", "update", "delete"))
                 if write:
+                    fn = owner.get(id(node))
                     sites.append((rel, node.lineno, node.end_lineno or node.lineno,
-                                  owner.get(id(node), "<module>"), name))
+                                  fn.name if fn else "<module>", name,
+                                  (fn.lineno, fn.end_lineno) if fn else (node.lineno, node.end_lineno)))
     return decorators, sites
 
 
@@ -125,8 +129,25 @@ def load(folders):
 _APP_LABEL = {"FastAPI": "api", "FastHTML": "ui"}
 
 
-def report(folders, out):
+def _count(items) -> dict:
+    counts = defaultdict(int)
+    for item in items:
+        counts[item] += 1
+    return counts
+
+
+def _coverage(path):
+    """Lines and branches a coverage.py JSON report (--cov-branch) records per file."""
+    if not path:
+        return None
+    data = json.load(open(path, encoding="utf-8"))["files"]
+    return {rel: (set(f["executed_lines"]), f.get("executed_branches", []), f.get("missing_branches", []))
+            for rel, f in data.items()}
+
+
+def report(folders, out, coverage_path=None):
     files, routes, sites, findings, inventory = load(folders)
+    coverage = _coverage(coverage_path)
     decorators, static_sites = static_inventory()
     lines = [f"# Mutation census", "", f"Census files: {files} test processes across {len(folders)} folder(s).", ""]
 
@@ -140,6 +161,8 @@ def report(folders, out):
               f"in {len({d[0] for d in bundled})} files; in ui/: {len(decorators) - len(bundled)}.",
               f"- Mutating routes the test apps serve: {len(mutating)} "
               f"(api {sum(1 for k in mutating if k[0] == 'FastAPI')}, ui {sum(1 for k in mutating if k[0] == 'FastHTML')}).",
+              f"- Receivers of the bundled decorators: "
+              f"{', '.join(f'{r or "?"} {n}' for r, n in sorted(_count(d[4] for d in bundled).items()))}.",
               f"- Decorated in the source but not served by the test apps: {len(unmounted)}.", ""]
     classes = defaultdict(list)
     for (app, method, path), row in sorted(mutating.items()):
@@ -154,7 +177,7 @@ def report(folders, out):
         lines.append("")
     if unmounted:
         lines += ["### Decorated but not served by the test apps", ""]
-        lines += [f"- {m} {f}:{n} {fn}" for f, n, fn, m in unmounted] + [""]
+        lines += [f"- {m} {f}:{n} {fn}" for f, n, fn, m, _ in unmounted] + [""]
 
     # -- findings --------------------------------------------------------------
     by_kind = defaultdict(list)
@@ -183,18 +206,36 @@ def report(folders, out):
         path, _, line = location.rpartition(":")
         hit[path].add(int(line))
     covered, missed = [], []
-    for rel, start, end, fn, name in static_sites:
-        (covered if any(start <= n <= end for n in hit.get(rel, ())) else missed).append((rel, start, fn, name))
+    for rel, start, end, fn, name, span in static_sites:
+        (covered if any(start <= n <= end for n in hit.get(rel, ())) else missed).append((rel, start, end, fn, name, span))
     lines += ["## Mutation sites", "",
               f"- Write sites in the bundled source: {len(static_sites)}; passed through by an observed durable "
               f"write in a request: {len(covered)}; not: {len(missed)}.",
               "- A site not passed through is either outside request work (startup, background, migration, "
               "CLI) or a request write no test reaches.", ""]
-    per_file = defaultdict(list)
-    for rel, start, fn, name in missed:
-        per_file[rel].append(f"{start} {fn} ({name})")
-    lines += ["| File | Sites not passed through |", "|---|---|"]
-    lines += [f"| {rel} | {'; '.join(v)} |" for rel, v in sorted(per_file.items())] + [""]
+    if coverage is None:
+        per_file = defaultdict(list)
+        for rel, start, _, fn, name, _ in missed:
+            per_file[rel].append(f"{start} {fn} ({name})")
+        lines += ["| File | Sites not passed through |", "|---|---|"]
+        lines += [f"| {rel} | {'; '.join(v)} |" for rel, v in sorted(per_file.items())] + [""]
+    else:
+        # With a branch coverage report, a site no observed request write passed through
+        # is either run by some test (outside a request, or a write the observer counts
+        # elsewhere) or run by none; its function's branches show how much of it is reached.
+        ran, never = defaultdict(list), defaultdict(list)
+        for rel, start, end, fn, name, (first, last) in missed:
+            executed, taken, untaken = coverage.get(rel, (set(), [], []))
+            inside = lambda arcs: sum(1 for a, _ in arcs if first <= a <= last)
+            branches = inside(taken) + inside(untaken)
+            entry = f"{start} {fn} ({name}; branches {inside(taken)}/{branches})"
+            (ran if any(start <= n <= end for n in executed) else never)[rel].append(entry)
+        lines += [f"- Of the sites not passed through: run by a test {sum(len(v) for v in ran.values())}, "
+                  f"run by no test {sum(len(v) for v in never.values())} (branches: taken/all in the "
+                  f"site's function).", ""]
+        for title, group in (("Run by no test", never), ("Run by a test, no observed request write", ran)):
+            lines += [f"### {title}", "", "| File | Sites |", "|---|---|"]
+            lines += [f"| {rel} | {'; '.join(v)} |" for rel, v in sorted(group.items())] + [""]
 
     text = "\n".join(lines) + "\n"
     if out:
@@ -210,8 +251,9 @@ def main(argv=None) -> int:
     parser.add_argument("folders", nargs="+")
     parser.add_argument("--out")
     parser.add_argument("--enforce", action="store_true")
+    parser.add_argument("--coverage", help="a coverage.py JSON report of the same run, with branches")
     args = parser.parse_args(argv)
-    count = report(args.folders, args.out)
+    count = report(args.folders, args.out, args.coverage)
     return 1 if args.enforce and count else 0
 
 

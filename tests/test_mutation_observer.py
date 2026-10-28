@@ -260,3 +260,26 @@ async def test_a_table_without_company_data_must_be_named(session, auth):
         await session.commit()
     finding, = mutation_observer.CENSUS.findings
     assert (finding.kind, finding.table) == ("unowned-table", "users")
+
+
+async def test_a_route_of_an_included_router_is_counted_under_the_path_the_inventory_lists(tmp_path):
+    import json
+
+    import httpx
+    from fastapi import APIRouter, FastAPI
+
+    inner, outer, app = APIRouter(), APIRouter(), FastAPI()
+
+    @inner.get("/things/{thing_id}")
+    async def thing(thing_id: str) -> dict:
+        return {"id": thing_id}
+
+    outer.include_router(inner, prefix="/in")
+    app.include_router(outer, prefix="/pre")
+    transport = httpx.ASGITransport(app=mutation_observer.observed(app, "api"))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        assert (await client.get("/pre/in/things/5")).status_code == 200
+    assert mutation_observer.CENSUS.routes["api GET /pre/in/things/{thing_id}"] == {"requests": 1}
+    mutation_observer.write_routes(str(tmp_path / "routes.json"), [app])
+    row, = [r for r in json.loads((tmp_path / "routes.json").read_text()) if r["path"].startswith("/pre/")]
+    assert row["path"] == "/pre/in/things/{thing_id}" and row["source"].startswith(f"{__file__}:")

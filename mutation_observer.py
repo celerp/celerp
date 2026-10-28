@@ -32,6 +32,7 @@ import weakref
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field
 
+from fastapi.routing import _get_scope_effective_route_context
 from greenlet import greenlet
 from sqlalchemy import event
 from sqlalchemy.engine import Engine
@@ -171,8 +172,11 @@ class serving:
 
 def _route(request: dict) -> str:
     scope = request["scope"]
-    route = scope.get("route")
-    key = f"{scope.get('method', '?')} {getattr(route, 'path', None) or scope.get('path', '?')}"
+    # A route of a router the app includes keeps its own path; FastAPI records the
+    # prefixed template, the one the route inventory lists, in the effective context.
+    template = getattr(_get_scope_effective_route_context(scope), "path", None) \
+        or getattr(scope.get("route"), "path", None) or scope.get("path", "?")
+    key = f"{scope.get('method', '?')} {template}"
     return f"{request['app']} {key}" if request.get("app") else key
 
 
@@ -447,6 +451,17 @@ class Totals:
                        "findings": list(self.findings.values())}, out, default=str)
 
 
+def _handler(fn):
+    """The function a FastHTML route was declared with: FastHTML serves it through a
+    wrapper that holds it in its closure as `f`."""
+    code = getattr(fn, "__code__", None)
+    if code is not None and fn.__closure__ and "f" in code.co_freevars:
+        inner = fn.__closure__[code.co_freevars.index("f")].cell_contents
+        if callable(inner):
+            return inner
+    return fn
+
+
 def write_routes(path: str, apps) -> None:
     """The routes the test apps serve: method, path template and the endpoint's source."""
     import inspect
@@ -465,7 +480,7 @@ def write_routes(path: str, apps) -> None:
             methods = sorted(getattr(route, "methods", None) or ())
             if endpoint is None or not methods:
                 continue
-            fn = inspect.unwrap(endpoint)
+            fn = _handler(inspect.unwrap(endpoint))
             try:
                 source = f"{_relative(inspect.getsourcefile(fn)) or inspect.getsourcefile(fn)}:" \
                          f"{inspect.getsourcelines(fn)[1]}"

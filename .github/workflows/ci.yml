@@ -60,6 +60,8 @@ jobs:
           ALLOW_INSECURE_JWT: "true"
           # Run on the Postgres service (each xdist worker gets its own database).
           DATABASE_URL: postgresql+asyncpg://celerp:celerp@localhost:5432/celerp_test
+          # Each test process writes what the write observer saw here; the census job reads all shards.
+          CELERP_MUTATION_CENSUS: ${{ runner.temp }}/mutation-census
         # ubuntu-latest has 2 vCPUs, so a single `-n auto` run can't keep up.
         # pytest-split fans the suite across 12 parallel runners; each still uses -n auto
         # within its 2 cores.
@@ -78,6 +80,45 @@ jobs:
           --durations-path tests/.test_durations
           --ignore=tests/test_visual.py
           --ignore=tests/test_browser
+
+      - name: Upload the write observer's census
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: census-shard-${{ matrix.group }}
+          path: ${{ runner.temp }}/mutation-census
+          if-no-files-found: error
+          retention-days: 7
+
+  census:
+    name: Mutation census
+    needs: shard
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: census-shard-*
+          path: ${{ runner.temp }}/census
+
+      # The route inventory, the writes made without the company lock and the write sites
+      # the suite passed through, from every shard together (scripts/mutation_census.py).
+      - name: Report
+        run: |
+          python scripts/mutation_census.py ${{ runner.temp }}/census/census-shard-* --out census.md
+          head -c 1000000 census.md >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: mutation-census
+          path: census.md
+          retention-days: 30
 
   process:
     name: Process tests
