@@ -417,8 +417,14 @@ async def test_events_engine_pg_notify_exception_swallowed():
     mock_bind = MagicMock()
     mock_bind.dialect.name = "postgresql"
     mock_session.bind = mock_bind
-    # pg_notify raises an exception
-    mock_session.execute = AsyncMock(side_effect=Exception("pg_notify failed"))
+    mock_session.info = {}
+    # pg_notify raises an exception; the other statements (the company lock) find nothing.
+    async def execute(statement, *args, **kwargs):
+        if "pg_notify" in str(statement):
+            raise Exception("pg_notify failed")
+        return MagicMock()
+
+    mock_session.execute = AsyncMock(side_effect=execute)
     mock_session.add = MagicMock()
     # No stored rows: the company, entity and store-connection lookups find nothing.
     mock_session.get = AsyncMock(return_value=None)

@@ -85,29 +85,27 @@ async def _set_semantics(session, value: str) -> None:
     await conn.run_sync(lambda c: set_meta(c, PROJECTION_SEMANTICS_KEY, value))
 
 
-async def _projection_count(session) -> int:
-    return len((await session.execute(select_projections())).all())
-
-
-def select_projections():
+async def _projection_count(session, cid) -> int:
+    """The seeded company's records: a rebuild replays every company in the database,
+    including any another test committed."""
     from sqlalchemy import select
-    return select(Projection)
+    return len((await session.execute(select(Projection).where(Projection.company_id == cid))).all())
 
 
 @pytest.mark.asyncio
 async def test_guard_rebuilds_on_version_change(session):
     """No marker (develop origin) → guard rebuilds projections and stamps the
     version marker."""
-    await _seed_item(session)
+    cid = await _seed_item(session)
     # Simulate projections that don't match the release: wipe them.
     await session.execute(delete(Projection))
-    assert await _projection_count(session) == 0
+    assert await _projection_count(session, cid) == 0
     assert await _marker(session) is None
 
     result = await run_upgrade_guard(session)
 
     assert result == {"changed": True, "rebuilt": True, "current": True}
-    assert await _projection_count(session) == 1     # rebuilt from the ledger
+    assert await _projection_count(session, cid) == 1     # rebuilt from the ledger
     assert await _marker(session) == __version__
 
 
@@ -115,7 +113,7 @@ async def test_guard_rebuilds_on_version_change(session):
 async def test_guard_gated_when_version_matches(session):
     """Once stamped for this version, a second run is skipped — proven by wiping
     projections and confirming the guard does NOT rebuild them."""
-    await _seed_item(session)
+    cid = await _seed_item(session)
     await run_upgrade_guard(session)            # stamps marker == __version__
     assert await _marker(session) == __version__
 
@@ -123,7 +121,7 @@ async def test_guard_gated_when_version_matches(session):
     result = await run_upgrade_guard(session)    # same version → must skip
 
     assert result == {"changed": False, "rebuilt": False, "current": True}
-    assert await _projection_count(session) == 0  # NOT rebuilt (gate held)
+    assert await _projection_count(session, cid) == 0  # NOT rebuilt (gate held)
 
 
 @pytest.mark.asyncio
@@ -131,7 +129,7 @@ async def test_guard_skips_rebuild_for_release_origin(session):
     """A DB last booted by a RELEASE build (marker has no .dev) under the same
     projection semantics is assumed projection-correct: a release→release upgrade
     skips the rebuild entirely."""
-    await _seed_item(session)
+    cid = await _seed_item(session)
     await _set_marker(session, "1.0.0")          # previous boot was a release build
     await _set_semantics(session, str(PROJECTION_SEMANTICS))
     await session.execute(delete(Projection))    # corrupt: drop read-models
@@ -139,7 +137,7 @@ async def test_guard_skips_rebuild_for_release_origin(session):
     result = await run_upgrade_guard(session)
 
     assert result == {"changed": True, "rebuilt": False, "current": True}
-    assert await _projection_count(session) == 0  # NOT rebuilt — release origin
+    assert await _projection_count(session, cid) == 0  # NOT rebuilt — release origin
     assert await _marker(session) == __version__  # but the boot version is recorded
 
 
@@ -148,7 +146,7 @@ async def test_guard_skips_rebuild_for_release_origin(session):
 async def test_guard_rebuilds_for_release_origin_with_other_semantics(session, semantics):
     """A release→release upgrade across a change in projection semantics rebuilds,
     and records both the version and the semantics it rebuilt under."""
-    await _seed_item(session)
+    cid = await _seed_item(session)
     await _set_marker(session, "1.0.0")
     if semantics is not None:
         await _set_semantics(session, semantics)
@@ -157,7 +155,7 @@ async def test_guard_rebuilds_for_release_origin_with_other_semantics(session, s
     result = await run_upgrade_guard(session)
 
     assert result == {"changed": True, "rebuilt": True, "current": True}
-    assert await _projection_count(session) == 1
+    assert await _projection_count(session, cid) == 1
     assert await _marker(session) == __version__
     assert await _semantics(session) == str(PROJECTION_SEMANTICS)
 
@@ -168,14 +166,14 @@ async def test_guard_rebuilds_for_dev_origin(session, dev_marker):
     """A DB last booted by a DEVELOP build gets a rebuild — the develop→release
     transition this feature exists for. Both dev-version forms count (matching
     the UI's detection): a `.devN` segment and the `+dev` local fallback."""
-    await _seed_item(session)
+    cid = await _seed_item(session)
     await _set_marker(session, dev_marker)        # previous boot was a develop build
     await session.execute(delete(Projection))
 
     result = await run_upgrade_guard(session)
 
     assert result == {"changed": True, "rebuilt": True, "current": True}
-    assert await _projection_count(session) == 1  # rebuilt from the ledger
+    assert await _projection_count(session, cid) == 1  # rebuilt from the ledger
     assert await _marker(session) == __version__
 
 
@@ -193,13 +191,13 @@ async def test_guard_skips_rebuild_on_unknown_event_type(session):
         ),
         {"cid": cid, "idem": f"idem-{uuid.uuid4().hex[:8]}"},
     )
-    before = await _projection_count(session)
+    before = await _projection_count(session, cid)
 
     result = await run_upgrade_guard(session)
 
     assert result["changed"] is True and result["rebuilt"] is False and result["current"] is False
     assert "zzz.unknown.event" in result["unknown_event_types"]
-    assert await _projection_count(session) == before   # untouched
+    assert await _projection_count(session, cid) == before   # untouched
     assert await _marker(session) is None               # not stamped → retries later
     assert await _semantics(session) is None
 

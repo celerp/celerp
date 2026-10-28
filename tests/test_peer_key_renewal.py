@@ -287,36 +287,36 @@ async def test_client_warning_text_names_the_firm(monkeypatch):
 @pytest.mark.asyncio
 async def test_outbound_run_checks_the_key_once_before_sending(monkeypatch):
     from contextlib import asynccontextmanager
-    from celerp import db
-    from celerp.connectors import ownership, sync_runner
+    from types import SimpleNamespace
+    from celerp.connectors import execution, sync_runner
     from celerp.connectors.base import SyncDirection, SyncEntity, SyncResult
     from celerp.connectors.celerp import CelerpConnector
 
-    class Session:
-        async def commit(self):
-            pass
+    company = str(uuid.uuid4())
+    ctx = _ctx(company)
+
+    async def sending_only(cid, name):
+        return {key: "outbound" if flow.outbound else "off"
+                for key, flow in CelerpConnector.entity_flows.items()}
 
     @asynccontextmanager
-    async def session():
-        yield Session()
-
-    async def no_config(*args, **kwargs):
-        return None
+    async def one_execution(cid, connector, purpose, resources):
+        yield SimpleNamespace(ctx=ctx)
 
     order = []
 
-    async def fake_run_sync(connector, ctx, entity, **kwargs):
+    async def fake_run_sync(connector, cid, entity, **kwargs):
         order.append(entity)
         return SyncResult(entity=SyncEntity.CONTACTS, direction=SyncDirection.OUTBOUND)
 
     async def before(self, ctx, now=None):
         order.append("key")
 
-    monkeypatch.setattr(db, "get_session_ctx", session)
-    monkeypatch.setattr(ownership, "lock_connector_operation", no_config)
+    monkeypatch.setattr(sync_runner, "_directions", sending_only)
+    monkeypatch.setattr(execution, "connector_execution", one_execution)
     monkeypatch.setattr(sync_runner, "run_sync", fake_run_sync)
     monkeypatch.setattr(CelerpConnector, "before_outbound", before)
-    await sync_runner.run_connector_sync(CelerpConnector(), _ctx(str(uuid.uuid4())))
+    await sync_runner.run_connector_sync(CelerpConnector(), company, purpose="manual_sync")
     assert order[0] == "key" and order.count("key") == 1 and len(order) > 2
 
 

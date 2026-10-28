@@ -110,9 +110,10 @@ async def _seed_company(factory) -> tuple[uuid.UUID, uuid.UUID, types.SimpleName
 
 @pytest.mark.asyncio
 async def test_company_lock_upgrade_serializes_without_deadlock(_db_engine):
-    """Two transactions each emit a ledger event for the same company (so each holds the
-    implicit KEY SHARE on the company row), synchronize so both hold it, then concurrently
-    take the code-namespace lock. FOR NO KEY UPDATE never has to upgrade past KEY SHARE, so
+    """Two transactions each hold the KEY SHARE on the company row that an insert referencing
+    the company takes (an event emit takes the company lock first, so the KEY SHARE here is
+    taken directly), synchronize so both hold it, then concurrently take the code-namespace
+    lock. FOR NO KEY UPDATE never has to upgrade past KEY SHARE, so
     one acquires and the other waits for it to commit; both then commit with no deadlock. On
     the pre-fix FOR UPDATE lock the same interleaving is a lock upgrade past the peer's KEY
     SHARE, which Postgres breaks with 40P01."""
@@ -126,17 +127,9 @@ async def test_company_lock_upgrade_serializes_without_deadlock(_db_engine):
     async def _hold_and_lock(idx: int) -> None:
         s = factory()
         try:
-            await emit_event(
-                s, company_id=company_id, entity_id=f"item:ks-{idx}-{uuid.uuid4().hex[:8]}",
-                entity_type="item", event_type="item.created",
-                data={"sku": f"KS{idx}", "name": "Key-share holder", "quantity": 1},
-                actor_id=user.id, location_id=None, source="test",
-                idempotency_key=str(uuid.uuid4()), metadata_={},
-            )
-            # Flush so the INSERT lands and its FK check takes the KEY SHARE on the company row
-            # now, before the barrier - the emit alone would not touch the DB until the next
-            # execute or commit, and the whole point is that both hold KEY SHARE first.
-            await s.flush()
+            # The KEY SHARE an insert's foreign-key check takes on the company row, held before
+            # the barrier: the whole point is that both hold KEY SHARE first.
+            await s.execute(text("SELECT 1 FROM companies WHERE id = :c FOR KEY SHARE"), {"c": company_id})
             pid = await _backend_pid(s)
             await both_hold_key_share.wait()
             await lock_item_code_namespace(s, company_id)
