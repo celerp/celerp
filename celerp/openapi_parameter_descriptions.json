@@ -1489,5 +1489,18 @@
   },
   "GET /ai/usage-stats": {
     "query:period": "Questions to count: month (from the start of the current company month, the default) or all (all time)."
+  },
+  "GET /ai/conversations/{conversation_id}/questions/{question_id}": {
+    "path:conversation_id": "Identifier of the AI conversation.",
+    "path:question_id": "Identifier of the question within the AI conversation."
+  },
+  "POST /ai/jobs/{job_id}/cancel": {
+    "path:job_id": "Identifier of the AI processing job."
+  },
+  "POST /ai/jobs/{job_id}/resume": {
+    "path:job_id": "Identifier of the AI processing job."
+  },
+  "POST /ai/jobs/{job_id}/retry-failed": {
+    "path:job_id": "Identifier of the AI processing job."
   }
 }
