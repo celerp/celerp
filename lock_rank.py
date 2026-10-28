@@ -46,19 +46,24 @@ RANKS: dict[str, int] = {
     "adv:backup-names": 10, "adv:backup": 11, "adv:backup-landing": 12,
     # Module state, then sign-in (auth.py hold_companyless_login: before any company row).
     "adv:module-state": 15, "adv:direct-sign-in": 16, "row:users": 17,
-    # Connector guard (R0, R1) and the run lock.
-    "adv:connector-runtime": 20, "adv:connector-owner": 21, "adv:sync-run": 22,
+    # Connector guard (R0, R1), the run lock and the outbound identity lock (taken with no
+    # transaction open in the task, on its own connection).
+    "adv:connector-runtime": 20, "adv:connector-owner": 21, "adv:sync-run": 22, "adv:outbound": 23,
+    # Execution lease (fence, KEY SHARE) and its heartbeat. Every FOR UPDATE on either table runs
+    # in a transaction that holds nothing else, and acquire/takeover use NOWAIT.
+    "row:connector_execution_leases": 25, "row:connector_execution_heartbeats": 26,
     # The company (R3) and what is read under it.
     "row:companies": 30, "row:user_auth_state": 31, "row:user_companies": 32,
-    "row:company_peer_identities": 33, "row:locations": 34,
+    "row:company_peer_identities": 33, "row:locations": 34, "row:sync_runs": 35,
+    "row:connector_configs": 39,
     # Shop identity namespaces, after the company and before any item row.
     "adv:woocommerce-order": 40, "adv:external-link": 41, "adv:external-product": 42,
-    "row:connector_configs": 43, "row:connector_first_syncs": 44, "row:sync_runs": 45,
+    "row:connector_first_syncs": 44,
     # Chart and posting (R3a).
     "adv:chart": 50, "row:accounts": 51, "row:bank_accounts": 52, "row:reconciliation_sessions": 53,
     "row:bank_statement_lines": 54, "row:unmatched_payments": 55,
     # Items (R6), then import batches (R7) and the outbound queue (R8).
-    "row:projections": 60, "row:import_batches": 61, "adv:outbound": 62, "row:outbound_queue": 63,
+    "row:projections": 60, "row:import_batches": 61, "row:outbound_queue": 63,
     # Bookkeeping rows written last.
     "row:migration_runs": 70, "row:migration_cleanup_tasks": 71, "row:migration_templates": 72,
     "row:migration_attachment_fetches": 73, "adv:xero-attachments": 74, "adv:xero-attachments-round": 75,
