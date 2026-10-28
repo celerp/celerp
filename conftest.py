@@ -644,12 +644,18 @@ def _ui_api_not_running(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _held_ai_limits(monkeypatch):
+def _held_ai_limits():
     """Test relays model a current AI service: the app holds its published limits, so
     a model call does not first fetch them (tests/test_ai_deadlines.py forgets them
-    to test the fetch itself)."""
+    to test the fetch itself). Set and restored without monkeypatch: an autouse
+    fixture that requests it sets it up ahead of the fixtures that restore shared
+    state, which would then tear down while a test's patches are still in place
+    (tests/test_conftest_fixture_order.py)."""
     from celerp.ai import deadlines
-    monkeypatch.setattr(deadlines, "_held", deadlines.CURRENT_RELAY_DEFAULTS)
+    before = deadlines._held
+    deadlines._held = deadlines.CURRENT_RELAY_DEFAULTS
+    yield
+    deadlines._held = before
 
 
 @pytest.fixture(autouse=True)
