@@ -639,6 +639,17 @@ def _committed(session) -> None:
 
 # -- census files ------------------------------------------------------------------
 
+def explain(findings: list[Finding]) -> str:
+    """One paragraph per finding: what was written where, and why it was judged so."""
+    out = [f"{len(findings)} write(s) of company data the write observer refused:"]
+    for f in findings:
+        out.append(
+            f"- {f.kind}: {f.route} {f.table or ''} company {f.company} ({f.company_from}); {f.detail}\n"
+            f"  sql: {f.sql[:300]}\n  earlier locks: {f.earlier_locks or 'none'}\n"
+            f"  at: {' <- '.join(f.where[:4]) or 'no app frame'}")
+    return "\n".join(out)
+
+
 class Totals:
     """Everything one test process saw, merged across its tests: request and write counts
     per route, durable writes per app frame, and each distinct finding once, with how

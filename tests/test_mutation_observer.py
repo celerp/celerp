@@ -26,7 +26,7 @@ from celerp.models.projections import Projection
 from celerp.services.company_lock import lock_chart, lock_company
 from celerp.services.permissions import authorize_request
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [pytest.mark.asyncio, pytest.mark.observer_control]
 
 
 def _kinds() -> list[str]:

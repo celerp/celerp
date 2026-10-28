@@ -497,6 +497,9 @@ def _one_current_event_loop():
 
 
 _CENSUS = mutation_observer.Totals()
+# A write the observer judges unprotected, out of order, for another company or that it
+# cannot classify fails the test that made it.
+_ENFORCE = os.environ.get("CELERP_MUTATION_ENFORCE") == "1"
 
 
 @pytest.fixture(autouse=True)
@@ -505,7 +508,10 @@ def _mutation_census(request):
     (CELERP_MUTATION_CENSUS names its folder)."""
     mutation_observer.reset(request.node.nodeid)
     yield
-    _CENSUS.add(mutation_observer.reset())
+    seen = mutation_observer.reset()
+    _CENSUS.add(seen)
+    if _ENFORCE and seen.findings and not request.node.get_closest_marker("observer_control"):
+        pytest.fail(mutation_observer.explain(seen.findings), pytrace=False)
 
 
 def pytest_sessionfinish(session, exitstatus):
