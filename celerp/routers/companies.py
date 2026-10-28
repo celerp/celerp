@@ -761,7 +761,11 @@ async def transfer_install_owner(
     owner: User = Depends(require_install_owner),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Transfer installation-wide authority to an active user in this company."""
+    """Transfer installation-wide authority to an active user in this company.
+
+    The company lock comes before the login rows, as in every company request that
+    locks a login, and holds the company for the notice the transfer leaves there."""
+    await lock_company(session, company_id)
     current = (await session.execute(
         select(User).where(User.is_install_owner.is_(True)).with_for_update()
     )).scalar_one_or_none()
