@@ -12,7 +12,6 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Awaitable, Callable
 
 import sqlalchemy as sa
 
@@ -24,7 +23,6 @@ log = logging.getLogger(__name__)
 
 _CHECK_INTERVAL_SECONDS = 3600  # check every hour
 
-TokenFetcher = Callable[[str, str], Awaitable["ConnectorContext"]]  # noqa: F821
 
 
 def latest_scheduled_run(now: datetime, hour: int) -> datetime:
@@ -44,14 +42,9 @@ def daily_sync_due(last_daily_sync_at: datetime | None, hour: int, now: datetime
     return last_daily_sync_at.replace(tzinfo=timezone.utc) < latest_scheduled_run(now, hour)
 
 
-async def check_and_run_daily_syncs(
-    company_id: str,
-    token_fetcher: TokenFetcher | None = None,
-) -> list[str]:
-    """Check all connectors with daily frequency and run if due.
-
-    token_fetcher: async (company_id, connector_name) -> ConnectorContext
-      If not provided, due connectors are logged as warnings but NOT marked synced.
+async def check_and_run_daily_syncs(company_id: str) -> list[str]:
+    """Check all connectors with daily frequency and run if due, each in its own
+    execution. A connection whose sync is busy records a rerun and stays due.
 
     Returns list of connector names that were successfully synced.
     """
@@ -90,29 +83,28 @@ async def check_and_run_daily_syncs(
             log.warning("daily_scheduler: unknown connector %s", config.connector)
             continue
 
-        if token_fetcher is None:
-            log.warning(
-                "daily_scheduler: %s is due for sync but no token_fetcher provided - skipping",
-                config.connector,
-            )
-            continue
-
         log.info("daily_scheduler: running %s", config.connector)
 
+        from celerp.connectors.execution import (
+            AdmissionBusy,
+            ExecutionBusy,
+            ExecutionRefused,
+            plan_resources,
+            record_rerun,
+        )
         from celerp.connectors.relay_token import ConnectorUpgradeRequired, ConnectRequired
 
         try:
-            ctx = await token_fetcher(company_id, config.connector)
-        except (ConnectorUpgradeRequired, ConnectRequired) as exc:
+            entity_results = await run_connector_sync(connector, company_id, purpose="schedule", reconcile=True)
+        except (ExecutionBusy, AdmissionBusy):
+            for resource in plan_resources(connector, config.entity_directions):
+                await record_rerun(company_id, config.connector, resource)
+            log.info("daily_scheduler: %s busy, rerun recorded", config.connector)
+            continue
+        except (ExecutionRefused, ConnectorUpgradeRequired, ConnectRequired) as exc:
             # Stays due, so the sync runs at the first check after the update or renewal.
             log.warning("daily_scheduler: %s not synced: %s", config.connector, exc)
             continue
-        except Exception as exc:
-            log.warning("daily_scheduler: token fetch failed for %s: %s", config.connector, exc)
-            continue
-
-        try:
-            entity_results = await run_connector_sync(connector, ctx, reconcile=True)
         except Exception as exc:
             log.error("daily_scheduler: sync error %s: %s", config.connector, exc)
             entity_results = []
@@ -151,11 +143,11 @@ async def check_and_run_daily_syncs(
     return synced
 
 
-async def scheduler_loop(company_id: str, token_fetcher: TokenFetcher | None = None) -> None:
+async def scheduler_loop(company_id: str) -> None:
     """Background loop that checks for due daily syncs every hour."""
     while True:
         try:
-            synced = await check_and_run_daily_syncs(company_id, token_fetcher=token_fetcher)
+            synced = await check_and_run_daily_syncs(company_id)
             if synced:
                 log.info("daily_scheduler: synced %s", ", ".join(synced))
         except Exception as exc:
@@ -173,13 +165,13 @@ async def _distinct_company_ids() -> list[str]:
         return [str(r[0]) for r in rows if str(r[0]) != legacy_id]
 
 
-async def scheduler_loop_all(token_fetcher: TokenFetcher | None = None) -> None:
+async def scheduler_loop_all() -> None:
     """Reconciliation backstop: hourly, run any due daily syncs for every company
     that has a connector configured. Started from the API lifespan."""
     while True:
         try:
             for company_id in await _distinct_company_ids():
-                synced = await check_and_run_daily_syncs(company_id, token_fetcher=token_fetcher)
+                synced = await check_and_run_daily_syncs(company_id)
                 if synced:
                     log.info("daily_scheduler: synced %s for %s", ", ".join(synced), company_id)
         except Exception as exc:

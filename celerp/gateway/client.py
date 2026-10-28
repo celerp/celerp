@@ -723,7 +723,6 @@ class GatewayClient:
         try:
             import sqlalchemy as sa
 
-            from celerp.connectors.relay_token import fetch_context
             from celerp.connectors.webhooks import WebhookEvent, handle_webhook
             from celerp.db import get_session_ctx
             from celerp.models.connector_config import ConnectorConfig
@@ -739,19 +738,14 @@ class GatewayClient:
             event = WebhookEvent(platform="shopify", topic=topic, payload=data)
             want = _shop_key(shop)
             for (company_id,) in configs:
-                ctx = await fetch_context(company_id, "shopify")
-                if ctx is None:
-                    continue
                 # Guard against a misrouted/stale delivery: only sync when the webhook's
                 # shop matches this instance's connected store. (Companies on an instance
                 # share one instance-level Shopify token, so this matches on the store,
-                # not a specific company — per-company store routing isn't modelled.)
-                if want and _shop_key(ctx.store_handle) != want:
-                    continue
+                # not a specific company: per-company store routing isn't modelled.)
                 await handle_webhook(
                     event,
-                    ctx,
-                    expected_store_handle=ctx.store_handle,
+                    company_id,
+                    store_matches=lambda handle: not want or _shop_key(handle) == want,
                 )
         except Exception as exc:
             log.warning("shopify webhook handling failed (topic=%s): %s", topic, exc)

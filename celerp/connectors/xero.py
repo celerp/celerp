@@ -401,9 +401,7 @@ class XeroConnector(ConnectorBase):
             try:
                 if doc_id not in queued:
                     await enqueue_outbound(company_id, self.name, "invoice", doc_id)
-                outcome = await process_outbound_identity(
-                    company_id, self.name, "invoice", doc_id, ctx=ctx
-                )
+                outcome = await process_outbound_identity(company_id, self.name, "invoice", doc_id)
             except Exception as exc:
                 errors.append(f"Invoice {label}: {exc}")
                 continue

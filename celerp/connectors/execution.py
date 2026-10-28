@@ -308,6 +308,36 @@ def before_remote_call(method: str) -> None:
     ex.check_alive()
 
 
+@contextlib.asynccontextmanager
+async def identity_lock(key: str) -> AsyncIterator[None]:
+    """Serialize the sends of one remote identity across workers, with no transaction
+    open in the task: a session-level advisory lock on the boundary's own
+    autocommit connection, held across the fresh read, the remote write and the
+    result, and released after them."""
+    ex = current()
+    if ex is not None and ex.has_open_transaction():
+        raise RemoteCallInTransaction("an identity lock is taken with no transaction open")
+    import celerp.db as db
+
+    with _internal():
+        conn = await db.lifecycle_engine.connect()
+    try:
+        postgres = conn.dialect.name != "sqlite"
+        if postgres:
+            with _internal():
+                conn = await conn.execution_options(isolation_level="AUTOCOMMIT")
+                await conn.execute(sa.text("SELECT pg_advisory_lock(hashtextextended(:k, 0))"), {"k": key})
+        try:
+            yield
+        finally:
+            if postgres:
+                with _internal():
+                    await conn.execute(sa.text("SELECT pg_advisory_unlock(hashtextextended(:k, 0))"), {"k": key})
+    finally:
+        with _internal():
+            await conn.close()
+
+
 # -- lease transactions ---------------------------------------------------------------
 
 def _sessions():
@@ -546,16 +576,20 @@ async def _credentials(ex: Execution):
 
 @contextlib.asynccontextmanager
 async def connector_execution(
-    company_id, connector_name: str, purpose: str, resources: list[str], *,
+    company_id, connector, purpose: str, resources: list[str], *,
     admission_wait: float | None = None,
 ) -> AsyncIterator[Execution]:
-    """Run connector work for ``resources`` of one connection.
+    """Run connector work for ``resources`` of one connection (``connector`` is the
+    connector or its registered name).
 
     ``admission_wait`` bounds the wait for a free slot (None waits; 0 only tries);
     AdmissionBusy when none frees. ExecutionBusy when a resource is held,
     ExecutionRefused when `eligible` refuses, LeaseLost when the lease ends early."""
     from celerp import connectors
 
+    if isinstance(connector, str):
+        connector = connectors.get(connector)
+    connector_name = connector.name
     company_id = str(company_id)
     resources = sorted(set(resources))
     mine = current()
@@ -565,7 +599,6 @@ async def connector_execution(
             return
         raise NestedExecutionError(
             f"{connector_name} {resources} requested inside an execution holding {mine.resources}")
-    connector = connectors.get(connector_name)
     slots = _slots()
     try:
         if admission_wait is None:

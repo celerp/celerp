@@ -175,7 +175,6 @@ async def _verify_runtime_dependencies() -> None:
         outbound_queue_loop,
     )
     from celerp.connectors.daily_scheduler import scheduler_loop_all
-    from celerp.connectors.relay_token import fetch_context as connector_token_fetcher
     from celerp.services.peer_access import expiry_warning_loop
     from celerp.services.migration_xero_attachments import fetch_loop as xero_attachment_loop
     from celerp.services.reorder import reorder_alert_loop
@@ -191,7 +190,6 @@ async def _verify_runtime_dependencies() -> None:
         run_jti_cleanup_loop,
         outbound_queue_loop,
         scheduler_loop_all,
-        connector_token_fetcher,
         reorder_alert_loop,
         expiry_warning_loop,
         xero_attachment_loop,
@@ -612,7 +610,6 @@ async def _serve(_app: FastAPI, held):
     )
     await adopt_legacy_connector_configs()
     from celerp.connectors.daily_scheduler import scheduler_loop_all
-    from celerp.connectors.relay_token import fetch_context as _connector_token_fetcher
     from celerp.services.reorder import reorder_alert_loop
     # Outbound stock delivery, the daily connector reconciliation and the reorder
     # alerts all read the projections to change data or tell other systems, so
@@ -623,9 +620,8 @@ async def _serve(_app: FastAPI, held):
             # Near-real-time outbound stock delivery.
             asyncio.create_task(outbound_queue_loop()),
             # Connector reconciliation: a daily incremental sync per connector,
-            # backstopping any realtime webhooks missed while offline. No-op without
-            # a relay session (self-hosted instances skip token fetch).
-            asyncio.create_task(scheduler_loop_all(token_fetcher=_connector_token_fetcher)),
+            # backstopping any realtime webhooks missed while offline.
+            asyncio.create_task(scheduler_loop_all()),
             # Reorder low-stock alerts: a daily per-company scan that notifies once
             # per dip when items reach their reorder point (no-op for companies with
             # alerts disabled or no reorder points set).

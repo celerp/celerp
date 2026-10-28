@@ -3,6 +3,7 @@
 """Connector routes - /connectors/*."""
 from __future__ import annotations
 
+import contextlib
 import logging
 from datetime import date
 from typing import Annotated, Literal
@@ -105,6 +106,25 @@ async def _connector_context(company_id: str, connector_name: str, **kwargs):
         raise HTTPException(status_code=402, detail=str(exc)) from exc
 
 
+@contextlib.contextmanager
+def _execution_refusals(connector):
+    """A person's connector work refused by its execution, as the answer they see."""
+    from celerp.connectors.execution import ExecutionBusy, ExecutionRefused
+    from celerp.connectors.relay_token import ConnectorUpgradeRequired, ConnectRequired
+
+    try:
+        yield
+    except ExecutionBusy as exc:
+        raise HTTPException(status_code=409, detail=t("connectors.fail_busy")) from exc
+    except ExecutionRefused as exc:
+        key = "connectors.fail_direction" if exc.reason == "direction_off" else "connectors.err_first_sync_needed"
+        raise HTTPException(status_code=409, detail=t(key, service=connector.display_name)) from exc
+    except ConnectorUpgradeRequired as exc:
+        raise HTTPException(status_code=426, detail=str(exc)) from exc
+    except ConnectRequired as exc:
+        raise HTTPException(status_code=402, detail=str(exc)) from exc
+
+
 async def _first_sync_row(session: AsyncSession, company_id, connector_name: str, *, for_update: bool = False):
     """The connection's first-sync record (ConnectorFirstSync), None without one."""
     from celerp.models.connector_first_sync import ConnectorFirstSync
@@ -175,16 +195,15 @@ async def trigger_sync(
         )
 
     await _ready_config(session, company_id, connector)
+    # The sync's transactions begin inside its execution.
+    await session.commit()
 
-    ctx = await _connector_context(str(company_id), connector_name)
-    if ctx is None:
-        raise HTTPException(status_code=409, detail=t("error.connector_not_connected", service=connector.display_name))
-
-    # Route through run_sync so the manual path gets the same audit row, concurrency
-    # guard, and incremental watermark as the scheduled/webhook paths.
     from celerp.connectors.sync_runner import run_sync
     try:
-        result = await run_sync(connector, ctx, payload.entity.value)
+        with _execution_refusals(connector):
+            result = await run_sync(connector, company_id, payload.entity.value, purpose="manual_sync")
+    except HTTPException:
+        raise
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
@@ -218,16 +237,16 @@ async def trigger_sync_plan(
 
     await _ready_config(session, company_id, connector)
 
-    ctx = await _connector_context(str(company_id), connector_name)
-    if ctx is None:
-        raise HTTPException(status_code=409, detail=t("error.connector_not_connected", service=connector.display_name))
-
+    from celerp.connectors.execution import ExecutionError
+    from celerp.connectors.relay_token import ConnectorUpgradeRequired, ConnectRequired
     from celerp.connectors.sync_runner import run_connector_sync
     from celerp.services.background import spawn_background
 
     async def _run() -> None:
         try:
-            await run_connector_sync(connector, ctx)
+            await run_connector_sync(connector, company_id, purpose="manual_sync")
+        except (ExecutionError, ConnectRequired, ConnectorUpgradeRequired) as exc:
+            log.info("connector sync plan not run: %s: %s", connector_name, exc)
         except Exception:
             log.exception("connector sync plan failed: %s", connector_name)
 
