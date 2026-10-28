@@ -693,20 +693,91 @@
         "where"
       ]
     },
-    "ai.err_operation_conflict": {
-      "en": "This question was already sent and cannot be sent again. Press Send to ask it as a new question; it counts as one more question.",
+    "ai.job_permission_lost": {
+      "en": "This job stopped because you no longer have permission to use the AI assistant.",
       "params": []
     },
-    "ai.err_outcome_unknown": {
-      "en": "Celerp AI's answer to this question was lost and can't be recovered. You can ask it as a new question, which counts as one more question.",
+    "ai.job_ai_unavailable": {
+      "en": "This job stopped because Celerp is no longer connected to the AI service. Reconnect, then resume the job.",
       "params": []
     },
-    "ai.err_operation_mismatch": {
-      "en": "This question can't be sent again because its context has changed since it was first sent. You can ask it as a new question, which counts as one more question.",
+    "ai.err_file_unexpected": {
+      "en": "Something went wrong while reading this file. Retry it to read it again.",
       "params": []
     },
-    "ai.ask_as_new": {
-      "en": "Ask as a new question",
+    "ai.retry_files": {
+      "en": "Retry {n} files",
+      "params": [
+        "n"
+      ]
+    },
+    "ai.retry_files_confirm": {
+      "en": "This counts as {n} questions, one per file.",
+      "params": [
+        "n"
+      ]
+    },
+    "ai.retry_one_file": {
+      "en": "Retry 1 file",
+      "params": []
+    },
+    "ai.retry_one_file_confirm": {
+      "en": "This counts as 1 question.",
+      "params": []
+    },
+    "ai.err_job_not_open": {
+      "en": "This job can't do that now. It may still be running, or have nothing left to send.",
+      "params": []
+    },
+    "ai.err_question_not_found": {
+      "en": "Celerp couldn't find this question in the conversation.",
+      "params": []
+    },
+    "ai.question_promoted": {
+      "en": "This is taking longer than usual. It keeps working in the background, and you'll get a notification when it's done.",
+      "params": []
+    },
+    "ai.waiting_documents": {
+      "en": "Waiting for a document reading job to free up",
+      "params": []
+    },
+    "ai.waiting_questions": {
+      "en": "Waiting for another AI question to finish",
+      "params": []
+    },
+    "ai.question_answered_title": {
+      "en": "Celerp AI answered your question",
+      "params": []
+    },
+    "ai.question_failed_title": {
+      "en": "Celerp AI couldn't answer your question",
+      "params": []
+    },
+    "ai.question_done_body": {
+      "en": "Open the conversation to read the reply.",
+      "params": []
+    },
+    "ai.stop": {
+      "en": "Stop",
+      "params": []
+    },
+    "ai.question_stopped": {
+      "en": "You stopped this question. Ask again to continue it. It still counts as one question.",
+      "params": []
+    },
+    "ai.question_interrupted": {
+      "en": "This question stopped when Celerp restarted. Ask again to continue it. It still counts as one question.",
+      "params": []
+    },
+    "ai.job_stopped": {
+      "en": "Stopped after reading {done} of {total} files. Continue to read the rest.",
+      "params": [
+        "done",
+        "total"
+      ]
+    },
+    "ai.err_question_expired": {
+      "en": "This question can no longer be continued. You can ask it as a new question, which counts as one more question.",
       "params": []
     }
   }
