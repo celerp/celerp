@@ -88,8 +88,10 @@ async def get_runtime_state(session: AsyncSession) -> dict[str, Any]:
     cached = _drain_cache_get()
     if cached is not None:
         return cached
-    row = await _get_or_create(session)
-    value = dict(row.value) if row.value else dict(_DEFAULT_VALUE)
+    # A read never creates the row: the drain check runs it in a session it never
+    # commits, where an insert would be discarded and, until then, hold the row's key.
+    row = await session.get(SystemRuntimeState, _SINGLETON_ID)
+    value = dict(row.value) if row is not None and row.value else dict(_DEFAULT_VALUE)
     _drain_cache_set(value)
     return value
 
