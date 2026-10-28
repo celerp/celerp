@@ -92,7 +92,7 @@ jobs:
 
   census:
     name: Mutation census
-    needs: shard
+    needs: [shard, process, browser]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -108,7 +108,8 @@ jobs:
           path: ${{ runner.temp }}/census
 
       # The route inventory, the writes made without the company lock and the write sites
-      # the suite passed through, from every shard together (scripts/mutation_census.py).
+      # the suite passed through, from every unit, process and browser shard together
+      # (scripts/mutation_census.py).
       # Fails on a write no baseline entry accepts, and on an entry no finding matched or
       # its own test did not reproduce.
       - name: Report
@@ -164,10 +165,20 @@ jobs:
           ALLOW_INSECURE_JWT: "true"
           # Run on the Postgres service (each xdist worker gets its own database).
           DATABASE_URL: postgresql+asyncpg://celerp:celerp@localhost:5432/celerp_test
+          CELERP_MUTATION_CENSUS: ${{ runner.temp }}/mutation-census
         run: >
           timeout 600 pytest tests/ default_modules/*/tests/ -m "process and not integration" -n auto -q --tb=short --no-cov
           --ignore=tests/test_visual.py
           --ignore=tests/test_browser
+
+      - name: Upload the write observer's census
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: census-shard-process
+          path: ${{ runner.temp }}/mutation-census
+          if-no-files-found: error
+          retention-days: 7
 
   integration:
     name: Integration validation
@@ -259,6 +270,8 @@ jobs:
           # Each xdist worker gets its own database AND its own server ports (see
           # tests/test_browser/conftest.py), so -n parallelism is safe.
           DATABASE_URL: postgresql+asyncpg://celerp:celerp@localhost:5432/celerp_test
+          # The servers run in the test process, so the write observer sees every request.
+          CELERP_MUTATION_CENSUS: ${{ runner.temp }}/mutation-census
         # Clear the default `-m 'not browser'` addopts, select browser tests, and shard them across
         # 6 runners with pytest-split. Each runner runs its group SERIALLY (no -n): a browser test
         # is CPU-heavy (Chromium + an API + a UI server), so intra-runner parallelism on a 2-vCPU
@@ -274,6 +287,15 @@ jobs:
           --timeout=120 --timeout-method=thread --no-cov --tb=short -p no:cacheprovider
           --splits 6 --group ${{ matrix.group }} --splitting-algorithm least_duration
           --durations-path tests/.test_durations
+
+      - name: Upload the write observer's census
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: census-shard-browser-${{ matrix.group }}
+          path: ${{ runner.temp }}/mutation-census
+          if-no-files-found: error
+          retention-days: 7
 
       # On failure, upload the Playwright traces + screenshots so CI-only browser flakes
       # (which never reproduce locally) can be diagnosed: `playwright show-trace <name>.trace.zip`.
