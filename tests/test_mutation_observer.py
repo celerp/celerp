@@ -818,3 +818,41 @@ async def test_a_write_is_judged_on_the_session_that_ran_it(session, auth):
         await bystander.close()  # its savepoint is the inner one, so it ends first
         await session.commit()
     assert _kinds() == ["unprotected"]
+
+
+async def test_a_request_starting_meanwhile_leaves_background_work_its_own_edit(session, auth):
+    """Work that outlives the request that started it (a migration runner) runs outside
+    request scope on its own sessions; a request starting while it holds an unflushed
+    edit leaves the edit to it, to flush when it carries on."""
+    import asyncio
+    import contextvars
+
+    import httpx
+    from fastapi import FastAPI
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    app, added, served = FastAPI(), asyncio.Event(), asyncio.Event()
+    cid = auth["company_id"]
+
+    @app.post("/observed")
+    async def endpoint() -> dict:
+        return {}
+
+    async def background() -> list:
+        mine = AsyncSession(bind=session.bind, join_transaction_mode="create_savepoint")
+        await mine.execute(select(1))
+        mine.add(Location(company_id=cid, name="Background", type="warehouse"))
+        added.set()
+        await served.wait()
+        pending = list(mine.new)
+        await mine.close()
+        return pending
+
+    work = contextvars.Context().run(asyncio.get_running_loop().create_task, background())
+    await added.wait()
+    transport = httpx.ASGITransport(app=mutation_observer.observed(app, "api"))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        assert (await client.post("/observed")).status_code == 200
+    served.set()
+    assert [p.name for p in await work] == ["Background"]
+    assert mutation_observer.CENSUS.findings == []

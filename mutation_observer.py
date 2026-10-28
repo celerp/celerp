@@ -32,6 +32,7 @@ INFRASTRUCTURE or flagged as an unowned table."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -157,6 +158,7 @@ _ROOT = os.path.dirname(os.path.abspath(__file__))
 _REQUEST: ContextVar[dict | None] = ContextVar("mutation_observer_request", default=None)
 _SESSIONS: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
 _LIVE: "weakref.WeakSet" = weakref.WeakSet()
+_BEGUN_IN: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()  # session: the task its transaction began in
 _SERVING: dict[int, dict] = {}  # the requests being served now, by id
 _WRITE, _LOCK, _FENCE, _ROW = "observed-write", "observed-lock", "observed-fence", "observed-row-lock"
 _CREATED = "observed-created"  # companies this transaction inserted: no other can see them before it commits
@@ -268,11 +270,26 @@ async def _settle() -> None:
     """A request starts where the work before it ended: a session the tests reuse is
     handed to the request with their edits still unflushed, and whichever statement of
     the request flushes them, they are the tests' writes, so they are flushed first. A
-    session another request is serving with at the same time is that request's."""
+    session another request is serving with at the same time is that request's, and one
+    whose transaction began in other work still running (a migration runner, outside
+    request scope) is that work's."""
     busy = {session for request in list(_SERVING.values()) for session in request["sessions"]}
     for session in _open_sessions():
-        if session not in busy and (session.new or session.dirty or session.deleted):
+        if session not in busy and not _elsewhere(session) and (session.new or session.dirty or session.deleted):
             await greenlet_spawn(session.flush)
+
+
+def _elsewhere(session) -> bool:
+    task = _BEGUN_IN.get(session)
+    task = task() if task is not None else None
+    return task is not None and not task.done() and task is not _current_task()
+
+
+def _current_task():
+    try:
+        return asyncio.current_task()
+    except RuntimeError:
+        return None
 
 
 def _held() -> "weakref.WeakKeyDictionary":
@@ -626,6 +643,8 @@ def _holds(request: dict, session, company) -> bool:
 @event.listens_for(Session, "after_begin")
 def _begun(session, transaction, connection) -> None:
     _LIVE.add(session)
+    task = _current_task()
+    _BEGUN_IN[session] = weakref.ref(task) if task is not None else None
     request = _REQUEST.get()
     if request is not None:
         request["sessions"].add(session)
