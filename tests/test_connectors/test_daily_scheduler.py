@@ -47,6 +47,7 @@ async def _config(_db_engine):
         async with get_session_ctx() as session:
             await session.execute(sa.delete(ConnectorConfig).where(ConnectorConfig.connector == connector))
             await session.execute(sa.delete(ConnectorFirstSync).where(ConnectorFirstSync.connector == connector))
+            await session.commit()
             config = ConnectorConfig(company_id=company_id, connector=connector, **fields)
             session.add(config)
             await session.flush()

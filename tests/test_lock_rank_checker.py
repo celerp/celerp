@@ -173,3 +173,44 @@ def test_the_offline_check_judges_edges_seen_across_test_statements(tmp_path):
     }))
     out = lock_rank.check(tmp_path)
     assert "row:projections (60) -> row:companies (30)" in out
+
+
+def test_a_lock_on_a_table_only_a_test_creates_is_not_recorded():
+    assert classify("INSERT INTO zz_test_only (id) VALUES ($1)", ("a",)) == []
+
+
+def test_an_execution_body_taking_the_connector_guard_fails():
+    recorder = Recorder()
+    lock = Lock("adv:connector-runtime", "xact shared wait", "celerp/x.py:1 f", "", "1", in_execution=True)
+    recorder.acquire(1, lock, 0.0)
+    assert ("guard", "adv:connector-runtime") in _kinds(recorder)
+
+
+def test_a_lease_taken_while_holding_more_than_the_guard_fails():
+    recorder = Recorder()
+    recorder.acquire(1, _lock("row:companies", "no key update wait"), 0.0)
+    recorder.acquire(1, _lock("row:connector_execution_leases", "update nowait"), 0.0)
+    assert ("lease-held", "row:connector_execution_leases") in _kinds(recorder)
+
+
+def test_a_lease_taken_under_the_guard_without_nowait_fails():
+    recorder = Recorder()
+    recorder.acquire(1, _lock("adv:connector-runtime", "xact shared wait"), 0.0)
+    recorder.acquire(1, _lock("adv:connector-owner", "xact shared wait"), 0.0)
+    recorder.acquire(1, _lock("row:connector_execution_leases", "update wait"), 0.0)
+    assert {k for k, _ in _kinds(recorder)} == {"lease-wait"}
+
+
+def test_a_lease_row_written_without_its_for_update_fails():
+    recorder = Recorder()
+    recorder.acquire(1, _lock("row:connector_execution_leases", "write"), 0.0)
+    assert ("lease-unlocked", "row:connector_execution_leases") in _kinds(recorder)
+
+
+def test_the_guard_then_a_lease_taken_nowait_then_written_passes():
+    recorder = Recorder()
+    recorder.acquire(1, _lock("adv:connector-runtime", "xact shared wait"), 0.0)
+    recorder.acquire(1, _lock("adv:connector-owner", "xact shared wait"), 0.0)
+    recorder.acquire(1, _lock("row:connector_execution_leases", "update nowait"), 0.0)
+    recorder.acquire(1, _lock("row:connector_execution_leases", "write"), 0.0)
+    assert not recorder.violations

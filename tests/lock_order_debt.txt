@@ -1,0 +1,6 @@
+# Lock order violations the suite may still record, each with its owner after "#".
+# An entry is "<kind> <held class> -> <taken class> <file> <function>" (tests/lock_rank.py
+# violation_key). Only two kinds of owner are allowed: a #402 group that removes the edge
+# (with an xfail(strict=True) pair test naming that group) and a named whole-company
+# maintenance protocol (with a test showing a live sale waits on its gate). The list only
+# shrinks: `python tests/lock_rank.py check <dir>` lists any entry the run no longer hits.

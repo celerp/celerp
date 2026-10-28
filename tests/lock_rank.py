@@ -45,10 +45,12 @@ RANKS: dict[str, int] = {
     # Instance-wide: schema, version, bootstrap.
     "adv:migration": 0, "adv:version-admit": 1, "adv:version-fence": 2, "adv:bootstrap": 3,
     "adv:migration-scan": 4, "adv:jti-cleanup": 5,
+    "row:alembic_version": 6, "row:system_runtime_state": 7,
     # Whole-company backup and restore.
     "adv:backup-names": 10, "adv:backup": 11, "adv:backup-landing": 12,
     # Module state, then sign-in (auth.py hold_companyless_login: before any company row).
     "adv:module-state": 15, "adv:direct-sign-in": 16, "row:users": 17,
+    "row:password_resets": 18, "row:password_reset_notices": 19,
     # Connector guard (R0, R1), the run lock and the outbound identity lock (taken with no
     # transaction open in the task, on its own connection).
     "adv:connector-runtime": 20, "adv:connector-owner": 21, "adv:sync-run": 22, "adv:outbound": 23,
@@ -58,23 +60,30 @@ RANKS: dict[str, int] = {
     # The company (R3) and what is read under it.
     "row:companies": 30, "row:user_auth_state": 31, "row:user_companies": 32,
     "row:company_peer_identities": 33, "row:locations": 34, "row:sync_runs": 35,
-    "row:connector_configs": 39,
+    "row:connector_configs": 39, "row:connector_sources": 43,
     # Shop identity namespaces, after the company and before any item row.
     "adv:woocommerce-order": 40, "adv:external-link": 41, "adv:external-product": 42,
     "row:connector_first_syncs": 44,
+    # Peer links between companies, after the company's own identity rows.
+    "row:company_peer_grants": 45, "row:company_peer_accounts": 46, "row:company_peer_deliveries": 47,
+    "row:company_peer_attention": 48,
     # Chart and posting (R3a).
     "adv:chart": 50, "row:accounts": 51, "row:bank_accounts": 52, "row:reconciliation_sessions": 53,
-    "row:bank_statement_lines": 54, "row:unmatched_payments": 55,
+    "row:bank_statement_lines": 54, "row:unmatched_payments": 55, "row:reconciliation_rules": 56,
+    "row:unmatched_refunds": 57, "row:payment_closures": 58,
     # Items (R6), then import batches (R7) and the outbound queue (R8).
-    "row:projections": 60, "row:import_batches": 61, "row:outbound_queue": 63,
+    "row:ledger": 59, "row:projections": 60, "row:import_batches": 61, "row:outbound_queue": 63,
+    "row:payment_recoveries": 64,
     # Bookkeeping rows written last.
     "row:migration_runs": 70, "row:migration_cleanup_tasks": 71, "row:migration_templates": 72,
     "row:migration_attachment_fetches": 73, "adv:xero-attachments": 74, "adv:xero-attachments-round": 75,
-    "row:ai_messages": 80, "row:instance_meta": 81,
+    "row:migration_batch_files": 76, "row:migration_entity_maps": 77,
+    "row:ai_conversations": 78, "row:ai_batch_jobs": 79,
+    "row:ai_messages": 80, "row:instance_meta": 81, "row:notifications": 82, "row:notification_reads": 83,
+    "row:session_registry": 84, "row:doc_share_tokens": 85, "row:label_templates": 86,
+    "row:marketplace_configs": 87, "row:work_centers": 88, "row:supporter_badges": 89, "row:ai_usage": 90,
+    "row:ai_job_steps": 91,
 }
-
-# Tables that exist only in test fixtures: each fixture module ranks its own here.
-TEST_RANKS: dict[str, int] = {}
 
 
 # LOCK TABLE runs only in the whole-company protocols (company_reset, db_catalog._hold), each
@@ -96,7 +105,7 @@ def rank(cls: str) -> int | None:
         return TABLE_LOCK_RANK if rank("row:" + cls[4:]) is not None else None
     if cls.startswith("key:"):
         return KEY_RANK if rank("row:" + cls[4:]) is not None else None
-    return RANKS.get(cls, TEST_RANKS.get(cls))
+    return RANKS.get(cls)
 
 
 # Numeric advisory keys with a fixed value (module constant) -> class.
@@ -139,6 +148,16 @@ class Lock:
     site: str
     origin: str = ""  # the test statement that made the call ("" outside a test)
     key: str = ""     # what is locked: the advisory key, or a row lock's bound parameters
+    in_execution: bool = False  # sent from a connector execution's body (not its own lease work)
+
+
+# The connector guard (rule (c)): an execution takes 20 and 21 only in its guard + acquire
+# transaction, which commits before its body runs.
+_GUARD = ("adv:connector-runtime", "adv:connector-owner")
+# Lease rows (rule (d)): an exclusive take holds nothing but the guard's shared 20/21, the
+# acquire or takeover (the take under the guard) does not wait, and a lease row (its
+# generation is the fence) is written only after its FOR UPDATE.
+_LEASE_ROWS = ("row:connector_execution_leases", "row:connector_execution_heartbeats")
 
 
 # Taken outside the task's other transactions by design (1.11): the outbound identity lock,
@@ -155,6 +174,7 @@ class Recorder:
     classes: dict[str, dict] = field(default_factory=dict)
     contention: list[dict] = field(default_factory=list)
     violations: list[dict] = field(default_factory=list)
+    seen: dict[str, dict] = field(default_factory=dict)  # each distinct violation, its first example
     test: str = ""
     # The connections each task has used, and the task that last used each connection.
     task_conns: weakref.WeakKeyDictionary = field(default_factory=weakref.WeakKeyDictionary)
@@ -196,6 +216,10 @@ class Recorder:
                                     "seconds": round(waited, 3), "test": self.test})
         if rank(lock.cls) is None:
             self._violate("unknown", lock)
+        if lock.cls in _GUARD and lock.in_execution:
+            self._violate("guard", lock)
+        if lock.cls in _LEASE_ROWS:
+            self._lease(conn_key, lock)
         if lock.cls.startswith("key:") and _strength(lock) == "keyshare":
             return
         if self._retake(conn_key, lock):
@@ -238,6 +262,23 @@ class Recorder:
         runs = self.held[conn_key]
         if not runs or runs[-1].cls != lock.cls or _exclusive(lock.mode) and not _exclusive(runs[-1].mode):
             runs.append(lock)
+
+    def _lease(self, conn_key: int, lock: Lock) -> None:
+        strength = _strength(lock)
+        if lock.mode == "write":
+            if lock.cls == _LEASE_ROWS[0] and "update" not in self.explicit[conn_key].get(lock.cls, ()):
+                self._violate("lease-unlocked", lock)
+            return
+        if strength != "update":
+            return
+        held = self.session_held[conn_key] + self.held[conn_key]
+        others = [h for h in held if h.cls not in _LEASE_ROWS
+                  and not (h.cls in _GUARD and _strength(h) == "shared")]
+        if others:
+            self._violate("lease-held", lock, held_lock=others[0])
+        if lock.cls == _LEASE_ROWS[0] and any(h.cls in _GUARD for h in held) \
+                and not lock.mode.endswith("nowait"):
+            self._violate("lease-wait", lock)
 
     def _edge(self, h: Lock, lock: Lock, waits: bool, gate: set[str]) -> None:
         edge = self.edges.get((h.cls, lock.cls))
@@ -290,6 +331,13 @@ class Recorder:
                 del locks[i]
                 return
 
+    def take_violations(self) -> list[dict]:
+        """The violations since the last call; the graph keeps each distinct one once."""
+        out, self.violations = self.violations, []
+        for v in out:
+            self.seen.setdefault(violation_key(v), v)
+        return out
+
     def _violate(self, kind: str, lock: Lock, held_lock: Lock | None = None) -> None:
         self.violations.append({
             "kind": kind, "cls": lock.cls, "site": lock.site, "test": self.test,
@@ -303,7 +351,7 @@ class Recorder:
             "classes": {k: {"count": v["count"], "modes": sorted(v["modes"]), "sites": sorted(v["sites"])}
                         for k, v in self.classes.items()},
             "contention": self.contention,
-            "violations": self.violations,
+            "violations": list({**self.seen, **{violation_key(v): v for v in self.violations}}.values()),
         }
 
 
@@ -527,23 +575,40 @@ def _from_tables(from_clause, ctes: set[str]) -> dict[str, str]:
     return found
 
 
-def _foreign_keys(table: str) -> dict[str, str]:
-    """column -> referenced table, for one mapped table (empty for a table the app does not map)."""
-    from celerp.models.base import Base
-    import celerp.models  # noqa: F401 - every core table registers on Base
+@functools.lru_cache(maxsize=1)
+def _app_tables() -> dict:
+    """Every table the app declares: the core models and each default module's models, plus
+    Alembic's own. A lock on any other table is on one a test created, which production never
+    takes."""
+    import importlib
+    import pkgutil
+    import sys
 
-    mapped = Base.metadata.tables.get(table)
+    import celerp.models
+    from celerp.models.base import Base
+
+    for info in pkgutil.iter_modules(celerp.models.__path__):
+        importlib.import_module(f"celerp.models.{info.name}")
+    for path in sorted((Path(_ROOT) / "default_modules").glob("*/celerp_*/models*.py")):
+        if str(path.parent.parent) not in sys.path:
+            sys.path.insert(0, str(path.parent.parent))
+        importlib.import_module(f"{path.parent.name}.{path.stem}")
+    return {**Base.metadata.tables, "alembic_version": None}
+
+
+def _foreign_keys(table: str) -> dict[str, str]:
+    """column -> referenced table, for one app table (empty for a table no model maps)."""
+    mapped = _app_tables().get(table)
     if mapped is None:
         return {}
     return {fk.parent.name: fk.column.table.name for fk in mapped.foreign_keys}
 
 
-def _parents() -> set[str]:
+@functools.lru_cache(maxsize=1)
+def _parents() -> frozenset[str]:
     """Every table a foreign key of the app references."""
-    from celerp.models.base import Base
-    import celerp.models  # noqa: F401
-
-    return {fk.column.table.name for t in Base.metadata.tables.values() for fk in t.foreign_keys}
+    return frozenset(fk.column.table.name for t in _app_tables().values() if t is not None
+                     for fk in t.foreign_keys)
 
 
 @functools.lru_cache(maxsize=8192)
@@ -614,7 +679,8 @@ def _locks(statement: str, parameters) -> list[tuple[str, str, str]]:
     if out or not _LOCKING.search(statement):
         return out
     found, names = _row_locks(statement)
-    return [(cls, mode, _row_key(numbers, names, parameters)) for cls, mode, numbers in found]
+    return [(cls, mode, _row_key(numbers, names, parameters)) for cls, mode, numbers in found
+            if cls.split(":", 1)[1] in _app_tables()]
 
 
 def classify(statement: str, parameters) -> list[tuple[str, str]]:
@@ -634,11 +700,13 @@ def record_statement(conn_key: int, statement: str, parameters, waited: float) -
     if not found:
         return
     site, origin = _site(), _origin()
+    execution = sys.modules.get("celerp.connectors.execution")
+    in_execution = execution is not None and execution.current() is not None
     for cls, mode, key in found:
         if cls == "-unlock":
             RECORDER.release_session(conn_key, mode)
             continue
-        RECORDER.acquire(conn_key, Lock(cls, mode, site, origin, key), waited)
+        RECORDER.acquire(conn_key, Lock(cls, mode, site, origin, key, in_execution), waited)
 
 
 _INSTALLED = False
@@ -842,6 +910,32 @@ def report(directory: Path) -> str:
     return "\n".join(lines) + "\n"
 
 
+DEBT_FILE = Path(__file__).resolve().parent / "lock_order_debt.txt"
+
+
+def violation_key(v: dict) -> str:
+    """One debt entry's text: the kind, the classes and the acquiring function (no line, so
+    an unrelated edit above it does not move the entry)."""
+    site = v["site"].split(" ", 1)
+    return f"{v['kind']} {v['held'] or '-'} -> {v['cls']} {site[0].rsplit(':', 1)[0]} {site[-1]}"
+
+
+def debt() -> dict[str, str]:
+    """entry -> its owner (the #402 group or the maintenance protocol), from the debt file."""
+    out = {}
+    for line in DEBT_FILE.read_text().splitlines() if DEBT_FILE.exists() else ():
+        entry, _, owner = line.partition("#")
+        if entry.strip():
+            out[entry.strip()] = owner.strip()
+    return out
+
+
+def new_violations() -> list[dict]:
+    """The violations recorded since the last call that no debt entry names."""
+    known = debt()
+    return [v for v in RECORDER.take_violations() if violation_key(v) not in known]
+
+
 def check(directory: Path) -> str:
     """Judge a recorded graph against ``RANKS``: every class the suite locked, wrote or
     referenced must be ranked, and every waiting acquisition after a lock of a higher rank
@@ -855,6 +949,10 @@ def check(directory: Path) -> str:
         e = g["edges"][(a, b)]
         ex = e["call_example"] or e["example"]
         lines.append(f"- {a} ({rank(a)}) -> {b} ({rank(b)}): {ex['held']} -> {ex['acquired']} ({ex['test']})")
+    # Rule (e): the debt list only shrinks, so an entry the run no longer hits must go.
+    hit = {violation_key(v) for v in g["violations"]}
+    stale = sorted(set(debt()) - hit)
+    lines += ["", f"Stale debt entries: {len(stale)}", *(f"- {e}" for e in stale)]
     return "\n".join(lines) + "\n"
 
 

@@ -1039,26 +1039,38 @@ def relay_not_called_at_boot(no_connection_off_this_machine, monkeypatch):
 
 
 # ── Lock rank recorder (tests/lock_rank.py) ────────────────────────────────────
-# CELERP_LOCK_RANK_DIR=<dir> records every lock the run takes and writes one graph per
-# worker there; `python tests/lock_rank.py report <dir>` merges them.
+# Every test runs under the recorder: a test whose body takes a lock out of RANKS order
+# (or breaks another rule the recorder checks) fails, unless tests/lock_order_debt.txt names
+# that violation. CELERP_LOCK_RANK_DIR=<dir> also writes one graph per worker there;
+# `python tests/lock_rank.py check <dir>` judges the merged graph and lists stale debt.
+import importlib.util as _importlib_util
+
+# Loaded once under its own name, so the checker's tests share this recorder.
+_spec = _importlib_util.spec_from_file_location("lock_rank", Path(__file__).parent / "tests" / "lock_rank.py")
+_lock_rank = _sys.modules["lock_rank"] = _importlib_util.module_from_spec(_spec)
+_spec.loader.exec_module(_lock_rank)
+_lock_rank.install()
+
+
+def pytest_runtest_setup(item):
+    _lock_rank.RECORDER.test = item.nodeid
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_call(item):
+    # Fixture setup runs in the test's one outer transaction; production commits
+    # between setup-like work and a request, so the body starts holding nothing.
+    _lock_rank.RECORDER.take_violations()
+    _lock_rank.RECORDER.clear_transactions()
+    outcome = yield
+    found = _lock_rank.new_violations()
+    if found and outcome.excinfo is None:
+        lines = [f"{_lock_rank.violation_key(v)} (held at {v['held_site']}, taken at {v['site']})"
+                 for v in found[:20]]
+        outcome.force_exception(AssertionError(
+            f"lock order: {len(found)} violation(s) not in tests/lock_order_debt.txt:\n" + "\n".join(lines)))
+
+
 if os.environ.get("CELERP_LOCK_RANK_DIR"):
-    import importlib.util
-    import sys
-
-    # Loaded once under its own name, so the checker's tests share this recorder.
-    _spec = importlib.util.spec_from_file_location("lock_rank", Path(__file__).parent / "tests" / "lock_rank.py")
-    _lock_rank = sys.modules["lock_rank"] = importlib.util.module_from_spec(_spec)
-    _spec.loader.exec_module(_lock_rank)
-
-    _lock_rank.install()
-
-    def pytest_runtest_setup(item):
-        _lock_rank.RECORDER.test = item.nodeid
-
     def pytest_sessionfinish(session, exitstatus):
         _lock_rank.dump(Path(os.environ["CELERP_LOCK_RANK_DIR"]) / f"lock-graph-{_worker}.json")
-
-    def pytest_runtest_call(item):
-        # Fixture setup runs in the test's one outer transaction; production commits
-        # between setup-like work and a request, so the body starts holding nothing.
-        _lock_rank.RECORDER.clear_transactions()

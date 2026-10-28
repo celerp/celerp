@@ -525,7 +525,13 @@ async def release(ex: Execution, resource: str) -> None:
 async def _release(ex: Execution, resources: list[str]) -> None:
     with _internal():
         async with _sessions()() as s:
-            await _bound(s)
+            # Lease rows before heartbeat rows, each in resource order, as _acquire takes them.
+            lock = " ORDER BY resource FOR UPDATE" if await _bound(s) else ""
+            key = _key(ex, resources=sorted(resources))
+            for table in ("connector_execution_leases", "connector_execution_heartbeats"):
+                await s.execute(sa.text(
+                    f"SELECT resource FROM {table} WHERE company_id = :c AND connector = :k "
+                    "AND resource IN :r" + lock).bindparams(_IN), key)
             for resource in resources:
                 await s.execute(sa.text(
                     "UPDATE connector_execution_leases SET holder = NULL WHERE company_id = :c "
