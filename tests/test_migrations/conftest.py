@@ -207,12 +207,9 @@ def head_rev() -> str:
 
 def upgrade_to(sync_url: str, revision: str) -> None:
     """Run plain alembic upgrade to `revision` against `sync_url`, as an older release did."""
-    from alembic import command
+    from alembic_support import alembic_run
 
-    from celerp.alembic_config import build_alembic_config
-
-    os.environ["DATABASE_URL"] = sync_url
-    command.upgrade(build_alembic_config(), revision)
+    alembic_run(sync_url, "upgrade", revision)
 
 
 def schema_of(sync_url: str) -> dict[str, set]:

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 
 import pytest
 
@@ -745,3 +746,66 @@ def test_every_worker_dump_carries_the_census(tmp_path):
     lock_rank.dump(tmp_path / "lock-graph-gw0.json")
     assert json.loads((tmp_path / "lock-graph-gw0.json").read_text())["writers"] == lock_rank.static_writers()
     assert lock_rank._merge(tmp_path)["writers"] == {k: set(v) for k, v in lock_rank.static_writers().items()}
+
+
+# ── Serialized classes: an order no rank can give, safe only under one exclusive key ──
+
+_TAKE_KEY = "SELECT pg_advisory_lock(4207320001)"
+_DROP_KEY = "SELECT pg_advisory_unlock(4207320001)"
+
+
+def _migration_run(recorder: Recorder, conn: int = 1) -> None:
+    """One alembic run: a migration's table, then the stamp, in one transaction."""
+    recorder.acquire(conn, _lock("row:company_peer_grants", "write"), 0.0)
+    recorder.acquire(conn, _lock("row:alembic_version", "write"), 0.0)
+
+
+def _serialized_listed(recorder: Recorder, tmp_path) -> bool:
+    (tmp_path / "lock-graph-gw0.json").write_text(json.dumps(recorder.dump()))
+    return "- serialized row:company_peer_grants -> row:alembic_version" in lock_rank.check(tmp_path)
+
+
+def test_a_session_key_held_on_another_connection_of_the_flow_gates_its_takes(recorder, tmp_path):
+    recorder.statement(9, _TAKE_KEY, (), 0.0)
+    _migration_run(recorder)
+    recorder.end(1)
+    recorder.acquire(2, _lock("row:alembic_version", "write"), 0.0)
+    recorder.statement(9, _DROP_KEY, (), 0.0)
+    assert not recorder.violations
+    (tmp_path / "lock-graph-gw0.json").write_text(json.dumps(recorder.dump()))
+    report = lock_rank.check(tmp_path)
+    assert "- serialized row:company_peer_grants -> row:alembic_version" not in report
+    assert "- row:alembic_version by adv:migration" in report
+    assert not lock_rank.check_failed(report)
+
+
+def test_one_take_of_the_class_outside_the_key_fails_the_serialized_inversion(recorder, tmp_path):
+    recorder.statement(9, _TAKE_KEY, (), 0.0)
+    _migration_run(recorder)
+    recorder.end(1)
+    recorder.statement(9, _DROP_KEY, (), 0.0)
+    recorder.acquire(2, _lock("row:alembic_version", "write"), 0.0)
+    assert not recorder.violations
+    assert _serialized_listed(recorder, tmp_path)
+    assert lock_rank.check_failed(lock_rank.check(tmp_path))
+
+
+def test_a_released_key_gates_nothing(recorder):
+    recorder.statement(9, _TAKE_KEY, (), 0.0)
+    recorder.statement(9, _DROP_KEY, (), 0.0)
+    _migration_run(recorder)
+    assert ("order", "row:alembic_version") in _kinds(recorder)
+
+
+def test_a_key_held_by_another_thread_gates_nothing(recorder):
+    taker = threading.Thread(target=recorder.statement, args=(9, _TAKE_KEY, (), 0.0))
+    taker.start()
+    taker.join()
+    _migration_run(recorder)
+    assert ("order", "row:alembic_version") in _kinds(recorder)
+
+
+def test_a_key_of_many_values_is_no_serializing_gate(recorder):
+    recorder.acquire(9, _lock("adv:chart", "session exclusive wait", key="chart"), 0.0)
+    _migration_run(recorder)
+    assert ("order", "row:alembic_version") in _kinds(recorder)

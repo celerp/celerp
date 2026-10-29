@@ -12,13 +12,14 @@ each test builds it as the previous release did.
 
 from __future__ import annotations
 
-import os
 import uuid
 
 import pytest
 from sqlalchemy import create_engine, text
 
 from celerp.cli import _apply_migrations
+
+from alembic_support import alembic_run
 
 from .conftest import throwaway_db, upgrade_to
 
@@ -154,15 +155,12 @@ def test_new_installation_has_nothing_to_convert():
 def test_downgrade_and_upgrade_keep_read_state():
     """Back on the shared flag a notice someone had read is read, as it was before
     the upgrade; upgrading again gives every current member the same receipts."""
-    from alembic import command
 
-    from celerp.alembic_config import build_alembic_config
 
     with throwaway_db("notifreads") as (_, sync_url):
         ids = _at_parent(sync_url, started_first=False)
         upgrade_to(sync_url, REVISION)
-        os.environ["DATABASE_URL"] = sync_url
-        command.downgrade(build_alembic_config(), PARENT)
+        alembic_run(sync_url, "downgrade", PARENT)
         eng = create_engine(sync_url)
         try:
             with eng.connect() as conn:

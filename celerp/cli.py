@@ -670,8 +670,8 @@ def _stamped_revision(db_url: str) -> str | None:
 
 @contextmanager
 def _migration_lock(db_url: str):
-    """Hold this version's fence and the shared Postgres migration advisory
-    lock for the wrapped block.
+    """Hold the shared Postgres migration advisory lock for the wrapped block,
+    through ``celerp.db.migration_key``.
 
     Single source of the lock protocol (acquire, guaranteed release, engine
     disposal), so every path that migrates a database serializes the same way
@@ -684,23 +684,15 @@ def _migration_lock(db_url: str):
     duplicate-object handler, which reaches the right answer for the wrong
     reason. The second holder waits here and then finds nothing pending.
     """
-    from sqlalchemy import text
-
-    from celerp.db import _MIGRATION_LOCK_KEY
+    from celerp.db import migration_key
 
     # The mutating scope is entered before the migration lock, so a process still
     # waiting for the fence never holds the migration lock a fence holder (the
     # restore reconcile inside a running server) may be waiting for. Inside a
     # fence this process holds already, that fence is reused.
     with _db_engine(db_url, pool_pre_ping=True, isolation_level="AUTOCOMMIT") as engine, \
-            engine.connect() as lock_conn:
-        lock_conn.execute(text("SELECT pg_advisory_lock(:key)"), {"key": _MIGRATION_LOCK_KEY})
-        try:
-            yield
-        finally:
-            lock_conn.execute(
-                text("SELECT pg_advisory_unlock(:key)"), {"key": _MIGRATION_LOCK_KEY}
-            )
+            engine.connect() as lock_conn, migration_key(lock_conn):
+        yield
 
 
 def _migrate_to_head(db_url: str) -> bool:

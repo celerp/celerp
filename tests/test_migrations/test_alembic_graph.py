@@ -18,18 +18,18 @@ and a database built from a branch that used the colliding ID for a different ch
 from __future__ import annotations
 
 import ast
-import os
 import uuid
 from pathlib import Path
 
 import pytest
-from alembic import command
 from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, text
 
 from celerp.alembic_config import build_alembic_config
 from celerp.cli import _apply_migrations
 from celerp.migrations.compatibility import NEWEST_CELERP_KEY, running_version
+
+from alembic_support import alembic_run
 
 from .conftest import head_rev, schema_of, throwaway_db, upgrade_to
 
@@ -210,8 +210,7 @@ def _newest_celerp(sync_url: str) -> str | None:
 
 
 def _downgrade_to(sync_url: str, revision: str) -> None:
-    os.environ["DATABASE_URL"] = sync_url
-    command.downgrade(build_alembic_config(), revision)
+    alembic_run(sync_url, "downgrade", revision)
 
 
 def _populate(sync_url: str) -> dict[str, str]:

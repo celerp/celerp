@@ -3,7 +3,8 @@
 
 import os
 import re
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
+from contextvars import ContextVar
 
 from sqlalchemy import text as _sql_text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -11,12 +12,49 @@ from sqlalchemy.pool import NullPool
 
 from celerp.capacity import REQUEST_DB_MAX_OVERFLOW, REQUEST_DB_POOL_SIZE
 from celerp.config import settings
+from celerp.db_url import same_database
 
 # The advisory-lock key every supported change to Celerp's PostgreSQL schema holds
 # exclusively (core and module migrations, the startup create_all, a module's data
 # purge, a whole-database restore), and every operation that needs the schema to stay as it is holds shared
 # (a company backup or restore). One key, one source of truth, across every process.
 _MIGRATION_LOCK_KEY = 4207320001
+
+# The databases whose migration key this flow of control holds (``migration_key``). A
+# context variable, so work the holder hands to a thread (asyncio.to_thread) holds it and
+# another thread of the process, which the key does not serialize, does not.
+_MIGRATION_KEY_HELD: ContextVar[tuple[str, ...]] = ContextVar("migration_key_held", default=())
+
+
+def holds_migration_key(db_url: str) -> bool:
+    """Whether this flow of control holds the migration key on *db_url*'s database."""
+    return any(same_database(held, db_url) for held in _MIGRATION_KEY_HELD.get())
+
+
+@contextmanager
+def migration_key(conn):
+    """Hold the migration key exclusively for the block, on *conn*, an autocommit
+    connection of its own, waiting for every other holder. The one way a run changes the
+    schema under the key: alembic refuses to run without it (``holds_migration_key``)."""
+    conn.execute(_sql_text("SELECT pg_advisory_lock(:k)"), {"k": _MIGRATION_LOCK_KEY})
+    token = _MIGRATION_KEY_HELD.set((*_MIGRATION_KEY_HELD.get(), str(conn.engine.url)))
+    try:
+        yield
+    finally:
+        _MIGRATION_KEY_HELD.reset(token)
+        conn.execute(_sql_text("SELECT pg_advisory_unlock(:k)"), {"k": _MIGRATION_LOCK_KEY})
+
+
+@asynccontextmanager
+async def migration_key_async(conn):
+    """``migration_key`` on an async autocommit connection."""
+    await conn.execute(_sql_text("SELECT pg_advisory_lock(:k)"), {"k": _MIGRATION_LOCK_KEY})
+    token = _MIGRATION_KEY_HELD.set((*_MIGRATION_KEY_HELD.get(), str(conn.engine.url)))
+    try:
+        yield
+    finally:
+        _MIGRATION_KEY_HELD.reset(token)
+        await conn.execute(_sql_text("SELECT pg_advisory_unlock(:k)"), {"k": _MIGRATION_LOCK_KEY})
 
 # Redacts the password in any Postgres URL: "://user:secret@host" -> "://user:***@host".
 # One authoritative masker for logs and surfaced errors so a connection string

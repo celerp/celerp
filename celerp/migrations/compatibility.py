@@ -65,6 +65,7 @@ import zlib
 import sqlalchemy as sa
 from packaging.version import InvalidVersion, Version
 
+from celerp.db_url import same_database
 # instance_meta is owned by _data_reconcile; read here without its get_meta helper,
 # which creates the table.
 from celerp.migrations._data_reconcile import _META_TABLE, PROJECTION_VERSION_KEY, set_meta
@@ -465,15 +466,9 @@ def _end_process(exc: IncompatibleDatabase) -> None:
     os._exit(1)
 
 
-def _same_database(a: sa.engine.URL, b: sa.engine.URL) -> bool:
-    return ((a.host, a.port, a.database, dict(a.query))
-            == (b.host, b.port, b.database, dict(b.query)))
-
-
 def held_fence(sync_url: str) -> "Fence | None":
     """The fence this process holds on *sync_url*'s database, if any."""
-    url = sa.engine.make_url(sync_url)
-    return next((f for f in reversed(_HELD) if _same_database(f._url, url)), None)
+    return next((f for f in reversed(_HELD) if same_database(f._url, sync_url)), None)
 
 
 @contextlib.contextmanager

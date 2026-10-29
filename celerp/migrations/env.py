@@ -64,6 +64,14 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
+    # A run stamps alembic_version after each migration in one transaction, so it locks
+    # tables and the stamp in both orders: it is safe only while it holds the migration
+    # key, which keeps every other run out.
+    from celerp.db import holds_migration_key
+    if not holds_migration_key(_sync_url):
+        raise RuntimeError(
+            "Alembic changes a database only under the migration key "
+            "(celerp.db.migration_key), which keeps every other migration run out.")
     cfg = config.get_section(config.config_ini_section, {})
     cfg["sqlalchemy.url"] = _sync_url
 

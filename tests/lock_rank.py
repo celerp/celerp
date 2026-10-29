@@ -36,6 +36,7 @@ import os
 import weakref
 import re
 import sys
+import threading
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -126,6 +127,10 @@ NUMERIC_KEYS: dict[int, str] = {
     0x43454C5250: "adv:jti-cleanup",      # celerp/services/session_tracker.py
 }
 
+# R5: the classes of one fixed key, which a holder's exclusive session lock keeps every other
+# taker out of (the version fence's class is a namespace of one key per version).
+_SERIAL_KEYS = frozenset(NUMERIC_KEYS.values()) - {"adv:version-fence"}
+
 # Numeric advisory keys computed per call (a hash) -> class, by the function that takes them.
 CALLSITE_KEYS: dict[str, str] = {
     "celerp.services.company_lock.lock_chart": "adv:chart",
@@ -159,6 +164,7 @@ class Lock:
     in_execution: bool = False  # sent from a connector execution's body (not its own lease work)
     company: str = ""  # the one company whose rows the statement names (R1, R2), "" when it names none
     gated: bool = False  # an insert made under its company's exclusive lock (R2)
+    flow: tuple = ()  # a session lock's taker: its thread and task (R5)
 
 
 # The connector guard (rule (c)): an execution takes 20 and 21 only in its guard + acquire
@@ -351,9 +357,19 @@ class Recorder:
             held = held | self.explicit[conn_key].get(lock.cls, set())
         return any(_covers(h, w) for h in held)
 
+    def _serial_gates(self) -> set[str]:
+        """R5: the fixed keys this flow of control holds exclusively at session level, on any
+        connection. While held, no other run takes them, whatever connection it uses."""
+        flow = _flow()
+        return {h.cls for locks in self.session_held.values() for h in locks
+                if h.cls in _SERIAL_KEYS and _exclusive(h.mode) and h.flow == flow}
+
     def acquire(self, conn_key: int, lock: Lock, waited: float) -> None:
         info = self.classes.setdefault(lock.cls, {"count": 0, "modes": set(), "sites": set()})
         info["count"] += 1
+        serial = self._serial_gates()
+        # R5: the keys every take of the class was made under.
+        info["serial"] = info["serial"] & serial if "serial" in info else serial
         info["modes"].add(lock.mode)
         info["sites"].add(lock.site)
         if waited >= _CONTENDED_S:
@@ -396,13 +412,17 @@ class Recorder:
             seen.add(h.cls)
             # Classes this transaction held exclusively before h: a gate every other
             # transaction taking them waits on, so it cannot interleave with this edge.
-            gate = {g.cls for g in held[:i] if _exclusive(g.mode)} - {h.cls, lock.cls}
+            gate = ({g.cls for g in held[:i] if _exclusive(g.mode)} | serial) - {h.cls, lock.cls}
             gated = {x.cls for x in (h, lock) if x.gated}
             company_gated = "" if gated else self._company_gate(conn_key, h, lock)
-            self._edge(h, lock, waits, gate, gated, company_gated)
-            if gated or company_gated:
+            inverts = waits and rank(lock.cls) is not None and rank(h.cls) is not None \
+                and rank(lock.cls) < rank(h.cls)
+            # R5: judged offline against every take of the class outside those keys.
+            serialized = inverts and bool(gate & serial)
+            self._edge(h, lock, waits, gate, gated, company_gated, serialized)
+            if gated or company_gated or serialized:
                 continue
-            if waits and rank(lock.cls) is not None and rank(h.cls) is not None and rank(lock.cls) < rank(h.cls):
+            if inverts:
                 decreasing = True
                 self._violate("order", lock, held_lock=h)
         last = self.last_key[conn_key].get(lock.cls)
@@ -425,6 +445,7 @@ class Recorder:
                 if not decreasing and lock.key < last:
                     self._violate("unsorted", lock)
         if lock.mode.startswith("session"):
+            lock.flow = _flow()
             self.session_held[conn_key].append(lock)
             return
         self.taken[conn_key].setdefault((lock.cls, lock.key), set()).add(_strength(lock))
@@ -457,7 +478,7 @@ class Recorder:
             self._violate("lease-wait", lock)
 
     def _edge(self, h: Lock, lock: Lock, waits: bool, gate: set[str], gated: set[str] = frozenset(),
-              company_gated: str = "") -> None:
+              company_gated: str = "", serialized: bool = False) -> None:
         edge = self.edges.get((h.cls, lock.cls))
         if edge is None:
             edge = self.edges[(h.cls, lock.cls)] = {
@@ -475,6 +496,9 @@ class Recorder:
             edge["company_gated"] |= {h.cls, lock.cls}
             edge["company_gated_modes"].add(f"{company_gated} {_strength(h)}>{_strength(lock)}")
             edge.setdefault("company_example", {"held": h.site, "acquired": lock.site, "test": self.test})
+            waits = False
+        if serialized:
+            edge["serialized"] = True
             waits = False
         edge["waits"] = edge["waits"] or waits
         if waits:
@@ -544,11 +568,21 @@ class Recorder:
                        "call_sites": {k: sorted(m) for k, m in v["call_sites"].items()}}
                       for (a, b), v in self.edges.items()],
             "classes": {k: {"count": v["count"], "modes": sorted(v["modes"]), "sites": sorted(v["sites"]),
+                            "serial": sorted(v.get("serial", ())),
                             **{c: v.get(c, 0) for c in _COUNTS}, **{c: sorted(v.get(c, ())) for c in _SETS}}
                         for k, v in self.classes.items()},
             "contention": self.contention,
             "violations": list({**self.seen, **{violation_key(v): v for v in self.violations}}.values()),
         }
+
+
+def _flow() -> tuple:
+    """This flow of control: its thread, and its task when one runs."""
+    try:
+        task = asyncio.current_task()
+    except RuntimeError:
+        task = None
+    return threading.get_ident(), id(task) if task is not None else None
 
 
 def _exclusive(mode: str) -> bool:
@@ -1250,6 +1284,7 @@ def _merge(directory: Path) -> dict:
             cur["company_gated"].update(e.get("company_gated", ()))
             cur["company_gated_modes"].update(e.get("company_gated_modes", ()))
             cur["company_example"] = cur["company_example"] or e.get("company_example")
+            cur["serialized"] = cur.get("serialized", False) or e.get("serialized", False)
             for pair, combos in e.get("call_sites", {}).items():
                 cur["call_sites"].setdefault(pair, set()).update(combos)
             cur["modes"].update(e["modes"])
@@ -1266,6 +1301,8 @@ def _merge(directory: Path) -> dict:
                 cur.setdefault(c, set()).update(v.get(c, ()))
             cur["modes"].update(v["modes"])
             cur["sites"].update(v["sites"])
+            serial = set(v.get("serial", ()))
+            cur["serial"] = cur["serial"] & serial if "serial" in cur else serial
         contention += d["contention"]
         violations += d["violations"]
     return {"edges": edges, "classes": classes, "contention": contention, "violations": violations,
@@ -1414,6 +1451,25 @@ def _gated_keys(g: dict) -> set[str]:
     return out
 
 
+def _serialized_keys(g: dict) -> set[str]:
+    """R5, offline: "serialized <held> -> <taken>" for each decreasing edge taken under a fixed
+    key its flow held exclusively (a migration run's table, then its stamp), unless every
+    recorded take of the taken class held one of the edge's keys too, and the run exercised
+    every production writer of that class. No order ranks such a class; the key serializes it."""
+    unexercised = _unexercised(g)
+    out = set()
+    for (a, b), e in g["edges"].items():
+        if not e.get("serialized") or rank(a) is None or rank(b) is None or rank(a) <= rank(b):
+            continue
+        if b in unexercised or not e["gate"] & g["classes"].get(b, {}).get("serial", set()):
+            out.add(f"serialized {a} -> {b}")
+    return out
+
+
+def _offline_keys(g: dict) -> set[str]:
+    return _gated_keys(g) | _serialized_keys(g)
+
+
 def _recorded_keys(directory: Path) -> set[str]:
     return {violation_key(v) for v in _merge(directory)["violations"]}
 
@@ -1426,13 +1482,13 @@ def debt_listing(directory: Path) -> str:
     """Every violation key a recorded run hit, sorted, each with its owner in the debt file
     ("untriaged" when it has none): for review, never written to the file."""
     known = debt()
-    keys = _recorded_keys(directory) | _gated_keys(_merge(directory))
+    keys = _recorded_keys(directory) | _offline_keys(_merge(directory))
     return "".join(_entry(k, known.get(k, "untriaged")) + "\n" for k in sorted(keys))
 
 
 def debt_diff(directory: Path) -> str:
     """The keys a recorded run hit that the debt file lacks, and the entries it no longer hits."""
-    known, hit = debt(), _recorded_keys(directory) | _gated_keys(_merge(directory))
+    known, hit = debt(), _recorded_keys(directory) | _offline_keys(_merge(directory))
     added, removed = sorted(hit - set(known)), sorted(set(known) - hit)
     return "".join([f"Added: {len(added)}\n", *(f"+ {k}\n" for k in added),
                     f"Removed: {len(removed)}\n", *(f"- {_entry(k, known[k])}\n" for k in removed)])
@@ -1447,7 +1503,9 @@ def check(directory: Path) -> str:
     fail only when the class has a taker of more than one key without that lock, at a
     strength that conflicts. An inversion between rows of one company under that company's
     lock (R4) is listed as a "gated" key unless the debt file names it, when either class has
-    a take outside that lock that could make it wait (``_gated_keys``)."""
+    a take outside that lock that could make it wait (``_gated_keys``). An inversion taken under
+    a fixed key its flow held exclusively (R5, a migration run) is listed as a "serialized" key
+    unless every take of the taken class held that key too (``_serialized_keys``)."""
     g = _merge(directory)
     lines = [f"Unranked classes: {sorted(c for c in g['classes'] if rank(c) is None) or 'none'}", ""]
 
@@ -1476,10 +1534,15 @@ def check(directory: Path) -> str:
     idle = {c: w for c, w in _unexercised(g).items() if c in gated_classes}
     lines += ["", f"Company-gated classes with an unexercised writer: {len(idle)}",
               *(f"- {c}: {', '.join(w)}" for c, w in sorted(idle.items()))]
-    new = sorted(k for k in _gated_keys(g) if k not in debt())
-    lines += ["", f"Company-gated inversions not proven, not in the debt file: {len(new)}", *(f"- {k}" for k in new)]
+    # R5: an inversion under a fixed key its flow held, with a take of the taken class outside it.
+    serial = sorted({b for (a, b), e in g["edges"].items() if e.get("serialized")})
+    lines += ["", f"Serialized classes: {len(serial)}",
+              *(f"- {c} by {', '.join(sorted(g['classes'][c]['serial'])) or 'NONE'}" for c in serial)]
+    new = sorted(k for k in _offline_keys(g) if k not in debt())
+    lines += ["", f"Gated or serialized inversions not proven, not in the debt file: {len(new)}",
+              *(f"- {k}" for k in new)]
     # Rule (e): the debt list only shrinks, so an entry the run no longer hits must go.
-    hit = _recorded_keys(directory) | _gated_keys(g)
+    hit = _recorded_keys(directory) | _offline_keys(g)
     stale = sorted(set(debt()) - hit)
     lines += ["", f"Stale debt entries: {len(stale)}", *(f"- {e}" for e in stale)]
     return "\n".join(lines) + "\n"
@@ -1487,7 +1550,7 @@ def check(directory: Path) -> str:
 
 def check_failed(out: str) -> bool:
     """Whether a ``check`` report fails the lock-order job: a stale debt entry, or an unproven
-    company-gated inversion the debt file lacks."""
+    company-gated or serialized inversion the debt file lacks."""
     return "\nStale debt entries: 0\n" not in out or "not in the debt file: 0\n" not in out
 
 

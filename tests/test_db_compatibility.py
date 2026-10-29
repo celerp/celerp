@@ -20,6 +20,8 @@ import pytest
 import sqlalchemy as sa
 from sqlalchemy.pool import NullPool
 
+from alembic_support import alembic_run
+
 from celerp.db_url import sync_url
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
@@ -442,12 +444,10 @@ def test_older_schema_with_older_marker_migrates_forward(scratch, monkeypatch):
     """One revision behind, last opened by an older Celerp: migrated to head, data kept,
     this copy recorded as having opened it, and the projection reconcile's own version
     left for the server's successful start to advance."""
-    from alembic import command
-    from celerp.alembic_config import build_alembic_config
     from celerp.migrations.compatibility import check_url
     url = scratch("head", "2.5.3")
     monkeypatch.setenv("DATABASE_URL", url)
-    command.downgrade(build_alembic_config(), "-1")
+    alembic_run(url, "downgrade", "-1")
     older = snapshot(url)
     assert older["alembic_version"] != [(_head(),)]
     assert check_url(sync_url(url)).ok
@@ -468,13 +468,11 @@ def test_older_backup_restored_and_migrated_forward(scratch, tmp_path, monkeypat
     """A dump from an older Celerp, one revision behind, restored by pg_restore and
     brought to head by the recovery's schema reconcile, its data intact."""
     import asyncio
-    from alembic import command
-    from celerp.alembic_config import build_alembic_config
     from celerp.config import settings
     from celerp.services import backup, backup_import
     source = scratch("head", "2.5.3")
     monkeypatch.setenv("DATABASE_URL", source)
-    command.downgrade(build_alembic_config(), "-1")
+    alembic_run(source, "downgrade", "-1")
     dump = tmp_path / "database.dump"
     backup.dump_database(source, dump)
     target = scratch(None, None)

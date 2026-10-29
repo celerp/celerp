@@ -15,6 +15,7 @@ import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import IntegrityError
 
+from alembic_support import alembic_run
 from company_backup_support import company, member, owner
 from migration_support import OWNER_EMAIL, auth, real_client  # noqa: F401
 
@@ -110,12 +111,7 @@ def real_engine(fresh_db, monkeypatch):  # noqa: F811
 
 
 def _migrate_to(fresh, revision: str) -> None:
-    from alembic import command
-
-    from celerp.alembic_config import build_alembic_config
-
-    os.environ["DATABASE_URL"] = fresh[0]
-    command.upgrade(build_alembic_config(), revision)
+    alembic_run(fresh[0], "upgrade", revision)
 
 
 async def _sign_in_before_the_upgrade(engine, user_id, company_id, role: str) -> tuple[str, str]:
