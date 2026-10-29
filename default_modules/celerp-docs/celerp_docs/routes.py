@@ -1022,6 +1022,14 @@ _DOC_SORT_FIELDS = {
 _DOC_NUMERIC_SORT_FIELDS = frozenset({"total", "amount_outstanding"})
 
 
+def _doc_issue_date():
+    """A document's effective issue date: its own issue_date, else the day it was created. A
+    document made without one (a conversion before issue dates were set) stays inside the date
+    windows and sorts by the day it was made, as _list_sort_date does for lists."""
+    issue = _func.nullif(_func.substr(Projection.state["issue_date"].as_string(), 1, 10), "")
+    return _func.coalesce(issue, _func.substr(_sa.cast(Projection.created_at, _sa.Text), 1, 10))
+
+
 def _doc_sql_where(company_id: str, f: DocListFilters) -> list:
     """The SQL WHERE for ``f`` (company scope included): every filter the DB can evaluate. The
     multi-field filters (overdue_only, unfulfilled_only, not_restocked, not_stocked) are not
@@ -1055,9 +1063,9 @@ def _doc_sql_where(company_id: str, f: DocListFilters) -> list:
     if id_list:
         base_where.append(Projection.entity_id.in_(id_list))
     if f.date_from:
-        base_where.append(Projection.state["issue_date"].as_string() >= f.date_from)
+        base_where.append(_doc_issue_date() >= f.date_from)
     if f.date_to:
-        base_where.append(Projection.state["issue_date"].as_string() <= f.date_to)
+        base_where.append(_doc_issue_date() <= f.date_to)
     if f.due_from:
         base_where.append(Projection.state["due_date"].as_string() >= f.due_from)
     if f.due_to:
@@ -1096,6 +1104,8 @@ def _doc_sql_order(field: str, descending: bool) -> list:
     per-page queries, so a row on a page boundary can be skipped (or duplicated) by OFFSET."""
     if field == "_updated_at":
         expr = Projection.updated_at
+    elif field == "issue_date":
+        expr = _doc_issue_date()
     else:
         values = [
             _func.nullif(Projection.state[k].as_string(), "")
@@ -1117,8 +1127,12 @@ def _doc_display(state: dict) -> dict:
 
 def _doc_row(r: Projection) -> dict:
     """The list row for a document: its displayed state (``_doc_display``) with ``id`` and
-    ``_updated_at``."""
-    return _doc_display(r.state | {"id": r.entity_id, "_updated_at": r.updated_at.isoformat() if r.updated_at else None})
+    ``_updated_at``. A document with no issue_date shows the day it was created, the date
+    ``_doc_issue_date`` windows and sorts it by."""
+    row = r.state | {"id": r.entity_id, "_updated_at": r.updated_at.isoformat() if r.updated_at else None}
+    if not row.get("issue_date") and r.created_at:
+        row["issue_date"] = r.created_at.date().isoformat()
+    return _doc_display(row)
 
 
 # The state keys the row-by-row filters of ``_doc_filter`` read, before display fallbacks.
@@ -8091,6 +8105,7 @@ lists_router = APIRouter(dependencies=[Depends(get_current_user)])
 class ListCreatePayload(BaseModel):
     list_type: str | None = None
     ref_id: str | None = None
+    issue_date: str | None = None
     contact_id: str | None = None
     contact_name: str | None = None
     line_items: list[dict] = Field(default_factory=list)
@@ -8188,6 +8203,18 @@ def _list_sort_date():
     created = _func.substr(_sa.cast(Projection.created_at, _sa.Text), 1, 10)
     date = _func.nullif(_func.substr(Projection.state["date"].as_string(), 1, 10), "")
     return _func.coalesce(issue, created, date)
+
+
+async def _fill_list_issue_date(session: AsyncSession, company_id, entity_id: str, state: dict) -> dict:
+    """``state`` with the list's issue_date filled in when it has none (a list made before lists
+    stored one): the date the index shows and windows it by (``_list_sort_date``), so a list's
+    page and its row in the index always agree. Nothing is written."""
+    if state.get("issue_date"):
+        return state
+    effective = (await session.execute(
+        select(_list_sort_date()).where(*_list_base_where(company_id), Projection.entity_id == entity_id)
+    )).scalar_one_or_none()
+    return state | {"issue_date": effective} if effective else state
 
 
 def _list_customer():
@@ -8433,8 +8460,9 @@ async def get_list(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     row = await _get_list(session, company_id, entity_id)
-    return row.state | {"id": row.entity_id, "version": row.version,
-                        "line_holds": await _line_holds(session, company_id, entity_id)}
+    state = await _fill_list_issue_date(session, company_id, entity_id, row.state)
+    return state | {"id": row.entity_id, "version": row.version,
+                    "line_holds": await _line_holds(session, company_id, entity_id)}
 
 
 _PAGE_LIMIT_MAX = 100
@@ -8495,7 +8523,7 @@ async def get_list_page(
         {"lo": off, "hi": off + lim - 1, "cid": str(company_id), "eid": entity_id},
     )).all()
     items = [r.item for r in window if r.item is not None]
-    header = dict(head.header or {})
+    header = await _fill_list_issue_date(session, company_id, entity_id, dict(head.header or {}))
     header["id"] = entity_id
     header["version"] = head.version
     item_meta = await _page_item_meta(session, company_id, items)
@@ -8584,6 +8612,8 @@ async def create_list(
     data["ref_id"] = ref_id
     chosen = _chosen_terms(data)
     data.setdefault("currency", company.settings.get("currency", "USD"))
+    # Default issue_date to the company's today, as a new document does.
+    data.setdefault("issue_date", business_date_of(None, company.settings.get("timezone")))
     if contact is not None:
         data.update(await _contact_selection_values(
             session, company_id, settings, role, data,
@@ -9505,7 +9535,8 @@ async def convert_list(
     if state.get("tax"):
         new_data["tax_rate"] = state["tax"]
     new_data = money_from_lines(new_data, state.get("currency"))
-    new_data.update({"doc_type": payload.target_type, "ref_id": ref, "source_list_id": entity_id, "status": "draft"})
+    new_data.update({"doc_type": payload.target_type, "ref_id": ref, "source_list_id": entity_id, "status": "draft",
+                     "issue_date": business_date_of(None, company.settings.get("timezone"))})
     await emit_event(
         session, company_id=company_id, entity_id=new_doc_id, entity_type="doc",
         event_type="doc.created", data=new_data, actor_id=user.id, location_id=None,
@@ -9536,6 +9567,7 @@ async def duplicate_list(
     new_data = {k: v for k, v in state.items()
                 if k not in {"status", "entity_type", "ref_id", "share_token", SCAN_RUNS_FIELD, RESTORE_POINT}}
     new_data.update({"ref_id": ref_id, "status": "draft", "source_list_id": entity_id,
+                     "issue_date": business_date_of(None, company.settings.get("timezone")),
                      "line_items": strip_line_ids(state.get("line_items"))})
     await require_moving_fits_units(session, company_id, new_entity_id, "list", new_data)
     entry = await _emit_list(session, company_id, new_entity_id, "list.created", new_data, user)

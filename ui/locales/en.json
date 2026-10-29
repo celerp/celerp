@@ -6588,5 +6588,6 @@
   "ai.usage_unresolved_note": "{count} of them can no longer be confirmed, because the AI service keeps a question's charge for one day only. They stay unconfirmed and are not counted in Credits Used.",
   "docs.list_issue_before_send": "Issue the list before sending it.",
   "documents.marked_as_sent": "Marked as sent.",
-  "documents.sent_marker_cleared": "Sent marker cleared."
+  "documents.sent_marker_cleared": "Sent marker cleared.",
+  "doc.converted_to": "Converted to:"
 }

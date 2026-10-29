@@ -970,3 +970,110 @@ class TestListSendCommits:
         r = await client.post(f"/lists/{eid}/send", headers=_h(token), json={"sent_via": "manual"})
         assert r.status_code == 409
         assert r.json()["detail"]["message_key"] == "docs.list_issue_before_send"
+
+
+# ---------------------------------------------------------------------------
+# Issue date: lists carry one, converted documents get one, the docs index windows by it
+# ---------------------------------------------------------------------------
+
+async def _company_today(client, token) -> str:
+    from celerp.services.business_time import business_date_of
+    settings = (await client.get("/companies/me", headers=_h(token))).json()["settings"]
+    return business_date_of(None, settings.get("timezone"))
+
+
+async def _clear_issue_date(client, token, eid) -> None:
+    """A list as it was stored before lists carried an issue date."""
+    r = await client.patch(f"/lists/{eid}", headers=_h(token), json={"fields_changed": {"issue_date": {"new": None}}})
+    assert r.status_code == 200, r.text
+
+
+class TestListIssueDate:
+
+    @pytest.mark.asyncio
+    async def test_new_list_is_dated_the_company_day(self, client):
+        token = await _register(client)
+        eid = await _create_list(client, token, list_type="quotation")
+        detail = (await client.get(f"/lists/{eid}", headers=_h(token))).json()
+        assert detail["issue_date"] == await _company_today(client, token)
+        assert (await client.get(f"/lists/{eid}/page", headers=_h(token))).json()["list"]["issue_date"] == detail["issue_date"]
+
+    @pytest.mark.asyncio
+    async def test_given_issue_date_is_kept(self, client):
+        token = await _register(client)
+        eid = await _create_list(client, token, issue_date="2026-05-07")
+        assert (await client.get(f"/lists/{eid}", headers=_h(token))).json()["issue_date"] == "2026-05-07"
+
+    @pytest.mark.asyncio
+    async def test_issue_date_is_editable_in_draft_only_like_a_document(self, client):
+        token = await _register(client)
+        eid = await _create_list(client, token, list_type="quotation")
+        r = await client.patch(f"/lists/{eid}", headers=_h(token),
+                               json={"fields_changed": {"issue_date": {"new": "2026-03-01"}}})
+        assert r.status_code == 200, r.text
+        assert (await client.get(f"/lists/{eid}", headers=_h(token))).json()["issue_date"] == "2026-03-01"
+
+        await client.post(f"/lists/{eid}/finalize", headers=_h(token))
+        r = await client.patch(f"/lists/{eid}", headers=_h(token),
+                               json={"fields_changed": {"issue_date": {"new": "2026-03-02"}}})
+        assert r.status_code == 409
+        # A document refuses the same edit once issued.
+        doc = (await client.post("/docs", headers=_h(token), json={
+            "doc_type": "invoice", "line_items": [{"name": "Ring", "quantity": 1, "unit_price": 10, "line_total": 10}],
+            "subtotal": 10, "total": 10})).json()["id"]
+        assert (await client.post(f"/docs/{doc}/finalize", headers=_h(token))).status_code == 200
+        r = await client.patch(f"/docs/{doc}", headers=_h(token),
+                               json={"fields_changed": {"issue_date": {"new": "2026-03-02"}}})
+        assert r.status_code == 409
+
+    @pytest.mark.asyncio
+    async def test_list_without_issue_date_reads_the_date_the_index_shows(self, client):
+        token = await _register(client)
+        eid = await _create_list(client, token, list_type="quotation")
+        await _clear_issue_date(client, token, eid)
+        detail = (await client.get(f"/lists/{eid}", headers=_h(token))).json()
+        page = (await client.get(f"/lists/{eid}/page", headers=_h(token))).json()["list"]
+        row = next(x for x in (await client.get("/lists?limit=100", headers=_h(token))).json()["items"] if x["id"] == eid)
+        assert detail["issue_date"] == page["issue_date"] == row["date"]
+        assert detail["issue_date"] == await _company_today(client, token)
+
+    @pytest.mark.asyncio
+    async def test_duplicate_is_dated_today_not_like_the_original(self, client):
+        token = await _register(client)
+        eid = await _create_list(client, token, list_type="quotation", issue_date="2026-01-02")
+        copy = (await client.post(f"/lists/{eid}/duplicate", headers=_h(token))).json()["id"]
+        assert (await client.get(f"/lists/{copy}", headers=_h(token))).json()["issue_date"] == await _company_today(client, token)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("target,doc_type", [("memo", "memo"), ("invoice", "invoice")])
+    async def test_converted_document_is_dated_the_conversion_day_and_found_in_its_window(self, client, target, doc_type):
+        token = await _register(client)
+        eid = await _create_list(client, token, list_type="quotation", issue_date="2026-01-02")
+        await client.post(f"/lists/{eid}/finalize", headers=_h(token))
+        r = await client.post(f"/lists/{eid}/convert", headers=_h(token), json={"target_type": target})
+        assert r.status_code == 200, r.text
+        doc_id = r.json()["target_doc_id"]
+        today = await _company_today(client, token)
+
+        doc = (await client.get(f"/docs/{doc_id}", headers=_h(token))).json()
+        assert doc["issue_date"] == today and doc["doc_type"] == doc_type and doc["status"] == "draft"
+        found = (await client.get(f"/docs?doc_type={doc_type}&status=draft&date_from={today}&date_to={today}",
+                                  headers=_h(token))).json()["items"]
+        assert doc_id in {x["id"] for x in found}
+        # The quotation names what it became.
+        closed = (await client.get(f"/lists/{eid}", headers=_h(token))).json()
+        assert closed["converted_to"] == doc_id and closed["converted_to_type"] == target
+
+    @pytest.mark.asyncio
+    async def test_document_without_issue_date_stays_inside_its_date_window(self, client):
+        token = await _register(client)
+        doc = (await client.post("/docs", headers=_h(token), json={"doc_type": "memo", "line_items": []})).json()["id"]
+        r = await client.patch(f"/docs/{doc}", headers=_h(token), json={"fields_changed": {"issue_date": {"new": None}}})
+        assert r.status_code == 200, r.text
+        today = await _company_today(client, token)
+
+        inside = (await client.get(f"/docs?doc_type=memo&date_from={today}&date_to={today}", headers=_h(token))).json()["items"]
+        row = next(x for x in inside if x["id"] == doc)
+        assert row["issue_date"] == today
+        outside = (await client.get("/docs?doc_type=memo&date_from=2020-01-01&date_to=2020-12-31", headers=_h(token))).json()["items"]
+        assert doc not in {x["id"] for x in outside}

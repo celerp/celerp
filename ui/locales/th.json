@@ -6588,5 +6588,6 @@
   "documents.btn_restore_total": "คืนค่ายอดรวมเดิม",
   "docs.list_issue_before_send": "ออกรายการก่อนส่ง",
   "documents.marked_as_sent": "ทำเครื่องหมายว่าส่งแล้ว",
-  "documents.sent_marker_cleared": "ล้างเครื่องหมายว่าส่งแล้ว"
+  "documents.sent_marker_cleared": "ล้างเครื่องหมายว่าส่งแล้ว",
+  "doc.converted_to": "แปลงเป็น:"
 }

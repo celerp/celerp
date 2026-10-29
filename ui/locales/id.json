@@ -6588,5 +6588,6 @@
   "documents.btn_restore_total": "Pulihkan total sebelumnya",
   "docs.list_issue_before_send": "Terbitkan daftar sebelum mengirimnya.",
   "documents.marked_as_sent": "Ditandai sudah terkirim.",
-  "documents.sent_marker_cleared": "Tanda terkirim dihapus."
+  "documents.sent_marker_cleared": "Tanda terkirim dihapus.",
+  "doc.converted_to": "Dikonversi menjadi:"
 }

@@ -6588,5 +6588,6 @@
   "documents.btn_restore_total": "以前の合計に戻す",
   "docs.list_issue_before_send": "リストを送信する前に発行してください。",
   "documents.marked_as_sent": "送信済みにしました。",
-  "documents.sent_marker_cleared": "送信済みの印を外しました。"
+  "documents.sent_marker_cleared": "送信済みの印を外しました。",
+  "doc.converted_to": "変換先:"
 }

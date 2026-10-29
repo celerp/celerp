@@ -6588,5 +6588,6 @@
   "documents.btn_restore_total": "استعادة الإجمالي السابق",
   "docs.list_issue_before_send": "أصدر القائمة قبل إرسالها.",
   "documents.marked_as_sent": "تم وضع علامة «تم الإرسال».",
-  "documents.sent_marker_cleared": "تمت إزالة علامة «تم الإرسال»."
+  "documents.sent_marker_cleared": "تمت إزالة علامة «تم الإرسال».",
+  "doc.converted_to": "تم التحويل إلى:"
 }

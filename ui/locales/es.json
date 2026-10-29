@@ -6588,5 +6588,6 @@
   "documents.btn_restore_total": "Restablecer el total anterior",
   "docs.list_issue_before_send": "Emita la lista antes de enviarla.",
   "documents.marked_as_sent": "Marcado como enviado.",
-  "documents.sent_marker_cleared": "Se quitó la marca de enviado."
+  "documents.sent_marker_cleared": "Se quitó la marca de enviado.",
+  "doc.converted_to": "Convertido en:"
 }

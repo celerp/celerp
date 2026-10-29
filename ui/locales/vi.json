@@ -6588,5 +6588,6 @@
   "documents.btn_restore_total": "Khôi phục tổng trước đó",
   "docs.list_issue_before_send": "Hãy phát hành danh sách trước khi gửi.",
   "documents.marked_as_sent": "Đã đánh dấu là đã gửi.",
-  "documents.sent_marker_cleared": "Đã bỏ dấu đã gửi."
+  "documents.sent_marker_cleared": "Đã bỏ dấu đã gửi.",
+  "doc.converted_to": "Đã chuyển thành:"
 }
