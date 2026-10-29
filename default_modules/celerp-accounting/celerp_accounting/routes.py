@@ -3062,7 +3062,7 @@ async def start_reconciliation(
             select(BankAccount).where(
                 BankAccount.id == payload.bank_account_id,
                 BankAccount.company_id == company_id,
-            ).with_for_update()
+            ).with_for_update(key_share=True)
         )
     ).scalar_one_or_none()
     if not bank:
@@ -3197,7 +3197,8 @@ async def reopen_reconciliation(
     # start_reconciliation does, so a start or another reopen of the same statement
     # waits for this one. Then lock this reconciliation and read its status as committed
     # by whoever held it (a completion in flight), not as first read.
-    await db.execute(select(BankAccount.id).where(BankAccount.id == recon.bank_account_id).with_for_update())
+    await db.execute(select(BankAccount.id).where(BankAccount.id == recon.bank_account_id)
+                     .with_for_update(key_share=True))
     recon = await _get_recon(db, session_id, company_id, for_update=True)
     await db.refresh(recon)
     if recon.status != "completed":

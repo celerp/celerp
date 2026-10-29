@@ -769,7 +769,7 @@ async def transfer_install_owner(
 ) -> dict:
     """Transfer installation-wide authority to an active user in this company."""
     current = (await session.execute(
-        select(User).where(User.is_install_owner.is_(True)).with_for_update()
+        select(User).where(User.is_install_owner.is_(True)).with_for_update(key_share=True)
     )).scalar_one_or_none()
     if current is None or current.id != owner.id:
         raise HTTPException(status_code=403, detail="Installation owner access required")
@@ -777,7 +777,7 @@ async def transfer_install_owner(
         return {"ok": True}
 
     target = (await session.execute(
-        select(User).where(User.id == user_id).with_for_update()
+        select(User).where(User.id == user_id).with_for_update(key_share=True)
     )).scalar_one_or_none()
     membership = (await session.execute(
         select(UserCompany).where(
@@ -964,7 +964,7 @@ async def patch_user(
 
     await lock_company(session, company_id)
     user = (await session.execute(
-        select(User).where(User.id == user_id).with_for_update()
+        select(User).where(User.id == user_id).with_for_update(key_share=True)
     )).scalar_one_or_none()
     link = (await session.execute(
         select(UserCompany).where(

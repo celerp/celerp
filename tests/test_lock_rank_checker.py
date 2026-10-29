@@ -899,6 +899,9 @@ async def upd(s): await s.execute(sa.update(Item.__table__).where(Item.id == 1))
 async def dele(s): await s.execute(delete(Tags))
 async def lock(s): await s.execute(select(Item.id).where(Item.id == 1).with_for_update())
 async def get(s): await s.get(Item, 1, with_for_update=True)
+async def get_nokey(s): await s.get(Item, 1, with_for_update={"key_share": True})
+async def get_plain(s): await s.get(Item, 1, with_for_update=False)
+async def nokey(s): await s.execute(select(Item.id).where(Item.id == 1).with_for_update(key_share=True))
 async def raw(s): await s.execute(text("UPDATE items SET a = 1"))
 async def raw_lock(s, t): await s.execute(text(f"SELECT id FROM tags WHERE t = {t} FOR NO KEY UPDATE"))
 async def raw_insert(s): await s.execute(text("INSERT INTO items (a) VALUES (1)"))
@@ -911,7 +914,8 @@ async def reads(s, d):
     found = lock_rank._scan_writers([tmp_path / "m.py"])
     path = lock_rank.os.path.relpath(tmp_path / "m.py", lock_rank._ROOT)
     assert {t: {(f, k) for p, f, k in v if p == path} for t, v in found.items()} == {
-        "items": {("ins", "insert"), ("upd", "write"), ("lock", "lock"), ("get", "lock"),
+        "items": {("ins", "insert"), ("upd", "write"), ("lock", "key lock"), ("get", "key lock"),
+                  ("get_nokey", "lock"), ("nokey", "lock"),
                   ("raw", "write"), ("raw_insert", "insert"), ("inner", "delete")},
         "tags": {("dele", "delete"), ("raw_lock", "lock")},
     }

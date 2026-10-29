@@ -564,7 +564,7 @@ async def _lock_run(session: AsyncSession, run: MigrationRun, *, company: bool =
         await lock_company(session, run.company_id)
     (await session.execute(select(MigrationRun)
                            .where(MigrationRun.id == run.id, MigrationRun.company_id == run.company_id)
-                           .with_for_update().execution_options(populate_existing=True))).scalar_one()
+                           .with_for_update(key_share=True).execution_options(populate_existing=True))).scalar_one()
 
 
 async def request_start(session: AsyncSession, run: MigrationRun) -> None:
@@ -693,7 +693,7 @@ async def _stop_if_cancelled(maker, run_id: uuid.UUID, status: str) -> bool:
         return False
     if status == _S.CANCEL_REQUESTED:
         async with maker() as s:
-            run = await s.get(MigrationRun, run_id, with_for_update=True)
+            run = await s.get(MigrationRun, run_id, with_for_update={"key_share": True})
             await _set_status(s, run, _S.CANCELLED)
             await s.commit()
     return True
@@ -736,7 +736,7 @@ def _failure_message(exc: Exception) -> str:
 async def _fail(maker, run_id: uuid.UUID, phase: MigrationPhase, cursor: int, exc: Exception) -> None:
     errors, details = _failure_details(exc)
     async with maker() as s:
-        run = await s.get(MigrationRun, run_id, with_for_update=True)
+        run = await s.get(MigrationRun, run_id, with_for_update={"key_share": True})
         state = dict(run.phase_state)
         state[phase.value] = {**_phase_entry(state, phase), "status": "failed", "cursor": cursor, "errors": errors}
         run.phase_state = state
@@ -985,7 +985,7 @@ async def _reconcile_run(maker, run_id: uuid.UUID, state: dict, expected: list[t
 
     Completeness is checked first: matching totals cannot show a lost record."""
     async with maker() as s:
-        run = await s.get(MigrationRun, run_id, with_for_update=True)
+        run = await s.get(MigrationRun, run_id, with_for_update={"key_share": True})
         if run.status != _S.RUNNING:
             if run.status == _S.CANCEL_REQUESTED:
                 await _set_status(s, run, _S.CANCELLED)
@@ -1009,13 +1009,13 @@ async def _reconcile_run(maker, run_id: uuid.UUID, state: dict, expected: list[t
             report = await _verification(s, run)
         except Exception as exc:
             await s.rollback()
-            run = await s.get(MigrationRun, run_id, with_for_update=True, populate_existing=True)
+            run = await s.get(MigrationRun, run_id, with_for_update={"key_share": True}, populate_existing=True)
             run.reconciliation = {}
             await s.commit()
             await _fail(maker, run_id, _P.RECONCILIATION, 0, exc)
             return
         await s.rollback()  # measurement only; nothing it read is kept locked
-        run = await s.get(MigrationRun, run_id, with_for_update=True, populate_existing=True)
+        run = await s.get(MigrationRun, run_id, with_for_update={"key_share": True}, populate_existing=True)
         ready = report["blockers"] == 0 or reviewable_differences(report)
         state[_P.RECONCILIATION.value] = {**_phase_entry(state, _P.RECONCILIATION),
                                           "status": "done" if ready else "failed"}
@@ -1361,7 +1361,7 @@ async def mark_stale_runs_interrupted(session: AsyncSession, company_id: uuid.UU
     query = select(MigrationRun).where(
         MigrationRun.status.in_([_S.RUNNING.value, _S.CANCEL_REQUESTED.value, _S.RECONCILING.value]),
         MigrationRun.heartbeat_at < cutoff,
-    ).with_for_update(skip_locked=True)
+    ).with_for_update(key_share=True, skip_locked=True)
     if company_id is not None:
         query = query.where(MigrationRun.company_id == company_id)
     marked = 0

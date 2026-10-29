@@ -1269,12 +1269,22 @@ def _foreign_key_share(table: str, strength: str) -> bool:
     return strength == "key share" and table in _parents()
 
 
-def _orm_strength(call: ast.Call) -> str:
-    """The row-lock strength of a ``with_for_update(read=, key_share=)`` call."""
-    flag = {k.arg: isinstance(k.value, ast.Constant) and k.value.value is True for k in call.keywords}
+def _orm_strength(keywords) -> str:
+    """The row-lock strength of ``with_for_update(read=, key_share=)`` keywords."""
+    flag = {k.arg: isinstance(k.value, ast.Constant) and k.value.value is True for k in keywords}
     read, key = flag.get("read", False), flag.get("key_share", False)
     return {(True, True): "key share", (True, False): "share",
             (False, True): "no key update", (False, False): "update"}[(read, key)]
+
+
+
+def _get_strength(value) -> str:
+    """The row-lock strength of ``session.get(..., with_for_update=<value>)``: True, or a
+    dict of ``with_for_update`` keywords."""
+    if isinstance(value, ast.Dict):
+        return _orm_strength(ast.keyword(arg=k.value, value=v) for k, v in zip(value.keys, value.values)
+                             if isinstance(k, ast.Constant))
+    return "update"
 
 
 def _production_files():
@@ -1333,15 +1343,26 @@ def _writes(call: ast.Call, tables: dict[str, str]) -> list[tuple[str, str]]:
     if name == "with_for_update" and isinstance(call.func, ast.Attribute):
         root = _chain_root(call.func.value)
         if isinstance(root, ast.Call) and root.args and (t := _named_table(root.args[0], tables)):
-            return [] if _foreign_key_share(t, _orm_strength(call)) else [(t, "lock")]
-    if name == "get" and call.args and any(k.arg == "with_for_update" for k in call.keywords):
-        return [(t, "lock")] if (t := _named_table(call.args[0], tables)) else []
+            return _locking_read(t, _orm_strength(call.keywords))
+    if name == "get" and call.args and (t := _named_table(call.args[0], tables)):
+        for k in call.keywords:
+            if k.arg == "with_for_update" and not (isinstance(k.value, ast.Constant) and k.value.value is not True):
+                return _locking_read(t, _get_strength(k.value))
     if name == "text" and call.args:
         sql = _text(call.args[0])
         return ([(t, "insert" if ins else "write") for ins, t in _TEXT_DML.findall(sql)]
-                + [(t, "lock") for t, strength in _TEXT_FOR.findall(sql)
-                   if not _foreign_key_share(t, " ".join(strength.lower().split()))])
+                + [w for t, strength in _TEXT_FOR.findall(sql)
+                   for w in _locking_read(t, " ".join(strength.lower().split()))])
     return []
+
+
+def _locking_read(table: str, strength: str) -> list[tuple[str, str]]:
+    """A locking read's census entry: none for a parent's key share (the foreign-key check's
+    lock), "key lock" for FOR UPDATE (it also holds the row's key: a new row referring to it
+    waits), else "lock"."""
+    if _foreign_key_share(table, strength):
+        return []
+    return [(table, "key lock" if strength == "update" else "lock")]
 
 
 def _scan_writers(files) -> dict[str, set[tuple[str, str, str]]]:
@@ -1379,6 +1400,15 @@ def static_writers() -> dict[str, list[str]]:
             out[f"row:{table}"].add(f"{path} {function}")
     return {k: sorted(v) for k, v in out.items()}
 
+
+
+def key_locks() -> list[str]:
+    """Sorted "path function table" of every production function that locks a parent row
+    FOR UPDATE: it holds the row's key too, so a new row referring to it waits until the
+    transaction ends, and the recorder ranks the take as key:<t>. Every other lock that
+    changes neither the key nor removes the row is FOR NO KEY UPDATE."""
+    return sorted(f"{path} {function} {table}" for table, found in _scan_writers(_production_files()).items()
+                  if table in _parents() for path, function, kind in found if kind == "key lock")
 
 def _unexercised(g: dict) -> dict[str, list[str]]:
     """class -> the static writers of the class no recorded take was made from: their takes
