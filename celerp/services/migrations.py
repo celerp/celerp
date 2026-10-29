@@ -1162,8 +1162,13 @@ async def discard(session: AsyncSession, run: MigrationRun) -> str:
     """Delete a staged company and its runs, then their files; returns where the user goes next.
 
     The files are deleted after the commit through a cleanup task committed with the
-    deletes, so a storage failure never blocks the user and is retried at startup."""
-    await _lock_run(session, run)
+    deletes, so a storage failure never blocks the user and is retried at startup.
+    The run is removed, so it is locked FOR UPDATE (its key) up front, never upgraded
+    from the NO KEY UPDATE of _lock_run after the company's other rows are deleted."""
+    await lock_company(session, run.company_id)
+    (await session.execute(select(MigrationRun)
+                           .where(MigrationRun.id == run.id, MigrationRun.company_id == run.company_id)
+                           .with_for_update().execution_options(populate_existing=True))).scalar_one()
     company = await session.get(Company, run.company_id)
     if run.status == _S.COMPLETED or not company.is_migration_staged:
         raise MigrationError(409, t(NO_UNFINISHED))
