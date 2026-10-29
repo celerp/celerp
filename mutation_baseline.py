@@ -66,7 +66,7 @@ GAPS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mutation_c
 ROUTE_CLASSES = ("never requested", "requested, no durable write")
 SITE_CLASSES = ("not reached from a route", "reached from a route")  # by the static call graph
 # The checked-in entries at most: closing a gap lowers it in the same change, and nothing raises it.
-GAPS_CEILING = 302
+GAPS_CEILING = 300
 
 
 def gap_key(entry: dict) -> tuple[str, str]:
