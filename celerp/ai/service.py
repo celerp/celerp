@@ -15,11 +15,12 @@ The service never touches quota or gateway directly - that lives in the router.
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import logging
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -36,8 +37,7 @@ from celerp.ai.tools import (
     compile_agent_capabilities,
     execute_agent_capability,
 )
-from celerp.db import SessionLocal
-from celerp.services.field_schema import hidden_item_fields
+from celerp.services.field_schema import field_visibility
 from celerp.services.permissions import read_authority, role_has_permission
 from ui.i18n import current_lang, lang_label, t
 
@@ -417,7 +417,8 @@ async def _agent_loop(
             if not capability.get("requires_confirmation", False)
         }
     tools = agent_tool_specs(capabilities)
-    await _admit_stored_reads(journal, capabilities, company_settings, role)
+    admit_reads = functools.partial(_admit_reads, journal, capabilities, company_id, user_id)
+    await admit_reads()
 
     # Company memory rides in the system message, so the user message (which
     # names the question when it is asked again) depends on the question alone.
@@ -447,7 +448,7 @@ async def _agent_loop(
                 pending_actions=[], error=_TOO_MUCH_DATA_TEXT, error_code="too_much_data",
             )
         try:
-            result = await _model_turn(messages, tools, turn=turn, journal=journal,
+            result = await _model_turn(messages, tools, turn=turn, journal=journal, admit_reads=admit_reads,
                                        reservation_id=reservation_id, tally=tally)
         except HTTPException as exc:
             if turn and exc.status_code == 413:
@@ -527,7 +528,7 @@ async def _agent_loop(
                 tool_result = await _tool_step(journal, call_id, lambda: execute_agent_capability(
                     app, bearer(), capability, arguments, call_id,
                     result_max_bytes=MAX_RESULT_BYTES,
-                ), lambda: _relied_on(capability, company_id, user_id, company_settings, role))
+                ), lambda: _contract_now(capability, company_id, user_id))
                 tools_called.append(name)
                 _cite(tally, name, arguments, tool_result)
                 if not tool_result.get("ok") and (tool_result.get("error") or {}).get("code") == "invalid_arguments":
@@ -560,11 +561,13 @@ async def _model_turn(
     *,
     turn: int,
     journal: jobs.Journal,
+    admit_reads: Callable[[], Awaitable[None]],
     reservation_id: str | None,
     tally: RunTally,
 ) -> dict:
     """Model turn ``turn``: what the journal holds for it, or one model call sent
-    under the turn's identity inside an ``interactive`` gate slot and journaled.
+    under the turn's identity inside an ``interactive`` gate slot and journaled. Each
+    send, a resend too, first admits the kept reads it carries (``admit_reads``).
     Every charge it reports is added to ``tally`` before anything else happens,
     including the charge of a call whose answer was lost."""
     key = f"model:{turn}"
@@ -573,9 +576,13 @@ async def _model_turn(
         identity = journal.identity(turn)
         await journal.admit()
 
+        async def _before_send(nbytes: int) -> None:
+            await admit_reads()
+            await journal.sending(key, identity, nbytes)
+
         async def _call() -> ModelResult:
             return await complete(messages, tools=tools, reservation_id=reservation_id,
-                                  before_send=lambda nbytes: journal.sending(key, identity, nbytes), **identity)
+                                  before_send=_before_send, **identity)
         try:
             async with jobs.gate.slot("interactive", on_wait=journal.on_wait):
                 result = await jobs.send_step(_call, resend=journal.background,
@@ -598,49 +605,71 @@ async def _model_turn(
 _STEP_STATES = {"outcome_unknown": "unknown", "operation_expired": "expired"}
 
 
-async def _admit_stored_reads(journal: jobs.Journal, capabilities: dict, company_settings: dict,
-                              role: str) -> None:
-    """A question run again replays the reads it kept only while each is still valid
-    for its asker: AI access, the read's tool, every permission its result relied on
-    (``_relied_on``), and no item field shown then that is hidden now. Otherwise the
-    question ends refused before anything is sent."""
+# The replay contract's version. A kept read whose contract is missing or of another
+# version is never replayed: the question ends refused.
+_REPLAY = 1
+
+
+async def _authority(company_id: uuid.UUID, user_id: uuid.UUID) -> tuple[str, dict]:
+    """The asker's role and the company settings as committed now (no lock kept)."""
+    async with jobs.SessionLocal() as session:
+        authority = await read_authority(session, company_id, user_id)
+        await session.commit()
+    return authority
+
+
+def _replay_contract(capability: dict, role: str, settings: dict) -> dict:
+    """What a read's result relied on of its asker's authority, kept beside the result
+    and never sent to the model: their role, whether they held each permission the
+    capability's result depends on, and, for a result the item field visibility shapes,
+    that visibility config."""
+    return {"v": _REPLAY, "role": role,
+            "permissions": {key: role_has_permission(settings, role, key) for key in capability["result_permissions"]},
+            "visibility": field_visibility(settings) if capability["field_visibility"] else None}
+
+
+async def _contract_now(capability: dict, company_id: uuid.UUID, user_id: uuid.UUID) -> dict:
+    """``_replay_contract`` under the asker's authority read now."""
+    return _replay_contract(capability, *await _authority(company_id, user_id))
+
+
+def _supports(capability: dict, kept: dict | None, role: str, settings: dict) -> bool:
+    """Whether the asker's authority now still supports what a kept read showed: a
+    contract of this version made for the capability as it is declared now, the same
+    role, every permission the result relied on still held, and the same field
+    visibility config. Anything else is refused, a kept read without a contract too."""
+    contract = (kept or {}).get("replay") if isinstance(kept, dict) else None
+    if not isinstance(contract, dict) or contract.get("v") != _REPLAY or "result" not in kept:
+        return False
+    held = contract.get("permissions")
+    return (isinstance(held, dict) and set(held) == set(capability["result_permissions"])
+            and contract.get("role") == role
+            and all(role_has_permission(settings, role, key) for key, was in held.items() if was)
+            and contract.get("visibility") == (field_visibility(settings) if capability["field_visibility"] else None))
+
+
+async def _admit_reads(journal: jobs.Journal, capabilities: dict, company_id: uuid.UUID,
+                       user_id: uuid.UUID) -> None:
+    """Before a question run again replays the reads it kept, and again just before each
+    model step leaves (after any wait for a slot): AI access, and each kept read still
+    supported by its asker's authority read now (``_supports``). Otherwise the question
+    ends refused before anything is sent."""
     reads = journal.stored_reads()
     if not reads:
         return
     await journal.admit()
+    role, settings = await _authority(company_id, user_id)
     for call_id, name in reads.items():
-        relied_on = journal.stored(f"tool:{call_id}")["relied_on"]
-        hidden = relied_on["hidden_fields"]
-        if (name not in capabilities
-                or not all(role_has_permission(company_settings, role, key) for key in relied_on["permissions"])
-                or (hidden is not None and not hidden_item_fields(company_settings, role) <= set(hidden))):
+        capability = capabilities.get(name) if name else None
+        if capability is None or not _supports(capability, journal.stored(f"tool:{call_id}"), role, settings):
             raise _CallerRefused("read_refused")
 
 
-async def _relied_on(capability: dict, company_id: uuid.UUID, user_id: uuid.UUID,
-                     settings: dict, role: str) -> dict:
-    """What of its asker's authority a read's result may have depended on: each
-    permission the capability's result depends on that the asker held when the run
-    began or holds now the read returned, and, for a result the item field visibility
-    shapes, the fields hidden from the asker both then and now. A change between the
-    two cannot slip past: either side counts."""
-    if not capability["result_permissions"] and not capability["field_visibility"]:
-        return {"permissions": [], "hidden_fields": None}
-    async with SessionLocal() as session:
-        now_role, now_settings = await read_authority(session, company_id, user_id)
-        await session.commit()
-    permissions = sorted(
-        key for key in capability["result_permissions"]
-        if role_has_permission(settings, role, key) or role_has_permission(now_settings, now_role, key))
-    hidden = None
-    if capability["field_visibility"]:
-        hidden = sorted(hidden_item_fields(settings, role) & hidden_item_fields(now_settings, now_role))
-    return {"permissions": permissions, "hidden_fields": hidden}
-
-
-async def _tool_step(journal: jobs.Journal, call_id: str, run, relied_on) -> dict:
+async def _tool_step(journal: jobs.Journal, call_id: str, run, contract) -> dict:
     """One read tool call: what the journal holds for it, or its result, journaled
-    with what of its asker's authority it relied on (``_relied_on``). The question is
+    with its replay contract (``contract``: ``_replay_contract`` from the authority
+    read just before and just after the read; None when the two differ, so the read is
+    never replayed and the next model step is refused). The question is
     admitted before the read, as before every model step. A read the app refused its
     caller is never journaled: the question ends with that refusal. Signed out, it
     may be asked again and reads again; refused the read, only a new question follows."""
@@ -648,11 +677,13 @@ async def _tool_step(journal: jobs.Journal, call_id: str, run, relied_on) -> dic
     stored = journal.stored(key)
     if stored is None:
         await journal.admit()
+        before = await contract()
         result = await run()
         refused = jobs.caller_refusal(result)
         if refused is not None:
             raise _CallerRefused(refused)
-        stored = {"result": result, "relied_on": await relied_on()}
+        after = await contract()
+        stored = {"result": result, "replay": after if after == before else None}
         await journal.ended(key, "done", stored)
     return stored["result"]
 

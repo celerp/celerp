@@ -351,13 +351,14 @@ def effective_field_schema(settings: dict, category: str | None = None) -> list[
     return _rehydrate_builtin_metadata(base_schema)
 
 
-def hidden_item_fields(settings: dict, role: str) -> frozenset[str]:
-    """Every item field ``role`` may not see, as ``category/key`` (no category: the base
-    schema), over the base schema and each category's own."""
-    from celerp.services.cost_visibility import restricted_field_keys
+def field_visibility(settings: dict) -> dict[str, list[str]]:
+    """The item field visibility config ``settings`` give: the roles each restricted
+    field is visible to (``visible_to_roles``), by ``category/key`` (no category: the
+    base schema), over the base schema and each category's own."""
     categories = (None, *((settings or {}).get("category_schemas") or {}))
-    return frozenset(
-        f"{category or ''}/{key}"
+    return {
+        f"{category or ''}/{field['key']}": sorted(field["visible_to_roles"])
         for category in categories
-        for key in restricted_field_keys(role, effective_field_schema(settings or {}, category))
-    )
+        for field in effective_field_schema(settings or {}, category)
+        if field.get("visible_to_roles")
+    }

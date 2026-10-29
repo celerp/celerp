@@ -357,6 +357,28 @@ async def test_a_reopen_racing_a_conversation_delete_never_reopens_its_orphaned_
     assert not jobs.running_tasks() and len(cloud.bodies) == sent
 
 
+async def test_asking_again_while_the_conversation_is_deleted_answers_not_found(
+        client, owner, cloud, session, monkeypatch):
+    """The send read the interrupted question, then its conversation was deleted before
+    the reopen: the send answers 404, never in progress, and nothing reaches the model."""
+    from celerp.ai import conversations
+    token, company_id, user_id = owner
+    case = await _in_state(client, token, company_id, user_id, cloud, session, monkeypatch, "conversation", "unheld")
+    reopen = jobs.reopen_question
+
+    async def deleted_first(s, job_id, auth_nonce):
+        assert await conversations.delete_conversation(s, uuid.UUID(case.conv), company_id, user_id)
+        return await reopen(s, job_id, auth_nonce)
+
+    monkeypatch.setattr(jobs, "reopen_question", deleted_first)
+    sent = len(cloud.bodies)
+    r = await client.post(f"/ai/conversations/{case.conv}/query", headers=AUTH(token),
+                          json={"query": QUERY, "operation_id": str(case.job_id)})
+    assert r.status_code == 404, r.text
+    assert jobs.liveness(await _row(session, case.job_id)) == "ended"
+    assert not jobs.running_tasks() and len(cloud.bodies) == sent
+
+
 @pytest.mark.parametrize("state", ("running", "unheld"))
 async def test_an_open_questions_message_is_never_pruned(client, owner, cloud, session, monkeypatch, state):
     """A thread keeps its newest messages and prunes the oldest, never the message of

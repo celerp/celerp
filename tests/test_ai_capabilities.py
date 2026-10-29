@@ -439,7 +439,7 @@ def _undeclared(app) -> list[str]:
 
 def test_every_permission_a_capabilitys_result_depends_on_is_declared():
     """A kept read is replayed only while its asker still holds every permission its
-    result depended on (celerp.ai.service._admit_stored_reads). So a capability
+    result depended on (celerp.ai.service._admit_reads). So a capability
     declares exactly the permissions its handler, or any Celerp function it calls,
     consults, and whether it applies field visibility. A check whose key comes from
     data (a registry) needs every key declared."""
