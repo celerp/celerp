@@ -47,7 +47,7 @@ def _sites(tmp_path, monkeypatch):
     (tmp_path / "celerp" / "w.py").write_text(SOURCE)
     monkeypatch.setattr(mutation_census, "ROOT", str(tmp_path))
     monkeypatch.setattr(mutation_census.static_calls, "ROOT", str(tmp_path))
-    return mutation_census.static_inventory()[1]
+    return mutation_census.static_inventory(mutation_census.static_calls.Graph())[1]
 
 
 def _passed(sites, *sent):
@@ -84,7 +84,7 @@ def test_a_driven_add_site_of_the_bundled_source_counts_on_its_own_line(tmp_path
         lines = fh.read().splitlines()
     add = next(i for i, line in enumerate(lines, 1) if line.strip() == "session.add(wc)")
     commit = next(i for i in range(add + 1, add + 6) if "await session.commit()" in lines[i - 1])
-    site = next(s for s in mutation_census.static_inventory()[1] if s[0] == rel and s[1] == add)
+    site = next(s for s in mutation_census.static_inventory(mutation_census.static_calls.Graph())[1] if s[0] == rel and s[1] == add)
     assert mutation_census._passed_through(site, {(add, "create_work_center", site[5][0])})
     assert not mutation_census._passed_through(site, {(commit, "create_work_center", site[5][0])})
 

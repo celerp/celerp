@@ -69,35 +69,24 @@ def _read(path: str) -> str:
         return fh.read()
 
 
-def static_inventory():
+def static_inventory(graph):
     """Mutating route decorators and write sites in the bundled source."""
     decorators, sites = [], []
-    for rel in static_calls._python_files():
-        try:
-            tree = ast.parse(_read(os.path.join(ROOT, rel)))
-        except SyntaxError:
-            continue
-        functions = [n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
-        for fn in functions:
-            for deco in fn.decorator_list:
-                if isinstance(deco, ast.Call) and _called(deco).upper() in MUTATING:
-                    # the line the function's source starts on, the first decorator's
-                    decorators.append((rel, fn.decorator_list[0].lineno, fn.name, _called(deco).upper(),
-                                       _receiver(deco)))
-        owner = {}  # node -> the innermost function holding it, the frame its write runs in
-        for fn in functions:  # outer functions first (ast.walk is breadth first)
-            for child in ast.walk(fn):
-                if hasattr(child, "lineno"):
-                    owner[id(child)] = fn
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Call) and (static_calls.effect(node) or "").startswith("write "):
-                fn = owner.get(id(node))
-                # The function's span from its first decorator, the line its code object starts on.
-                first = min([fn.lineno] + [d.lineno for d in fn.decorator_list]) if fn else node.lineno
-                sites.append((rel, node.lineno, node.end_lineno or node.lineno,
-                              fn.name if fn else "<module>", _called(node),
-                              (first, fn.end_lineno) if fn else (node.lineno, node.end_lineno)))
-    return decorators, sites
+    for rel, tree in graph.trees.items():
+        for fn in ast.walk(tree):
+            if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                for deco in fn.decorator_list:
+                    if isinstance(deco, ast.Call) and _called(deco).upper() in MUTATING:
+                        # the line the function's source starts on, the first decorator's
+                        decorators.append((rel, fn.decorator_list[0].lineno, fn.name, _called(deco).upper(),
+                                           _receiver(deco)))
+    for rel, node, fn, module in graph.calls():
+        if (graph.effect(node, fn, module) or "").startswith("write "):
+            # The innermost function's span from its first decorator, the line its code object starts on.
+            sites.append((rel, node.lineno, node.end_lineno or node.lineno,
+                          fn.node.name if fn else "<module>", _called(node),
+                          (fn.first, fn.node.end_lineno) if fn else (node.lineno, node.end_lineno)))
+    return decorators, sorted(sites)
 
 
 def _read_noted(graph, route: str) -> set[str]:
@@ -108,12 +97,11 @@ def _read_noted(graph, route: str) -> set[str]:
     return {key for key, fn in graph.functions.items() if f"{fn.path} {fn.qualname.rpartition('.')[2]}" in sites}
 
 
-def routes_that_write(rows) -> dict[tuple, list]:
+def routes_that_write(rows, graph) -> dict[tuple, list]:
     """Each route among *rows* whose handler the static call graph shows reaching a write
     (a session write, a commit, a company lock or a mutating API request), with one chain to
     each, through no function of READ_SAFE or, for a read route, of a note READ_ROUTE_WRITES
     has for it."""
-    graph = static_calls.Graph()
     found = {}
     for (app, method, path), row in rows.items():
         rel, _, line = row["source"].rpartition(":")
@@ -183,7 +171,8 @@ def _passed_through(site, sent) -> bool:
 def report(folders, out, coverage_path=None, baseline=mutation_baseline.PATH, gaps=mutation_baseline.GAPS_PATH):
     files, routes, sites, findings, inventory = load(folders)
     coverage = _coverage(coverage_path)
-    decorators, static_sites = static_inventory()
+    graph = static_calls.Graph()
+    decorators, static_sites = static_inventory(graph)
     lines = [f"# Mutation census", "", f"Census files: {files} test processes across {len(folders)} folder(s).", ""]
 
     # -- routes ----------------------------------------------------------------
@@ -227,7 +216,7 @@ def report(folders, out, coverage_path=None, baseline=mutation_baseline.PATH, ga
     unrequested = {(app, "GET", path): row for (app, path), row in reading.items() if not _requested(app, path)}
     untested = {(app, method, path): row for cls in mutation_baseline.ROUTE_CLASSES
                 for app, method, path, _, _ in classes.get(cls, []) for row in [mutating[(app, method, path)]]}
-    reaching = routes_that_write({**unrequested, **untested})
+    reaching = routes_that_write({**unrequested, **untested}, graph)
     writing = {k: v for k, v in reaching.items() if k in unrequested}
     lines += ["## Read routes", "",
               f"- GET and HEAD routes the test apps serve: {len(reading)} "

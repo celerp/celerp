@@ -2165,7 +2165,7 @@ async def _sender_reply_to(session: AsyncSession, company_id, user) -> str:
     return cfg.get("email") or getattr(user, "email", "") or ""
 
 
-async def _payments_tip_suffix(session, company_id) -> str:
+async def _payments_tip_suffix(session: AsyncSession, company_id) -> str:
     """One-time payments pitch that piggybacks on the first delivery receipt
     for a payable doc (no separate nag notification). Empty string once shown,
     once payments are on, or when the instance cannot take payments anyway."""

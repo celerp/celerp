@@ -51,8 +51,11 @@ _SQL_WRITES = {f"statement {op}" for op in ("insert", "update", "delete", "merge
 _SQL_READS = {"statement select": "a SELECT",
               "statement control": "a session control statement (SET, LOCK, SAVEPOINT and the like)",
               "statement ddl": "schema DDL, which the observer counts as no data write"}
-_SESSION_TYPES = {"AsyncSession": SESSION, "Session": SESSION, "AsyncConnection": SESSION, "Connection": SESSION,
-                  "async_sessionmaker": FACTORY, "sessionmaker": FACTORY, "AsyncEngine": ENGINE, "Engine": ENGINE}
+# What a value annotated with a sqlalchemy type holds.
+_SQLA_TYPES = {"AsyncSession": SESSION, "Session": SESSION, "AsyncConnection": SESSION, "Connection": SESSION,
+               "async_sessionmaker": FACTORY, "sessionmaker": FACTORY, "AsyncEngine": ENGINE, "Engine": ENGINE,
+               "Select": "statement select", "Insert": "statement insert", "Update": "statement update",
+               "Delete": "statement delete"}
 _SQLA_MADE = {"AsyncSession": SESSION, "Session": SESSION, "async_sessionmaker": FACTORY, "sessionmaker": FACTORY,
               "create_async_engine": ENGINE, "create_engine": ENGINE,
               "insert": "statement insert", "update": "statement update", "delete": "statement delete",
@@ -465,14 +468,14 @@ class Graph:
         while scope is not None:
             bound = self._bindings(scope)
             if name in bound:
-                return _combine(self._bound(b, scope, scope.module) for b in bound[name])
+                return self._held(bound[name], scope, scope.module)
             scope = scope.parent
         entry = fn.scope.get(name) if fn is not None else None
         info = self._modules.get(module, {})
         if entry is None:
             bound = self._bindings(None, module)
             if name in bound:
-                return _combine(self._bound(b, None, module) for b in bound[name])
+                return self._held(bound[name], None, module)
             entry = info.get("names", {}).get(name)
         if entry is not None:
             return self._entry(entry)
@@ -506,9 +509,14 @@ class Graph:
     def _global(self, module: str, name: str):
         bound = self._bindings(None, module)
         if name in bound:
-            return _combine(self._bound(b, None, module) for b in bound[name])
+            return self._held(bound[name], None, module)
         entry = self._modules[module]["names"].get(name)
         return self._entry(entry) if entry is not None else None
+
+    def _held(self, bindings, fn, module):
+        """What a name holds across the values bound to it; an annotation declares it for all."""
+        declared = [b for b in bindings if b[0] == "annotation"]
+        return _combine(self._bound(b, fn, module) for b in declared or bindings)
 
     def _bound(self, binding, fn, module):
         how, what = binding
@@ -620,7 +628,7 @@ class Graph:
         if held is None or held == _CYCLE:
             return None
         if held.startswith(f"{SQLA} "):
-            return _SESSION_TYPES.get(held[len(SQLA) + 1:], held)
+            return _SQLA_TYPES.get(held[len(SQLA) + 1:], held)
         if held.startswith("type "):
             return self._instance(held[5:])
         if held.startswith("outside ") and held.rpartition(".")[2] not in ("Any", "TypeVar"):
@@ -697,6 +705,11 @@ class Graph:
                 model = self.kind(call.args[0], fn, module) or ""
                 return self._instance(model[5:]) if model.startswith("type ") else None
             return SESSION if name == "connection" else ENGINE if name == "get_bind" else None
+        if held == "value" and name == "join" and call.args and isinstance(call.args[0], (ast.List, ast.Tuple)) \
+                and call.args[0].elts:
+            # sep.join([first, ...]) starts with its first item: the SQL it builds is that item's.
+            first = self.kind(call.args[0].elts[0], fn, module)
+            return first if first and first.startswith("statement ") else "value"
         if held == "set":
             return "set" if name in ("copy", "union", "difference", "intersection", "symmetric_difference") else None
         if held.startswith("dict:"):

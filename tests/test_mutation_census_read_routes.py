@@ -53,7 +53,7 @@ def _scan(tmp_path, monkeypatch, safe=()):
     monkeypatch.setattr(mutation_census, "READ_SAFE", dict.fromkeys(safe, "reads"))
     rows = {("FastHTML", "GET", "/lists/new"): {"source": "ui/routes/x.py:5"},
             ("FastHTML", "GET", "/docs/{id}"): {"source": "ui/routes/x.py:12"}}
-    found = mutation_census.routes_that_write(rows)
+    found = mutation_census.routes_that_write(rows, mutation_census.static_calls.Graph())
     return {path: [mutation_census.static_calls.describe(c) for c in chains] for (_, _, path), chains in found.items()}
 
 

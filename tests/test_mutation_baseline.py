@@ -81,7 +81,7 @@ def _census(tmp_path, findings, entries) -> int:
     gaps = tmp_path / "gaps.json"
     gaps.write_text("[]")
     with pytest.MonkeyPatch.context() as patch:  # findings alone: no source, so no coverage gap
-        patch.setattr(mutation_census, "static_inventory", lambda: ([], []))
+        patch.setattr(mutation_census, "static_inventory", lambda graph: ([], []))
         return mutation_census.main([str(folder), "--out", str(tmp_path / "census.md"),
                                      "--baseline", str(baseline), "--gaps", str(gaps), "--enforce"])
 
