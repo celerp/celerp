@@ -62,7 +62,8 @@ async def test_an_online_payment_is_refused_when_no_default_deposit_account_is_s
 @pytest.mark.asyncio
 async def test_a_channels_own_deposit_account_still_wins(session, auth):
     from celerp.services.company_lock import locked_company
-    from celerp_docs.routes_payments import WOOCOMMERCE_DEPOSIT_ACCOUNT_KEY, deposit_account
+    from celerp.services.payments import WOOCOMMERCE_DEPOSIT_ACCOUNT_KEY
+    from celerp_docs.routes_payments import deposit_account
 
     company = await locked_company(session, auth["company_id"])
     company.settings = {**company.settings, WOOCOMMERCE_DEPOSIT_ACCOUNT_KEY: "1200"}

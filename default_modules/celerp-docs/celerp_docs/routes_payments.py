@@ -28,7 +28,7 @@ from celerp.models.accounting import UserCompany
 from celerp.models.company import Company
 from celerp.models.projections import Projection
 from celerp.services import payments as pay
-from celerp.services.payments import ONLINE_DEPOSIT_ACCOUNT_KEY, WOOCOMMERCE_DEPOSIT_ACCOUNT_KEY
+from celerp.services.payments import ONLINE_DEPOSIT_ACCOUNT_KEY
 from celerp.services.account_roles import resolve
 from celerp.services.auth import get_current_company_id, get_current_user, require_install_owner
 from celerp.services.business_time import business_date_at, business_timezone

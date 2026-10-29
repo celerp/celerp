@@ -46,7 +46,7 @@ from celerp_accounting.ledger_accounts import require_money_account
 from celerp_accounting.models import Account, BankAccount, BankStatementLine, ReconciliationRule, ReconciliationSession
 from celerp.models.projections import Projection
 from celerp.accounting_roles import AccountRole, refusal
-from celerp.services.account_roles import current_settings, line_roles, merge_survivors, resolve, resolve_many, role_map
+from celerp.services.account_roles import current_settings, line_roles, merge_survivors, resolve, resolve_many
 from celerp.services.ledger_rows import REVERSAL_SUFFIX, journal_rows
 from celerp.services.lot_origin import rerun_after_placing
 from celerp.services import peer_accounts, peer_journals
@@ -215,6 +215,7 @@ async def seed_chart_of_accounts(session: AsyncSession, company_id: uuid.UUID) -
     """Seed Thai default chart of accounts for a new company. Idempotent."""
     from sqlalchemy import select as _select
 
+    await lock_chart(session, company_id)
     existing_codes = set(
         (await session.execute(
             _select(Account.code).where(Account.company_id == company_id)
