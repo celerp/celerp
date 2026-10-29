@@ -624,20 +624,30 @@ def test_an_inversion_between_rows_of_the_locked_company_records_no_violation(re
     recorder.statement(1, _OUTBOUND, ("c1", 7), 0.0)
     _projection(recorder, 1, "item")
     assert not recorder.violations
-    assert recorder.edges[("row:outbound_queue", "row:projections")]["company_gated"] == {
-        "row:outbound_queue", "row:projections"}
+    assert recorder.edges[("row:outbound_queue", "row:projections")]["company_gated"] == {"row:projections"}
 
 
 @pytest.mark.parametrize("case", [
     {"gate": None},                    # no company lock
     {"gate": "c2"},                    # another company's lock
-    {"held": "c2", "gate": "c1"},      # the held row is another company's
     {"taken": "", "gate": "c1"},       # the acquired row names no one company
-    {"gate_first": False},             # the company lock came after the held row
 ])
-def test_an_inversion_not_wholly_under_one_companys_prior_lock_is_an_order_violation(recorder, case):
+def test_an_inversion_whose_acquired_row_is_not_under_its_companys_lock_is_an_order_violation(recorder, case):
     _gated_inversion(recorder, **case)
     assert ("order", "row:projections") in _kinds(recorder)
+
+
+@pytest.mark.parametrize("case", [
+    {"held": "c2", "gate": "c1"},      # the held row is another company's
+    {"gate_first": False},             # the company lock came after the held row
+])
+def test_an_inversion_is_gated_by_the_acquired_rows_company_lock_alone(recorder, case):
+    """A cycle through the edge needs another transaction holding the acquired row while it
+    waits; every taker of that row holds its company's lock, which this transaction holds, so
+    none can. What this transaction holds, and of which company, does not enter it."""
+    _gated_inversion(recorder, **case)
+    assert ("order", "row:projections") not in _kinds(recorder)
+    assert recorder.edges[("row:outbound_queue", "row:projections")]["company_gated"] == {"row:projections"}
 
 
 def test_a_table_lock_under_the_company_lock_still_orders(recorder):
@@ -670,7 +680,7 @@ def test_every_company_keyed_row_taken_without_its_company_lock_is_counted(recor
 @pytest.mark.parametrize("other, listed", [
     (None, False),                                                          # every taker holds the company
     ((_PROJECTION, None), True),                                            # projections without it
-    ((_OUTBOUND, None), True),                                              # outbound without it
+    ((_OUTBOUND, None), False),                                             # the held class is not judged
     ((_PROJECTION.replace("FOR UPDATE", "FOR KEY SHARE"), None), True),     # key share conflicts with FOR UPDATE
     ((_PROJECTION, "c1"), False),                                           # under the company lock
 ])

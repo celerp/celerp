@@ -220,9 +220,6 @@ class Recorder:
     last_key: dict[int, dict[str, str]] = field(default_factory=lambda: defaultdict(dict))
     # Per transaction: the companies it inserted, uncommitted (R1).
     own: dict[int, set[str]] = field(default_factory=lambda: defaultdict(set))
-    # Per transaction, per class: the one company every lock of the class was taken under
-    # that company's exclusive lock, or None when one was not (R4).
-    under_company: dict[int, dict[str, str | None]] = field(default_factory=lambda: defaultdict(dict))
     # Per transaction: the strengths it holds on each company's row, a foreign key's share
     # included (R4).
     company_rows: dict[int, dict[str, set[str]]] = field(default_factory=lambda: defaultdict(dict))
@@ -232,7 +229,7 @@ class Recorder:
     savepoints: dict[int, list[tuple[str, tuple]]] = field(default_factory=lambda: defaultdict(list))
 
     def _transaction_state(self) -> tuple:
-        return self.held, self.taken, self.explicit, self.last_key, self.own, self.under_company, self.company_rows
+        return self.held, self.taken, self.explicit, self.last_key, self.own, self.company_rows
 
     def end(self, conn_key: int) -> None:
         for state in (*self._transaction_state(), self.savepoints):
@@ -328,15 +325,15 @@ class Recorder:
         taker of the class's keys waits on: its company's row exclusively."""
         return self._company_held(conn_key, lock)
 
-    def _company_gate(self, conn_key: int, h: Lock, lock: Lock) -> str:
-        """R4: ``lock`` and every lock of ``h``'s class this transaction holds are rows of one
-        company whose row it took exclusively before them (transaction-scoped). Another
-        transaction holding either row while it waits on the other would hold that company's
-        lock too, so the two cannot wait on each other; the offline check fails the edge when
-        either class has a taker without the company lock, at a strength that conflicts, that
-        holds nothing of the company's row the gate conflicts with. The gate's strength, or ""."""
-        if not (lock.company and self._company_held(conn_key, lock)
-                and self.under_company[conn_key].get(h.cls) == lock.company):
+    def _company_gate(self, conn_key: int, lock: Lock) -> str:
+        """R4: ``lock`` is a row of a company whose row this transaction holds exclusively. A
+        cycle through an edge into ``lock`` needs another transaction holding that row while it
+        waits; one that took it under the company's lock cannot, since this transaction holds
+        that lock, so what this transaction already holds, and of which company, does not enter
+        it. The offline check fails the edge when ``lock``'s class has a taker without the
+        company lock, at a strength that conflicts, that holds nothing of the company's row the
+        gate conflicts with. The gate's strength, or ""."""
+        if not self._company_held(conn_key, lock):
             return ""
         return max(self.company_rows[conn_key].get(lock.company, set()) & {"nokey", "update"},
                    key=_STRENGTH_ORDER.index)
@@ -438,7 +435,7 @@ class Recorder:
             # transaction taking them waits on, so it cannot interleave with this edge.
             gate = ({g.cls for g in held[:i] if _exclusive(g.mode)} | serial) - {h.cls, lock.cls}
             gated = {x.cls for x in (h, lock) if x.gated}
-            company_gated = "" if gated else self._company_gate(conn_key, h, lock)
+            company_gated = "" if gated else self._company_gate(conn_key, lock)
             inverts = waits and h.cls not in _TRY_ONLY and rank(lock.cls) is not None \
                 and rank(h.cls) is not None and rank(lock.cls) < rank(h.cls)
             # R5: judged offline against every take of the class outside those keys.
@@ -473,9 +470,6 @@ class Recorder:
             self.session_held[conn_key].append(lock)
             return
         self.taken[conn_key].setdefault((lock.cls, lock.key), set()).add(_strength(lock))
-        under = self.under_company[conn_key]
-        company = lock.company if lock.company and self._company_held(conn_key, lock) else None
-        under[lock.cls] = company if under.get(lock.cls, company) == company else None
         if _explicit(lock.mode):
             self.explicit[conn_key].setdefault(lock.cls, set()).add(_strength(lock))
             self.last_key[conn_key][lock.cls] = lock.key
@@ -515,9 +509,9 @@ class Recorder:
             edge["gated"] |= gated
             waits = False
         if waits and company_gated:
-            # R4: judged offline against both classes' takers without the company lock, with
-            # the strength of the company lock this transaction holds.
-            edge["company_gated"] |= {h.cls, lock.cls}
+            # R4: judged offline against the taken class's takers without the company lock,
+            # with the strength of the company lock this transaction holds.
+            edge["company_gated"].add(lock.cls)
             edge["company_gated_modes"].add(f"{company_gated} {_strength(h)}>{_strength(lock)}")
             edge.setdefault("company_example", {"held": h.site, "acquired": lock.site, "test": self.test})
             waits = False
@@ -1472,10 +1466,10 @@ def new_violations() -> list[dict]:
 
 
 def _gated_keys(g: dict) -> set[str]:
-    """R4, offline: "gated <held> -> <taken>" for each decreasing edge taken under one company's
-    lock where either class has a take outside that lock, at a strength that conflicts with
-    the edge's own, made holding nothing of the company's row that conflicts with the gate, or
-    where either class has a production writer the run never took a lock from (``_unexercised``)."""
+    """R4, offline: "gated <held> -> <taken>" for each decreasing edge taken under the taken
+    row's company lock where the taken class has a take outside that lock, at a strength that
+    conflicts with the edge's own, made holding nothing of the company's row that conflicts
+    with the gate, or a production writer the run never took a lock from (``_unexercised``)."""
     unexercised = _unexercised(g)
 
     def unproven(cls: str, strength: str, gate: str) -> bool:
@@ -1493,8 +1487,7 @@ def _gated_keys(g: dict) -> set[str]:
             continue
         for mode in e["company_gated_modes"]:
             gate, pair = mode.split(" ")
-            sa, sb = pair.split(">")
-            if unproven(a, sa, gate) or unproven(b, sb, gate):
+            if unproven(b, pair.split(">")[1], gate):
                 out.add(f"gated {a} -> {b}")
     return out
 
@@ -1554,8 +1547,8 @@ def check(directory: Path) -> str:
     insert made under its company's lock (R2) waits only when its table also has an insert
     made without that lock; keys of a class taken out of order under the company lock (R3)
     fail only when the class has a taker of more than one key without that lock, at a
-    strength that conflicts. An inversion between rows of one company under that company's
-    lock (R4) is listed as a "gated" key unless the debt file names it, when either class has
+    strength that conflicts. An inversion into a row whose company's lock the transaction holds
+    (R4) is listed as a "gated" key unless the debt file names it, when the taken class has
     a take outside that lock that could make it wait (``_gated_keys``). An inversion taken under
     a fixed key its flow held exclusively (R5, a migration run) is listed as a "serialized" key
     unless every take of the taken class held that key too (``_serialized_keys``)."""
@@ -1581,9 +1574,9 @@ def check(directory: Path) -> str:
         v = g["classes"][c]
         lines.append(f"- {c}: {v['gated_unsorted']} unsorted, {v['ungated_multi']} ungated: "
                      + ", ".join(sorted(v["multi_sites"])))
-    # R4: an inversion under one company's lock, with a take of either class outside it, or a
-    # writer of either class the run never exercised.
-    gated_classes = {c for (a, b), e in g["edges"].items() if e["company_gated_modes"] for c in (a, b)}
+    # R4: an inversion under the taken row's company lock, with a take of the taken class
+    # outside it, or a writer of that class the run never exercised.
+    gated_classes = {b for (a, b), e in g["edges"].items() if e["company_gated_modes"]}
     idle = {c: w for c, w in _unexercised(g).items() if c in gated_classes}
     lines += ["", f"Company-gated classes with an unexercised writer: {len(idle)}",
               *(f"- {c}: {', '.join(w)}" for c, w in sorted(idle.items()))]
