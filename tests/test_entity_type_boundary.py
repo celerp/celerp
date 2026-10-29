@@ -267,7 +267,7 @@ async def test_rebuild_with_a_historical_crossed_row_is_deterministic(client, se
         data={"fields_changed": {"memo": {"old": None, "new": "legacy"}}}, actor_id=None,
         location_id=None, source="legacy", idempotency_key=str(uuid.uuid4()), metadata_={},
     ))
-    await session.flush()
+    await session.commit()
 
     async def _states():
         rows = (await session.execute(

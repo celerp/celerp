@@ -350,11 +350,12 @@ async def test_delete_refuses_contact_named_on_a_deal(client, session):
     deal_id = f"deal:{uuid.uuid4()}"
     deal = {"name": "Open deal", "stage": "lead", "contact_id": source}
     now = datetime.now(timezone.utc)
+    session.add(Projection(company_id=company_id, entity_id=deal_id, entity_type="deal", state=deal,
+                           version=1, location_id=None, created_at=now, updated_at=now))
+    await session.flush()
     session.add(LedgerEntry(company_id=company_id, entity_id=deal_id, entity_type="deal",
                             event_type="crm.deal.created", data=deal, actor_id=None, location_id=None,
                             source="test", idempotency_key=str(uuid.uuid4()), metadata_={}))
-    session.add(Projection(company_id=company_id, entity_id=deal_id, entity_type="deal", state=deal,
-                           version=1, location_id=None, created_at=now, updated_at=now))
     await session.commit()
 
     blocked = await client.post("/crm/contacts/bulk/delete", headers=h, json={"contact_ids": [source]})

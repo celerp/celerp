@@ -72,8 +72,8 @@ RANKS: dict[str, int] = {
     "adv:chart": 50, "row:accounts": 51, "row:bank_accounts": 52, "row:reconciliation_sessions": 53,
     "row:bank_statement_lines": 54, "row:unmatched_payments": 55, "row:reconciliation_rules": 56,
     "row:unmatched_refunds": 57, "row:payment_closures": 58,
-    # Items (R6), then import batches (R7) and the outbound queue (R8).
-    "row:ledger": 59, "row:projections": 60, "row:import_batches": 61, "row:outbound_queue": 63,
+    # Items (R6), then import batches (R7), the items' ledger rows and the outbound queue (R8).
+    "row:projections": 60, "row:import_batches": 61, "row:ledger": 62, "row:outbound_queue": 63,
     "row:payment_recoveries": 64,
     # Bookkeeping rows written last.
     "row:migration_runs": 70, "row:migration_cleanup_tasks": 71, "row:migration_templates": 72,

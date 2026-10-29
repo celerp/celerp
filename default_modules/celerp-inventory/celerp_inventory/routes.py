@@ -5038,6 +5038,26 @@ async def list_import_batches(
     ]}
 
 
+async def _undoable_batch(session: AsyncSession, company_id, batch_uuid: uuid.UUID, *, lock: bool):
+    """The company's import batch, refused when it is missing, already undone or not reversible."""
+    from celerp_inventory.models_import_batch import ImportBatch
+
+    query = select(ImportBatch).where(ImportBatch.id == batch_uuid)
+    if lock:
+        query = query.with_for_update()
+    batch = (await session.execute(query.execution_options(populate_existing=True))).scalar_one_or_none()
+    if batch is None or batch.company_id != company_id:
+        raise HTTPException(status_code=404, detail=t("inventory.err_import_not_found"))
+    if batch.status == "undone":
+        raise HTTPException(status_code=409, detail=t("inventory.err_import_already_undone"))
+    if not batch.reversible:
+        raise HTTPException(status_code=409, detail={
+            "code": "import_not_reversible",
+            "message": t("inventory.err_import_not_reversible"),
+        })
+    return batch
+
+
 @router.post("/import/batches/{batch_id}/undo")
 async def undo_import_batch(
     batch_id: str,
@@ -5054,7 +5074,6 @@ async def undo_import_batch(
     voided (a locked period)."""
     from datetime import datetime, timezone as _tz
 
-    from celerp_inventory.models_import_batch import ImportBatch
     from celerp.models.ledger import LedgerEntry
     from celerp.services.auto_je import _void_je_if_posted
 
@@ -5062,26 +5081,25 @@ async def undo_import_batch(
         batch_uuid = uuid.UUID(batch_id)
     except ValueError:
         raise HTTPException(status_code=404, detail=t("inventory.err_import_not_found"))
-    # The company lock serialises this with any chunk still adding to the batch.
+    # The company lock serialises this with any chunk still adding to the batch. The batch
+    # is read first without a lock: its items are locked before it, in rank order, and the
+    # locked batch must still list exactly those items.
     await lock_company(session, company_id)
-    batch = (await session.execute(
-        select(ImportBatch).where(ImportBatch.id == batch_uuid).with_for_update()
-        .execution_options(populate_existing=True))).scalar_one_or_none()
-    if batch is None or batch.company_id != company_id:
-        raise HTTPException(status_code=404, detail=t("inventory.err_import_not_found"))
-    if batch.status == "undone":
-        raise HTTPException(status_code=409, detail=t("inventory.err_import_already_undone"))
-    if not batch.reversible:
-        raise HTTPException(status_code=409, detail={
-            "code": "import_not_reversible",
-            "message": t("inventory.err_import_not_reversible"),
-        })
-
-    entity_ids = batch.entity_ids or []
-    rows = await lock_projections(session, company_id, entity_ids)
-    entries = (await session.execute(select(Projection).where(
+    batch = await _undoable_batch(session, company_id, batch_uuid, lock=False)
+    entity_ids = list(batch.entity_ids or [])
+    entry_ids = list((await session.execute(select(Projection.entity_id).where(
         Projection.company_id == company_id,
-        Projection.entity_id.startswith(f"je:auto:opening-stock:{batch.id}:")))).scalars().all()
+        Projection.entity_id.startswith(f"je:auto:opening-stock:{batch.id}:")))).scalars())
+    # The import's entries before its items, as every writer of documents and items does.
+    entries = list((await lock_projections(session, company_id, entry_ids)).values())
+    rows = await lock_projections(session, company_id, entity_ids)
+    batch = await _undoable_batch(session, company_id, batch_uuid, lock=True)
+    if list(batch.entity_ids or []) != entity_ids:
+        raise HTTPException(status_code=409, detail={
+            "code": "import_items_modified",
+            "message": t("inventory.err_import_items_changed"),
+            "entity_ids": sorted(set(entity_ids) ^ set(batch.entity_ids or [])),
+        })
     unexpected = sorted(e.entity_id for e in entries if (e.state or {}).get("status") != "posted")
     if unexpected:
         raise HTTPException(status_code=409, detail={

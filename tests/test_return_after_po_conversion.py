@@ -111,16 +111,17 @@ async def _strip_lot_provenance(session, auth, doc_id: str) -> None:
     """Store the document's receipts as an earlier version recorded them: a purchase order
     receipt onto a lot on hand said nothing of what it added, in the event or the document."""
     session.expire_all()
+    row = await session.get(Projection, {"company_id": auth["company_id"], "entity_id": doc_id})
+    row.state = {**row.state, "received_items": [
+        {k: v for k, v in x.items() if k not in ("lot_quantity_added", "lot_cost_added")}
+        for x in row.state["received_items"]]}
+    await session.flush()
     for entry in (await session.execute(select(LedgerEntry).where(
             LedgerEntry.company_id == auth["company_id"], LedgerEntry.entity_id == doc_id,
             LedgerEntry.event_type == "doc.received"))).scalars():
         entry.data = {**entry.data, "received_items": [
             {k: v for k, v in x.items() if k not in ("lot_quantity_added", "lot_cost_added")}
             for x in entry.data["received_items"]]}
-    row = await session.get(Projection, {"company_id": auth["company_id"], "entity_id": doc_id})
-    row.state = {**row.state, "received_items": [
-        {k: v for k, v in x.items() if k not in ("lot_quantity_added", "lot_cost_added")}
-        for x in row.state["received_items"]]}
     await session.commit()
 
 
@@ -452,7 +453,7 @@ async def _as_legacy_receipt(session, auth, doc_id: str) -> None:
 
     [suffix] = [s for s in await _je_status(session, auth, doc_id) if s.startswith("rcv:")]
     old, new = f"je:auto:{doc_id}:{suffix}", f"je:auto:{doc_id}:rcv"
-    for model in (LedgerEntry, Projection):
+    for model in (Projection, LedgerEntry):
         await session.execute(update(model).where(
             model.company_id == auth["company_id"], model.entity_id == old).values(entity_id=new))
     await session.commit()

@@ -238,6 +238,9 @@ _TOKEN = "INSERT INTO doc_share_tokens (id, company_id, token) VALUES ($1::UUID,
 _PROJECTION = ("SELECT projections.entity_id FROM projections WHERE projections.company_id = $1::UUID "
                "AND projections.entity_id = $2 FOR UPDATE")
 _LEDGER = "INSERT INTO ledger (id, company_id, entity_id) VALUES ($1::UUID, $2::UUID, $3)"
+# A row ranked above the ledger (R8), so an ungated ledger insert after it orders against it.
+_OUTBOUND = ("SELECT outbound_queue.id FROM outbound_queue WHERE outbound_queue.company_id = $1::UUID "
+             "AND outbound_queue.id = $2 FOR UPDATE")
 
 
 @pytest.fixture
@@ -303,7 +306,7 @@ def test_another_companys_rows_are_not_the_transactions_own(recorder):
 
 def test_an_insert_under_the_company_lock_records_no_order_violation(recorder):
     recorder.statement(1, _LOCK_COMPANY, ("c1",), 0.0)
-    recorder.statement(1, _PROJECTION, ("c1", "item"), 0.0)
+    recorder.statement(1, _OUTBOUND, ("c1", 7), 0.0)
     recorder.statement(1, _LEDGER, ("l1", "c1", "item"), 0.0)
     assert not recorder.violations
 
@@ -312,7 +315,7 @@ def test_an_insert_under_the_company_lock_records_no_order_violation(recorder):
 def test_an_insert_not_under_its_companys_lock_is_an_order_violation(recorder, locked):
     if locked:
         recorder.statement(1, _LOCK_COMPANY, (locked,), 0.0)
-    recorder.statement(1, _PROJECTION, ("c1", "item"), 0.0)
+    recorder.statement(1, _OUTBOUND, ("c1", 7), 0.0)
     recorder.statement(1, _LEDGER, ("l1", "c1", "item"), 0.0)
     assert ("order", "row:ledger") in _kinds(recorder)
 
@@ -321,12 +324,12 @@ def test_an_insert_not_under_its_companys_lock_is_an_order_violation(recorder, l
 def test_the_offline_check_judges_a_gated_insert_against_the_tables_ungated_inserters(
         recorder, tmp_path, ungated):
     recorder.statement(1, _LOCK_COMPANY, ("c1",), 0.0)
-    recorder.statement(1, _PROJECTION, ("c1", "item"), 0.0)
+    recorder.statement(1, _OUTBOUND, ("c1", 7), 0.0)
     recorder.statement(1, _LEDGER, ("l1", "c1", "item"), 0.0)
     if ungated:
         recorder.statement(2, _LEDGER, ("l2", "c1", "other"), 0.0)
     (tmp_path / "lock-graph-gw0.json").write_text(json.dumps(recorder.dump()))
-    listed = "row:projections (60) -> row:ledger (59)" in lock_rank.check(tmp_path)
+    listed = "row:outbound_queue (63) -> row:ledger (62)" in lock_rank.check(tmp_path)
     assert listed is ungated
 
 
