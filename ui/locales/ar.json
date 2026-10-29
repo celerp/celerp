@@ -6380,6 +6380,8 @@
   "company_backup.enable_and_open": "تفعيل وفتح",
   "company_backup.enable_open_hint": "يشغّل Celerp هذه الوحدات، ويعيد التشغيل إذا لزم الأمر، ثم يفتح نسخة الشركة هذه.",
   "company_backup.restarting_open": "يُعاد تشغيل Celerp لتحميل الوحدات. تُفتح الشركة عندما تصبح جاهزة.",
+  "company_backup.opening_chosen": "تم تفعيل الوحدات. جارٍ فتح {name} كما اخترت عبر «تفعيل وفتح».",
+  "company_backup.open_chosen": "فتح الشركة",
   "company_backup.decline_modules": "عدم تفعيلها",
   "company_backup.declined": "لم يُفتح شيء. تحتاج نسخة الشركة هذه إلى هذه الوحدات: {labels}. اختر الملف مرة أخرى عندما تريد تفعيلها.",
   "company_backup.declined_unnamed": "لم يُفتح شيء. اختر الملف مرة أخرى لترى الوحدات التي تحتاجها نسخة الشركة هذه.",

@@ -6384,6 +6384,8 @@
   "company_backup.enable_and_open": "Enable and open",
   "company_backup.enable_open_hint": "Celerp turns these modules on, restarts if needed, then opens this company copy.",
   "company_backup.restarting_open": "Celerp is restarting to load the modules. The company opens when it is ready.",
+  "company_backup.opening_chosen": "The modules are on. Opening {name}, as you chose with Enable and open.",
+  "company_backup.open_chosen": "Open the company",
   "company_backup.decline_modules": "Don't enable them",
   "company_backup.declined": "Nothing was opened. This company copy needs these modules: {labels}. Choose the file again when you want to enable them.",
   "company_backup.declined_unnamed": "Nothing was opened. Choose the file again to see the modules this company copy needs.",

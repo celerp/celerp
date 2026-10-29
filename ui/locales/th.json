@@ -6380,6 +6380,8 @@
   "company_backup.enable_and_open": "เปิดใช้และเปิด",
   "company_backup.enable_open_hint": "Celerp จะเปิดใช้โมดูลเหล่านี้ รีสตาร์ทหากจำเป็น แล้วเปิดสำเนาบริษัทนี้",
   "company_backup.restarting_open": "Celerp กำลังรีสตาร์ทเพื่อโหลดโมดูล บริษัทจะเปิดเมื่อพร้อม",
+  "company_backup.opening_chosen": "เปิดใช้โมดูลแล้ว กำลังเปิด {name} ตามที่คุณเลือกด้วย เปิดใช้และเปิด",
+  "company_backup.open_chosen": "เปิดบริษัท",
   "company_backup.decline_modules": "ไม่เปิดใช้",
   "company_backup.declined": "ไม่มีการเปิดสิ่งใด สำเนาบริษัทนี้ต้องใช้โมดูลเหล่านี้: {labels} เลือกไฟล์อีกครั้งเมื่อต้องการเปิดใช้",
   "company_backup.declined_unnamed": "ไม่มีการเปิดสิ่งใด เลือกไฟล์อีกครั้งเพื่อดูโมดูลที่สำเนาบริษัทนี้ต้องใช้",

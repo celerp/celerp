@@ -6380,6 +6380,8 @@
   "company_backup.enable_and_open": "Activer et ouvrir",
   "company_backup.enable_open_hint": "Celerp active ces modules, redémarre si nécessaire, puis ouvre cette copie de l'entreprise.",
   "company_backup.restarting_open": "Celerp redémarre pour charger les modules. L'entreprise s'ouvre dès qu'elle est prête.",
+  "company_backup.opening_chosen": "Les modules sont activés. Ouverture de {name}, comme vous l'avez choisi avec « Activer et ouvrir ».",
+  "company_backup.open_chosen": "Ouvrir l'entreprise",
   "company_backup.decline_modules": "Ne pas les activer",
   "company_backup.declined": "Rien n'a été ouvert. Cette copie de l'entreprise a besoin de ces modules : {labels}. Choisissez à nouveau le fichier lorsque vous voudrez les activer.",
   "company_backup.declined_unnamed": "Rien n'a été ouvert. Choisissez à nouveau le fichier pour voir les modules dont cette copie de l'entreprise a besoin.",

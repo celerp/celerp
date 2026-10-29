@@ -6380,6 +6380,8 @@
   "company_backup.enable_and_open": "አንቃ እና ክፈት",
   "company_backup.enable_open_hint": "Celerp እነዚህን ሞጁሎች ያበራል፣ ካስፈለገ እንደገና ይጀምራል፣ ከዚያ ይህን የኩባንያ ቅጂ ይከፍታል።",
   "company_backup.restarting_open": "Celerp ሞጁሎቹን ለመጫን እንደገና እየጀመረ ነው። ዝግጁ ሲሆን ኩባንያው ይከፈታል።",
+  "company_backup.opening_chosen": "ሞጁሎቹ በርተዋል። በ«አንቃ እና ክፈት» እንደመረጡት {name} በመክፈት ላይ።",
+  "company_backup.open_chosen": "ኩባንያውን ክፈት",
   "company_backup.decline_modules": "አታንቃቸው",
   "company_backup.declined": "ምንም አልተከፈተም። ይህ የኩባንያ ቅጂ እነዚህን ሞጁሎች ይፈልጋል፦ {labels}። ማንቃት ሲፈልጉ ፋይሉን እንደገና ይምረጡ።",
   "company_backup.declined_unnamed": "ምንም አልተከፈተም። ይህ የኩባንያ ቅጂ የሚፈልጋቸውን ሞጁሎች ለማየት ፋይሉን እንደገና ይምረጡ።",

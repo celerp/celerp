@@ -6380,6 +6380,8 @@
   "company_backup.enable_and_open": "Bật và mở",
   "company_backup.enable_open_hint": "Celerp bật các mô-đun này, khởi động lại nếu cần, rồi mở bản sao công ty này.",
   "company_backup.restarting_open": "Celerp đang khởi động lại để tải các mô-đun. Công ty sẽ mở khi sẵn sàng.",
+  "company_backup.opening_chosen": "Các mô-đun đã bật. Đang mở {name}, như bạn đã chọn với Bật và mở.",
+  "company_backup.open_chosen": "Mở công ty",
   "company_backup.decline_modules": "Không bật",
   "company_backup.declined": "Không có gì được mở. Bản sao công ty này cần các mô-đun sau: {labels}. Chọn lại tệp khi bạn muốn bật chúng.",
   "company_backup.declined_unnamed": "Không có gì được mở. Chọn lại tệp để xem các mô-đun mà bản sao công ty này cần.",

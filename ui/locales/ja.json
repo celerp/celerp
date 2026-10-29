@@ -6380,6 +6380,8 @@
   "company_backup.enable_and_open": "有効にして開く",
   "company_backup.enable_open_hint": "Celerp はこれらのモジュールをオンにし、必要なら再起動してから、この会社コピーを開きます。",
   "company_backup.restarting_open": "モジュールを読み込むために Celerp を再起動しています。準備ができると会社が開きます。",
+  "company_backup.opening_chosen": "モジュールが有効になりました。「有効にして開く」で選んだとおり、{name} を開いています。",
+  "company_backup.open_chosen": "会社を開く",
   "company_backup.decline_modules": "有効にしない",
   "company_backup.declined": "何も開かれていません。この会社コピーには次のモジュールが必要です: {labels}。有効にするときに、もう一度ファイルを選んでください。",
   "company_backup.declined_unnamed": "何も開かれていません。この会社コピーに必要なモジュールを確認するには、もう一度ファイルを選んでください。",

@@ -6380,6 +6380,8 @@
   "company_backup.enable_and_open": "Aktifkan dan buka",
   "company_backup.enable_open_hint": "Celerp mengaktifkan modul ini, memulai ulang bila perlu, lalu membuka salinan perusahaan ini.",
   "company_backup.restarting_open": "Celerp sedang memulai ulang untuk memuat modul. Perusahaan terbuka saat siap.",
+  "company_backup.opening_chosen": "Modul sudah aktif. Membuka {name}, sesuai pilihan Anda dengan Aktifkan dan buka.",
+  "company_backup.open_chosen": "Buka perusahaan",
   "company_backup.decline_modules": "Jangan aktifkan",
   "company_backup.declined": "Tidak ada yang dibuka. Salinan perusahaan ini memerlukan modul berikut: {labels}. Pilih file lagi saat Anda ingin mengaktifkannya.",
   "company_backup.declined_unnamed": "Tidak ada yang dibuka. Pilih file lagi untuk melihat modul yang diperlukan salinan perusahaan ini.",
