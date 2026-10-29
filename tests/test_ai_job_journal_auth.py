@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import json
 import pathlib
 import uuid
 
@@ -131,6 +132,7 @@ def _gated_read(app) -> dict:
     return {"name": "start_report", "method": "GET", "path": path, "module": "celerp",
             "path_names": (), "query_names": (), "expects_body": False, "inject_idempotency": False,
             "requires_confirmation": False, "required_permissions": ("manage_company_settings",),
+            "result_permissions": ("manage_company_settings",), "field_visibility": False,
             "tool": {"type": "function", "function": {"name": "start_report", "description": "last start",
                                                       "parameters": {}}}}
 
@@ -286,6 +288,120 @@ async def test_a_question_resumed_after_a_restart_replays_a_kept_read_only_while
 
     await jobs.recover_on_start()
     state = await _settled(client, token, conv, qid)
+    assert (state["state"], state["message"]["error_code"], state["message"]["new_question"]) == (
+        "failed", "read_refused", True)
+    assert len(results) == 1 and len(cloud.bodies) == sends
+
+
+# ── A kept read's result depends on more than its route's permission ─────────────
+
+COST = 4321.5
+
+
+async def _settings(session, company_id, change) -> None:
+    company = await locked_company(session, company_id)
+    company.settings = change(dict(company.settings or {}))
+    await session.commit()
+
+
+def _costs(granted: bool):
+    def change(settings):
+        grants = dict(settings.get("role_grants") or {})
+        if granted:
+            grants.pop("view_inventory_costs", None)
+        else:
+            grants["view_inventory_costs"] = []
+        return {**settings, "role_grants": grants}
+    return change
+
+
+def _name_shown_to_admins_only(settings):
+    from celerp.services.field_schema import _BASE_FIELDS
+    return {**settings, "item_schema": [{**f, "visible_to_roles": ["admin"]} if f["key"] == "name" else f
+                                        for f in settings.get("item_schema") or _BASE_FIELDS]}
+
+
+async def _item_read_kept_then_failed(client, owner_token, asker_token, cloud, monkeypatch) -> tuple:
+    """A question of ``asker_token`` reads an item through the real item capability and
+    keeps the read; the turn after it finds the AI service unreachable, so it fails.
+    Returns the conversation, the question id, every read result and the relay switch."""
+    from celerp.main import app
+    from test_helpers import real_agent_app
+    r = await client.post("/items", headers=AUTH(owner_token), json={
+        "status": "available", "sku": "COST-1", "sell_by": "piece", "name": "Costly", "cost_price": COST,
+        "quantity": 1})
+    assert r.status_code == 200, r.text
+    item_id = r.json()["id"]
+    real_agent_app()
+    monkeypatch.setattr(service, "compile_agent_capabilities", tools.compile_agent_capabilities)
+    caps = tools.compile_agent_capabilities(app, {}, None)
+    name = next(n for n, c in caps.items() if c["method"] == "GET" and c["path"].endswith("/items/{entity_id}"))
+    assert caps[name]["required_permissions"] == ("view_inventory",)
+    assert "view_inventory_costs" in caps[name]["result_permissions"] and caps[name]["field_visibility"]
+    real = service.execute_agent_capability
+    results: list[dict] = []
+
+    async def _read(*args, **kwargs):
+        results.append(await real(*args, **kwargs))
+        return results[-1]
+    monkeypatch.setattr(service, "execute_agent_capability", _read)
+    conv = await _conversation(client, asker_token)
+    qid = uuid.uuid4()
+    down = {"on": True}
+
+    def _script(identity, body):
+        if identity == str(qid):
+            return tool_turn((name, {"path": {"entity_id": item_id}}, "call-1"))
+        if down["on"]:
+            cloud.state.pop(identity, None)
+            return httpx.ConnectError("relay down")
+        return answer("Done.")
+    cloud.script = _script
+    first = await _ask_again(client, asker_token, conv, qid)
+    assert results[0]["status"] == 200 and first["state"] == "failed", first
+    return conv, qid, results, down
+
+
+async def test_a_kept_read_that_showed_costs_ends_the_question_refused_once_costs_are_taken_away(
+        client, owner, cloud, session, monkeypatch):
+    token, company_id, _ = owner
+    conv, qid, results, down = await _item_read_kept_then_failed(client, token, token, cloud, monkeypatch)
+    assert str(COST) in json.dumps(results[0])
+    down["on"] = False
+    sends = len(cloud.bodies)
+    await _settings(session, company_id, _costs(False))
+    state = await _ask_again(client, token, conv, qid)
+    assert (state["state"], state["message"]["error_code"], state["message"]["new_question"]) == (
+        "failed", "read_refused", True)
+    assert len(results) == 1 and len(cloud.bodies) == sends   # nothing read, nothing sent
+
+
+async def test_a_kept_read_made_without_costs_is_replayed_while_its_asker_still_may_not_see_them(
+        client, owner, cloud, session, monkeypatch):
+    """A role that never saw costs keeps its cost-free read: the cost permission it
+    never held is not part of what the read relied on."""
+    token, company_id, _ = owner
+    await _settings(session, company_id, _costs(False))
+    conv, qid, results, down = await _item_read_kept_then_failed(client, token, token, cloud, monkeypatch)
+    assert str(COST) not in json.dumps(results[0])
+    down["on"] = False
+    state = await _ask_again(client, token, conv, qid)
+    assert (state["state"], state["message"]["content"]) == ("answered", "Done.")
+    assert len(results) == 1                                  # replayed, not read again
+
+
+async def test_a_kept_read_that_showed_a_field_ends_the_question_refused_once_the_field_is_hidden(
+        client, owner, cloud, session, monkeypatch):
+    from test_helpers import invite_user
+    token, company_id, _ = owner
+    manager = await invite_user(client, session, AUTH(token), "manager@journal.example", "manager")
+    conv, qid, results, down = await _item_read_kept_then_failed(client, token, manager, cloud, monkeypatch)
+    assert "Costly" in json.dumps(results[0])
+    down["on"] = False
+    sends = len(cloud.bodies)
+    await _settings(session, company_id, _name_shown_to_admins_only)
+    assert "Costly" not in (await client.get(f"/items/{results[0]['data']['id']}", headers=AUTH(manager))).text
+    state = await _ask_again(client, manager, conv, qid)
     assert (state["state"], state["message"]["error_code"], state["message"]["new_question"]) == (
         "failed", "read_refused", True)
     assert len(results) == 1 and len(cloud.bodies) == sends

@@ -48,12 +48,14 @@ CAPS = {
     "list_items": {
         "name": "list_items", "method": "GET", "path": "/api/inventory/items",
         "path_names": (), "query_names": ("q",), "expects_body": False,
-        "inject_idempotency": False, "tool": _tool("list_items"),
+        "inject_idempotency": False, "result_permissions": (), "field_visibility": False,
+        "tool": _tool("list_items"),
     },
     "get_item": {
         "name": "get_item", "method": "GET", "path": "/api/inventory/items/{item_id}",
         "path_names": ("item_id",), "query_names": (), "expects_body": False,
-        "inject_idempotency": False, "tool": _tool("get_item"),
+        "inject_idempotency": False, "result_permissions": (), "field_visibility": False,
+        "tool": _tool("get_item"),
     },
     "create_contact": {
         "name": "create_contact", "method": "POST", "path": "/api/crm/contacts",

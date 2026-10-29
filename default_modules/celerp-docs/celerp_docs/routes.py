@@ -86,6 +86,13 @@ from ui.i18n import doc_type_label, t
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
+# A document write checks these on what it is given beyond its route's permission:
+# a line price, a contact it copies from, a cost price list.
+_DOC_WRITE_AGENT = {
+    "x-celerp-agent": True, "x-celerp-agent-idempotent": True,
+    "x-celerp-agent-result-permissions": ["set_sales_doc_prices", "view_contacts", "view_inventory_costs"],
+}
+
 # Longest explicit id list the list route accepts; a batch of AI drafts is far below it.
 MAX_IDS_FILTER = 500
 
@@ -1706,7 +1713,7 @@ async def get_doc_pdf(
     )
 
 
-@router.post("", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True})
+@router.post("", openapi_extra=_DOC_WRITE_AGENT)
 async def create_doc(
     payload: DocCreatePayload,
     company_id: str = Depends(get_current_company_id),
@@ -1843,7 +1850,7 @@ async def create_doc(
     return {"event_id": entry.id, "id": entry.entity_id}
 
 
-@router.patch("/{entity_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True})
+@router.patch("/{entity_id}", openapi_extra=_DOC_WRITE_AGENT)
 async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends(get_current_company_id), _: None = require_permission("edit_documents"), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     await _refuse_synced(session, company_id, entity_id)
     result = await write_doc_patch(session, company_id, role, settings, user, entity_id, payload)

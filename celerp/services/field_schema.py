@@ -304,8 +304,11 @@ async def get_effective_field_schema(
     )
     if co is None:
         return DEFAULT_ITEM_SCHEMA
-    settings = co.settings or {}
+    return effective_field_schema(co.settings or {}, category)
 
+
+def effective_field_schema(settings: dict, category: str | None = None) -> list[dict]:
+    """The effective item field schema the company settings ``settings`` give (get_effective_field_schema)."""
     # Build base schema: stored fields + any missing _BASE_FIELDS defaults
     stored: list[dict] = settings.get("item_schema") or _BASE_FIELDS
     price_lists: list[dict] = settings.get("price_lists") or _DEFAULT_PRICE_LISTS
@@ -346,3 +349,15 @@ async def get_effective_field_schema(
         for f in base_schema
     ]
     return _rehydrate_builtin_metadata(base_schema)
+
+
+def hidden_item_fields(settings: dict, role: str) -> frozenset[str]:
+    """Every item field ``role`` may not see, as ``category/key`` (no category: the base
+    schema), over the base schema and each category's own."""
+    from celerp.services.cost_visibility import restricted_field_keys
+    categories = (None, *((settings or {}).get("category_schemas") or {}))
+    return frozenset(
+        f"{category or ''}/{key}"
+        for category in categories
+        for key in restricted_field_keys(role, effective_field_schema(settings or {}, category))
+    )

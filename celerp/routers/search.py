@@ -131,7 +131,7 @@ def _jsonable_rows(rows: list) -> list[dict]:
     return encoded
 
 
-@router.get("/search", openapi_extra={"x-celerp-agent": True})
+@router.get("/search", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-result-permissions": "*"})
 async def global_search(
     request: Request,
     q: str = "",

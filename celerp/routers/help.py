@@ -29,6 +29,9 @@ from celerp.services.permissions import get_current_company_settings, missing_pe
 from ui.i18n import current_lang, t
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
+# An agent tool. Each result names whether the caller holds its page's permission, so
+# it depends on whichever permission a page names: every one.
+_AGENT = {"x-celerp-agent": True, "x-celerp-agent-result-permissions": "*"}
 
 _MAX_Q_LEN = 200
 _MAX_PATH_LEN = 300
@@ -50,7 +53,7 @@ def _summary(page: HelpPage) -> dict:
     return {"id": page.id, "title": page.title, "summary": page.summary}
 
 
-@router.get("/help/search", operation_id="help_search", openapi_extra={"x-celerp-agent": True})
+@router.get("/help/search", operation_id="help_search", openapi_extra=_AGENT)
 async def help_search(
     q: str = Query(..., max_length=_MAX_Q_LEN),
     module: str | None = None,
@@ -71,7 +74,7 @@ async def help_search(
     return {"hits": [{**_summary(h.page), **_flags(h)} for h in hits]}
 
 
-@router.get("/help/page/{page_id}", operation_id="help_read", openapi_extra={"x-celerp-agent": True})
+@router.get("/help/page/{page_id}", operation_id="help_read", openapi_extra=_AGENT)
 async def help_read(
     page_id: str,
     role: str = Depends(get_current_role),

@@ -526,7 +526,7 @@ async def test_ai_access_lost_mid_job_stops_the_unsent_files_and_resume_sends_th
 
 _CAPS = {"help_search": {
     "name": "help_search", "method": "GET", "path": "/help/search", "path_names": (), "query_names": ("q",),
-    "expects_body": False, "inject_idempotency": False, "required_permissions": (),
+    "expects_body": False, "inject_idempotency": False, "required_permissions": (), "result_permissions": (), "field_visibility": False,
     "tool": {"type": "function", "function": {"name": "help_search", "description": "help_search",
                                               "parameters": {}}}}}
 

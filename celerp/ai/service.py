@@ -36,7 +36,9 @@ from celerp.ai.tools import (
     compile_agent_capabilities,
     execute_agent_capability,
 )
-from celerp.services.permissions import role_has_permission
+from celerp.db import SessionLocal
+from celerp.services.field_schema import hidden_item_fields
+from celerp.services.permissions import read_authority, role_has_permission
 from ui.i18n import current_lang, lang_label, t
 
 log = logging.getLogger(__name__)
@@ -525,7 +527,7 @@ async def _agent_loop(
                 tool_result = await _tool_step(journal, call_id, lambda: execute_agent_capability(
                     app, bearer(), capability, arguments, call_id,
                     result_max_bytes=MAX_RESULT_BYTES,
-                ))
+                ), lambda: _relied_on(capability, company_id, user_id, company_settings, role))
                 tools_called.append(name)
                 _cite(tally, name, arguments, tool_result)
                 if not tool_result.get("ok") and (tool_result.get("error") or {}).get("code") == "invalid_arguments":
@@ -598,36 +600,61 @@ _STEP_STATES = {"outcome_unknown": "unknown", "operation_expired": "expired"}
 
 async def _admit_stored_reads(journal: jobs.Journal, capabilities: dict, company_settings: dict,
                               role: str) -> None:
-    """A question run again replays the reads it kept only while its asker may still
-    make each of them: AI access, and every permission the read's capability needs.
-    Otherwise the question ends refused before anything is sent."""
+    """A question run again replays the reads it kept only while each is still valid
+    for its asker: AI access, the read's tool, every permission its result relied on
+    (``_relied_on``), and no item field shown then that is hidden now. Otherwise the
+    question ends refused before anything is sent."""
     reads = journal.stored_reads()
     if not reads:
         return
     await journal.admit()
-    for name in reads.values():
-        capability = capabilities.get(name) if name else None
-        if capability is None or not all(role_has_permission(company_settings, role, permission)
-                                         for permission in capability["required_permissions"]):
+    for call_id, name in reads.items():
+        relied_on = journal.stored(f"tool:{call_id}")["relied_on"]
+        hidden = relied_on["hidden_fields"]
+        if (name not in capabilities
+                or not all(role_has_permission(company_settings, role, key) for key in relied_on["permissions"])
+                or (hidden is not None and not hidden_item_fields(company_settings, role) <= set(hidden))):
             raise _CallerRefused("read_refused")
 
 
-async def _tool_step(journal: jobs.Journal, call_id: str, run) -> dict:
-    """One read tool call: what the journal holds for it, or its result, journaled.
-    The question is admitted before the read, as before every model step. A read the
-    app refused its caller is never journaled: the question ends with that refusal.
-    Signed out, it may be asked again and reads again; refused the read, only a new
-    question follows."""
+async def _relied_on(capability: dict, company_id: uuid.UUID, user_id: uuid.UUID,
+                     settings: dict, role: str) -> dict:
+    """What of its asker's authority a read's result may have depended on: each
+    permission the capability's result depends on that the asker held when the run
+    began or holds now the read returned, and, for a result the item field visibility
+    shapes, the fields hidden from the asker both then and now. A change between the
+    two cannot slip past: either side counts."""
+    if not capability["result_permissions"] and not capability["field_visibility"]:
+        return {"permissions": [], "hidden_fields": None}
+    async with SessionLocal() as session:
+        now_role, now_settings = await read_authority(session, company_id, user_id)
+        await session.commit()
+    permissions = sorted(
+        key for key in capability["result_permissions"]
+        if role_has_permission(settings, role, key) or role_has_permission(now_settings, now_role, key))
+    hidden = None
+    if capability["field_visibility"]:
+        hidden = sorted(hidden_item_fields(settings, role) & hidden_item_fields(now_settings, now_role))
+    return {"permissions": permissions, "hidden_fields": hidden}
+
+
+async def _tool_step(journal: jobs.Journal, call_id: str, run, relied_on) -> dict:
+    """One read tool call: what the journal holds for it, or its result, journaled
+    with what of its asker's authority it relied on (``_relied_on``). The question is
+    admitted before the read, as before every model step. A read the app refused its
+    caller is never journaled: the question ends with that refusal. Signed out, it
+    may be asked again and reads again; refused the read, only a new question follows."""
     key = f"tool:{call_id}"
     stored = journal.stored(key)
     if stored is None:
         await journal.admit()
-        stored = await run()
-        refused = jobs.caller_refusal(stored)
+        result = await run()
+        refused = jobs.caller_refusal(result)
         if refused is not None:
             raise _CallerRefused(refused)
+        stored = {"result": result, "relied_on": await relied_on()}
         await journal.ended(key, "done", stored)
-    return stored
+    return stored["result"]
 
 
 def _cite(tally: RunTally, name: str, arguments: dict, tool_result: dict) -> None:
