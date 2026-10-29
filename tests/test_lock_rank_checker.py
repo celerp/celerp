@@ -1229,3 +1229,34 @@ def test_a_closed_sync_connection_leaves_no_session_lock_behind():
         assert [h.cls for h in lock_rank.RECORDER.session_held.get(key, ())] == ["adv:version-fence"]
     engine.dispose()
     assert not lock_rank.RECORDER.session_held.get(key)
+
+
+_LOCK_RUN = ("SELECT migration_runs.id FROM migration_runs WHERE migration_runs.id = $1::UUID "
+             "AND migration_runs.company_id = $2::UUID FOR UPDATE")
+_MAP = "INSERT INTO migration_entity_maps (id, migration_run_id, source_type) VALUES ($1::UUID, $2::UUID, $3)"
+_MAPS = _MAP + ", ($4::UUID, $5::UUID, $6)"
+
+
+@pytest.mark.parametrize("new_company", [False, True])  # the company locked, or inserted by this transaction
+@pytest.mark.parametrize("lock_run", [_LOCK_RUN, _LOCK_RUN.replace("FOR UPDATE", "FOR NO KEY UPDATE"),
+                                      _LOCK_RUN.replace("FOR UPDATE", "FOR KEY SHARE")])
+@pytest.mark.parametrize("insert, runs, retake", [
+    (_MAP, ("r1",), True), (_MAP, ("r2",), False),
+    (_MAPS, ("r1", "r1"), True), (_MAPS, ("r1", "r2"), False),  # one statement inserting two rows
+])
+def test_a_foreign_key_share_of_a_row_its_transaction_locked_by_key_is_a_retake(recorder, new_company, lock_run,
+                                                                                insert, runs, retake):
+    """A child insert shares its parent's key. When the transaction already locked that parent
+    row by its primary key (with its company named), the share is granted at once: it waits on
+    nothing, so it is no take outside the company lock."""
+    if new_company:
+        recorder.statement(1, _COMPANY, ("c1", "n", "s"), 0.0)
+        recorder.statement(1, _CLAIM, ("r1", "c1", "x"), 0.0)
+    else:
+        recorder.statement(1, _LOCK_COMPANY, ("c1",), 0.0)
+    recorder.statement(1, lock_run, ("r1", "c1"), 0.0)
+    recorder.statement(1, insert, tuple(v for i, run in enumerate(runs) for v in (f"m{i}", run, "x")), 0.0)
+    recorder.statement(1, _LOCK_COMPANY, ("c2",), 0.0)  # a later take that can wait
+    recorder.statement(1, "COMMIT", (), 0.0)
+    takes = recorder.dump()["classes"]["key:migration_runs"].get("ungated_takes", [])
+    assert takes == ([] if retake else ["keyshare|unknown"])

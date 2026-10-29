@@ -169,6 +169,7 @@ class Lock:
     company: str = ""  # the one company whose rows the statement names (R1, R2), "" when it names none
     gated: bool = False  # an insert made under its company's exclusive lock (R2)
     flow: tuple = ()  # a session lock's taker: its thread and task (R5)
+    row: str = ""     # the one row a row lock names by its primary key ("" when it names none)
 
 
 # The connector guard (rule (c)): an execution takes 20 and 21 only in its guard + acquire
@@ -315,7 +316,7 @@ class Recorder:
                 continue
             if row and not company:
                 company = self.rows[conn_key].get((cls.split(":", 1)[1], row), "")
-            self.acquire(conn_key, Lock(cls, mode, site, origin, key, in_execution, company), waited)
+            self.acquire(conn_key, Lock(cls, mode, site, origin, key, in_execution, company, row=row), waited)
 
     def name_row(self, conn_key: int, table: str, row: str, company: str) -> None:
         """The ORM is about to write ``table``'s row ``row`` (its primary key), which belongs
@@ -398,9 +399,9 @@ class Recorder:
         """Whether this connection already holds what ``lock`` asks for: the same key at no
         less strength, or (for an implicit write) an explicit lock of the class that covers
         it. A statement does not show which rows an UPDATE touches, and the helpers lock
-        the rows they then write. A row lock naming several values (an IN list) is a retake
-        when each value was locked on its own at no less strength: every row it can select
-        is then already held."""
+        the rows they then write. A row or key lock naming several values (an IN list, a
+        multi-row insert's references) is a retake when each value was locked on its own at no
+        less strength: every row it can select is then already held."""
         w = _strength(lock)
         held = set(self.taken[conn_key].get((lock.cls, lock.key), ()))
         held |= {_strength(h) for h in self.session_held.get(conn_key, ()) if h.cls == lock.cls and h.key == lock.key}
@@ -411,6 +412,14 @@ class Recorder:
         values = _row_values(lock) if _explicit(lock.mode) else ()
         return len(values) > 1 and all(
             any(_covers(h, w) for h in self.taken[conn_key].get((lock.cls, repr((v,))), ())) for v in values)
+
+    def _take(self, conn_key: int, lock: Lock) -> None:
+        """Note what this transaction now holds. A row named by its primary key is also held by
+        that key alone, as a foreign-key share of it binds it: the share is then granted at once."""
+        self.taken[conn_key].setdefault((lock.cls, lock.key), set()).add(_strength(lock))
+        if lock.row:
+            parent = "key:" + lock.cls.split(":", 1)[1]
+            self.taken[conn_key].setdefault((parent, repr((lock.row,))), set()).add(_strength(lock))
 
     def _serial_gates(self) -> set[str]:
         """R5: the fixed keys this flow of control holds exclusively at session level, on any
@@ -443,9 +452,11 @@ class Recorder:
         if not own:
             self._census(conn_key, lock, info, retake)
         if lock.cls.startswith("key:") and _strength(lock) == "keyshare":
+            self._take(conn_key, lock)
             return
         if own:
             info["own"] = info.get("own", 0) + 1
+            self._take(conn_key, lock)
             return
         if lock.mode == "insert":
             lock.gated = self._gated(conn_key, lock)
@@ -456,6 +467,7 @@ class Recorder:
         if self._retake(conn_key, lock):
             # Granted at once: it waits for nothing, so it orders nothing.
             info["retakes"] = info.get("retakes", 0) + 1
+            self._take(conn_key, lock)
             return
         waits = lock.mode.split(" ")[-1] not in ("nowait", "try", "skip")
         if lock.cls in _TRY_ONLY and waits:
@@ -507,7 +519,7 @@ class Recorder:
             lock.flow = _flow()
             self.session_held[conn_key].append(lock)
             return
-        self.taken[conn_key].setdefault((lock.cls, lock.key), set()).add(_strength(lock))
+        self._take(conn_key, lock)
         if _explicit(lock.mode):
             self.explicit[conn_key].setdefault(lock.cls, set()).add(_strength(lock))
             self.last_key[conn_key][lock.cls] = lock.key
@@ -698,8 +710,8 @@ def _covers(h: str, w: str) -> bool:
 
 
 def _row_values(lock: Lock) -> tuple:
-    """The values a row lock's key binds (``_row_key``); () for any other lock."""
-    if not lock.cls.startswith("row:") or not lock.key.startswith("("):
+    """The values a row or key lock's key binds (``_row_key``); () for any other lock."""
+    if not lock.cls.startswith(("row:", "key:")) or not lock.key.startswith("("):
         return ()
     try:
         return tuple(ast.literal_eval(lock.key))
@@ -1085,11 +1097,11 @@ def _row_locks(statement: str) -> tuple[tuple[tuple[str, str, tuple[int, ...] | 
                 mode = f"{_ROW_STRENGTH[c['strength']]} {_WAIT_POLICY[c.get('waitPolicy', 'LockWaitBlock')]}"
                 named = [r["RangeVar"]["relname"] for r in c.get("lockedRels", ())]
                 for t in ([tables.get(n, n) for n in named] if named else list(tables.values())):
-                    company = _company_param(t, where) if len(tables) == 1 else None
+                    company, row = (_company_param(t, where), _row_param(t, where)) if len(tables) == 1 else (None, None)
                     shares_key = _foreign_key_share(t, _ROW_STRENGTH[c["strength"]])
-                    out.append((f"{'key' if shares_key else 'row'}:{t}", mode, key, company, None))
+                    out.append((f"{'key' if shares_key else 'row'}:{t}", mode, key, company, row))
                     if mode.startswith("update ") and t in _parents():
-                        out.append((f"key:{t}", mode, key, company, None))
+                        out.append((f"key:{t}", mode, key, company, row))
         elif kind == "LockStmt":
             mode = f"{TABLE_MODES[body['mode']]} {'nowait' if body.get('nowait') else 'wait'}"
             out += [(f"tbl:{r['RangeVar']['relname']}", mode, None, None, None) for r in body["relations"]]
@@ -1147,7 +1159,7 @@ def _company(numbers: tuple[int, ...] | None, names: tuple, parameters) -> str:
 
 def _locks(statement: str, parameters) -> list[tuple[str, str, str, str, str]]:
     """(class, mode, key, company, row) for each lock the statement takes, ``row`` the primary
-    key of the one company row an UPDATE or DELETE names by it ("" otherwise);
+    key of the one company row a row lock, UPDATE or DELETE names by it ("" otherwise);
     ('-unlock', class, '', '', '') for an unlock."""
     out: list[tuple[str, str, str, str, str]] = []
     for m in _ADVISORY.finditer(statement):
