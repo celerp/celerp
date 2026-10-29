@@ -6589,5 +6589,10 @@
   "docs.list_issue_before_send": "Stellen Sie die Liste aus, bevor Sie sie senden.",
   "documents.marked_as_sent": "Als gesendet markiert.",
   "documents.sent_marker_cleared": "Markierung „gesendet“ entfernt.",
-  "doc.converted_to": "Umgewandelt in:"
+  "doc.converted_to": "Umgewandelt in:",
+  "documents.picker_no_items_yet": "Noch keine Artikel. Legen Sie zuerst Bestand an oder tippen Sie, um eine freie Zeile einzugeben.",
+  "documents.contact_picker_error": "Die Kontakte konnten nicht geladen werden. Bitte versuchen Sie es erneut.",
+  "documents.contact_picker_retry": "Erneut versuchen",
+  "documents.picker_no_customers": "Noch keine Kunden. Mit {add} legen Sie einen an.",
+  "documents.picker_no_vendors": "Noch keine Lieferanten. Mit {add} legen Sie einen an."
 }

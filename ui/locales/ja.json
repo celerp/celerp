@@ -6589,5 +6589,10 @@
   "docs.list_issue_before_send": "リストを送信する前に発行してください。",
   "documents.marked_as_sent": "送信済みにしました。",
   "documents.sent_marker_cleared": "送信済みの印を外しました。",
-  "doc.converted_to": "変換先:"
+  "doc.converted_to": "変換先:",
+  "documents.picker_no_items_yet": "まだ品目がありません。先に在庫を追加するか、入力して自由な行を追加してください。",
+  "documents.contact_picker_error": "連絡先を読み込めませんでした。もう一度お試しください。",
+  "documents.contact_picker_retry": "再試行",
+  "documents.picker_no_customers": "まだ顧客がいません。{add}で作成してください。",
+  "documents.picker_no_vendors": "まだ仕入先がいません。{add}で作成してください。"
 }

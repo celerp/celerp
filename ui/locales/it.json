@@ -6589,5 +6589,10 @@
   "docs.list_issue_before_send": "Emetta l'elenco prima di inviarlo.",
   "documents.marked_as_sent": "Segnato come inviato.",
   "documents.sent_marker_cleared": "Segno di inviato rimosso.",
-  "doc.converted_to": "Convertito in:"
+  "doc.converted_to": "Convertito in:",
+  "documents.picker_no_items_yet": "Ancora nessun articolo. Aggiungi prima delle scorte, oppure scrivi per inserire una riga libera.",
+  "documents.contact_picker_error": "Impossibile caricare i contatti. Riprova.",
+  "documents.contact_picker_retry": "Riprova",
+  "documents.picker_no_customers": "Ancora nessun cliente. Usa {add} per crearne uno.",
+  "documents.picker_no_vendors": "Ancora nessun fornitore. Usa {add} per crearne uno."
 }

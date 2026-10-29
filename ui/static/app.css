@@ -2163,6 +2163,7 @@ form:has(> #fa-preview:not(:empty)) ~ .empty-state-cta { display: none; }
 .catalog-ac-option:last-child { border-bottom: none; }
 .catalog-ac-option:hover, .catalog-ac-option--active { background: var(--c-accent-light, rgba(14,165,122,0.08)); color: var(--c-accent); }
 .catalog-ac-option--custom { font-style: italic; color: var(--c-text2); border-top: 1px solid var(--c-border); margin-top: 2px; }
+.catalog-ac-option--empty { color: var(--c-text2); cursor: default; font-style: italic; }
 .catalog-ac-option--custom:hover, .catalog-ac-option--custom.catalog-ac-option--active { background: var(--c-accent-light, rgba(14,165,122,0.08)); color: var(--c-accent); font-style: italic; }
 
 /* ─── Bank Reconciliation Workspace (phase 9) ─────────────────────────────── */

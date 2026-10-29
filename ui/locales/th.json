@@ -6589,5 +6589,10 @@
   "docs.list_issue_before_send": "ออกรายการก่อนส่ง",
   "documents.marked_as_sent": "ทำเครื่องหมายว่าส่งแล้ว",
   "documents.sent_marker_cleared": "ล้างเครื่องหมายว่าส่งแล้ว",
-  "doc.converted_to": "แปลงเป็น:"
+  "doc.converted_to": "แปลงเป็น:",
+  "documents.picker_no_items_yet": "ยังไม่มีสินค้า เพิ่มสต็อกก่อน หรือพิมพ์เพื่อป้อนรายการเอง",
+  "documents.contact_picker_error": "โหลดรายชื่อผู้ติดต่อไม่ได้ โปรดลองอีกครั้ง",
+  "documents.contact_picker_retry": "ลองอีกครั้ง",
+  "documents.picker_no_customers": "ยังไม่มีลูกค้า ใช้ {add} เพื่อสร้าง",
+  "documents.picker_no_vendors": "ยังไม่มีผู้ขาย ใช้ {add} เพื่อสร้าง"
 }

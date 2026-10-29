@@ -6589,5 +6589,10 @@
   "docs.list_issue_before_send": "Terbitkan daftar sebelum mengirimnya.",
   "documents.marked_as_sent": "Ditandai sudah terkirim.",
   "documents.sent_marker_cleared": "Tanda terkirim dihapus.",
-  "doc.converted_to": "Dikonversi menjadi:"
+  "doc.converted_to": "Dikonversi menjadi:",
+  "documents.picker_no_items_yet": "Belum ada barang. Tambahkan stok terlebih dahulu, atau ketik untuk memasukkan baris khusus.",
+  "documents.contact_picker_error": "Kontak tidak dapat dimuat. Silakan coba lagi.",
+  "documents.contact_picker_retry": "Coba lagi",
+  "documents.picker_no_customers": "Belum ada pelanggan. Gunakan {add} untuk membuatnya.",
+  "documents.picker_no_vendors": "Belum ada pemasok. Gunakan {add} untuk membuatnya."
 }

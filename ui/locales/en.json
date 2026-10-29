@@ -6589,5 +6589,10 @@
   "docs.list_issue_before_send": "Issue the list before sending it.",
   "documents.marked_as_sent": "Marked as sent.",
   "documents.sent_marker_cleared": "Sent marker cleared.",
-  "doc.converted_to": "Converted to:"
+  "doc.converted_to": "Converted to:",
+  "documents.picker_no_items_yet": "No items yet. Add stock first, or type to enter a custom line.",
+  "documents.contact_picker_error": "Contacts could not be loaded. Please try again.",
+  "documents.contact_picker_retry": "Try again",
+  "documents.picker_no_customers": "No customers yet. Use {add} to create one.",
+  "documents.picker_no_vendors": "No vendors yet. Use {add} to create one."
 }

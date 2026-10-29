@@ -6589,5 +6589,10 @@
   "docs.list_issue_before_send": "ዝርዝሩን ከመላክዎ በፊት ያውጡት።",
   "documents.marked_as_sent": "እንደተላከ ተመዝግቧል።",
   "documents.sent_marker_cleared": "የመላክ ምልክቱ ተወግዷል።",
-  "doc.converted_to": "የተቀየረው ወደ፦"
+  "doc.converted_to": "የተቀየረው ወደ፦",
+  "documents.picker_no_items_yet": "እስካሁን ምንም ዕቃ የለም። መጀመሪያ ክምችት ያክሉ፣ ወይም ብጁ መስመር ለማስገባት ይተይቡ።",
+  "documents.contact_picker_error": "እውቂያዎችን መጫን አልተቻለም። እባክዎ እንደገና ይሞክሩ።",
+  "documents.contact_picker_retry": "እንደገና ሞክር",
+  "documents.picker_no_customers": "እስካሁን ደንበኛ የለም። ለመፍጠር {add} ይጠቀሙ።",
+  "documents.picker_no_vendors": "እስካሁን አቅራቢ የለም። ለመፍጠር {add} ይጠቀሙ።"
 }

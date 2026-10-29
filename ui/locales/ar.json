@@ -6589,5 +6589,10 @@
   "docs.list_issue_before_send": "أصدر القائمة قبل إرسالها.",
   "documents.marked_as_sent": "تم وضع علامة «تم الإرسال».",
   "documents.sent_marker_cleared": "تمت إزالة علامة «تم الإرسال».",
-  "doc.converted_to": "تم التحويل إلى:"
+  "doc.converted_to": "تم التحويل إلى:",
+  "documents.picker_no_items_yet": "لا توجد أصناف بعد. أضف مخزونًا أولًا، أو اكتب لإدخال سطر مخصص.",
+  "documents.contact_picker_error": "تعذّر تحميل جهات الاتصال. يرجى المحاولة مرة أخرى.",
+  "documents.contact_picker_retry": "إعادة المحاولة",
+  "documents.picker_no_customers": "لا يوجد عملاء بعد. استخدم {add} لإنشاء واحد.",
+  "documents.picker_no_vendors": "لا يوجد موردون بعد. استخدم {add} لإنشاء واحد."
 }

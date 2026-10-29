@@ -6589,5 +6589,10 @@
   "docs.list_issue_before_send": "Émettez la liste avant de l'envoyer.",
   "documents.marked_as_sent": "Marqué comme envoyé.",
   "documents.sent_marker_cleared": "Marque « envoyé » retirée.",
-  "doc.converted_to": "Converti en :"
+  "doc.converted_to": "Converti en :",
+  "documents.picker_no_items_yet": "Aucun article pour le moment. Ajoutez d'abord du stock, ou saisissez pour entrer une ligne libre.",
+  "documents.contact_picker_error": "Les contacts n'ont pas pu être chargés. Veuillez réessayer.",
+  "documents.contact_picker_retry": "Réessayer",
+  "documents.picker_no_customers": "Aucun client pour le moment. Utilisez {add} pour en créer un.",
+  "documents.picker_no_vendors": "Aucun fournisseur pour le moment. Utilisez {add} pour en créer un."
 }
