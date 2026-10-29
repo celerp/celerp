@@ -374,3 +374,100 @@ async def test_a_cancellation_after_the_replace_committed_keeps_the_backup(real_
     assert new != old
     [kept] = await cb.kept_backups(new)
     assert kept["company_name"] == NAME
+
+
+# -- a replace meets a person editing an item of the company, on real connections -------
+
+async def _first_item(engine, company_id) -> str:
+    async with engine.connect() as conn:
+        return (await conn.execute(text(
+            "SELECT min(entity_id) FROM projections WHERE company_id = :c AND entity_type = 'item'"),
+            {"c": uuid.UUID(str(company_id))})).scalar_one()
+
+
+async def _item_name(engine, company_id, item) -> str | None:
+    async with engine.connect() as conn:
+        return (await conn.execute(text(
+            "SELECT CAST(state AS jsonb) ->> 'name' FROM projections WHERE company_id = :c AND entity_id = :e"),
+            {"c": uuid.UUID(str(company_id)), "e": item})).scalar_one_or_none()
+
+
+async def test_an_item_edit_waiting_for_a_replace_writes_nothing_into_the_replaced_company(
+        real_client, real_engine, _data_dir, monkeypatch):
+    """The replace holds the company for deletion; a person's item edit sent meanwhile waits
+    for it, then is refused with the company gone, and the new company holds the item as the
+    copy has it."""
+    import asyncio
+
+    from celerp.services import company_backup as cb
+    from test_import_preflight_invariants import _until_blocked_or_done
+    tok, data = await _copy_then_more_work(real_client, real_engine)
+    cid = _cid(tok)
+    item = await _first_item(real_engine, cid)
+    name = await _item_name(real_engine, cid, item)
+    preview = (await read(real_client, tok, data)).json()
+    entered, go = asyncio.Event(), asyncio.Event()
+    hold = cb.hold_module_state
+
+    async def paused(session):
+        entered.set()
+        await go.wait()
+        return await hold(session)
+
+    monkeypatch.setattr(cb, "hold_module_state", paused)
+    replace = asyncio.create_task(
+        real_client.post("/company-backups/replace", json=_replace_request(preview), headers=auth(tok)))
+    await asyncio.wait_for(entered.wait(), timeout=10)
+    edit = asyncio.create_task(real_client.patch(
+        f"/items/{item}", json={"fields_changed": {"name": {"old": name, "new": "Edited meanwhile"}}},
+        headers=auth(tok)))
+    await _until_blocked_or_done(real_engine, edit)
+    assert not edit.done(), edit.result().text
+    go.set()
+    replaced, edited = await asyncio.wait_for(asyncio.gather(replace, edit), timeout=30)
+    assert replaced.status_code == 200, replaced.text
+    assert edited.status_code == 403 and "nothing was saved" in edited.json()["detail"], edited.text
+    [(new, _)] = await _companies(real_engine)
+    assert new != cid
+    assert await _item_name(real_engine, new, item) == name
+
+
+async def test_a_replace_waiting_for_an_item_edit_replaces_nothing(
+        real_client, real_engine, _data_dir, monkeypatch):
+    """A person's item edit holds its locks; a replace started meanwhile keeps a backup
+    without it, waits for the edit, sees the company changed and stops with nothing
+    replaced. The edit stays and neither side is aborted."""
+    import asyncio
+
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from celerp.services import company_backup as cb
+    from celerp.services.company_lock import lock_projections
+    from test_import_preflight_invariants import _until_blocked_or_done
+    tok, data = await _copy_then_more_work(real_client, real_engine)
+    cid = _cid(tok)
+    item = await _first_item(real_engine, cid)
+    preview = (await read(real_client, tok, data)).json()
+    entered, go = asyncio.Event(), asyncio.Event()
+
+    async def edit():
+        async with AsyncSession(bind=real_engine) as s:
+            row = (await lock_projections(s, uuid.UUID(cid), [item]))[item]
+            entered.set()
+            await go.wait()
+            row.state = {**row.state, "name": "Edited first"}
+            await s.commit()
+
+    editing = asyncio.create_task(edit())
+    await asyncio.wait_for(entered.wait(), timeout=10)
+    replace = asyncio.create_task(
+        real_client.post("/company-backups/replace", json=_replace_request(preview), headers=auth(tok)))
+    await _until_blocked_or_done(real_engine, replace)
+    assert not replace.done(), replace.result().text
+    go.set()
+    _, replaced = await asyncio.wait_for(asyncio.gather(editing, replace), timeout=30)
+    assert replaced.status_code == 409 and replaced.json()["code"] == "changed", replaced.text
+    assert "Nothing was replaced." in replaced.json()["detail"]
+    assert await _companies(real_engine) == [(cid, NAME)]
+    assert await _item_name(real_engine, cid, item) == "Edited first"
+    assert await cb.kept_backups(cid) == []
