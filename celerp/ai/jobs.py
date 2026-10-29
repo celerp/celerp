@@ -67,7 +67,6 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
 import httpx
-import sqlalchemy as sa
 from sqlalchemy import and_, or_, select, update
 
 from celerp.ai import deadlines
@@ -292,10 +291,29 @@ def liveness(job, now: datetime | None = None) -> str:
     return "running" if job.lease_until is not None and job.lease_until > (now or _now()) else "unheld"
 
 
+def outcome(job) -> str | None:
+    """How a job ended (``completed``, ``failed`` or ``cancelled``), or None while it is open."""
+    return job.status if liveness(job) == "ended" else None
+
+
+def answered(step) -> bool:
+    """Whether a step ended with its answer."""
+    return step.state == "done"
+
+
 def is_open():
     """The query form of ``liveness(job) != "ended"``."""
     from celerp.models.ai import AIBatchJob
     return AIBatchJob.status.not_in(TERMINAL_JOBS)
+
+
+def reopenable():
+    """The query form of: a job its user may reopen. A question until it is answered,
+    a reading job whatever its status (its steps say what is left to send), and
+    neither once the conversation it was asked in is gone."""
+    from celerp.models.ai import AIBatchJob
+    return and_(or_(AIBatchJob.kind == "documents", AIBatchJob.status != "completed"),
+                or_(AIBatchJob.question_id.is_(None), AIBatchJob.conversation_id.is_not(None)))
 
 
 def runs_now():
@@ -467,7 +485,12 @@ async def _supervise(job_id: uuid.UUID) -> None:
     """The job's task: it holds the job's lease and renews it, runs the job, and when
     the run raises runs it again after a growing delay, for as long as the process
     lives. Meanwhile the job reads as running: a question is moved to the background
-    so the thread offers Stop, and a Stop ends the job at the next failure."""
+    so the thread offers Stop, and a Stop ends the job at the next failure.
+
+    A claim this process took for the job while this task lives (a reopen: the user
+    asked again) is always run by this task: whichever way a run ends, a reopen it
+    was told of (``_again``) is claimed again and run. The task leaves ``_tasks`` in
+    the same step that it decides to end, so a later reopen starts a new task."""
     stop = asyncio.Event()
     claim: list[str | None] = [None]
     beat = asyncio.create_task(_heartbeat(job_id, claim, stop))
@@ -478,27 +501,30 @@ async def _supervise(job_id: uuid.UUID) -> None:
                 claim[0] = await _claim(session, job_id, own=True)
                 await session.commit()
             if claim[0] is None:
-                return      # ended, or another process runs it
+                break       # ended, or another process runs it
             try:
                 await _run(job_id, claim[0])
+                failures = 0
             except ClaimTaken:
-                return
+                pass        # a stop or a reopen took the claim: only a reopen runs again
             except Exception:
                 failures += 1
                 log.exception("AI job %s stopped (%d in a row); running it again", job_id, failures)
                 await _after_failure(job_id, claim[0])
                 await asyncio.sleep(min(STEP_RETRY_DELAY_S * 2 ** failures, RUNNER_RESTART_MAX_DELAY_S))
                 continue
-            failures = 0
             if job_id not in _again:
-                return
+                break
             _again.discard(job_id)
     finally:
+        # No await between the decision to end and leaving ``_tasks``: a reopen either
+        # reached this task or finds none alive and starts another.
+        _again.discard(job_id)
+        if _tasks.get(job_id) is asyncio.current_task():
+            del _tasks[job_id]
         # Never cancelled mid-query: the renewal in flight ends, then the heartbeat does.
         stop.set()
         await asyncio.gather(beat, return_exceptions=True)
-        if _tasks.get(job_id) is asyncio.current_task():
-            del _tasks[job_id]
 
 
 async def _heartbeat(job_id: uuid.UUID, claim: list[str | None], stop: asyncio.Event) -> None:
@@ -628,8 +654,8 @@ async def _reopen(job_id: uuid.UUID, company_id: uuid.UUID, user_id: uuid.UUID, 
     from celerp.models.ai import AIJobStep
     async with SessionLocal() as session:
         job = await owned_job(session, job_id, company_id=company_id, user_id=user_id)
-        if job is None or liveness(job) == "running" or (job.question_id and job.conversation_id is None):
-            return None     # not this user's, run by a runner, or its conversation is gone
+        if job is None or liveness(job) == "running":
+            return None     # not this user's, or run by a runner
         steps = (await session.execute(
             select(AIJobStep).where(AIJobStep.job_id == job_id,
                                     AIJobStep.state.in_(RETRYABLE_STEPS if retry else OPEN_STEPS))
@@ -641,9 +667,9 @@ async def _reopen(job_id: uuid.UUID, company_id: uuid.UUID, user_id: uuid.UUID, 
                 step.generation += 1
                 step.operation_id = step.step_id = file_operation_id(job_id, step.key, step.generation)
                 step.state, step.result, step.charge_known = "pending", None, False
-        if not await _claim(session, job_id, sa.true(), status="running", error=None, completed_at=None,
+        if not await _claim(session, job_id, reopenable(), status="running", error=None, completed_at=None,
                             cancel_requested_at=None):
-            await session.rollback()        # another send took it first
+            await session.rollback()        # another send took it first, or its conversation is gone
             return None
         await session.commit()
     start_job(job_id)
@@ -957,7 +983,7 @@ class _JobJournal(Journal):
         self._promoter: asyncio.Task | None = None
         for step in steps:
             self._pk[step.key], self._generation[step.key] = step.id, step.generation
-            if step.state == "done":
+            if answered(step):
                 self._done[step.key] = step.result
 
     @property
@@ -1069,9 +1095,8 @@ async def reopen_question(session, job_id: uuid.UUID, auth_nonce: str | None) ->
     tools read the app under the session of whoever asks it again (``auth_nonce``).
     One conditional update, which takes the job's lease for this process, so a send
     that read the question before its job answered it never reopens the answer and
-    one that runs is never reopened; False then."""
-    from celerp.models.ai import AIBatchJob
-    return await _claim(session, job_id, AIBatchJob.status != "completed",
+    one that runs, or one whose conversation is gone, is never reopened; False then."""
+    return await _claim(session, job_id, reopenable(),
                         status="pending", results=None, error=None, completed_at=None, cancel_requested_at=None,
                         auth_nonce=auth_nonce)
 

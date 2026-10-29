@@ -531,7 +531,7 @@ JOB_STATUS = {"running": "running", "unheld": "interrupted"}
 def _job_out(job, steps: list) -> BatchJobOut:
     """A reading job as its user sees it; its progress is read from its steps."""
     from celerp.ai import jobs
-    done = sum(1 for s in steps if s.state == "done")
+    done = sum(1 for s in steps if jobs.answered(s))
     return BatchJobOut(
         id=job.id,
         conversation_id=job.conversation_id,
@@ -771,9 +771,11 @@ async def query_in_conversation(
         raise _conflict("question_in_progress", t("ai.err_question_in_progress"))
     if not reopened:
         # A runner holds it, or answered it after this send read the thread: that
-        # answer, never a second run.
+        # answer, never a second run. Or the conversation was deleted meanwhile.
         await session.refresh(job)
-        if job.status != "completed":
+        if job.conversation_id is None:
+            raise HTTPException(status_code=404, detail=t("ai.err_conversation_not_found"))
+        if jobs.outcome(job) != "completed":
             raise _conflict("question_in_progress", t("ai.err_question_in_progress"))
         answer = await jobs.answer_message(session, job)
         if answer is None:
@@ -1522,7 +1524,7 @@ async def propose_from_job(
     if jobs.liveness(job) != "ended":
         raise _conflict("job_not_finished", "The files are still being read.")
     result_files = [jobs.file_view(step) for step in (await jobs.job_steps(session, [job.id]))[job.id]]
-    if job.status == "failed" and not any(entry.get("status") == "success" for entry in result_files):
+    if jobs.outcome(job) == "failed" and not any(entry.get("status") == "success" for entry in result_files):
         raise _conflict("job_failed", job.error or "None of the files could be read.")
 
     existing_id = (job.results or {}).get("proposal_message_id")

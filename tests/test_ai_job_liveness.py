@@ -331,6 +331,32 @@ async def test_a_conversation_is_kept_and_undeletable_only_while_a_job_runs_in_i
     assert cloud.executions.get(case.identity, 0) == sent
 
 
+@pytest.mark.parametrize("shape", ("conversation", "documents"))
+async def test_a_reopen_racing_a_conversation_delete_never_reopens_its_orphaned_job(
+        client, owner, cloud, session, monkeypatch, shape):
+    """A send (or Continue) reads the job, then the conversation is deleted, then its
+    reopen runs: the one reopenable rule refuses a job whose conversation is gone, in
+    the reopen's own conditional update, so nothing of it runs or reaches the model."""
+    token, company_id, user_id = owner
+    case = await _in_state(client, token, company_id, user_id, cloud, session, monkeypatch, shape, "unheld")
+    r = await client.delete(f"/ai/conversations/{case.conv}", headers=AUTH(token))
+    assert r.status_code == 204, r.text
+    row = await _row(session, case.job_id)
+    assert row.conversation_id is None and jobs.liveness(row) == "ended"
+    sent = len(cloud.bodies)
+    if shape == "documents":
+        # Its refusal rolls back the test's one shared transaction, rows and all (on
+        # separate connections it rolls back only its own), so the row is read before.
+        await session.commit()
+        assert await jobs.resume(case.job_id, company_id, user_id) is None
+    else:
+        async with jobs.SessionLocal() as s:
+            assert not await jobs.reopen_question(s, case.job_id, row.auth_nonce)
+            await s.commit()
+        assert jobs.liveness(await _row(session, case.job_id)) == "ended"
+    assert not jobs.running_tasks() and len(cloud.bodies) == sent
+
+
 @pytest.mark.parametrize("state", ("running", "unheld"))
 async def test_an_open_questions_message_is_never_pruned(client, owner, cloud, session, monkeypatch, state):
     """A thread keeps its newest messages and prunes the oldest, never the message of
@@ -453,16 +479,47 @@ async def _written(session, case: Case) -> tuple:
     return (row.status, row.error, row.results, row.completed_at, row.runner_id), list(steps), list(messages)
 
 
+async def _reopened_by_the_user(client, token, session, case: Case) -> None:
+    """The job's lease lapses while its runner waits on the service, and its user asks
+    it again (a reading job: Continue). The reopen takes the job for this process while
+    the stalled runner's task still lives, so that task is told to run it again."""
+    await _lapse(session, case.job_id)
+    assert jobs.task_alive(case.job_id)
+    if case.shape == "documents":
+        r = await client.post(f"/ai/jobs/{case.job_id}/resume", headers=AUTH(token))
+    else:
+        path = "/ai/query" if case.shape == "one_off" else f"/ai/conversations/{case.conv}/query"
+        r = await client.post(path, headers=AUTH(token), json={"query": QUERY, "operation_id": str(case.job_id)})
+    assert r.status_code in (200, 202), r.text
+    assert case.job_id in jobs._again
+
+
+@pytest.mark.parametrize("competitor", ["ended it", "reopened by the user"])
 @pytest.mark.parametrize("shape", SHAPES)
 async def test_a_runner_whose_claim_another_took_writes_no_step_and_no_end(
-        client, owner, cloud, session, monkeypatch, shape):
+        client, owner, cloud, session, monkeypatch, shape, competitor):
     """Two claims in one process: the first stalls on the service past its lease, the
-    second takes the job and ends it. When the first wakes with its answer, every write
-    it tries is fenced on its own claim and refused: its step result, its final status
-    and its message. The job stays as the second claim ended it, with one answer, and
-    the stalled runner sends nothing more and is not run again."""
+    second takes the job. When the first wakes with its answer, every write it tries is
+    fenced on its own claim and refused: its step result, its final status and its
+    message. A second claim that ended the job keeps it as it ended it, with one answer,
+    and the stalled runner sends nothing more and is not run again. A second claim the
+    user's ask again took is run by the job's task, which still lives: the job ends
+    answered once, from the service's one execution, and nothing is left to run."""
     token, company_id, user_id = owner
     case = await _start(client, token, company_id, user_id, cloud, monkeypatch, shape, failing=False)
+    if competitor == "reopened by the user":
+        await _reopened_by_the_user(client, token, session, case)
+        _let_go(cloud, case)
+        await until(lambda: not jobs.running_tasks(), 20.0)
+        (status, _, _, _, runner_id), steps, messages = await _written(session, case)
+        assert (status, runner_id) == ("completed", None)
+        assert case.job_id not in jobs._again and not jobs.task_alive(case.job_id)
+        if shape == "documents":
+            assert [state for _, state, _, _ in steps] == ["done"]
+        if shape == "conversation":
+            assert len([m for m in messages if m.role == "assistant"]) == 1
+        assert cloud.executions[case.identity] == 1
+        return
     await _ended_by_a_competing_claim(session, case)
     ended = await _written(session, case)
     assert ended[0][0] == "completed"
@@ -518,7 +575,8 @@ def _scanned() -> list[pathlib.Path]:
 JOB_TABLES = {"AIBatchJob", "AIJobStep"}
 # The columns a job's lifecycle moves: what it is doing, who runs it, and when it stopped or ended.
 JOB_STATE = {"status", "state", "runner_id", "lease_until", "cancel_requested_at", "completed_at", "promoted_at"}
-OPEN_STATES = {"pending", "running"}
+# Every status a job and every state a step takes, open or ended.
+STATUSES = {"pending", "running", "done", *jobs.TERMINAL_JOBS, *jobs.RETRYABLE_STEPS}
 
 
 def _call_name(node: ast.Call) -> str | None:
@@ -543,8 +601,9 @@ def _own_nodes(statement: ast.stmt):
 
 def _bypasses(source: str) -> list[str]:
     """What ``source`` does with the job tables that is the job module's to do:
-    a job-state predicate of its own (``jobs.liveness``, ``is_open`` and ``runs_now``
-    say whether a job is open or runs), a job read without its owner (``jobs.owned_job``
+    a job-state predicate of its own, a comparison of a job's status or a step's state
+    with any status (``jobs.liveness``, ``is_open``, ``runs_now`` and the outcome
+    readers say whether a job is open, runs, or how it ended), a job read without its owner (``jobs.owned_job``
     and the listing helpers scope every read to the company and the user), or a write
     that moves a job or a step (every transition is the runner's or a ``jobs`` helper's).
     Reporting reads that reuse those helpers stay where they are."""
@@ -564,10 +623,10 @@ def _bypasses(source: str) -> list[str]:
                 found.append(f"{n.lineno} predicate {n.value.id}.{n.attr}")
             if (about_jobs and isinstance(n, ast.Compare) and isinstance(n.left, ast.Attribute)
                     and n.left.attr in ("status", "state") and any(
-                        isinstance(v, ast.Constant) and v.value in OPEN_STATES
+                        isinstance(v, ast.Constant) and v.value in STATUSES
                         for c in n.comparators for v in (c.elts if isinstance(c, (ast.Tuple, ast.List, ast.Set))
                                                          else [c]))):
-                found.append(f"{n.lineno} predicate .{n.left.attr} against an open state")
+                found.append(f"{n.lineno} predicate .{n.left.attr} against a status")
             if not isinstance(n, ast.Call):
                 continue
             name, args = _call_name(n), n.args
@@ -603,6 +662,8 @@ def test_no_code_outside_the_job_module_decides_a_jobs_state_its_owner_or_its_tr
     ("from celerp.models.ai import AIBatchJob\nq = select(AIBatchJob).where(AIBatchJob.lease_until > now)",
      "predicate AIBatchJob.lease_until"),
     ("from celerp.ai import jobs\nopen_ = job.status in ('pending', 'running')", "predicate .status"),
+    ('from celerp.ai import jobs\nif job.status != "completed":\n    raise busy\n', "predicate .status"),
+    ("from celerp.ai import jobs\nfailed = step.state == 'failed'", "predicate .state"),
     ("from celerp.models.ai import AIBatchJob\nasync def f(s, i):\n    return await s.get(AIBatchJob, i)",
      "ownership get(AIBatchJob)"),
     ("from celerp.models.ai import AIBatchJob\nq = select(AIBatchJob).where(AIBatchJob.company_id == c)",
