@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: BUSL-1.1
 
 """The findings of the write observer (mutation_observer.py) that predate it, accepted one
-by one until their tracking issue is resolved (mutation_baseline.json).
+by one until their tracking issue is resolved (mutation_baseline.json), and the writers no
+test covers yet (mutation_coverage_gaps.json).
 
 An entry matches a finding exactly: its route, kind, table, statement shape (fingerprint)
 and the app frames that made it, as functions without line numbers. A finding matching no
@@ -55,6 +56,40 @@ def load(path: str = PATH) -> dict[tuple, dict]:
 
 
 ENTRIES = load()
+
+# The writers no test covers, accepted one by one (mutation_coverage_gaps.json): a mutating
+# route whose source reaches a write that no test made write durably, keyed by app, method
+# and path, and the write sites of one function and call no observed request write passed
+# through, keyed by file, function and call with their count. The census fails a gap no
+# entry names and an entry that no longer matches its gap.
+GAPS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mutation_coverage_gaps.json")
+ROUTE_CLASSES = ("never requested", "requested, no durable write")
+SITE_CLASSES = ("outside request work", "request write no test reaches")
+# The checked-in entries at most: closing a gap lowers it in the same change, and nothing raises it.
+GAPS_CEILING = 0
+
+
+def gap_key(entry: dict) -> tuple[str, str]:
+    return ("route", entry["route"]) if "route" in entry else ("site", entry["site"])
+
+
+def load_gaps(path: str = GAPS_PATH) -> dict[tuple[str, str], dict]:
+    gaps: dict[tuple[str, str], dict] = {}
+    with open(path, encoding="utf-8") as fh:
+        for entry in json.load(fh):
+            if ("route" in entry) == ("site" in entry):
+                raise ValueError(f"coverage gap {entry} names no single route or site")
+            name = entry.get("route") or entry.get("site")
+            missing = [field for field in ("class", "reason") + (() if "route" in entry else ("count",))
+                       if not entry.get(field)]
+            if missing:
+                raise ValueError(f"coverage gap {name} lacks {', '.join(missing)}")
+            if entry["class"] not in (ROUTE_CLASSES if "route" in entry else SITE_CLASSES):
+                raise ValueError(f"coverage gap {name} has an unknown class {entry['class']!r}")
+            if gap_key(entry) in gaps:
+                raise ValueError(f"two coverage gap entries for {name}")
+            gaps[gap_key(entry)] = entry
+    return gaps
 
 
 def accepted(finding) -> dict | None:

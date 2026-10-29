@@ -211,6 +211,7 @@ class Finding:
     company_from: str = "statement"  # statement, or request when the SQL names no company
     fingerprint: str = ""  # the statement's shape, without its values (pglast)
     sites: list[str] = field(default_factory=list)  # every app frame of a write, for site coverage
+    through: list[str] = field(default_factory=list)  # the requests the write's request is made for
 
 
 @dataclass
@@ -357,6 +358,14 @@ def _read_route(request: dict) -> str:
         if _reads(outer):
             return " -> ".join(_route(r) for r in chain[i:])
     return ""
+
+
+def _outer_routes(request: dict) -> list[str]:
+    """The routes of the requests *request* is made for, outermost last."""
+    routes = []
+    while (request := request.get("outer")) is not None:
+        routes.append(_route(request))
+    return routes
 
 
 def _route(request: dict) -> str:
@@ -893,7 +902,7 @@ def _executed(conn, cursor, statement, parameters, context, executemany) -> None
             kind or "protected", route, target, op.table, statement[:300], op.detail,
             earlier_locks=before, transaction=f"{id(root):x}",
             where=_where() if kind else [], test=CENSUS.test, company_from=source,
-            sites=frames, fingerprint=op.fingerprint))
+            sites=frames, fingerprint=op.fingerprint, through=_outer_routes(request)))
 
 
 def _recording_the_call(name: str):
@@ -924,6 +933,8 @@ def _committed(session) -> None:
     for finding in noted(session, _WRITE):
         CENSUS.count(finding.route, finding.kind)
         CENSUS.count(finding.route, f"company from {finding.company_from}")
+        for outer in finding.through:
+            CENSUS.count(outer, "writes through")
         for site in set(finding.sites):
             CENSUS.sites[site] = CENSUS.sites.get(site, 0) + 1
         if finding.kind != "protected":

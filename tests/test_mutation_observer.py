@@ -91,6 +91,18 @@ async def test_a_write_made_for_a_read_request_through_another_request_is_report
         ["GET /api"] if outer == "POST" and inner == "GET" else [])
 
 
+async def test_a_durable_write_counts_for_every_request_it_is_made_for(session, auth):
+    """A UI route that writes by calling the API: the census counts the write for it as well."""
+    with serving("POST", "/page"), serving("POST", "/api"):
+        cid = _authorize(session, auth)
+        await lock_company(session, cid)
+        session.add(Location(company_id=cid, name="Through", type="warehouse"))
+        await session.commit()
+    routes = mutation_observer.CENSUS.routes
+    assert routes["POST /api"].get("protected") and routes["POST /page"].get("writes through")
+    assert "protected" not in routes["POST /page"] and "writes through" not in routes["POST /api"]
+
+
 @pytest.mark.parametrize("method", ["GET", "POST"])
 async def test_a_write_to_infrastructure_made_for_a_read_request_is_reported(session, auth, method):
     """A table no company owns (a login's supporter badge) is not judged by the company

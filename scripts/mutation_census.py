@@ -3,7 +3,8 @@
 
 """Report what the write observer (mutation_observer.py) saw across a test run.
 
-    python scripts/mutation_census.py <census folder>... [--out census.md] [--coverage coverage.json] [--baseline file] [--enforce]
+    python scripts/mutation_census.py <census folder>... [--out census.md] [--coverage coverage.json] [--baseline file]
+        [--gaps file] [--enforce]
 
 Reads every census-*.json and census-*.routes.json under the folders (one pair per test
 process, so the folders of all CI shards together give the whole suite) and writes:
@@ -22,10 +23,14 @@ process, so the folders of all CI shards together give the whole suite) and writ
   recorded when they happen.
 
 - the baseline: each accepted finding (mutation_baseline.json) with its tracking issue, and
-  every entry no finding matched or its own reproducing test did not see.
+  every entry no finding matched or its own reproducing test did not see;
+- the coverage gaps: each mutating route whose source reaches a write that no test made
+  write durably, and each write site no request write passed through, against the accepted
+  ones (mutation_coverage_gaps.json), with every entry that no longer matches its gap.
 
 With --enforce the exit status is 1 when a finding matches no baseline entry, an entry
-is stale or not reproduced by its test, or a read route no test requested reaches a write."""
+is stale or not reproduced by its test, a read route no test requested reaches a write, a
+coverage gap has no entry, or a coverage-gap entry no longer matches its gap."""
 
 from __future__ import annotations
 
@@ -103,17 +108,18 @@ def _read_noted(graph, route: str) -> set[str]:
     return {key for key, fn in graph.functions.items() if f"{fn.path} {fn.qualname.rpartition('.')[2]}" in sites}
 
 
-def read_routes_that_write(rows) -> dict[tuple, list]:
-    """Each read route among *rows* whose handler the static call graph shows reaching a
-    write (a session write, a commit, a company lock or a mutating API request), with one
-    chain to each, through no function of READ_SAFE or of a note READ_ROUTE_WRITES has for it."""
+def routes_that_write(rows) -> dict[tuple, list]:
+    """Each route among *rows* whose handler the static call graph shows reaching a write
+    (a session write, a commit, a company lock or a mutating API request), with one chain to
+    each, through no function of READ_SAFE or, for a read route, of a note READ_ROUTE_WRITES
+    has for it."""
     graph = static_calls.Graph()
     found = {}
     for (app, method, path), row in rows.items():
         rel, _, line = row["source"].rpartition(":")
         handler = graph.by_source.get((rel, int(line))) if line.isdigit() else None
         if handler is not None:
-            stop = set(READ_SAFE) | _read_noted(graph, f"{method} {path}")
+            stop = set(READ_SAFE) | (_read_noted(graph, f"{method} {path}") if method in READING else set())
             chains = graph.doing([handler.key], lambda what: True, stop=stop)
             if chains:
                 found[(app, method, path)] = chains
@@ -174,7 +180,7 @@ def _passed_through(site, sent) -> bool:
                for line, name, begins in sent)
 
 
-def report(folders, out, coverage_path=None, baseline=mutation_baseline.PATH):
+def report(folders, out, coverage_path=None, baseline=mutation_baseline.PATH, gaps=mutation_baseline.GAPS_PATH):
     files, routes, sites, findings, inventory = load(folders)
     coverage = _coverage(coverage_path)
     decorators, static_sites = static_inventory()
@@ -196,7 +202,8 @@ def report(folders, out, coverage_path=None, baseline=mutation_baseline.PATH):
     classes = defaultdict(list)
     for (app, method, path), row in sorted(mutating.items()):
         counts = routes.get(f"{_APP_LABEL.get(app, app)} {method} {path}", {})
-        wrote = sum(n for what, n in counts.items() if what in ("protected", "unprotected", "lock-order", "cross-company"))
+        wrote = sum(n for what, n in counts.items()
+                    if what in ("protected", "unprotected", "lock-order", "cross-company", "writes through"))
         cls = "writes" if wrote else "requested, no durable write" if counts.get("requests") else "never requested"
         classes[cls].append((app, method, path, row["source"], counts))
     lines += ["| Class | Routes |", "|---|---|"] + [f"| {c} | {len(v)} |" for c, v in sorted(classes.items())] + [""]
@@ -218,7 +225,10 @@ def report(folders, out, coverage_path=None, baseline=mutation_baseline.PATH):
     def _requested(app, path):
         return any(routes.get(f"{_APP_LABEL.get(app, app)} {m} {path}", {}).get("requests") for m in READING)
     unrequested = {(app, "GET", path): row for (app, path), row in reading.items() if not _requested(app, path)}
-    writing = read_routes_that_write(unrequested)
+    untested = {(app, method, path): row for cls in mutation_baseline.ROUTE_CLASSES
+                for app, method, path, _, _ in classes.get(cls, []) for row in [mutating[(app, method, path)]]}
+    reaching = routes_that_write({**unrequested, **untested})
+    writing = {k: v for k, v in reaching.items() if k in unrequested}
     lines += ["## Read routes", "",
               f"- GET and HEAD routes the test apps serve: {len(reading)} "
               f"(api {sum(1 for k in reading if k[0] == 'FastAPI')}, ui {sum(1 for k in reading if k[0] == 'FastHTML')}); "
@@ -310,13 +320,51 @@ def report(folders, out, coverage_path=None, baseline=mutation_baseline.PATH):
             lines += [f"### {title}", "", "| File | Sites |", "|---|---|"]
             lines += [f"| {rel} | {'; '.join(v)} |" for rel, v in sorted(group.items())] + [""]
 
+    # -- coverage gaps ---------------------------------------------------------
+    # A writer no test covers: a mutating route reaching a write that no test made write
+    # durably, and the write sites of one function and call no request write passed through.
+    route_gaps = {("route", f"{_APP_LABEL.get(a, a)} {m} {p}"): (cls, f"| {_APP_LABEL.get(a, a)} | {m} {p} | {src} | {cls} |")
+                  for cls in mutation_baseline.ROUTE_CLASSES for a, m, p, src, _ in classes.get(cls, [])
+                  if (a, m, p) in reaching}
+    site_gaps = defaultdict(list)
+    for rel, start, _, fn, name, _ in missed:
+        site_gaps[("site", f"{rel} {fn} {name}")].append(start)
+    known_sites = {("site", f"{rel} {fn} {name}") for rel, _, _, fn, name, _ in static_sites}
+    served = {("route", f"{_APP_LABEL.get(a, a)} {m} {p}") for a, m, p in mutating}
+    gap_entries = mutation_baseline.load_gaps(gaps)
+    unnamed = [k for k in (*route_gaps, *site_gaps) if k not in gap_entries]
+    lines += ["## Coverage gaps", "",
+              f"- Mutating routes reaching a write that no test made write: {len(route_gaps)}; write sites "
+              f"(by file, function and call) no request write passed through: {len(site_gaps)}.",
+              f"- Accepted (mutation_coverage_gaps.json): {len(gap_entries)}; named by no entry: {len(unnamed)}.", "",
+              "### Named by no entry", "", "| App | Route | Source | Class |", "|---|---|---|---|"]
+    lines += [route_gaps[k][1] for k in unnamed if k[0] == "route"]
+    lines += ["", "| Site | Count | Lines |", "|---|---|---|"]
+    lines += [f"| {k[1]} | {len(site_gaps[k])} | {', '.join(map(str, sorted(site_gaps[k])))} |"
+              for k in unnamed if k[0] == "site"]
+    lines += ["", "### Accepted", "", "| Kind | Gap | Class | Status |", "|---|---|---|---|"]
+    gap_failing = len(unnamed)
+    for k, entry in gap_entries.items():
+        if k in route_gaps:
+            status = "matched" if route_gaps[k][0] == entry["class"] else f"class is {route_gaps[k][0]}"
+        elif k in site_gaps:
+            n = len(site_gaps[k])
+            status = "matched" if n == entry["count"] else f"{n} site(s), entry says {entry['count']}"
+        elif k in served or k in known_sites:
+            status = "stale: covered"
+        else:
+            status = "stale: no such gap"
+        gap_failing += status != "matched"
+        lines.append(f"| {k[0]} | {k[1]} | {entry['class']} | {status} |")
+    lines.append("")
+
     text = "\n".join(lines) + "\n"
     if out:
         with open(out, "w", encoding="utf-8") as fh:
             fh.write(text)
     else:
         sys.stdout.write(text)
-    return sum(len(v) for v in by_kind.values()) + failing + len(writing)
+    return sum(len(v) for v in by_kind.values()) + failing + len(writing) + gap_failing
 
 
 def main(argv=None) -> int:
@@ -326,8 +374,9 @@ def main(argv=None) -> int:
     parser.add_argument("--enforce", action="store_true")
     parser.add_argument("--coverage", help="a coverage.py JSON report of the same run, with branches")
     parser.add_argument("--baseline", default=mutation_baseline.PATH, help="the accepted findings")
+    parser.add_argument("--gaps", default=mutation_baseline.GAPS_PATH, help="the accepted coverage gaps")
     args = parser.parse_args(argv)
-    count = report(args.folders, args.out, args.coverage, args.baseline)
+    count = report(args.folders, args.out, args.coverage, args.baseline, args.gaps)
     return 1 if args.enforce and count else 0
 
 
