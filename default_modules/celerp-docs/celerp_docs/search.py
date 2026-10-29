@@ -46,10 +46,14 @@ async def global_search(
     q: str,
     limit: int,
 ) -> dict:
-    """Global-search provider: newest documents matching q, capped to limit."""
+    """Global-search provider: newest documents and Lists matching q, capped to limit.
+
+    A List is a document the user finds the same way (by its number or its customer), so it is
+    searched with them; each row says which it is under ``kind``. ``view_documents`` gates both,
+    as it does the document and List pages."""
     where = [
         Projection.company_id == company_id,
-        Projection.entity_type == "doc",
+        Projection.entity_type.in_(("doc", "list")),
     ]
     clause = doc_q_clause(q)
     if clause is not None:
@@ -58,11 +62,12 @@ async def global_search(
         select(Projection)
         .where(*where)
         .order_by(
-            Projection.state["issue_date"].as_string().desc(),
+            # A List has no issue date; it must not float above every dated document.
+            Projection.state["issue_date"].as_string().desc().nulls_last(),
             Projection.entity_id.desc(),
         )
         .limit(limit)
     )
     rows = (await session.execute(list_q)).scalars().all()
-    out = [r.state | {"id": r.entity_id} for r in rows]
+    out = [r.state | {"id": r.entity_id, "kind": r.entity_type} for r in rows]
     return {"items": out}

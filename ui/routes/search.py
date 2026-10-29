@@ -71,6 +71,16 @@ def _status_tag(status: str, domain: str | None):
     return Span(f" - {label}", cls="search-result-status") if label else ""
 
 
+def _doc_type_name(record: dict) -> str:
+    """The kind of document a result is (Quotation, Invoice, ...), in the request language. A
+    List names its list type, a document its document type."""
+    if record.get("kind") == "list":
+        from ui.routes.documents import _list_type_label
+        return _list_type_label(record.get("list_type"))
+    from ui.i18n import doc_type_label
+    return doc_type_label(record["doc_type"]) if record.get("doc_type") else ""
+
+
 def setup_routes(app):
 
     @app.get("/search")
@@ -132,9 +142,9 @@ def setup_routes(app):
              frozenset(),
              "contact_status"),
             ("celerp-docs", "items", "📄",
-             lambda r: r.get("doc_number") or r.get("ref") or "",
-             lambda r: f"/docs/{r.get('id', '')}",
-             lambda r: r.get("doc_type") or "",
+             lambda r: r.get("doc_number") or r.get("ref_id") or r.get("ref") or "",
+             lambda r: f"/{'lists' if r.get('kind') == 'list' else 'docs'}/{r.get('id', '')}",
+             _doc_type_name,
              frozenset({"void"}),
              "doc_status"),
             ("celerp-manufacturing", "items", "🏭",

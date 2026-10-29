@@ -355,3 +355,20 @@ async def test_over_long_query_shows_error_not_no_results(ui_client, monkeypatch
     body = r.text
     assert "No results" not in body
     assert "unavailable" in body.lower()
+
+
+@pytest.mark.asyncio
+async def test_documents_and_lists_show_their_type_and_link_to_their_own_page(ui_client, monkeypatch):
+    answer = {
+        "results": {"celerp-docs": {"items": [
+            {"id": "doc:1", "kind": "doc", "doc_type": "invoice", "doc_number": "INV-2610-0001", "status": "draft"},
+            {"id": "list:1", "kind": "list", "list_type": "quotation", "ref_id": "LST-2610-0001", "status": "draft"},
+        ]}},
+        "degraded_modules": [],
+    }
+
+    r, _ = await _search(ui_client, monkeypatch, answer, q="2610")
+
+    body = r.text
+    assert 'href="/docs/doc:1"' in body and "INV-2610-0001" in body and "(Invoice)" in body
+    assert 'href="/lists/list:1"' in body and "LST-2610-0001" in body and "(Quotation)" in body
