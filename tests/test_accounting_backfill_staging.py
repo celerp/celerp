@@ -503,3 +503,32 @@ async def test_no_lifecycle_backfill_filters_on_is_active_alone(real_engine):
     assert missed == [], f"backfills that skipped a deactivated company: {missed}"
     assert await _company_rows(real_engine, staged.id) == before
     assert await _staged(real_engine, staged.id) is True
+
+
+async def test_backfilling_several_companies_takes_their_locks_in_one_order(real_engine):
+    """Startup backfills every company in one transaction. Taking one company's lock and
+    chart lock, then the next company's, holds a chart lock while it waits on a company
+    and takes chart keys in company order, not key order: a request posting for the second
+    company then waits on the backfill while the backfill waits on it. The two companies
+    here sort one way by id and the other way by chart key, so any per-company order
+    shows as a violation the lock checker reports (and the suite fails)."""
+    import sys
+
+    from celerp.models.company import Company
+    from celerp.services.company_lock import chart_key
+
+    while True:
+        ids = sorted((uuid.uuid4(), uuid.uuid4()), key=str)
+        if str(chart_key(ids[0])) > str(chart_key(ids[1])):
+            break
+    async with maker(real_engine)() as s:
+        await _owner(s)
+        for n, company_id in enumerate(ids):
+            s.add(Company(id=company_id, name=f"Shop {n}", slug=f"shop-{n}-{uuid.uuid4().hex[:6]}",
+                          settings={}, is_active=True))
+        await s.commit()
+    recorder = sys.modules["lock_rank"].RECORDER
+    recorder.take_violations()
+    assert set(ids) <= await _backfill(real_engine)
+    found = [v for v in recorder.take_violations() if "adv:chart" in (v["cls"], v["held"])]
+    assert found == [], [sys.modules["lock_rank"].violation_key(v) + " at " + v["site"] for v in found]

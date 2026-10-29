@@ -982,3 +982,20 @@ def test_a_cross_connection_wait_without_a_serializing_key_stays_a_live_violatio
 
     asyncio.run(body())
     assert ("cross-connection", "row:alembic_version") in _kinds(recorder)
+
+
+_SHARE_COMPANIES = ("SELECT companies.id FROM companies WHERE companies.id IN ($1::UUID, $2::UUID) "
+                    "ORDER BY companies.id FOR KEY SHARE")
+
+
+@pytest.mark.parametrize("held, violates", [
+    (("c1", "c2"), False),  # both rows already held more strongly: granted at once
+    (("c1",), True),        # c2 is not held, so the statement can wait on it
+])
+def test_one_statement_over_rows_each_already_held_is_a_retake(recorder, held, violates):
+    # The notice writer shares, at commit, every company its notices name in one statement.
+    for company in held:
+        recorder.statement(1, _LOCK_COMPANY, (company,), 0.0)
+    _chart_of(recorder, 1, "c1", "xact exclusive wait")
+    recorder.statement(1, _SHARE_COMPANIES, ("c1", "c2"), 0.0)
+    assert (("order", "row:companies") in _kinds(recorder)) is violates

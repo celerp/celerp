@@ -118,6 +118,14 @@ async def lock_companies(session: AsyncSession, company_ids) -> None:
         await lock_company(session, company_id)
 
 
+async def lock_charts(session: AsyncSession, company_ids) -> None:
+    """``lock_chart`` (exclusive) for several companies, in key order, so two callers
+    taking an overlapping set meet in the same order. Taken after ``lock_companies`` for
+    the same set."""
+    for company_id in sorted(set(company_ids), key=lambda c: str(chart_key(c))):
+        await lock_chart(session, company_id)
+
+
 async def lock_company_for_deletion(session: AsyncSession, company_id) -> bool:
     """Take the company FOR UPDATE ahead of deleting it, waiting for every holder.
     False when the company is no longer there once the lock is free.

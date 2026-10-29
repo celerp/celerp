@@ -368,19 +368,27 @@ async def backfill_chart_of_accounts_hook(*, session: AsyncSession) -> None:
     retried on the next start. A company
     staged for a migration is left alone: its chart and posting accounts come from the
     imported books when the migration is finalized.
+
+    Every company is backfilled in one transaction, so it first takes the lock of every
+    company it backfills and then their chart locks, each set in its helper's order;
+    every later take is a retake, and no chart lock is held while a company's is awaited.
     """
     from celerp.accounting_roles import UNGUESSED_ROLES
     from celerp.models.company import Company
     from celerp.services import migrations
+    from celerp.services.company_lock import lock_charts, lock_companies
     from celerp.services.lot_origin import place_company_stock
     from sqlalchemy import select as _select
 
     unseeded = set((await session.execute(
         _select(Company.id).where(~_select(Account.id).where(Account.company_id == Company.id).exists())
     )).scalars().all())
-    for company_id in (await session.execute(_select(Company.id).order_by(Company.id))).scalars().all():
-        if await migrations.is_company_migration_staged(session, company_id):
-            continue
+    companies = [company_id
+                 for company_id in (await session.execute(_select(Company.id).order_by(Company.id))).scalars()
+                 if not await migrations.is_company_migration_staged(session, company_id)]
+    await lock_companies(session, companies)
+    await lock_charts(session, companies)
+    for company_id in companies:
         if company_id in unseeded:
             await seed_chart_of_accounts(session, company_id)
             await _seed_default_bank_account(session, company_id)

@@ -383,13 +383,19 @@ class Recorder:
         """Whether this connection already holds what ``lock`` asks for: the same key at no
         less strength, or (for an implicit write) an explicit lock of the class that covers
         it. A statement does not show which rows an UPDATE touches, and the helpers lock
-        the rows they then write."""
+        the rows they then write. A row lock naming several values (an IN list) is a retake
+        when each value was locked on its own at no less strength: every row it can select
+        is then already held."""
         w = _strength(lock)
         held = set(self.taken[conn_key].get((lock.cls, lock.key), ()))
         held |= {_strength(h) for h in self.session_held.get(conn_key, ()) if h.cls == lock.cls and h.key == lock.key}
         if not _explicit(lock.mode):
             held = held | self.explicit[conn_key].get(lock.cls, set())
-        return any(_covers(h, w) for h in held)
+        if any(_covers(h, w) for h in held):
+            return True
+        values = _row_values(lock) if _explicit(lock.mode) else ()
+        return len(values) > 1 and all(
+            any(_covers(h, w) for h in self.taken[conn_key].get((lock.cls, repr((v,))), ())) for v in values)
 
     def _serial_gates(self) -> set[str]:
         """R5: the fixed keys this flow of control holds exclusively at session level, on any
@@ -662,6 +668,16 @@ def _covers(h: str, w: str) -> bool:
     if h in _STRENGTH_ORDER and w in _STRENGTH_ORDER:
         return _STRENGTH_ORDER.index(h) >= _STRENGTH_ORDER.index(w)
     return False
+
+
+def _row_values(lock: Lock) -> tuple:
+    """The values a row lock's key binds (``_row_key``); () for any other lock."""
+    if not lock.cls.startswith("row:") or not lock.key.startswith("("):
+        return ()
+    try:
+        return tuple(ast.literal_eval(lock.key))
+    except (ValueError, SyntaxError):
+        return ()
 
 
 def _strength(lock: Lock) -> str:
