@@ -189,17 +189,18 @@ def test_create_contact_via_form(page, ui_server, api):
     # Click "New Customer" button (hx_post="/contacts/create?type=customer")
     add_btn = page.locator("button:has-text('New Customer'), button[hx-post*='/contacts/create']").first
     add_btn.wait_for(state="visible", timeout=5000)
-    add_btn.click()
-    page.wait_for_url(f"{ui_server}/contacts/**", timeout=10000)
+    # The list page's own URL is under /contacts/ too: wait for the create and the new contact's page.
+    with page.expect_response(lambda r: r.request.method == "POST" and "/contacts/create" in r.url):
+        add_btn.click()
+    page.wait_for_url(f"{ui_server}/contacts/contact:*", timeout=10000)
     _assert_no_crash(page, "after blank-create redirect")
-
-    assert "/contacts/" in page.url, f"Expected redirect to contact detail, got: {page.url}"
+    entity_id = page.url.rsplit("/contacts/", 1)[1]
 
     # Assert via API
     r = api.get("/crm/contacts", params={"limit": 5, "sort": "created_at", "dir": "desc"})
     assert r.status_code == 200
     contacts = r.json().get("items", [])
-    assert len(contacts) > 0, "No contacts found after blank-create"
+    assert entity_id in {c.get("entity_id") or c.get("id") for c in contacts}, "The new contact is not listed"
 
 
 # ── CREATE-08: list via the New List button ───────────────────────────────────
