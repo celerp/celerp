@@ -41,7 +41,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "scripts"))
 import mutation_baseline  # noqa: E402
-import mutation_observer  # noqa: E402
+import mutation_read_notes  # noqa: E402
 import static_calls  # noqa: E402
 from static_calls import _called, _receiver  # noqa: E402
 
@@ -98,7 +98,7 @@ def static_inventory():
 def _read_noted(graph, route: str) -> set[str]:
     """The functions a READ_ROUTE_WRITES note lets *route* write through: the observer
     holds each write they make to the note's columns while the route runs."""
-    sites = {site for note in mutation_observer.READ_ROUTE_WRITES.values() if note.route in (None, route)
+    sites = {site for note in mutation_read_notes.READ_ROUTE_WRITES.values() if note.route in (None, route)
              for site in note.sites}
     return {key for key, fn in graph.functions.items() if f"{fn.path} {fn.qualname.rpartition('.')[2]}" in sites}
 

@@ -68,8 +68,8 @@ def test_a_write_made_only_through_a_read_safe_function_is_not_found(tmp_path, m
 
 
 def _noted(monkeypatch, route):
-    observer = mutation_census.mutation_observer
-    monkeypatch.setattr(observer, "READ_ROUTE_WRITES", {("items", "UPDATE"): observer.ReadNote(
+    notes = mutation_census.mutation_read_notes
+    monkeypatch.setattr(notes, "READ_ROUTE_WRITES", {("items", "UPDATE"): notes.ReadNote(
         ("seen_at",), ("ui/api_client.py items_metadata",), "a note of the read", route=route)})
 
 

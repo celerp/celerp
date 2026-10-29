@@ -22,6 +22,7 @@ from fastapi import HTTPException
 from sqlalchemy import delete, func, insert, select, text, update
 
 import mutation_observer
+import mutation_read_notes
 from mutation_observer import serving
 from celerp.connectors.ownership import lock_connector_key
 from celerp.credentials import issue_token_pair
@@ -497,7 +498,7 @@ async def test_a_read_request_may_make_only_the_note_it_is_allowed(session, auth
     functions only, for its route only: a further column, the same write from elsewhere,
     or from another read route, is reported."""
     allowed = tuple(c.name for c in MigrationRun.__table__.columns) if columns == "every" else ("cancel_requested_at",)
-    monkeypatch.setitem(mutation_observer.READ_ROUTE_WRITES, ("migration_runs", "UPDATE"), mutation_observer.ReadNote(
+    monkeypatch.setitem(mutation_read_notes.READ_ROUTE_WRITES, ("migration_runs", "UPDATE"), mutation_read_notes.ReadNote(
         allowed, ("celerp/services/migrations.py request_cancel",), "a note made while reading", route="GET /observed"))
     run_id = await _migration_run(session, auth, "running")
     with serving("GET", path):
