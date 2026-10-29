@@ -195,6 +195,10 @@ READ_ROUTE_WRITES: dict[tuple[str, str], ReadNote] = {
     ("session_registry", "INSERT"): ReadNote(
         ("company_id", "expiry", "jti", "user_id"), ("celerp/credentials.py issue_token_pair",),
         "a session registered again when the middleware refreshes the token of a request whose slot is gone"),
+    ("user_auth_state", "UPDATE"): ReadNote(
+        ("evicted_by_ip", "updated_at"), ("celerp/services/session_tracker.py pop_evicted_by_ip",),
+        "the address that ended a user's sessions, shown once on that user's next request of any kind, "
+        "a read too, and cleared as it is shown"),
     ("doc_share_tokens", "INSERT"): ReadNote(
         ("company_id", "created_at", "entity_id", "expires_at", "id", "revoked_at", "token"),
         ("default_modules/celerp-docs/celerp_docs/routes_share.py share_status",),
