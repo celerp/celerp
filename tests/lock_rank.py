@@ -223,13 +223,16 @@ class Recorder:
     # Per transaction: the strengths it holds on each company's row, a foreign key's share
     # included (R4).
     company_rows: dict[int, dict[str, set[str]]] = field(default_factory=lambda: defaultdict(dict))
+    # Per transaction: the company of each row the ORM is about to write by its primary key,
+    # by (table, primary key): the row's WHERE names only the key (R4's census).
+    rows: dict[int, dict[tuple[str, str], str]] = field(default_factory=lambda: defaultdict(dict))
     # Per transaction: its open savepoints, oldest first, each with the transaction state as
     # it stood when the savepoint was made. PostgreSQL releases every lock taken after a
     # savepoint when the transaction rolls back to it; releasing a savepoint keeps them.
     savepoints: dict[int, list[tuple[str, tuple]]] = field(default_factory=lambda: defaultdict(list))
 
     def _transaction_state(self) -> tuple:
-        return self.held, self.taken, self.explicit, self.last_key, self.own, self.company_rows
+        return self.held, self.taken, self.explicit, self.last_key, self.own, self.company_rows, self.rows
 
     def end(self, conn_key: int) -> None:
         for state in (*self._transaction_state(), self.savepoints):
@@ -283,17 +286,25 @@ class Recorder:
         try:
             found = _locks(statement, parameters)
         except Exception as exc:  # an unparseable lock statement is itself a finding
-            found = [(f"?unparsed:{type(exc).__name__}", "wait", "", "")]
+            found = [(f"?unparsed:{type(exc).__name__}", "wait", "", "", "")]
         if not found:
             return
         site, origin = _site(), _origin()
         execution = sys.modules.get("celerp.connectors.execution")
         in_execution = execution is not None and execution.current() is not None
-        for cls, mode, key, company in found:
+        for cls, mode, key, company, row in found:
             if cls == "-unlock":
                 self.release_session(conn_key, mode)
                 continue
+            if row and not company:
+                company = self.rows[conn_key].get((cls.split(":", 1)[1], row), "")
             self.acquire(conn_key, Lock(cls, mode, site, origin, key, in_execution, company), waited)
+
+    def name_row(self, conn_key: int, table: str, row: str, company: str) -> None:
+        """The ORM is about to write ``table``'s row ``row`` (its primary key), which belongs
+        to ``company``: the UPDATE or DELETE that names the row by its key alone is judged
+        under that company."""
+        self.rows[conn_key][(table, str(row))] = str(company)
 
     def _own(self, conn_key: int, lock: Lock) -> bool:
         """R1: a row of a company this transaction inserted and has not committed. Nobody else
@@ -963,6 +974,28 @@ def _company_param(table: str, where) -> tuple[int, ...] | None:
     """The parameter a WHERE clause binds the table's company column to, when that equality
     is the whole clause or one of its top-level AND terms: every row it selects names that
     company. None when no such term exists."""
+    return _column_param(_company_column(table), where)
+
+
+@functools.lru_cache(maxsize=None)
+def _row_key_column(table: str) -> str:
+    """The one-column primary key of a table whose rows each belong to one company (the
+    companies table aside), else ""."""
+    mapped = _app_tables().get(table)
+    pk = list(mapped.primary_key.columns) if mapped is not None else []
+    return pk[0].name if len(pk) == 1 and _has_company(table) and table != "companies" else ""
+
+
+def _row_param(table: str, where) -> tuple[int, ...] | None:
+    """The parameter a WHERE clause binds such a table's primary key to (as
+    ``_company_param``): the statement writes at most that one row. None otherwise."""
+    column = _row_key_column(table)
+    return _column_param(column, where) if column else None
+
+
+def _column_param(column: str, where) -> tuple[int, ...] | None:
+    """The one parameter a WHERE clause binds ``column`` to by equality, as the whole clause
+    or one of its top-level AND terms; None when no such term exists."""
     if where is None:
         return None
     (kind, body), = where.items()
@@ -973,7 +1006,7 @@ def _company_param(table: str, where) -> tuple[int, ...] | None:
             continue
         for col, val in ((body.get("lexpr"), body.get("rexpr")), (body.get("rexpr"), body.get("lexpr"))):
             fields = (col or {}).get("ColumnRef", {}).get("fields", [])
-            if fields and fields[-1].get("String", {}).get("sval") == _company_column(table):
+            if fields and fields[-1].get("String", {}).get("sval") == column:
                 numbers = _params(val)
                 if numbers and len(numbers) == 1:
                     return numbers
@@ -981,17 +1014,17 @@ def _company_param(table: str, where) -> tuple[int, ...] | None:
 
 
 @functools.lru_cache(maxsize=8192)
-def _row_locks(statement: str) -> tuple[tuple[tuple[str, str, tuple[int, ...] | None, tuple[int, ...] | None], ...],
-                                        tuple]:
-    """(class, mode, parameter numbers of the key, parameter numbers of the company) for each
-    row or table lock the statement takes, and the placeholder map. A statement the parser
-    rejects raises."""
+def _row_locks(statement: str) -> tuple[tuple[tuple[str, str, tuple[int, ...] | None, tuple[int, ...] | None,
+                                                    tuple[int, ...] | None], ...], tuple]:
+    """(class, mode, parameter numbers of the key, of the company, of the one row's primary
+    key) for each row or table lock the statement takes, and the placeholder map. A statement
+    the parser rejects raises."""
     from pglast.parser import parse_sql_json
 
     text, names = _numbered(statement)
     tree = json.loads(parse_sql_json(text))
     ctes = {body["ctename"] for kind, body in _nodes(tree) if kind == "CommonTableExpr"}
-    out: list[tuple[str, str, tuple[int, ...] | None, tuple[int, ...] | None]] = []
+    out: list[tuple[str, str, tuple[int, ...] | None, tuple[int, ...] | None, tuple[int, ...] | None]] = []
     for kind, body in _nodes(tree):
         if kind == "SelectStmt" and body.get("lockingClause"):
             tables = _from_tables(body.get("fromClause"), ctes)
@@ -1003,28 +1036,30 @@ def _row_locks(statement: str) -> tuple[tuple[tuple[str, str, tuple[int, ...] | 
                 named = [r["RangeVar"]["relname"] for r in c.get("lockedRels", ())]
                 for t in ([tables.get(n, n) for n in named] if named else list(tables.values())):
                     company = _company_param(t, where) if len(tables) == 1 else None
-                    out.append((f"row:{t}", mode, key, company))
+                    out.append((f"row:{t}", mode, key, company, None))
                     if mode.startswith("update ") and t in _parents():
-                        out.append((f"key:{t}", mode, key, company))
+                        out.append((f"key:{t}", mode, key, company, None))
         elif kind == "LockStmt":
             mode = f"{TABLE_MODES[body['mode']]} {'nowait' if body.get('nowait') else 'wait'}"
-            out += [(f"tbl:{r['RangeVar']['relname']}", mode, None, None) for r in body["relations"]]
+            out += [(f"tbl:{r['RangeVar']['relname']}", mode, None, None, None) for r in body["relations"]]
         elif kind == "UpdateStmt":
             table, where = body["relation"]["relname"], body.get("whereClause")
-            company = _company_param(table, where) if not body.get("fromClause") else None
-            out.append((f"row:{table}", "write", _params(where), company))
+            company, row = (None, None) if body.get("fromClause") else (_company_param(table, where),
+                                                                         _row_param(table, where))
+            out.append((f"row:{table}", "write", _params(where), company, row))
             fks = _foreign_keys(table)
             for target in body.get("targetList", ()):
                 t = target["ResTarget"]
                 if t.get("name") in fks:
-                    out.append((f"key:{fks[t['name']]}", "key share wait", _params(t.get("val")), None))
+                    out.append((f"key:{fks[t['name']]}", "key share wait", _params(t.get("val")), None, None))
         elif kind == "DeleteStmt":
             table, where = body["relation"]["relname"], body.get("whereClause")
             key = _params(where)
-            company = _company_param(table, where) if not body.get("usingClause") else None
-            out.append((f"row:{table}", "delete", key, company))
+            company, row = (None, None) if body.get("usingClause") else (_company_param(table, where),
+                                                                          _row_param(table, where))
+            out.append((f"row:{table}", "delete", key, company, row))
             if table in _parents():
-                out.append((f"key:{table}", "delete", key, company))
+                out.append((f"key:{table}", "delete", key, company, row))
         elif kind == "InsertStmt":
             table = body["relation"]["relname"]
             fks = _foreign_keys(table)
@@ -1037,14 +1072,14 @@ def _row_locks(statement: str) -> tuple[tuple[tuple[str, str, tuple[int, ...] | 
                 if numbers and all(n and len(n) == 1 for n in numbers):
                     company = tuple(n[0] for n in numbers)
             if table not in FRESH_KEYED and (_serial_keyed(table) is None or _serial_keyed(table) in cols):
-                out.append((f"row:{table}", "insert", None, company))
+                out.append((f"row:{table}", "insert", None, company, None))
             for col, ref in fks.items():
                 if cols and col not in cols:
                     continue
                 values = [r["List"]["items"][cols.index(col)] for r in rows if cols] or None
-                out.append((f"key:{ref}", "key share wait", _params(values) if values else None, None))
+                out.append((f"key:{ref}", "key share wait", _params(values) if values else None, None, None))
             if body.get("onConflictClause", {}).get("action") == "ONCONFLICT_UPDATE":
-                out.append((f"row:{table}", "write", None, company if table != "companies" else None))
+                out.append((f"row:{table}", "write", None, company if table != "companies" else None, None))
     return tuple(dict.fromkeys(out)), names
 
 
@@ -1054,35 +1089,38 @@ def _company(numbers: tuple[int, ...] | None, names: tuple, parameters) -> str:
     return values.pop() if len(values) == 1 and "None" not in values else ""
 
 
-def _locks(statement: str, parameters) -> list[tuple[str, str, str, str]]:
-    """(class, mode, key, company) for each lock the statement takes; ('-unlock', class, '', '')
-    for an unlock."""
-    out: list[tuple[str, str, str, str]] = []
+def _locks(statement: str, parameters) -> list[tuple[str, str, str, str, str]]:
+    """(class, mode, key, company, row) for each lock the statement takes, ``row`` the primary
+    key of the one company row an UPDATE or DELETE names by it ("" otherwise);
+    ('-unlock', class, '', '', '') for an unlock."""
+    out: list[tuple[str, str, str, str, str]] = []
     for m in _ADVISORY.finditer(statement):
         try_, xact, verb, shared, args = m.groups()
         cls = _advisory_class(args, parameters or ())
         if verb.lower() == "unlock":
-            out.append(("-unlock", cls, "", ""))
+            out.append(("-unlock", cls, "", "", ""))
             continue
         mode = ("xact" if xact else "session") + (" shared" if shared else " exclusive")
-        out.append((cls, mode + (" try" if try_ else " wait"), _advisory_key(statement, parameters), ""))
+        out.append((cls, mode + (" try" if try_ else " wait"), _advisory_key(statement, parameters), "", ""))
     if out or not _LOCKING.search(statement):
         return out
     found, names = _row_locks(statement)
     out = []
-    for cls, mode, numbers, company in found:
+    for cls, mode, numbers, company, row in found:
         if cls.split(":", 1)[1] not in _app_tables():
             continue
         key = _row_key(numbers, names, parameters)
+        row_id = _company(row, names, parameters)
         # A multi-row insert is one insert per row: each company it names is inserted (R1, R2).
         companies = [company] if mode != "insert" else [(n,) for n in company or ()] or [company]
-        out += [(cls, mode, key, c) for c in dict.fromkeys(_company(n, names, parameters) for n in companies)]
+        out += [(cls, mode, key, c, row_id)
+                for c in dict.fromkeys(_company(n, names, parameters) for n in companies)]
     return out
 
 
 def classify(statement: str, parameters) -> list[tuple[str, str]]:
     """(class, mode) for each lock the statement takes; ('-unlock', class) for an unlock."""
-    return [(cls, mode) for cls, mode, _, _ in _locks(statement, parameters)]
+    return [(cls, mode) for cls, mode, *_ in _locks(statement, parameters)]
 
 
 def record_statement(conn_key: int, statement: str, parameters, waited: float) -> None:
@@ -1098,10 +1136,10 @@ def install() -> None:
     if _INSTALLED:
         return
     _INSTALLED = True
-    from sqlalchemy import event
+    from sqlalchemy import event, inspect
     from sqlalchemy.dialects.postgresql import asyncpg as pg_asyncpg
     from sqlalchemy.engine import Engine
-    from sqlalchemy.orm import Session
+    from sqlalchemy.orm import Mapper, Session
 
     cursor_cls = pg_asyncpg.AsyncAdapt_asyncpg_cursor
     conn_cls = pg_asyncpg.AsyncAdapt_asyncpg_connection
@@ -1145,6 +1183,20 @@ def install() -> None:
     def _engine_end(conn):
         if conn.dialect.name == "postgresql" and conn.dialect.driver != "asyncpg":
             RECORDER.end(id(conn.connection.dbapi_connection))
+
+    @event.listens_for(Mapper, "before_update")
+    @event.listens_for(Mapper, "before_delete")
+    def _name_row(mapper, connection, target):
+        table = mapper.local_table.name
+        if connection.dialect.name != "postgresql" or not _row_key_column(table):
+            return
+        state = inspect(target)
+        if not state.identity or len(state.identity) != 1:
+            return
+        column = _company_column(table)
+        company = state.committed_state.get(column, getattr(target, column, None))
+        if company is not None:
+            RECORDER.name_row(id(connection.connection.dbapi_connection), table, state.identity[0], company)
 
     @event.listens_for(Session, "after_transaction_end")
     def _session_end(session, transaction):

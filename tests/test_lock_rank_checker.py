@@ -985,3 +985,61 @@ async def test_every_in_process_client_of_the_app_gets_a_transaction_per_request
         app.router.routes.pop()
     assert response.json() == {"held": 1}
     assert companies_held() == 0
+
+
+# ── A write by primary key is named by the row's company ──
+
+_FLUSH_UPDATE = "UPDATE outbound_queue SET status=$1 WHERE outbound_queue.id = $2::UUID"
+_FLUSH_DELETE = "DELETE FROM outbound_queue WHERE outbound_queue.id = $1::UUID"
+
+
+@pytest.mark.parametrize("statement, params, strength", [
+    (_FLUSH_UPDATE, ("done", "r1"), "nokey"),
+    (_FLUSH_DELETE, ("r1",), "update"),
+])
+@pytest.mark.parametrize("locked, named, counted", [
+    ("c1", "c1", None),              # the row's company is locked: gated
+    ("c1", None, "unknown"),         # nothing names the row: still unknown
+    ("c2", "c1", "none"),            # another company's lock: ungated, holding nothing of c1
+    (None, "c1", "none"),            # no lock
+])
+def test_a_write_by_primary_key_is_judged_under_the_rows_company(recorder, statement, params, strength,
+                                                                  locked, named, counted):
+    """An UPDATE or DELETE the ORM flushes by primary key names no company in its WHERE; the
+    row's company is the one the ORM's object carries, so the census judges it under that
+    company's lock rather than as a take of an unknown company."""
+    if locked:
+        recorder.statement(1, _LOCK_COMPANY, (locked,), 0.0)
+    if named:
+        recorder.name_row(1, "outbound_queue", "r1", named)
+    recorder.statement(1, statement, params, 0.0)
+    info = recorder.dump()["classes"]["row:outbound_queue"]
+    assert info.get("ungated_takes", []) == ([f"{strength}|{counted}"] if counted else [])
+
+
+def test_a_row_named_in_an_ended_transaction_names_nothing_in_the_next(recorder):
+    recorder.statement(1, _LOCK_COMPANY, ("c1",), 0.0)
+    recorder.name_row(1, "outbound_queue", "r1", "c1")
+    recorder.statement(1, "COMMIT", (), 0.0)
+    recorder.statement(1, _LOCK_COMPANY, ("c1",), 0.0)
+    recorder.statement(1, _FLUSH_UPDATE, ("done", "r1"), 0.0)
+    assert recorder.dump()["classes"]["row:outbound_queue"]["ungated_takes"] == ["nokey|unknown"]
+
+
+async def test_the_orm_names_the_company_of_every_row_it_flushes(session, auth):
+    """End to end: an account changed under its company's lock and flushed by the ORM is
+    counted as gated, not as a take of an unknown company."""
+    from sqlalchemy import select
+
+    from celerp_accounting.models import Account
+    from celerp.services.company_lock import lock_company
+
+    lock_rank.RECORDER.clear_transactions()
+    before = dict(lock_rank.RECORDER.classes.get("row:accounts", {}))
+    await lock_company(session, auth["company_id"])
+    acc = (await session.execute(select(Account).where(Account.company_id == auth["company_id"])
+                                 .limit(1).with_for_update())).scalar_one()
+    acc.name = acc.name + " (renamed)"
+    await session.flush()
+    after = lock_rank.RECORDER.classes["row:accounts"]
+    assert after.get("company_ungated", 0) == before.get("company_ungated", 0)
