@@ -26,10 +26,9 @@ from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, text
 
 from celerp.alembic_config import build_alembic_config
-from celerp.cli import _apply_migrations
 from celerp.migrations.compatibility import NEWEST_CELERP_KEY, running_version
 
-from alembic_support import alembic_run
+from alembic_support import alembic_run, apply_migrations as _apply_migrations
 
 from .conftest import head_rev, schema_of, throwaway_db, upgrade_to
 

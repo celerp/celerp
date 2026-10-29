@@ -29,7 +29,8 @@ import pytest
 from sqlalchemy import create_engine, text
 
 from celerp import __version__
-from celerp.cli import _reconcile_after_migrate, _run_migrations
+from alembic_support import run_migrations as _run_migrations
+from celerp.cli import _reconcile_after_migrate
 from celerp.migrations._data_reconcile import (
     BACKFILL_VERSION_KEY,
     get_meta,

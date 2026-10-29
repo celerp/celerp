@@ -16,9 +16,8 @@ import uuid
 import pytest
 from sqlalchemy import create_engine, text
 
-from celerp.cli import _apply_migrations
 
-from alembic_support import alembic_run
+from alembic_support import alembic_run, apply_migrations as _apply_migrations
 
 from .conftest import throwaway_db, upgrade_to
 

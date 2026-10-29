@@ -25,3 +25,19 @@ def alembic_run(db_url: str, verb: str, revision: str) -> None:
             getattr(command, verb)(build_alembic_config(), revision)
     finally:
         engine.dispose()
+
+
+def apply_migrations(db_url: str) -> None:
+    """``celerp.cli._apply_migrations`` as ``celerp migrate`` runs it: under ``_migration_lock``."""
+    from celerp import cli
+
+    with cli._migration_lock(db_url):
+        cli._apply_migrations(db_url)
+
+
+def run_migrations(db_url: str) -> None:
+    """``celerp.cli._run_migrations`` (exit semantics) under ``_migration_lock``."""
+    from celerp import cli
+
+    with cli._migration_lock(db_url):
+        cli._run_migrations(db_url)

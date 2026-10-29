@@ -44,8 +44,9 @@ def _key_holders(sync_url: str) -> int:
     try:
         with engine.connect() as conn:
             return conn.execute(sa.text(
-                "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND granted "
-                "AND objid::bigint = :k"), {"k": _MIGRATION_LOCK_KEY & 0xFFFFFFFF}).scalar_one()
+                "SELECT count(*) FROM pg_locks l JOIN pg_database d ON d.oid = l.database "
+                "WHERE l.locktype = 'advisory' AND l.granted AND d.datname = current_database() "
+                "AND l.objid::bigint = :k"), {"k": _MIGRATION_LOCK_KEY & 0xFFFFFFFF}).scalar_one()
     finally:
         engine.dispose()
 

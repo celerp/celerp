@@ -269,8 +269,8 @@ def test_check_runs_read_only(scratch):
 # ── Every path that opens a database ─────────────────────────────────────────
 
 def _apply_migrations(url):
-    from celerp.cli import _apply_migrations
-    _apply_migrations(url)
+    from alembic_support import apply_migrations
+    apply_migrations(url)
 
 
 def _celerp_migrate(url):
@@ -633,7 +633,7 @@ def test_migrate_records_this_copy_before_its_first_change(scratch, tmp_path, mo
 
     monkeypatch.setattr(cli, "_run_upgrade_with_auto_stamp", _upgrade_fails)
     with pytest.raises(RuntimeError, match="migration failed"):
-        cli._apply_migrations(url)
+        _apply_migrations(url)
     assert _meta(url)[OPENED_KEY] == NEWER
     monkeypatch.undo()
     monkeypatch.setattr(celerp, "__version__", RUNNING)

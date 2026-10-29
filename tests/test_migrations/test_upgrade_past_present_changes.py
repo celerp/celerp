@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from sqlalchemy import create_engine, text
 
-from celerp.cli import _apply_migrations
+from alembic_support import apply_migrations as _apply_migrations
 
 from .conftest import schema_of, throwaway_db, upgrade_to
 
