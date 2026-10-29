@@ -1058,7 +1058,10 @@ async def resolve_product_conflict(
     from celerp.connectors.sync_runner import remove_attention_entry
     from celerp.events.engine import emit_event
     from celerp.services.field_fingerprints import LINK_KEY, fingerprint
-    from celerp_inventory.services import external_link_for_state, set_external_link_state
+    from celerp_inventory.services import (
+        external_link_for_state, lock_external_identity_namespace, resolve_catalog_anchor_for_item,
+        set_external_link_state,
+    )
 
     if connector_name not in PRODUCT_CHANNEL_PLATFORMS or payload.keep not in ("store", "celerp"):
         raise HTTPException(status_code=422, detail=t("connectors.err_conflict_choice"))
@@ -1068,7 +1071,8 @@ async def resolve_product_conflict(
         await session.rollback()
         raise HTTPException(status_code=404, detail=t("connectors.err_conflict_gone"))
     entity_id, fields = entry["entity_id"], entry["fields"]
-    from celerp_inventory.services import resolve_catalog_anchor_for_item
+    # The store's links before the item row the store-value edit writes (lock order).
+    await lock_external_identity_namespace(session, company_id, connector_name)
     anchor = await resolve_catalog_anchor_for_item(session, company_id, entity_id)
     link = external_link_for_state(anchor.state or {}, connector_name)
     if not link:

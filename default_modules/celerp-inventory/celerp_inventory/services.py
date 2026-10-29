@@ -856,7 +856,7 @@ class ExternalLinkConflictError(ValueError):
     """External product identity changed or is already claimed."""
 
 
-async def _lock_external_identity_namespace(
+async def lock_external_identity_namespace(
     session: AsyncSession, company_id, platform: str
 ) -> None:
     """The company lock comes first (lock order: companies, then the external-link and
@@ -1141,7 +1141,7 @@ async def upsert_external_product(
     lock_key = f"external-product:{cid}:{platform}:{sku_lock or identity}"
 
     async with AsyncSessionLocal() as session:
-        await _lock_external_identity_namespace(session, cid, platform)
+        await lock_external_identity_namespace(session, cid, platform)
         await session.execute(
             text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"),
             {"k": lock_key},
@@ -1377,7 +1377,7 @@ async def set_external_link_state(
 ) -> dict:
     """Patch one external link while preserving every other channel identity."""
     cid = uuid.UUID(str(company_id))
-    await _lock_external_identity_namespace(session, cid, platform)
+    await lock_external_identity_namespace(session, cid, platform)
     row = await session.get(
         Projection, {"company_id": cid, "entity_id": entity_id},
         with_for_update=True, populate_existing=True,
@@ -1411,7 +1411,7 @@ async def set_external_link(
 ) -> dict:
     """Create or replace one channel link without touching any other channel."""
     cid = uuid.UUID(str(company_id))
-    await _lock_external_identity_namespace(session, cid, platform)
+    await lock_external_identity_namespace(session, cid, platform)
     row = await session.get(
         Projection, {"company_id": cid, "entity_id": entity_id},
         with_for_update=True, populate_existing=True,
@@ -1466,7 +1466,7 @@ async def detach_external_link(
 ) -> bool:
     """Detach one platform identity while preserving local item and other channels."""
     cid = uuid.UUID(str(company_id))
-    await _lock_external_identity_namespace(session, cid, platform)
+    await lock_external_identity_namespace(session, cid, platform)
     row = await session.get(
         Projection, {"company_id": cid, "entity_id": entity_id}, with_for_update=True
     )

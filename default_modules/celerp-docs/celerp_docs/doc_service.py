@@ -286,14 +286,14 @@ async def _lock_woocommerce_order(session, cid, order_id: str) -> None:
     from sqlalchemy import text
 
     from celerp.services.company_lock import lock_company
-    from celerp_inventory.services import _lock_external_identity_namespace
+    from celerp_inventory.services import lock_external_identity_namespace
 
     await lock_company(session, cid)
     await session.execute(
         text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"),
         {"k": f"woocommerce-order:{cid}:{order_id}"},
     )
-    await _lock_external_identity_namespace(session, cid, "woocommerce")
+    await lock_external_identity_namespace(session, cid, "woocommerce")
 
 
 # The source state of an imported order WooCommerce no longer returns (deleted,
