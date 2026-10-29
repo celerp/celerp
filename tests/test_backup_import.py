@@ -164,7 +164,7 @@ async def test_restored_connector_cleanup_fences_stale_context(
         entity_type="item",
         entity_id="item:restore",
     ))
-    await session.flush()
+    await session.commit()  # the restored database is committed before the cleanup runs
 
     await _isolate_database_side_effects["_clear_restored_connector_state"](session)
     await session.flush()

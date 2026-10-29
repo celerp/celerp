@@ -107,6 +107,19 @@ def test_an_insert_waits_on_its_own_table_for_a_unique_key():
     assert ("row:user_companies", "insert") in found
 
 
+def test_an_insert_into_a_table_keyed_only_by_a_serial_id_waits_on_nothing_of_its_own():
+    """Two inserts collide only on a unique key; a table whose only one is a serial id the
+    database generates has none two transactions could share. Its references still wait."""
+    found = classify("INSERT INTO sync_runs (company_id, connector, entity, direction, started_at, status) "
+                     "VALUES ($1, $2, $3, $4, $5, $6)", ("c", "woocommerce", "orders", "inbound", "t", "ok"))
+    assert not any(cls == "row:sync_runs" for cls, _ in found)
+    assert ("row:sync_runs", "insert") in classify(
+        "INSERT INTO sync_runs (id, company_id) VALUES ($1, $2)", (1, "c"))
+    assert ("row:connector_sources", "insert") in classify(
+        "INSERT INTO connector_sources (company_id, connector, store_handle) VALUES ($1, $2, $3)",
+        ("c", "woocommerce", "h"))
+
+
 def test_returning_to_a_held_class_after_a_higher_rank_is_an_order_violation():
     recorder = Recorder()
     recorder.acquire(1, _lock("row:companies", "update wait", key="a"), 0.0)

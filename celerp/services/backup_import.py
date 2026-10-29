@@ -707,8 +707,8 @@ async def _clear_restored_connector_state(session) -> None:
     for company_id in company_ids:
         for connector in connectors:
             record_connector_reset(session, company_id, connector)
-    await session.execute(sa.delete(OutboundQueue))
     await session.execute(sa.delete(ConnectorConfig))
+    await session.execute(sa.delete(OutboundQueue))
 
 
 def _failed(error: str, **kw):

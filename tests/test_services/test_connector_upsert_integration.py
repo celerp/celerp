@@ -52,6 +52,7 @@ async def _seed_companies(session, *names: str) -> list[uuid.UUID]:
         ))
     for _, cid, _ in seeds:
         await provision_company_books(session, cid)
+    await session.commit()  # provisioning commits each company before any request uses it
     return [cid for _, cid, _ in seeds]
 
 
@@ -1331,7 +1332,7 @@ async def _bank_on(session, cid, code: str, *, active: bool = True) -> None:
         company_id=cid, chart_account_code=code, bank_name=f"Bank {code}", account_number="",
         bank_type="checking", currency="USD", opening_balance=0, is_active=active,
     ))
-    await session.flush()
+    await session.commit()  # set up by its own request, committed before an import reads it
 
 
 async def _deposit_case(session, cid, other, case: str) -> str:
@@ -1343,7 +1344,7 @@ async def _deposit_case(session, cid, other, case: str) -> str:
         session.add(Account(company_id=cid, code="1112", name="Petty cash", account_type="asset",
                             parent_code="1110", is_active=False))
         company.settings = {**(company.settings or {}), "woocommerce_deposit_account": "1112"}
-        await session.flush()
+        await session.commit()
         return "1112"
     code = {"missing": "1199", "not_asset": "4100"}.get(case, "1190")
     if case == "archived_bank":
@@ -1351,7 +1352,7 @@ async def _deposit_case(session, cid, other, case: str) -> str:
     elif case == "other_company":
         await _bank_on(session, other, code)
     company.settings = {**(company.settings or {}), "woocommerce_deposit_account": code}
-    await session.flush()
+    await session.commit()
     return code
 
 
@@ -2149,7 +2150,7 @@ async def test_conflict_choice_settles_the_field(use_test_session, monkeypatch, 
     session.add(SyncRun(company_id=str(cid), connector="woocommerce", entity="products",
                         direction="inbound", started_at=now, finished_at=now, status="success",
                         attention_json=json.dumps([entry])))
-    await session.flush()
+    await session.commit()  # the sync's transaction ends before a person resolves the conflict
 
     out = await resolve_product_conflict("woocommerce", "960", ConflictChoice(keep=keep), str(cid),
                                          SimpleNamespace(id=None), None, session)

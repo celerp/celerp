@@ -724,6 +724,24 @@ def _company_keyed(table: str) -> bool:
     return all(col in [c.name for c in k] for k in keys)
 
 
+@functools.lru_cache(maxsize=None)
+def _serial_keyed(table: str) -> str | None:
+    """The serial id column when the table's only unique key is that id: an insert that
+    leaves it to the database carries no key another insert can carry, so it waits on no
+    row of its own table. None for any other table."""
+    mapped = _app_tables().get(table)
+    if mapped is None:
+        return None
+    from sqlalchemy import Integer, UniqueConstraint
+
+    pk = list(mapped.primary_key.columns)
+    serial = len(pk) == 1 and isinstance(pk[0].type, Integer) and pk[0].autoincrement in (True, "auto")
+    others = [c for c in mapped.constraints if isinstance(c, UniqueConstraint)]
+    others += [i for i in mapped.indexes if i.unique]
+    others += [c for c in mapped.columns if c.unique]
+    return pk[0].name if serial and not others else None
+
+
 def _company_param(table: str, where) -> tuple[int, ...] | None:
     """The parameter a WHERE clause binds the table's company column to, when that equality
     is the whole clause or one of its top-level AND terms: every row it selects names that
@@ -801,7 +819,8 @@ def _row_locks(statement: str) -> tuple[tuple[tuple[str, str, tuple[int, ...] | 
                 numbers = [_params(v) for v in values]
                 if numbers and all(n and len(n) == 1 for n in numbers):
                     company = tuple(n[0] for n in numbers)
-            out.append((f"row:{table}", "insert", None, company))
+            if _serial_keyed(table) is None or _serial_keyed(table) in cols:
+                out.append((f"row:{table}", "insert", None, company))
             for col, ref in fks.items():
                 if cols and col not in cols:
                     continue
