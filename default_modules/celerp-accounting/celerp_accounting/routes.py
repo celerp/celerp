@@ -1546,6 +1546,89 @@ async def extended_journal(
     return payload
 
 
+async def _party_names(session: AsyncSession, company_id: uuid.UUID, ids: set[str]) -> dict[str, str]:
+    """Display names for contact ids, read from the contact projections. A contact
+    that no longer resolves is simply absent, and the caller shows the id."""
+    if not ids:
+        return {}
+    rows = (await session.execute(
+        select(Projection).where(Projection.company_id == company_id,
+                                 Projection.entity_id.in_(sorted(ids)))
+    )).scalars().all()
+    return {r.entity_id: str((r.state or {}).get("name") or "") for r in rows}
+
+
+@router.get("/journal/by-doc/{doc_id:path}")
+async def journal_by_doc(
+    doc_id: str,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    _: None = require_permission("view_financial_reports"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """What one document did to the books: every journal entry posted for it, with
+    its lines, the party each line belongs to and the item detail the extended
+    journal attaches.
+
+    Cut from the same payload the journal and extended journal read, so the lines
+    here are exactly the lines there; nothing is posted, stored or recomputed. The
+    cost-of-sales and inventory legs of a fulfilment, a payment and a void's
+    reversal are the document's own entries and appear with the rest. A document
+    that posted nothing (a draft, a quotation) returns no entries; the document's
+    `doc_type` and `status` are returned so the caller can say which it is.
+    """
+    doc = (await session.execute(
+        select(Projection).where(Projection.company_id == company_id,
+                                 Projection.entity_id == doc_id)
+    )).scalar_one_or_none()
+    if doc is None:
+        raise HTTPException(status_code=404, detail=t("documents.document_not_found"))
+    state = doc.state or {}
+    payload, refs, base = await _journal_payload(session, company_id, None, None)
+    survivors = await merge_survivors(session, company_id)
+    own_party = state.get("contact_id") or state.get("customer_id") or state.get("supplier_id") or ""
+    own_party = survivors.get(own_party, own_party)
+
+    entries = [e for e in payload["entries"] if (e.get("source_doc") or {}).get("doc_id") == doc_id]
+    wanted = {e["je_id"] for e in entries}
+    # A line's own contact (a manual posting) wins over the document's, exactly as
+    # in the ledgers (_line_party). The payload's lines do not carry it, so it is
+    # read from the stored lines, which the payload walks in the same order and with
+    # the same skips; that is why it is stamped on before item detail replaces a
+    # posted line with a row per item.
+    own: dict[str, list[str]] = {}
+    for je_id, st, _ts in await journal_rows(session, company_id, include_void=True):
+        if je_id in wanted:
+            own[je_id] = [
+                c if isinstance(c, str) else ""
+                for c in (ln.get("contact") for ln in st.get("entries", [])
+                          if ln.get("account") and _line_amounts(ln) is not None)]
+    for entry in entries:
+        named = own.get(entry["je_id"], [])
+        for ln, c in zip(entry["lines"], named + [""] * len(entry["lines"])):
+            ln["party_id"] = survivors.get(c, c) if c else own_party
+        lines, status = _expand_item_lines(entry["lines"], refs.get(entry["je_id"]), base)
+        entry["lines"] = lines
+        entry["items_status"] = status
+    names = await _party_names(session, company_id,
+                               {ln["party_id"] for e in entries for ln in e["lines"] if ln["party_id"]})
+    for entry in entries:
+        for ln in entry["lines"]:
+            ln["party_name"] = names.get(ln["party_id"]) or (
+                (state.get("contact_name") or "") if ln["party_id"] == own_party else "")
+    return {
+        "doc_id": doc_id,
+        "doc_ref": state.get("ref_id") or state.get("doc_number") or doc_id,
+        "doc_type": canonical_doc_type(state.get("doc_type") or state.get("type") or ""),
+        "status": state.get("status"),
+        "currency": base,
+        "entries": entries,
+        "total_debit": to_stored_float(round_money(
+            sum((to_decimal(l["debit"]) for e in entries if e["status"] == "posted" for l in e["lines"]), Decimal(0)), base)),
+        "total_credit": to_stored_float(round_money(
+            sum((to_decimal(l["credit"]) for e in entries if e["status"] == "posted" for l in e["lines"]), Decimal(0)), base)),
+    }
+
+
 class ManualJELine(BaseModel):
     account: str
     debit: FiniteFloat = 0

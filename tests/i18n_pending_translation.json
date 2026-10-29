@@ -13,6 +13,42 @@
     "vi"
   ],
   "keys": {
+    "documents.gl_impact": {
+      "en": "GL Impact",
+      "params": []
+    },
+    "documents.gl_impact_account": {
+      "en": "Account",
+      "params": []
+    },
+    "documents.gl_impact_credit": {
+      "en": "Credit",
+      "params": []
+    },
+    "documents.gl_impact_debit": {
+      "en": "Debit",
+      "params": []
+    },
+    "documents.gl_impact_memo": {
+      "en": "Memo",
+      "params": []
+    },
+    "documents.gl_impact_none": {
+      "en": "This document does not affect the general ledger.",
+      "params": []
+    },
+    "documents.gl_impact_not_posted": {
+      "en": "Not posted yet. This document will affect the general ledger once it is issued.",
+      "params": []
+    },
+    "documents.gl_impact_party": {
+      "en": "Party",
+      "params": []
+    },
+    "documents.gl_impact_void": {
+      "en": "Void",
+      "params": []
+    },
     "migration.export_warning_sage50": {
       "en": "Tick Include Headings on the Options tab of each template before exporting: Celerp recognises every file by its column names.",
       "params": []
