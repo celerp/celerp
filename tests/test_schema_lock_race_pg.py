@@ -25,6 +25,7 @@ from sqlalchemy.pool import NullPool
 from ui.i18n import t
 
 from company_backup_support import auth, confirm, download, manifest, members, read
+from test_helpers import as_another_client
 from migration_support import real_client, real_engine  # noqa: F401
 from test_company_backup import (  # noqa: F401
     _BK_MODULE,
@@ -143,7 +144,7 @@ async def test_schema_change_in_progress_refuses_export_and_restore(
     preview = await read(real_client, tok, data, mode="new_company")
     assert preview.status_code == 200, preview.text
     async with real_engine.connect() as holder:
-        await holder.execute(text("SELECT pg_advisory_lock(:k)"), {"k": SCHEMA_KEY})
+        await as_another_client(holder.execute(text("SELECT pg_advisory_lock(:k)"), {"k": SCHEMA_KEY}))
         try:
             r = await real_client.get("/company-backups/download", headers=auth(tok))
             assert r.status_code == 409, r.text

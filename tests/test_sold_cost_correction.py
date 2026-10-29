@@ -188,13 +188,13 @@ def legacy_invoice(*names: str, doc: str = "doc"):
         je_id = f"je:auto:{ctx[doc]}:fin"
         row = await session.get(Projection, {"company_id": auth["company_id"], "entity_id": je_id})
         cogs_free = [e for e in row.state["entries"] if e["account"] not in _COGS_ACCOUNTS]
+        row.state = {**row.state, "entries": cogs_free}
+        await session.flush()
         created = (await session.execute(select(LedgerEntry).where(
             LedgerEntry.company_id == auth["company_id"], LedgerEntry.entity_id == je_id,
             LedgerEntry.event_type == "acc.journal_entry.created"))).scalars().one()
         created.data = {**created.data, "entries": cogs_free}
         created.metadata_ = {k: v for k, v in created.metadata_.items() if k != "cogs_allocations"}
-        await session.flush()
-        row.state = {**row.state, "entries": cogs_free}
         await session.commit()
         assert await auto_je.recognized_cogs(session, auth["company_id"], ctx[doc]) is None
     return step

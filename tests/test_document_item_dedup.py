@@ -281,7 +281,7 @@ async def test_rebuild_replays_historical_duplicate_unchanged(client, session):
         metadata_={},
     )
     session.add(entry)
-    await session.flush()
+    await session.commit()
 
     # Rebuild must replay the historical event without raising.
     await ProjectionEngine.rebuild(session)

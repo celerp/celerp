@@ -1244,8 +1244,10 @@ async def _deleted_before_upgrade(session, inv: str, index: int) -> None:
     from celerp.models.ledger import LedgerEntry
     from celerp.models.projections import Projection
     from celerp.projections.engine import ProjectionEngine
+    from celerp.services.company_lock import lock_company
     from sqlalchemy import select as _sel
     doc_row = (await session.execute(_sel(Projection).where(Projection.entity_id == inv))).scalar_one()
+    await lock_company(session, doc_row.company_id)
     entry = LedgerEntry(company_id=doc_row.company_id, entity_id=inv, entity_type="doc",
                         event_type="doc.payment.deleted", data={"payment_index": index}, actor_id=None,
                         location_id=None, source="api", idempotency_key=f"legacy-delete:{inv}:{index}",

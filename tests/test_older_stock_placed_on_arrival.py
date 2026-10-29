@@ -57,11 +57,12 @@ async def _demo(session, client, auth) -> list[str]:
         Projection.company_id == auth["company_id"], Projection.entity_type == "item")
         .execution_options(populate_existing=True))).scalars().all()
     assert rows
+    for row in rows:
+        row.state = {k: v for k, v in row.state.items() if k != _FIELD}
+    await session.flush()
     await session.execute(delete(LedgerEntry).where(
         LedgerEntry.company_id == auth["company_id"], LedgerEntry.entity_id.in_([r.entity_id for r in rows]),
         LedgerEntry.event_type == "item.inventory_account.recorded"))
-    for row in rows:
-        row.state = {k: v for k, v in row.state.items() if k != _FIELD}
     await session.commit()
     await _older_release(session, auth)
     return [r.entity_id for r in rows]

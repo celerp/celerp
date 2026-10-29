@@ -32,7 +32,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from celerp.db import REQUEST_CONNECT_ARGS
-from test_helpers import DATABASE_URL
+from test_helpers import DATABASE_URL, as_another_client
 from ui.i18n import t
 
 
@@ -251,7 +251,7 @@ async def test_bootstrap_lock_timeout_fails_closed_without_partial_state(real_en
     session_a = maker()
     session_b = maker()
     try:
-        await session_a.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": BOOTSTRAP_LOCK_KEY})
+        await as_another_client(session_a.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": BOOTSTRAP_LOCK_KEY}))
         payload = RegisterRequest(
             company_name="TimeoutCo", email="timeout@example.com", name="Owner", password="validpass1"
         )

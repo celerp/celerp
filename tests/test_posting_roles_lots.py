@@ -63,12 +63,13 @@ async def _sell(client, auth, *lots: tuple[str, float]) -> str:
 async def _forget_origin(session, auth, item_id: str) -> None:
     """Make a lot look like one created before lots recorded their account: neither its
     state nor its history records one."""
-    await session.execute(delete(LedgerEntry).where(
-        LedgerEntry.company_id == auth["company_id"], LedgerEntry.entity_id == item_id,
-        LedgerEntry.event_type == "item.inventory_account.recorded"))
     row = await session.get(Projection, {"company_id": auth["company_id"], "entity_id": item_id},
                             populate_existing=True)
     row.state = {k: v for k, v in row.state.items() if k != _FIELD}
+    await session.flush()
+    await session.execute(delete(LedgerEntry).where(
+        LedgerEntry.company_id == auth["company_id"], LedgerEntry.entity_id == item_id,
+        LedgerEntry.event_type == "item.inventory_account.recorded"))
     await session.commit()
 
 

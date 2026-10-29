@@ -66,10 +66,10 @@ def test_session_company_upgrade_and_downgrade(sessions_db):
     a, b = uuid.uuid4(), uuid.uuid4()
     with sessions_db.begin() as conn:
         conn.execute(text("INSERT INTO companies (id) VALUES (:a), (:b)"), {"a": a, "b": b})
-        conn.execute(text("INSERT INTO session_registry (jti, user_id, expiry) VALUES ('old', :u, :e)"),
-                     {"u": uuid.uuid4(), "e": _later()})
         conn.execute(text("INSERT INTO user_auth_state (user_id, nonce, evicted_by_ip) "
                           "VALUES (:u, 'n1', '10.0.0.1'), (:v, 'n2', NULL)"), {"u": uuid.uuid4(), "v": uuid.uuid4()})
+        conn.execute(text("INSERT INTO session_registry (jti, user_id, expiry) VALUES ('old', :u, :e)"),
+                     {"u": uuid.uuid4(), "e": _later()})
 
     run_migration_ops(sessions_db, MODULE)
     with sessions_db.begin() as conn:
@@ -81,6 +81,7 @@ def test_session_company_upgrade_and_downgrade(sessions_db):
         for jti, cid in (("on-a", a), ("on-b", b)):
             conn.execute(text("INSERT INTO session_registry (jti, user_id, company_id, expiry) "
                               "VALUES (:j, :u, :c, :e)"), {"j": jti, "u": uuid.uuid4(), "c": cid, "e": _later()})
+    with sessions_db.begin() as conn:  # a company's removal, as its own transaction
         conn.execute(text("DELETE FROM companies WHERE id = :a"), {"a": a})
         assert list(conn.execute(text("SELECT jti FROM session_registry")).scalars()) == ["on-b"]
     with pytest.raises(IntegrityError):

@@ -22,6 +22,7 @@ import celerp.db
 from celerp.models.import_batch import ImportBatch
 from celerp.models.ledger import LedgerEntry
 from celerp.projections.engine import ProjectionEngine
+from celerp.services.company_lock import lock_company
 from mfg_runs import issue, product, run
 from stock_books import assert_books_carry_stock
 from test_cost_restatement import _state
@@ -43,6 +44,7 @@ async def _legacy_doc(session, auth, lot: str, doc_type: str = "quotation") -> s
     checks on new lines (no document may newly take a draft)."""
     doc_id = f"doc:{uuid.uuid4()}"
     number = f"Q-{uuid.uuid4().hex[:5]}"
+    await lock_company(session, auth["company_id"])
     legacy = LedgerEntry(company_id=auth["company_id"], entity_id=doc_id, entity_type="doc",
                          event_type="doc.created",
                          data={"doc_type": doc_type, "doc_number": number, "status": "draft", "line_items": [

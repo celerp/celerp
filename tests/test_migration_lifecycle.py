@@ -37,7 +37,7 @@ from migration_support import (
     staged_run,
     upload_parts,
 )
-from test_helpers import make_authed_token, register_admin
+from test_helpers import as_another_client, make_authed_token, register_admin
 from ui.i18n import t
 
 OWNER_ONLY = t("migration.err_owner_only", "en")
@@ -348,7 +348,8 @@ async def test_migration_advisory_lock_prevents_double_runner(real_engine, migra
     before = await load_run(real_engine, run_id)
 
     async with real_engine.connect() as holder:
-        await holder.execute(text("SELECT pg_advisory_lock(hashtext('migration:' || :r))"), {"r": str(run_id)})
+        await as_another_client(holder.execute(text("SELECT pg_advisory_lock(hashtext('migration:' || :r))"),
+                                               {"r": str(run_id)}))
         await holder.commit()
         await migrations.run_migration(run_id)
         after = await load_run(real_engine, run_id)
@@ -512,7 +513,8 @@ async def test_discard_staged_company_is_complete_or_noop(real_client, real_engi
             await conn.execute(text("DROP TABLE mystery_rows"))
 
     async with real_engine.connect() as holder:
-        await holder.execute(text("SELECT pg_advisory_lock(hashtext('migration:' || :r))"), {"r": run_id})
+        await as_another_client(holder.execute(text("SELECT pg_advisory_lock(hashtext('migration:' || :r))"),
+                                               {"r": run_id}))
         await holder.commit()
         r = await discard(admin_token, run_id)
         assert r.status_code == 409 and r.json()["detail"] == t("migration.err_already_running", "en")

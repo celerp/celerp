@@ -86,7 +86,7 @@ async def _asset_record(session, company_id, entity_id: str | None = None) -> st
     session.add(Projection(company_id=company_id, entity_id=entity_id, entity_type="fa_asset",
                            state={"code": "FA-0001"}, version=1,
                            updated_at=datetime.now(timezone.utc)))
-    await session.flush()
+    await session.commit()
     return entity_id
 
 
@@ -187,22 +187,21 @@ async def test_s6_company_and_user_authority(session, auth, registry):
     probe = _probe()
     probe["register"]({"s6_capitalize": ("manage_accounting",)}, source_prefix="fa:")
     source = await _asset_record(session, auth["company_id"])
+    # A user of another company, and a member lacking the key the type holds.
+    stranger, operator = uuid.uuid4(), uuid.uuid4()
+    await ensure_user(session, stranger)
+    await ensure_user(session, operator)
+    session.add(UserCompany(user_id=operator, company_id=auth["company_id"], role="operator", is_active=True))
+    await session.commit()
 
     # An unknown operation type.
     with pytest.raises(HTTPException) as exc:
         await _post(probe, session, auth, source, operation="s6_unregistered")
     _refused(exc, 422, "module_journal.unknown_operation")
 
-    # A user of another company, and a member lacking the key the type holds.
-    stranger = uuid.uuid4()
-    await ensure_user(session, stranger)
     with pytest.raises(HTTPException) as exc:
         await _post(probe, session, auth, source, user_id=stranger)
     assert exc.value.status_code == 403
-    operator = uuid.uuid4()
-    await ensure_user(session, operator)
-    session.add(UserCompany(user_id=operator, company_id=auth["company_id"], role="operator", is_active=True))
-    await session.flush()
     with pytest.raises(HTTPException) as exc:
         await _post(probe, session, auth, source, user_id=operator)
     assert exc.value.status_code == 403 and "Manage accounting" in str(exc.value.detail)
@@ -305,7 +304,7 @@ async def test_s6_moves_what_a_named_journal_recognized(session, auth, registry)
                                updated_at=datetime.now(timezone.utc), state={"status": status, "entries": [
                                    {"account": "1210", "debit": 100.0, "credit": 0.0},
                                    {"account": "1111", "debit": 0.0, "credit": 100.0}]}))
-        await session.flush()
+        await session.commit()
         return je_id
 
     def moving(amount: str, je_id: str):

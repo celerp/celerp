@@ -64,14 +64,15 @@ async def _strip_snapshot(session, auth, doc: str) -> None:
 async def _unrecorded(session, auth, lot: str) -> None:
     """A lot created before lots recorded their inventory account: no record of one, in
     its state or its history."""
-    await session.execute(delete(LedgerEntry).where(
-        LedgerEntry.company_id == auth["company_id"], LedgerEntry.entity_id == lot,
-        LedgerEntry.event_type == RECORDED))
     row = await session.get(Projection, {"company_id": auth["company_id"], "entity_id": lot})
     st = dict(row.state)
     st.pop("inventory_account_code", None)
     row.state = st
     flag_modified(row, "state")
+    await session.flush()
+    await session.execute(delete(LedgerEntry).where(
+        LedgerEntry.company_id == auth["company_id"], LedgerEntry.entity_id == lot,
+        LedgerEntry.event_type == RECORDED))
     await session.commit()
 
 

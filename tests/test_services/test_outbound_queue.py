@@ -458,7 +458,7 @@ async def test_ambiguous_connector_ownership_fails_closed(session, monkeypatch):
         ConnectorConfig(company_id=first_company, connector=connector),
         ConnectorConfig(company_id=second_company, connector=connector),
     ])
-    await session.flush()
+    await session.commit()
     with pytest.raises(ConnectorOwnershipAmbiguousError):
         await lock_connector_operation(
             session, first_company, connector, require_owner=True

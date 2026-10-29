@@ -80,7 +80,9 @@ async def seeded(committed_maker):
     async with committed_maker() as s:
         company = Company(name="RaceCo", slug=f"raceco-{tag}", settings={})
         user = User(email=f"race-{tag}@test.invalid", name="Race")
-        s.add_all([company, user])
+        s.add(user)
+        await s.flush()
+        s.add(company)
         await s.flush()
         conv = AIConversation(company_id=company.id, user_id=user.id, title="race")
         s.add(conv)

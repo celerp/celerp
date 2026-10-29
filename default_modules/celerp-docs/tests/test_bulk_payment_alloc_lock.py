@@ -27,7 +27,7 @@ from celerp.events.engine import emit_event
 from celerp_accounting.routes import seed_chart_of_accounts_hook
 from celerp.models.company import Company, User
 from celerp.models.projections import Projection
-from test_helpers import remove_company
+from test_helpers import as_another_client, remove_company
 
 
 def _factory(engine):
@@ -173,9 +173,9 @@ async def test_bulk_payment_that_cannot_take_a_document_records_nothing(_db_engi
                                     total=100.0, contact_id="contact:lock")
         s_hold, s_bulk = factory(), factory()
         try:
-            await s_hold.execute(
+            await as_another_client(s_hold.execute(
                 text("SELECT 1 FROM projections WHERE company_id = :c AND entity_id = :e FOR UPDATE"),
-                {"c": str(company_id), "e": held})
+                {"c": str(company_id), "e": held}))
             await s_bulk.execute(text("SET lock_timeout = '800ms'"))
             with pytest.raises(DBAPIError):
                 await bulk_payment(

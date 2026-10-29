@@ -51,7 +51,7 @@ async def _sink_context(client, session, read_attachment):
         mode="full_history",
     )
     session.add(run)
-    await session.flush()
+    await session.commit()
     register_sink(migration_core_sink.SINK)
     context = SinkContext(session=session, company_id=company_id, user_id=user.id, run_id=run.id,
                           read_attachment=read_attachment)
@@ -77,7 +77,7 @@ async def _persist_mappings(session, run_id, result) -> None:
                 target_entity_id=m.target_entity_id,
                 status=m.status,
             ))
-    await session.flush()
+    await session.commit()
 
 
 async def _ledger_rows(session, company_id) -> int:

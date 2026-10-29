@@ -185,7 +185,6 @@ async def _bk_seed_portable(engine, cid, marker: str) -> None:
     from celerp.models.company import WorkCenter
     async with maker(engine)() as s:
         loc = await s.scalar(text("SELECT id FROM locations WHERE company_id = :c LIMIT 1"), {"c": cid})
-        s.add(WorkCenter(company_id=cid, name=f"{marker} bench", wip_location_id=loc, is_default=True))
         s.add(Account(company_id=cid, code="1111", name=f"{marker} cash", account_type="asset"))
         bank = BankAccount(company_id=cid, chart_account_code="1111", bank_name=f"{marker} bank",
                            account_number="****1234", bank_type="checking", currency="USD")
@@ -200,6 +199,8 @@ async def _bk_seed_portable(engine, cid, marker: str) -> None:
         s.add(ReconciliationRule(company_id=cid, bank_account_id=bank.id, match_pattern=f"{marker} fee",
                                  target_account_code="1111"))
         s.add(LabelTemplate(company_id=cid, name=f"{marker} label", fields=[{"key": "name"}]))
+        await s.flush()
+        s.add(WorkCenter(company_id=cid, name=f"{marker} bench", wip_location_id=loc, is_default=True))
         await s.commit()
 
 

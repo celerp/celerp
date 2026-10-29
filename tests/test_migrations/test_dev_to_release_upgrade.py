@@ -54,6 +54,9 @@ def _build_dev_schema(sync_url: str, *, stamp: str | None) -> None:
     try:
         with eng.begin() as conn:
             Base.metadata.create_all(conn)
+            if stamp is not None:
+                conn.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)"))
+                conn.execute(text("INSERT INTO alembic_version (version_num) VALUES (:r)"), {"r": stamp})
             cid = uuid.uuid4()
             conn.execute(
                 text(
@@ -71,9 +74,6 @@ def _build_dev_schema(sync_url: str, *, stamp: str | None) -> None:
                 ),
                 {"cid": cid, "data": '{"amount": 100}', "ts": _PAYMENT_TS},
             )
-            if stamp is not None:
-                conn.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)"))
-                conn.execute(text("INSERT INTO alembic_version (version_num) VALUES (:r)"), {"r": stamp})
     finally:
         eng.dispose()
 

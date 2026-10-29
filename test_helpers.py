@@ -11,6 +11,7 @@ tests/helpers.py is a shim that re-exports from here for backward compatibility.
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import gc
 import json
@@ -125,6 +126,14 @@ async def signed_request(session, company_id, user_id, role: str = "operator"):
         yield
     finally:
         await dependency.aclose()
+
+
+async def as_another_client(statement):
+    """Await ``statement``, a lock a test takes to stand for another client, in a task of its
+    own, as that client would run it: the lock-order recorder then sees the test's later
+    bounded wait on it (a refusal or a lock timeout, the contention under test) as one client
+    waiting on another, not as one task waiting on itself."""
+    return await asyncio.ensure_future(statement)
 
 
 async def provision_company_books(session, company_id) -> None:

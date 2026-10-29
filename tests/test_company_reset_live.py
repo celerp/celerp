@@ -225,10 +225,10 @@ async def test_a_login_only_the_reset_company_had_stays_signed_out(real_client, 
             "author uuid REFERENCES users(id) ON DELETE CASCADE, body text NOT NULL)"))
         await conn.execute(text("INSERT INTO ext_notes VALUES (:i, :c, :u, 'alpha note')"),
                            {"i": uuid.uuid4(), "c": alpha, "u": clerk})
-        await conn.execute(text("INSERT INTO session_registry (jti, user_id, company_id, expiry) "
-                                "VALUES ('clerk-jti', :u, :c, now())"), {"u": clerk, "c": alpha})
         await conn.execute(text("INSERT INTO user_auth_state (user_id, nonce) VALUES (:u, 'n') "
                                 "ON CONFLICT (user_id) DO NOTHING"), {"u": clerk})
+        await conn.execute(text("INSERT INTO session_registry (jti, user_id, company_id, expiry) "
+                                "VALUES ('clerk-jti', :u, :c, now())"), {"u": clerk, "c": alpha})
     try:
         r = await _reset(real_client, ta, "Alpha Co")
 

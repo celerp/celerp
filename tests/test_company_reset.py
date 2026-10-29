@@ -45,24 +45,27 @@ async def _seed(engine, tmp_path, cid, user_id, marker: str) -> None:
     from celerp.models.ai import AIConversation, AIMessage
     from celerp.models.company import WorkCenter
     from celerp.models.notification import Notification
-    async with maker(engine)() as s:
+    async with maker(engine)() as s:  # each row in lock-rank order, as the writers that make them do
         loc = await s.scalar(text("SELECT id FROM locations WHERE company_id = :c LIMIT 1"), {"c": cid})
+        s.add(Account(company_id=cid, code="1111", name=f"{marker} cash", account_type="asset"))
+        await s.flush()
+        await s.execute(text(
+            "INSERT INTO projections (company_id, entity_id, entity_type, state, version, location_id, updated_at) "
+            "VALUES (:c, 'doc:1', 'doc', CAST(:d AS json), 1, :l, now())"),
+            {"c": cid, "d": json.dumps({"doc_type": "invoice", "ref": marker}), "l": loc})
         await s.execute(text(
             "INSERT INTO ledger (company_id, entity_id, entity_type, event_type, data, actor_id, location_id, "
             "source, idempotency_key) VALUES (:c, 'doc:1', 'doc', 'doc.created', CAST(:d AS json), :u, :l, 'api', :k)"),
             {"c": cid, "d": json.dumps({"doc_type": "invoice", "ref": marker}), "u": user_id, "l": loc,
              "k": f"doc-{marker}"})
-        await s.execute(text(
-            "INSERT INTO projections (company_id, entity_id, entity_type, state, version, location_id, updated_at) "
-            "VALUES (:c, 'doc:1', 'doc', CAST(:d AS json), 1, :l, now())"),
-            {"c": cid, "d": json.dumps({"doc_type": "invoice", "ref": marker}), "l": loc})
         conv = AIConversation(company_id=cid, user_id=user_id, title=marker)
-        s.add_all([WorkCenter(company_id=cid, name=f"{marker} bench", wip_location_id=loc, is_default=True),
-                   Account(company_id=cid, code="1111", name=f"{marker} cash", account_type="asset"),
-                   Notification(company_id=cid, user_id=user_id, category="system", title=marker, body=""),
-                   conv])
+        s.add(conv)
         await s.flush()
         s.add(AIMessage(conversation_id=conv.id, role="user", content=f"{marker} question"))
+        await s.flush()
+        s.add(Notification(company_id=cid, user_id=user_id, category="system", title=marker, body=""))
+        await s.flush()
+        s.add(WorkCenter(company_id=cid, name=f"{marker} bench", wip_location_id=loc, is_default=True))
         await s.commit()
     folder = _folder(tmp_path, cid)
     folder.mkdir(parents=True, exist_ok=True)

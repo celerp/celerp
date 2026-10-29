@@ -228,7 +228,7 @@ async def test_legacy_salesperson_target_normalized_in_hierarchy(client, session
             role="salesperson",
         )
     )
-    await session.flush()
+    await session.commit()
 
     caller_token = await make_authed_token(session, str(caller_id), str(company_id), "viewer")
     caller_h = {"Authorization": f"Bearer {caller_token}"}

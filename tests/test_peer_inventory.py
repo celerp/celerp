@@ -253,7 +253,8 @@ async def test_completed_stock_audits_page_in_posted_order_not_document_id(clien
     assert created.status_code == 200
     location_id = created.json()["id"]
     position = []
-    for source_id, qty in (("list:z-older", 8), ("list:a-newer", 6)):
+    audits = (("list:z-older", 8), ("list:a-newer", 6))
+    for source_id, qty in audits:
         session.add(Projection(
             company_id=company_id, entity_id=source_id, entity_type="list",
             version=1, updated_at=datetime.now(timezone.utc),
@@ -261,6 +262,8 @@ async def test_completed_stock_audits_page_in_posted_order_not_document_id(clien
                    "result": "stock_adjusted", "location_id": location_id,
                    "line_items": [{"item_id": "item:lot", "counted_qty": qty}]},
         ))
+    await session.flush()
+    for source_id, _qty in audits:
         entry = LedgerEntry(
             company_id=company_id, entity_id=source_id, entity_type="list",
             event_type="list.closed", data={"result": "stock_adjusted"},

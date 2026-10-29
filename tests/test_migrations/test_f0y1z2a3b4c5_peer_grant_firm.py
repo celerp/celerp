@@ -42,10 +42,10 @@ def test_existing_keys_take_the_name_their_client_was_shown():
         engine = create_engine(sync_url)
         try:
             with engine.begin() as conn:
-                opened = _grant(conn, _company(
-                    conn, "Firm copy", {"restored_backup": {"opened_from": "Lakeside Bookkeeping"}}))
-                blank = _grant(conn, _company(conn, "Plain Firm", {"restored_backup": {"opened_from": "  "}}))
-                plain = _grant(conn, _company(conn, "Other Firm", {}))
+                companies = [_company(conn, "Firm copy", {"restored_backup": {"opened_from": "Lakeside Bookkeeping"}}),
+                             _company(conn, "Plain Firm", {"restored_backup": {"opened_from": "  "}}),
+                             _company(conn, "Other Firm", {})]
+                opened, blank, plain = (_grant(conn, c) for c in companies)
             upgrade_to(sync_url, REVISION)
             with engine.connect() as conn:
                 firms = dict(conn.execute(text("SELECT CAST(id AS text), firm FROM company_peer_grants")).all())

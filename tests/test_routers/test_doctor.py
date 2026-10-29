@@ -1127,10 +1127,10 @@ async def _drop_document_entries(session, company_id, doc_id: str) -> None:
         Projection.company_id == company_id, Projection.entity_type == "journal_entry",
         Projection.entity_id.like(f"je:auto:{doc_id}:%")))).scalars())
     assert jes
-    await session.execute(delete(LedgerEntry).where(
-        LedgerEntry.company_id == company_id, LedgerEntry.entity_id.in_(jes)))
     await session.execute(delete(Projection).where(
         Projection.company_id == company_id, Projection.entity_id.in_(jes)))
+    await session.execute(delete(LedgerEntry).where(
+        LedgerEntry.company_id == company_id, LedgerEntry.entity_id.in_(jes)))
     await session.commit()
 
 
