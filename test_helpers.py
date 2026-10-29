@@ -230,24 +230,33 @@ def worker_state_tables() -> list[str]:
 
 async def remove_company(factory, company_ids, *user_ids) -> None:
     """Delete everything committed for ``company_ids`` (one id or a list), then the companies,
-    then ``user_ids``. Each table is deleted in a transaction of its own, children first, so a
-    cleanup never holds one table's rows while it takes another's (no lock-order edge)."""
+    then ``user_ids``. Each company's rows of each table are deleted in a transaction of their
+    own, children first, under that company's lock (as Celerp's own removals are), so a cleanup
+    never holds one table's rows while it takes another's (no lock-order edge) and takes no
+    company's row without its lock. A connector execution lease row is taken holding nothing
+    else (celerp.connectors.execution), so its tables are deleted without the lock."""
     from sqlalchemy import Uuid, delete
 
     from celerp.models.base import Base
     from celerp.models.company import Company, User
+    from celerp.models.connector_execution import ConnectorExecutionHeartbeat, ConnectorExecutionLease
+    from celerp.services.company_lock import lock_company
+    leases = {ConnectorExecutionLease.__table__, ConnectorExecutionHeartbeat.__table__}
     ids = [uuid.UUID(str(c)) for c in (
         company_ids if isinstance(company_ids, (list, tuple, set)) else [company_ids])]
     tables = [t for t in reversed(Base.metadata.sorted_tables)
               if "company_id" in t.c and t.name != "companies"]
     async with factory() as s:
-        for t in tables:
-            col = t.c.company_id
-            await s.execute(delete(t).where(
-                col.in_(ids if isinstance(col.type, Uuid) else [str(i) for i in ids])))
+        for company_id in ids:
+            for t in tables:
+                col = t.c.company_id
+                if t not in leases:
+                    await lock_company(s, company_id)
+                await s.execute(delete(t).where(col == (company_id if isinstance(col.type, Uuid) else str(company_id))))
+                await s.commit()
+            await lock_company(s, company_id)
+            await s.execute(delete(Company).where(Company.id == company_id))
             await s.commit()
-        await s.execute(delete(Company).where(Company.id.in_(ids)))
-        await s.commit()
         if user_ids:
             await s.execute(delete(User).where(User.id.in_([uuid.UUID(str(u)) for u in user_ids])))
             await s.commit()
