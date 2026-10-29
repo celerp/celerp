@@ -4378,21 +4378,9 @@ celerpUpdateBulkAlloc();
             request=request,
         )
 
-    @app.get("/lists/new")
+    # A new list is created by POST /lists/create-blank; a GET only opens the lists.
+    @app.route("/lists/new", methods=["GET", "POST"])
     async def lists_new_redirect(request: Request):
-        token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
-        try:
-            result = await api.create_list(token, {"list_type": "quotation", "status": "draft"})
-            return RedirectResponse(f"/lists/{result.get('entity_id') or result.get('id', '')}", status_code=302)
-        except APIError as e:
-            if e.status == 401:
-                raise
-            return RedirectResponse("/lists", status_code=302)
-
-    @app.post("/lists/new")
-    async def lists_new_post_redirect(request: Request):
         return RedirectResponse("/lists", status_code=302)
 
     @app.get("/lists/search")

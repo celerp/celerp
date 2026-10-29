@@ -1571,15 +1571,8 @@ async def get_terms_conditions(company_id=Depends(get_current_company_id), sessi
     company = await session.get(Company, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
-    configured = company.settings.get("terms_conditions")
-    templates = terms_templates(company.settings)
-    if configured is not None and templates != configured:
-        company = await locked_company(session, company_id)
-        templates = terms_templates(company.settings)
-        if company.settings.get("terms_conditions") != templates:
-            company.settings = {**company.settings, "terms_conditions": templates}
-        await session.commit()
-    return templates
+    # The normalised templates are what an edit saves back (PATCH); a read never saves them.
+    return terms_templates(company.settings)
 
 
 @router.patch("/me/terms-conditions")

@@ -202,21 +202,20 @@ def test_create_contact_via_form(page, ui_server, api):
     assert len(contacts) > 0, "No contacts found after blank-create"
 
 
-# ── CREATE-08: list via /lists/new form ───────────────────────────────────────
+# ── CREATE-08: list via the New List button ───────────────────────────────────
 
 def test_create_list_via_form(page, ui_server, api):
     """
-    CREATE-08: Navigate to /lists/new — blank-first create.
+    CREATE-08: the New List button on /lists posts a blank-first create.
     Asserts redirect to /lists/{id} detail page (no form needed).
     """
-    page.goto(f"{ui_server}/lists/new", wait_until="domcontentloaded")
-    _assert_no_crash(page, "/lists/new page load")
+    page.goto(f"{ui_server}/lists", wait_until="domcontentloaded")
+    _assert_no_crash(page, "lists page load")
 
-    # /lists/new does a blank-first create and redirects to /lists/{id}
-    page.wait_for_url("**/lists/**", timeout=5000)
-    assert "/lists/" in page.url and "/lists/new" not in page.url, (
-        f"Expected redirect to /lists/{{id}}, got: {page.url}"
-    )
+    new_btn = page.locator("button[hx-post='/lists/create-blank']").first
+    new_btn.wait_for(state="visible", timeout=5000)
+    new_btn.click()
+    page.wait_for_url(lambda url: "/lists/" in url and "?" not in url, timeout=10000)
     assert "/login" not in page.url, "Redirected to login"
     _assert_no_crash(page, "after blank-first list redirect")
 

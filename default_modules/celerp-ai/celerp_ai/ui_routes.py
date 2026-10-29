@@ -349,10 +349,11 @@ def setup_ui_routes(app) -> None:
         )
         return HTMLResponse(to_xml(reply), headers=headers)
 
-    @app.get("/ai/proposals-ui")
+    @app.post("/ai/proposals-ui")
     async def ai_proposals_ui(request: Request):
         """The reading job's bubble polls this until the job ends, then it is
-        swapped for the finished line, the assistant's summary and the bill cards."""
+        swapped for the finished line, the assistant's summary and the bill cards.
+        A POST: the first poll after the job ends saves the proposals message."""
         from starlette.responses import Response as _R
         token = _token(request)
         if not token:
@@ -1373,7 +1374,7 @@ def _job_bubble(job: dict, conversation_id: str, lang: str = "en") -> FT:
         data_job_id=job_id,
         data_total=str(total),
         data_text=t("ai.job_reading", lang, done="{done}", total="{total}"),
-        hx_get=f"/ai/proposals-ui?conversation={conversation_id}&job={job_id}",
+        hx_post=f"/ai/proposals-ui?conversation={conversation_id}&job={job_id}",
         hx_trigger=f"{poll}, celerp:job-done",
         hx_swap="outerHTML",
     )

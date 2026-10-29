@@ -610,9 +610,9 @@ function initCombobox(wrap) {
     clearPickNote();
     var val = opt.dataset.value !== undefined ? opt.dataset.value : opt.textContent.trim();
     var label = opt.textContent.trim();
-    // __new__:URL values trigger a redirect instead of a form submission
+    // __new__:URL values create a record by POST to URL, which answers with HX-Redirect
     if (val.indexOf('__new__:') === 0) {
-      window.location = val.slice('__new__:'.length);
+      htmx.ajax('POST', val.slice('__new__:'.length), {swap: 'none'});
       return;
     }
     if (isMulti && bag) {

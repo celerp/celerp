@@ -4538,14 +4538,29 @@ class TestListsCreateBlank:
         assert "/lists/list:VIEW-001" in r.headers.get("HX-Redirect", "")
 
     @pytest.mark.asyncio
-    async def test_lists_new_get_redirects_without_interim_page(self, ui_client):
-        """/lists/new GET no longer shows a form - creates immediately and redirects."""
+    async def test_lists_new_get_opens_the_lists_without_creating_one(self, ui_client):
+        """A GET never creates: /lists/new opens the lists, whose New List button posts."""
         ui_client.cookies.update(_authed())
-        with patch("ui.api_client.create_list",
-                   new=AsyncMock(return_value={"id": "list:VIEW-002"})):
+        create = AsyncMock(return_value={"id": "list:VIEW-002"})
+        with patch("ui.api_client.create_list", new=create):
             r = await ui_client.get("/lists/new", follow_redirects=False)
         assert r.status_code == 302
-        assert "/lists/list:VIEW-002" in r.headers.get("location", "")
+        assert r.headers.get("location") == "/lists"
+        create.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_inventory_new_get_creates_nothing_and_create_blank_makes_a_component(self, ui_client):
+        """The picker's "+ Add new component" posts to create-blank; GET /inventory/new only opens the list."""
+        ui_client.cookies.update(_authed())
+        create = AsyncMock(return_value={"id": "item:C-1"})
+        with patch("ui.api_client.create_item", new=create):
+            r = await ui_client.get("/inventory/new?type=component", follow_redirects=False)
+            assert r.status_code == 302 and r.headers.get("location") == "/inventory"
+            create.assert_not_awaited()
+            r = await ui_client.post("/inventory/create-blank?type=component")
+        assert r.status_code == 204
+        assert r.headers.get("HX-Redirect") == "/inventory/item:C-1"
+        assert create.await_args.args[1]["inventory_type"] == "component"
 
     @pytest.mark.asyncio
     async def test_lists_page_no_href_new(self, ui_client):

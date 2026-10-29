@@ -1833,33 +1833,24 @@ def setup_routes(app):
 
     @app.post("/inventory/create-blank")
     async def inventory_create_blank(request: Request):
-        """Create a minimal item and redirect to its detail page."""
+        """Create a minimal item, or with ?type=component a component (the "+ Add new
+        component" picker option), and open its detail page."""
         token = _token(request)
         if not token:
             return Response("", status_code=401, headers={"HX-Redirect": "/login"})
+        blank = {"name": "New Item", "quantity": 0, "sell_by": "piece"}
+        if request.query_params.get("type") == "component":
+            blank.update(name="New Component", inventory_type="component")
         try:
-            result = await api.create_item(token, {"name": "New Item", "quantity": 0, "sell_by": "piece"})
+            result = await api.create_item(token, blank)
             item_id = result.get("id", result.get("entity_id", ""))
         except APIError as e:
             logger.warning("Blank-create item failed: %s", e.detail)
             return api.refusal_response(e)
         return Response("", status_code=204, headers={"HX-Redirect": f"/inventory/{item_id}"})
 
-    # /inventory/new: ?type=component creates a blank component item and opens it
-    # (target of the "+ Add new component" picker option); otherwise redirect to the list.
     @app.get("/inventory/new")
     async def inventory_new_redirect(request: Request):
-        if request.query_params.get("type") == "component":
-            token = _token(request)
-            if not token:
-                return RedirectResponse("/login", status_code=302)
-            try:
-                result = await api.create_item(token, {"name": "New Component", "quantity": 0,
-                                                       "sell_by": "piece", "inventory_type": "component"})
-                item_id = result.get("id", result.get("entity_id", ""))
-                return RedirectResponse(f"/inventory/{item_id}", status_code=302)
-            except APIError as e:
-                logger.warning("Create component item failed: %s", e.detail)
         return RedirectResponse("/inventory", status_code=302)
 
     @app.get("/inventory/{entity_id}")
@@ -7040,7 +7031,7 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
     # ingredient in more than one step, so an added item must remain addable again.
     base_opts = [o for o in item_opts if show_all or o[0] in component_ids]
     scope_opt = ("__scope__components", t("inventory.scope_components")) if show_all else ("__scope__all", t("inventory.scope_all_items"))
-    comp_opts = base_opts + [scope_opt, ("__new__:/inventory/new?type=component", t("inventory.add_new_component"))]
+    comp_opts = base_opts + [scope_opt, ("__new__:/inventory/create-blank?type=component", t("inventory.add_new_component"))]
 
     def _comp_row(i, c):
         cid = c.get("item_id", "")
