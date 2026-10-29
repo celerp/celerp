@@ -156,7 +156,7 @@
    "default_modules/celerp-labels/celerp_labels/routes.py list_templates",
    "default_modules/celerp-labels/celerp_labels/routes.py _seed_presets"
   ],
-  "test": "tests/test_browser/test_file_activity.py::test_item_activity_shows_file_link",
+  "test": "tests/test_browser/test_item_detail_audit.py::test_new_company_item_print_menu_lists_preset_labels",
   "issue": "https://github.com/celerp/celerp/issues/405",
   "owner": "celerp-labels",
   "remove_when": "the presets are seeded by a locked writer, never by a read route"
