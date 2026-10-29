@@ -705,7 +705,9 @@ async def test_the_migrators_writes_are_its_own_only_under_the_migration_lock(se
     from celerp.db import _MIGRATION_LOCK_KEY
     from test_helpers import DATABASE_URL
     key = _MIGRATION_LOCK_KEY if migrating != "other key" else _MIGRATION_LOCK_KEY + 1
-    engine = create_engine(DATABASE_URL.replace("+asyncpg", "+psycopg2"), isolation_level="AUTOCOMMIT")
+    # The migration lock is a session lock, held whatever the transaction does; the insert
+    # runs in a transaction this test rolls back, so it leaves no company for later tests.
+    engine = create_engine(DATABASE_URL.replace("+asyncpg", "+psycopg2"))
     try:
         with serving("POST", "/observed"), engine.connect() as lock_conn, engine.connect() as conn:
             lock_conn.execute(text("SELECT pg_advisory_lock(:key)"), {"key": key})
