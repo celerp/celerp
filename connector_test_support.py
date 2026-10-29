@@ -15,7 +15,9 @@ from test_helpers import provision_company_books
 
 
 async def seed_company(session, name: str = "Store") -> uuid.UUID:
-    """A company with an owner and its books, as provisioning gives every new company."""
+    """A company with an owner and its books, as provisioning gives every new company,
+    committed as the signup that creates it is: connector work runs on companies that
+    already exist, so it never shares a transaction with their creation."""
     from celerp.models.accounting import UserCompany
     from celerp.models.company import Company, User
 
@@ -31,6 +33,7 @@ async def seed_company(session, name: str = "Store") -> uuid.UUID:
     await session.flush()
     session.add(UserCompany(user_id=uid, company_id=cid, role="owner", is_active=True))
     await provision_company_books(session, cid)
+    await session.commit()
     return cid
 
 
@@ -60,7 +63,8 @@ async def item_state(session, company_id, entity_id: str) -> dict:
 async def connect(session, company_id, connector, directions: dict | None = None, *,
                   first_sync: str = "pending", **fields):
     """The company's connection to ``connector`` (a registered name or a connector),
-    set to ``directions``, with its first-sync record in state ``first_sync``."""
+    set to ``directions``, with its first-sync record in state ``first_sync``, committed
+    as connecting is its own request."""
     from celerp.models.connector_config import ConnectorConfig
 
     config = ConnectorConfig(
@@ -70,19 +74,18 @@ async def connect(session, company_id, connector, directions: dict | None = None
     session.add(config)
     await session.flush()
     await record_first_sync(session, config, first_sync, connector=connector)
+    await session.commit()
     return config
 
 
 async def connected(company_id, connector, directions: dict | None = None, *,
                     first_sync: str = "completed", **fields):
-    """``connect``, committed through the app's own sessions, for tests that run
+    """``connect`` through the app's own sessions, for tests that run
     connector work through its execution on the real database."""
     from celerp.db import get_session_ctx
 
     async with get_session_ctx() as session:
-        config = await connect(session, company_id, connector, directions, first_sync=first_sync, **fields)
-        await session.commit()
-    return config
+        return await connect(session, company_id, connector, directions, first_sync=first_sync, **fields)
 
 
 def stand_in_connector(monkeypatch, prefix: str, *, like: str = "xero") -> str:

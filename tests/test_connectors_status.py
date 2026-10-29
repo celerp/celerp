@@ -15,7 +15,7 @@ from fasthtml.common import to_xml
 from celerp.models.company import Company
 from connector_test_support import stand_in_connector
 
-from test_helpers import remove_company
+from test_helpers import as_another_client, remove_company
 from ui.routes.settings_connectors import (
     _any_in_progress,
     _connector_status_view,
@@ -89,17 +89,7 @@ async def test_entity_runs_returns_latest_per_entity(_db_engine):
 
 @pytest.mark.asyncio
 async def test_release_connector_ownership_clears_work_and_resets_cursor(_db_engine, monkeypatch):
-    import sqlalchemy as sa
-    from celerp.connectors.ownership import (
-        ConnectorOwnershipError,
-        claim_connector_ownership,
-        lock_connector_operation,
-        release_connector_ownership,
-    )
     from celerp.db import get_session_ctx
-    from celerp.models.company import Company
-    from celerp.models.connector_config import OutboundQueue
-    from celerp.models.sync_run import SyncRun
 
     company_uuid = uuid.uuid4()
     cid = str(company_uuid)
@@ -111,7 +101,25 @@ async def test_release_connector_ownership_clears_work_and_resets_cursor(_db_eng
             slug=f"connector-release-{company_uuid.hex[:8]}",
             settings={},
         ))
-        await session.flush()
+        await session.commit()
+    try:
+        await _release_and_check(get_session_ctx, cid, connector)
+    finally:
+        await remove_company(get_session_ctx, company_uuid)
+
+
+async def _release_and_check(get_session_ctx, cid: str, connector: str) -> None:
+    import sqlalchemy as sa
+    from celerp.connectors.ownership import (
+        ConnectorOwnershipError,
+        claim_connector_ownership,
+        lock_connector_operation,
+        release_connector_ownership,
+    )
+    from celerp.models.connector_config import OutboundQueue
+    from celerp.models.sync_run import SyncRun
+
+    async with get_session_ctx() as session:
         await claim_connector_ownership(
             session, cid, connector, default_sync_frequency="realtime"
         )
@@ -247,25 +255,25 @@ async def test_connector_in_use_elsewhere_is_refused(_db_engine, monkeypatch):
                 entity_directions={},
             ),
         ])
-        await session.flush()
-
-        with pytest.raises(ConnectorOwnershipError):
-            await claim_connector_ownership(session, second_company, connector)
-        assert await claim_connector_ownership(
-            session, first_company, connector
-        ) is not None
-        await session.rollback()
+        await session.commit()
+    try:
+        async with get_session_ctx() as session:
+            with pytest.raises(ConnectorOwnershipError):
+                await claim_connector_ownership(session, second_company, connector)
+        async with get_session_ctx() as session:
+            assert await claim_connector_ownership(
+                session, first_company, connector
+            ) is not None
+            await session.rollback()
+    finally:
+        await _forget([connector], first_company_uuid, second_company_uuid)
 
 
 @pytest.mark.asyncio
 async def test_connector_ownership_merges_legacy_operational_state(_db_engine, monkeypatch):
     import json
-    from unittest.mock import patch
-    import sqlalchemy as sa
 
-    from celerp.connectors.ownership import claim_connector_ownership
     from celerp.db import get_session_ctx
-    from celerp.models.company import Company
     from celerp.models.connector_config import ConnectorConfig
 
     company_uuid = uuid.uuid4()
@@ -291,8 +299,21 @@ async def test_connector_ownership_merges_legacy_operational_state(_db_engine, m
                 entity_directions={},
             ),
         ])
-        await session.flush()
+        await session.commit()
+    try:
+        await _merge_and_check(get_session_ctx, company_id, legacy_id, connector)
+    finally:
+        await _forget([connector], company_uuid)
 
+
+async def _merge_and_check(get_session_ctx, company_id: str, legacy_id: str, connector: str) -> None:
+    from unittest.mock import patch
+    import sqlalchemy as sa
+
+    from celerp.connectors.ownership import claim_connector_ownership
+    from celerp.models.connector_config import ConnectorConfig
+
+    async with get_session_ctx() as session:
         with patch("celerp.connectors.ownership.ensure_instance_id", return_value=legacy_id):
             row = await claim_connector_ownership(session, company_id, connector)
             await session.flush()
@@ -391,6 +412,24 @@ async def _company(session, label: str):
     return str(cid)
 
 
+async def _forget(connectors, *company_ids) -> None:
+    """Remove what a test committed for its connectors, rows of no company included, then its
+    companies: setup is committed before the ownership work it prepares, as the requests that
+    made it were."""
+    import sqlalchemy as sa
+    from celerp.db import get_session_ctx
+    from celerp.models.connector_config import ConnectorConfig, OutboundQueue
+    from celerp.models.connector_first_sync import ConnectorFirstSync
+    from celerp.models.sync_run import SyncRun
+
+    for model in (OutboundQueue, SyncRun, ConnectorFirstSync, ConnectorConfig):
+        async with get_session_ctx() as session:
+            await session.execute(sa.delete(model).where(model.connector.in_(list(connectors))))
+            await session.commit()
+    if company_ids:
+        await remove_company(get_session_ctx, list(company_ids))
+
+
 @pytest.mark.asyncio
 async def test_disconnect_while_linked_twice_changes_only_this_company(_db_engine):
     """Disconnecting a connector linked twice changes only this company's own
@@ -414,23 +453,27 @@ async def test_disconnect_while_linked_twice_changes_only_this_company(_db_engin
             ConnectorConfig(company_id=a, connector=connector),
             ConnectorConfig(company_id=b, connector=connector),
         ])
-        await session.flush()
-        assert await connector_ownership_state(session, a, connector) == OWNERSHIP_AMBIGUOUS
+        await session.commit()
+    try:
+        async with get_session_ctx() as session:
+            assert await connector_ownership_state(session, a, connector) == OWNERSHIP_AMBIGUOUS
 
-        await release_connector_ownership(session, a, connector)
-        await session.flush()
+            await release_connector_ownership(session, a, connector)
+            await session.flush()
 
-        remaining = (await session.execute(
-            sa.select(ConnectorConfig.company_id).where(ConnectorConfig.connector == connector)
-        )).scalars().all()
-        assert [str(r) for r in remaining] == [b]
-        resets = (await session.execute(
-            sa.select(SyncRun.company_id).where(
-                SyncRun.connector == connector, SyncRun.entity == CONNECTOR_RESET_ENTITY
-            )
-        )).scalars().all()
-        assert resets == [a]
-        await session.rollback()
+            remaining = (await session.execute(
+                sa.select(ConnectorConfig.company_id).where(ConnectorConfig.connector == connector)
+            )).scalars().all()
+            assert [str(r) for r in remaining] == [b]
+            resets = (await session.execute(
+                sa.select(SyncRun.company_id).where(
+                    SyncRun.connector == connector, SyncRun.entity == CONNECTOR_RESET_ENTITY
+                )
+            )).scalars().all()
+            assert resets == [a]
+            await session.rollback()
+    finally:
+        await _forget([connector], a, b)
 
 
 @pytest.mark.asyncio
@@ -454,15 +497,20 @@ async def test_connector_release_scope_names_what_a_disconnect_may_touch(_db_eng
             ConnectorConfig(company_id=a, connector=legacy_only),
             ConnectorConfig(company_id=legacy, connector=legacy_only),
         ])
-        await session.flush()
-
-        rows = await connector_release_scope(session, a, shared)
-        assert [str(r.company_id) for r in rows] == [a]
-        rows = await connector_release_scope(session, a, legacy_only)
-        assert sorted(str(r.company_id) for r in rows) == sorted([a, legacy])
-        with pytest.raises(ConnectorOwnershipError):
-            await connector_release_scope(session, c, shared)
-        await session.rollback()
+        await session.commit()
+    # Each scope is asked in a request of its own, as a disconnect asks it.
+    try:
+        async with get_session_ctx() as session:
+            rows = await connector_release_scope(session, a, shared)
+            assert [str(r.company_id) for r in rows] == [a]
+        async with get_session_ctx() as session:
+            rows = await connector_release_scope(session, a, legacy_only)
+            assert sorted(str(r.company_id) for r in rows) == sorted([a, legacy])
+        async with get_session_ctx() as session:
+            with pytest.raises(ConnectorOwnershipError):
+                await connector_release_scope(session, c, shared)
+    finally:
+        await _forget([shared, legacy_only], a, b, c)
 
 
 def _second_engine():
@@ -489,8 +537,8 @@ async def test_connector_work_shares_the_fence_and_only_ownership_changes_wait(_
     engine, factory = _second_engine()
     try:
         async with factory() as work_a, factory() as work_b, factory() as owner:
-            await lock_connector_key(work_a, connector)
-            await asyncio.wait_for(lock_connector_key(work_b, connector), timeout=5)
+            await as_another_client(lock_connector_key(work_a, connector))
+            await as_another_client(asyncio.wait_for(lock_connector_key(work_b, connector), timeout=5))
             with pytest.raises(ConnectorBusyError):
                 await lock_connector_key(owner, connector, exclusive=True)
             await owner.rollback()
@@ -605,34 +653,40 @@ async def test_connector_no_company_owns_is_reset_without_choosing_an_owner(_db_
         a = await _company(session, "UnassignedA")
         session.add_all([
             ConnectorConfig(company_id=legacy, connector=unassigned),
-            OutboundQueue(company_id=legacy, connector=unassigned, entity_type="inventory",
-                          entity_id="10", status="pending", retry_count=0),
             ConnectorConfig(company_id=legacy, connector=held),
             ConnectorConfig(company_id=a, connector=held),
         ])
-        await session.flush()
+        await session.commit()
+        session.add(OutboundQueue(company_id=legacy, connector=unassigned, entity_type="inventory",
+                                  entity_id="10", status="pending", retry_count=0))
+        await session.commit()
+    try:
+        async with get_session_ctx() as session:
+            assert await connector_ownership_state(session, a, unassigned) == OWNERSHIP_UNASSIGNED
+            assert await connector_ownership_state(session, a, held) != OWNERSHIP_UNASSIGNED
+        # Each refusal is its own request, as a person's reset attempt is.
+        for refused in (lock_unassigned_connector, release_unassigned_connector):
+            async with get_session_ctx() as session:
+                with pytest.raises(ConnectorOwnershipError):
+                    await refused(session, held)
 
-        assert await connector_ownership_state(session, a, unassigned) == OWNERSHIP_UNASSIGNED
-        assert await connector_ownership_state(session, a, held) != OWNERSHIP_UNASSIGNED
-        with pytest.raises(ConnectorOwnershipError):
-            await lock_unassigned_connector(session, held)
-        with pytest.raises(ConnectorOwnershipError):
-            await release_unassigned_connector(session, held)
+        async with get_session_ctx() as session:
+            await release_unassigned_connector(session, unassigned)
+            await session.flush()
 
-        await release_unassigned_connector(session, unassigned)
-        await session.flush()
-
-        for model in (ConnectorConfig, OutboundQueue):
-            assert await session.scalar(sa.select(sa.func.count()).select_from(model).where(
-                model.connector == unassigned
-            )) == 0
-        resets = (await session.execute(
-            sa.select(SyncRun.company_id).where(
-                SyncRun.connector == unassigned, SyncRun.entity == CONNECTOR_RESET_ENTITY
-            )
-        )).scalars().all()
-        assert resets == [legacy]
-        assert await session.scalar(sa.select(sa.func.count()).select_from(ConnectorConfig).where(
-            ConnectorConfig.connector == held
-        )) == 2
-        await session.rollback()
+            for model in (ConnectorConfig, OutboundQueue):
+                assert await session.scalar(sa.select(sa.func.count()).select_from(model).where(
+                    model.connector == unassigned
+                )) == 0
+            resets = (await session.execute(
+                sa.select(SyncRun.company_id).where(
+                    SyncRun.connector == unassigned, SyncRun.entity == CONNECTOR_RESET_ENTITY
+                )
+            )).scalars().all()
+            assert resets == [legacy]
+            assert await session.scalar(sa.select(sa.func.count()).select_from(ConnectorConfig).where(
+                ConnectorConfig.connector == held
+            )) == 2
+            await session.rollback()
+    finally:
+        await _forget([unassigned, held], a)

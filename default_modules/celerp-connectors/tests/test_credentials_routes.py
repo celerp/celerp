@@ -3,6 +3,7 @@
 """Tests for connector setup and disconnect routes."""
 from __future__ import annotations
 
+import contextlib
 import os
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 
@@ -60,38 +61,32 @@ def _session():
 
 
 @pytest.fixture(autouse=True)
-def _owned_connector_boundary():
-    with patch(
-        "celerp.connectors.ownership.claim_connector_ownership",
-        new=AsyncMock(return_value=(object(), True)),
-    ), patch(
-        "celerp.connectors.ownership.lock_connector_operation",
-        new=AsyncMock(return_value=SimpleNamespace(
-            webhook_ids=[], webhook_secret=None, first_sync_state="pending",
-            entity_directions=dict(WOO_DEFAULTS))),
-    ), patch(
-        "celerp.connectors.ownership.release_connector_ownership",
-        new=AsyncMock(),
-    ), patch(
-        "celerp.connectors.ownership.bind_connector_store",
-        new=AsyncMock(),
-    ), patch(
-        "celerp.connectors.ownership.connector_owned_by_company",
-        new=AsyncMock(return_value=True),
-    ), patch(
-        "celerp_inventory.services.detach_external_links_for_platform",
-        new=AsyncMock(),
-    ), patch(
-        "celerp.services.outbound_url.asyncio.get_running_loop",
-        return_value=SimpleNamespace(
-            getaddrinfo=AsyncMock(return_value=[
-                (2, 1, 6, "", ("93.184.216.34", 443))
-            ])
-        ),
-    ), patch(
-        "celerp.connectors.woocommerce.WooCommerceConnector.deregister_webhooks",
-        new=AsyncMock(),
-    ):
+def _owned_connector_boundary(request):
+    """The connection's ownership stands in for the tests on a fake session; the tests on the
+    real database (``connector_session``) run the real ownership boundary, locks included."""
+    with contextlib.ExitStack() as stack:
+        if "connector_session" not in request.fixturenames:
+            for target, mock in (
+                ("claim_connector_ownership", AsyncMock(return_value=(object(), True))),
+                ("lock_connector_operation", AsyncMock(return_value=SimpleNamespace(
+                    webhook_ids=[], webhook_secret=None, first_sync_state="pending",
+                    entity_directions=dict(WOO_DEFAULTS)))),
+                ("release_connector_ownership", AsyncMock()),
+                ("bind_connector_store", AsyncMock()),
+                ("connector_owned_by_company", AsyncMock(return_value=True)),
+            ):
+                stack.enter_context(patch(f"celerp.connectors.ownership.{target}", new=mock))
+        stack.enter_context(patch("celerp_inventory.services.detach_external_links_for_platform", new=AsyncMock()))
+        stack.enter_context(patch(
+            "celerp.services.outbound_url.asyncio.get_running_loop",
+            return_value=SimpleNamespace(
+                getaddrinfo=AsyncMock(return_value=[
+                    (2, 1, 6, "", ("93.184.216.34", 443))
+                ])
+            ),
+        ))
+        stack.enter_context(patch(
+            "celerp.connectors.woocommerce.WooCommerceConnector.deregister_webhooks", new=AsyncMock()))
         yield
 
 
@@ -714,8 +709,7 @@ async def test_first_sync_runs_once(connector_session):
     user = SimpleNamespace(id="user-1")
     request = FirstSyncRequest(directions={**WOO_DEFAULTS, "products": "both"}, match="take",
                                orders_from=date(2026, 9, 1))
-    with patch("celerp.connectors.ownership.lock_connector_operation", new=AsyncMock(return_value=config)), \
-            patch("celerp.connectors.relay_token.fetch_context", new=AsyncMock(return_value=ctx)), \
+    with patch("celerp.connectors.relay_token.fetch_context", new=AsyncMock(return_value=ctx)), \
             patch("celerp.services.background.spawn_background", spawned.append):
         out = await start_first_sync("woocommerce", request, str(cid), user, None, session)
         assert out == {"ok": True}
@@ -749,8 +743,7 @@ async def test_first_sync_without_products_in_records_no_batch(connector_session
     config = await connect(session, cid, "woocommerce", dict(WOO_DEFAULTS))
     ctx = ConnectorContext(company_id=str(cid), access_token="k:s", store_handle=STORE)
     spawned = []
-    with patch("celerp.connectors.ownership.lock_connector_operation", new=AsyncMock(return_value=config)), \
-            patch("celerp.connectors.relay_token.fetch_context", new=AsyncMock(return_value=ctx)), \
+    with patch("celerp.connectors.relay_token.fetch_context", new=AsyncMock(return_value=ctx)), \
             patch("celerp.services.background.spawn_background", spawned.append):
         await start_first_sync("woocommerce", FirstSyncRequest(directions=WOO_DEFAULTS, match="keep"),
                                str(cid), SimpleNamespace(id="user-1"), None, session)
@@ -758,5 +751,6 @@ async def test_first_sync_without_products_in_records_no_batch(connector_session
         coro.close()
     row = await session.get(ConnectorFirstSync, (str(cid), "woocommerce"), populate_existing=True)
     assert row.batch_id is None
+    await session.refresh(config)
     # Orders start at the first sync by default: past orders are normally in the books already.
     assert abs((config.orders_from - row.started_at).total_seconds()) < 1

@@ -291,7 +291,7 @@ async def test_unchanged_product_not_sent(connector_session):
     await emit_event(session, company_id=cid, entity_id="item:u", entity_type="item", event_type="item.updated",
                      data={"fields_changed": {"name": {"old": "Mug", "new": "Big mug"}}}, actor_id=None,
                      location_id=None, source="api", idempotency_key="rename-u", metadata_={})
-    await session.flush()
+    await session.commit()  # a person's edit is its own request
     result = await WooCommerceConnector().sync_products_out(ctx)
     assert [_json.loads(c.request.content) for c in put.calls] == [{"name": "Big mug"}]
     assert result.updated == 1
