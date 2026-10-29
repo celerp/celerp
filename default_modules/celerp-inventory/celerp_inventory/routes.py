@@ -5032,14 +5032,15 @@ async def list_import_batches(
 
 
 async def _undoable_batch(session: AsyncSession, company_id, batch_uuid: uuid.UUID, *, lock: bool):
-    """The company's import batch, refused when it is missing, already undone or not reversible."""
+    """The company's import batch, refused when it is missing, already undone or not reversible.
+    Only a batch of the company is read, so another company's batch is never locked."""
     from celerp_inventory.models_import_batch import ImportBatch
 
-    query = select(ImportBatch).where(ImportBatch.id == batch_uuid)
+    query = select(ImportBatch).where(ImportBatch.id == batch_uuid, ImportBatch.company_id == company_id)
     if lock:
         query = query.with_for_update()
     batch = (await session.execute(query.execution_options(populate_existing=True))).scalar_one_or_none()
-    if batch is None or batch.company_id != company_id:
+    if batch is None:
         raise HTTPException(status_code=404, detail=t("inventory.err_import_not_found"))
     if batch.status == "undone":
         raise HTTPException(status_code=409, detail=t("inventory.err_import_already_undone"))
