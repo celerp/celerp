@@ -490,15 +490,17 @@ async def test_a_judgment_without_the_lock_protects_only_the_named_write(session
     assert _kinds() == ["unprotected"]
 
 
-@pytest.mark.parametrize("columns, by", [("every", "named"), ("one", "named"), ("every", "another")])
-async def test_a_read_request_may_make_only_the_note_it_is_allowed(session, auth, monkeypatch, columns, by):
+@pytest.mark.parametrize("columns, by, path", [("every", "named", "/observed"), ("one", "named", "/observed"),
+                                               ("every", "another", "/observed"), ("every", "named", "/elsewhere")])
+async def test_a_read_request_may_make_only_the_note_it_is_allowed(session, auth, monkeypatch, columns, by, path):
     """A note READ_ROUTE_WRITES allows a read request is its columns only, written by its
-    functions only: a further column, or the same write from elsewhere, is reported."""
+    functions only, for its route only: a further column, the same write from elsewhere,
+    or from another read route, is reported."""
     allowed = tuple(c.name for c in MigrationRun.__table__.columns) if columns == "every" else ("cancel_requested_at",)
     monkeypatch.setitem(mutation_observer.READ_ROUTE_WRITES, ("migration_runs", "UPDATE"), mutation_observer.ReadNote(
-        allowed, ("celerp/services/migrations.py request_cancel",), "a note made while reading"))
+        allowed, ("celerp/services/migrations.py request_cancel",), "a note made while reading", route="GET /observed"))
     run_id = await _migration_run(session, auth, "running")
-    with serving("GET", "/observed"):
+    with serving("GET", path):
         _authorize(session, auth)
         if by == "named":
             await request_cancel(session, await session.get(MigrationRun, run_id))
@@ -506,7 +508,7 @@ async def test_a_read_request_may_make_only_the_note_it_is_allowed(session, auth
             await judge_without_company_lock(session, auth["company_id"])
             await session.execute(update(MigrationRun).where(MigrationRun.id == run_id).values(status="cancelled"))
             await session.commit()
-    expected = ["read-route-write"] if (columns, by) != ("every", "named") else []
+    expected = ["read-route-write"] if (columns, by, path) != ("every", "named", "/observed") else []
     assert [k for k in _kinds() if k != "unprotected"] == expected
 
 
