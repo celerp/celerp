@@ -1,0 +1,18 @@
+{
+  "id": "reports.filtering-and-export",
+  "title": "Switch a report's date range",
+  "summary": "Use a preset period or a custom range; the report keeps your sort when the period changes.",
+  "keywords": ["date range", "preset", "custom range", "this month", "period"],
+  "routes": ["/reports/ar-aging"],
+  "permission": "view_financial_reports",
+  "order": 2,
+  "steps": [
+    {
+      "text": "Each report has a row of preset periods such as {month}, or a custom range typed into the two date fields beside them.",
+      "labels": {"month": "filter.this_month"},
+      "image": null,
+      "capture": {"route": "/reports/ar-aging", "selector": "main", "actions": []}
+    }
+  ],
+  "related": ["reports.operational-reports", "accounting.financial-reports"]
+}

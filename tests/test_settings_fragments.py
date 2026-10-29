@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 import celerp.gateway.state as gw_state
 
@@ -145,6 +146,11 @@ async def test_cloud_status_uses_ws_pushed_tier_when_relay_unreachable(client, o
         patch.object(gw_state, "_session_token", ""),
         patch.object(gw_state, "_subscription_tier", "free"),
         patch.object(gw_state, "_subscription_status", "active"),
+        # The relay cannot be reached: subscription_status answers None and the
+        # live billing read raises.
+        patch("celerp.services.cloud_entitlement.subscription_status", new=AsyncMock(return_value=None)),
+        patch("celerp.services.cloud_entitlement.authenticated_request",
+              new=AsyncMock(side_effect=httpx.ConnectError("relay unreachable"))),
         patch("celerp.gateway.client.get_client", return_value=MagicMock(relay_status="active")),
         patch("celerp.services.cloud_entitlement.authenticated_request", new=AsyncMock(side_effect=OSError)),
     ):

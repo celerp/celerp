@@ -1,0 +1,18 @@
+{
+  "id": "contacts.settings",
+  "title": "Contact settings",
+  "summary": "Set up payment terms, price lists, tags and defaults for new contacts.",
+  "keywords": ["settings", "payment terms", "price lists", "tags", "defaults"],
+  "routes": ["/settings/contacts"],
+  "permission": "manage_module_settings",
+  "order": 3,
+  "steps": [
+    {
+      "text": "On {title}, the tabs cover payment terms, {prices}, {tags} and {defaults} for new contacts.",
+      "labels": {"title": "settings_contacts.page_header", "prices": "page.price_lists", "tags": "page.tags", "defaults": "settings_contacts.tab_defaults"},
+      "image": null,
+      "capture": {"route": "/settings/contacts", "selector": "main", "actions": []}
+    }
+  ],
+  "related": ["contacts.add-customer", "contacts.add-vendor"]
+}

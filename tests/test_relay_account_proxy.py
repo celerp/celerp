@@ -222,6 +222,8 @@ async def test_account_methods_proxy_reports_free_email_quota():
         data = await account_methods_api(user=MagicMock(id="root"), session=MagicMock())
     assert data["free_email_quota"] == 10
 
+    from celerp.routers.health import _relay_methods
+    _relay_methods.clear()
     client.get = AsyncMock(side_effect=ConnectionError("down"))
     with (
         patch("celerp.gateway.state.relay_http_url", return_value="https://relay.test"),

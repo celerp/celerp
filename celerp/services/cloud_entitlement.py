@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import AsyncIterable, Callable
 
 log = logging.getLogger(__name__)
 
@@ -94,8 +95,11 @@ async def persisted_api_key() -> str:
 
 async def authenticated_request(method: str, path: str, *, total_s: float = RELAY_ENTITLEMENT_TIMEOUT,
                                 json: dict | None = None, params: dict | None = None,
-                                content: bytes | None = None, api_key: str | None = None):
-    """Make one bounded authenticated Connect request; ``content`` sends raw bytes instead of JSON."""
+                                content: bytes | Callable[[], AsyncIterable[bytes]] | None = None,
+                                headers: dict[str, str] | None = None, api_key: str | None = None):
+    """Make one bounded authenticated Connect request. ``content`` sends a raw body
+    instead of JSON: bytes (octet-stream unless ``headers`` names the type), or a
+    factory of a fresh body stream for each connection attempt."""
     from celerp.config import ensure_instance_id, settings
     from celerp.gateway.state import (
         fetch_relay_auth, is_foreign_relay_identity,
@@ -112,13 +116,14 @@ async def authenticated_request(method: str, path: str, *, total_s: float = RELA
         if (pending_verifier
                 and is_foreign_relay_identity(authenticated_iid, local_iid)):
             return None
-        headers = {"Authorization": f"Bearer {jwt}"}
+        sent = {"Authorization": f"Bearer {jwt}"}
         raw = {}
         if content is not None:
-            headers["Content-Type"] = "application/octet-stream"
-            raw = {"content": content}
+            sent["Content-Type"] = "application/octet-stream"
+            raw = {"content": content() if callable(content) else content}
+        sent.update(headers or {})
         return await client.request(
-            method, f"{base}{path}", json=json, params=params, **raw, headers=headers)
+            method, f"{base}{path}", json=json, params=params, **raw, headers=sent)
 
     return await with_relay_client(total_s, _op)
 

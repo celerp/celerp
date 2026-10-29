@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import atexit
 import os
 import shutil
@@ -11,6 +12,13 @@ from pathlib import Path
 from conftest_support import (
     is_own_test_config, provision_worker_db, resolve_worker_config, resolve_worker_data_dir, skip_relay_check_in,
     worker_label)
+
+# No event loop is current until a test makes one. Otherwise the first async test's
+# runner asks for the current loop and asyncio makes one on the spot; the runner puts
+# it back as current afterwards, and the next sync test that calls asyncio.run()
+# replaces it without closing it, so its sockets are reported as unclosed in whichever
+# later test the garbage collector happens to run in.
+asyncio.set_event_loop(None)
 
 # Must be set before celerp.config is imported (JWT guard fires at module load).
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
@@ -149,7 +157,7 @@ from ui.app import app as _ui_app
 import sys as _sys, os as _os
 from pathlib import Path
 
-from test_helpers import REPO_ROOT, DATABASE_URL, make_test_token, authed_cookies, _crm_available, company_auth  # noqa: F401
+from test_helpers import REPO_ROOT, DATABASE_URL, make_test_token, authed_cookies, _crm_available, company_auth, settle_background  # noqa: F401
 
 # Register inventory module routes onto the test app.
 _inv_src = _os.path.join(_os.path.dirname(__file__), "default_modules", "celerp-inventory")
@@ -456,16 +464,22 @@ def _ensure_slots() -> None:
 
 @pytest.fixture(autouse=True)
 def _reset_hot_path_caches():
-    """Bust the in-process drain cache before each test.
+    """Bust the in-process drain cache and relay methods cache before each test.
 
-    The module-level cache is correct at runtime (single process, explicit bust
-    on mutation).  In tests, each test rolls back its database changes, so the
-    cache must be cleared to avoid leaking state between tests.
+    The module-level caches are correct at runtime (single process, explicit
+    bust on mutation, or a time-limited relay answer). In tests, each test rolls
+    back its database changes and mocks its own relay, so the caches must be
+    cleared to avoid leaking state between tests.
     """
+    import asyncio
+    from celerp.routers import health
     from celerp.services.runtime_state import _drain_cache_bust
     _drain_cache_bust()
+    health._relay_methods.clear()
+    health._relay_methods_lock = asyncio.Lock()
     yield
     _drain_cache_bust()
+    health._relay_methods.clear()
 
 
 @pytest.fixture(autouse=True)
@@ -636,6 +650,21 @@ def _ui_api_not_running(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _held_ai_limits():
+    """Test relays model a current AI service: the app holds its published limits, so
+    a model call does not first fetch them (tests/test_ai_deadlines.py forgets them
+    to test the fetch itself). Set and restored without monkeypatch: an autouse
+    fixture that requests it sets it up ahead of the fixtures that restore shared
+    state, which would then tear down while a test's patches are still in place
+    (tests/test_conftest_fixture_order.py)."""
+    from celerp.ai import deadlines
+    before = deadlines._held
+    deadlines._held = deadlines.CURRENT_RELAY_DEFAULTS
+    yield
+    deadlines._held = before
+
+
+@pytest.fixture(autouse=True)
 def _mock_get_modules_default():
     """Default get_modules mock — returns empty list so settings page always has a valid response."""
     from unittest.mock import patch, AsyncMock
@@ -803,6 +832,22 @@ async def committed_engine():
 
 
 @pytest_asyncio.fixture
+async def _background_work_finishes():
+    """Background work a test's requests started finishes on the test's own event
+    loop. Left running, it would be cut off when the loop closes, and a database
+    connection it held would only be reported unclosed in some later test."""
+    yield
+    await settle_background()
+
+
+def pytest_collection_modifyitems(items):
+    # Every async test, and only those: a sync test has no loop of its own to settle.
+    for item in items:
+        if pytest_asyncio.is_async_test(item) and "_background_work_finishes" not in item.fixturenames:
+            item.fixturenames.append("_background_work_finishes")
+
+
+@pytest_asyncio.fixture
 async def session(_db_engine) -> AsyncSession:
     """Per-test isolation by transaction rollback — nothing commits to disk. The
     test runs inside an outer transaction; the app's session.commit() calls become
@@ -843,6 +888,15 @@ def ids():
 async def auth(session, ids):
     """A company with its books and an admin (test_helpers.company_auth), and the admin's request headers."""
     return await company_auth(session, ids["company_id"], ids["user_id"])
+
+
+@pytest_asyncio.fixture
+async def drained_jobs():
+    """Drains the AI jobs a test started (``test_helpers.drain_jobs``); request it
+    after ``client`` and ``session`` so it is torn down before them."""
+    from test_helpers import drain_jobs
+    yield
+    await drain_jobs()
 
 
 @pytest_asyncio.fixture
@@ -895,10 +949,22 @@ async def client(session: AsyncSession):
         bind=await session.connection(), class_=AsyncSession,
         expire_on_commit=False, join_transaction_mode="create_savepoint")
 
-    with patch("celerp.gateway.client._client", MagicMock()), \
+    # AI job tasks run beside the requests that start them, on the same connection.
+    # Their sessions join the outer transaction without savepoints of their own, so
+    # a job's commit can never release a savepoint a request session still holds.
+    job_factory = async_sessionmaker(
+        bind=await session.connection(), class_=AsyncSession,
+        expire_on_commit=False, join_transaction_mode="rollback_only")
+    # The model gate's condition binds to the event loop that first waits on it, and
+    # every test runs on its own loop: each test gets a gate of its own.
+    from celerp.ai import jobs
+
+    with patch("celerp.ai.jobs.gate", jobs.ModelGate(jobs.gate.size)), \
+         patch("celerp.gateway.client._client", MagicMock()), \
          patch("celerp.gateway.state.get_session_token", return_value="test-session-token"), \
          patch("celerp.middleware.get_session_ctx", _shared_session_ctx), \
-         patch("celerp.db.LifecycleSessionLocal", lifecycle_factory):
+         patch("celerp.db.LifecycleSessionLocal", lifecycle_factory), \
+         patch("celerp.ai.jobs.SessionLocal", job_factory):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             yield c
         # Work a request left running (an email send and its receipt) finishes on this
@@ -1019,16 +1085,21 @@ def no_connection_off_this_machine(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def account_methods_offline(monkeypatch):
-    """Answer the screens' account-methods request as the API does when the relay is
-    unreachable. Opening a document refreshes the free-send quota from it in a task that
-    outlives the test. A test about the answer patches it again itself."""
+def relay_backed_reads_offline(monkeypatch):
+    """Answer the screens' requests whose API answer comes from the relay (account
+    methods, the AI offer) as the API does when the relay is unreachable. Opening a
+    document refreshes the free-send quota in a task that outlives the test, and the
+    dashboard reads the AI offer. A test about an answer patches it again itself."""
     import ui.api_client as api
 
-    async def _offline(token):
+    async def _methods_offline(token):
         return {"google": False, "free_email_quota": 0, "google_start_url": ""}
 
-    monkeypatch.setattr(api, "account_methods", _offline)
+    async def _offer_offline(token):
+        return {"paid_ai": False, "free_ai_questions": None, "plan_ai_questions": None}
+
+    monkeypatch.setattr(api, "account_methods", _methods_offline)
+    monkeypatch.setattr(api, "ai_offer", _offer_offline)
 
 
 @pytest.fixture

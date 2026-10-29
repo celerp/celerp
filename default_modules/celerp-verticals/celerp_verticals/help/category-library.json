@@ -1,0 +1,24 @@
+{
+  "id": "verticals.category-library",
+  "title": "Adding categories from an industry preset",
+  "summary": "Pick category types in bulk for jewelry, retail and other common trades, or add one at a time.",
+  "keywords": ["vertical", "industry", "preset", "category library", "gems", "jewelry"],
+  "routes": ["/settings/inventory"],
+  "permission": "manage_module_settings",
+  "order": 2,
+  "steps": [
+    {
+      "text": "Open {settings} and go to the Categories tab; your applied categories are listed under {yours}.",
+      "labels": {"settings": "settings_inventory.page_header", "yours": "settings.your_categories"},
+      "image": null,
+      "capture": {"route": "/settings/inventory?tab=categories", "selector": "main", "actions": []}
+    },
+    {
+      "text": "Expand {browse} to add categories one at a time, or apply a whole industry preset in a single step.",
+      "labels": {"browse": "settings.browse_library"},
+      "image": null,
+      "capture": {"route": "/settings/inventory?tab=categories", "selector": "main", "actions": []}
+    }
+  ],
+  "related": ["verticals.business-type"]
+}

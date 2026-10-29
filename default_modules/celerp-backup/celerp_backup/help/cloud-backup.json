@@ -1,0 +1,24 @@
+{
+  "id": "backup.cloud-backup",
+  "title": "Automatic encrypted backups to the cloud",
+  "summary": "Celerp Connect keeps an encrypted copy of your database so a lost machine does not mean lost books.",
+  "keywords": ["backup", "cloud backup", "encrypted", "restore", "disaster recovery", "celerp connect"],
+  "routes": ["/settings/cloud"],
+  "permission": "manage_integrations",
+  "order": 1,
+  "steps": [
+    {
+      "text": "Open {access} from Settings. Celerp Connect adds {backup}: your database is encrypted on this machine before it ever leaves it.",
+      "labels": {"access": "settings_cloud.web_access", "backup": "cloud.feature_backup_title"},
+      "image": null,
+      "capture": {"route": "/settings/cloud", "selector": "main", "actions": []}
+    },
+    {
+      "text": "Once Celerp Connect is active, the status tab here shows when the last backup ran and when the next one is due.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/settings/cloud", "selector": "main", "actions": []}
+    }
+  ],
+  "related": ["backup.local-backup"]
+}

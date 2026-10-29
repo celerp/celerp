@@ -1,0 +1,24 @@
+{
+  "id": "dashboard.overview",
+  "title": "Read your dashboard",
+  "summary": "The dashboard's cards, charts and activity feed summarize your company's current numbers.",
+  "keywords": ["dashboard", "kpi", "overview", "charts", "activity", "home page"],
+  "routes": ["/dashboard"],
+  "permission": "view_dashboards",
+  "order": 1,
+  "steps": [
+    {
+      "text": "Open {dashboard} from the sidebar. The cards at the top show the numbers your company's business type cares about most, such as stock value and receivables.",
+      "labels": {"dashboard": "nav.dashboard"},
+      "image": null,
+      "capture": {"route": "/dashboard", "selector": "main", "actions": []}
+    },
+    {
+      "text": "{quick} underneath the charts jump straight to the lists and reports those numbers come from.",
+      "labels": {"quick": "page.quick_links"},
+      "image": null,
+      "capture": {"route": "/dashboard", "selector": "main", "actions": []}
+    }
+  ],
+  "related": ["dashboard.getting-started"]
+}

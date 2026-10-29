@@ -1,0 +1,30 @@
+{
+  "id": "connectors.connect-store",
+  "title": "Connecting a sales channel or books app",
+  "summary": "Bring in orders and products from your store, or send invoices to your accounting software.",
+  "keywords": ["shopify", "woocommerce", "quickbooks", "xero", "connector", "sync", "channel", "celerp connect"],
+  "routes": ["/settings/cloud"],
+  "permission": "manage_integrations",
+  "order": 1,
+  "steps": [
+    {
+      "text": "Open {access} from Settings. Celerp Connect adds {website} to bring in orders, products and customers from Shopify and WooCommerce on a schedule.",
+      "labels": {"access": "settings_cloud.web_access", "website": "cloud.feature_website_title"},
+      "image": null,
+      "capture": {"route": "/settings/cloud", "selector": "main", "actions": []}
+    },
+    {
+      "text": "The same subscription adds {accounting} to push invoices and contacts to QuickBooks or Xero and reconcile the bank feed, so nothing is entered twice.",
+      "labels": {"accounting": "cloud.feature_accounting_title"},
+      "image": null,
+      "capture": {"route": "/settings/cloud", "selector": "main", "actions": []}
+    },
+    {
+      "text": "Once Celerp Connect is active, this page gains a Website tab and an Accounting tab; open either one to connect a store or books app and choose how often it syncs.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/settings/cloud", "selector": "main", "actions": []}
+    }
+  ],
+  "related": ["connectors.accountant-access"]
+}

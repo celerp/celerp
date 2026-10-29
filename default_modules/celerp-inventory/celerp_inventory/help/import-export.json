@@ -1,0 +1,24 @@
+{
+  "id": "inventory.import-export",
+  "title": "Import or export inventory",
+  "summary": "Bring items in from a spreadsheet, or export the current list.",
+  "keywords": ["import", "export", "csv", "spreadsheet", "bulk"],
+  "routes": ["/inventory", "/inventory/import"],
+  "permission": "import_export_data",
+  "order": 2,
+  "steps": [
+    {
+      "text": "On {inv}, use {exp} to download the current list, or {imp} to start an import.",
+      "labels": {"inv": "nav.inventory", "exp": "btn.export_csv", "imp": "btn.import"},
+      "image": null,
+      "capture": {"route": "/inventory", "selector": "main", "actions": []}
+    },
+    {
+      "text": "On {title}, use {dl} to get a blank spreadsheet in the expected format, then upload your file and map its columns.",
+      "labels": {"title": "page.import_inventory", "dl": "btn.download_template"},
+      "image": null,
+      "capture": {"route": "/inventory/import", "selector": "main", "actions": []}
+    }
+  ],
+  "related": ["inventory.add-item"]
+}

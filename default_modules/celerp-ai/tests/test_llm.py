@@ -11,6 +11,7 @@ from the recorded relay fixtures.
 from __future__ import annotations
 
 import json
+import uuid
 import os
 
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
@@ -22,11 +23,18 @@ from fastapi import HTTPException
 
 from celerp.ai import llm as llm_mod
 from celerp.ai.files import XLSX_CONTENT_TYPE
-from celerp.ai.llm import ModelResult, RelayError, _build_user_content, call_llm, complete
+from celerp.ai import deadlines, jobs
+from celerp.ai.llm import ModelResult, RelayError, _build_user_content
 
 from _fixtures import synthetic_response
 
 _RELAY = "https://relay.test"
+
+
+async def complete(*args, **kwargs) -> ModelResult:
+    """``llm.complete`` as every caller runs it: inside a slot of the app's model gate."""
+    async with jobs.gate.slot("interactive"):
+        return await llm_mod.complete(*args, **kwargs)
 
 
 @pytest.fixture
@@ -115,6 +123,86 @@ async def test_complete_sends_tools_and_reservation_only_when_set(relay):
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_complete_names_the_question_on_its_first_turn_only(relay):
+    import uuid
+
+    route = respx.post(f"{_RELAY}/ai/complete").mock(
+        return_value=httpx.Response(200, json=synthetic_response("text_completion")))
+    question = uuid.uuid4()
+    await complete([{"role": "user", "content": "hi"}], operation_id=question)
+    body = json.loads(route.calls.last.request.content)
+    assert body["operation_id"] == str(question)
+    assert "reservation_id" not in body
+
+    await complete([{"role": "user", "content": "hi"}], reservation_id="resv-1")
+    body = json.loads(route.calls.last.request.content)
+    assert "operation_id" not in body and body["reservation_id"] == "resv-1"
+
+    calls = len(route.calls)
+    with pytest.raises(ValueError):
+        await complete([{"role": "user", "content": "hi"}], reservation_id="resv-1", operation_id=question)
+    assert len(route.calls) == calls
+
+
+@pytest.mark.parametrize("status,detail,code", [
+    (503, {"code": "service_unavailable", "message": "m"}, "service_unavailable"),
+    (503, {"code": "busy", "message": "m"}, "busy"),
+    (429, {"code": "rate_limited", "message": "m"}, "busy"),
+    (429, {"code": "too_many_concurrent", "message": "m"}, "busy"),
+    (409, {"code": "continuation_expired", "message": "m"}, "continuation_expired"),
+    (409, {"code": "operation_expired", "message": "m"}, "operation_expired"),
+    (422, {"code": "operation_mismatch", "message": "m"}, "operation_mismatch"),
+    (409, "no code", "continuation_expired"),
+    (429, "no code", "busy"),
+])
+@pytest.mark.asyncio
+@respx.mock
+async def test_complete_maps_typed_failures(relay, status, detail, code):
+    respx.post(f"{_RELAY}/ai/complete").mock(return_value=httpx.Response(status, json={"detail": detail}))
+    with pytest.raises(RelayError) as ei:
+        await complete([{"role": "user", "content": "x"}])
+    assert (ei.value.code, ei.value.status, ei.value.credits, ei.value.retry_after) == (code, status, 0, None)
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_lost_answer_carries_its_charge(relay):
+    respx.post(f"{_RELAY}/ai/complete").mock(return_value=httpx.Response(
+        503, json={"detail": {"code": "outcome_unknown", "message": "lost", "credits": 2}}))
+    with pytest.raises(RelayError) as ei:
+        await complete([{"role": "user", "content": "x"}])
+    assert (ei.value.code, ei.value.status, ei.value.credits) == ("outcome_unknown", 503, 2)
+
+
+@pytest.mark.parametrize("detail,headers,wait", [
+    ({"code": "operation_in_progress", "message": "m", "retry_after": 3}, {"Retry-After": "7"}, 3.0),
+    ({"code": "operation_in_progress", "message": "m"}, {"Retry-After": "7"}, 7.0),
+    ({"code": "operation_in_progress", "message": "m"}, {}, 1.0),
+    ({"code": "operation_in_progress", "message": "m", "retry_after": "soon"}, {"Retry-After": "-1"}, 1.0),
+])
+@pytest.mark.asyncio
+@respx.mock
+async def test_question_in_progress_says_when_to_ask_again(relay, detail, headers, wait):
+    respx.post(f"{_RELAY}/ai/complete").mock(
+        return_value=httpx.Response(409, json={"detail": detail}, headers=headers))
+    with pytest.raises(RelayError) as ei:
+        await complete([{"role": "user", "content": "x"}])
+    assert (ei.value.code, ei.value.retry_after, ei.value.credits) == ("operation_in_progress", wait, 0)
+
+
+@pytest.mark.parametrize("code", ["not_available", "plan_limit", "quota_exceeded"])
+@pytest.mark.asyncio
+@respx.mock
+async def test_typed_402_passes_through(relay, code):
+    detail = {"code": code, "message": "m"}
+    respx.post(f"{_RELAY}/ai/complete").mock(return_value=httpx.Response(402, json={"detail": detail}))
+    with pytest.raises(HTTPException) as ei:
+        await complete([{"role": "user", "content": "x"}])
+    assert (ei.value.status_code, ei.value.detail) == (402, detail)
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_complete_parses_message_model_usage(relay):
     respx.post(f"{_RELAY}/ai/complete").mock(
         return_value=httpx.Response(200, json=synthetic_response("text_completion")))
@@ -198,25 +286,69 @@ async def test_plain_503_remains_busy(relay):
     assert (ei.value.code, ei.value.status) == ("busy", 503)
 
 
+@pytest.mark.parametrize("case", ["connected", "no_key", "disconnected"])
+@pytest.mark.asyncio
+async def test_complete_without_session_header(monkeypatch, case):
+    """With no Connect session the call uses the install Bearer, or names why it cannot."""
+    from unittest.mock import AsyncMock, patch
+    from celerp.config import settings
+    monkeypatch.setattr(llm_mod, "relay_session_headers", lambda: {"X-Session-Token": "", "X-Instance-ID": ""})
+    monkeypatch.setattr(settings, "cloud_disconnected", case == "disconnected")
+    reply = httpx.Response(200, json={"message": {"role": "assistant", "content": "hi"},
+                                      "model_used": "m", "usage": {}, "remaining": 29})
+    bearer = AsyncMock(return_value=None if case == "no_key" else reply)
+    with patch("celerp.services.cloud_entitlement.authenticated_request", new=bearer):
+        if case == "connected":
+            result = await complete([{"role": "user", "content": "x"}])
+            assert result.remaining == 29
+            bearer.assert_awaited_once()
+            args, kwargs = bearer.await_args
+            assert args == ("POST", "/ai/complete")
+            body = b"".join([chunk async for chunk in kwargs["content"]()])
+            assert json.loads(body)["messages"] == [{"role": "user", "content": "x"}]
+            assert kwargs["total_s"] == deadlines.call_budget(await deadlines.limits(), len(body)).total_s
+            return
+        with pytest.raises(RelayError) as ei:
+            await complete([{"role": "user", "content": "x"}])
+    if case == "no_key":
+        assert ei.value.code == "no_account"
+        bearer.assert_awaited_once()
+    else:
+        assert ei.value.code == "no_session"
+        bearer.assert_not_awaited()
+
+
+_FILES_402 = ("This plan allows 1 file per question. Remove the extra files, "
+              "or choose Connect + AI to attach more.")
+
+
+@pytest.mark.parametrize("status,body,expected", [
+    (402, {"detail": "AI is not available on this plan"},
+     {"code": "not_available", "message": "AI is not available on this plan"}),
+    (402, {"detail": _FILES_402}, {"code": "plan_limit", "message": _FILES_402}),
+    (413, {"detail": {"code": "free_text_too_large", "message": "too long"}},
+     {"code": "free_text_too_large", "message": "too long"}),
+    (503, {"detail": {"code": "free_paused", "message": "paused",
+                      "resets_at": "2026-11-01T00:00:00+00:00"}},
+     {"code": "free_paused", "message": "paused", "resets_at": "2026-11-01T00:00:00+00:00"}),
+])
 @pytest.mark.asyncio
 @respx.mock
-async def test_plain_402_keeps_quota_code(relay):
-    respx.post(f"{_RELAY}/ai/complete").mock(
-        return_value=httpx.Response(402, json={"detail": "AI is not available on this plan"}))
+async def test_complete_maps_free_codes(relay, status, body, expected):
+    respx.post(f"{_RELAY}/ai/complete").mock(return_value=httpx.Response(status, json=body))
     with pytest.raises(HTTPException) as ei:
         await complete([{"role": "user", "content": "x"}])
-    assert ei.value.detail == {
-        "code": "quota_exceeded",
-        "message": "AI is not available on this plan",
-    }
+    assert ei.value.status_code == status
+    assert ei.value.detail == expected
 
 
 @pytest.mark.asyncio
-async def test_complete_no_session(monkeypatch):
-    monkeypatch.setattr(llm_mod, "relay_session_headers", lambda: {"X-Session-Token": "", "X-Instance-ID": ""})
-    with pytest.raises(RelayError) as ei:
-        await complete([{"role": "user", "content": "x"}])
-    assert ei.value.code == "no_session"
+@respx.mock
+async def test_complete_remaining_null_stays_unknown(relay):
+    respx.post(f"{_RELAY}/ai/complete").mock(return_value=httpx.Response(
+        200, json={"message": {"role": "assistant", "content": "hi"}, "remaining": None}))
+    result = await complete([{"role": "user", "content": "x"}])
+    assert result.remaining is None
 
 
 @pytest.mark.asyncio
@@ -227,44 +359,3 @@ async def test_complete_gateway_error(relay):
         await complete([{"role": "user", "content": "x"}])
     assert (ei.value.code, ei.value.status) == ("gateway_error", 500)
 
-
-# -- call_llm ---------------------------------------------------------------
-
-@pytest.mark.asyncio
-@respx.mock
-async def test_call_llm_returns_content(relay):
-    route = respx.post(f"{_RELAY}/ai/complete").mock(
-        return_value=httpx.Response(200, json=synthetic_response("text_completion")))
-    result = await call_llm("advisory-model", "system", "how many items")
-    assert result.message["content"].startswith("You currently have 42 items")
-    assert result.usage
-    body = json.loads(route.calls.last.request.content)
-    assert body["messages"][0]["role"] == "system"
-    assert body["hints"]["file_count"] == 0
-    assert "tools" not in body
-
-
-@pytest.mark.asyncio
-@respx.mock
-async def test_call_llm_quota_exceeded_raises_402(relay):
-    respx.post(f"{_RELAY}/ai/complete").mock(
-        return_value=httpx.Response(402, json=synthetic_response("error_402")))
-    with pytest.raises(HTTPException) as ei:
-        await call_llm("m", "s", "u")
-    assert ei.value.status_code == 402
-
-
-@pytest.mark.asyncio
-async def test_call_llm_no_session(monkeypatch):
-    monkeypatch.setattr(llm_mod, "relay_session_headers", lambda: {"X-Session-Token": ""})
-    with pytest.raises(RelayError) as ei:
-        await call_llm("m", "s", "u")
-    assert ei.value.code == "no_session"
-
-
-def test_ai_deadline_hierarchy_leaves_transport_margin():
-    from celerp.ai.llm import MODEL_CALL_TIMEOUT_S
-    from celerp.ai.service import AGENT_RUN_TIMEOUT_S
-    from ui.api_client import AI_QUERY_TIMEOUT_S
-
-    assert MODEL_CALL_TIMEOUT_S < AGENT_RUN_TIMEOUT_S < AI_QUERY_TIMEOUT_S

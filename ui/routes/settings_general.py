@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from urllib.parse import urlencode
 
 from fasthtml.common import *
 from starlette.requests import Request
@@ -161,8 +162,7 @@ def setup_routes(app):
                 )
             else:
                 content = _company_tab(company, lang=lang, is_owner=is_owner)
-                if is_owner:
-                    tab = "company"
+                tab = "company"
 
         return await base_shell(
             _section_breadcrumb("settings_general.breadcrumb_general"),
@@ -174,4 +174,5 @@ def setup_routes(app):
             lang=lang,
             extra_head=_phone_head_items(),
             request=request,
+            help_path="/settings/general?" + urlencode({"tab": tab}),
         )

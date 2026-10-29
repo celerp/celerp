@@ -104,6 +104,18 @@ from celerp_inventory.projections import _is_image_mime, is_core_item_key, is_it
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
+# What an item read returns depends on more than its route's permission: costs on
+# view_inventory_costs (a draft's on edit_inventory too), linked documents on
+# view_documents, and each field on the role's field visibility. The agent replays a
+# kept read only while all of that still holds (celerp.ai.service).
+_ITEM_READ_AGENT = {
+    "x-celerp-agent": True,
+    "x-celerp-agent-result-permissions": ["edit_inventory", "view_documents", "view_inventory_costs"],
+    "x-celerp-agent-field-visibility": True,
+}
+# An import's preview and commit price, count and file new locations by these.
+_IMPORT_PERMISSIONS = ["edit_inventory_amounts", "manage_company_settings", "set_inventory_prices"]
+
 
 # ---------------------------------------------------------------------------
 # Validation helpers
@@ -1468,7 +1480,7 @@ async def query_items(
     return resp
 
 
-@router.get("", openapi_extra={"x-celerp-agent": True})
+@router.get("", openapi_extra=_ITEM_READ_AGENT)
 async def list_items(
     request: Request,
     company_id=Depends(get_current_company_id),
@@ -1501,7 +1513,7 @@ async def list_items(
     return resp
 
 
-@router.get("/valuation", openapi_extra={"x-celerp-agent": True})
+@router.get("/valuation", openapi_extra=_ITEM_READ_AGENT)
 async def get_valuation(
     filters: ItemListFilters = Depends(),
     attr_filters: list[tuple[str, set[str]]] = Depends(_attr_filters),
@@ -2098,7 +2110,7 @@ async def import_preview(
 
 @router.post(
     "/import/preview", response_model=InventoryImportPreview,
-    openapi_extra={"x-celerp-agent": True, "x-celerp-agent-confirm": False},
+    openapi_extra={"x-celerp-agent": True, "x-celerp-agent-confirm": False, "x-celerp-agent-result-permissions": _IMPORT_PERMISSIONS},
     dependencies=[require_permission("import_export_data")],
 )
 async def import_preview_agent(
@@ -2130,7 +2142,7 @@ class InventoryImportCommit(BaseModel):
 
 @router.post(
     "/import/commit", response_model=BatchImportResult,
-    openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True},
+    openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-result-permissions": _IMPORT_PERMISSIONS},
     dependencies=[require_permission("import_export_data"), require_permission("edit_inventory")],
 )
 async def import_commit(
@@ -2169,7 +2181,7 @@ async def import_commit(
     )
 
 
-@router.get("/{entity_id}", dependencies=[require_permission("view_inventory")], openapi_extra={"x-celerp-agent": True})
+@router.get("/{entity_id}", dependencies=[require_permission("view_inventory")], openapi_extra=_ITEM_READ_AGENT)
 async def get_item(entity_id: str, company_id=Depends(get_current_company_id), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
     from celerp.models.company import Location
     from celerp.services.field_schema import get_effective_field_schema
@@ -2298,7 +2310,8 @@ async def _require_company_location(session: AsyncSession, company_id, location_
     await require_company_location(session, company_id, location_id)
 
 
-@router.post("", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True})
+@router.post("", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True,
+                                 "x-celerp-agent-result-permissions": ["set_inventory_prices"]})
 async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
     idem_key = payload.idempotency_key or str(uuid.uuid4())
     if payload.idempotency_key:
@@ -2526,7 +2539,9 @@ def is_cost_price_type(price_type: str) -> bool:
     return is_cost_list_name(name)
 
 
-@router.patch("/{entity_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True})
+@router.patch("/{entity_id}", openapi_extra={
+    "x-celerp-agent": True, "x-celerp-agent-idempotent": True,
+    "x-celerp-agent-result-permissions": ["edit_inventory_amounts", "revert_items_to_draft", "set_inventory_prices"]})
 async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
     if payload.idempotency_key:
         replay = await find_event_by_idempotency(session, company_id, payload.idempotency_key)

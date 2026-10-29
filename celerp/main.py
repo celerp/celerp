@@ -53,6 +53,7 @@ from celerp.routers import stars as stars_router_mod
 from celerp.importers.sinks import register_sink
 from celerp.services.migration_core_sink import SINK as CORE_SINK
 from celerp.routers import search as search_router_mod
+from celerp.routers import help as help_router_mod
 
 import celerp.models  # noqa: F401 - ensures kernel models (UserCompany, ImportBatch, DocShareToken) are registered
 
@@ -167,7 +168,8 @@ async def _verify_runtime_dependencies() -> None:
     from celerp.gateway.bootstrap import associate_partner_deployment
     from celerp.gateway import ensure_running, has_active_share
     from celerp.services import backup_scheduler
-    from celerp.ai.batch import fail_interrupted_jobs
+    from celerp.ai import jobs
+    from celerp.ai.usage import reconcile_usage_loop
     from celerp.ai.cleanup import run_cleanup_loop
     from celerp.services.session_tracker import run_jti_cleanup_loop
     from celerp.connectors.outbound_queue import (
@@ -186,7 +188,8 @@ async def _verify_runtime_dependencies() -> None:
         associate_partner_deployment,
         ensure_running,
         backup_scheduler.start,
-        fail_interrupted_jobs,
+        jobs.recover_on_start,
+        reconcile_usage_loop,
         run_cleanup_loop,
         run_jti_cleanup_loop,
         outbound_queue_loop,
@@ -571,20 +574,18 @@ async def _serve(_app: FastAPI, held):
         backup_scheduler.start()
         log.debug("Backup scheduler started")
 
-    # AI batch jobs cannot survive a restart: mark any left pending or running
-    # as failed so their owners are told to resend instead of waiting forever.
+    # AI jobs left by the last process resume first; only then does the usage
+    # reconcile loop start, so it never asks about a step a job is about to send.
     try:
-        from celerp.ai.batch import fail_interrupted_jobs
-        from celerp.db import LifecycleSessionLocal as _BatchSweepSession
-        async with _BatchSweepSession() as _sweep_session:
-            interrupted = await fail_interrupted_jobs(_sweep_session)
-            await _sweep_session.commit()
-        if interrupted:
-            logging.getLogger(__name__).warning(
-                "Marked %d interrupted AI batch job(s) as failed", interrupted
-            )
+        from celerp.ai import jobs
+        resumed = await jobs.recover_on_start()
+        if resumed:
+            logging.getLogger(__name__).info("Resumed %d AI job(s) left by the last process", resumed)
     except Exception:
-        logging.getLogger(__name__).exception("AI batch job sweep failed (non-fatal)")
+        logging.getLogger(__name__).exception("AI job recovery failed (non-fatal)")
+    from celerp.ai.usage import reconcile_usage_loop
+    from celerp.db import SessionLocal as _UsageSession
+    background.append(asyncio.create_task(reconcile_usage_loop(_UsageSession)))
 
     # Company migrations: finish interrupted starts, delete expired scans, mark runs whose
     # runner died with the last process as interrupted, and delete sources past retention.
@@ -656,11 +657,12 @@ async def _serve(_app: FastAPI, held):
     from celerp.notifications.sse import shutdown_all as _sse_shutdown
     _sse_shutdown()
 
-    # Stop background tasks, the backup scheduler and migration runs included, and wait for them
+    # Stop background tasks, the backup scheduler, migration runs and AI jobs included, and wait for them
+    from celerp.ai import jobs as _ai_jobs
     from celerp.services import backup_scheduler
     from celerp.services import migrations as _migration_runs
     background.append(backup_scheduler.stop())
-    await _stop_background_tasks(background + _migration_runs.running_tasks())
+    await _stop_background_tasks(background + _migration_runs.running_tasks() + _ai_jobs.running_tasks())
 
     # Close the tunnel and its run task, whoever started it (boot gate, auto-activate,
     # or a runtime share-create) - the gateway package owns that lifecycle now.
@@ -854,6 +856,7 @@ app.include_router(stars_router_mod.router, prefix="/stars", tags=["stars"])
 app.include_router(notifications.router)
 app.include_router(events_router_mod.router)
 app.include_router(search_router_mod.router, tags=["search"])
+app.include_router(help_router_mod.router, tags=["help"])
 app.include_router(migrations.router)
 app.include_router(company_backup.router)
 app.include_router(company_peers.router)

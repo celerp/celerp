@@ -16,12 +16,13 @@ from __future__ import annotations
 import json
 import os
 import uuid
+from types import SimpleNamespace
 
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 
 import pytest
 
-from celerp.ai import service
+from celerp.ai import deadlines, jobs, service
 from celerp.ai.llm import RelayError
 from ui.i18n import t
 from celerp.ai.service import (
@@ -29,7 +30,7 @@ from celerp.ai.service import (
     MAX_MODEL_TURNS,
     MAX_TOOL_CALLS_PER_RUN,
     MAX_TOOL_CALLS_PER_TURN,
-    MAX_TOTAL_RESULT_BYTES,
+    REQUEST_TEXT_BUDGET,
     AgentResult,
     _EMPTY_ANSWER,
     run_agent,
@@ -48,12 +49,14 @@ CAPS = {
     "list_items": {
         "name": "list_items", "method": "GET", "path": "/api/inventory/items",
         "path_names": (), "query_names": ("q",), "expects_body": False,
-        "inject_idempotency": False, "tool": _tool("list_items"),
+        "inject_idempotency": False, "result_permissions": (), "field_visibility": False,
+        "tool": _tool("list_items"),
     },
     "get_item": {
         "name": "get_item", "method": "GET", "path": "/api/inventory/items/{item_id}",
         "path_names": ("item_id",), "query_names": (), "expects_body": False,
-        "inject_idempotency": False, "tool": _tool("get_item"),
+        "inject_idempotency": False, "result_permissions": (), "field_visibility": False,
+        "tool": _tool("get_item"),
     },
     "create_contact": {
         "name": "create_contact", "method": "POST", "path": "/api/crm/contacts",
@@ -76,14 +79,24 @@ class FakeComplete:
             "messages": [dict(m) for m in messages],
             "tools": tools,
             "reservation_id": reservation_id,
+            "operation_id": kw.get("operation_id"),
         })
-        return self._results.pop(0)
+        result = self._results.pop(0)
+        if isinstance(result, BaseException):
+            raise result
+        return result
+
+
+async def _owner_authority(company_id, user_id):
+    return "owner", {}
 
 
 def _install(monkeypatch, results, execute=None):
-    """Wire the fake complete/compile/execute into the service module."""
+    """Wire the fake complete/compile/execute into the service module, and the asker's
+    authority (role and company settings) that read replay contracts are made under."""
     fake = FakeComplete(results)
     monkeypatch.setattr(service, "complete", fake)
+    monkeypatch.setattr(service, "_authority", _owner_authority)
     monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None: CAPS)
     if execute is not None:
         monkeypatch.setattr(service, "execute_agent_capability", execute)
@@ -98,11 +111,13 @@ def _execute_returning(result):
 
 async def _run(**over):
     kwargs = dict(
-        app=object(), authorization="Bearer tok", query="a question",
+        app=object(), bearer=lambda: "Bearer tok", query="a question",
         company_id=uuid.uuid4(), company_settings={}, user_id=uuid.uuid4(),
         role="owner", memory={"notes": [], "kv": {}}, file_ids=None, history=[],
+        operation_id=uuid.uuid4(),
     )
     kwargs.update(over)
+    kwargs.setdefault("journal", jobs.Journal(kwargs["operation_id"]))
     return await run_agent(**kwargs)
 
 
@@ -336,21 +351,6 @@ async def test_tool_404_surfaces_to_model_not_as_run_error(monkeypatch):
     assert result.answer == "I could not find that item."
 
 
-@pytest.mark.asyncio
-async def test_tool_403_surfaces_to_model_not_as_run_error(monkeypatch):
-    _install(
-        monkeypatch,
-        [
-            tool_result(calls=[tool_call("list_items", {"query": {"q": "x"}}, "d1")]),
-            tool_result(content="You do not have permission to view inventory."),
-        ],
-        execute=_execute_returning({"ok": False, "status": 403, "data": {"detail": "Forbidden"}}),
-    )
-    result = await _run()
-    assert result.error is None
-    assert "permission" in result.answer
-
-
 # -- Caps -------------------------------------------------------------------
 
 @pytest.mark.asyncio
@@ -428,18 +428,141 @@ async def test_mutation_overflow_noted_in_answer(monkeypatch):
 @pytest.mark.asyncio
 async def test_total_result_bytes_cap(monkeypatch):
     big = {"ok": True, "status": 200, "data": {"blob": "x" * 130000}}
-    _install(
+    fake = _install(
         monkeypatch,
         [
-            tool_result(calls=[tool_call("list_items", {"query": {"q": "a"}}, "b1")]),
+            tool_result(calls=[tool_call("list_items", {"query": {"q": "a"}}, "b1")],
+                        usage={"credits": 1}),
             tool_result(calls=[tool_call("list_items", {"query": {"q": "b"}}, "b2")]),
         ],
         execute=_execute_returning(big),
     )
-    assert 130000 < MAX_TOTAL_RESULT_BYTES < 260000
+    # The budget keeps every model call under the AI service's 256 KB text limit.
+    assert 130000 < REQUEST_TEXT_BUDGET < 256 * 1024
     result = await _run()
-    assert result.error is not None
-    assert "Too much data" in result.error
+    assert result.error is not None and "Too much data" in result.error
+    assert result.error_code == "too_much_data"
+    # The second read would have outgrown a model call, so it was never sent; the
+    # charged first turn stays counted.
+    assert len(fake.calls) == 2 and result.credits == 1
+
+
+@pytest.mark.asyncio
+async def test_continuation_refused_as_too_large_keeps_the_charge(monkeypatch):
+    from fastapi import HTTPException
+    fake = _install(
+        monkeypatch,
+        [
+            tool_result(calls=[tool_call("list_items", {"query": {"q": "a"}}, "t1")], usage={"credits": 1}),
+            HTTPException(status_code=413, detail={"code": "free_text_too_large", "message": "x"}),
+        ],
+        execute=_execute_returning({"ok": True, "status": 200, "data": {}}),
+    )
+    result = await _run()
+    assert result.error_code == "too_much_data" and result.credits == 1
+    assert result.pending_actions == [] and len(fake.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_first_turn_too_large_is_a_refusal(monkeypatch):
+    from fastapi import HTTPException
+    _install(monkeypatch, [HTTPException(status_code=413, detail={"code": "free_text_too_large"})])
+    with pytest.raises(HTTPException) as ei:
+        await _run()
+    assert ei.value.status_code == 413
+
+
+@pytest.mark.asyncio
+async def test_history_trimmed_oldest_first_to_fit_one_model_call(monkeypatch):
+    fake = _install(monkeypatch, [tool_result(content="ok")])
+    turn = "ก" * 20000  # Thai text is three bytes a character
+    history = [{"role": "user", "content": f"old {n} {turn}"} for n in range(6)]
+    result = await _run(history=[jobs.Earlier(SimpleNamespace(**h, tools_called=None)) for h in history])
+    assert result.answer == "ok"
+    sent = fake.calls[0]["messages"]
+    kept = [m["content"] for m in sent if m["role"] == "user" and m["content"].startswith("old ")]
+    # The newest turns stay, in order; the oldest went until the call fit.
+    assert kept and kept == [h["content"] for h in history[-len(kept):]] and len(kept) < len(history)
+    assert service._request_text_bytes(sent, fake.calls[0]["tools"]) <= REQUEST_TEXT_BUDGET
+    assert sent[-1]["role"] == "user" and "a question" in sent[-1]["content"]
+
+
+def test_request_size_with_every_real_tool_fits_a_model_call():
+    """The real tool list, the system prompt and the largest tool result a turn may
+    carry fit inside the budget, so an ordinary question is never refused as too large."""
+    from celerp.ai.tools import AGENT_RESULT_MAX_BYTES, agent_tool_specs, compile_agent_capabilities
+    from celerp.ai.service import agent_system_prompt
+    from test_helpers import real_agent_app
+    tools = agent_tool_specs(compile_agent_capabilities(real_agent_app(), {}, "owner"))
+    assert len(tools) > 20
+    messages = [
+        {"role": "system", "content": agent_system_prompt("th")},
+        {"role": "user", "content": "<user_query>\n" + "ก" * 2000 + "\n</user_query>"},
+        {"role": "tool", "tool_call_id": "x", "content": "x" * AGENT_RESULT_MAX_BYTES},
+    ]
+    assert service._request_text_bytes(messages, tools) <= REQUEST_TEXT_BUDGET
+    # File parts are sent beside the text and do not count against it.
+    with_file = [*messages[:1], {"role": "user", "content": [
+        {"type": "text", "text": "q"}, {"type": "image_url", "image_url": {"url": "data:" + "A" * 300000}}]}]
+    assert service._request_text_bytes(with_file, tools) < REQUEST_TEXT_BUDGET
+
+
+@pytest.mark.asyncio
+async def test_operation_id_sent_on_the_first_turn_only(monkeypatch):
+    fake = _install(
+        monkeypatch,
+        [
+            tool_result(calls=[tool_call("list_items", {"query": {"q": "x"}}, "o1")], reservation_id="R1"),
+            tool_result(content="done", reservation_id="R1"),
+        ],
+        execute=_execute_returning({"ok": True, "status": 200, "data": {}}),
+    )
+    question = uuid.uuid4()
+    await _run(operation_id=question)
+    assert fake.calls[0]["operation_id"] == question and fake.calls[0]["reservation_id"] is None
+    assert fake.calls[1]["operation_id"] is None and fake.calls[1]["reservation_id"] == "R1"
+
+
+@pytest.mark.asyncio
+async def test_question_still_running_is_waited_for_then_asked_again(monkeypatch):
+    sleeps: list[float] = []
+
+    async def _sleep(seconds):
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(jobs.asyncio, "sleep", _sleep)
+    fake = _install(monkeypatch, [
+        RelayError("operation_in_progress", "x", status=409, retry_after=2.0),
+        RelayError("operation_in_progress", "x", status=409, retry_after=600.0),
+        tool_result(content="answer", usage={"credits": 0}),
+    ])
+    question = uuid.uuid4()
+    result = await _run(operation_id=question)
+    assert result.answer == "answer" and result.error is None
+    assert [c["operation_id"] for c in fake.calls] == [question] * 3
+    assert sleeps == [2.0, deadlines.IN_PROGRESS_POLL_S]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("code, credits, retryable, key", [
+    ("outcome_unknown", 1, False, "ai.err_outcome_unknown"), ("service_unavailable", 0, True, None),
+    ("operation_expired", 0, False, "ai.err_question_expired"),
+    ("operation_mismatch", 0, False, "ai.err_operation_mismatch"),
+])
+async def test_relay_failure_codes_reach_the_result(monkeypatch, code, credits, retryable, key):
+    """A failure is retried under its question id, or asked as a new question, never both:
+    the service keeps an unknown outcome final for that id."""
+    _install(monkeypatch, [RelayError(code, "Lost.", status=503, credits=credits)])
+    result = await _run()
+    assert result.error_code == code and result.credits == credits
+    assert (code in service.RETRYABLE_ERRORS) is retryable
+    assert (code in service.NEW_QUESTION_ERRORS) is (not retryable)
+    if key:
+        assert result.error == t(key)
+
+
+def test_retry_and_new_question_failures_are_disjoint():
+    assert not service.RETRYABLE_ERRORS & service.NEW_QUESTION_ERRORS
 
 
 @pytest.mark.asyncio
@@ -485,18 +608,13 @@ async def test_reservation_id_threaded_between_turns(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_timeout_maps_to_error(monkeypatch):
-    import asyncio
-
-    async def _slow(messages, *, tools=None, tool_choice=None, reservation_id=None, **kw):
-        await asyncio.sleep(5)
-        return tool_result(content="never")
-
-    monkeypatch.setattr(service, "AGENT_RUN_TIMEOUT_S", 0.05)
-    monkeypatch.setattr(service, "complete", _slow)
-    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None: CAPS)
+async def test_a_step_with_no_reply_maps_to_the_timeout_error_and_is_not_resent_while_interactive(monkeypatch):
+    """No clock bounds the whole run: one model step's call budget runs out, and a
+    question someone waits on stores the retryable timeout instead of sending it again."""
+    import httpx
+    fake = _install(monkeypatch, [httpx.ReadTimeout("no reply")])
     result = await _run()
-    assert result.error == t("ai.err_timeout")
+    assert result.error == t("ai.err_timeout") and len(fake.calls) == 1
 
 
 @pytest.mark.asyncio
@@ -539,15 +657,23 @@ async def test_service_unavailable_message_survives_agent_boundary(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_tool_401_ends_run_with_session_expired(monkeypatch):
+@pytest.mark.parametrize("status,code", sorted(jobs.CALLER_REFUSALS.items()))
+async def test_a_read_refused_to_its_caller_ends_the_run_and_is_never_journaled(monkeypatch, status, code):
+    """Signed out (401) or refused by a permission or a module turned off (403): the
+    refusal is about who asked, not the request, so the run ends with it and the read
+    is not kept as the tool call's result. Signed out, the question can be asked again;
+    refused the read, only a new question follows."""
     _install(
         monkeypatch,
         [tool_result(calls=[tool_call("list_items", {"query": {"q": "x"}}, "r1")])],
-        execute=_execute_returning({"ok": False, "status": 401, "error": {"code": "http_401", "message": "no"}}),
+        execute=_execute_returning({"ok": False, "status": status, "data": {"detail": "no"}}),
     )
-    result = await _run()
-    assert result.error == t("error.session_expired")
-    assert result.pending_actions == []
+    journal = jobs.Journal(uuid.uuid4())
+    result = await _run(journal=journal, operation_id=journal.question_id)
+    assert (result.error_code, result.pending_actions) == (code, [])
+    assert code in (service.RETRYABLE_ERRORS if status == 401 else service.NEW_QUESTION_ERRORS)
+    assert result.error == t({"session_expired": "error.session_expired", "read_refused": "ai.err_read_refused"}[code])
+    assert journal.stored("tool:r1") is None
 
 
 @pytest.mark.asyncio

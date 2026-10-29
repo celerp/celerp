@@ -56,6 +56,7 @@ _NEXT_RES = (
     re.compile(r"^export-send$"),
     re.compile(r"^move-send$"),
     re.compile(r"^xero-attachments$"),
+    re.compile(r"^ai$"),
 )
 
 # Every gate delivers its panel inside the shared modal dialog, floating over
@@ -70,7 +71,15 @@ _GATE_BENEFIT_KEYS = {
     "export-send": "account.gate_export_send_benefit",
     "move-send": "account.gate_move_send_benefit",
     "xero-attachments": "account.gate_xero_attachments_benefit",
+    "ai": "ai.free_questions_included",
 }
+
+# Kinds whose benefit line names a free allowance, and the account-methods field
+# that carries it. With the count missing or 0 the panel keeps the generic hint.
+_GATE_BENEFIT_COUNTS = {"doc-send": "free_email_quota", "ai": "free_ai_questions"}
+
+# Conditions that come with a kind's free allowance, shown after its benefit line.
+_GATE_BENEFIT_TERMS = {"ai": "ai.free_terms"}
 
 # Continuations whose form kept every typed value and the same operation: submitting it
 # again reuses what was staged, so the copy is never re-exported, the client gets one
@@ -160,7 +169,7 @@ def gate_modal_response(panel: FT) -> HTMLResponse:
 
 def _signup_body(lang: str, panel_id: str, google: bool,
                  next_action: str | None = None,
-                 free_quota: int = 0) -> list:
+                 counts: dict | None = None) -> list:
     email_form = Form(
         Input(type="email", name="email", required=True,
               placeholder=t("account.email_placeholder", lang),
@@ -232,9 +241,13 @@ def _signup_body(lang: str, panel_id: str, google: bool,
         # State the concrete reason the sign-in stands between the user and the
         # action they clicked, in place of the generic hint.
         kind = next_action.split(":", 1)[0]
-        benefit = (t(_GATE_BENEFIT_KEYS[kind], lang, n=free_quota)
-                   if kind == "doc-send" else t(_GATE_BENEFIT_KEYS[kind], lang))
-        parts[1] = P(benefit, cls="settings-hint account-panel__benefit")
+        if kind not in _GATE_BENEFIT_COUNTS:
+            parts[1] = P(t(_GATE_BENEFIT_KEYS[kind], lang),
+                         cls="settings-hint account-panel__benefit")
+        elif n := (counts or {}).get(_GATE_BENEFIT_COUNTS[kind]):
+            terms = [" ", t(_GATE_BENEFIT_TERMS[kind], lang)] if kind in _GATE_BENEFIT_TERMS else []
+            parts[1] = P(t(_GATE_BENEFIT_KEYS[kind], lang, n=n), *terms,
+                         cls="settings-hint account-panel__benefit")
     if method_toggle is not None:
         parts.append(method_toggle)
     parts.append(email_path)
@@ -299,16 +312,17 @@ def account_panel(lang: str, *, intent: str = "signup",
                   panel_id: str = "celerp-account-panel",
                   google: bool = False, error: str | None = None,
                   next_action: str | None = None,
-                  free_quota: int = 0) -> FT:
+                  counts: dict | None = None) -> FT:
     """The one account surface. `panel_id` lets a host page keep its own swap
     target (the Settings Connect page uses cloud-relay-tab so the shipped
-    claim endpoints keep replacing the same element).
+    claim endpoints keep replacing the same element). `counts` is the
+    account-methods answer, read for the free allowance a benefit line names.
 
     The claim variant never auto-submits Connect; opening a panel is read-only."""
     body = _claim_body(lang, panel_id) \
         if intent == "claim" \
         else _signup_body(lang, panel_id, google, next_action=next_action,
-                          free_quota=free_quota)
+                          counts=counts)
     if error:
         body.insert(1, Div(error, cls="flash flash--error"))
     return Div(*body, id=panel_id, cls="cloud-connect-section")
@@ -331,16 +345,20 @@ async def account_gate(token: str, lang: str,
         return GATE_UNREACHABLE
     if status.get("email_verified"):
         return None
-    google, quota = False, 0
+    methods = await signup_methods(token)
+    return account_panel(lang, intent="signup", panel_id=GATE_PANEL_ID,
+                         google=bool(methods.get("google")),
+                         next_action=_next_from(next_action), counts=methods)
+
+
+async def signup_methods(token: str) -> dict:
+    """The account-methods answer a sign-up panel renders from, or {} when it
+    cannot be loaded (no Google button, the generic hint)."""
     try:
         methods = await api.account_methods(token)
-        google = bool(methods.get("google"))
-        quota = int(methods.get("free_email_quota") or 0)
     except APIError:
-        pass
-    return account_panel(lang, intent="signup", panel_id=GATE_PANEL_ID,
-                         google=google, next_action=_next_from(next_action),
-                         free_quota=quota)
+        return {}
+    return methods if isinstance(methods, dict) else {}
 
 
 def _waiting_panel(lang: str, panel_id: str, mode: str, n: int = 0,
@@ -448,6 +466,9 @@ def _resume_parts(next_action: str) -> list:
         return [_resume_guard_script(next_action,
                                      "sessionStorage.setItem('celerp_open_send','1');"
                                      "location.reload();")]
+    if next_action == "ai":
+        # The AI page renders its chat once the account exists; load it fresh.
+        return [_resume_guard_script(next_action, "location.assign('/ai');")]
     if next_action in _RESUBMIT_FORMS:
         return [_resume_guard_script(next_action,
                                      f"var f=document.getElementById('{_RESUBMIT_FORMS[next_action]}');"
@@ -495,17 +516,10 @@ def setup_routes(app):
                 headers=toast_header(t("account.admin_only", lang), "info"))
         intent = request.query_params.get("intent", "signup")
         next_action = _next_from(request.query_params.get("next"))
-        google, quota = False, 0
-        if intent != "claim":
-            try:
-                methods = await api.account_methods(token)
-                google = bool(methods.get("google"))
-                quota = int(methods.get("free_email_quota") or 0)
-            except APIError:
-                pass
+        methods = await signup_methods(token) if intent != "claim" else {}
         panel = account_panel(lang, intent=intent, panel_id=panel_id,
-                              google=google, next_action=next_action,
-                              free_quota=quota)
+                              google=bool(methods.get("google")),
+                              next_action=next_action, counts=methods)
         if request.query_params.get("modal") == "1":
             return gate_modal_response(panel)
         return panel
@@ -527,16 +541,11 @@ def setup_routes(app):
         except APIError as e:
             res = {"error": e.detail or str(e)}
         if res.get("error"):
-            google, quota = False, 0
-            try:
-                methods = await api.account_methods(token)
-                google = bool(methods.get("google"))
-                quota = int(methods.get("free_email_quota") or 0)
-            except APIError:
-                pass
-            return account_panel(lang, panel_id=panel_id, google=google,
+            methods = await signup_methods(token)
+            return account_panel(lang, panel_id=panel_id,
+                                 google=bool(methods.get("google")),
                                  error=str(res["error"]), next_action=next_action,
-                                 free_quota=quota)
+                                 counts=methods)
         return _waiting_panel(lang, panel_id, "email", next_action=next_action)
 
     @app.get("/account/google")
