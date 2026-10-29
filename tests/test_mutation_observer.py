@@ -586,6 +586,31 @@ async def test_a_read_requests_token_refresh_slides_or_registers_its_session(ses
     assert (site in mutation_observer.CENSUS.sites) == (slot == "gone")
 
 
+async def test_a_token_refresh_does_not_show_the_route_it_rides_on_writes(session, auth, monkeypatch):
+    """The middleware refreshes a token past half its life on whichever request comes then,
+    so its write does not show that route, or the page it is made for, writes; a route that
+    issues a token itself does."""
+    from contextlib import asynccontextmanager
+    import celerp.middleware as middleware
+
+    @asynccontextmanager
+    async def this_session():
+        yield session
+
+    user = await session.get(User, auth["user_id"])
+    with serving("POST", "/sign-in"):
+        pair = await issue_token_pair(session, user=user, company_id=auth["company_id"], expected_snonce=None)
+    monkeypatch.setattr(middleware, "get_session_ctx", this_session)
+    monkeypatch.setattr(middleware, "_past_half_life", lambda exp: True)
+    with serving("POST", "/page"), serving("POST", "/api"):
+        assert await middleware._refresh_bearer_validated(pair["access_token"])
+    routes = mutation_observer.CENSUS.routes
+    assert routes["POST /sign-in"].get("protected")
+    assert routes["POST /api"].get("made for any request")
+    assert not {"protected", "writes through"} & (set(routes["POST /api"]) | set(routes.get("POST /page", {})))
+    assert _kinds() == []
+
+
 @pytest.mark.parametrize("method", ["POST", "GET"])
 @pytest.mark.parametrize("state_locked", [True, False])
 async def test_a_session_token_written_outside_issuance_is_reported(session, auth, state_locked, method):

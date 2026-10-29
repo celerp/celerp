@@ -168,6 +168,11 @@ UNDER_ROW_LOCK: dict[tuple[str, str], RowLocked] = {
 # turn (a page load that calls the API): a durable write made for it, to any table, is a
 # finding however it is locked, as a link, a prefetch or a page load can send it.
 READ_METHODS = ("GET", "HEAD")
+
+# Functions that write on any request, at a time no test controls: the middleware's sliding
+# token refresh, once a token is past half its life. Their writes are judged like any other,
+# and do not show that the request they ride on, or one it is made for, writes.
+ANY_REQUEST_WRITERS = ("celerp/middleware.py _refresh_bearer_validated",)
 # The header a request from the UI to the API names the UI request it is made for by, when
 # the two talk over HTTP (the browser suite's servers): outgoing_headers.
 OUTER_HEADER = "x-observed-request"
@@ -212,6 +217,7 @@ class Finding:
     fingerprint: str = ""  # the statement's shape, without its values (pglast)
     sites: list[str] = field(default_factory=list)  # every app frame of a write, for site coverage
     through: list[str] = field(default_factory=list)  # the requests the write's request is made for
+    own: bool = True  # the request's own write, not one ANY_REQUEST_WRITERS makes on any request
 
 
 @dataclass
@@ -902,7 +908,8 @@ def _executed(conn, cursor, statement, parameters, context, executemany) -> None
             kind or "protected", route, target, op.table, statement[:300], op.detail,
             earlier_locks=before, transaction=f"{id(root):x}",
             where=_where() if kind else [], test=CENSUS.test, company_from=source,
-            sites=frames, fingerprint=op.fingerprint, through=_outer_routes(request)))
+            sites=frames, fingerprint=op.fingerprint, through=_outer_routes(request),
+            own=not _made_by(ANY_REQUEST_WRITERS)))
 
 
 def _recording_the_call(name: str):
@@ -931,9 +938,9 @@ def _committed(session) -> None:
     if session.in_nested_transaction():
         return
     for finding in noted(session, _WRITE):
-        CENSUS.count(finding.route, finding.kind)
+        CENSUS.count(finding.route, finding.kind if finding.own else "made for any request")
         CENSUS.count(finding.route, f"company from {finding.company_from}")
-        for outer in finding.through:
+        for outer in finding.through if finding.own else ():
             CENSUS.count(outer, "writes through")
         for site in set(finding.sites):
             CENSUS.sites[site] = CENSUS.sites.get(site, 0) + 1

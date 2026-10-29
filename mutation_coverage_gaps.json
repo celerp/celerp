@@ -110,6 +110,11 @@
   "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches lock lock_company, lock locked_company."
  },
  {
+  "route": "api POST /items/import/rows/preview",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches lock lock_company, lock locked_company."
+ },
+ {
   "route": "api POST /migrations/several",
   "class": "requested, no durable write",
   "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches commit, write session.add."
