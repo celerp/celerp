@@ -14552,8 +14552,8 @@ class TestCsvImportSellByValidation:
         assert "setupBlockDrag" in html
 
     @pytest.mark.asyncio
-    async def test_preset_seeding_when_empty(self, label_client):
-        """When no templates exist, presets are seeded via API."""
+    async def test_empty_list_page_posts_no_presets(self, label_client):
+        """The templates read seeds presets itself, so a page load never POSTs them."""
         call_log = []
 
         class MockResponse:
@@ -14564,24 +14564,12 @@ class TestCsvImportSellByValidation:
                 return {"items": self._items}
 
         class MockClient:
-            def __init__(self):
-                self._call_count = 0
-
             async def __aenter__(self):
                 return self
             async def __aexit__(self, *a):
                 pass
             async def get(self, url, **kw):
-                self._call_count += 1
-                if self._call_count == 1:
-                    # First fetch: empty
-                    return MockResponse(items=[])
-                # After seeding: return preset templates
-                return MockResponse(items=[
-                    {"id": "p1", "name": "Barcode Sticker (24x24)", "format": "24x24mm", "copies": 1},
-                    {"id": "p2", "name": "Shelf Label (100x50)", "format": "100x50mm", "copies": 1},
-                    {"id": "p3", "name": "QR Label (62x29)", "format": "62x29mm", "copies": 1},
-                ])
+                return MockResponse(items=[])
             async def post(self, url, **kw):
                 call_log.append(url)
                 return MockResponse(status=201)
@@ -14589,12 +14577,8 @@ class TestCsvImportSellByValidation:
         label_client.cookies.update(_authed())
         with patch("httpx.AsyncClient", return_value=MockClient()):
             r = await label_client.get("/settings/labels")
-        # After seeding, redirects to first template
-        assert r.status_code == 302
-        assert "/settings/labels/p1" in r.headers["location"]
-        # 6 presets were POSTed (3 square sticker + 3 original)
-        assert len(call_log) == 6
-        assert all("/api/labels/templates" in u for u in call_log)
+        assert r.status_code == 200
+        assert call_log == []
 
     @pytest.mark.asyncio
     async def test_editor_drag_js_uses_global_function(self, label_client):
