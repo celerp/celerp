@@ -818,16 +818,6 @@ async def invalid_timezone_handler(_request: Request, exc: InvalidTimezoneError)
         "detail": t("error.company_timezone_unknown"), "code": "company_timezone"})
 
 
-from celerp.ai.jobs import CompanyGone  # noqa: E402
-
-
-@app.exception_handler(CompanyGone)
-async def company_gone_handler(_request: Request, _exc: CompanyGone):
-    # The assistant's work for a company that was reset while the request waited for its
-    # lock: nothing was written, and the company is no longer there.
-    return JSONResponse(status_code=404, content={"detail": t("error.company_unavailable")})
-
-
 @app.exception_handler(UnhandledEventsError)
 async def unhandled_events_handler(_request: Request, exc: UnhandledEventsError):
     # Every rebuild door (ledger, doctor, admin) is refused the same way before it changes anything.

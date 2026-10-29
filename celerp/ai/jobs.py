@@ -74,6 +74,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
 import httpx
+from fastapi import HTTPException
 from sqlalchemy import and_, or_, select, update
 
 from celerp.ai import deadlines
@@ -383,8 +384,12 @@ class ClaimTaken(Exception):
     more, sends nothing more, and stops."""
 
 
-class CompanyGone(ClaimTaken):
-    """The job's company is gone: nothing more is written for it."""
+class CompanyGone(ClaimTaken, HTTPException):
+    """The job's company is gone: nothing more is written for it. A request that waited
+    for the lock of a company reset meanwhile is answered not found."""
+
+    def __init__(self) -> None:
+        HTTPException.__init__(self, status_code=404, detail=t("error.company_unavailable"))
 
 
 async def lock_for_ai(session, company_id: uuid.UUID) -> None:
