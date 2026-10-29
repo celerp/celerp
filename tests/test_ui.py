@@ -15292,6 +15292,17 @@ class TestProformaNumbering:
         from ui.routes.settings_sales import _SALES_DOC_TYPES
         assert "proforma" in _SALES_DOC_TYPES
 
+    def test_every_list_type_is_numbered_in_sales_settings_and_the_old_counter_is_hidden(self):
+        """SAL-007: the five list types have a Numbering row; the retired shared LST counter has none."""
+        from ui.routes.settings_sales import _SALES_DOC_TYPES
+        assert {"quotation", "transfer", "audit", "writeoff", "shipping_doc"} <= _SALES_DOC_TYPES
+        assert "list" not in _SALES_DOC_TYPES
+
+    def test_list_type_numbering_rows_are_labelled_in_the_users_language(self):
+        from ui.i18n import doc_type_label
+        for dt, label in (("transfer", "Transfer"), ("audit", "Audit"), ("writeoff", "Write-off")):
+            assert doc_type_label(dt) == label
+
     def test_finalize_projection_updates_ref(self):
         """doc.finalized event with ref_id updates the projection state."""
         from celerp_docs.doc_projections import apply_documents_event
