@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import contextvars
 import functools
 import inspect
 import os
@@ -916,6 +917,10 @@ async def auth(session, ids):
     return await company_auth(session, ids["company_id"], ids["user_id"])
 
 
+# Set while a request of the `client` fixture runs (its per-request transaction).
+_IN_REQUEST = contextvars.ContextVar("celerp_test_in_request", default=False)
+
+
 @pytest_asyncio.fixture
 async def client(session: AsyncSession):
     from httpx import ASGITransport, AsyncClient
@@ -961,7 +966,15 @@ async def client(session: AsyncSession):
     # shared connection routes every lifecycle session (each a fresh session that
     # closes on exit) into this transaction: it sees the seeded data and its commits
     # stay inside the rolled-back outer transaction.
+    # Installed as the API app's middleware stack while the fixture runs, so every
+    # in-process client of the app (this one, the UI's bridge into it, a test's own) gets
+    # a transaction per request. A request the app makes into itself joins the outer one.
+    stack = app.middleware_stack or app.build_middleware_stack()
+
     async def _request_scoped(scope, receive, send):
+        if scope["type"] != "http" or _IN_REQUEST.get():
+            await stack(scope, receive, send)
+            return
         # Production gives each request a session of its own, closed at the end, so a
         # request never joins its caller's transaction and keeps nothing it did not
         # commit. Requests here share the test's session, so each one gets a transaction
@@ -981,9 +994,11 @@ async def client(session: AsyncSession):
             await send(message)
 
         await _end_transaction(commit=True)
+        token = _IN_REQUEST.set(True)
         try:
-            await app(scope, receive, _send)
+            await stack(scope, receive, _send)
         finally:
+            _IN_REQUEST.reset(token)
             await _end_transaction(commit=status < 400)
 
     async def _end_transaction(commit: bool):
@@ -1004,8 +1019,9 @@ async def client(session: AsyncSession):
     with patch("celerp.gateway.client._client", MagicMock()), \
          patch("celerp.gateway.state.get_session_token", return_value="test-session-token"), \
          patch("celerp.middleware.get_session_ctx", _shared_session_ctx), \
-         patch("celerp.db.LifecycleSessionLocal", lifecycle_factory):
-        async with AsyncClient(transport=ASGITransport(app=_request_scoped), base_url="http://test") as c:
+         patch("celerp.db.LifecycleSessionLocal", lifecycle_factory), \
+         patch.object(app, "middleware_stack", _request_scoped):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             yield c
         # Work a request left running (an email send and its receipt) finishes on this
         # test's loop: cut off by the loop closing, it would leave its connection open.

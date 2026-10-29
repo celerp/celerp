@@ -369,12 +369,12 @@ async def backfill_chart_of_accounts_hook(*, session: AsyncSession) -> None:
     imported books when the migration is finalized.
 
     Every company is backfilled in one transaction, so it first takes the lock of every
-    company it backfills, in lock_companies' order; every later take is a retake.
+    company it backfills, in lock_company's order; every later take is a retake.
     """
     from celerp.accounting_roles import UNGUESSED_ROLES
     from celerp.models.company import Company
     from celerp.services import migrations
-    from celerp.services.company_lock import lock_companies
+    from celerp.services.company_lock import lock_company
     from celerp.services.lot_origin import place_company_stock
     from sqlalchemy import select as _select
 
@@ -384,7 +384,7 @@ async def backfill_chart_of_accounts_hook(*, session: AsyncSession) -> None:
     companies = [company_id
                  for company_id in (await session.execute(_select(Company.id).order_by(Company.id))).scalars()
                  if not await migrations.is_company_migration_staged(session, company_id)]
-    await lock_companies(session, companies)
+    await lock_company(session, *companies)
     for company_id in companies:
         if company_id in unseeded:
             await seed_chart_of_accounts(session, company_id)

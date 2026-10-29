@@ -33,7 +33,7 @@ def _chain_names(node: ast.AST, assigned: dict[str, list[ast.AST]]) -> set[str]:
 
 
 # The calls that take the company lock (celerp/services/company_lock.py).
-COMPANY_LOCKS = frozenset({"lock_company", "lock_companies", "locked_company", "lock_projections"})
+COMPANY_LOCKS = frozenset({"lock_company", "locked_company", "lock_projections"})
 
 # The reads a posting makes of the accounts it posts to (ChartAccess.lock_accounts and the
 # money account check), each of which must take the company lock before it reads.

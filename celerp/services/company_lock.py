@@ -22,7 +22,7 @@ _JUDGED = "celerp_authority_judged"
 _REFUSED = "celerp_authority_refused"
 
 
-async def lock_company(session: AsyncSession, company_id) -> None:
+async def lock_company(session: AsyncSession, *company_ids) -> None:
     """Serialize a read-check-write section with every other holder for the company.
 
     Two concurrent writers that each check a condition and then write would both
@@ -45,11 +45,19 @@ async def lock_company(session: AsyncSession, company_id) -> None:
 
     Canonical lock order: take this lock first, then any Projection or account row locks.
     Never acquire it after SELECT ... FOR UPDATE on a Projection.
+
+    Several companies are locked in id order, so two callers taking an overlapping set
+    meet in the same order. Every company row is taken before the request is judged
+    again (its membership row is read under the lock), so no company lock is waited on
+    while a membership row is held.
     """
-    await session.execute(
-        select(Company.id).where(Company.id == company_id).with_for_update(key_share=True)
-    )
-    await _judge_authority_again(session, company_id)
+    ids = sorted(set(company_ids), key=str)
+    for company_id in ids:
+        await session.execute(
+            select(Company.id).where(Company.id == company_id).with_for_update(key_share=True)
+        )
+    for company_id in ids:
+        await _judge_authority_again(session, company_id)
 
 
 async def _judge_authority_again(session: AsyncSession, company_id) -> None:
@@ -86,13 +94,6 @@ async def hold_company(session: AsyncSession, company_id) -> bool:
     held = await session.scalar(
         select(Company.id).where(Company.id == company_id).with_for_update(read=True, key_share=True))
     return held is not None
-
-
-async def lock_companies(session: AsyncSession, company_ids) -> None:
-    """``lock_company`` for several companies, in id order, so two callers taking an
-    overlapping set meet in the same order."""
-    for company_id in sorted(set(company_ids), key=str):
-        await lock_company(session, company_id)
 
 
 async def lock_company_for_deletion(session: AsyncSession, company_id) -> bool:

@@ -946,3 +946,32 @@ def test_one_statement_over_rows_each_already_held_is_a_retake(recorder, held, v
     _chart(recorder)
     recorder.statement(1, _SHARE_COMPANIES, ("c1", "c2"), 0.0)
     assert (("order", "row:companies") in _kinds(recorder)) is violates
+
+
+async def test_every_in_process_client_of_the_app_gets_a_transaction_per_request(client, auth):
+    """Production closes each request's session when the request ends; the suite's requests
+    share the test's session, so the `client` fixture ends a transaction per request for any
+    in-process client of the app (the UI's bridge, a test's own), and a lock one request
+    took is not read as held by the next."""
+    from fastapi import Depends
+    from httpx import ASGITransport, AsyncClient
+
+    from celerp.db import get_session
+    from celerp.main import app
+    from celerp.services.company_lock import lock_company
+
+    def companies_held() -> int:
+        return sum(lock.cls == "row:companies" for held in lock_rank.RECORDER.held.values() for lock in held)
+
+    async def reads_under_the_lock(session=Depends(get_session)) -> dict:
+        await lock_company(session, auth["company_id"])
+        return {"held": companies_held()}
+
+    app.add_api_route("/lock-rank-probe", reads_under_the_lock, methods=["GET"])
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as bridge:
+            response = await bridge.get("/lock-rank-probe")
+    finally:
+        app.router.routes.pop()
+    assert response.json() == {"held": 1}
+    assert companies_held() == 0

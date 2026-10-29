@@ -24,7 +24,7 @@ from celerp.models.projections import Projection
 from ui.i18n import t
 from celerp.projections.handlers.system import apply_system_event
 from celerp.projections.retired import RETIRED
-from celerp.services.company_lock import lock_companies, lock_company
+from celerp.services.company_lock import lock_company
 
 log = logging.getLogger(__name__)
 
@@ -291,7 +291,7 @@ class ProjectionEngine:
         # one, in ledger order, which only the company lock keeps from meeting a writer's
         # records in the other order.
         if company_id is None:
-            await lock_companies(session, (await session.execute(select(Company.id))).scalars().all())
+            await lock_company(session, *(await session.execute(select(Company.id))).scalars().all())
         else:
             await lock_company(session, company_id)
         await session.execute(delete(Projection) if company_id is None else delete(Projection).where(Projection.company_id == company_id))
