@@ -31,6 +31,7 @@ from celerp.gateway.state import set_session_token
 from celerp.models.ai import AIConversation, AIMessage, AIUsage
 from celerp.services.auth import decode_access_token
 from celerp.services.business_time import business_today
+from migration_support import maker, real_client, real_engine  # noqa: F401
 from test_helpers import invite_user, register_admin, settled_question, signed_request, until
 
 
@@ -503,15 +504,18 @@ async def test_question_sent_again_while_it_is_answered_runs_once(client, owner,
 
 
 @pytest.mark.parametrize("window", ["not_yet_stored", "already_answered"])
-async def test_repeat_send_in_a_read_window_runs_once(client, owner, monkeypatch, window):
+async def test_repeat_send_in_a_read_window_runs_once(real_client, real_engine, drained_jobs, monkeypatch, window):
     """A repeat that reads the question just as the first send moves on is still one model
     run and one charge. Both windows are forced with events, not sleeps: the repeat's
     read of the question is held while the first send's job reaches the model, and in
     the second window the job also answers before the repeat acts on that read, which
-    then returns the answer and never reopens the question."""
+    then returns the answer and never reopens the question. On real connections: the
+    repeat's refused insert rolls back only its own transaction, as in production."""
     from celerp.ai import conversations
 
-    token, _, _ = owner
+    monkeypatch.setattr(jobs, "SessionLocal", maker(real_engine))
+    client = real_client
+    token = await register_admin(client)
     sent: list = []
     in_model, release = asyncio.Event(), asyncio.Event()
 

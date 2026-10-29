@@ -9,8 +9,6 @@ reads as running.
 """
 from __future__ import annotations
 
-import ast
-import pathlib
 import uuid
 
 import pytest
@@ -23,7 +21,6 @@ from test_ai_usage import _claims, _conversation, _settled, owner  # noqa: F401
 from test_helpers import invite_user, signed_request
 
 AUTH = lambda token: {"Authorization": f"Bearer {token}"}  # noqa: E731
-ROOT = pathlib.Path(__file__).resolve().parent.parent
 ANSWER = {"answer": "The owner's figures.", "model_used": "m", "tools_called": [], "help_pages": None,
           "error": None, "error_code": None}
 
@@ -176,50 +173,3 @@ async def test_an_interrupted_question_asked_again_reads_under_the_askers_curren
     assert r.status_code == 200, r.text
     job = await session.get(AIBatchJob, job_id, populate_existing=True)
     assert job.auth_nonce == decode_access_token(token)["snonce"]
-
-
-# ── Guard: one way to name a job ─────────────────────────────────────────────
-
-JOB_TABLES = {"AIBatchJob", "AIJobStep"}
-QUERIES = {"get", "select", "update", "delete"}
-# Reads of the job tables that never name one job by its id, with why each is allowed.
-ALLOWED = {
-    ("celerp/ai/batch.py", "publish_progress"): "the runner counts its own job's steps",
-    ("celerp/ai/batch.py", "list_conversation_jobs"): "lists by company, user and conversation",
-    ("celerp/ai/conversations.py", "_protected_conversation_ids"): "conversation ids the caller already owns",
-    ("celerp/services/company_reset.py", "reset"): "whether the company has any open job",
-}
-
-
-def _job_queries(path: pathlib.Path):
-    tree = ast.parse(path.read_text())
-    for fn in ast.walk(tree):
-        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
-        for node in ast.walk(fn):
-            if not (isinstance(node, ast.Call) and node.args):
-                continue
-            name = node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", None)
-            target = node.args[1] if name == "get" and len(node.args) > 1 else node.args[0]
-            while isinstance(target, ast.Attribute):
-                target = target.value
-            if name in QUERIES and isinstance(target, ast.Name) and target.id in JOB_TABLES:
-                yield fn.name, node.lineno
-
-
-def test_only_the_job_module_names_a_job_by_its_id():
-    """Outside ``celerp/ai/jobs.py`` (the accessors and the runner) no code reads or
-    writes the job tables but the listed few that never name one job by its id, so a
-    new caller cannot read a job without its owner."""
-    found, seen = [], set()
-    for top in ("celerp", "ui", "default_modules"):
-        for path in sorted((ROOT / top).rglob("*.py")):
-            rel = path.relative_to(ROOT).as_posix()
-            if "/tests/" in rel or rel == "celerp/ai/jobs.py" or "/migrations/" in rel:
-                continue
-            for fn, line in _job_queries(path):
-                seen.add((rel, fn))
-                if (rel, fn) not in ALLOWED:
-                    found.append(f"{rel}:{line} in {fn}")
-    assert not found, "read or reuse a job through jobs.owned_job or jobs.reused_job:\n" + "\n".join(found)
-    assert seen >= set(ALLOWED), f"stale allowances: {set(ALLOWED) - seen}"

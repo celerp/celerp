@@ -79,7 +79,7 @@ async def _start(client, token, company_id, user_id, cloud, monkeypatch, shape: 
     if failing:
         attempts: list[uuid.UUID] = []
 
-        async def _broken(job_id_):
+        async def _broken(job_id_, runner_id):
             attempts.append(job_id_)
             raise RuntimeError("database unavailable")
         monkeypatch.setattr(jobs, "STEP_RETRY_DELAY_S", 0.001)
@@ -235,11 +235,11 @@ async def test_a_runner_failing_for_longer_than_its_lease_still_reads_as_running
     outage = {"on": True}
     attempts: list[uuid.UUID] = []
 
-    async def _run_job(job_id):
+    async def _run_job(job_id, runner_id):
         attempts.append(job_id)
         if outage["on"]:
             raise RuntimeError("database unavailable")
-        return await real(job_id)
+        return await real(job_id, runner_id)
     monkeypatch.setattr(jobs, "_run_job", _run_job)
     conv = await _conversation(client, token)
     file_ids = _files(company_id, user_id, 2)
@@ -283,29 +283,197 @@ async def test_the_liveness_rule_and_its_sql_form_agree_on_every_state(owner, se
     assert {jobs.liveness(job) for job in rows.values()} == {"running", "unheld", "ended"}
 
 
-@pytest.mark.parametrize("status,held", [("pending", True), ("running", True), ("pending", False),
-                                         ("running", False), ("completed", False), ("failed", False),
-                                         ("cancelled", False)])
-async def test_a_conversation_with_open_work_stays_listed_and_is_deleted_only_once_nothing_runs_in_it(
-        client, owner, cloud, session, status, held):
-    """The history keeps a conversation while a job of it is open (running, or waiting
-    for Continue), and the conversation cannot be deleted while a runner works in it."""
+async def _row(session, job_id: uuid.UUID) -> AIBatchJob:
+    return (await session.execute(select(AIBatchJob).where(AIBatchJob.id == job_id)
+                                  .execution_options(populate_existing=True))).scalar_one()
+
+
+async def _in_state(client, token, company_id, user_id, cloud, session, monkeypatch, shape: str, state: str) -> Case:
+    """A job of ``shape`` its runner holds (running), whose process is gone (unheld),
+    or that finished (ended)."""
+    case = await _start(client, token, company_id, user_id, cloud, monkeypatch, shape, failing=False)
+    if state == "unheld":
+        await jobs.shutdown()
+        await _lapse(session, case.job_id)
+    elif state == "ended":
+        _let_go(cloud, case)
+        await until(lambda: not jobs.running_tasks(), 20.0)
+    assert jobs.liveness(await _row(session, case.job_id)) == state
+    await session.commit()
+    return case
+
+
+@pytest.mark.parametrize("state", ("running", "unheld", "ended"))
+@pytest.mark.parametrize("shape", ("conversation", "documents"))
+async def test_a_conversation_is_kept_and_undeletable_only_while_a_job_runs_in_it_and_no_job_outlives_it_open(
+        client, owner, cloud, session, monkeypatch, shape, state):
+    """The history keeps a conversation while a job of it is open. Deleting it is
+    refused while a runner works in it; otherwise the delete ends every open job of it
+    as stopped, so nothing of it resumes at the next start or reaches the model again."""
     from celerp.ai.conversations import _protected_conversation_ids
     token, company_id, user_id = owner
-    conv = uuid.UUID(await _conversation(client, token))
-    job = AIBatchJob(conversation_id=conv, company_id=company_id, user_id=user_id, status=status,
-                     query="read", file_ids=["f1"])
-    if held:
-        job.runner_id, job.lease_until = "elsewhere", datetime.now(timezone.utc) + timedelta(minutes=5)
-    session.add(job)
+    case = await _in_state(client, token, company_id, user_id, cloud, session, monkeypatch, shape, state)
+    conv = uuid.UUID(case.conv)
+    assert await _protected_conversation_ids(session, [conv]) == (set() if state == "ended" else {conv})
     await session.commit()
-    kept = await _protected_conversation_ids(session, [conv])
-    assert kept == ({conv} if status in ("pending", "running") else set())
-    await session.commit()      # the refused delete rolls back the request's shared session
     r = await client.delete(f"/ai/conversations/{conv}", headers=AUTH(token))
-    assert r.status_code == (409 if held else 204), r.text
-    if held:
-        assert r.json()["detail"]["code"] == "conversation_busy"
+    if state == "running":
+        assert r.status_code == 409 and r.json()["detail"]["code"] == "conversation_busy", r.text
+        _let_go(cloud, case)
+        await until(lambda: not jobs.running_tasks(), 20.0)
+        return
+    assert r.status_code == 204, r.text
+    assert jobs.liveness(await _row(session, case.job_id)) == "ended"
+    sent = cloud.executions.get(case.identity, 0)
+    assert await jobs.recover_on_start() == 0
+    _let_go(cloud, case)
+    await until(lambda: not jobs.running_tasks(), 20.0)
+    assert cloud.executions.get(case.identity, 0) == sent
+
+
+@pytest.mark.parametrize("state", ("running", "unheld"))
+async def test_an_open_questions_message_is_never_pruned(client, owner, cloud, session, monkeypatch, state):
+    """A thread keeps its newest messages and prunes the oldest, never the message of
+    a question whose job is open."""
+    from celerp.ai import conversations
+    from celerp.models.ai import AIMessage
+    token, company_id, user_id = owner
+    case = await _in_state(client, token, company_id, user_id, cloud, session, monkeypatch, "conversation", state)
+    monkeypatch.setattr(conversations, "MAX_MESSAGES_PER_CONVERSATION", 2)
+    for role, text in (("user", "later question"), ("assistant", "later answer")):
+        await conversations.add_message(session, uuid.UUID(case.conv), role, text)
+    await session.commit()
+    assert await session.get(AIMessage, case.job_id) is not None
+    _let_go(cloud, case)
+    await until(lambda: not jobs.running_tasks(), 20.0)
+    # Its runner answers it; an interrupted one still reads as interrupted, with its message.
+    expected = {"running": "answered", "unheld": "interrupted"}[state]
+    assert (await _seen(client, token, company_id, user_id, case))[0] == expected
+
+
+@pytest.mark.parametrize("state", ("running", "unheld"))
+async def test_a_question_whose_message_is_gone_ends_and_is_answered_not_found(
+        client, owner, cloud, session, monkeypatch, state):
+    """The question's own message was removed while its job was open. Its job ends
+    (nothing of it resumes), and reading or asking it again answers 404 or 409."""
+    from sqlalchemy import delete
+    from celerp.models.ai import AIMessage
+    token, company_id, user_id = owner
+    case = await _in_state(client, token, company_id, user_id, cloud, session, monkeypatch, "conversation", state)
+    await session.execute(delete(AIMessage).where(AIMessage.id == case.job_id))
+    await session.commit()
+    _let_go(cloud, case)
+    if state == "unheld":
+        await jobs.recover_on_start()
+    await until(lambda: not jobs.running_tasks(), 20.0)
+    await session.commit()
+    r = await client.get(f"/ai/conversations/{case.conv}/questions/{case.job_id}", headers=AUTH(token))
+    assert r.status_code == 404, r.text
+    r = await client.post(f"/ai/conversations/{case.conv}/query", headers=AUTH(token),
+                          json={"query": QUERY, "operation_id": str(case.job_id)})
+    assert r.status_code in (404, 409), r.text
+    assert jobs.liveness(await _row(session, case.job_id)) == "ended"
+    assert await jobs.recover_on_start() == 0
+
+
+async def test_a_message_that_is_no_question_is_answered_not_found(client, owner, cloud, session):
+    """An id naming a message no question job belongs to is not a question: reading
+    it, or asking under it, answers 404."""
+    from celerp.ai import conversations
+    token, *_ = owner
+    conv = await _conversation(client, token)
+    message = await conversations.add_message(session, uuid.UUID(conv), "user", "a note")
+    await session.commit()
+    r = await client.get(f"/ai/conversations/{conv}/questions/{message.id}", headers=AUTH(token))
+    assert r.status_code == 404, r.text
+    r = await client.post(f"/ai/conversations/{conv}/query", headers=AUTH(token),
+                          json={"query": QUERY, "operation_id": str(message.id)})
+    assert r.status_code == 404, r.text
+
+
+@pytest.mark.parametrize("shape", SHAPES)
+async def test_a_runner_whose_lease_lapsed_never_writes_over_the_stop_that_ended_its_job(
+        client, owner, cloud, session, monkeypatch, shape):
+    """The runner stalls past its lease while its process lives. Stop finds the job
+    run by nobody and ends it as stopped. When the stalled runner wakes, its final
+    write is refused: the job stays as Stop left it."""
+    token, company_id, user_id = owner
+    case = await _start(client, token, company_id, user_id, cloud, monkeypatch, shape, failing=False)
+    await _lapse(session, case.job_id)
+    r = await client.post(f"/ai/jobs/{case.job_id}/cancel", headers=AUTH(token))
+    assert r.status_code == 202, r.text
+    stopped = await _row(session, case.job_id)
+    assert jobs.liveness(stopped) == "ended"
+    stopped = (stopped.status, stopped.error, stopped.results, stopped.completed_at)
+    _let_go(cloud, case)
+    await until(lambda: not jobs.running_tasks(), 20.0)
+    row = await _row(session, case.job_id)
+    assert (row.status, row.error, row.results, row.completed_at) == stopped
+    if shape != "documents":
+        assert (await _seen(client, token, company_id, user_id, case))[0] == "failed"
+
+
+async def _ended_by_a_competing_claim(session, case: Case) -> str:
+    """The job's lease lapses while its runner waits on the service, and a second claim
+    of this same process takes it and ends it: a reading job with its file read, a
+    question answered. Returns the competitor's runner id."""
+    from celerp.ai import service
+    from celerp.models.ai import AIJobStep
+    await _lapse(session, case.job_id)
+    async with jobs.SessionLocal() as s:
+        competitor = await jobs._claim(s, case.job_id)
+        await s.commit()
+    assert competitor is not None and competitor[:len(jobs.RUNNER_ID)] == jobs.RUNNER_ID
+    row = await _row(session, case.job_id)
+    assert row.runner_id == competitor
+    if case.shape == "documents":
+        run = jobs._file_run(row, competitor)
+        (step,) = (await session.execute(select(AIJobStep.id).where(AIJobStep.job_id == case.job_id))).scalars()
+        async with jobs.SessionLocal() as s:
+            await jobs._set_step(s, run, step, state="done", result={"filename": "competitor", "answer": "Theirs."})
+            await s.commit()
+        await jobs._end_job(run)
+    else:
+        answered = service.RunTally().result(answer="Theirs.", model_used="m", tools_called=[], pending_actions=[],
+                                             error=None, error_code=None)
+        await jobs._finish_question(case.job_id, answered, None, competitor)
+    return competitor
+
+
+async def _written(session, case: Case) -> tuple:
+    """Everything a runner's writes can change: the job's end, its steps, its messages."""
+    from celerp.models.ai import AIJobStep, AIMessage
+    session.expire_all()
+    row = await _row(session, case.job_id)
+    steps = (await session.execute(select(AIJobStep.key, AIJobStep.state, AIJobStep.result, AIJobStep.updated_at)
+                                   .where(AIJobStep.job_id == case.job_id).order_by(AIJobStep.seq))).all()
+    messages = [] if case.conv is None else (await session.execute(
+        select(AIMessage.role, AIMessage.content).where(AIMessage.conversation_id == uuid.UUID(case.conv))
+        .order_by(AIMessage.created_at))).all()
+    return (row.status, row.error, row.results, row.completed_at, row.runner_id), list(steps), list(messages)
+
+
+@pytest.mark.parametrize("shape", SHAPES)
+async def test_a_runner_whose_claim_another_took_writes_no_step_and_no_end(
+        client, owner, cloud, session, monkeypatch, shape):
+    """Two claims in one process: the first stalls on the service past its lease, the
+    second takes the job and ends it. When the first wakes with its answer, every write
+    it tries is fenced on its own claim and refused: its step result, its final status
+    and its message. The job stays as the second claim ended it, with one answer, and
+    the stalled runner sends nothing more and is not run again."""
+    token, company_id, user_id = owner
+    case = await _start(client, token, company_id, user_id, cloud, monkeypatch, shape, failing=False)
+    await _ended_by_a_competing_claim(session, case)
+    ended = await _written(session, case)
+    assert ended[0][0] == "completed"
+    if shape == "conversation":
+        assert [m.content for m in ended[2] if m.role == "assistant"] == ["Theirs."]
+
+    _let_go(cloud, case)
+    await until(lambda: not jobs.running_tasks(), 20.0)
+    assert await _written(session, case) == ended
+    assert not [b for b in cloud.bodies if b.get("step_id")]
+    assert cloud.executions[case.identity] == 1
 
 
 @pytest.mark.parametrize("status,held,answers", [
@@ -338,32 +506,119 @@ async def test_continue_never_reopens_a_job_a_runner_holds_and_stop_never_acts_o
     assert (row.status, row.runner_id) == (status, job.runner_id)
 
 
-# ── Guard: nothing outside the job module reads liveness from the status column ──
+# ── Guard: the job module owns what a job's state means, who owns it, and how it moves ──
 
 def _scanned() -> list[pathlib.Path]:
     paths = [p for p in (ROOT / "celerp").rglob("*.py") if "migrations" not in p.parts]
     paths += [p for p in (ROOT / "default_modules").glob("*/celerp_*/**/*.py")]
-    return [p for p in paths if p != ROOT / "celerp" / "ai" / "jobs.py"]
+    paths += [p for p in (ROOT / "ui").rglob("*.py") if "tests" not in p.parts]
+    return [p for p in paths if p != ROOT / "celerp" / "ai" / "jobs.py" and (ROOT / "celerp" / "models") not in p.parents]
 
 
-def _open_literal(node: ast.AST) -> bool:
-    values = node.elts if isinstance(node, (ast.Tuple, ast.List, ast.Set)) else [node]
-    return any(isinstance(v, ast.Constant) and v.value in ("pending", "running") for v in values)
+JOB_TABLES = {"AIBatchJob", "AIJobStep"}
+# The columns a job's lifecycle moves: what it is doing, who runs it, and when it stopped or ended.
+JOB_STATE = {"status", "state", "runner_id", "lease_until", "cancel_requested_at", "completed_at", "promoted_at"}
+OPEN_STATES = {"pending", "running"}
 
 
-def test_no_code_outside_the_job_module_reads_whether_a_job_runs_from_its_status():
-    """Whether a job runs is the lease's to say: no code but the job module names the
-    job status column in a query, or compares a job row's status with an open status."""
+def _call_name(node: ast.Call) -> str | None:
+    return node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", None)
+
+
+def _root(node: ast.AST) -> str | None:
+    while isinstance(node, (ast.Attribute, ast.Call)):
+        node = node.value if isinstance(node, ast.Attribute) else node.func
+    return node.id if isinstance(node, ast.Name) else None
+
+
+def _own_nodes(statement: ast.stmt):
+    """The expressions of ``statement``, without those of the statements nested in it."""
+    stack = list(ast.iter_child_nodes(statement))
+    while stack:
+        node = stack.pop()
+        if not isinstance(node, ast.stmt):
+            yield node
+            stack.extend(ast.iter_child_nodes(node))
+
+
+def _bypasses(source: str) -> list[str]:
+    """What ``source`` does with the job tables that is the job module's to do:
+    a job-state predicate of its own (``jobs.liveness``, ``is_open`` and ``runs_now``
+    say whether a job is open or runs), a job read without its owner (``jobs.owned_job``
+    and the listing helpers scope every read to the company and the user), or a write
+    that moves a job or a step (every transition is the runner's or a ``jobs`` helper's).
+    Reporting reads that reuse those helpers stay where they are."""
+    tree = ast.parse(source)
+    about_jobs = bool(JOB_TABLES & {_root(n) for n in ast.walk(tree)}) or "jobs" in {
+        alias.asname or alias.name for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) for alias in n.names}
     found = []
-    for path in _scanned():
-        source = path.read_text(encoding="utf-8")
-        tree = ast.parse(source)
-        about_jobs = "AIBatchJob" in source or "jobs." in source
-        for node in ast.walk(tree):
-            if (isinstance(node, ast.Attribute) and node.attr == "status"
-                    and isinstance(node.value, ast.Name) and node.value.id == "AIBatchJob"):
-                found.append(f"{path.relative_to(ROOT)}:{node.lineno} AIBatchJob.status")
-            if (about_jobs and isinstance(node, ast.Compare) and isinstance(node.left, ast.Attribute)
-                    and node.left.attr == "status" and any(_open_literal(c) for c in node.comparators)):
-                found.append(f"{path.relative_to(ROOT)}:{node.lineno} .status against an open status")
+    for statement in ast.walk(tree):
+        if not isinstance(statement, ast.stmt):
+            continue
+        nodes = list(_own_nodes(statement))
+        owner = {n.attr for n in nodes
+                 if isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name) and n.value.id == "AIBatchJob"}
+        for n in nodes:
+            if (isinstance(n, ast.Attribute) and n.attr in JOB_STATE and isinstance(n.value, ast.Name)
+                    and n.value.id in JOB_TABLES):
+                found.append(f"{n.lineno} predicate {n.value.id}.{n.attr}")
+            if (about_jobs and isinstance(n, ast.Compare) and isinstance(n.left, ast.Attribute)
+                    and n.left.attr in ("status", "state") and any(
+                        isinstance(v, ast.Constant) and v.value in OPEN_STATES
+                        for c in n.comparators for v in (c.elts if isinstance(c, (ast.Tuple, ast.List, ast.Set))
+                                                         else [c]))):
+                found.append(f"{n.lineno} predicate .{n.left.attr} against an open state")
+            if not isinstance(n, ast.Call):
+                continue
+            name, args = _call_name(n), n.args
+            if isinstance(n.func, ast.Name) and n.func.id in JOB_TABLES:
+                found.append(f"{n.lineno} lifecycle new {n.func.id}")
+            elif name in ("update", "delete", "insert") and args and _root(args[0]) in JOB_TABLES:
+                found.append(f"{n.lineno} lifecycle {name}({_root(args[0])})")
+            elif name == "get" and args and _root(args[0]) == "AIBatchJob":
+                found.append(f"{n.lineno} ownership get(AIBatchJob) by id alone")
+            elif (name == "select" and args and _root(args[0]) == "AIBatchJob"
+                  and not {"company_id", "user_id"} <= owner):
+                found.append(f"{n.lineno} ownership select(AIBatchJob) without its company and user")
+        if about_jobs and isinstance(statement, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
+            for target in statement.targets if isinstance(statement, ast.Assign) else [statement.target]:
+                for n in ast.walk(target):
+                    if isinstance(n, ast.Attribute) and n.attr in JOB_STATE - {"status", "state"}:
+                        found.append(f"{n.lineno} lifecycle .{n.attr} set")
+                    elif isinstance(n, ast.Attribute) and n.attr in ("status", "state") and _root(n) in (
+                            "job", "step", "row"):
+                        found.append(f"{n.lineno} lifecycle {_root(n)}.{n.attr} set")
+    return sorted(set(found))
+
+
+def test_no_code_outside_the_job_module_decides_a_jobs_state_its_owner_or_its_transitions():
+    found = [f"{path.relative_to(ROOT)}:{line}" for path in _scanned()
+             for line in _bypasses(path.read_text(encoding="utf-8"))]
     assert found == []
+
+
+@pytest.mark.parametrize("source,kind", [
+    ("from celerp.models.ai import AIBatchJob\nq = select(AIBatchJob.id).where(AIBatchJob.status == 'pending')",
+     "predicate AIBatchJob.status"),
+    ("from celerp.models.ai import AIBatchJob\nq = select(AIBatchJob).where(AIBatchJob.lease_until > now)",
+     "predicate AIBatchJob.lease_until"),
+    ("from celerp.ai import jobs\nopen_ = job.status in ('pending', 'running')", "predicate .status"),
+    ("from celerp.models.ai import AIBatchJob\nasync def f(s, i):\n    return await s.get(AIBatchJob, i)",
+     "ownership get(AIBatchJob)"),
+    ("from celerp.models.ai import AIBatchJob\nq = select(AIBatchJob).where(AIBatchJob.company_id == c)",
+     "ownership select(AIBatchJob)"),
+    ("from celerp.models.ai import AIJobStep\nq = update(AIJobStep).values(state='done')", "lifecycle update(AIJobStep)"),
+    ("from celerp.models.ai import AIBatchJob\nq = delete(AIBatchJob)", "lifecycle delete(AIBatchJob)"),
+    ("from celerp.models.ai import AIJobStep\ns.add(AIJobStep(key='x'))", "lifecycle new AIJobStep"),
+    ("from celerp.ai import jobs\njob = await jobs.owned_job(s, i)\njob.status = 'failed'", "lifecycle job.status set"),
+    ("from celerp.ai import jobs\njob.lease_until = None", "lifecycle .lease_until set"),
+])
+def test_the_guard_finds_each_bypass(source, kind):
+    assert any(kind in line for line in _bypasses(source)), _bypasses(source)
+
+
+def test_the_guard_passes_a_scoped_report_through_the_job_helpers():
+    source = ("from celerp.ai import jobs\nfrom celerp.models.ai import AIBatchJob, AIJobStep\n"
+              "rows = select(AIBatchJob).where(AIBatchJob.company_id == c, AIBatchJob.user_id == u, jobs.is_open())\n"
+              "steps = select(AIJobStep.key).where(AIJobStep.job_id == j)\n")
+    assert _bypasses(source) == []

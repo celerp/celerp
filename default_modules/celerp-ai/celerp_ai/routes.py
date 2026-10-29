@@ -49,7 +49,6 @@ from celerp.ai.files import AGENT_UPLOAD_TYPES, XLSX_CONTENT_TYPE
 from celerp.ai.service import PROPOSAL_TTL_S
 from celerp.config import settings
 from celerp.db import get_session
-from celerp.models.ai import AIBatchJob, AIMessage
 from celerp.routers.auth import limiter as _limiter
 from celerp.services.auth import (
     AuthContext, get_auth_context, get_current_company_id, get_current_role, get_current_user,
@@ -171,12 +170,16 @@ def _conflict(code: str, message: str) -> HTTPException:
 
 
 async def _find_question(session: AsyncSession, conversation_id: uuid.UUID, question_id: uuid.UUID, request):
-    """``find_question`` for this send, its id conflict refused as ``operation_conflict``."""
-    from celerp.ai.conversations import QuestionIdConflict, find_question
+    """``find_question`` for this send, its id conflict refused as ``operation_conflict``
+    and an id that names no question as not found."""
+    from celerp.ai.conversations import QuestionIdConflict, QuestionNotFound, find_question
     try:
         return await find_question(session, conversation_id, question_id, request)
     except QuestionIdConflict:
         raise _conflict("operation_conflict", t("ai.err_operation_conflict")) from None
+    except QuestionNotFound:
+        await session.commit()      # the job a missing question ended
+        raise HTTPException(status_code=404, detail=t("ai.err_question_not_found")) from None
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -525,7 +528,7 @@ def _answer_response(msg, *, question_id: uuid.UUID, asked_again: bool) -> Query
 JOB_STATUS = {"running": "running", "unheld": "interrupted"}
 
 
-def _job_out(job: AIBatchJob, steps: list) -> BatchJobOut:
+def _job_out(job, steps: list) -> BatchJobOut:
     """A reading job as its user sees it; its progress is read from its steps."""
     from celerp.ai import jobs
     done = sum(1 for s in steps if s.state == "done")
@@ -547,7 +550,7 @@ def _job_out(job: AIBatchJob, steps: list) -> BatchJobOut:
     )
 
 
-async def _jobs_out(session: AsyncSession, rows: list[AIBatchJob]) -> list[BatchJobOut]:
+async def _jobs_out(session: AsyncSession, rows: list) -> list[BatchJobOut]:
     from celerp.ai import jobs
     steps = await jobs.job_steps(session, [job.id for job in rows])
     return [_job_out(job, steps[job.id]) for job in rows]
@@ -617,18 +620,19 @@ async def get_conv(
     session: AsyncSession = Depends(get_session),
 ) -> ConversationDetail:
     """Get a conversation with its messages and the reading jobs started from it."""
-    from celerp.ai.batch import list_conversation_jobs
+    from celerp.ai import jobs
     from celerp.ai.conversations import get_conversation, get_messages
     conv = await get_conversation(session, conversation_id, company_id, user.id)
     if conv is None:
         raise HTTPException(status_code=404, detail=t("ai.err_conversation_not_found"))
     msgs = await get_messages(session, conversation_id)
-    jobs = await list_conversation_jobs(session, conversation_id, company_id, user.id)
+    rows = await jobs.conversation_jobs(session, conversation_id, company_id=company_id, user_id=user.id,
+                                        shape="documents")
     return ConversationDetail(
         id=conv.id, title=conv.title,
         created_at=conv.created_at.isoformat(), updated_at=conv.updated_at.isoformat(),
         messages=[_message_out(m) for m in msgs],
-        jobs=await _jobs_out(session, jobs),
+        jobs=await _jobs_out(session, rows),
     )
 
 
@@ -641,14 +645,13 @@ async def delete_conv(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> None:
-    """Delete a conversation and all its messages."""
-    from celerp.ai import jobs
-    from celerp.ai.batch import list_conversation_jobs
-    from celerp.ai.conversations import delete_conversation
-    rows = await list_conversation_jobs(session, conversation_id, company_id, user.id)
-    if any(jobs.liveness(job) == "running" for job in rows):
-        raise _conflict("conversation_busy", t("ai.err_conversation_busy"))
-    found = await delete_conversation(session, conversation_id, company_id, user.id)
+    """Delete a conversation and all its messages; its open jobs end as stopped. Refused
+    while a job runs in it."""
+    from celerp.ai.conversations import ConversationBusy, delete_conversation
+    try:
+        found = await delete_conversation(session, conversation_id, company_id, user.id)
+    except ConversationBusy:
+        raise _conflict("conversation_busy", t("ai.err_conversation_busy")) from None
     if not found:
         raise HTTPException(status_code=404, detail=t("ai.err_conversation_not_found"))
     await session.commit()
@@ -772,7 +775,9 @@ async def query_in_conversation(
         await session.refresh(job)
         if job.status != "completed":
             raise _conflict("question_in_progress", t("ai.err_question_in_progress"))
-        answer = await session.get(AIMessage, uuid.UUID(job.results["message_id"]))
+        answer = await jobs.answer_message(session, job)
+        if answer is None:
+            raise HTTPException(status_code=404, detail=t("ai.err_question_not_found"))
         return _answer_response(answer, question_id=question_id, asked_again=True)
     jobs.start_job(question_id)
     return JSONResponse(
@@ -809,9 +814,8 @@ async def question_state(
     elif held and stored["promoted"]:
         notice = t("ai.question_promoted")
     message = stored["message"]
-    asked = await session.get(AIMessage, question_id)
     return {
-        "asked": _message_out(asked).model_dump(mode="json"),
+        "asked": _message_out(stored["asked"]).model_dump(mode="json"),
         "state": "running" if held else stored["state"], "promoted": stored["promoted"], "waiting": waiting,
         "notice": notice, "message": None if held or message is None else _message_out(message).model_dump(mode="json"),
     }

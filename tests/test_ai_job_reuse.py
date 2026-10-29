@@ -49,9 +49,10 @@ async def test_a_thread_send_under_a_colleagues_question_id_is_not_found(client,
     assert not cloud.sends
 
 
-async def test_a_message_id_that_names_no_question_job_is_a_conflict(client, owner, cloud, session):
+async def test_a_message_id_that_names_no_question_job_is_not_found(client, owner, cloud, session):
     """A thread message with no job under its id was never a question this app asked:
-    a send under that id is refused, never treated as the question asked again."""
+    a send under that id is answered not found, never treated as the question asked
+    again."""
     token, *_ = owner
     conv = await _conversation(client, token)
     qid = uuid.uuid4()
@@ -59,8 +60,7 @@ async def test_a_message_id_that_names_no_question_job_is_a_conflict(client, own
     await session.commit()
     r = await client.post(f"/ai/conversations/{conv}/query", headers=AUTH(token),
                           json={"query": QUERY, "operation_id": str(qid)})
-    assert r.status_code == 409, r.text
-    assert r.json()["detail"]["code"] == "operation_conflict"
+    assert r.status_code == 404, r.text
     assert not cloud.sends
 
 

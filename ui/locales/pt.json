@@ -6578,7 +6578,7 @@
   "ai.question_interrupted": "Esta pergunta foi interrompida quando o Celerp reiniciou. Pergunte novamente para continuá-la. Ela ainda conta como uma única pergunta.",
   "ai.job_stopped": "Interrompida após a leitura de {done} de {total} arquivos. Continue para ler os restantes.",
   "ai.job_interrupted": "A leitura foi interrompida após {done} de {total} arquivos. Continue para ler os restantes.",
-  "ai.err_read_refused": "O assistente não teve permissão para ler os dados de que esta pergunta precisa. Pergunte novamente quando tiver acesso a eles.",
+  "ai.err_read_refused": "O assistente não teve permissão para ler os dados de que esta pergunta precisa. Quando tiver acesso a eles, você pode fazê-la como uma nova pergunta, que contará como uma pergunta adicional.",
   "th.unconfirmed": "Ainda não confirmado",
   "ai.usage_unconfirmed_note": "Ainda não confirmado: perguntas cuja cobrança o serviço de IA ainda não confirmou. Elas não são incluídas em «Créditos utilizados» até a confirmação.",
   "ai.usage_unresolved_note": "Não é mais possível confirmar {count} delas, porque o serviço de IA guarda as informações de cobrança de uma pergunta por apenas um dia. Elas permanecem sem confirmação e não são incluídas em «Créditos utilizados».",

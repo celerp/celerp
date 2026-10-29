@@ -6578,7 +6578,7 @@
   "ai.question_interrupted": "Pertanyaan ini terhenti ketika Celerp dimulai ulang. Ajukan kembali untuk melanjutkannya. Pertanyaan ini tetap dihitung sebagai satu pertanyaan.",
   "ai.job_stopped": "Terhenti setelah membaca {done} dari {total} berkas. Lanjutkan untuk membaca sisanya.",
   "ai.job_interrupted": "Pembacaan terputus setelah {done} dari {total} berkas. Lanjutkan untuk membaca sisanya.",
-  "ai.err_read_refused": "Asisten tidak diizinkan membaca data yang diperlukan pertanyaan ini. Tanyakan lagi setelah Anda memiliki akses ke data tersebut.",
+  "ai.err_read_refused": "Asisten tidak diizinkan membaca data yang diperlukan pertanyaan ini. Setelah Anda memiliki akses ke data tersebut, Anda dapat mengajukannya sebagai pertanyaan baru, yang dihitung sebagai satu pertanyaan tambahan.",
   "th.unconfirmed": "Belum Dikonfirmasi",
   "ai.usage_unconfirmed_note": "Belum dikonfirmasi: pertanyaan yang biayanya belum dikonfirmasi oleh layanan AI. Pertanyaan tersebut tidak dihitung dalam Kredit Terpakai sampai biayanya dikonfirmasi.",
   "ai.usage_unresolved_note": "Sebanyak {count} di antaranya tidak dapat dikonfirmasi lagi karena layanan AI hanya menyimpan data biaya pertanyaan selama satu hari. Pertanyaan tersebut tetap belum dikonfirmasi dan tidak dihitung dalam Kredit Terpakai.",

@@ -326,11 +326,11 @@ async def test_a_result_write_that_fails_once_resends_the_file_under_its_id_and_
     real_set_step = jobs._set_step
     failed = []
 
-    async def _set_step(session, step_pk, **values):
+    async def _set_step(session, claim, step_pk, **values):
         if values.get("state") == "done" and step_pk == await target() and not failed:
             failed.append(step_pk)
             raise RuntimeError("database write refused")
-        return await real_set_step(session, step_pk, **values)
+        return await real_set_step(session, claim, step_pk, **values)
     monkeypatch.setattr(jobs, "_set_step", _set_step)
     await client.post(f"/ai/conversations/{conv}/query", headers=AUTH(token), json={
         "query": "Read", "file_ids": file_ids, "document_mode": "receipts", "operation_id": str(job_id)})
@@ -428,17 +428,17 @@ async def test_a_runner_that_cannot_record_a_failure_drains_its_steps_and_runs_t
             raise RuntimeError("unexpected")
         return await real_read(run, file_id, operation_id, **kw)
 
-    async def _set_step(session_, step_pk, **values):
+    async def _set_step(session_, claim, step_pk, **values):
         if values.get("state") == "failed" and broken["on"]:
             raise RuntimeError("database write refused")
-        return await real_set_step(session_, step_pk, **values)
+        return await real_set_step(session_, claim, step_pk, **values)
     left_running: list[list] = []
     real_after_failure = jobs._after_failure
 
-    async def _after_failure(job_id_):
+    async def _after_failure(job_id_, runner_id):
         left_running.append(_step_tasks())
         broken["on"] = False                    # the next run can write again
-        await real_after_failure(job_id_)
+        await real_after_failure(job_id_, runner_id)
     monkeypatch.setattr(batch, "read_file", _read)
     monkeypatch.setattr(jobs, "_set_step", _set_step)
     monkeypatch.setattr(jobs, "_after_failure", _after_failure)
@@ -526,7 +526,7 @@ async def test_ai_access_lost_mid_job_stops_the_unsent_files_and_resume_sends_th
 
 _CAPS = {"help_search": {
     "name": "help_search", "method": "GET", "path": "/help/search", "path_names": (), "query_names": ("q",),
-    "expects_body": False, "inject_idempotency": False,
+    "expects_body": False, "inject_idempotency": False, "required_permissions": (),
     "tool": {"type": "function", "function": {"name": "help_search", "description": "help_search",
                                               "parameters": {}}}}}
 
@@ -672,6 +672,7 @@ async def test_a_queued_synchronous_call_returns_running_within_y_of_its_start(c
     cloud.release(long_step)
     await jobs.recover_on_start()           # promoted at Y, so it resumes after a restart
     await until(lambda: len(cloud.arrived) == 2)
+    assert cloud.arrived[1] == str(queued)  # the queued question, resumed under its own id
 
 
 # ── Red 27: one gate, interactive priority ────────────────────────────────────

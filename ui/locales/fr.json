@@ -6578,7 +6578,7 @@
   "ai.question_interrupted": "Cette question s'est arrêtée lors du redémarrage de Celerp. Demandez à nouveau de la poursuivre. Elle compte toujours comme une seule question.",
   "ai.job_stopped": "Arrêt après la lecture de {done} fichiers sur {total}. Reprenez pour lire les fichiers restants.",
   "ai.job_interrupted": "La lecture a été interrompue après {done} fichiers sur {total}. Reprenez pour lire les fichiers restants.",
-  "ai.err_read_refused": "L'assistant n'a pas été autorisé à lire les données dont cette question a besoin. Posez-la de nouveau dès que vous y aurez accès.",
+  "ai.err_read_refused": "L'assistant n'a pas été autorisé à lire les données dont cette question a besoin. Dès que vous y aurez accès, vous pourrez la poser comme une nouvelle question, qui comptera comme une question supplémentaire.",
   "th.unconfirmed": "Pas encore confirmé",
   "ai.usage_unconfirmed_note": "Pas encore confirmé : questions dont le coût n'a pas encore été confirmé par le service d'IA. Elles ne figurent pas dans les « Crédits utilisés » tant que ce coût n'est pas confirmé.",
   "ai.usage_unresolved_note": "{count} d'entre elles ne peuvent plus être confirmées, car le service d'IA ne conserve le coût d'une question que pendant un jour. Elles restent non confirmées et ne figurent pas dans les « Crédits utilisés ».",

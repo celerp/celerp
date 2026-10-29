@@ -36,6 +36,7 @@ from celerp.ai.tools import (
     compile_agent_capabilities,
     execute_agent_capability,
 )
+from celerp.services.permissions import role_has_permission
 from ui.i18n import current_lang, lang_label, t
 
 log = logging.getLogger(__name__)
@@ -138,12 +139,14 @@ _TOO_MUCH_DATA_TEXT = "Too much data was returned; ask a narrower question."
 RETRYABLE_ERRORS = frozenset({
     "service_unavailable", "busy", "operation_in_progress",
     "continuation_expired", "unexpected_reply", "gateway_error", "timeout", "stopped",
-    *jobs.CALLER_REFUSALS.values(),
+    "session_expired",
 })
-# Failures after which the service will not take the question id again: the outcome
-# of its first send is unknown (final for that id), the id expired, or the question
-# was sent with different content. Only a new question, under a new id, can follow.
-NEW_QUESTION_ERRORS = frozenset({"outcome_unknown", "operation_expired", "operation_mismatch"})
+# Failures after which the question id is not taken again: the outcome of its first
+# send is unknown (final for that id), the id expired, the question was sent with
+# different content, or its asker may not make a read it needs. Only a new question,
+# under a new id and the asker's authority now, can follow.
+NEW_QUESTION_ERRORS = frozenset({"outcome_unknown", "operation_expired", "operation_mismatch",
+                                 "read_refused"})
 
 
 class _CallerRefused(Exception):
@@ -370,6 +373,8 @@ async def run_agent(
         return result
     except HTTPException as exc:
         raise AgentRefusal(exc, tally) from exc
+    except jobs.ClaimTaken:
+        raise
     except Exception as exc:
         if not isinstance(exc, (_CallerRefused, jobs.Stopped)):
             log.error("AI agent run failed: %s", exc)
@@ -410,6 +415,7 @@ async def _agent_loop(
             if not capability.get("requires_confirmation", False)
         }
     tools = agent_tool_specs(capabilities)
+    await _admit_stored_reads(journal, capabilities, company_settings, role)
 
     # Company memory rides in the system message, so the user message (which
     # names the question when it is asked again) depends on the question alone.
@@ -590,11 +596,28 @@ async def _model_turn(
 _STEP_STATES = {"outcome_unknown": "unknown", "operation_expired": "expired"}
 
 
+async def _admit_stored_reads(journal: jobs.Journal, capabilities: dict, company_settings: dict,
+                              role: str) -> None:
+    """A question run again replays the reads it kept only while its asker may still
+    make each of them: AI access, and every permission the read's capability needs.
+    Otherwise the question ends refused before anything is sent."""
+    reads = journal.stored_reads()
+    if not reads:
+        return
+    await journal.admit()
+    for name in reads.values():
+        capability = capabilities.get(name) if name else None
+        if capability is None or not all(role_has_permission(company_settings, role, permission)
+                                         for permission in capability["required_permissions"]):
+            raise _CallerRefused("read_refused")
+
+
 async def _tool_step(journal: jobs.Journal, call_id: str, run) -> dict:
     """One read tool call: what the journal holds for it, or its result, journaled.
     The question is admitted before the read, as before every model step. A read the
-    app refused its caller is never journaled: the question ends with that refusal and
-    asking again reads again."""
+    app refused its caller is never journaled: the question ends with that refusal.
+    Signed out, it may be asked again and reads again; refused the read, only a new
+    question follows."""
     key = f"tool:{call_id}"
     stored = journal.stored(key)
     if stored is None:

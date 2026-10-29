@@ -25,7 +25,6 @@ from celerp.accounting_roles import refusal
 from celerp.db import sqlstate
 
 from celerp.models.accounting import UserCompany
-from celerp.models.ai import AIBatchJob
 from celerp.models.auth import SessionRegistry
 from celerp.models.company import Company
 from celerp.models.connector_config import ConnectorConfig
@@ -306,9 +305,7 @@ async def reset(session: AsyncSession, company: Company, typed_name: str) -> Res
                                 "belongs to before resetting this one. Nothing was deleted.")
     # A job is created under the company's key lock, so none can start once this check passed.
     from celerp.ai import jobs
-    reading = await session.scalar(select(AIBatchJob.id).where(
-        AIBatchJob.company_id == company.id, jobs.runs_now()).limit(1))
-    if reading is not None:
+    if await jobs.company_runs_now(session, company.id):
         raise ResetRefused(409, AI_BATCH_ACTIVE)
     run_ids = [str(r) for r in (await session.scalars(
         select(MigrationRun.id).where(MigrationRun.company_id == company.id))).all()]

@@ -6578,7 +6578,7 @@
   "ai.question_interrupted": "Diese Frage wurde beim Neustart von Celerp angehalten. Fragen Sie erneut nach, um sie fortzusetzen. Sie zählt weiterhin als eine Frage.",
   "ai.job_stopped": "Nach dem Lesen von {done} von {total} Dateien angehalten. Setzen Sie den Auftrag fort, um die übrigen Dateien zu lesen.",
   "ai.job_interrupted": "Das Lesen wurde nach {done} von {total} Dateien unterbrochen. Setzen Sie den Auftrag fort, um die übrigen Dateien zu lesen.",
-  "ai.err_read_refused": "Der Assistent durfte die Daten, die diese Frage benötigt, nicht lesen. Fragen Sie erneut, sobald Sie Zugriff darauf haben.",
+  "ai.err_read_refused": "Der Assistent durfte die Daten, die diese Frage benötigt, nicht lesen. Sobald Sie Zugriff darauf haben, können Sie sie als neue Frage stellen; das zählt als eine weitere Frage.",
   "th.unconfirmed": "Noch nicht bestätigt",
   "ai.usage_unconfirmed_note": "Noch nicht bestätigt: Fragen, deren Kosten der KI-Dienst noch nicht bestätigt hat. Bis zur Bestätigung werden sie nicht unter „Verbrauchte Credits“ mitgezählt.",
   "ai.usage_unresolved_note": "{count} davon können nicht mehr bestätigt werden, weil der KI-Dienst die Kosteninformationen einer Frage nur einen Tag lang aufbewahrt. Sie bleiben unbestätigt und werden nicht unter „Verbrauchte Credits“ mitgezählt.",

@@ -21,7 +21,7 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.ai import jobs
-from celerp.models.ai import AIBatchJob, AIConversation, AIMessage
+from celerp.models.ai import AIConversation, AIMessage
 from celerp.ai.service import NEW_QUESTION_ERRORS
 from celerp.ai.usage import record_usage
 from ui.i18n import t
@@ -49,12 +49,7 @@ async def _protected_conversation_ids(
     if not ids:
         return set()
 
-    active_ids = set((await session.execute(
-        select(AIBatchJob.conversation_id).where(
-            AIBatchJob.conversation_id.in_(ids),
-            jobs.is_open(),
-        )
-    )).scalars().all())
+    active_ids = {job.conversation_id for job in await jobs.open_jobs(session, ids)}
     action_rows = await session.execute(
         select(AIMessage.conversation_id, AIMessage.tools_called).where(
             AIMessage.conversation_id.in_(ids),
@@ -198,12 +193,20 @@ async def delete_conversation(
     company_id: uuid.UUID,
     user_id: uuid.UUID,
 ) -> bool:
-    """Delete a conversation and its messages. Returns True if found."""
+    """Delete a conversation and its messages, and end its open jobs as stopped in the
+    same transaction, so none outlives it open. Returns True if found. Raises
+    ``ConversationBusy``, and deletes nothing, while a job runs in it."""
     conv = await get_conversation(session, conversation_id, company_id, user_id)
     if conv is None:
         return False
+    if not await jobs.end_conversation_jobs(session, conversation_id, company_id=company_id, user_id=user_id):
+        raise ConversationBusy
     await session.delete(conv)
     return True
+
+
+class ConversationBusy(Exception):
+    """A job runs in the conversation: it can be deleted once the job ends or is stopped."""
 
 
 async def rename_conversation(
@@ -279,12 +282,13 @@ async def add_message(
         )).all())
         if old_rows:
             # Unresolved proposals and ambiguous/retryable writes are durable user
-            # decisions, not disposable chat history. Preserve them until they reach
-            # a terminal state, even if that means temporarily exceeding the soft
-            # history cap.
+            # decisions, not disposable chat history, and an open job's question is
+            # what it answers. Preserve them until they reach a terminal state, even
+            # if that means temporarily exceeding the soft history cap.
+            asked = {job.question_id for job in await jobs.open_jobs(session, [conversation_id])}
             prunable = [
                 message_id for message_id, tools_called in old_rows
-                if not pending_actions(tools_called)
+                if message_id not in asked and not pending_actions(tools_called)
             ]
             if prunable:
                 await session.execute(delete(AIMessage).where(AIMessage.id.in_(prunable)))
@@ -378,8 +382,12 @@ def message_error(tools_called: list | None) -> bool:
 
 
 class QuestionIdConflict(Exception):
-    """The question id already names a message this send cannot be: one no question job
-    holds, or a question that can no longer be asked under it."""
+    """The question id names a question that can no longer be asked under it."""
+
+
+class QuestionNotFound(Exception):
+    """The question id names a message no job asks, or a job whose question is gone
+    (its job is ended, unless a runner holds it: its run ends it)."""
 
 
 async def find_question(
@@ -387,15 +395,15 @@ async def find_question(
     conversation_id: uuid.UUID,
     question_id: uuid.UUID,
     request: jobs.JobRequest,
-) -> tuple[AIBatchJob | None, AIMessage | None, AIMessage | None]:
+) -> tuple:
     """The job ``question_id`` names for ``request`` (``jobs.reused_job``, the one
     comparison of a send with what the question asked), its user message, and the
     answer it already has.
 
     The message is read before the job: both are committed together, so a send that
     finds the message finds its job. (None, None, None) when nothing holds the id yet:
-    a new question. A message under the id without a job is not a question this send
-    can be: ``QuestionIdConflict``. The answer is the first reply after the
+    a new question. A message under the id without a job, or a job whose message is
+    gone, is no question to ask: ``QuestionNotFound``. The answer is the first reply after the
     question, before the next question, that is not a failure; a question with an
     answer returns it however many questions came after. Without an answer the question
     is asked again only while it is the conversation's latest and the AI service still
@@ -405,8 +413,11 @@ async def find_question(
     job = await jobs.reused_job(session, question_id, request)
     if job is None:
         if asked is not None:
-            raise QuestionIdConflict
+            raise QuestionNotFound
         return None, None, None
+    if asked is None:
+        await jobs.end_question(session, job.id)
+        raise QuestionNotFound
     later = (await session.execute(
         select(AIMessage)
         .where(AIMessage.conversation_id == conversation_id, AIMessage.created_at > asked.created_at)

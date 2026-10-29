@@ -298,7 +298,7 @@ async def test_batch_progress_failure_does_not_send_a_file_again(session, db_fac
     def _reply(op):
         sent.append(op)
         return _model_result("Done")
-    with patch("celerp.ai.batch.func.count", side_effect=RuntimeError("count failed")):
+    with patch("celerp.ai.jobs.job_steps", side_effect=RuntimeError("count failed")):
         await _run(job.id, _reply)
 
     assert (await _job(db_factory, job.id)).status == "completed"

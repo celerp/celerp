@@ -649,10 +649,11 @@ async def test_service_unavailable_message_survives_agent_boundary(monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("status,code", sorted(jobs.CALLER_REFUSALS.items()))
-async def test_a_read_refused_to_its_caller_ends_the_run_retryable_and_is_never_journaled(monkeypatch, status, code):
+async def test_a_read_refused_to_its_caller_ends_the_run_and_is_never_journaled(monkeypatch, status, code):
     """Signed out (401) or refused by a permission or a module turned off (403): the
-    refusal is about who asked, not the request, so the run ends with it, the question
-    can be asked again, and the read is not kept as the tool call's result."""
+    refusal is about who asked, not the request, so the run ends with it and the read
+    is not kept as the tool call's result. Signed out, the question can be asked again;
+    refused the read, only a new question follows."""
     _install(
         monkeypatch,
         [tool_result(calls=[tool_call("list_items", {"query": {"q": "x"}}, "r1")])],
@@ -661,7 +662,7 @@ async def test_a_read_refused_to_its_caller_ends_the_run_retryable_and_is_never_
     journal = jobs.Journal(uuid.uuid4())
     result = await _run(journal=journal, operation_id=journal.question_id)
     assert (result.error_code, result.pending_actions) == (code, [])
-    assert code in service.RETRYABLE_ERRORS
+    assert code in (service.RETRYABLE_ERRORS if status == 401 else service.NEW_QUESTION_ERRORS)
     assert result.error == t({"session_expired": "error.session_expired", "read_refused": "ai.err_read_refused"}[code])
     assert journal.stored("tool:r1") is None
 

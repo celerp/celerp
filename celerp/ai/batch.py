@@ -24,18 +24,17 @@ import json
 import logging
 import re
 import uuid
+from collections import Counter
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 import httpx
 from fastapi import HTTPException
-from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.ai import jobs, llm
 from celerp.ai.files import load_file_for_llm
 from celerp.ai.llm import RelayError
-from celerp.models.ai import AIBatchJob, AIJobStep
 from ui.i18n import t
 
 log = logging.getLogger(__name__)
@@ -122,6 +121,8 @@ class FileRun:
     user_id: uuid.UUID
     conversation_id: uuid.UUID | None
     query: str
+    # The claim the job's runner holds its lease under (celerp.ai.jobs._claim).
+    runner_id: str | None = None
     # The admission refusal that stopped the job's unsent steps (an i18n key).
     stop_reason: str | None = None
 
@@ -193,7 +194,7 @@ async def create_batch_job(
     file_ids: list[str],
     conversation_id: uuid.UUID | None = None,
     job_id: uuid.UUID | None = None,
-) -> AIBatchJob:
+):
     """Create a pending reading job, held by this process, and one step per file; the
     caller commits and then starts it (celerp.ai.jobs.start_job).
 
@@ -205,25 +206,10 @@ async def create_batch_job(
         raise ValueError("Attach at least one file")
     if len(file_ids) > MAX_BATCH_FILES:
         raise ValueError(t("error.batch_too_many", max=MAX_BATCH_FILES))
-
-    job = AIBatchJob(
-        id=job_id or uuid.uuid4(),
-        company_id=company_id,
-        user_id=user_id,
-        conversation_id=conversation_id,
-        kind="documents",
-        mode="background",
-        query=query,
-        file_ids=file_ids,
-        status="pending",
-        request_digest=request.digest(),
-    )
-    jobs.hold(job)      # running from its creation: the caller starts it after the commit
+    job, steps = jobs.documents_job(request=request, file_ids=file_ids, job_id=job_id)
     session.add(job)
     await session.flush()
-    for seq, file_id in enumerate(file_ids):
-        op = jobs.file_operation_id(job.id, file_id, 0)
-        session.add(AIJobStep(job_id=job.id, seq=seq, key=file_id, operation_id=op, step_id=op))
+    session.add_all(steps)
     await session.flush()
     return job
 
@@ -234,9 +220,8 @@ async def publish_progress(run: FileRun, file_id: str, state: str) -> None:
     from celerp.notifications.sse import publish
     try:
         async with jobs.SessionLocal() as session:
-            counts = dict((await session.execute(
-                select(AIJobStep.state, func.count()).where(AIJobStep.job_id == run.job_id).group_by(AIJobStep.state)
-            )).all())
+            steps = (await jobs.job_steps(session, [run.job_id]))[run.job_id]
+        counts = Counter(step.state for step in steps)
         open_steps = sum(counts.get(s, 0) for s in jobs.OPEN_STEPS)
         completed = counts.get("done", 0)
         await publish(run.company_id, run.user_id, {
@@ -259,17 +244,3 @@ async def notify_finished(run: FileRun, completed: int, failed: int) -> None:
     await jobs.notify(run.company_id, run.user_id, run.conversation_id, title, body)
 
 
-async def list_conversation_jobs(
-    session: AsyncSession,
-    conversation_id: uuid.UUID,
-    company_id: uuid.UUID,
-    user_id: uuid.UUID,
-) -> list[AIBatchJob]:
-    """Every reading job started from a conversation, oldest first."""
-    q = (
-        select(AIBatchJob)
-        .where(AIBatchJob.conversation_id == conversation_id, AIBatchJob.company_id == company_id,
-               AIBatchJob.user_id == user_id, AIBatchJob.kind == "documents")
-        .order_by(AIBatchJob.created_at.asc())
-    )
-    return list((await session.execute(q)).scalars().all())
