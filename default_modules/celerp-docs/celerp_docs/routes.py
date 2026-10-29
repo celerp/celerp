@@ -11842,6 +11842,11 @@ async def undo_receive(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    return await undo_receipts(entity_id, company_id, user, session, commit=True)
+
+
+async def undo_receipts(entity_id: str, company_id: str, user, session: AsyncSession, *,
+                        commit: bool = True) -> dict:
     """Undo everything received on a bill.
 
     A receipt exists when the bill has received anything, expense and asset lines
@@ -12025,7 +12030,8 @@ async def undo_receive(
               if "lot_quantity_added" in x and 0 <= x.get("po_line_index", -1) < len(lines)],
     )
 
-    await session.commit()
+    if commit:
+        await session.commit()
     return {"undone": True, "item_ids": received_item_ids}
 
 
