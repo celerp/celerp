@@ -54,6 +54,24 @@
   "remove_when": "the presets are seeded by a locked writer, never by a read route"
  },
  {
+  "route": "ui GET /labels/print-list -> api GET /api/labels/templates",
+  "kind": "read-route-write",
+  "table": "label_templates",
+  "fingerprint": "66666111f73d39ef",
+  "where": [
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "default_modules/celerp-labels/celerp_labels/routes.py list_templates",
+   "default_modules/celerp-labels/celerp_labels/routes.py _seed_presets"
+  ],
+  "test": "tests/test_browser/test_help_capture.py::test_help_capture_every_page",
+  "issue": "https://github.com/celerp/celerp/issues/405",
+  "owner": "celerp-labels",
+  "remove_when": "the presets are seeded by a locked writer, never by a read route"
+ },
+ {
   "route": "api GET /api/labels/sources/{source}",
   "kind": "unprotected",
   "table": "label_templates",

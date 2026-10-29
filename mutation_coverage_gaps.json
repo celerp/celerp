@@ -1,10 +1,5 @@
 [
  {
-  "route": "api POST /ai/query",
-  "class": "requested, no durable write",
-  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
- },
- {
   "route": "api POST /ai/upload",
   "class": "requested, no durable write",
   "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches lock hold_company."
@@ -1113,12 +1108,6 @@
   "route": "ui POST /subscriptions/import/confirm",
   "class": "requested, no durable write",
   "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
- },
- {
-  "site": "celerp/ai/batch.py fail_interrupted_jobs add",
-  "count": 1,
-  "class": "not reached from a route",
-  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
  },
  {
   "site": "celerp/connectors/outbound_queue.py enqueue_outbound add",
