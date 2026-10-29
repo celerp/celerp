@@ -263,7 +263,7 @@ def report(folders, out, coverage_path=None, baseline=mutation_baseline.PATH):
               "| Route | Table | Seen | Status | Issue |", "|---|---|---|---|---|"]
     for key, entry in entries.items():
         seen = by_entry.get(key, [])
-        tests = {t for f in seen for t in f["tests"]}
+        tests = {mutation_baseline.test_function(t) for f in seen for t in f["tests"]}
         status = "stale: no finding matched" if not seen else \
             "not reproduced by its test" if entry["test"] not in tests else "matched"
         failing += status != "matched"

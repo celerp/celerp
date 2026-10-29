@@ -87,6 +87,12 @@ def test_the_census_passes_when_every_finding_matches_one_entry(tmp_path):
     assert "| matched |" in (tmp_path / "census.md").read_text()
 
 
+def test_an_entry_is_reproduced_by_its_test_under_any_parameters(tmp_path):
+    """pytest-playwright parametrizes a browser test by browser in some versions, as [chromium]."""
+    assert _census(tmp_path, [_finding(tests=[f"{_TEST}[chromium]"])], [_entry(_finding())]) == 0
+    assert "| matched |" in (tmp_path / "census.md").read_text()
+
+
 @pytest.mark.parametrize("findings, entries, why", [
     ([_finding("api POST /new")], [], "a finding no entry accepts"),
     ([], [_entry(_finding())], "stale: no finding matched"),
@@ -103,6 +109,13 @@ def test_an_entry_without_its_tracking_fields_is_refused(tmp_path, change):
     path = tmp_path / "baseline.json"
     path.write_text(json.dumps([_entry(_finding(), **change)]))
     with pytest.raises(ValueError, match="lacks"):
+        mutation_baseline.load(str(path))
+
+
+def test_an_entry_naming_a_parametrized_test_is_refused(tmp_path):
+    path = tmp_path / "baseline.json"
+    path.write_text(json.dumps([_entry(_finding(), test=f"{_TEST}[chromium]")]))
+    with pytest.raises(ValueError, match="parametrized"):
         mutation_baseline.load(str(path))
 
 

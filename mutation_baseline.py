@@ -8,6 +8,8 @@ An entry matches a finding exactly: its route, kind, table, statement shape (fin
 and the app frames that made it, as functions without line numbers. A finding matching no
 entry fails the test that made it; an entry no finding matched, or that its own
 reproducing test did not see, fails the census (scripts/mutation_census.py --enforce).
+An entry names its reproducing test as a function, without parameters: a plugin may
+parametrize it (pytest-playwright adds the browser, as [chromium], in some versions).
 Standard library only, so the census job reads it without the app installed."""
 
 from __future__ import annotations
@@ -25,6 +27,11 @@ def _unlined(frame: str) -> str:
     return f"{path if colon and line.isdigit() else location} {function}"
 
 
+def test_function(nodeid: str) -> str:
+    """A test's node id without its parameters, as an entry names it."""
+    return nodeid.partition("[")[0]
+
+
 def key(finding) -> tuple:
     """What an entry and a finding (a Finding or its census record) must share."""
     get = finding.get if isinstance(finding, dict) else lambda name: getattr(finding, name)
@@ -39,6 +46,8 @@ def load(path: str = PATH) -> dict[tuple, dict]:
             missing = [name for name in FIELDS if not entry.get(name)]
             if missing:
                 raise ValueError(f"baseline entry for {entry.get('route')} lacks {', '.join(missing)}")
+            if test_function(entry["test"]) != entry["test"]:
+                raise ValueError(f"baseline entry for {entry['route']} names a parametrized test; name its function")
             if key(entry) in entries:
                 raise ValueError(f"two baseline entries for {entry['route']} {entry['table']}")
             entries[key(entry)] = entry
