@@ -542,6 +542,7 @@
   "doc.commission_agent_and_fee_for_this_document_agent_m": "Agente di commissione e tariffa per questo documento. L'agente deve essere configurato come contatto fornitore.",
   "doc.company": "Azienda:",
   "doc.contact": "Contatto:",
+  "doc.converted_to": "Convertito in:",
   "doc.could_not_load_selected_documents": "Celerp non è riuscito a caricare i documenti selezionati. Seleziona Riprova, poi seleziona di nuovo.",
   "doc.country_of_destination": "Paese di destinazione finale",
   "doc.country_of_export": "Paese di esportazione",

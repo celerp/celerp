@@ -542,6 +542,7 @@
   "doc.commission_agent_and_fee_for_this_document_agent_m": "وكيل العمولة ورسوم هذه الوثيقة. يجب إعداد الوكيل كجهة اتصال للمورد.",
   "doc.company": "شركة:",
   "doc.contact": "اتصال:",
+  "doc.converted_to": "تم التحويل إلى:",
   "doc.could_not_load_selected_documents": "تعذّر على Celerp تحميل المستندات المحددة. اختر إعادة المحاولة ثم أعد اختيارها.",
   "doc.country_of_destination": "بلد الوجهة النهائية",
   "doc.country_of_export": "بلد التصدير",

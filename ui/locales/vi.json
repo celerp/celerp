@@ -542,6 +542,7 @@
   "doc.commission_agent_and_fee_for_this_document_agent_m": "Đại lý hoa hồng và lệ phí cho tài liệu này. Đại lý phải được thiết lập làm người liên hệ của nhà cung cấp.",
   "doc.company": "Công ty:",
   "doc.contact": "Liên hệ:",
+  "doc.converted_to": "Đã chuyển thành:",
   "doc.could_not_load_selected_documents": "Celerp không tải được các chứng từ đã chọn. Hãy chọn Thử lại, rồi chọn lại chúng.",
   "doc.country_of_destination": "Nước đến cuối cùng",
   "doc.country_of_export": "Nước xuất khẩu",

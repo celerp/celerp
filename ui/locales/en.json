@@ -604,6 +604,7 @@
   "doc.commission_agent_and_fee_for_this_document_agent_m": "Commission agent and fee for this document. Agent must be set up as a supplier contact.",
   "doc.company": "Company:",
   "doc.contact": "Contact:",
+  "doc.converted_to": "Converted to:",
   "doc.could_not_load_selected_documents": "Celerp couldn't load the selected documents. Select Try again, then select them again.",
   "doc.country_of_destination": "Country of Ultimate Destination",
   "doc.country_of_export": "Country of Export",

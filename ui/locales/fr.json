@@ -542,6 +542,7 @@
   "doc.commission_agent_and_fee_for_this_document_agent_m": "Commissionnaire et honoraires pour ce document. L'agent doit être configuré en tant que contact fournisseur.",
   "doc.company": "Entreprise :",
   "doc.contact": "Contact :",
+  "doc.converted_to": "Converti en :",
   "doc.could_not_load_selected_documents": "Celerp n'a pas pu charger les documents sélectionnés. Sélectionnez « Réessayer », puis refaites votre sélection.",
   "doc.country_of_destination": "Pays de destination finale",
   "doc.country_of_export": "Pays d'exportation",

@@ -542,6 +542,7 @@
   "doc.commission_agent_and_fee_for_this_document_agent_m": "ตัวแทนนายหน้าและค่าธรรมเนียมสำหรับเอกสารนี้ ต้องตั้งค่าตัวแทนเป็นผู้ติดต่อของซัพพลายเออร์",
   "doc.company": "บริษัท:",
   "doc.contact": "ผู้ติดต่อ:",
+  "doc.converted_to": "แปลงเป็น:",
   "doc.could_not_load_selected_documents": "Celerp โหลดเอกสารที่เลือกไม่ได้ เลือก ลองอีกครั้ง แล้วเลือกอีกครั้ง",
   "doc.country_of_destination": "ประเทศปลายทางสุดท้าย",
   "doc.country_of_export": "ประเทศส่งออก",

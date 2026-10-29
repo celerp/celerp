@@ -542,6 +542,7 @@
   "doc.commission_agent_and_fee_for_this_document_agent_m": "Provisionsagent und Gebühr für dieses Dokument. Agent muss als Lieferantenkontakt angelegt sein.",
   "doc.company": "Unternehmen:",
   "doc.contact": "Kontakt:",
+  "doc.converted_to": "Umgewandelt in:",
   "doc.could_not_load_selected_documents": "Celerp konnte die ausgewählten Dokumente nicht laden. Wählen Sie „Erneut versuchen“ und dann sie erneut aus.",
   "doc.country_of_destination": "Endbestimmungsland",
   "doc.country_of_export": "Ausfuhrland",

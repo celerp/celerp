@@ -542,6 +542,7 @@
   "doc.commission_agent_and_fee_for_this_document_agent_m": "この文書の代理人および手数料を委託します。エージェントはサプライヤーの連絡先として設定する必要があります。",
   "doc.company": "会社：",
   "doc.contact": "連絡先：",
+  "doc.converted_to": "変換先:",
   "doc.could_not_load_selected_documents": "選択した書類を読み込めませんでした。「再試行」を選んでから、もう一度選択してください。",
   "doc.country_of_destination": "最終仕向国",
   "doc.country_of_export": "輸出国",

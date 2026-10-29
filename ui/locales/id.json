@@ -542,6 +542,7 @@
   "doc.commission_agent_and_fee_for_this_document_agent_m": "Agen komisi dan biaya untuk dokumen ini. Agen harus diatur sebagai kontak pemasok.",
   "doc.company": "Perusahaan:",
   "doc.contact": "Kontak:",
+  "doc.converted_to": "Dikonversi menjadi:",
   "doc.could_not_load_selected_documents": "Celerp tidak bisa memuat dokumen yang dipilih. Pilih Coba lagi, lalu pilih lagi.",
   "doc.country_of_destination": "Negara tujuan akhir",
   "doc.country_of_export": "Negara ekspor",

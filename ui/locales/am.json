@@ -579,6 +579,7 @@
   "doc.commission_agent_and_fee_for_this_document_agent_m": "ለዚህ ሰነድ የኮሚሽን ወኪል እና ክፍያ። ወኪሉ እንደ አቅራቢ ዕውቂያ መዋቀር አለበት።",
   "doc.company": "ኩባንያ፦",
   "doc.contact": "ዕውቂያ፦",
+  "doc.converted_to": "የተቀየረው ወደ፦",
   "doc.could_not_load_selected_documents": "Celerp የተመረጡትን ሰነዶች መጫን አልቻለም። እንደገና ሞክር ይምረጡና እንደገና ይምረጧቸው።",
   "doc.country_of_destination": "የመጨረሻ መድረሻ ሀገር",
   "doc.country_of_export": "የመላኪያ ሀገር",
