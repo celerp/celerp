@@ -1697,10 +1697,10 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
                 await lock_connector_maintenance(session)
                 if not await lock_company_for_deletion(session, replacing.company_id):
                     raise BackupError(404, t("error.company_unavailable") + _NOT_REPLACED)
-            await hold_module_state(session)
-            checked = await check_backup(session, backup)
             if mode == "bootstrap":
                 await _wait_for(session, bootstrap.lock_bootstrap)  # any other first-owner setup
+            await hold_module_state(session)
+            checked = await check_backup(session, backup)
             if mode == "bootstrap":
                 plan = plan_bootstrap_restore(backup)
                 found = await _bootstrap_existing(session, backup, owner_account, caller)
@@ -1713,11 +1713,13 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
                     return result
                 name = plan.destination_name if company_name is None else _chosen_name(company_name)
             else:
-                if mode == "start_company" and not await hold_companyless_login(session, user_id):
-                    raise BackupError(409, t(HAS_COMPANY))
                 # One restore at a time per owner, so two cannot both take the same free name.
+                # Before the login's row: another restore by this owner holds this lock while
+                # it adds rows that reference the login.
                 await session.execute(text("SELECT pg_advisory_xact_lock(:k)"),
                                       {"k": _lock_key(f"names:{user_id}")})
+                if mode == "start_company" and not await hold_companyless_login(session, user_id):
+                    raise BackupError(409, t(HAS_COMPANY))
                 plan, destination = await _plan(session, backup, mode, user_id, current_company_id, lock=True)
                 if plan.action == REFUSE:
                     raise BackupError(409, t(NOT_A_MEMBER))

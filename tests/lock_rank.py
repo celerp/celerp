@@ -44,14 +44,16 @@ from pathlib import Path
 # ── The one map ────────────────────────────────────────────────────────────────
 # class -> rank. Lower ranks are taken first. Filled from the measured graph.
 RANKS: dict[str, int] = {
-    # Instance-wide: schema, version, bootstrap.
-    "adv:migration": 0, "adv:version-admit": 1, "adv:version-fence": 2, "adv:bootstrap": 3,
-    "adv:migration-scan": 4, "adv:jti-cleanup": 5, "adv:migration-run": 8,
-    "row:alembic_version": 6, "row:system_runtime_state": 7,
-    # Whole-company backup and restore.
-    "adv:backup-names": 10, "adv:backup": 11, "adv:backup-landing": 12,
-    # Module state, then sign-in (auth.py hold_companyless_login: before any company row).
-    "adv:module-state": 15, "adv:direct-sign-in": 16, "row:users": 17,
+    # Instance-wide: schema, version, a backup's restore claim (company_backup._claim: the
+    # first lock a restore takes, before a bootstrap restore waits on bootstrap), bootstrap.
+    "adv:migration": 0, "adv:version-admit": 1, "adv:version-fence": 2, "adv:backup": 3,
+    "adv:bootstrap": 4, "adv:migration-scan": 5, "adv:jti-cleanup": 6, "adv:migration-run": 9,
+    "row:alembic_version": 7, "row:system_runtime_state": 8,
+    # A restore's new company's attachment files (only ever tried).
+    "adv:backup-landing": 12,
+    # Module state, one restore per owner, then sign-in (auth.py hold_companyless_login:
+    # before any company row).
+    "adv:module-state": 14, "adv:backup-names": 15, "adv:direct-sign-in": 16, "row:users": 17,
     "row:password_resets": 18, "row:password_reset_notices": 19,
     # Connector guard (R0, R1), the run lock and the outbound identity lock (taken with no
     # transaction open in the task, on its own connection).
