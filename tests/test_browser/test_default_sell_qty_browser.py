@@ -14,6 +14,7 @@ import uuid
 import pytest
 from playwright.sync_api import expect
 
+from .conftest import css_class
 from .inline_edit import ready, set_cell, settled
 
 pytestmark = pytest.mark.browser
@@ -435,12 +436,12 @@ def test_allow_splitting_locks_and_unlocks_the_cell_without_a_reload(page, ui_se
     parcel = _item(api, default_sell_qty=3)
     _open(page, ui_server, parcel)
     cell = page.locator(CELL)
-    expect(cell).not_to_have_class("cell--locked")
+    expect(cell).not_to_have_class(css_class("cell--locked"))
 
     set_cell(page, "allow_splitting", "false", scope=SCOPE, kind="select")
     expect(page.locator(CELL)).to_have_attribute("title", "Not used while Allow Splitting is off: a scan always "
                                                            "adds the whole item. Turn Allow Splitting on to change this.")
-    assert "cell--locked" in (page.locator(CELL).get_attribute("class") or "")
+    expect(page.locator(CELL)).to_have_class(css_class("cell--locked"))
     expect(page.locator(CELL)).to_contain_text("3")
     assert _stored(api, parcel) == 3
 

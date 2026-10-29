@@ -13,6 +13,7 @@ Skip from default suite: pytest -m "not browser"
 from __future__ import annotations
 
 import os
+import re
 import socket
 import threading
 import time
@@ -359,6 +360,13 @@ def clear_session_registry() -> None:
     with conn.cursor() as cur:
         cur.execute("DELETE FROM session_registry;")
     conn.close()
+
+
+def css_class(name: str) -> re.Pattern:
+    """A class attribute holding *name* as one whole class, for expect(...).to_have_class.
+    The expect retries until it holds; a class read once can see the element mid-swap,
+    while htmx still holds its settling classes."""
+    return re.compile(rf"(^|\s){re.escape(name)}(\s|$)")
 
 
 def release_held_routes(page, glob: str, held: list) -> None:

@@ -21,6 +21,9 @@ Proves:
 from __future__ import annotations
 
 import pytest
+from playwright.sync_api import expect
+
+from .conftest import css_class
 
 pytestmark = pytest.mark.browser
 
@@ -89,7 +92,7 @@ def test_clicking_an_option_ticks_it_and_keeps_the_list_open(page, statement_url
     _open_picker(page, statement_url)
     first = _options(page).first
     first.click()
-    assert "combobox-option--selected" in (first.get_attribute("class") or "")
+    expect(first).to_have_class(css_class("combobox-option--selected"))
     assert page.locator(".combobox-list.open").is_visible(), "list closed after one pick"
 
 
@@ -112,7 +115,7 @@ def test_clicking_a_ticked_option_unticks_it(page, statement_url):
     assert _selected_inputs(page).count() == 1
     opt.click()
     assert _selected_inputs(page).count() == 0
-    assert "combobox-option--selected" not in (opt.get_attribute("class") or "")
+    expect(opt).not_to_have_class(css_class("combobox-option--selected"))
 
 
 _LIST_OFFSET = """(() => {
@@ -231,8 +234,8 @@ def test_a_search_keeps_the_tick_on_an_already_picked_subject(page, statement_ur
 
     swapped = _option_by_value(page, value)
     assert swapped.count() == 1, "the searched-for subject should be in the results"
-    assert "combobox-option--selected" in (swapped.first.get_attribute("class") or ""), (
-        "the search results dropped the tick on an already picked subject")
+    expect(swapped.first, "the search results dropped the tick on an already picked subject").to_have_class(
+        css_class("combobox-option--selected"))
     assert _selected_inputs(page).count() == 1, "the search changed the submitted set"
 
 
@@ -252,6 +255,6 @@ def test_clearing_the_search_keeps_the_tick(page, statement_url):
 
     restored = _option_by_value(page, value)
     assert restored.count() == 1, "clearing the box should bring the full list back"
-    assert "combobox-option--selected" in (restored.first.get_attribute("class") or ""), (
-        "the restored list dropped the tick on an already picked subject")
+    expect(restored.first, "the restored list dropped the tick on an already picked subject").to_have_class(
+        css_class("combobox-option--selected"))
     assert _selected_inputs(page).count() == 1
