@@ -205,6 +205,11 @@ READ_ROUTE_WRITES: dict[tuple[str, str], ReadNote] = {
         "a document's share link minted deactivated the first time an editor opens its Share panel, "
         "which shows the link the cloud signs for it; Share (POST) turns it on",
         route="GET /docs/{entity_id}/share"),
+    ("payment_recoveries", "UPDATE"): ReadNote(
+        ("generation",), ("celerp/services/payments.py report_recoveries",),
+        "Celerp Cloud's confirmation of an earlier System Recovery restore, stored as it answers before "
+        "a payment opens; a customer opens the payment from an emailed link, a GET",
+        route="GET /pay/{token}"),
 }
 
 _ROOT = os.path.dirname(os.path.abspath(__file__))
