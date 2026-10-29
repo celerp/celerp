@@ -26,6 +26,7 @@ from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, User
 import celerp.connectors.upsert as u
 
+from connector_test_support import add_item
 from test_helpers import provision_company_books
 from migration_support import real_engine  # noqa: F401 - fixture
 
@@ -989,7 +990,6 @@ async def test_explicit_catalog_relation_accepts_barcoded_catalog_template(use_t
 
 @pytest.mark.asyncio
 async def test_external_product_identity_has_one_catalog_owner(use_test_session):
-    from celerp.events.engine import emit_event
     from celerp_inventory.services import (
         ExternalLinkConflictError,
         set_external_link,
@@ -998,20 +998,7 @@ async def test_external_product_identity_has_one_catalog_owner(use_test_session)
     session = use_test_session
     cid = await _seed_company(session, "ExternalIdentityOwner")
     for entity_id, sku in (("item:left", "LEFT-1"), ("item:right", "RIGHT-1")):
-        await emit_event(
-            session,
-            company_id=cid,
-            entity_id=entity_id,
-            entity_type="item",
-            event_type="item.created",
-            data={"sku": sku, "name": sku, "sell_by": "piece"},
-            actor_id=None,
-            location_id=None,
-            source="api",
-            idempotency_key=f"create:{entity_id}",
-            metadata_={},
-        )
-    await session.flush()
+        await add_item(session, cid, entity_id, sku)
 
     link = {
         "product_id": "9901",
@@ -1030,7 +1017,6 @@ async def test_external_product_identity_has_one_catalog_owner(use_test_session)
 
 @pytest.mark.asyncio
 async def test_external_link_rejects_stale_sku_selection(use_test_session):
-    from celerp.events.engine import emit_event
     from celerp_inventory.services import (
         ExternalLinkConflictError,
         set_external_link,
@@ -1038,20 +1024,7 @@ async def test_external_link_rejects_stale_sku_selection(use_test_session):
 
     session = use_test_session
     cid = await _seed_company(session, "ExternalIdentityCas")
-    await emit_event(
-        session,
-        company_id=cid,
-        entity_id="item:cas",
-        entity_type="item",
-        event_type="item.created",
-        data={"sku": "NEW-SKU", "name": "CAS", "sell_by": "piece"},
-        actor_id=None,
-        location_id=None,
-        source="api",
-        idempotency_key="create:cas",
-        metadata_={},
-    )
-    await session.flush()
+    await add_item(session, cid, "item:cas", "NEW-SKU", name="CAS")
 
     with pytest.raises(ExternalLinkConflictError, match="SKU changed"):
         await set_external_link(
@@ -1070,7 +1043,6 @@ async def test_external_link_rejects_stale_sku_selection(use_test_session):
 
 @pytest.mark.asyncio
 async def test_external_link_compare_and_set_rejects_stale_writers(use_test_session):
-    from celerp.events.engine import emit_event
     from celerp_inventory.services import (
         ExternalLinkConflictError,
         set_external_link,
@@ -1079,19 +1051,7 @@ async def test_external_link_compare_and_set_rejects_stale_writers(use_test_sess
     session = use_test_session
     cid = await _seed_company(session, "LinkCas")
     entity_id = "item:link-cas"
-    await emit_event(
-        session,
-        company_id=cid,
-        entity_id=entity_id,
-        entity_type="item",
-        event_type="item.created",
-        data={"sku": "CAS-1", "name": "CAS", "sell_by": "piece"},
-        actor_id=None,
-        location_id=None,
-        source="test",
-        idempotency_key=str(uuid.uuid4()),
-        metadata_={},
-    )
+    await add_item(session, cid, entity_id, "CAS-1", name="CAS")
 
     await set_external_link(
         session, cid, entity_id, "woocommerce",
@@ -1339,18 +1299,16 @@ async def _deposit_case(session, cid, other, case: str) -> str:
     """Set up one way the WooCommerce deposit account cannot take a payment (``other`` is
     another company); its code."""
     from celerp_accounting.models import Account
-    company = await locked_company(session, cid)
+    code = {"archived_cash": "1112", "missing": "1199", "not_asset": "4100"}.get(case, "1190")
     if case == "archived_cash":
-        session.add(Account(company_id=cid, code="1112", name="Petty cash", account_type="asset",
+        session.add(Account(company_id=cid, code=code, name="Petty cash", account_type="asset",
                             parent_code="1110", is_active=False))
-        company.settings = {**(company.settings or {}), "woocommerce_deposit_account": "1112"}
-        await session.commit()
-        return "1112"
-    code = {"missing": "1199", "not_asset": "4100"}.get(case, "1190")
-    if case == "archived_bank":
+        await session.commit()  # archived by its own request
+    elif case == "archived_bank":
         await _bank_on(session, cid, code, active=False)
     elif case == "other_company":
         await _bank_on(session, other, code)
+    company = await locked_company(session, cid)
     company.settings = {**(company.settings or {}), "woocommerce_deposit_account": code}
     await session.commit()
     return code
@@ -1397,6 +1355,7 @@ async def _emit_item(session, cid, entity_id, state):
         event_type="item.created", data=state, actor_id=None, location_id=None,
         source="api", idempotency_key=f"create:{entity_id}", metadata_={},
     )
+    await session.commit()  # a person's create is its own request
 
 
 @pytest.mark.asyncio
@@ -1414,7 +1373,6 @@ async def test_set_external_link_unchanged_is_a_noop_even_when_identity_is_conte
     await _emit_item(session, cid, "item:second", {
         "sku": "NOOP-B", "name": "Second", "sell_by": "piece", "external_links": {"woocommerce": dict(link)},
     })
-    await session.flush()
     assert await set_external_link(session, cid, "item:first", "woocommerce", link) == link
 
 
@@ -2030,7 +1988,7 @@ async def test_mark_and_undo_reconciled_through_the_routes(client, use_test_sess
 @pytest.mark.asyncio
 async def test_sku_match_link_only_keeps_celerp_fields(use_test_session):
     from celerp_inventory.services import external_link_for_state, upsert_external_product
-    from connector_test_support import add_item, item_state
+    from connector_test_support import item_state
 
     session = use_test_session
     cid = await _seed_company(session, "LinkKeep")
@@ -2052,7 +2010,7 @@ async def test_sku_match_link_only_keeps_celerp_fields(use_test_session):
 @pytest.mark.asyncio
 async def test_sku_match_taking_store_values_overwrites(use_test_session):
     from celerp_inventory.services import upsert_external_product
-    from connector_test_support import add_item, item_state
+    from connector_test_support import item_state
 
     session = use_test_session
     cid = await _seed_company(session, "LinkTake")
@@ -2078,7 +2036,7 @@ async def _edit(session, cid, entity_id: str, **changes) -> None:
         actor_id=None, location_id=None, source="api",
         idempotency_key=f"edit:{entity_id}:{uuid.uuid4()}", metadata_={},
     )
-    await session.flush()
+    await session.commit()  # a person's edit is its own request
 
 
 @pytest.mark.asyncio
@@ -2189,23 +2147,23 @@ async def _first_sync_then_undo(session, monkeypatch) -> None:
     from celerp_connectors.routes import undo_first_sync_links
     from celerp_inventory.routes import undo_import_batch
     from celerp_inventory.services import external_link_for_state
-    from connector_test_support import add_item, connect, item_state
+    from connector_test_support import connect, item_state
 
     monkeypatch.setattr("celerp.connectors.woocommerce.validate_public_base_url",
                         AsyncMock(side_effect=lambda value, **_kw: value.rstrip("/")))
     cid = await _seed_company(session, "FirstUndo")
     user_id = await session.scalar(select(UserCompany.user_id).where(UserCompany.company_id == cid))
     await add_item(session, cid, "item:match", "MATCH-1", name="Celerp name", sale_price=10.0)
-    batch = ImportBatch(company_id=cid, entity_type="item", filename="WooCommerce first sync",
-                        row_count=0, entity_ids=[], idempotency_keys=[], reversible=True)
-    session.add(batch)
-    await session.flush()
     config = await connect(session, cid, "woocommerce",
                            {"products": "inbound", "stock": "off", "orders": "off", "customers": "off"},
                            first_sync="starting")
+    batch = ImportBatch(id=uuid.uuid4(), company_id=cid, entity_type="item", filename="WooCommerce first sync",
+                        row_count=0, entity_ids=[], idempotency_keys=[], reversible=True)
     config.first_sync.directions = dict(config.entity_directions)
     config.first_sync.batch_id, config.first_sync.match = str(batch.id), "take"
     config.first_sync.undo = {"links": []}
+    await session.flush()
+    session.add(batch)  # after the first-sync record is locked, as starting a first sync does
     await session.commit()
     ctx = ConnectorContext(company_id=str(cid), access_token="ck:cs", store_handle="https://store.example.com")
     monkeypatch.setattr("celerp.connectors.relay_token.fetch_context", AsyncMock(return_value=ctx))

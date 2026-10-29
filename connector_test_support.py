@@ -45,7 +45,7 @@ async def add_item(session, company_id, entity_id: str, sku: str, **fields) -> N
         actor_id=None, location_id=None, source="api",
         idempotency_key=f"create:{entity_id}", metadata_={},
     )
-    await session.flush()
+    await session.commit()  # a person's create is its own request
 
 
 async def item_state(session, company_id, entity_id: str) -> dict:
