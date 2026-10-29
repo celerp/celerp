@@ -206,13 +206,21 @@ async def delete_conversation(
     company_id: uuid.UUID,
     user_id: uuid.UUID,
 ) -> bool:
-    """Delete a conversation and its messages. Returns True if found."""
-    conv = await get_conversation(session, conversation_id, company_id, user_id)
-    if conv is None:
-        return False
-    await _lock_conversation(session, conv.id)
-    await session.delete(conv)
-    return True
+    """Delete a conversation and its messages. Returns True if found.
+
+    One DELETE of the conversation's row: the row is locked first and the
+    database's foreign-key cascade then removes the messages, the same order
+    every message writer takes (conversation, then messages)."""
+    deleted = (await session.execute(
+        delete(AIConversation)
+        .where(
+            AIConversation.id == conversation_id,
+            AIConversation.company_id == company_id,
+            AIConversation.user_id == user_id,
+        )
+        .returning(AIConversation.id)
+    )).scalar_one_or_none()
+    return deleted is not None
 
 
 async def rename_conversation(

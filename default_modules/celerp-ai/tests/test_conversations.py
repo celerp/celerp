@@ -124,7 +124,7 @@ async def test_create_conversation_sets_title_from_query(session, company, user)
 async def test_conversation_limit_per_user(session, company, user):
     for i in range(MAX_CONVERSATIONS_PER_USER + 5):
         await create_conversation(session, company.id, user.id, title=f"Conv {i}")
-    await session.commit()
+        await session.commit()
 
     convs = await list_conversations(session, company.id, user.id, limit=200)
     assert len(convs) <= MAX_CONVERSATIONS_PER_USER
@@ -142,7 +142,7 @@ async def test_conversation_pruning_preserves_unresolved_action(session, company
 
     for i in range(MAX_CONVERSATIONS_PER_USER):
         await create_conversation(session, company.id, user.id, title=f"New {i}")
-    await session.commit()
+        await session.commit()
 
     assert await get_conversation(session, protected_id, company.id, user.id) is not None
     convs = await list_conversations(session, company.id, user.id, limit=MAX_CONVERSATIONS_PER_USER + 10)
@@ -158,7 +158,7 @@ async def test_pruning_is_scoped_per_user(session, company, user, user_b):
 
     for i in range(MAX_CONVERSATIONS_PER_USER + 5):
         await create_conversation(session, company.id, user.id, title=f"A {i}")
-    await session.commit()
+        await session.commit()
 
     # User A pruned to the cap; user B's single conversation is untouched.
     a_convs = await list_conversations(session, company.id, user.id, limit=500)
@@ -223,9 +223,10 @@ async def test_delete_conversation_cascades_messages(session, company, user):
     await session.commit()
     assert deleted is True
 
-    # Conversation gone
+    # Conversation and its messages gone
     result = await get_conversation(session, conv.id, company.id, user.id)
     assert result is None
+    assert await get_messages(session, conv.id) == []
 
 
 @pytest.mark.asyncio
