@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import copy
 import functools
 import json
 import os
@@ -202,22 +203,62 @@ class Recorder:
     # Per transaction: the strengths it holds on each company's row, a foreign key's share
     # included (R4).
     company_rows: dict[int, dict[str, set[str]]] = field(default_factory=lambda: defaultdict(dict))
+    # Per transaction: its open savepoints, oldest first, each with the transaction state as
+    # it stood when the savepoint was made. PostgreSQL releases every lock taken after a
+    # savepoint when the transaction rolls back to it; releasing a savepoint keeps them.
+    savepoints: dict[int, list[tuple[str, tuple]]] = field(default_factory=lambda: defaultdict(list))
 
     def _transaction_state(self) -> tuple:
         return self.held, self.taken, self.explicit, self.last_key, self.own, self.under_company, self.company_rows
 
     def end(self, conn_key: int) -> None:
-        for state in self._transaction_state():
+        for state in (*self._transaction_state(), self.savepoints):
             state.pop(conn_key, None)
 
     def clear_transactions(self) -> None:
-        for state in self._transaction_state():
+        for state in (*self._transaction_state(), self.savepoints):
             state.clear()
+
+    def _savepoint(self, conn_key: int, statement: str) -> bool:
+        """SAVEPOINT, RELEASE SAVEPOINT and ROLLBACK TO SAVEPOINT; False for any other statement."""
+        words = statement.split()
+        upper = [w.upper() for w in words]
+        if upper[:1] == ["SAVEPOINT"] and len(words) == 2:
+            snapshot = tuple(copy.deepcopy(state[conn_key]) if conn_key in state else None
+                             for state in self._transaction_state())
+            self.savepoints[conn_key].append((words[1], snapshot))
+            return True
+        if upper[:2] == ["RELEASE", "SAVEPOINT"] and len(words) == 3:
+            self._unwind(conn_key, words[2], keep=False)
+            return True
+        if upper[:3] == ["ROLLBACK", "TO", "SAVEPOINT"] and len(words) == 4:
+            snapshot = self._unwind(conn_key, words[3], keep=True)
+            if snapshot is not None:
+                for state, before in zip(self._transaction_state(), snapshot):
+                    if before is None:
+                        state.pop(conn_key, None)
+                    else:
+                        state[conn_key] = copy.deepcopy(before)
+            return True
+        return False
+
+    def _unwind(self, conn_key: int, name: str, *, keep: bool) -> tuple | None:
+        """Drop the savepoints made after ``name`` (and ``name`` itself unless ``keep``);
+        the state ``name`` was made with, or None when it is not open."""
+        stack = self.savepoints.get(conn_key, [])
+        for i in range(len(stack) - 1, -1, -1):
+            if stack[i][0] == name:
+                snapshot = stack[i][1]
+                del stack[i + 1 if keep else i:]
+                return snapshot
+        return None
 
     def statement(self, conn_key: int, statement: str, parameters, waited: float) -> None:
         head = statement.lstrip()[:20].upper()
         if head.startswith(("COMMIT", "ROLLBACK", "END")) and "SAVEPOINT" not in head and "TO " not in head:
             self.end(conn_key)
+            return
+        if self._savepoint(conn_key, statement.strip()):
             return
         try:
             found = _locks(statement, parameters)

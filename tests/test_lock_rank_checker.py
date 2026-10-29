@@ -151,6 +151,41 @@ def test_one_task_waiting_on_the_same_key_on_two_connections_is_a_self_deadlock(
     assert ("self-deadlock", "row:connector_configs") in _kinds(recorder)
 
 
+def _second_connection_after(*statements: str) -> set[tuple[str, str]]:
+    """One task locks its company on connection 1 around ``statements`` ("lock" takes the
+    company), then waits for the same company on connection 2."""
+    recorder = Recorder()
+
+    async def body():
+        for statement in statements:
+            if statement == "lock":
+                recorder.acquire(1, _lock("row:companies", "no key update wait", key="a"), 0.0)
+            else:
+                recorder.statement(1, statement, None, 0.0)
+        recorder.acquire(2, _lock("row:companies", "no key update wait", key="a"), 0.0)
+
+    asyncio.run(body())
+    return {k for k, _ in _kinds(recorder)} & {"cross-connection", "self-deadlock"}
+
+
+def test_a_lock_taken_in_a_savepoint_rolled_back_is_no_longer_held():
+    assert not _second_connection_after("SAVEPOINT sa_1", "lock", "ROLLBACK TO SAVEPOINT sa_1")
+
+
+def test_rolling_back_to_an_outer_savepoint_drops_the_inner_ones_locks_too():
+    assert not _second_connection_after("SAVEPOINT sa_1", "SAVEPOINT sa_2", "lock",
+                                        "RELEASE SAVEPOINT sa_2", "ROLLBACK TO SAVEPOINT sa_1")
+
+
+@pytest.mark.parametrize("statements", [
+    ("lock", "SAVEPOINT sa_1", "ROLLBACK TO SAVEPOINT sa_1"),
+    ("SAVEPOINT sa_1", "lock", "RELEASE SAVEPOINT sa_1"),
+    ("SAVEPOINT sa_1", "SAVEPOINT sa_2", "lock", "ROLLBACK TO SAVEPOINT sa_1", "lock"),
+], ids=["taken-before-it", "released", "taken-again"])
+def test_a_lock_a_savepoint_rollback_does_not_undo_is_still_held(statements):
+    assert _second_connection_after(*statements)
+
+
 def test_two_tasks_on_two_connections_are_not_cross_connection():
     recorder = Recorder()
 

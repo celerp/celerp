@@ -92,15 +92,30 @@ def _defer(session: AsyncSession, company_id: uuid.UUID | None, write: Callable[
 
 def _write_pending(sync: Session) -> None:
     """before_commit, which also fires when a savepoint is released: the writes wait for
-    the outermost commit, in the order they were asked for. First every notice of the
-    companies they write is locked in one order, (company, id), so two commits that update
-    or remove the same notices in different orders wait for each other instead of each
-    holding one the other needs."""
+    the outermost commit, in the order they were asked for.
+
+    First the companies they write are shared by key, in id order, before any notice: a
+    company being reset holds its key until the reset commits, and a new notice's foreign
+    key would otherwise wait for it while holding the notices table the reset locks next,
+    which PostgreSQL breaks by aborting one of the two. A company the reset removed has no
+    notices left to write. Then every notice of those companies is locked in one order,
+    (company, id), so two commits that update or remove the same notices in different
+    orders wait for each other instead of each holding one the other needs."""
+    from celerp.models.company import Company
+
     if sync.in_nested_transaction():
         return
     writes = sync.info.pop(_WRITES, [])
     if not writes:
         return
+    named = sorted({company_id for _, company_id, _ in writes if company_id is not None}, key=str)
+    if named:
+        present = {str(c) for c in sync.execute(
+            select(Company.id).where(Company.id.in_(named)).order_by(Company.id)
+            .with_for_update(read=True, key_share=True)).scalars()}
+        writes = [w for w in writes if w[1] is None or str(w[1]) in present]
+        if not writes:
+            return
     companies = {company_id for _, company_id, _ in writes}
     notices = select(Notification.id).order_by(Notification.company_id, Notification.id).with_for_update()
     if None not in companies:
