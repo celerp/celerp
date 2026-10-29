@@ -42,6 +42,7 @@ from celerp.services.permissions import locked_authority, require_permission
 from celerp.schemas.numbers import FiniteFloat
 from ui.i18n import t
 from celerp_inventory.projections import is_manufacturable
+from celerp_inventory.services import replaced_price
 
 from .costing import RecipeError, labor_hours, output_quantity, roll_up_cost, where_used
 
@@ -480,15 +481,12 @@ async def _apply_standard_cost(session: AsyncSession, company_id, user, item_id:
     new_cost = recipe.get("unit_cost")
     if new_cost is None:
         return
-    current = item_state.get("cost_price")
-    try:
-        if current is not None and float(current) == float(new_cost):
-            return
-    except (TypeError, ValueError):
-        pass
+    current = replaced_price(item_state, "cost_price")
+    if current is not None and current == float(new_cost):
+        return
     await emit_event(
         session, company_id=company_id, entity_id=item_id, entity_type="item",
-        event_type="item.pricing.set", data={"price_type": "cost_price", "new_price": new_cost},
+        event_type="item.pricing.set", data={"price_type": "cost_price", "new_price": new_cost, "old_price": current},
         actor_id=user.id, location_id=None, source="auto", idempotency_key=str(uuid.uuid4()), metadata_={},
     )
 

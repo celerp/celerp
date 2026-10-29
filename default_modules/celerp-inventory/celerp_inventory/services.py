@@ -60,7 +60,10 @@ from celerp.services.peer_import import SourceRevision
 from celerp.services.line_measures import check_sell_qty_fits_unit, validate_default_sell_qty
 from celerp.services.permissions import role_has_permission
 from celerp.services.vertical_presets import category_item_defaults
-from celerp.services.pricing import derived_price_keys, get_price_config, is_derived, price_key, price_keys_in
+from celerp.services.pricing import (
+    coerce_price, derived_price_keys, get_price_config, is_cost_price_type, is_derived, price_key, price_keys_in,
+    stored_price,
+)
 from celerp.services.units import (
     SERVICE_SELL_BY,
     build_unit_map,
@@ -191,6 +194,24 @@ def goods_basis(state: dict) -> float | None:
     if basis is None:
         basis = state.get("cost_total")
     return None if basis is None else round_basis(basis)
+
+
+def replaced_price(state: dict, price_type: str) -> float | None:
+    """The value an item.pricing.set of ``price_type`` replaces, in the unit of its
+    new_price, or None when the item has none: the goods basis for cost_total, the
+    goods unit cost for cost_price, a cost list's own key, else the item's price on
+    that list."""
+    if price_type == "cost_total":
+        return goods_basis(state)
+    if price_type == "cost_price":
+        unit = coerce_price(state.get("cost_price"))
+        if unit is not None:
+            return unit
+        basis, qty = goods_basis(state), coerce_price(state.get("quantity")) or 0
+        return round(basis / qty, 10) if basis is not None and qty > 0 else None
+    if is_cost_price_type(price_type):
+        return coerce_price(state.get(price_type))
+    return stored_price(state, price_type)
 
 
 @dataclass(frozen=True)

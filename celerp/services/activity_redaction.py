@@ -3,8 +3,8 @@
 
 """Role-gated cost redaction for activity/history payloads.
 
-Cost (``cost_price`` / ``cost_total``) is visible only to manager+ everywhere else in
-the app (item detail, list, dashboard cost basis). The ledger/activity feeds must honour
+Cost (``cost_price`` / ``cost_total`` and any cost price list) is visible only to manager+
+everywhere else in the app (item detail, list, dashboard cost basis). The ledger/activity feeds must honour
 the same rule, enforced **server-side** so raw cost never ships to an under-threshold
 role. This is the single source of truth for that redaction, used by both the ledger
 router and the dashboard activity endpoints.
@@ -16,10 +16,13 @@ contribution.
 
 from __future__ import annotations
 
+from celerp.events.schemas import ItemPricingSet
 from celerp.services.permissions import role_has_permission
+from celerp.services.pricing import is_cost_price_type
 
-# The cost fields gated by view_inventory_costs (mirrors the inventory item-visibility rule).
-COST_FIELD_KEYS = frozenset({"cost_price", "cost_total"})
+# Every amount an item.pricing.set carries (all its fields but price_type), so an amount
+# field added to the event later is redacted with the rest.
+_PRICING_AMOUNT_KEYS = frozenset(ItemPricingSet.model_fields) - {"price_type"}
 
 # Every cost-bearing key that can appear in event data (top-level or in fields_changed):
 # item cost, COGS on fulfillment, manufacturing unit cost. Sell prices (retail_price etc.)
@@ -53,7 +56,8 @@ def redact_event_costs(event_type: str, data: dict) -> dict:
     """Return ``data`` with every cost amount stripped. Pure (returns a copy only when it
     changes something); rows are kept (counts/pagination stay intact), only cost numbers go.
 
-    Covers all cost-bearing event data: ``item.pricing.set`` for a cost price_type;
+    Covers all cost-bearing event data: ``item.pricing.set`` for a cost price_type (a cost
+    key or a cost price list: every amount, the new value and the one it replaced);
     top-level cost keys (item cost on item.created/snapshot/patched, ``total_cogs`` on
     doc fulfillment, manufacturing ``unit_cost``); ``fields_changed`` cost keys; transform
     parent/child cost totals; and split ``children_detail`` cost deltas. Sell prices
@@ -65,9 +69,10 @@ def redact_event_costs(event_type: str, data: dict) -> dict:
     if not isinstance(data, dict):
         return data
 
-    # Pricing event for a cost price_type → drop the amount, keep the (label-only) row.
-    if event_type == "item.pricing.set" and data.get("price_type") in COST_FIELD_KEYS:
-        out = {k: v for k, v in data.items() if k != "new_price"}
+    # Pricing event for a cost price_type (a cost key or a cost list) → drop every amount
+    # (all fields but price_type), keep the label-only row.
+    if event_type == "item.pricing.set" and is_cost_price_type(str(data.get("price_type") or "")):
+        out = {k: v for k, v in data.items() if k not in _PRICING_AMOUNT_KEYS}
         out["cost_redacted"] = True
         return out
 

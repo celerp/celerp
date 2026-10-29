@@ -123,3 +123,23 @@ async def test_recost_dependents_none(client) -> None:
     lonely = await _item(client, token, "LONELY", quantity=1, cost_total=10)
     r = await client.post(f"/manufacturing/items/{lonely}/recost-dependents", headers=_h(token))
     assert r.status_code == 200 and r.json()["count"] == 0
+
+
+async def _pricing_rows(client, token, item_id) -> list[dict]:
+    r = await client.get("/ledger", params={"entity_id": item_id}, headers=_h(token))
+    assert r.status_code == 200, r.text
+    return [e["data"] for e in r.json()["items"] if e["event_type"] == "item.pricing.set"]
+
+
+@pytest.mark.asyncio
+async def test_a_recipe_change_records_the_unit_cost_it_replaced(client) -> None:
+    """A stocked manufactured item's history shows the goods unit cost before the recipe
+    changed it; saving the same recipe again records no price change."""
+    token = await _register(client)
+    gold = await _item(client, token, "GOLDH", quantity=1, cost_total=80)
+    ring = await _item(client, token, "RINGH", quantity=2, cost_total=100)  # goods unit cost 50
+    await _set_recipe(client, token, ring, [{"item_id": gold, "quantity": 5}])
+    rows = await _pricing_rows(client, token, ring)
+    assert [r for r in rows if r.get("price_type") == "cost_price"][0]["old_price"] == 50
+    await _set_recipe(client, token, ring, [{"item_id": gold, "quantity": 5}])
+    assert len(await _pricing_rows(client, token, ring)) == len(rows)

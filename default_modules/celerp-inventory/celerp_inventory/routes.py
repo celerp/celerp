@@ -56,6 +56,7 @@ from .services import (
     item_price_mutex_groups,
     normalize_sku,
     build_import_plan,
+    replaced_price,
     source_header_semantics,
 )
 from celerp.accounting_roles import LOT_ACCOUNT_FIELD, ON_BOOKS_FIELD, refusal
@@ -89,6 +90,7 @@ from celerp.services.pricing import (
     get_price_config,
     inject_derived_prices,
     is_cost_list_name,
+    is_cost_price_type,
     is_price_item_key,
     price_key,
     price_keys_in,
@@ -2520,16 +2522,6 @@ def draft_cost_carveout(is_draft: bool, role: str, settings: dict) -> bool:
     return is_draft and role_has_permission(settings, role, "edit_inventory")
 
 
-def is_cost_price_type(price_type: str) -> bool:
-    """True when a set_item_price price_type addresses the cost list, in either the
-    primitive-key form (cost_price/cost_total) or a list-name-derived key (e.g.
-    landed_price for a 'Landed' cost list)."""
-    if price_type in COST_ITEM_KEYS:
-        return True
-    name = price_type[:-len("_price")] if price_type.endswith("_price") else price_type
-    return is_cost_list_name(name)
-
-
 @router.patch("/{entity_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True})
 async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
     if payload.idempotency_key:
@@ -4853,7 +4845,8 @@ async def set_item_price(entity_id: str, payload: PriceBody, company_id=Depends(
     event = dict(
         entity_id=entity_id,
         event_type="item.pricing.set",
-        data=payload.model_dump(exclude_none=True),
+        data={**payload.model_dump(exclude_none=True),
+              "old_price": replaced_price(_proj.state or {}, payload.price_type)},
         actor_id=user.id,
         source="api",
         idempotency_key=payload.idempotency_key or str(uuid.uuid4()),

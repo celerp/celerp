@@ -387,7 +387,14 @@ def detail_from_entry(data: dict, event_type: str, currency: str | None = None,
         label = price_list_label(price_type) if price_type else t("field.price")
         if label == price_type:
             label = _field_name(price_type)
-        return f"{label} → {fmt_price(new_price, price_type, currency)}" if new_price is not None else label
+        if new_price is None:
+            return label
+        new_str = fmt_price(new_price, price_type, currency)
+        if "old_price" not in data:  # recorded before the replaced value was kept
+            return f"{label} → {new_str}"
+        old = data["old_price"]
+        old_str = t("activity.none") if old is None else fmt_price(old, price_type, currency)
+        return f"{label}: {old_str} → {new_str}"
     if event_type == "item.status.set":
         new_status = data.get("new_status", "")
         return f"→ {new_status}" if new_status else ""

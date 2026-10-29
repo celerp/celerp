@@ -148,6 +148,9 @@ class ItemUpdated(BaseModel):
 class ItemPricingSet(BaseModel):
     price_type: str
     new_price: float
+    # The value this change replaced, in the unit of new_price; None when the item had none.
+    # Absent on changes recorded before it was kept.
+    old_price: float | None = None
 
 
 class ItemStatusSet(BaseModel):
