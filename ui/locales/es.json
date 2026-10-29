@@ -6585,5 +6585,8 @@
   "documents.list_old_rule_notice": "El total de este presupuesto se calculó con la regla de redondeo anterior: {stored}. La regla actual da {current}. Vuelva a calcular el total para aplicar la regla actual. Después podrá restablecer el total anterior.",
   "documents.btn_recalculate_total": "Volver a calcular el total",
   "documents.list_total_recalculated": "Total recalculado de {old} a {new}.",
-  "documents.btn_restore_total": "Restablecer el total anterior"
+  "documents.btn_restore_total": "Restablecer el total anterior",
+  "docs.list_issue_before_send": "Emita la lista antes de enviarla.",
+  "documents.marked_as_sent": "Marcado como enviado.",
+  "documents.sent_marker_cleared": "Se quitó la marca de enviado."
 }

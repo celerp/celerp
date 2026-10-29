@@ -6585,5 +6585,8 @@
   "documents.list_old_rule_notice": "この見積書の合計は以前の端数処理ルールで計算されています：{stored}。現在のルールでは{current}です。現在のルールを適用するには合計を再計算してください。その後、以前の合計に戻すこともできます。",
   "documents.btn_recalculate_total": "合計を再計算",
   "documents.list_total_recalculated": "合計を{old}から{new}に再計算しました。",
-  "documents.btn_restore_total": "以前の合計に戻す"
+  "documents.btn_restore_total": "以前の合計に戻す",
+  "docs.list_issue_before_send": "リストを送信する前に発行してください。",
+  "documents.marked_as_sent": "送信済みにしました。",
+  "documents.sent_marker_cleared": "送信済みの印を外しました。"
 }

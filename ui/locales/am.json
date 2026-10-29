@@ -6585,5 +6585,8 @@
   "documents.list_old_rule_notice": "ይህ የዋጋ ጥቅስ ጠቅላላ ድምር በቀድሞው የማጠጋጋት ሕግ ተሰልቷል፦ {stored}። የአሁኑ ሕግ {current} ያስገኛል። የአሁኑን ሕግ ለመጠቀም ጠቅላላ ድምሩን እንደገና ያስሉ። ከዚያ በኋላ የቀድሞውን ድምር መመለስ ይችላሉ።",
   "documents.btn_recalculate_total": "ጠቅላላ ድምሩን እንደገና አስላ",
   "documents.list_total_recalculated": "ጠቅላላ ድምሩ ከ{old} ወደ {new} እንደገና ተሰልቷል።",
-  "documents.btn_restore_total": "የቀድሞውን ጠቅላላ ድምር መልስ"
+  "documents.btn_restore_total": "የቀድሞውን ጠቅላላ ድምር መልስ",
+  "docs.list_issue_before_send": "ዝርዝሩን ከመላክዎ በፊት ያውጡት።",
+  "documents.marked_as_sent": "እንደተላከ ተመዝግቧል።",
+  "documents.sent_marker_cleared": "የመላክ ምልክቱ ተወግዷል።"
 }

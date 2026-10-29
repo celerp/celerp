@@ -6585,5 +6585,8 @@
   "documents.list_old_rule_notice": "O total deste orçamento foi calculado pela regra de arredondamento anterior: {stored}. A regra atual resulta em {current}. Recalcule o total para aplicar a regra atual. Depois, você poderá restaurar o total anterior.",
   "documents.btn_recalculate_total": "Recalcular total",
   "documents.list_total_recalculated": "Total recalculado de {old} para {new}.",
-  "documents.btn_restore_total": "Restaurar total anterior"
+  "documents.btn_restore_total": "Restaurar total anterior",
+  "docs.list_issue_before_send": "Emita a lista antes de enviá-la.",
+  "documents.marked_as_sent": "Marcado como enviado.",
+  "documents.sent_marker_cleared": "Marca de enviado removida."
 }

@@ -6585,5 +6585,8 @@
   "ai.err_read_refused": "The assistant was not allowed to read the data this question needs. Once you have access to it, you can ask it as a new question, which counts as one more question.",
   "th.unconfirmed": "Not Yet Confirmed",
   "ai.usage_unconfirmed_note": "Not yet confirmed: questions whose charge the AI service has not confirmed yet. They are not counted in Credits Used until it is.",
-  "ai.usage_unresolved_note": "{count} of them can no longer be confirmed, because the AI service keeps a question's charge for one day only. They stay unconfirmed and are not counted in Credits Used."
+  "ai.usage_unresolved_note": "{count} of them can no longer be confirmed, because the AI service keeps a question's charge for one day only. They stay unconfirmed and are not counted in Credits Used.",
+  "docs.list_issue_before_send": "Issue the list before sending it.",
+  "documents.marked_as_sent": "Marked as sent.",
+  "documents.sent_marker_cleared": "Sent marker cleared."
 }

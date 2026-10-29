@@ -6585,5 +6585,8 @@
   "documents.list_old_rule_notice": "ยอดรวมใบเสนอราคานี้คำนวณตามกฎการปัดเศษเดิม: {stored} ส่วนกฎปัจจุบันได้ {current} โปรดคำนวณยอดรวมใหม่เพื่อใช้กฎปัจจุบัน และสามารถคืนค่ายอดรวมเดิมได้ภายหลัง",
   "documents.btn_recalculate_total": "คำนวณยอดรวมใหม่",
   "documents.list_total_recalculated": "คำนวณยอดรวมใหม่จาก {old} เป็น {new} แล้ว",
-  "documents.btn_restore_total": "คืนค่ายอดรวมเดิม"
+  "documents.btn_restore_total": "คืนค่ายอดรวมเดิม",
+  "docs.list_issue_before_send": "ออกรายการก่อนส่ง",
+  "documents.marked_as_sent": "ทำเครื่องหมายว่าส่งแล้ว",
+  "documents.sent_marker_cleared": "ล้างเครื่องหมายว่าส่งแล้ว"
 }

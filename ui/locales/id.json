@@ -6585,5 +6585,8 @@
   "documents.list_old_rule_notice": "Total penawaran harga ini dihitung dengan aturan pembulatan sebelumnya: {stored}. Aturan saat ini menghasilkan {current}. Hitung ulang total untuk menggunakan aturan saat ini. Anda dapat memulihkan total sebelumnya setelah itu.",
   "documents.btn_recalculate_total": "Hitung ulang total",
   "documents.list_total_recalculated": "Total dihitung ulang dari {old} menjadi {new}.",
-  "documents.btn_restore_total": "Pulihkan total sebelumnya"
+  "documents.btn_restore_total": "Pulihkan total sebelumnya",
+  "docs.list_issue_before_send": "Terbitkan daftar sebelum mengirimnya.",
+  "documents.marked_as_sent": "Ditandai sudah terkirim.",
+  "documents.sent_marker_cleared": "Tanda terkirim dihapus."
 }
