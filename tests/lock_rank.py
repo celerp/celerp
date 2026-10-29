@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import ast
 import asyncio
-import copy
 import functools
 import json
 import os
@@ -182,6 +181,14 @@ def _own_connection(lock: Lock) -> bool:
     return lock.cls == "adv:outbound" and lock.mode.startswith("session")
 
 
+def _copy_state(value):
+    """One connection's transaction state, copied for a savepoint: its containers and their
+    sets of strengths. A Lock is never changed once a transaction holds it, so it is shared."""
+    if isinstance(value, dict):
+        return {k: set(v) if isinstance(v, set) else v for k, v in value.items()}
+    return type(value)(value)
+
+
 @dataclass
 class Recorder:
     held: dict[int, list[Lock]] = field(default_factory=lambda: defaultdict(list))
@@ -230,7 +237,7 @@ class Recorder:
         words = statement.split()
         upper = [w.upper() for w in words]
         if upper[:1] == ["SAVEPOINT"] and len(words) == 2:
-            snapshot = tuple(copy.deepcopy(state[conn_key]) if conn_key in state else None
+            snapshot = tuple(_copy_state(state[conn_key]) if conn_key in state else None
                              for state in self._transaction_state())
             self.savepoints[conn_key].append((words[1], snapshot))
             return True
@@ -244,7 +251,7 @@ class Recorder:
                     if before is None:
                         state.pop(conn_key, None)
                     else:
-                        state[conn_key] = copy.deepcopy(before)
+                        state[conn_key] = _copy_state(before)
             return True
         return False
 
