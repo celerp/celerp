@@ -211,6 +211,57 @@ def test_the_outbound_identity_lock_may_be_held_on_its_own_connection():
     assert not {k for k, _ in _kinds(recorder)} & {"cross-connection", "self-deadlock"}
 
 
+def test_a_key_every_taker_only_tries_may_be_held_while_waiting_on_another_connection():
+    """A Xero fetch round holds its key on a connection of its own while its work waits on
+    others: no one waits on that key, so the hold closes no cycle."""
+    recorder = Recorder()
+
+    async def body():
+        recorder.acquire(1, _lock("adv:xero-attachments-round", "session exclusive try"), 0.0)
+        recorder.acquire(2, _lock("row:migration_attachment_fetches", "update wait"), 0.0)
+
+    asyncio.run(body())
+    assert not {k for k, _ in _kinds(recorder)} & {"cross-connection", "self-deadlock"}
+
+
+def test_a_waiting_take_of_a_key_every_taker_should_only_try_fails():
+    recorder = Recorder()
+    recorder.acquire(1, _lock("adv:xero-attachments-round", "session exclusive wait"), 0.0)
+    assert ("try-only", "adv:xero-attachments-round") in _kinds(recorder)
+
+
+def test_a_key_others_wait_on_still_fails_when_held_across_connections():
+    recorder = Recorder()
+
+    async def body():
+        recorder.acquire(1, _lock("adv:migration", "session exclusive try"), 0.0)
+        recorder.acquire(2, _lock("row:migration_runs", "update wait"), 0.0)
+
+    asyncio.run(body())
+    assert ("cross-connection", "row:migration_runs") in _kinds(recorder)
+
+
+def test_a_text_key_named_like_a_fixed_key_is_unranked():
+    """An import run's key once read "migration:<run>", which the recorder filed as the
+    migration key itself: the two would be judged as one lock."""
+    found = classify("SELECT pg_try_advisory_xact_lock(hashtext($1))", ("migration:42",))
+    assert [c for c, _ in found] == ["adv:?adv:migration (named like a fixed key)"]
+    assert lock_rank.rank(found[0][0]) is None
+
+
+def test_the_import_run_key_has_a_class_of_its_own():
+    from celerp.services.migrations import _lock_key
+    found = classify("SELECT pg_try_advisory_xact_lock(hashtext($1))", (_lock_key("42"),))
+    assert found == [("adv:migration-run", "xact exclusive try")]
+
+
+def test_a_held_key_every_taker_only_tries_orders_nothing_on_its_own_connection():
+    recorder = Recorder()
+    recorder.acquire(1, _lock("adv:migration-run", "xact exclusive try"), 0.0)
+    recorder.acquire(1, _lock("adv:migration", "xact exclusive wait"), 0.0)
+    assert not _kinds(recorder)
+
+
 def test_the_offline_check_judges_edges_seen_across_test_statements(tmp_path):
     (tmp_path / "lock-graph-gw0.json").write_text(json.dumps({
         "contention": [], "violations": [],

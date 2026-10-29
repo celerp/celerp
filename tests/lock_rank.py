@@ -46,7 +46,7 @@ from pathlib import Path
 RANKS: dict[str, int] = {
     # Instance-wide: schema, version, bootstrap.
     "adv:migration": 0, "adv:version-admit": 1, "adv:version-fence": 2, "adv:bootstrap": 3,
-    "adv:migration-scan": 4, "adv:jti-cleanup": 5,
+    "adv:migration-scan": 4, "adv:jti-cleanup": 5, "adv:migration-run": 8,
     "row:alembic_version": 6, "row:system_runtime_state": 7,
     # Whole-company backup and restore.
     "adv:backup-names": 10, "adv:backup": 11, "adv:backup-landing": 12,
@@ -79,7 +79,8 @@ RANKS: dict[str, int] = {
     "row:payment_recoveries": 64,
     # Bookkeeping rows written last.
     "row:migration_runs": 70, "row:migration_cleanup_tasks": 71, "row:migration_templates": 72,
-    "row:migration_attachment_fetches": 73, "adv:xero-attachments": 74, "adv:xero-attachments-round": 75,
+    # A fetch's start takes its key before its row, which may not exist yet.
+    "adv:xero-attachments": 73, "row:migration_attachment_fetches": 74, "adv:xero-attachments-round": 75,
     "row:migration_batch_files": 76, "row:migration_entity_maps": 77,
     "row:ai_conversations": 78, "row:ai_messages": 79,
     "row:ai_batch_jobs": 80, "row:instance_meta": 81,
@@ -141,6 +142,9 @@ CALLSITE_KEYS: dict[str, str] = {
     "celerp.services.company_backup.restore_company": "adv:backup-names",
 }
 
+# The classes of keys that are not text: a text key's class must never be one of them.
+_FIXED_CLASSES = frozenset(NUMERIC_KEYS.values()) | frozenset(CALLSITE_KEYS.values())
+
 _ADVISORY = re.compile(
     r"pg_(try_)?advisory_(xact_)?(lock|unlock)(_shared)?\s*\(([^()]*(?:\([^()]*\)[^()]*)*)\)", re.I)
 _PARAM = re.compile(r"\$(\d+)|%\((\w+)\)s|:(\w+)")
@@ -179,6 +183,11 @@ _LEASE_ROWS = ("row:connector_execution_leases", "row:connector_execution_heartb
 # session-level, on the execution's own connection.
 def _own_connection(lock: Lock) -> bool:
     return lock.cls == "adv:outbound" and lock.mode.startswith("session")
+
+
+# Keys every taker only tries (pg_try_advisory_lock): no one waits on them, so holding one
+# closes no cycle, on its own connection or another. A waiting take of one fails ("try-only").
+_TRY_ONLY = ("adv:migration-run", "adv:xero-attachments-round")
 
 
 def _copy_state(value):
@@ -407,8 +416,9 @@ class Recorder:
             info["retakes"] = info.get("retakes", 0) + 1
             return
         waits = lock.mode.split(" ")[-1] not in ("nowait", "try", "skip")
-        if waits:
-            self._other_connections(conn_key, lock)
+        if lock.cls in _TRY_ONLY and waits:
+            self._violate("try-only", lock)
+        self._other_connections(conn_key, lock, waits)
         # One entry per run of a class, in the order taken: a class taken again with nothing
         # else between adds no order, so the list stays as short as the order is.
         held = self.session_held[conn_key] + self.held[conn_key]
@@ -422,8 +432,8 @@ class Recorder:
             gate = ({g.cls for g in held[:i] if _exclusive(g.mode)} | serial) - {h.cls, lock.cls}
             gated = {x.cls for x in (h, lock) if x.gated}
             company_gated = "" if gated else self._company_gate(conn_key, h, lock)
-            inverts = waits and rank(lock.cls) is not None and rank(h.cls) is not None \
-                and rank(lock.cls) < rank(h.cls)
+            inverts = waits and h.cls not in _TRY_ONLY and rank(lock.cls) is not None \
+                and rank(h.cls) is not None and rank(lock.cls) < rank(h.cls)
             # R5: judged offline against every take of the class outside those keys.
             serialized = inverts and bool(gate & serial)
             self._edge(h, lock, waits, gate, gated, company_gated, serialized)
@@ -523,9 +533,10 @@ class Recorder:
         if edge["example"] is None:
             edge["example"] = {"held": h.site, "acquired": lock.site, "test": self.test}
 
-    def _other_connections(self, conn_key: int, lock: Lock) -> None:
+    def _other_connections(self, conn_key: int, lock: Lock, waits: bool) -> None:
         """A task that waits on one connection while it holds a lock on another can wait on
-        itself: the lock it holds is released only when this wait ends."""
+        itself: the lock it holds is released only when this wait ends. Every take ties its
+        connection to the task, a try included, so what that connection holds is seen."""
         try:
             task = asyncio.current_task()
         except RuntimeError:
@@ -533,11 +544,12 @@ class Recorder:
         if task is None:
             return
         conns = self.task_conns.setdefault(task, set())
-        for other in sorted(conns - {conn_key}):
+        for other in sorted(conns - {conn_key}) if waits else ():
             ref = self.conn_task.get(other)
             if ref is None or ref() is not task:
                 continue
-            holding = [h for h in self.session_held.get(other, []) + self.held.get(other, []) if not _own_connection(h)]
+            holding = [h for h in self.session_held.get(other, []) + self.held.get(other, [])
+                       if not _own_connection(h) and h.cls not in _TRY_ONLY]
             if any(h.cls == lock.cls and h.key == lock.key and _conflict(h, lock) for h in holding):
                 self._violate("self-deadlock", lock, held_lock=holding[0])
                 break
@@ -735,7 +747,10 @@ def _advisory_class(args: str, parameters) -> str:
     if "hashtext" in args:
         inner = re.search(r"hashtext(?:extended)?\s*\(\s*([^,()]+)", args).group(1)
         key = str(_param(inner, parameters)).strip("'")
-        return "adv:" + key.split(":", 1)[0]
+        cls = "adv:" + key.split(":", 1)[0]
+        # A text key named like a fixed key's class would be judged as that other lock:
+        # left unranked, so the take fails as unknown until the key is renamed.
+        return f"adv:?{cls} (named like a fixed key)" if cls in _FIXED_CLASSES else cls
     parts = [str(_param(p, parameters)) for p in args.split(",")]
     first = int(parts[0], 0) if _INT.match(parts[0]) else None
     if first is not None and first in NUMERIC_KEYS:

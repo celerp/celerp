@@ -389,7 +389,7 @@ def _sample_sha256() -> str | None:
 
 
 def _lock_key(run_id: uuid.UUID) -> str:
-    return f"migration:{run_id}"
+    return f"migration-run:{run_id}"
 
 
 async def _try_xact_lock(session: AsyncSession, run_id: uuid.UUID) -> bool:
