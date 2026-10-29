@@ -361,6 +361,14 @@ def clear_session_registry() -> None:
     conn.close()
 
 
+def release_held_routes(page, glob: str, held: list) -> None:
+    """Aborts the requests a test held with page.route(glob, held.append), then removes
+    the route. Unrouting first would send every held request on to the server."""
+    for route in held:
+        route.abort()
+    page.unroute(glob)
+
+
 def wait_for_landing(page, timeout: float = 30000) -> str:
     """Waits until the page has left Settings and returns the path it landed on, after
     checking it is where signing in lands: the first page in the menu (top-level entries

@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import pytest
 
+from .conftest import release_held_routes
+
 pytestmark = pytest.mark.browser
 
 
@@ -45,12 +47,7 @@ def test_poll_recovers_from_wedged_fetch(page, ui_server):
 
     issued = len(requests)
     # Release the held routes so teardown does not block on outstanding requests.
-    page.unroute("**/poll-probe")
-    for route in held:
-        try:
-            route.abort()
-        except Exception:
-            pass
+    release_held_routes(page, "**/poll-probe", held)
 
     assert issued >= 2, (
         "a wedged poll fetch must be aborted at its deadline so the poller keeps polling; "
