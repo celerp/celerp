@@ -24,7 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, Location, User
 from celerp.services.auth import hash_password
-from celerp.services.company_lock import locked_company
+from celerp.services.company_lock import lock_company, locked_company
 
 DEFAULT_LOCATION_NAME = "Head Office"
 DEFAULT_LOCATION_TYPE = "office"
@@ -143,7 +143,10 @@ async def ensure_default_location(session: AsyncSession, company_id: uuid.UUID) 
 
     An existing default is kept; otherwise the oldest location becomes the default;
     otherwise the standard default location is created. Only one is ever marked default.
+    Taken under the company's lock, as every location writer, so two callers settle it one
+    after the other.
     """
+    await lock_company(session, company_id)
     locations = list((await session.execute(
         select(Location).where(Location.company_id == company_id).order_by(Location.created_at, Location.id)
     )).scalars())
