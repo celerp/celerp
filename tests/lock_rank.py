@@ -1053,7 +1053,9 @@ def _row_locks(statement: str) -> tuple[tuple[tuple[str, str, tuple[int, ...] | 
                 named = [r["RangeVar"]["relname"] for r in c.get("lockedRels", ())]
                 for t in ([tables.get(n, n) for n in named] if named else list(tables.values())):
                     company = _company_param(t, where) if len(tables) == 1 else None
-                    out.append((f"row:{t}", mode, key, company, None))
+                    # FOR KEY SHARE of a parent row is the lock a foreign-key check takes: its key, shared.
+                    shares_key = mode.startswith("key share ") and t in _parents()
+                    out.append((f"{'key' if shares_key else 'row'}:{t}", mode, key, company, None))
                     if mode.startswith("update ") and t in _parents():
                         out.append((f"key:{t}", mode, key, company, None))
         elif kind == "LockStmt":

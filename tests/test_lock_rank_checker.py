@@ -82,6 +82,21 @@ def test_a_foreign_key_share_after_a_higher_rank_is_not_ordered():
     assert ("row:projections", "key:companies") not in recorder.edges
 
 
+def test_an_explicit_key_share_of_a_parent_row_is_the_foreign_key_checks_lock():
+    # The notice writer shares, at commit, every company its notices name, after the rows it wrote.
+    assert classify("SELECT id FROM companies WHERE id = $1 FOR KEY SHARE", ("c",)) == [
+        ("key:companies", "key share wait")]
+    recorder = Recorder()
+    recorder.statement(1, _LEDGER, ("l1", "c1", "item"), 0.0)
+    recorder.statement(1, _SHARE_COMPANIES, ("c1", "c2"), 0.0)
+    assert not recorder.violations
+
+
+def test_a_key_share_of_a_row_no_foreign_key_names_stays_a_row_lock():
+    assert classify("SELECT id FROM work_centers WHERE id = $1 FOR KEY SHARE", ("w",)) == [
+        ("row:work_centers", "key share wait")]
+
+
 @pytest.mark.parametrize("statement", [
     "SELECT id FROM companies WHERE id = $1 FOR UPDATE",
     "DELETE FROM companies WHERE id = $1",
@@ -1020,6 +1035,7 @@ def test_a_cross_connection_wait_without_a_serializing_key_stays_a_live_violatio
 
 _SHARE_COMPANIES = ("SELECT companies.id FROM companies WHERE companies.id IN ($1::UUID, $2::UUID) "
                     "ORDER BY companies.id FOR KEY SHARE")
+_SHARE_TWO_COMPANIES = _SHARE_COMPANIES.replace("FOR KEY SHARE", "FOR SHARE")
 
 
 @pytest.mark.parametrize("held, violates", [
@@ -1027,11 +1043,10 @@ _SHARE_COMPANIES = ("SELECT companies.id FROM companies WHERE companies.id IN ($
     (("c1",), True),        # c2 is not held, so the statement can wait on it
 ])
 def test_one_statement_over_rows_each_already_held_is_a_retake(recorder, held, violates):
-    # The notice writer shares, at commit, every company its notices name in one statement.
     for company in held:
         recorder.statement(1, _LOCK_COMPANY, (company,), 0.0)
     _chart(recorder)
-    recorder.statement(1, _SHARE_COMPANIES, ("c1", "c2"), 0.0)
+    recorder.statement(1, _SHARE_TWO_COMPANIES, ("c1", "c2"), 0.0)
     assert (("order", "row:companies") in _kinds(recorder)) is violates
 
 
