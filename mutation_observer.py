@@ -23,7 +23,8 @@ TRUNCATE are writes, a data-changing CTE included; FOR UPDATE and FOR SHARE, LOC
 and the advisory lock functions are locks. A statement is a read only when every function
 it calls is reviewed (_PURE); an unreviewed function, procedural SQL or any statement type
 not named here is flagged as unknown, never taken as a read. A write is judged for the
-companies its construct names, else for the request's company, and the census says which.
+companies its construct names, else for the request's company, else for the one company
+whose lock its transaction holds, and the census says which.
 
 Writes are judged only inside a request (``observed`` wraps the app) and only for tables
 that hold company data: companies itself, a table with a company_id column, or one whose
@@ -162,6 +163,11 @@ UNDER_ROW_LOCK: dict[tuple[str, str], RowLocked] = {
     ("session_registry", "INSERT"): _TOKEN_ISSUE,
     ("session_registry", "UPDATE"): _TOKEN_ISSUE,
     ("session_registry", "DELETE"): _TOKEN_REVOKE,
+    ("ai_batch_jobs", "UPDATE"): RowLocked(
+        "ai_batch_jobs", ("celerp/ai/jobs.py _heartbeat",),
+        "a runner's lease renewed, and nothing else: only while its runner id still holds the job open, so it "
+        "never takes a job, and never waits on the company lock, as a renewal held past the lease would hand a "
+        "healthy runner's job to another"),
 }
 
 # A request in one of these methods only reads, and so does every request made for it in
@@ -876,10 +882,14 @@ def _executed(conn, cursor, statement, parameters, context, executemany) -> None
     # The statement names the companies it writes (an insert's company_id, a WHERE on it),
     # or the write is taken as the request's company and says so: an update by primary
     # key or raw SQL names no company, and the company lock never proves which company
-    # owns a row.
+    # owns a row. Work with no request authority to name its company (a job's runner, a
+    # background pass) is taken, the same way, as the one company whose lock its
+    # transaction holds, and says so; holding none, or several, it names no company.
     targets, source = op.companies, "statement"
     if not targets and company:
         targets, source = (company,), "request"
+    if not targets and len(held := {str(c) for c in _here(request, session, "locked")}) == 1:
+        targets, source = tuple(held), "lock"
     if (op.table, op.detail) == ("companies", "INSERT"):
         for created in op.companies:
             note(session, _CREATED, created)

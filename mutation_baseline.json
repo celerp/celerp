@@ -1,23 +1,5 @@
 [
  {
-  "route": "api DELETE /ai/conversations/{conversation_id}",
-  "kind": "unprotected",
-  "table": "ai_conversations",
-  "fingerprint": "72ce1a7749f88e33",
-  "where": [
-   "celerp/middleware.py __call__",
-   "celerp/middleware.py __call__",
-   "celerp/middleware.py __call__",
-   "celerp/middleware.py __call__",
-   "celerp/middleware.py _run",
-   "default_modules/celerp-ai/celerp_ai/routes.py delete_conv"
-  ],
-  "test": "default_modules/celerp-ai/tests/test_routes_coverage.py::test_conversation_lifecycle",
-  "issue": "https://github.com/celerp/celerp/issues/406",
-  "owner": "celerp-ai",
-  "remove_when": "the write takes the company lock (lock_company) at its owning service"
- },
- {
   "route": "api DELETE /api/labels/templates/{template_id}",
   "kind": "unprotected",
   "table": "label_templates",
@@ -355,96 +337,6 @@
    "celerp/ai/conversations.py add_message"
   ],
   "test": "default_modules/celerp-ai/tests/test_routes_coverage.py::test_proposal_flags_total_mismatch",
-  "issue": "https://github.com/celerp/celerp/issues/406",
-  "owner": "celerp-ai",
-  "remove_when": "the write takes the company lock (lock_company) at its owning service"
- },
- {
-  "route": "api POST /ai/conversations/{conversation_id}/query",
-  "kind": "unprotected",
-  "table": "ai_batch_jobs",
-  "fingerprint": "91c2f83828185adf",
-  "where": [
-   "celerp/middleware.py __call__",
-   "celerp/middleware.py __call__",
-   "celerp/middleware.py __call__",
-   "celerp/middleware.py _run",
-   "default_modules/celerp-ai/celerp_ai/routes.py query_in_conversation",
-   "celerp/ai/batch.py create_batch_job"
-  ],
-  "test": "default_modules/celerp-ai/tests/test_routes_coverage.py::test_query_with_images_creates_job",
-  "issue": "https://github.com/celerp/celerp/issues/406",
-  "owner": "celerp-ai",
-  "remove_when": "the write takes the company lock (lock_company) at its owning service"
- },
- {
-  "route": "api POST /ai/conversations/{conversation_id}/query",
-  "kind": "unprotected",
-  "table": "ai_conversations",
-  "fingerprint": "862d7e2852409ca3",
-  "where": [
-   "celerp/middleware.py __call__",
-   "celerp/middleware.py __call__",
-   "celerp/middleware.py __call__",
-   "celerp/middleware.py _run",
-   "default_modules/celerp-ai/celerp_ai/routes.py query_in_conversation",
-   "celerp/ai/conversations.py add_message"
-  ],
-  "test": "default_modules/celerp-ai/tests/test_routes_coverage.py::test_confirm_action_executes_pending",
-  "issue": "https://github.com/celerp/celerp/issues/406",
-  "owner": "celerp-ai",
-  "remove_when": "the write takes the company lock (lock_company) at its owning service"
- },
- {
-  "route": "api POST /ai/conversations/{conversation_id}/query",
-  "kind": "unprotected",
-  "table": "ai_conversations",
-  "fingerprint": "f4f6eb3bd33a959b",
-  "where": [
-   "celerp/middleware.py __call__",
-   "celerp/middleware.py __call__",
-   "celerp/middleware.py __call__",
-   "celerp/middleware.py _run",
-   "default_modules/celerp-ai/celerp_ai/routes.py query_in_conversation",
-   "celerp/ai/conversations.py add_message"
-  ],
-  "test": "default_modules/celerp-ai/tests/test_routes_coverage.py::test_conversation_query_error",
-  "issue": "https://github.com/celerp/celerp/issues/406",
-  "owner": "celerp-ai",
-  "remove_when": "the write takes the company lock (lock_company) at its owning service"
- },
- {
-  "route": "api POST /ai/conversations/{conversation_id}/query",
-  "kind": "unprotected",
-  "table": "ai_messages",
-  "fingerprint": "3c72be308b480a92",
-  "where": [
-   "celerp/middleware.py __call__",
-   "celerp/middleware.py __call__",
-   "celerp/middleware.py __call__",
-   "celerp/middleware.py _run",
-   "default_modules/celerp-ai/celerp_ai/routes.py query_in_conversation",
-   "celerp/ai/conversations.py record_credits"
-  ],
-  "test": "default_modules/celerp-ai/tests/test_routes_coverage.py::test_conversation_query_error",
-  "issue": "https://github.com/celerp/celerp/issues/406",
-  "owner": "celerp-ai",
-  "remove_when": "the write takes the company lock (lock_company) at its owning service"
- },
- {
-  "route": "api POST /ai/conversations/{conversation_id}/query",
-  "kind": "unprotected",
-  "table": "ai_messages",
-  "fingerprint": "ea54b6580a2e4f31",
-  "where": [
-   "celerp/middleware.py __call__",
-   "celerp/middleware.py __call__",
-   "celerp/middleware.py __call__",
-   "celerp/middleware.py _run",
-   "default_modules/celerp-ai/celerp_ai/routes.py query_in_conversation",
-   "celerp/ai/conversations.py add_message"
-  ],
-  "test": "default_modules/celerp-ai/tests/test_routes_coverage.py::test_confirm_action_executes_pending",
   "issue": "https://github.com/celerp/celerp/issues/406",
   "owner": "celerp-ai",
   "remove_when": "the write takes the company lock (lock_company) at its owning service"

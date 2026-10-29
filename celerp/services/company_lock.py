@@ -40,8 +40,11 @@ def noted(session, kind: str) -> list:
     return [key for k, key, _ in session.info.get(_PROOFS, ()) if k == kind]
 
 
-async def lock_company(session: AsyncSession, company_id) -> None:
+async def lock_company(session: AsyncSession, company_id) -> bool:
     """Serialize a read-check-write section with every other holder for the company.
+    Returns whether the company row was there to lock: a caller with no request
+    authority to judge again (background work) must stop on False, as the company is
+    gone and nothing may be written for it.
 
     Two concurrent writers that each check a condition and then write would both
     pass the check. Taking a row lock on the company makes the second writer wait
@@ -62,11 +65,12 @@ async def lock_company(session: AsyncSession, company_id) -> None:
     Projection row locks. Never acquire it after SELECT ... FOR UPDATE on a Projection.
     """
     await judge_module_writes(session, company_id)
-    await session.execute(
+    found = (await session.execute(
         select(Company.id).where(Company.id == company_id).with_for_update(key_share=True)
-    )
+    )).first() is not None
     await _judge_authority_again(session, company_id)
     note(session, "locked", company_id)
+    return found
 
 
 async def judge_module_writes(session: AsyncSession, company_id) -> None:

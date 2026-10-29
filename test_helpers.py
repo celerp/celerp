@@ -82,6 +82,19 @@ async def until(predicate, timeout: float = 10.0) -> None:
     await asyncio.wait_for(_wait(), timeout)
 
 
+async def until_a_lock_waits(engine, timeout: float = 10.0) -> None:
+    """Wait until some transaction of the test database waits on a lock. pg_stat_activity
+    is a snapshot per transaction, so each poll reads on a connection of its own."""
+    from sqlalchemy import text
+
+    async def _waiting() -> bool:
+        async with engine.connect() as conn:
+            return bool((await conn.execute(text(
+                "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() "
+                "AND wait_event_type = 'Lock'"))).scalar_one())
+    await until(_waiting, timeout)
+
+
 async def settled_question(client, headers: dict, conversation_id: str, question_id) -> dict:
     """A thread question's state (GET .../questions/{id}) once its job has ended. The
     test's requests and the job share one connection, which runs one query at a time,

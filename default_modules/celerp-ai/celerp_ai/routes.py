@@ -713,6 +713,7 @@ async def query_in_conversation(
     from celerp.ai import jobs
     from celerp.ai.batch import create_batch_job
     from celerp.ai.conversations import add_message, get_conversation
+    await jobs.lock_for_ai(session, company_id)
     conv = await get_conversation(session, conversation_id, company_id, user.id)
     if conv is None:
         raise HTTPException(status_code=404, detail=t("ai.err_conversation_not_found"))
