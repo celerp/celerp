@@ -437,6 +437,23 @@ async def test_activation_payload_has_no_handoff():
     assert "handoff_id" not in activate_payload("iid", first_boot=True, activation_verifier="v", boot_id="b")
 
 
+async def test_restore_inserts_every_row_under_the_restored_companys_lock(real_engine, real_client, tmp_path,
+                                                                         monkeypatch):
+    """Each table's bulk insert names the restored company, so the lock checker judges every
+    restored row under that company: the census finds no row the restore inserts outside it."""
+    _bk_local(monkeypatch, tmp_path)
+    _, _, tok = await _bk_setup(real_engine)
+    recorder = sys.modules["lock_rank"].RECORDER
+
+    def inserts() -> set[str]:
+        rows = {c for c in recorder.classes if c.startswith("row:")}
+        return {s for s in recorder.ungated_sites(rows, "celerp/services/company_backup.py") if " _insert " in s}
+
+    before = inserts()
+    assert (await restore(real_client, tok, await download(real_client, tok))).status_code == 201
+    assert inserts() - before == set()
+
+
 @pytest.mark.parametrize("verifier", ["", "pending-verifier"])
 async def test_checkin_payload_has_no_handoff(real_engine, real_client, tmp_path, monkeypatch, verifier):
     """The startup check-in and activation report no hand-off id, even after a backup was restored."""

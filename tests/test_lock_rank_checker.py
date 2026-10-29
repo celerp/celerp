@@ -528,6 +528,29 @@ def test_an_insert_not_under_its_companys_lock_is_an_order_violation(recorder, l
     assert ("order", "row:ledger") in _kinds(recorder)
 
 
+# A restore's bulk insert: its rows come from a JSON array, its company is one bound value or
+# whatever company the rows themselves name.
+_LEDGER_SELECT = ("INSERT INTO ledger (id, company_id, entity_id) SELECT r.id, {company}, r.entity_id "
+                  "FROM jsonb_array_elements(CAST($1 AS jsonb)) AS e(v), "
+                  "jsonb_populate_record(NULL::ledger, e.v) AS r")
+
+
+def test_an_insert_select_binding_its_company_under_the_company_lock_is_gated(recorder):
+    recorder.statement(1, _LOCK_COMPANY, ("c1",), 0.0)
+    recorder.statement(1, _OUTBOUND, ("c1", 7), 0.0)
+    recorder.statement(1, _LEDGER_SELECT.format(company="CAST(CAST($2 AS text) AS uuid)"), ("[]", "c1"), 0.0)
+    assert not recorder.violations
+    assert recorder.ungated_sites({"row:ledger"}) == set()
+
+
+def test_an_insert_select_taking_its_company_from_its_rows_names_no_company(recorder):
+    # The rows could name any company: the insert is judged as made outside the company lock.
+    recorder.statement(1, _LOCK_COMPANY, ("c1",), 0.0)
+    recorder.statement(1, _OUTBOUND, ("c1", 7), 0.0)
+    recorder.statement(1, _LEDGER_SELECT.format(company="r.company_id"), ("[]",), 0.0)
+    assert ("order", "row:ledger") in _kinds(recorder)
+
+
 @pytest.mark.parametrize("ungated", [True, False])
 def test_the_offline_check_judges_a_gated_insert_against_the_tables_ungated_inserters(
         recorder, tmp_path, ungated):

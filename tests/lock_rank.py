@@ -1079,10 +1079,15 @@ def _row_locks(statement: str) -> tuple[tuple[tuple[str, str, tuple[int, ...] | 
             table = body["relation"]["relname"]
             fks = _foreign_keys(table)
             cols = [c["ResTarget"]["name"] for c in body.get("cols", ())]
-            rows = body.get("selectStmt", {}).get("SelectStmt", {}).get("valuesLists") or []
+            select_ = body.get("selectStmt", {}).get("SelectStmt", {})
+            rows = select_.get("valuesLists") or []
+            # INSERT ... SELECT: its one target list is every row's values.
+            picked = [t["ResTarget"]["val"] for t in select_.get("targetList", ())]
             company = None
             if _company_column(table) in cols and (table == "companies" or _company_keyed(table)):
                 values = [r["List"]["items"][cols.index(_company_column(table))] for r in rows]
+                if not rows and len(picked) == len(cols):
+                    values = [picked[cols.index(_company_column(table))]]
                 numbers = [_params(v) for v in values]
                 if numbers and all(n and len(n) == 1 for n in numbers):
                     company = tuple(n[0] for n in numbers)

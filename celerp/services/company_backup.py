@@ -1543,16 +1543,21 @@ def _row_batches(lines, limit: int):
 
 
 async def _insert(session: AsyncSession, zf: zipfile.ZipFile, table: str, columns: list[str],
-                  id_map: dict[str, str]) -> None:
+                  id_map: dict[str, str], schema: db_catalog.Table, company_id) -> None:
+    """Insert the backup's rows of ``table``. Its company column is the restored company,
+    bound once for the whole statement: the source company every row was checked to name
+    maps to it, so no restored row can name another company."""
     cols = ", ".join(db_catalog.ident(c) for c in columns)
-    picked = ", ".join(f"r.{db_catalog.ident(c)}" for c in columns)
+    company = f"CAST(CAST(:company AS text) AS {db_catalog.ident(schema.columns['company_id'].udt)})" \
+        if "company_id" in columns else ""
+    picked = ", ".join(company if c == "company_id" else f"r.{db_catalog.ident(c)}" for c in columns)
     statement = text(
         f"INSERT INTO {db_catalog.ident(table)} ({cols}) SELECT {picked} "
         f"FROM jsonb_array_elements(CAST(:rows AS jsonb)) WITH ORDINALITY AS e(v, n), "
         f"jsonb_populate_record(NULL::{db_catalog.ident(table)}, e.v) AS r ORDER BY e.n")
     batches = _row_batches(_lines(zf, f"tables/{table}.jsonl"), BATCH_ROWS)
     while rows := await asyncio.to_thread(next, batches, None):
-        await session.execute(statement, {"rows": _dump_rows(remap(rows, id_map))})
+        await session.execute(statement, {"rows": _dump_rows(remap(rows, id_map)), "company": str(company_id)})
 
 
 async def _verify(session: AsyncSession, checked: _Checked, manifest: dict, company_id,
@@ -1782,7 +1787,8 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
                                                            company_id=new_id, settings=settings)
                 try:
                     for name in checked.order:
-                        await _insert(session, zf, name, m["tables"][name]["columns"], id_map)
+                        await _insert(session, zf, name, m["tables"][name]["columns"], id_map,
+                                      checked.plan.schema[name], new_id)
                 except DBAPIError:
                     raise BackupError(422, t(UNSAVABLE)) from None
             await _verify(session, checked, m, new_id, {new: old for old, new in id_map.items()})
