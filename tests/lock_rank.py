@@ -232,6 +232,11 @@ class Recorder:
     # it stood when the savepoint was made. PostgreSQL releases every lock taken after a
     # savepoint when the transaction rolls back to it; releasing a savepoint keeps them.
     savepoints: dict[int, list[tuple[str, tuple]]] = field(default_factory=lambda: defaultdict(list))
+    # R4 leaf takes: per transaction, each take outside its company's lock (with the sites that
+    # retook it) after which no lock that can wait has been taken (on any connection). Its
+    # transaction never waits holding that row, so at its end the take is proof-neutral; one
+    # still open when the graph is read counts as ungated.
+    leaves: dict[int, list[tuple[dict, str, set[str]]]] = field(default_factory=lambda: defaultdict(list))
 
     def _transaction_state(self) -> tuple:
         return self.held, self.taken, self.explicit, self.last_key, self.own, self.company_rows, self.rows
@@ -239,10 +244,20 @@ class Recorder:
     def end(self, conn_key: int) -> None:
         for state in (*self._transaction_state(), self.savepoints):
             state.pop(conn_key, None)
+        for info, _, sites in self.leaves.pop(conn_key, ()):
+            info.setdefault("leaf_sites", set()).update(sites)
 
     def clear_transactions(self) -> None:
         for state in (*self._transaction_state(), self.savepoints):
             state.clear()
+        self._spoil_leaves()
+
+    def _spoil_leaves(self) -> None:
+        """A lock that can wait was taken (or the transactions are no longer followed): every
+        pending leaf take's transaction may wait holding its row, so each counts as ungated."""
+        for info, take, _ in (leaf for leaves in self.leaves.values() for leaf in leaves):
+            _ungated(info, take)
+        self.leaves.clear()
 
     def _savepoint(self, conn_key: int, statement: str) -> bool:
         """SAVEPOINT, RELEASE SAVEPOINT and ROLLBACK TO SAVEPOINT; False for any other statement."""
@@ -351,11 +366,13 @@ class Recorder:
         return max(self.company_rows[conn_key].get(lock.company, set()) & {"nokey", "update"},
                    key=_STRENGTH_ORDER.index)
 
-    def _census(self, conn_key: int, lock: Lock, info: dict) -> None:
+    def _census(self, conn_key: int, lock: Lock, info: dict, retake: bool) -> None:
         """R4: count each take of a company's row made without that company's exclusive lock,
         with what the transaction then holds of the company's row ("none" when nothing, "unknown"
         when the statement names no one company): a gate that conflicts with that still makes
-        the take wait or keeps the gate's holder out. The company's own row is the gate."""
+        the take wait or keeps the gate's holder out. The company's own row is the gate. A take
+        is counted once a lock that can wait follows it in the process before its transaction
+        ends (a leaf otherwise); a retake adds nothing to what its covering take holds."""
         table = lock.cls.split(":", 1)[1]
         if table == "companies":
             company = _companies_row(lock)
@@ -368,9 +385,14 @@ class Recorder:
             return
         held = self.company_rows[conn_key].get(lock.company, ()) if lock.company else ("unknown",)
         company = max(held, key=_STRENGTH_ORDER.index) if held and lock.company else (held or ("none",))[0]
-        info["company_ungated"] = info.get("company_ungated", 0) + 1
-        info.setdefault("ungated_takes", set()).add(f"{_strength(lock)}|{company}")
-        info.setdefault("ungated_sites", set()).add(f"{lock.site} [{_strength(lock)}|{company}]")
+        take, site = f"{_strength(lock)}|{company}", f"{lock.site} [{_strength(lock)}|{company}]"
+        info.setdefault("ungated_sites", set()).add(site)
+        if not retake:
+            self.leaves[conn_key].append((info, take, {site}))
+            return
+        for leaf in self.leaves.get(conn_key, ()):
+            if leaf[0] is info:
+                leaf[2].add(site)
 
     def _retake(self, conn_key: int, lock: Lock) -> bool:
         """Whether this connection already holds what ``lock`` asks for: the same key at no
@@ -400,6 +422,9 @@ class Recorder:
     def acquire(self, conn_key: int, lock: Lock, waited: float) -> None:
         info = self.classes.setdefault(lock.cls, {"count": 0, "modes": set(), "sites": set()})
         info["count"] += 1
+        retake = self._retake(conn_key, lock)
+        if lock.mode.split(" ")[-1] not in ("nowait", "try", "skip") and not retake:
+            self._spoil_leaves()
         serial = self._serial_gates()
         # R5: the keys every take of the class was made under.
         info["serial"] = info["serial"] & serial if "serial" in info else serial
@@ -416,7 +441,7 @@ class Recorder:
             self._lease(conn_key, lock)
         own = self._own(conn_key, lock)
         if not own:
-            self._census(conn_key, lock, info)
+            self._census(conn_key, lock, info, retake)
         if lock.cls.startswith("key:") and _strength(lock) == "keyshare":
             return
         if own:
@@ -607,6 +632,7 @@ class Recorder:
                 for s in v.get("ungated_sites", ()) if path in s.split(":", 1)[0]}
 
     def dump(self) -> dict:
+        self._spoil_leaves()
         return {
             "edges": [{"from": a, "to": b, **v, "gate": sorted(v["gate"]), "modes": sorted(v["modes"]),
                        "call_modes": sorted(v.get("call_modes", ())), "gated": sorted(v["gated"]),
@@ -622,6 +648,13 @@ class Recorder:
             "serial_cross": list(self.serial_cross.values()),
             "violations": list({**self.seen, **{violation_key(v): v for v in self.violations}}.values()),
         }
+
+
+def _ungated(info: dict, take: str) -> None:
+    """R4: count a take of a company's row outside its company's lock that its transaction
+    may hold while it waits."""
+    info["company_ungated"] = info.get("company_ungated", 0) + 1
+    info.setdefault("ungated_takes", set()).add(take)
 
 
 def _flow() -> tuple:
@@ -1428,8 +1461,8 @@ def _unexercised(g: dict) -> dict[str, list[str]]:
 # taken out of order under it, and second keys taken without it (R3), and every take of a
 # company's row without its company's lock (R4).
 _COUNTS = ("ungated", "gated_unsorted", "ungated_multi", "company_ungated")
-# The strengths of those R3 and R4 takes, and where each was taken.
-_SETS = ("unsorted_strengths", "multi_strengths", "multi_sites", "ungated_takes", "ungated_sites")
+# The strengths of those R3 and R4 takes, where each was taken, and the R4 leaf takes' sites.
+_SETS = ("unsorted_strengths", "multi_strengths", "multi_sites", "ungated_takes", "ungated_sites", "leaf_sites")
 
 
 def _merge(directory: Path) -> dict:

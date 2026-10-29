@@ -817,6 +817,53 @@ def test_an_inserts_foreign_key_share_on_its_company_holds_the_company(recorder,
     assert "- gated row:outbound_queue -> row:projections" not in lock_rank.check(tmp_path)
 
 
+_NOWAIT_OUTBOUND = _OUTBOUND.replace("FOR UPDATE", "FOR UPDATE NOWAIT")
+_WRITE_PROJECTION = "UPDATE projections SET state=$1 WHERE projections.company_id = $2::UUID AND projections.entity_id = $3"
+
+
+def _leaf_listed(recorder: Recorder, tmp_path) -> bool:
+    (tmp_path / "lock-graph-gw0.json").write_text(json.dumps(recorder.dump()))
+    return "- gated row:outbound_queue -> row:projections" in lock_rank.check(tmp_path)
+
+
+@pytest.mark.parametrize("after", [
+    (),                                                   # takes the row, commits
+    ((2, _WRITE_PROJECTION, ("s", "c1", "other")),),      # writes the row it holds: a retake
+    ((2, _NOWAIT_OUTBOUND, ("c1", 8)),),                  # a NOWAIT take cannot wait
+])
+@pytest.mark.parametrize("before", [False, True])
+def test_a_take_its_transaction_holds_while_waiting_on_nothing_is_proof_neutral(recorder, tmp_path, after,
+                                                                                 before):
+    """A cycle through a gated edge needs a transaction holding the taken row while it waits. One
+    that waits on nothing from that take until it ends never does, whatever it held before."""
+    _gated_inversion(recorder)
+    if before:
+        recorder.statement(2, _OUTBOUND, ("c1", 8), 0.0)
+    _projection(recorder, 2, "other")
+    for conn, query, params in after:
+        recorder.statement(conn, query, params, 0.0)
+    recorder.statement(2, "COMMIT", (), 0.0)
+    assert not _leaf_listed(recorder, tmp_path)
+    info = recorder.dump()["classes"]["row:projections"]
+    assert set(info["leaf_sites"]) <= set(info["ungated_sites"]) and info["leaf_sites"]
+    assert not info["ungated_takes"]
+
+
+@pytest.mark.parametrize("case", ["held weaker before", "waits after", "another connection waits", "still open"])
+def test_a_take_that_can_hold_its_row_while_waiting_stays_unproven(recorder, tmp_path, case):
+    _gated_inversion(recorder)
+    if case == "held weaker before":  # the weaker hold is kept while the upgrade waits
+        recorder.statement(2, _PROJECTION.replace("FOR UPDATE", "FOR KEY SHARE"), ("c1", "other"), 0.0)
+    _projection(recorder, 2, "other")
+    if case == "waits after":
+        recorder.statement(2, _OUTBOUND, ("c1", 8), 0.0)
+    if case == "another connection waits":
+        recorder.statement(3, _OUTBOUND, ("c1", 8), 0.0)
+    if case != "still open":
+        recorder.statement(2, "COMMIT", (), 0.0)
+    assert _leaf_listed(recorder, tmp_path)
+
+
 @pytest.mark.parametrize("listed_in_debt", [False, True])
 def test_the_lock_order_job_fails_on_an_unproven_gated_inversion_the_debt_file_lacks(
         recorder, tmp_path, monkeypatch, listed_in_debt):
