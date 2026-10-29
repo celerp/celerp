@@ -412,21 +412,46 @@ async def _exact_physical_lot(token: str, code: str, *, doc_type: str, doc_id: s
     return lots[0]
 
 
-async def _sales_options(token: str, items: list[dict], company_settings: dict, code: str, *,
-                         doc_id: str | None, line_id: str | None, source_memo_id: str | None) -> list[dict]:
-    """Forward-sale picker options for matched lots: drafts dropped, then splittable lots
-    held for another record or another line, or out on another memo, dropped before
-    consolidation, so a SKU's option only ever stands for (and counts) stock this line may
-    draw. Raises ``_PickerRefusal`` when every matched lot is held elsewhere, rather than
-    letting the caller fall through to a different item."""
+def _drawable_lots(items: list[dict], doc_id: str | None, line_id: str | None,
+                   source_memo_id: str | None) -> list[dict]:
+    """The lots a line may newly draw: drafts dropped, then splittable lots held for another
+    record or another line, or out on another memo."""
     from celerp_inventory.projections import held_elsewhere
 
-    items = [i for i in items if str(i.get("status") or "").lower() != "draft"]
-    drawable = [i for i in items
-                if not (splitting_allowed(i) and held_elsewhere(i, doc_id, line_id, source_memo_id))]
-    if items and not drawable:
-        raise _PickerRefusal(await _held_by_another_record(token, items, code))
+    return [i for i in items if str(i.get("status") or "").lower() != "draft"
+            and not (splitting_allowed(i) and held_elsewhere(i, doc_id, line_id, source_memo_id))]
+
+
+async def _sales_options(token: str, items: list[dict], company_settings: dict, code: str, *,
+                         doc_id: str | None, line_id: str | None, source_memo_id: str | None) -> list[dict]:
+    """Forward-sale picker options for matched lots: the drawable lots, consolidated, so a
+    SKU's option only ever stands for (and counts) stock this line may draw. Raises
+    ``_PickerRefusal`` when every matched lot is held elsewhere, rather than letting the
+    caller fall through to a different item."""
+    stock = [i for i in items if str(i.get("status") or "").lower() != "draft"]
+    drawable = _drawable_lots(stock, doc_id, line_id, source_memo_id)
+    if stock and not drawable:
+        raise _PickerRefusal(await _held_by_another_record(token, stock, code))
     return _consolidate_sales_lots(drawable, company_settings)
+
+
+async def _starting_options(token: str, company_settings: dict, *, doc_id: str | None,
+                            line_id: str | None, source_memo_id: str | None) -> list[dict]:
+    """The line-item picker's list before anything is typed, on every document type: the first
+    _PICKER_START_LIMIT options in the inventory list's default order (most recently updated
+    first) that this line may draw. Lots held elsewhere are skipped and the reading goes on, so
+    the newest items being held by another record (a quotation's reservation, a memo) never
+    leaves the list empty while other stock is free. At most _PICKER_START_PAGES pages are read."""
+    drawable: list[dict] = []
+    options: list[dict] = []
+    for page in range(_PICKER_START_PAGES):
+        found = (await api.list_items(token, {"limit": _PICKER_START_LIMIT,
+                                              "offset": page * _PICKER_START_LIMIT}))["items"]
+        drawable += _drawable_lots(found, doc_id, line_id, source_memo_id)
+        options = _consolidate_sales_lots(drawable, company_settings)
+        if len(options) >= _PICKER_START_LIMIT or len(found) < _PICKER_START_LIMIT:
+            break
+    return options[:_PICKER_START_LIMIT]
 
 
 def _enrich_doc_files(doc: dict) -> list[dict]:
@@ -446,8 +471,10 @@ from ui.routes.reports import _company_today, _date_presets, _get_company, _pars
 
 logger = logging.getLogger(__name__)
 
-# How many items the line-item picker offers before anything is typed.
+# How many items the line-item picker offers before anything is typed, and how many pages of
+# that size it reads at most to find them past lots held for other records.
 _PICKER_START_LIMIT = 20
+_PICKER_START_PAGES = 5
 
 # ---------------------------------------------------------------------------
 # Lists constants
@@ -1976,12 +2003,8 @@ def setup_routes(app):
                             seen.add(key)
                             items.append(item)
                     return _J([extract(i) for i in items])
-                found = (await api.list_items(token, {"limit": _PICKER_START_LIMIT}))["items"]
-                try:
-                    items = await _sales_options(token, found, ctx["settings"], q, doc_id=ctx["doc_id"],
-                                                 line_id=ctx["line_id"], source_memo_id=ctx["source_memo_id"])
-                except _PickerRefusal:
-                    items = []
+                items = await _starting_options(token, ctx["settings"], doc_id=ctx["doc_id"],
+                                                line_id=ctx["line_id"], source_memo_id=ctx["source_memo_id"])
                 return _J([extract(i) for i in items])
             lot = await _exact_physical_lot(token, q, doc_type=ctx["doc_type"], doc_id=ctx["doc_id"],
                                             line_id=ctx["line_id"], source_memo_id=ctx["source_memo_id"])
