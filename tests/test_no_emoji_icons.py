@@ -64,7 +64,6 @@ ALLOWED_IN_STRINGS: frozenset[str] = frozenset({
     "btn._memory",
     "btn._print_labels",
     "doc._labels",
-    "documents.err_tax_invalid",
     "inv.hero_product_image",
     "inv.u0001f4c1",
     "inv.u0001f4cb_duplicate",
