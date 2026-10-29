@@ -2754,6 +2754,7 @@ async def patch_bank_account(
     _: None = require_permission("manage_accounting"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    await lock_company(session, company_id)
     b = (
         await session.execute(
             select(BankAccount).where(BankAccount.id == bank_id, BankAccount.company_id == company_id)
@@ -2916,6 +2917,9 @@ async def _get_recon(
         ReconciliationSession.company_id == company_id,
     )
     if for_update:
+        # A writer takes the company's lock before its reconciliation rows, the lock its
+        # postings and chart reads take too, so it never waits for the company holding one.
+        await lock_company(db, company_id)
         query = query.with_for_update()
     recon = (await db.execute(query)).scalar_one_or_none()
     if not recon:
@@ -3052,6 +3056,7 @@ async def start_reconciliation(
     _: None = require_permission("manage_accounting"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    await lock_company(session, company_id)
     bank = (
         await session.execute(
             select(BankAccount).where(
@@ -4127,6 +4132,7 @@ async def create_recon_rule(
     _: None = require_permission("manage_accounting"),
     db: AsyncSession = Depends(get_session),
 ) -> dict:
+    await lock_company(db, company_id)
     bank = (await db.execute(select(BankAccount.id).where(
         BankAccount.id == payload.bank_account_id, BankAccount.company_id == company_id,
     ))).scalar_one_or_none()
@@ -4160,6 +4166,7 @@ async def patch_recon_rule(
     _: None = require_permission("manage_accounting"),
     db: AsyncSession = Depends(get_session),
 ) -> dict:
+    await lock_company(db, company_id)
     rule = (await db.execute(
         select(ReconciliationRule).where(
             ReconciliationRule.id == rule_id,
@@ -4184,6 +4191,7 @@ async def delete_recon_rule(
     _: None = require_permission("manage_accounting"),
     db: AsyncSession = Depends(get_session),
 ) -> dict:
+    await lock_company(db, company_id)
     rule = (await db.execute(
         select(ReconciliationRule).where(
             ReconciliationRule.id == rule_id,
@@ -4212,6 +4220,7 @@ async def _get_recon_and_line(
         select(BankStatementLine).where(
             BankStatementLine.id == line_id,
             BankStatementLine.reconciliation_id == session_id,
+            BankStatementLine.company_id == company_id,
         ).with_for_update()
     )).scalar_one_or_none()
     if not sl:
