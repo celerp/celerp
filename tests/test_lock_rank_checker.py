@@ -418,6 +418,7 @@ def test_a_test_statement_sent_through_a_conftest_wrapper_is_sited_at_the_test()
 # ── R4: edges between rows of one company, under that company's exclusive lock ──
 
 _DELETE_COMPANY = "SELECT companies.id FROM companies WHERE companies.id = $1::UUID FOR UPDATE"
+_HOLD_COMPANY = "SELECT companies.id FROM companies WHERE companies.id = $1::UUID FOR KEY SHARE"
 _TABLE = "LOCK TABLE projections IN SHARE ROW EXCLUSIVE MODE"
 
 
@@ -474,9 +475,11 @@ def test_every_company_keyed_row_taken_without_its_company_lock_is_counted(recor
     _projection(recorder, 2, "ungated")
     recorder.statement(3, "SELECT projections.entity_id FROM projections WHERE projections.entity_id = $1 FOR SHARE",
                        ("unknown-company",), 0.0)
+    recorder.statement(4, _HOLD_COMPANY, ("c1",), 0.0)
+    _projection(recorder, 4, "held")
     info = recorder.dump()["classes"]["row:projections"]
-    assert info["company_ungated"] == 2
-    assert info["ungated_strengths"] == ["share", "update"]
+    assert info["company_ungated"] == 3
+    assert info["ungated_takes"] == ["share|unknown", "update|keyshare", "update|none"]
 
 
 @pytest.mark.parametrize("other, listed", [
@@ -496,7 +499,48 @@ def test_the_offline_check_fails_a_company_gated_inversion_whose_classes_have_an
         recorder.statement(2, query, ("c1", 9), 0.0)
     assert not recorder.violations
     (tmp_path / "lock-graph-gw0.json").write_text(json.dumps(recorder.dump()))
-    assert ("row:outbound_queue (63) -> row:projections" in lock_rank.check(tmp_path)) is listed
+    assert ("- gated row:outbound_queue -> row:projections" in lock_rank.check(tmp_path)) is listed
+
+
+@pytest.mark.parametrize("gate, holder, listed", [
+    (_DELETE_COMPANY, _HOLD_COMPANY, False),  # the deletion gate waits for every holder of the company
+    (_LOCK_COMPANY, _HOLD_COMPANY, True),     # a company writer's lock does not wait for a key share
+    (_DELETE_COMPANY, None, True),            # a take holding nothing of the company
+])
+def test_a_take_outside_the_gate_is_proven_only_when_it_holds_a_company_lock_the_gate_waits_for(
+        recorder, tmp_path, gate, holder, listed):
+    recorder.statement(1, gate, ("c1",), 0.0)
+    recorder.statement(1, _OUTBOUND, ("c1", 7), 0.0)
+    _projection(recorder, 1, "item")
+    if holder:
+        recorder.statement(2, holder, ("c1",), 0.0)
+    _projection(recorder, 2, "other")
+    (tmp_path / "lock-graph-gw0.json").write_text(json.dumps(recorder.dump()))
+    assert ("- gated row:outbound_queue -> row:projections" in lock_rank.check(tmp_path)) is listed
+
+
+def test_an_inserts_foreign_key_share_on_its_company_holds_the_company(recorder, tmp_path):
+    recorder.statement(1, _DELETE_COMPANY, ("c1",), 0.0)
+    recorder.statement(1, _OUTBOUND, ("c1", 7), 0.0)
+    _projection(recorder, 1, "item")
+    recorder.statement(2, _LEDGER, ("l1", "c1", "item"), 0.0)
+    recorder.statement(2, _OUTBOUND, ("c1", 8), 0.0)
+    assert recorder.dump()["classes"]["row:outbound_queue"]["ungated_takes"] == ["update|keyshare"]
+    (tmp_path / "lock-graph-gw0.json").write_text(json.dumps(recorder.dump()))
+    assert "- gated row:outbound_queue -> row:projections" not in lock_rank.check(tmp_path)
+
+
+@pytest.mark.parametrize("listed_in_debt", [False, True])
+def test_the_lock_order_job_fails_on_an_unproven_gated_inversion_the_debt_file_lacks(
+        recorder, tmp_path, monkeypatch, listed_in_debt):
+    debt_file = tmp_path / "debt.txt"
+    keys = ("gated key:companies -> row:projections", "gated row:outbound_queue -> row:projections")
+    debt_file.write_text("".join(f"{k}  # protocol\n" for k in keys) if listed_in_debt else "")
+    monkeypatch.setattr(lock_rank, "DEBT_FILE", debt_file)
+    _gated_inversion(recorder)
+    _projection(recorder, 2, "other")
+    (tmp_path / "lock-graph-gw0.json").write_text(json.dumps(recorder.dump()))
+    assert lock_rank.check_failed(lock_rank.check(tmp_path)) is not listed_in_debt
 
 
 # ── The debt inventory: exact keys, printed for review, never written ──
