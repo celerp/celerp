@@ -67,21 +67,24 @@ async def test_entity_runs_returns_latest_per_entity(_db_engine):
     from celerp.db import get_session_ctx
     from celerp.models.sync_run import SyncRun
 
-    cid = f"co-{uuid.uuid4().hex[:10]}"
+    cid = str(uuid.uuid4())
     now = datetime.now(timezone.utc)
-    async with get_session_ctx() as s:
-        s.add_all([
-            SyncRun(company_id=cid, connector="shopify", entity="products", started_at=now - timedelta(minutes=5), finished_at=now - timedelta(minutes=5),
-                    created_count=1, updated_count=0, skipped_count=0, errors_json=None, status="success"),
-            SyncRun(company_id=cid, connector="shopify", entity="products", started_at=now, finished_at=now,
-                    created_count=9, updated_count=0, skipped_count=0, errors_json=None, status="success"),
-            SyncRun(company_id=cid, connector="shopify", entity="orders", started_at=now, finished_at=now,
-                    created_count=2, updated_count=0, skipped_count=0, errors_json=None, status="success"),
-        ])
-        await s.commit()
-    runs = await _entity_runs(cid, "shopify")
-    assert set(runs) == {"products", "orders"}
-    assert runs["products"].created_count == 9  # latest, not the older run
+    try:
+        async with get_session_ctx() as s:
+            s.add_all([
+                SyncRun(company_id=cid, connector="shopify", entity="products", started_at=now - timedelta(minutes=5), finished_at=now - timedelta(minutes=5),
+                        created_count=1, updated_count=0, skipped_count=0, errors_json=None, status="success"),
+                SyncRun(company_id=cid, connector="shopify", entity="products", started_at=now, finished_at=now,
+                        created_count=9, updated_count=0, skipped_count=0, errors_json=None, status="success"),
+                SyncRun(company_id=cid, connector="shopify", entity="orders", started_at=now, finished_at=now,
+                        created_count=2, updated_count=0, skipped_count=0, errors_json=None, status="success"),
+            ])
+            await s.commit()
+        runs = await _entity_runs(cid, "shopify")
+        assert set(runs) == {"products", "orders"}
+        assert runs["products"].created_count == 9  # latest, not the older run
+    finally:
+        await remove_company(get_session_ctx, cid)
 
 
 @pytest.mark.asyncio
@@ -206,12 +209,10 @@ async def test_get_connector_config_adopts_legacy_instance_row(_db_engine):
     finally:
         async with get_session_ctx() as session:
             await session.execute(
-                sa.delete(ConnectorConfig).where(
-                    ConnectorConfig.company_id.in_([company_id, legacy_id])
-                )
+                sa.delete(ConnectorConfig).where(ConnectorConfig.company_id == legacy_id)
             )
-            await session.execute(sa.delete(Company).where(Company.id == company_uuid))
             await session.commit()
+        await remove_company(get_session_ctx, company_uuid)
 
 
 @pytest.mark.asyncio
