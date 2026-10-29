@@ -407,14 +407,15 @@ async def test_an_item_edit_waiting_for_a_replace_writes_nothing_into_the_replac
     name = await _item_name(real_engine, cid, item)
     preview = (await read(real_client, tok, data)).json()
     entered, go = asyncio.Event(), asyncio.Event()
-    hold = cb.hold_module_state
+    hold = cb.lock_company_for_deletion
 
-    async def paused(session):
+    async def paused(session, company_id):
+        held = await hold(session, company_id)
         entered.set()
         await go.wait()
-        return await hold(session)
+        return held
 
-    monkeypatch.setattr(cb, "hold_module_state", paused)
+    monkeypatch.setattr(cb, "lock_company_for_deletion", paused)
     replace = asyncio.create_task(
         real_client.post("/company-backups/replace", json=_replace_request(preview), headers=auth(tok)))
     await asyncio.wait_for(entered.wait(), timeout=10)
