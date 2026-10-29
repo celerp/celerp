@@ -1055,7 +1055,129 @@ def install() -> None:
 
 def dump(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(RECORDER.dump(), indent=1, default=sorted))
+    path.write_text(json.dumps({**RECORDER.dump(), "writers": static_writers()}, indent=1, default=sorted))
+
+
+# ── Census from code: every production function that sends a statement locking a company's rows ──
+
+_WRITE_CALLS = {"insert": "insert", "pg_insert": "insert", "update": "write", "delete": "delete"}
+_SA_MODULES = {"sa", "_sa", "sqlalchemy", "postgresql"}  # aliases the code imports SQLAlchemy as
+_TEXT_DML = re.compile(r"\b(?:(INSERT)\s+INTO|UPDATE|DELETE\s+FROM)\s+\"?(\w+)", re.I)
+_TEXT_FOR = re.compile(r"\bFROM\s+\"?(\w+)[^;]*?\bFOR\s+(?:NO\s+KEY\s+UPDATE|UPDATE|KEY\s+SHARE|SHARE)\b", re.I | re.S)
+
+
+def _production_files():
+    root = Path(_ROOT)
+    yield from sorted([*root.joinpath("celerp").rglob("*.py"),
+                       *root.joinpath("default_modules").glob("*/celerp_*/**/*.py")])
+
+
+def _model_tables(trees) -> dict[str, str]:
+    """Model class or Table variable name -> table name, from ``__tablename__`` and ``Table("t", ...)``."""
+    out = {}
+    for tree in trees:
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef):
+                for stmt in node.body:
+                    if (isinstance(stmt, ast.Assign) and any(getattr(t, "id", "") == "__tablename__" for t in stmt.targets)
+                            and isinstance(stmt.value, ast.Constant) and isinstance(stmt.value.value, str)):
+                        out[node.name] = stmt.value.value
+            elif (isinstance(node, ast.Assign) and isinstance(node.value, ast.Call)
+                  and getattr(node.value.func, "id", getattr(node.value.func, "attr", "")) == "Table"
+                  and node.value.args and isinstance(node.value.args[0], ast.Constant)):
+                for t in node.targets:
+                    if isinstance(t, ast.Name):
+                        out[t.id] = node.value.args[0].value
+    return out
+
+
+def _named_table(node, tables: dict[str, str]) -> str | None:
+    """The table a statement's first argument names: a model, a Table variable, or a model's column."""
+    if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id in tables:
+        return tables[node.value.id]
+    return tables.get(node.attr if isinstance(node, ast.Attribute) else getattr(node, "id", None))
+
+
+def _chain_root(node):
+    """The first call of a method chain (``select(M)`` of ``select(M).where(...).with_for_update()``)."""
+    while isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Call):
+        node = node.func.value
+    return node
+
+
+def _text(node) -> str:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.JoinedStr):
+        return "".join(v.value if isinstance(v, ast.Constant) else " x " for v in node.values)
+    return ""
+
+
+def _writes(call: ast.Call, tables: dict[str, str]) -> list[tuple[str, str]]:
+    """(table, kind) for each row lock one call's statement takes."""
+    name = call.func.id if isinstance(call.func, ast.Name) else getattr(call.func, "attr", "")
+    module_call = isinstance(call.func, ast.Name) or getattr(getattr(call.func, "value", None), "id", "") in _SA_MODULES
+    if name in _WRITE_CALLS and module_call and call.args and (t := _named_table(call.args[0], tables)):
+        return [(t, _WRITE_CALLS[name])]
+    if name == "with_for_update" and isinstance(call.func, ast.Attribute):
+        root = _chain_root(call.func.value)
+        if isinstance(root, ast.Call) and root.args and (t := _named_table(root.args[0], tables)):
+            return [(t, "lock")]
+    if name == "get" and call.args and any(k.arg == "with_for_update" for k in call.keywords):
+        return [(t, "lock")] if (t := _named_table(call.args[0], tables)) else []
+    if name == "text" and call.args:
+        sql = _text(call.args[0])
+        return ([(t, "insert" if ins else "write") for ins, t in _TEXT_DML.findall(sql)]
+                + [(t, "lock") for t in _TEXT_FOR.findall(sql)])
+    return []
+
+
+def _scan_writers(files) -> dict[str, set[tuple[str, str, str]]]:
+    """table -> {(path, function, kind)}: every production function that sends a statement
+    locking the table's rows, named as the recorder names a site (the innermost function)."""
+    parsed = [(os.path.relpath(f, _ROOT), ast.parse(f.read_text())) for f in files]
+    tables = _model_tables(tree for _, tree in parsed)
+    out: dict[str, set[tuple[str, str, str]]] = defaultdict(set)
+
+    def visit(path: str, node, function: str) -> None:
+        for child in ast.iter_child_nodes(node):
+            inner = child.name if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)) else (
+                "<lambda>" if isinstance(child, ast.Lambda) else function)
+            if isinstance(child, ast.Call) and function:
+                for table, kind in _writes(child, tables):
+                    out[table].add((path, function, kind))
+            visit(path, child, inner)
+    for path, tree in parsed:
+        visit(path, tree, "")
+    return out
+
+
+@functools.lru_cache(maxsize=1)
+def static_writers() -> dict[str, list[str]]:
+    """class -> sorted "path function" of every production function that takes a row lock of a
+    company's table the recorder counts: updates, deletes and locking reads, and inserts into a
+    table whose insert waits on a key of its own (not FRESH_KEYED, not serial-keyed)."""
+    out: dict[str, set[str]] = defaultdict(set)
+    for table, found in _scan_writers(_production_files()).items():
+        if table not in _app_tables() or not _has_company(table):
+            continue
+        for path, function, kind in found:
+            if kind == "insert" and (table in FRESH_KEYED or _serial_keyed(table) is not None):
+                continue
+            out[f"row:{table}"].add(f"{path} {function}")
+    return {k: sorted(v) for k, v in out.items()}
+
+
+def _unexercised(g: dict) -> dict[str, list[str]]:
+    """class -> the static writers of the class no recorded take was made from: their takes
+    are unproven, so a company-gated edge of the class stays a violation."""
+    out = {}
+    for cls, writers in g["writers"].items():
+        seen = {" ".join((s.split(" ", 1)[0].rsplit(":", 1)[0], s.split(" ", 1)[1]))
+                for s in g["classes"].get(cls, {}).get("sites", ()) if " " in s}
+        if missing := sorted(set(writers) - seen):
+            out[cls] = missing
+    return out
 
 
 # ── Report: merge worker dumps into one graph ─────────────────────────────────
@@ -1071,9 +1193,11 @@ _SETS = ("unsorted_strengths", "multi_strengths", "multi_sites", "ungated_takes"
 def _merge(directory: Path) -> dict:
     edges: dict[tuple[str, str], dict] = {}
     classes: dict[str, dict] = {}
-    contention, violations = [], []
+    contention, violations, writers = [], [], defaultdict(set)
     for f in sorted(directory.glob("lock-graph-*.json")):
         d = json.loads(f.read_text())
+        for k, v in d.get("writers", {}).items():
+            writers[k].update(v)
         for e in d["edges"]:
             cur = edges.setdefault((e["from"], e["to"]),
                                    {"count": 0, "example": e["example"], "waits": False, "gate": set(e["gate"]),
@@ -1103,7 +1227,8 @@ def _merge(directory: Path) -> dict:
             cur["sites"].update(v["sites"])
         contention += d["contention"]
         violations += d["violations"]
-    return {"edges": edges, "classes": classes, "contention": contention, "violations": violations}
+    return {"edges": edges, "classes": classes, "contention": contention, "violations": violations,
+            "writers": dict(writers)}
 
 
 def _sccs(nodes, adj) -> list[list[str]]:
@@ -1223,8 +1348,13 @@ def new_violations() -> list[dict]:
 def _gated_keys(g: dict) -> set[str]:
     """R4, offline: "gated <held> -> <taken>" for each decreasing edge taken under one company's
     lock where either class has a take outside that lock, at a strength that conflicts with
-    the edge's own, made holding nothing of the company's row that conflicts with the gate."""
+    the edge's own, made holding nothing of the company's row that conflicts with the gate, or
+    where either class has a production writer the run never took a lock from (``_unexercised``)."""
+    unexercised = _unexercised(g)
+
     def unproven(cls: str, strength: str, gate: str) -> bool:
+        if cls in unexercised:
+            return True
         for take in g["classes"].get(cls, {}).get("ungated_takes", ()):
             u, company = take.split("|")
             if ((strength, u) in _CONFLICTS or (u, strength) in _CONFLICTS) \
@@ -1299,7 +1429,12 @@ def check(directory: Path) -> str:
         v = g["classes"][c]
         lines.append(f"- {c}: {v['gated_unsorted']} unsorted, {v['ungated_multi']} ungated: "
                      + ", ".join(sorted(v["multi_sites"])))
-    # R4: an inversion under one company's lock, with a take of either class outside it.
+    # R4: an inversion under one company's lock, with a take of either class outside it, or a
+    # writer of either class the run never exercised.
+    gated_classes = {c for (a, b), e in g["edges"].items() if e["company_gated_modes"] for c in (a, b)}
+    idle = {c: w for c, w in _unexercised(g).items() if c in gated_classes}
+    lines += ["", f"Company-gated classes with an unexercised writer: {len(idle)}",
+              *(f"- {c}: {', '.join(w)}" for c, w in sorted(idle.items()))]
     new = sorted(k for k in _gated_keys(g) if k not in debt())
     lines += ["", f"Company-gated inversions not proven, not in the debt file: {len(new)}", *(f"- {k}" for k in new)]
     # Rule (e): the debt list only shrinks, so an entry the run no longer hits must go.

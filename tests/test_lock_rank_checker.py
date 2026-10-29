@@ -648,3 +648,65 @@ def test_a_debt_entry_matches_only_its_exact_key(tmp_path, monkeypatch):
     monkeypatch.setattr(lock_rank, "RECORDER", recorder)
     assert [lock_rank.violation_key(v) for v in lock_rank.new_violations()] == [
         "order row:projections -> row:companies celerp/x.py g"]
+
+
+# ── Census from code: a writer the run never exercised leaves its class unproven ──
+
+def _site_writer(site: str) -> str:
+    """A recorded site ("path:line function") as the census names a writer ("path function")."""
+    where, function = site.split(" ", 1)
+    return f"{where.rsplit(':', 1)[0]} {function}"
+
+
+@pytest.mark.parametrize("exercised, listed", [(True, False), (False, True)])
+def test_a_gated_inversion_is_unproven_while_a_writer_of_its_class_is_unexercised(
+        recorder, tmp_path, exercised, listed):
+    _gated_inversion(recorder)
+    graph = recorder.dump()
+    seen = _site_writer(graph["classes"]["row:projections"]["sites"][0])
+    graph["writers"] = {"row:projections": [seen] if exercised else [seen, "celerp/x.py never_run"]}
+    (tmp_path / "lock-graph-gw0.json").write_text(json.dumps(graph))
+    out = lock_rank.check(tmp_path)
+    assert ("- gated row:outbound_queue -> row:projections" in out) is listed
+    assert ("- row:projections: celerp/x.py never_run" in out) is listed
+
+
+def test_the_census_finds_every_statement_that_locks_rows(tmp_path):
+    (tmp_path / "m.py").write_text('''
+class Item(Base):
+    __tablename__ = "items"
+Tags = Table("tags", meta)
+
+async def ins(s): await s.execute(insert(Item).values(a=1))
+async def upd(s): await s.execute(sa.update(Item.__table__).where(Item.id == 1))
+async def dele(s): await s.execute(delete(Tags))
+async def lock(s): await s.execute(select(Item.id).where(Item.id == 1).with_for_update())
+async def get(s): await s.get(Item, 1, with_for_update=True)
+async def raw(s): await s.execute(text("UPDATE items SET a = 1"))
+async def raw_lock(s, t): await s.execute(text(f"SELECT id FROM tags WHERE t = {t} FOR NO KEY UPDATE"))
+async def raw_insert(s): await s.execute(text("INSERT INTO items (a) VALUES (1)"))
+async def outer(s):
+    async def inner(): await s.execute(delete(Item))
+    await inner()
+async def reads(s, d):
+    await s.execute(select(Item)); await s.get(Item, 1); d.update(Item); await s.execute(text("SELECT 1"))
+''')
+    found = lock_rank._scan_writers([tmp_path / "m.py"])
+    path = lock_rank.os.path.relpath(tmp_path / "m.py", lock_rank._ROOT)
+    assert {t: {(f, k) for p, f, k in v if p == path} for t, v in found.items()} == {
+        "items": {("ins", "insert"), ("upd", "write"), ("lock", "lock"), ("get", "lock"),
+                  ("raw", "write"), ("raw_insert", "insert"), ("inner", "delete")},
+        "tags": {("dele", "delete"), ("raw_lock", "lock")},
+    }
+
+
+def test_the_census_names_the_production_writers_the_record_sites():
+    writers = lock_rank.static_writers()
+    assert "celerp/projections/engine.py _locked_projection" in writers["row:projections"]
+    assert "celerp/services/company_lock.py lock_company" in writers["row:companies"]
+
+
+def test_every_worker_dump_carries_the_census(tmp_path):
+    lock_rank.dump(tmp_path / "lock-graph-gw0.json")
+    assert json.loads((tmp_path / "lock-graph-gw0.json").read_text())["writers"] == lock_rank.static_writers()
+    assert lock_rank._merge(tmp_path)["writers"] == {k: set(v) for k, v in lock_rank.static_writers().items()}
