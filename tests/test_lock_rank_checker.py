@@ -1135,3 +1135,24 @@ async def test_the_orm_names_the_company_of_every_row_it_flushes(session, auth):
     await session.flush()
     after = lock_rank.RECORDER.classes["row:accounts"]
     assert after.get("company_ungated", 0) == before.get("company_ungated", 0)
+
+
+def test_a_closed_sync_connection_leaves_no_session_lock_behind():
+    # Postgres drops a closed connection's session locks; a later connection given the same
+    # object id (the version fence takes its lock again on a new one) must not inherit them.
+    import os
+
+    import sqlalchemy as sa
+
+    from celerp.db_url import sync_url
+    from celerp.migrations.compatibility import _FENCE_NAMESPACE
+
+    assert lock_rank._INSTALLED
+    engine = sa.create_engine(sync_url(os.environ["DATABASE_URL"]), poolclass=sa.pool.NullPool)
+    with engine.connect() as conn:
+        key = id(conn.connection.dbapi_connection)
+        conn.execute(sa.text(f"SELECT pg_advisory_lock_shared({_FENCE_NAMESPACE}, 1)"))
+        conn.commit()
+        assert [h.cls for h in lock_rank.RECORDER.session_held.get(key, ())] == ["adv:version-fence"]
+    engine.dispose()
+    assert not lock_rank.RECORDER.session_held.get(key)

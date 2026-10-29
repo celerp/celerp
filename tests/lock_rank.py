@@ -1164,6 +1164,7 @@ def install() -> None:
     from sqlalchemy.dialects.postgresql import asyncpg as pg_asyncpg
     from sqlalchemy.engine import Engine
     from sqlalchemy.orm import Mapper, Session
+    from sqlalchemy.pool import Pool
 
     cursor_cls = pg_asyncpg.AsyncAdapt_asyncpg_cursor
     conn_cls = pg_asyncpg.AsyncAdapt_asyncpg_connection
@@ -1193,14 +1194,19 @@ def install() -> None:
                 return _real(self)
             finally:
                 RECORDER.end(id(self))
-                if _real.__name__ == "close":
-                    RECORDER.session_held.pop(id(self), None)
         setattr(conn_cls, name, _ended)
 
     @event.listens_for(Engine, "before_cursor_execute")
     def _other_drivers(conn, cursor, statement, parameters, context, executemany):
         if conn.dialect.name == "postgresql" and conn.dialect.driver != "asyncpg":
             record_statement(id(conn.connection.dbapi_connection), statement, parameters, 0.0)
+
+    @event.listens_for(Pool, "close")
+    @event.listens_for(Pool, "close_detached")
+    def _closed(dbapi_connection, *_):
+        # Postgres drops a closed connection's session locks; a later connection may reuse its id.
+        RECORDER.end(id(dbapi_connection))
+        RECORDER.session_held.pop(id(dbapi_connection), None)
 
     @event.listens_for(Engine, "commit")
     @event.listens_for(Engine, "rollback")
