@@ -67,7 +67,13 @@ def _turn(content: str = "", calls: list[tuple[str, dict, str]] | None = None) -
                        reservation_id="r", remaining=10)
 
 
+async def _owner_authority(company_id, user_id):
+    return "owner", {}
+
+
 def _script(monkeypatch, turns: list[ModelResult]) -> list[list[dict]]:
+    """Script the model's turns and the asker's authority (role and company settings)
+    that read replay contracts are made under, so no run reads the database."""
     seen: list[list[dict]] = []
 
     async def _complete(messages, *, tools=None, reservation_id=None, **_kw):
@@ -75,6 +81,7 @@ def _script(monkeypatch, turns: list[ModelResult]) -> list[list[dict]]:
         return turns.pop(0)
 
     monkeypatch.setattr(service, "complete", _complete)
+    monkeypatch.setattr(service, "_authority", _owner_authority)
     monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None: _CAPS)
     return seen
 
