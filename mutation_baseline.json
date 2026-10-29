@@ -144,6 +144,24 @@
   "remove_when": "the presets are seeded by a locked writer, never by a read route"
  },
  {
+  "route": "ui GET /api/items/{entity_id}/label-templates -> api GET /api/labels/templates",
+  "kind": "read-route-write",
+  "table": "label_templates",
+  "fingerprint": "66666111f73d39ef",
+  "where": [
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "default_modules/celerp-labels/celerp_labels/routes.py list_templates",
+   "default_modules/celerp-labels/celerp_labels/routes.py _seed_presets"
+  ],
+  "test": "tests/test_browser/test_404_handling.py::test_missing_entity_is_graceful[/inventory/item:nonexistent-abc-def]",
+  "issue": "https://github.com/celerp/celerp/issues/405",
+  "owner": "celerp-labels",
+  "remove_when": "the presets are seeded by a locked writer, never by a read route"
+ },
+ {
   "route": "api PATCH /ai/conversations/{conversation_id}",
   "kind": "unprotected",
   "table": "ai_conversations",
