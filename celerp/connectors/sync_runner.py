@@ -71,11 +71,13 @@ async def run_connector_sync(
     purpose: str,
     reconcile: bool = False,
     first_sync: FirstSync | None = None,
+    resource: str | None = None,
 ) -> list[SyncResult]:
     """Run every entity the connection's directions sync, in one execution over their
     resources (joined when the caller already runs one). ``reconcile`` marks the
     daily reconciliation pass; ``first_sync`` the first sync, whose product pass
-    also runs when products only go out."""
+    also runs when products only go out; ``resource`` limits it to the syncs that
+    write that resource (a rerun)."""
     from celerp.connectors.execution import connector_execution, plan_resources
 
     directions = await _directions(company_id, connector.name)
@@ -83,6 +85,9 @@ async def run_connector_sync(
     if "products" not in plan and _links_products(connector, "products", directions, first_sync):
         plan.insert(0, "products")
     resources = sorted({_resource_of(entity) for entity in plan} | set(plan_resources(connector, directions)))
+    if resource is not None:
+        plan = [entity for entity in plan if _resource_of(entity) == resource]
+        resources = [resource]
     results: list[SyncResult] = []
     async with connector_execution(company_id, connector, purpose, resources) as ex:
         if any(entity in OUTBOUND_ENTITIES for entity in plan):

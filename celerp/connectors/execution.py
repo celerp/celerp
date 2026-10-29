@@ -14,8 +14,10 @@ lease on the resources it writes. While it runs:
   clock, and no store call is made while a fenced transaction is open.
 
 A webhook, schedule tick or queue row that finds the resource held records a rerun on
-the heartbeat row. The next execution of that resource takes it when it acquires the
-lease; one left after its holder released is run by the sweeper."""
+the heartbeat row. Only an execution that runs the work clears it: the holder takes it
+when it releases the resource and runs the resource's sync once more first; one with no
+live holder (its holder crashed, or admission was full) is run by the sweeper within a
+tick. An elapsed time never ends a lease: a holder that keeps renewing keeps it."""
 from __future__ import annotations
 
 import asyncio
@@ -48,12 +50,16 @@ MARGIN = timedelta(seconds=45)
 # The request pool's overflow is kept for background work; one overflow connection
 # stays free for the relay and sign-in.
 EXECUTION_SLOTS = max(1, REQUEST_DB_MAX_OVERFLOW - 1)
+# How often the sweeper looks for reruns no live execution holds.
+SWEEP_EVERY = 60.0
+# Reruns a holder runs before it releases; more recorded meanwhile go to the sweeper.
+_RERUN_ROUNDS = 3
 # A lifecycle transaction never waits longer than this for a lock or a statement.
 _INTERNAL_LOCK_TIMEOUT_MS = 5000
 _LOCK_NOT_AVAILABLE = "55P03"
 
 PURPOSES = ("first_sync", "manual_sync", "schedule", "webhook", "outbound_queue",
-            "item_publish", "undo", "resolve", "webhooks")
+            "item_publish", "undo", "resolve", "webhooks", "rerun")
 WEBHOOKS = "webhooks"
 
 
@@ -456,8 +462,7 @@ async def _acquire(ex: Execution, connector) -> None:
             "WHERE company_id = :c AND connector = :k AND resource IN :r").bindparams(_IN),
             {**key, "h": ex.holder})
         row = (await s.execute(sa.text(
-            "UPDATE connector_execution_heartbeats SET holder = :h, expires_at = now() + :ttl, "
-            "rerun_requested = CAST('[]' AS json) "
+            "UPDATE connector_execution_heartbeats SET holder = :h, expires_at = now() + :ttl "
             "WHERE company_id = :c AND connector = :k AND resource IN :r "
             "RETURNING expires_at, now() AS db_now").bindparams(_IN),
             {**key, "h": ex.holder, "ttl": TTL})).first()
@@ -519,20 +524,48 @@ async def release(ex: Execution, resource: str) -> None:
     heartbeat row, and the sweeper runs it."""
     ex.require(resource)
     await _release(ex, [resource])
-    ex.resources.remove(resource)
 
 
-async def _release(ex: Execution, resources: list[str]) -> None:
+async def _release(ex: Execution, resources: list[str], connector=None) -> list[str]:
+    """Release ``resources`` and return the ones kept. With ``connector``, a resource
+    whose recorded rerun may run now is kept, its rerun taken (cleared in the same
+    transaction), for the holder to run before it releases it; a rerun the
+    directions no longer call for is dropped. Released resources leave
+    ``ex.resources`` before any later transaction begins."""
+    from celerp.models.connector_config import ConnectorConfig
+    from celerp.models.connector_first_sync import ConnectorFirstSync
+
+    taken: list[str] = []
     with _internal():
         async with _sessions()() as s:
             # Lease rows before heartbeat rows, each in resource order, as _acquire takes them.
             lock = " ORDER BY resource FOR UPDATE" if await _bound(s) else ""
             key = _key(ex, resources=sorted(resources))
-            for table in ("connector_execution_leases", "connector_execution_heartbeats"):
-                await s.execute(sa.text(
-                    f"SELECT resource FROM {table} WHERE company_id = :c AND connector = :k "
-                    "AND resource IN :r" + lock).bindparams(_IN), key)
+            await s.execute(sa.text(
+                "SELECT resource FROM connector_execution_leases WHERE company_id = :c "
+                "AND connector = :k AND resource IN :r" + lock).bindparams(_IN), key)
+            beats = (await s.execute(sa.text(
+                "SELECT resource, holder, rerun_requested FROM connector_execution_heartbeats "
+                "WHERE company_id = :c AND connector = :k AND resource IN :r" + lock
+            ).bindparams(_IN).columns(sa.column("resource"), sa.column("holder"),
+                                      sa.column("rerun_requested", sa.JSON)), key)).all()
+            pending = [b.resource for b in beats if b.rerun_requested and b.holder is not None
+                       and uuid.UUID(str(b.holder)) == ex.holder]
+            if connector is not None and pending and not ex.lost:
+                config = await s.scalar(sa.select(ConnectorConfig).where(
+                    ConnectorConfig.company_id == ex.company_id, ConnectorConfig.connector == ex.connector))
+                first_sync = await s.get(ConnectorFirstSync, (ex.company_id, ex.connector))
+                reasons = {r: eligible(connector, config, first_sync, "rerun", r) for r in pending}
+                taken = [r for r in pending if reasons[r] is None]
+                cleared = [r for r in pending if reasons[r] in (None, "direction_off")]
+                if cleared:
+                    await s.execute(sa.text(
+                        "UPDATE connector_execution_heartbeats SET rerun_requested = CAST('[]' AS json) "
+                        "WHERE company_id = :c AND connector = :k AND resource IN :r AND holder = :h"
+                    ).bindparams(_IN), {**_key(ex, resources=cleared), "h": ex.holder})
             for resource in resources:
+                if resource in taken:
+                    continue
                 await s.execute(sa.text(
                     "UPDATE connector_execution_leases SET holder = NULL WHERE company_id = :c "
                     "AND connector = :k AND resource = :res AND holder = :h AND generation = :g"),
@@ -543,6 +576,88 @@ async def _release(ex: Execution, resources: list[str]) -> None:
                     "WHERE company_id = :c AND connector = :k AND resource = :res AND holder = :h"),
                     {"c": ex.company_id, "k": ex.connector, "res": resource, "h": ex.holder})
             await s.commit()
+    for resource in resources:
+        if resource not in taken:
+            ex.resources.remove(resource)
+    return taken
+
+
+async def _run_reruns(ex: Execution, connector) -> None:
+    """Before the holder releases: run, once, each rerun recorded on its resources
+    while it held them. A first sync leaves them to the sweeper, which runs them
+    once the first sync has completed."""
+    if ex.purpose == "first_sync":
+        return
+    for _ in range(_RERUN_ROUNDS):
+        if ex.lost or not ex.resources:
+            return
+        for resource in await _release(ex, list(ex.resources), connector):
+            try:
+                await _rerun(connector, ex, resource)
+            except Exception as exc:  # recorded again, for the next holder or the sweeper
+                log.warning("the %s %s rerun failed: %s", ex.connector, resource, exc)
+                with _internal():
+                    await record_rerun(ex.company_id, ex.connector, resource)
+                return
+
+
+async def _rerun(connector, ex: Execution, resource: str) -> None:
+    """The work a rerun asks for: the resource's syncs with the reconciliation pass,
+    or the webhook reconcile."""
+    from celerp.connectors.sync_runner import run_connector_sync
+    from celerp.connectors.webhook_reconcile import reconcile_webhooks
+
+    if resource == WEBHOOKS:
+        await reconcile_webhooks(ex)
+    else:
+        await run_connector_sync(connector, ex.company_id, purpose="rerun", reconcile=True, resource=resource)
+
+
+async def sweep_reruns() -> None:
+    """Start an execution for each recorded rerun that no live execution holds and
+    whose connection may run it; the execution runs it as it releases. A busy or
+    refused one waits for the next tick; one the directions no longer call for is
+    dropped. Runs in a task of its own, outside any execution."""
+    with _internal():
+        async with _sessions()() as s:
+            rows = (await s.execute(sa.text(
+                "SELECT h.company_id, h.connector, h.resource FROM connector_execution_heartbeats h "
+                "JOIN connector_first_syncs f ON f.company_id = h.company_id AND f.connector = h.connector "
+                "WHERE CAST(h.rerun_requested AS text) <> '[]' "
+                "AND (h.holder IS NULL OR h.expires_at <= now()) "
+                "AND (f.state IN (:done) OR (h.resource = :w AND f.state NOT IN (:new))) "
+                "ORDER BY 1, 2, 3"), {"w": WEBHOOKS, "done": "completed", "new": "pending"})).all()
+            await s.commit()
+    for company_id, connector, resource in rows:
+        try:
+            async with connector_execution(company_id, connector, "rerun", [resource], admission_wait=0):
+                pass
+        except (ExecutionBusy, AdmissionBusy):
+            continue
+        except ExecutionRefused as exc:
+            if exc.reason == "direction_off":
+                with _internal():
+                    async with _sessions()() as s:
+                        await s.execute(sa.text(
+                            "UPDATE connector_execution_heartbeats SET rerun_requested = CAST('[]' AS json) "
+                            "WHERE company_id = :c AND connector = :k AND resource = :res "
+                            "AND (holder IS NULL OR expires_at <= now())"),
+                            {"c": company_id, "k": connector, "res": resource})
+                        await s.commit()
+            log.info("rerun of %s %s not run: %s", connector, resource, exc.reason)
+        except Exception as exc:
+            log.warning("rerun of %s %s failed: %s", connector, resource, exc)
+
+
+async def rerun_sweeper_loop() -> None:
+    """Every SWEEP_EVERY seconds, run the reruns no live execution holds. Started
+    from the API lifespan beside the daily scheduler, which stays the backstop."""
+    while True:
+        try:
+            await sweep_reruns()
+        except Exception as exc:
+            log.error("rerun sweeper: %s", exc)
+        await asyncio.sleep(SWEEP_EVERY)
 
 
 async def record_rerun(company_id, connector: str, resource: str, *, session=None) -> None:
@@ -657,6 +772,7 @@ async def connector_execution(
             token = _CURRENT.set(ex)
             try:
                 yield ex
+                await _run_reruns(ex, connector)
             finally:
                 _CURRENT.reset(token)
         finally:
@@ -674,4 +790,3 @@ async def connector_execution(
 async def _release_all(ex: Execution) -> None:
     if ex.resources:
         await _release(ex, list(ex.resources))
-        ex.resources.clear()

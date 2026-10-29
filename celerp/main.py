@@ -175,6 +175,7 @@ async def _verify_runtime_dependencies() -> None:
         outbound_queue_loop,
     )
     from celerp.connectors.daily_scheduler import scheduler_loop_all
+    from celerp.connectors.execution import rerun_sweeper_loop
     from celerp.services.peer_access import expiry_warning_loop
     from celerp.services.migration_xero_attachments import fetch_loop as xero_attachment_loop
     from celerp.services.reorder import reorder_alert_loop
@@ -190,6 +191,7 @@ async def _verify_runtime_dependencies() -> None:
         run_jti_cleanup_loop,
         outbound_queue_loop,
         scheduler_loop_all,
+        rerun_sweeper_loop,
         reorder_alert_loop,
         expiry_warning_loop,
         xero_attachment_loop,
@@ -610,6 +612,7 @@ async def _serve(_app: FastAPI, held):
     )
     await adopt_legacy_connector_configs()
     from celerp.connectors.daily_scheduler import scheduler_loop_all
+    from celerp.connectors.execution import rerun_sweeper_loop
     from celerp.services.reorder import reorder_alert_loop
     # Outbound stock delivery, the daily connector reconciliation and the reorder
     # alerts all read the projections to change data or tell other systems, so
@@ -622,6 +625,8 @@ async def _serve(_app: FastAPI, held):
             # Connector reconciliation: a daily incremental sync per connector,
             # backstopping any realtime webhooks missed while offline.
             asyncio.create_task(scheduler_loop_all()),
+            # Reruns a busy webhook or schedule recorded that no live sync holds.
+            asyncio.create_task(rerun_sweeper_loop()),
             # Reorder low-stock alerts: a daily per-company scan that notifies once
             # per dip when items reach their reorder point (no-op for companies with
             # alerts disabled or no reorder points set).
