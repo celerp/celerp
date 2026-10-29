@@ -116,6 +116,8 @@ async def _company(session, name):
 
 
 async def _notif_count(session, cid):
+    """Notices stored for the company once the transaction commits (a notice is its transaction's last write)."""
+    await session.commit()
     return (await session.execute(
         select(func.count()).select_from(Notification).where(Notification.company_id == cid)
     )).scalar() or 0
