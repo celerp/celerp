@@ -173,3 +173,33 @@ async def test_an_interrupted_question_asked_again_reads_under_the_askers_curren
     assert r.status_code == 200, r.text
     job = await session.get(AIBatchJob, job_id, populate_existing=True)
     assert job.auth_nonce == decode_access_token(token)["snonce"]
+
+
+@pytest.mark.parametrize("action", ["resume", "retry-failed"])
+async def test_a_question_is_never_reopened_as_a_reading_job(client, owner, cloud, session, monkeypatch, action):
+    """Continue and retry send a reading job's files again under file identities; a
+    question continues only by being asked again under its id. Named for an owned,
+    interrupted question with an unsent and a failed step, both are refused as not
+    open, and nothing changes: no step identity, no status, no runner started."""
+    from sqlalchemy import select
+
+    from celerp.models.ai import AIJobStep
+    token, company_id, user_id = owner
+    job_id = await _one_off(session, company_id, user_id, "interrupted")
+    for seq, state in enumerate(("pending", "failed")):
+        op = jobs.step_id(job_id, turn=seq + 1)
+        session.add(AIJobStep(job_id=job_id, seq=seq, key=f"model:{seq + 1}", operation_id=op, step_id=op,
+                              state=state))
+    await session.commit()
+    before = [(s.key, s.state, s.generation, s.operation_id, s.step_id) for s in (await session.execute(
+        select(AIJobStep).where(AIJobStep.job_id == job_id).order_by(AIJobStep.seq))).scalars().all()]
+    started: list = []
+    monkeypatch.setattr(jobs, "start_job", started.append)
+    r = await client.post(f"/ai/jobs/{job_id}/{action}", headers=AUTH(token))
+    assert r.status_code == 409 and r.json()["detail"]["code"] == "job_not_open", r.text
+    session.expire_all()
+    after = [(s.key, s.state, s.generation, s.operation_id, s.step_id) for s in (await session.execute(
+        select(AIJobStep).where(AIJobStep.job_id == job_id).order_by(AIJobStep.seq))).scalars().all()]
+    job = await session.get(AIBatchJob, job_id)
+    assert after == before and job.status == "running" and jobs.liveness(job) == "unheld" and started == []
+    assert not cloud.sends

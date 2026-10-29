@@ -648,14 +648,16 @@ async def recover_on_start() -> int:
 
 
 async def _reopen(job_id: uuid.UUID, company_id: uuid.UUID, user_id: uuid.UUID, *, retry: bool) -> int | None:
-    """Mark a job running again and start it; with ``retry``, every step that ended
-    without an answer first moves to its next generation (a new identity). Returns the
-    number of steps reopened, or None when the job is not this user's or still runs."""
+    """Mark a reading job running again and start it; with ``retry``, every step that
+    ended without an answer first moves to its next generation (a new file identity).
+    Returns the number of steps reopened, or None when the job is not this user's
+    reading job or still runs. A question is never reopened here: it continues only by
+    being asked again under its id (``reopen_question``)."""
     from celerp.models.ai import AIJobStep
     async with SessionLocal() as session:
-        job = await owned_job(session, job_id, company_id=company_id, user_id=user_id)
+        job = await owned_job(session, job_id, company_id=company_id, user_id=user_id, shape="documents")
         if job is None or liveness(job) == "running":
-            return None     # not this user's, or run by a runner
+            return None     # not this user's reading job, or run by a runner
         steps = (await session.execute(
             select(AIJobStep).where(AIJobStep.job_id == job_id,
                                     AIJobStep.state.in_(RETRYABLE_STEPS if retry else OPEN_STEPS))
