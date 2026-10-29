@@ -35,7 +35,7 @@ from celerp.importers.sinks import register_sink
 from celerp_contacts import services
 from celerp_contacts.migration_sink import SINK
 from celerp_contacts.references import lock_contacts, lock_referencing_records
-from celerp_contacts.search import search_contacts
+from celerp_contacts.search import count_contacts, search_contacts
 from celerp_contacts.services import CRMImportRecord
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
@@ -179,12 +179,11 @@ async def list_contacts(
     company_id: str = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    # Deterministic order (name, then unique id) so OFFSET pagination over this Python-sliced list
-    # is stable - otherwise the DB's arbitrary row order lets a contact be skipped between pages.
-    results = await search_contacts(
-        session, company_id, q, include_deleted=include_deleted, contact_type=contact_type
-    )
-    return {"items": results[offset:offset + limit], "total": len(results)}
+    # Deterministic order (name, then unique id) so OFFSET pagination is stable - otherwise the
+    # DB's arbitrary row order lets a contact be skipped between pages.
+    filters = {"include_deleted": include_deleted, "contact_type": contact_type}
+    items = await search_contacts(session, company_id, q, limit=limit, offset=offset, **filters)
+    return {"items": items, "total": await count_contacts(session, company_id, q, **filters)}
 
 
 @router.get("/contacts/{contact_id}", dependencies=[require_permission("view_contacts")], openapi_extra={"x-celerp-agent": True})
