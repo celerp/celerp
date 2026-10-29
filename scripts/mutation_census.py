@@ -41,6 +41,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "scripts"))
 import mutation_baseline  # noqa: E402
+import mutation_observer  # noqa: E402
 import static_calls  # noqa: E402
 from static_calls import _called, _receiver  # noqa: E402
 
@@ -94,17 +95,26 @@ def static_inventory():
     return decorators, sites
 
 
+def _read_noted(graph, route: str) -> set[str]:
+    """The functions a READ_ROUTE_WRITES note lets *route* write through: the observer
+    holds each write they make to the note's columns while the route runs."""
+    sites = {site for note in mutation_observer.READ_ROUTE_WRITES.values() if note.route in (None, route)
+             for site in note.sites}
+    return {key for key, fn in graph.functions.items() if f"{fn.path} {fn.qualname.rpartition('.')[2]}" in sites}
+
+
 def read_routes_that_write(rows) -> dict[tuple, list]:
     """Each read route among *rows* whose handler the static call graph shows reaching a
     write (a session write, a commit, a company lock or a mutating API request), with one
-    chain to each, through no function of READ_SAFE."""
+    chain to each, through no function of READ_SAFE or of a note READ_ROUTE_WRITES has for it."""
     graph = static_calls.Graph()
     found = {}
     for (app, method, path), row in rows.items():
         rel, _, line = row["source"].rpartition(":")
         handler = graph.by_source.get((rel, int(line))) if line.isdigit() else None
         if handler is not None:
-            chains = graph.doing([handler.key], lambda what: True, stop=READ_SAFE)
+            stop = set(READ_SAFE) | _read_noted(graph, f"{method} {path}")
+            chains = graph.doing([handler.key], lambda what: True, stop=stop)
             if chains:
                 found[(app, method, path)] = chains
     return found

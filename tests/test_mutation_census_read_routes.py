@@ -3,7 +3,8 @@
 
 """A read route no test requests is judged from its source: the census fails it when its
 handler reaches a write through any number of calls, a mutating API request from the UI
-included, unless the write is made only through a function READ_SAFE names."""
+included, unless the write is made only through a function READ_SAFE names or a function a
+READ_ROUTE_WRITES note lets that route write through."""
 
 from __future__ import annotations
 
@@ -64,3 +65,19 @@ def test_a_read_route_reaching_a_mutating_request_through_a_helper_is_found(tmp_
 
 def test_a_write_made_only_through_a_read_safe_function_is_not_found(tmp_path, monkeypatch):
     assert list(_scan(tmp_path, monkeypatch, safe=["ui.api_client.items_metadata"])) == ["/lists/new"]
+
+
+def _noted(monkeypatch, route):
+    observer = mutation_census.mutation_observer
+    monkeypatch.setattr(observer, "READ_ROUTE_WRITES", {("items", "UPDATE"): observer.ReadNote(
+        ("seen_at",), ("ui/api_client.py items_metadata",), "a note of the read", route=route)})
+
+
+def test_a_write_made_only_through_a_read_note_site_for_the_route_is_not_found(tmp_path, monkeypatch):
+    _noted(monkeypatch, "GET /docs/{id}")
+    assert list(_scan(tmp_path, monkeypatch)) == ["/lists/new"]
+
+
+def test_a_read_note_scoped_to_another_route_does_not_cover_the_site(tmp_path, monkeypatch):
+    _noted(monkeypatch, "GET /other")
+    assert sorted(_scan(tmp_path, monkeypatch)) == ["/docs/{id}", "/lists/new"]
