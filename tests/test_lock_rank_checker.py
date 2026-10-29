@@ -591,6 +591,43 @@ def test_the_offline_check_fails_unsorted_account_rows_with_a_multi_row_taker_ou
     assert ("- row:accounts:" in lock_rank.check(tmp_path)) is listed
 
 
+@pytest.mark.parametrize("locked, chart, violates", [
+    ("c1", "c1", False),  # the company's chart lock under that company's lock
+    ("c1", "c2", True),   # another company's chart lock
+    (None, "c1", True),   # no company lock
+])
+def test_a_chart_lock_taken_under_its_companys_lock_is_a_row_of_that_company(recorder, locked, chart, violates):
+    # A posting holds an item row, then reads the chart: both are the company's, under its lock.
+    if locked:
+        recorder.statement(1, _LOCK_COMPANY, (locked,), 0.0)
+    _projection(recorder, 1, "item")
+    _chart_of(recorder, 1, chart, "xact shared wait")
+    assert (("order", "adv:chart") in _kinds(recorder)) is violates
+    if not violates:
+        assert recorder.edges[("row:projections", "adv:chart")]["company_gated"] == {"row:projections", "adv:chart"}
+
+
+@pytest.mark.parametrize("other, listed", [
+    (None, False),                              # every chart taker holds the company
+    (("xact exclusive wait", None), True),      # a chart change without the company lock
+    (("xact shared wait", None), False),        # another posting: shared takes never conflict
+    (("xact exclusive wait", "c1"), False),     # a chart change under the company lock
+])
+def test_the_offline_check_fails_a_gated_chart_inversion_whose_chart_has_an_ungated_conflicting_taker(
+        recorder, tmp_path, other, listed):
+    recorder.statement(1, _LOCK_COMPANY, ("c1",), 0.0)
+    _projection(recorder, 1, "item")
+    _chart_of(recorder, 1, "c1", "xact shared wait")
+    if other:
+        mode, locked = other
+        if locked:
+            recorder.statement(2, _LOCK_COMPANY, (locked,), 0.0)
+        _chart_of(recorder, 2, "c1", mode)
+    assert not recorder.violations
+    (tmp_path / "lock-graph-gw0.json").write_text(json.dumps(recorder.dump()))
+    assert ("- gated row:projections -> adv:chart" in lock_rank.check(tmp_path)) is listed
+
+
 def test_a_statement_sent_through_a_conftest_wrapper_is_sited_at_its_caller():
     """The suite's shared session wraps every operation in a conftest.py; the site is the
     application frame that called it, or every lock would carry the wrapper's line."""

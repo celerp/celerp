@@ -305,11 +305,7 @@ class Recorder:
         granted at once and make nobody wait. An insert is own only on a table whose every
         unique key holds the company (``_row_locks`` names the company only then); the
         company's own row is not (its slug is unique across companies). The chart lock of such
-        a company is its own too: its key is derived from the company id."""
-        if lock.cls == "adv:chart":
-            from celerp.services.company_lock import chart_key
-
-            return any(lock.key == str(chart_key(c)) for c in self.own[conn_key])
+        a company is its own too (``_chart_company``)."""
         if not lock.company or lock.company not in self.own[conn_key]:
             return False
         return lock.cls != "row:companies" or lock.mode != "insert"
@@ -341,6 +337,14 @@ class Recorder:
 
         return "exclusive" in self.taken[conn_key].get(("adv:chart", str(chart_key(lock.company))), ())
 
+    def _chart_company(self, conn_key: int, lock: Lock) -> str:
+        """The company whose chart lock ``lock`` is, among the companies whose row this
+        transaction holds or inserted; "" when none (its key is a hash of the company id).
+        A chart lock is then judged as a row of that company (R1, R4)."""
+        from celerp.services.company_lock import chart_key
+
+        return next((c for c in self.company_rows[conn_key] if lock.key == str(chart_key(c))), "")
+
     def _company_gate(self, conn_key: int, h: Lock, lock: Lock) -> str:
         """R4: ``lock`` and every lock of ``h``'s class this transaction holds are rows of one
         company whose row it took exclusively before them (transaction-scoped). Another
@@ -365,7 +369,7 @@ class Recorder:
             if company:
                 self.company_rows[conn_key].setdefault(company, set()).add(_strength(lock))
             return
-        if not lock.cls.startswith(("row:", "key:")) or not _has_company(table):
+        if lock.cls != "adv:chart" and (not lock.cls.startswith(("row:", "key:")) or not _has_company(table)):
             return
         if lock.company and self._company_held(conn_key, lock):
             return
@@ -411,6 +415,8 @@ class Recorder:
             self._violate("guard", lock)
         if lock.cls in _LEASE_ROWS:
             self._lease(conn_key, lock)
+        if lock.cls == "adv:chart" and not lock.company:
+            lock.company = self._chart_company(conn_key, lock)
         own = self._own(conn_key, lock)
         if not own:
             self._census(conn_key, lock, info)
