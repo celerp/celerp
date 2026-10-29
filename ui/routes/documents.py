@@ -7346,8 +7346,11 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             Button(Span(cls=_dot_cls, title=_dot_tip), t("btn.share"), type="button",
                    hx_get=f"/docs/{entity_id}/share",
                    hx_target=f"#{_share_body_id}", hx_swap="innerHTML",
+                   # A refusal (no permission to share) answers with its toast and no panel,
+                   # so the modal opens only when the panel came back.
                    hx_on__after_request=(
-                       f"if(event.detail.successful){{document.getElementById('{_share_modal_id}').showModal()}}"
+                       "if(event.detail.successful){if(event.detail.xhr.getResponseHeader('HX-Reswap')!=='none')"
+                       f"{{document.getElementById('{_share_modal_id}').showModal()}}}}"
                        f"else{{window.celerpToast&&celerpToast({_fail_js},'error')}}"),
                    cls="btn btn--secondary"),
         )

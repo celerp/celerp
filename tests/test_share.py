@@ -1280,42 +1280,37 @@ async def _expire_token(session, token: str) -> None:
 
 
 @pytest.mark.asyncio
-async def test_share_status_lifecycle(client: AsyncClient, session):
-    """Opening the Share panel only reads: a document never shared has no link and
-    no token row. Share mints the stable link on, Revoke turns it off - same token
-    throughout."""
-    from sqlalchemy import func, select
-    from celerp.models.share import DocShareToken
+async def test_share_status_lifecycle(client: AsyncClient):
+    """First GET mints the stable link deactivated; Share activates it, Revoke
+    deactivates it - same token throughout."""
     tok = await _token(client)
     entity_id = await _create_doc(client, tok)
 
     r = await client.get(f"/docs/{entity_id}/share", headers=_h(tok))
     assert r.status_code == 200
-    assert r.json() == {"shared": False, "active": False, "revoked": False, "expired": False,
-                        "token": None, "url": None, "view_url": None, "expires_at": None}
-    assert await session.scalar(select(func.count()).select_from(DocShareToken)
-                                .where(DocShareToken.entity_id == entity_id)) == 0
+    first = r.json()
+    assert first["active"] is False and first["revoked"] is True
+    assert len(first["token"]) == 12
+    # A deactivated link does not resolve publicly
+    assert (await client.get(f"/share/{first['token']}")).status_code == 404
 
     created = (await client.post(f"/docs/{entity_id}/share", headers=_h(tok))).json()
     assert created["active"] is True and created["revoked"] is False
-    assert len(created["token"]) == 12
+    assert created["token"] == first["token"]
 
     status = (await client.get(f"/docs/{entity_id}/share", headers=_h(tok))).json()
-    assert status["active"] is True and status["token"] == created["token"]
+    assert status["active"] is True and status["token"] == first["token"]
 
     revoked = (await client.delete(f"/docs/{entity_id}/share", headers=_h(tok))).json()
     assert revoked["active"] is False and revoked["revoked"] is True
-    assert revoked["token"] == created["token"]
-    # A deactivated link does not resolve publicly, and reading it keeps it off.
-    assert (await client.get(f"/share/{created['token']}")).status_code == 404
-    again = (await client.get(f"/docs/{entity_id}/share", headers=_h(tok))).json()
-    assert (again["active"], again["revoked"], again["token"]) == (False, True, created["token"])
+    assert revoked["token"] == first["token"]
 
 
 @pytest.mark.asyncio
-async def test_a_viewer_reads_the_share_state_but_cannot_share(client: AsyncClient, session):
-    """A role without edit_documents sees the Share panel's state and mints nothing;
-    sharing is refused."""
+async def test_a_viewer_sees_the_status_light_but_gets_no_share_link(client: AsyncClient, session):
+    """The share link is a credential: a role without edit_documents reads only whether
+    the document is shared, and opening the Share panel or sharing is refused and mints
+    nothing."""
     import uuid
     from sqlalchemy import func, select
     from celerp.models.accounting import UserCompany
@@ -1331,8 +1326,9 @@ async def test_a_viewer_reads_the_share_state_but_cannot_share(client: AsyncClie
     await session.commit()
     viewer = _h(await make_authed_token(session, str(uid), str(company_id), "viewer"))
 
-    r = await client.get(f"/docs/{entity_id}/share", headers=viewer)
-    assert (r.status_code, r.json()["token"]) == (200, None)
+    r = await client.get(f"/docs/{entity_id}/share/state", headers=viewer)
+    assert (r.status_code, r.json()) == (200, {"active": False})
+    assert (await client.get(f"/docs/{entity_id}/share", headers=viewer)).status_code == 403
     assert (await client.post(f"/docs/{entity_id}/share", headers=viewer)).status_code == 403
     assert await session.scalar(select(func.count()).select_from(DocShareToken)
                                 .where(DocShareToken.entity_id == entity_id)) == 0

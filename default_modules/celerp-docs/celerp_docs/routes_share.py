@@ -473,12 +473,17 @@ async def share_state(
 async def share_status(
     entity_id: str,
     company_id: _uuid.UUID = Depends(get_current_company_id),
+    _: None = require_permission("edit_documents"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Share state for a document or list. Read-only: a document never shared
-    reports no link, and Share (POST) mints its stable token."""
+    """Share panel state for a document or list, with its link. Mints the
+    (deactivated) token on first call so the panel always shows the document's
+    stable URL; never activates anything. The link is a credential, so this needs
+    the permission sharing does; the status light reads /share/state."""
     _shareable(await session.get(Projection, (company_id, entity_id)))
-    return await _share_status(session, await _find_share_row(session, company_id, entity_id))
+    share_row = await get_or_create_share_token(session, company_id, entity_id)
+    await session.commit()
+    return await _share_status(session, share_row)
 
 
 @router.post("/docs/{entity_id}/share")

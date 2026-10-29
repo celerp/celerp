@@ -173,14 +173,15 @@ OUTER_HEADER = "x-observed-request"
 
 
 # The writes a read request may make, by table and statement type: a note that the read
-# happened, which a peer's protocol sends as a read. Each names the only columns it may
-# set and the only functions that may make it; any other write of a read request is a
-# finding.
+# happened, which a peer's protocol sends as a read, or a credential a read hands out.
+# Each names the only columns it may set, the only functions that may make it and, when
+# only one route may, that route; any other write of a read request is a finding.
 @dataclass(frozen=True)
 class ReadNote:
     columns: tuple[str, ...]  # the only columns the statement may set
     sites: tuple[str, ...]  # "<file> <function>" that make the write
     reason: str
+    route: str | None = None  # "<METHOD> <path template>" of the only request that may make it
 
 
 READ_ROUTE_WRITES: dict[tuple[str, str], ReadNote] = {
@@ -194,6 +195,12 @@ READ_ROUTE_WRITES: dict[tuple[str, str], ReadNote] = {
     ("session_registry", "INSERT"): ReadNote(
         ("company_id", "expiry", "jti", "user_id"), ("celerp/credentials.py issue_token_pair",),
         "a session registered again when the middleware refreshes the token of a request whose slot is gone"),
+    ("doc_share_tokens", "INSERT"): ReadNote(
+        ("company_id", "created_at", "entity_id", "expires_at", "id", "revoked_at", "token"),
+        ("default_modules/celerp-docs/celerp_docs/routes_share.py share_status",),
+        "a document's share link minted deactivated the first time an editor opens its Share panel, "
+        "which shows the link the cloud signs for it; Share (POST) turns it on",
+        route="GET /docs/{entity_id}/share"),
 }
 
 _ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -383,13 +390,17 @@ def _read_route(request: dict) -> str:
 
 
 def _route(request: dict) -> str:
+    key = _route_key(request)
+    return f"{request['app']} {key}" if request.get("app") else key
+
+
+def _route_key(request: dict) -> str:
     scope = request["scope"]
     # A route of a router the app includes keeps its own path; FastAPI records the
     # prefixed template, the one the route inventory lists, in the effective context.
     template = getattr(_get_scope_effective_route_context(scope), "path", None) \
         or getattr(scope.get("route"), "path", None) or scope.get("path", "?")
-    key = f"{scope.get('method', '?')} {template}"
-    return f"{request['app']} {key}" if request.get("app") else key
+    return f"{scope.get('method', '?')} {template}"
 
 
 # -- classification ----------------------------------------------------------------
@@ -674,12 +685,12 @@ def _under_row_lock(request: dict, session, op: Op) -> bool:
     return _made_by(rule.sites)
 
 
-def _read_note(op: Op) -> bool:
+def _read_note(request: dict, op: Op) -> bool:
     """The write is one READ_ROUTE_WRITES lets a read request make: its columns only,
-    made by one of its functions."""
+    made by one of its functions, for its route when it names one."""
     rule = READ_ROUTE_WRITES.get((op.table, op.detail))
-    return rule is not None and bool(op.columns) \
-        and set(op.columns) <= set(rule.columns) and _made_by(rule.sites)
+    return rule is not None and bool(op.columns) and set(op.columns) <= set(rule.columns) \
+        and rule.route in (None, _route_key(request)) and _made_by(rule.sites)
 
 
 def _made_by(sites: tuple[str, ...]) -> bool:
@@ -872,7 +883,7 @@ def _executed(conn, cursor, statement, parameters, context, executemany) -> None
     if op.detail in ("UPDATE", "DELETE", "MERGE") and getattr(cursor, "rowcount", -1) == 0:
         return  # matched nothing: no mutation
     read_route = _read_route(request)
-    if read_route and not _read_note(op):
+    if read_route and not _read_note(request, op):
         note(session, _READ, Finding("read-route-write", read_route, company, op.table, statement[:300], op.detail,
                                      where=_where(), test=CENSUS.test, fingerprint=op.fingerprint))
     if not _owned(op.table):

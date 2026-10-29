@@ -1,13 +1,12 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: BUSL-1.1
 
-"""A document has one share link for its lifetime. Share mints it the first time, and
-Share and Revoke turn that same link on and off; opening the Share panel only reads it.
-A request made while another is minting or changing the link waits for it under the
-company lock and then works on the link and the document it left, so two first shares
-never mint two links (after which the document's link could no longer be found) and a
-document that stopped being shareable meanwhile is refused. Each case runs on real
-PostgreSQL across two connections."""
+"""A document has one share link for its lifetime. Opening Share mints it the first time,
+and Share and Revoke turn that same link on and off. A request made while another is
+minting or changing the link waits for it under the company lock and then works on the
+link and the document it left, so two first opens never mint two links (after which the
+document's link could no longer be found) and a document that stopped being shareable
+meanwhile is refused. Each case runs on real PostgreSQL across two connections."""
 
 from __future__ import annotations
 
@@ -25,7 +24,7 @@ from celerp.models.company import Company
 from celerp.models.projections import Projection
 from celerp.models.share import DocShareToken
 from celerp.services.company_lock import lock_company
-from celerp_docs.routes_share import create_share_link, revoke_share_link
+from celerp_docs.routes_share import create_share_link, revoke_share_link, share_status
 
 pytestmark = pytest.mark.asyncio
 
@@ -69,6 +68,18 @@ async def _while_minting(factory, cid, request):
         assert not task.done(), "the request read the share link without waiting for the holder"
         await s.commit()
     return minted.token, await asyncio.wait_for(task, 10)
+
+
+async def test_two_first_opens_share_one_link(factory):
+    cid = await _seed(factory)
+
+    async def opened():
+        async with factory() as s:
+            return await share_status(_DOC, company_id=cid, _=None, session=s)
+
+    token, answer = await _while_minting(factory, cid, opened)
+    assert answer["token"] == token
+    assert [link.token for link in await _links(factory, cid)] == [token]
 
 
 async def test_sharing_a_document_made_unshareable_meanwhile_is_refused(factory):
