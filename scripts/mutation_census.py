@@ -15,9 +15,9 @@ process, so the folders of all CI shards together give the whole suite) and writ
   observer could not classify, and writes to tables that hold no company's data;
 - mutation-site coverage: the places in the bundled source that write (emit_event, a
   session add, delete or merge, an INSERT, UPDATE or DELETE construct executed) and
-  whether any observed durable write passed through each. A write is sent where its SQL
-  runs (an added row at the later flush or commit), so it counts for every site of the
-  function it was sent from that comes before that line.
+  whether any observed durable write passed through each: a statement counts for the line
+  it ran from, an added, deleted or merged row for the line that called the session, both
+  recorded when they happen.
 
 - the baseline: each accepted finding (mutation_baseline.json) with its tracking issue, and
   every entry no finding matched or its own reproducing test did not see.
@@ -161,9 +161,10 @@ def _coverage(path):
 
 
 def _passed_through(site, sent) -> bool:
-    """A durable write was sent from the site's function at or after the site's line."""
-    _, start, _, fn, _, (first, last) = site
-    return any(name == fn and start <= line <= last and (begins is None or begins == first)
+    """A durable write was made on the site's own lines: the observer records the line a
+    statement ran from, and the line that called session.add, delete or merge."""
+    _, start, end, fn, _, (first, _) = site
+    return any(name == fn and start <= line <= end and (begins is None or begins == first)
                for line, name, begins in sent)
 
 

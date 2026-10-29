@@ -12,6 +12,7 @@ flagged, never taken as a read."""
 
 from __future__ import annotations
 
+import inspect
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -32,7 +33,7 @@ from celerp.services.company_lock import (
     judge_without_company_lock, lock_chart, lock_company, lock_company_for_deletion)
 from celerp.services.migrations import request_cancel, run_cleanup_task
 from celerp.services.permissions import authorize_request
-from celerp.services.session_tracker import invalidate_sessions, lock_auth_state
+from celerp.services.session_tracker import invalidate_sessions, lock_auth_state, register_token
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.observer_control]
 
@@ -72,6 +73,54 @@ async def test_a_locked_write_made_for_a_read_request_is_reported(session, auth,
         session.add(Location(company_id=cid, name="Read", type="warehouse"))
         await session.commit()
     assert _kinds() == ([] if method == "POST" else ["read-route-write"])
+
+
+@pytest.mark.parametrize("outer, inner", [("GET", "POST"), ("POST", "GET"), ("POST", "POST")])
+async def test_a_write_made_for_a_read_request_through_another_request_is_reported(session, auth, outer, inner):
+    """A page load that calls the API: the outermost read on the way is the request the
+    write is made for, however the inner request is sent."""
+    with serving(outer, "/page"), serving(inner, "/api"):
+        cid = _authorize(session, auth)
+        await lock_company(session, cid)
+        session.add(Location(company_id=cid, name="Nested", type="warehouse"))
+        await session.commit()
+    routes = [f.route for f in mutation_observer.CENSUS.findings if f.kind == "read-route-write"]
+    assert routes == {"GET": ["GET /page -> POST /api"], "POST": []}[outer] + (
+        ["GET /api"] if outer == "POST" and inner == "GET" else [])
+
+
+@pytest.mark.parametrize("method", ["GET", "POST"])
+async def test_a_write_to_infrastructure_made_for_a_read_request_is_reported(session, auth, method):
+    """A table no company owns (a login's supporter badge) is not judged by the company
+    lock, and still a read request may not write it."""
+    from celerp.models.supporter import SupporterBadge
+    with serving(method, "/observed"):
+        session.add(SupporterBadge(user_id=auth["user_id"], github_login="observed", tier="supporter",
+                                   ordinal=1, credential="x"))
+        await session.commit()
+    assert [(f.kind, f.table) for f in mutation_observer.CENSUS.findings] == (
+        [("read-route-write", "supporter_badges")] if method == "GET" else [])
+
+
+async def test_a_ui_request_names_itself_to_the_api_it_calls_over_http(session, auth):
+    """Over HTTP the API request names the UI request it is made for (outgoing_headers),
+    and the observer judges its writes as that request's."""
+    seen = {}
+
+    async def api(scope, receive, send):
+        seen["read_route"] = mutation_observer._read_route(mutation_observer._REQUEST.get())
+
+    async def ui(scope, receive, send):
+        headers = [(k.encode(), v.encode()) for k, v in mutation_observer.outgoing_headers().items()]
+        token = mutation_observer._REQUEST.set(None)  # another task: nothing carries over but the header
+        try:
+            await mutation_observer.observed(api, "api")(
+                {"type": "http", "method": "POST", "path": "/lists", "headers": headers}, receive, send)
+        finally:
+            mutation_observer._REQUEST.reset(token)
+
+    await mutation_observer.observed(ui, "ui")({"type": "http", "method": "GET", "path": "/lists/new"}, None, None)
+    assert seen["read_route"] == "ui GET /lists/new -> api POST /lists"
 
 
 async def test_a_read_request_that_writes_nothing_durable_is_not_reported(session, auth):
@@ -499,6 +548,11 @@ async def test_a_read_requests_token_refresh_slides_or_registers_its_session(ses
         await issue_token_pair(session, user=user, company_id=auth["company_id"], jti=jti, expected_snonce=None)
     assert _kinds() == []
     assert (await session.get(SessionRegistry, jti)).expiry > datetime.now(timezone.utc) + timedelta(minutes=5)
+    # The add counts for site coverage only when it ran, though both send their row at the commit.
+    lines, first = inspect.getsourcelines(register_token)
+    added = first + next(n for n, line in enumerate(lines) if "session.add(" in line)
+    site = f"celerp/services/session_tracker.py:{added} register_token@{first}"
+    assert (site in mutation_observer.CENSUS.sites) == (slot == "gone")
 
 
 @pytest.mark.parametrize("method", ["POST", "GET"])

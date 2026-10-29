@@ -163,9 +163,13 @@ UNDER_ROW_LOCK: dict[tuple[str, str], RowLocked] = {
     ("session_registry", "DELETE"): _TOKEN_REVOKE,
 }
 
-# A request in one of these methods only reads: a durable write it makes is a finding
-# however it is locked, as a link, a prefetch or a page load can send it.
+# A request in one of these methods only reads, and so does every request made for it in
+# turn (a page load that calls the API): a durable write made for it, to any table, is a
+# finding however it is locked, as a link, a prefetch or a page load can send it.
 READ_METHODS = ("GET", "HEAD")
+# The header a request from the UI to the API names the UI request it is made for by, when
+# the two talk over HTTP (the browser suite's servers): outgoing_headers.
+OUTER_HEADER = "x-observed-request"
 
 
 # The writes a read request may make, by table and statement type: a note that the read
@@ -199,7 +203,9 @@ _LIVE: "weakref.WeakSet" = weakref.WeakSet()
 _BEGUN_IN: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()  # session: the task its transaction began in
 _SERVING: dict[int, dict] = {}  # the requests being served now, by id
 _WRITE, _LOCK, _FENCE, _ROW = "observed-write", "observed-lock", "observed-fence", "observed-row-lock"
+_READ = "observed-read-route-write"  # writes made for a read request, reported when they commit
 _CREATED = "observed-created"  # companies this transaction inserted: no other can see them before it commits
+_CALLS = "observed-write-calls"  # session.info: the app lines that added, deleted or merged in a request
 
 
 @dataclass
@@ -228,7 +234,6 @@ class Finding:
     company_from: str = "statement"  # statement, or request when the SQL names no company
     fingerprint: str = ""  # the statement's shape, without its values (pglast)
     sites: list[str] = field(default_factory=list)  # every app frame of a write, for site coverage
-    read_write: bool = False  # a write READ_ROUTE_WRITES lets a read request make
 
 
 @dataclass
@@ -263,7 +268,8 @@ def observed(app, label: str):
         if scope.get("type") != "http":
             return await app(scope, receive, send)
         await _settle()
-        request = {"scope": scope, "company": None, "app": label, "inherited": _held(), "sessions": weakref.WeakSet()}
+        request = {"scope": scope, "company": None, "app": label, "inherited": _held(), "sessions": weakref.WeakSet(),
+                   "outer": _outer(scope)}
         token = _REQUEST.set(request)
         _SERVING[id(request)] = request
         try:
@@ -275,15 +281,32 @@ def observed(app, label: str):
     return _app
 
 
+def _outer(scope) -> dict | None:
+    """The request a request is made for: the one served in the same task (a test's
+    in-process transport), or the one the UI names when it calls the API over HTTP."""
+    enclosing = _REQUEST.get()
+    if enclosing is not None:
+        return enclosing
+    named = dict(scope.get("headers") or ()).get(OUTER_HEADER.encode())
+    return _SERVING.get(int(named)) if named and named.isdigit() else None
+
+
+def outgoing_headers() -> dict[str, str]:
+    """The header a request to the API sends to name the request it is made for."""
+    request = _REQUEST.get()
+    return {OUTER_HEADER: str(id(request))} if request is not None and id(request) in _SERVING else {}
+
+
 class serving:
-    """Request scope without an app, for the observer's own tests."""
+    """Request scope without an app, for the observer's own tests; nested, the inner
+    request is made for the outer one."""
 
     def __init__(self, method: str, path: str) -> None:
         self.scope = {"type": "http", "method": method, "path": path}
 
     def __enter__(self):
         self._token = _REQUEST.set({"scope": self.scope, "company": None, "inherited": _held(),
-                                    "sessions": weakref.WeakSet()})
+                                    "sessions": weakref.WeakSet(), "outer": _REQUEST.get()})
         return self
 
     def __exit__(self, *exc) -> None:
@@ -344,6 +367,19 @@ def _held() -> "weakref.WeakKeyDictionary":
 
 def _reads(request: dict) -> bool:
     return request["scope"].get("method") in READ_METHODS
+
+
+def _read_route(request: dict) -> str:
+    """The read request a write is made for, as the routes from it to the request that
+    writes ("ui GET /a -> api POST /b"); empty when no request on the way reads."""
+    chain = []
+    while request is not None:
+        chain.insert(0, request)
+        request = request.get("outer")
+    for i, outer in enumerate(chain):
+        if _reads(outer):
+            return " -> ".join(_route(r) for r in chain[i:])
+    return ""
 
 
 def _route(request: dict) -> str:
@@ -638,11 +674,11 @@ def _under_row_lock(request: dict, session, op: Op) -> bool:
     return _made_by(rule.sites)
 
 
-def _read_note(request: dict, op: Op) -> bool:
+def _read_note(op: Op) -> bool:
     """The write is one READ_ROUTE_WRITES lets a read request make: its columns only,
     made by one of its functions."""
     rule = READ_ROUTE_WRITES.get((op.table, op.detail))
-    return rule is not None and _reads(request) and bool(op.columns) \
+    return rule is not None and bool(op.columns) \
         and set(op.columns) <= set(rule.columns) and _made_by(rule.sites)
 
 
@@ -720,6 +756,7 @@ def _begun(session, transaction, connection) -> None:
 def _ended(session, transaction) -> None:
     if transaction.parent is not None:
         return
+    session.info.pop(_CALLS, None)
     for conn, stack in list(_SESSIONS.items()):
         if session in stack:
             stack.remove(session)
@@ -834,6 +871,10 @@ def _executed(conn, cursor, statement, parameters, context, executemany) -> None
         return
     if op.detail in ("UPDATE", "DELETE", "MERGE") and getattr(cursor, "rowcount", -1) == 0:
         return  # matched nothing: no mutation
+    read_route = _read_route(request)
+    if read_route and not _read_note(op):
+        note(session, _READ, Finding("read-route-write", read_route, company, op.table, statement[:300], op.detail,
+                                     where=_where(), test=CENSUS.test, fingerprint=op.fingerprint))
     if not _owned(op.table):
         return None if op.table in INFRASTRUCTURE else found("unowned-table")
     # The statement names the companies it writes (an insert's company_id, a WHERE on it),
@@ -870,8 +911,29 @@ def _executed(conn, cursor, statement, parameters, context, executemany) -> None
         note(session, _WRITE, Finding(
             kind or "protected", route, target, op.table, statement[:300], op.detail,
             earlier_locks=before, transaction=f"{id(root):x}",
-            where=_where() if kind or _reads(request) else [], test=CENSUS.test, company_from=source,
-            sites=frames, fingerprint=op.fingerprint, read_write=_read_note(request, op)))
+            where=_where() if kind else [], test=CENSUS.test, company_from=source,
+            sites=frames, fingerprint=op.fingerprint))
+
+
+def _recording_the_call(name: str):
+    """Session.<name>, noting the app line that called it in a request. An added or deleted
+    row is sent at a later flush, from the line that flushed it; the census credits the
+    line that made the change, and only when its transaction commits a durable write."""
+    original = getattr(Session, name)
+
+    def recorded(self, *args, **kwargs):
+        if _REQUEST.get() is not None:
+            frames = _app_frames(first_line=True)
+            if frames:
+                self.info.setdefault(_CALLS, set()).add(frames[-1])
+        return original(self, *args, **kwargs)
+
+    recorded.__wrapped__ = original
+    return recorded
+
+
+for _name in ("add", "add_all", "delete", "merge"):
+    setattr(Session, _name, _recording_the_call(_name))
 
 
 @event.listens_for(Session, "after_commit")
@@ -885,8 +947,10 @@ def _committed(session) -> None:
             CENSUS.sites[site] = CENSUS.sites.get(site, 0) + 1
         if finding.kind != "protected":
             CENSUS.findings.append(finding)
-        if finding.route.split(" ")[-2] in READ_METHODS and not finding.read_write:
-            CENSUS.findings.append(replace(finding, kind="read-route-write"))
+    if noted(session, _WRITE):
+        for site in session.info.pop(_CALLS, ()):
+            CENSUS.sites[site] = CENSUS.sites.get(site, 0) + 1
+    CENSUS.findings.extend(noted(session, _READ))
 
 
 # -- census files ------------------------------------------------------------------

@@ -176,6 +176,18 @@ for _label, _observed_app in (("api", app), ("ui", _ui_app)):
         lambda built=_observed_app.build_middleware_stack, label=_label: mutation_observer.observed(built(), label))
     _observed_app.middleware_stack = None
 
+# A request the UI makes to the API over HTTP (the browser suite's servers) names the UI
+# request it is made for, so a write made for a page load is judged as the page load's.
+import ui.api_client as _ui_api_client  # noqa: E402
+_ui_local_client = _ui_api_client._local_client
+
+
+def _observed_local_client(*args, headers=None, **kwargs):
+    return _ui_local_client(*args, headers={**(headers or {}), **mutation_observer.outgoing_headers()}, **kwargs)
+
+
+_ui_api_client._local_client = _observed_local_client
+
 import sys as _sys, os as _os
 from pathlib import Path
 
