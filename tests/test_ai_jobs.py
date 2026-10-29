@@ -761,3 +761,16 @@ async def test_a_steps_declared_budget_is_computed_after_it_takes_the_slot(cloud
         order.append("slot")
         await llm.complete([{"role": "user", "content": "hi"}])
     assert order == ["slot", "budget"]
+
+
+async def test_a_finished_jobs_notification_is_written_under_the_company_lock(client, owner, session):
+    """A job's task runs inside the request that started it; the notification it leaves
+    when it ends takes the company lock first, as every company write does."""
+    import mutation_observer
+    _token, company_id, user_id = owner
+    with mutation_observer.serving("POST", "/ai/conversations/{conversation_id}/query"):
+        await jobs.notify(company_id, user_id, None, "2 of 2 file(s) read", "Open the conversation.")
+    findings = mutation_observer.CENSUS.findings
+    assert findings == [], mutation_observer.explain(findings)
+    notes = (await session.execute(select(Notification).where(Notification.company_id == company_id))).scalars().all()
+    assert [n.title for n in notes] == ["2 of 2 file(s) read"]

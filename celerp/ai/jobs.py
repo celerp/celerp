@@ -71,6 +71,7 @@ from sqlalchemy import and_, or_, select, update
 
 from celerp.ai import deadlines
 from celerp.db import SessionLocal
+from celerp.services.company_lock import lock_company
 from ui.i18n import t
 
 log = logging.getLogger(__name__)
@@ -349,7 +350,7 @@ async def _claim(session, job_id: uuid.UUID, where=None, *, own: bool = False, *
     process's included."""
     from celerp.models.ai import AIBatchJob
     free = or_(AIBatchJob.lease_until.is_(None), AIBatchJob.lease_until <= _now(),
-               *([AIBatchJob.runner_id.startswith(RUNNER_ID)] if own else []))
+               *([AIBatchJob.runner_id.startswith(RUNNER_ID, autoescape=True)] if own else []))
     runner_id = _runner_id()
     claimed = await session.execute(update(AIBatchJob).where(AIBatchJob.id == job_id, free,
                                                              is_open() if where is None else where)
@@ -902,6 +903,7 @@ async def notify(company_id: uuid.UUID, user_id: uuid.UUID, conversation_id: uui
     try:
         from celerp.notifications.service import create as create_notification
         async with SessionLocal() as session:
+            await lock_company(session, company_id)
             await create_notification(
                 session, company_id, "ai", title, body, user_id=user_id,
                 action_url=f"/ai?conversation={conversation_id}" if conversation_id else "/ai",
