@@ -120,6 +120,11 @@
   "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches commit, write session.delete."
  },
  {
+  "route": "api POST /migrations/start-company/scan",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches write update."
+ },
+ {
   "route": "api DELETE /migrations/templates/{source_system}",
   "class": "requested, no durable write",
   "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches commit."
@@ -1110,7 +1115,43 @@
   "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
  },
  {
+  "site": "celerp/ai/conversations.py create_conversation execute",
+  "count": 1,
+  "class": "reached from a route",
+  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
+ },
+ {
+  "site": "celerp/ai/usage.py reconcile_usage execute",
+  "count": 2,
+  "class": "not reached from a route",
+  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
+ },
+ {
+  "site": "celerp/connectors/outbound_queue.py _release_rows execute",
+  "count": 2,
+  "class": "reached from a route",
+  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
+ },
+ {
+  "site": "celerp/connectors/outbound_queue.py clear execute",
+  "count": 1,
+  "class": "not reached from a route",
+  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
+ },
+ {
   "site": "celerp/connectors/outbound_queue.py enqueue_outbound add",
+  "count": 1,
+  "class": "not reached from a route",
+  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
+ },
+ {
+  "site": "celerp/connectors/outbound_queue.py retain execute",
+  "count": 1,
+  "class": "not reached from a route",
+  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
+ },
+ {
+  "site": "celerp/connectors/outbound_queue.py save execute",
   "count": 1,
   "class": "not reached from a route",
   "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
@@ -1134,6 +1175,30 @@
   "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
  },
  {
+  "site": "celerp/notifications/service.py create execute",
+  "count": 1,
+  "class": "reached from a route",
+  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
+ },
+ {
+  "site": "celerp/notifications/service.py notify_once execute",
+  "count": 1,
+  "class": "reached from a route",
+  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
+ },
+ {
+  "site": "celerp/routers/auth.py acknowledge_reset_notices execute",
+  "count": 1,
+  "class": "reached from a route",
+  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
+ },
+ {
+  "site": "celerp/routers/auth.py authenticate execute",
+  "count": 1,
+  "class": "reached from a route",
+  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
+ },
+ {
   "site": "celerp/services/auto_je.py void emit_event",
   "count": 1,
   "class": "not reached from a route",
@@ -1142,6 +1207,12 @@
  {
   "site": "celerp/services/backup_import.py _clear_restored_connector_state execute",
   "count": 2,
+  "class": "reached from a route",
+  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
+ },
+ {
+  "site": "celerp/services/company_reset.py reset execute",
+  "count": 1,
   "class": "reached from a route",
   "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
  },
@@ -1164,10 +1235,70 @@
   "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
  },
  {
+  "site": "celerp/services/migration_core_sink.py _import_attachment execute",
+  "count": 1,
+  "class": "not reached from a route",
+  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
+ },
+ {
   "site": "celerp/services/migration_core_sink.py _import_location add",
   "count": 1,
   "class": "not reached from a route",
   "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
+ },
+ {
+  "site": "celerp/services/migration_core_sink.py stage_file_cleanup execute",
+  "count": 1,
+  "class": "not reached from a route",
+  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
+ },
+ {
+  "site": "celerp/services/migration_templates.py forget execute",
+  "count": 1,
+  "class": "reached from a route",
+  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
+ },
+ {
+  "site": "celerp/services/migration_templates.py remember execute",
+  "count": 1,
+  "class": "reached from a route",
+  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
+ },
+ {
+  "site": "celerp/services/migration_xero_attachments.py attach execute",
+  "count": 2,
+  "class": "not reached from a route",
+  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
+ },
+ {
+  "site": "celerp/services/migration_xero_attachments.py save execute",
+  "count": 1,
+  "class": "not reached from a route",
+  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
+ },
+ {
+  "site": "celerp/services/migrations.py _checkpoint execute",
+  "count": 1,
+  "class": "reached from a route",
+  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
+ },
+ {
+  "site": "celerp/services/migrations.py _record_mappings execute",
+  "count": 1,
+  "class": "reached from a route",
+  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
+ },
+ {
+  "site": "celerp/services/migrations.py discard execute",
+  "count": 2,
+  "class": "reached from a route",
+  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
+ },
+ {
+  "site": "celerp/services/payments.py _apply_refund execute",
+  "count": 1,
+  "class": "reached from a route",
+  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
  },
  {
   "site": "celerp/services/payments.py _settle delete",
@@ -1182,7 +1313,37 @@
   "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
  },
  {
+  "site": "celerp/services/payments.py receive_payment execute",
+  "count": 2,
+  "class": "not reached from a route",
+  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
+ },
+ {
+  "site": "celerp/services/payments.py receive_refund execute",
+  "count": 1,
+  "class": "not reached from a route",
+  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
+ },
+ {
+  "site": "celerp/services/payments.py receive_release execute",
+  "count": 1,
+  "class": "not reached from a route",
+  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
+ },
+ {
   "site": "celerp/services/payments.py record_recovery add",
+  "count": 1,
+  "class": "reached from a route",
+  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
+ },
+ {
+  "site": "celerp/services/payments.py return_unmatched execute",
+  "count": 1,
+  "class": "reached from a route",
+  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
+ },
+ {
+  "site": "celerp/services/payments.py unrecord_company execute",
   "count": 1,
   "class": "reached from a route",
   "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
@@ -1202,6 +1363,18 @@
  {
   "site": "celerp/services/peer_journals.py apply_firm_journal emit_event",
   "count": 4,
+  "class": "not reached from a route",
+  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
+ },
+ {
+  "site": "celerp/services/peer_journals.py apply_firm_lock execute",
+  "count": 1,
+  "class": "not reached from a route",
+  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
+ },
+ {
+  "site": "celerp/services/peer_journals.py mark execute",
+  "count": 1,
   "class": "not reached from a route",
   "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
  },
@@ -1231,6 +1404,12 @@
  },
  {
   "site": "celerp/services/session_tracker.py clear execute",
+  "count": 1,
+  "class": "not reached from a route",
+  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
+ },
+ {
+  "site": "celerp/services/session_tracker.py run_jti_cleanup_loop execute",
   "count": 1,
   "class": "not reached from a route",
   "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."

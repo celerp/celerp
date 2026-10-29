@@ -17,8 +17,8 @@ process, so the folders of all CI shards together give the whole suite) and writ
 - the findings: each distinct write that was not protected by the company lock, SQL the
   observer could not classify, and writes to tables that hold no company's data;
 - mutation-site coverage: the places in the bundled source that write (emit_event, a
-  session add, delete or merge, an INSERT, UPDATE or DELETE construct executed) and
-  whether any observed durable write passed through each: a statement counts for the line
+  session add, delete or merge, an executed statement that writes, built or as SQL text,
+  and any session call scripts/static_calls.py cannot classify as a read) and whether any observed durable write passed through each: a statement counts for the line
   it ran from, an added, deleted or merged row for the line that called the session, both
   recorded when they happen.
 
