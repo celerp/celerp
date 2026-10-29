@@ -397,6 +397,8 @@ def test_every_insert_into_a_fresh_keyed_table_draws_a_new_key(table):
 _COMPANY = "INSERT INTO companies (id, name, slug) VALUES ($1::UUID, $2, $3)"
 _LOCK_COMPANY = "SELECT companies.id FROM companies WHERE companies.id = $1::UUID FOR NO KEY UPDATE"
 _ACCOUNT = "INSERT INTO accounts (id, company_id, code) VALUES ($1::UUID, $2::UUID, $3)"
+_CLAIM = ("INSERT INTO migration_runs (id, company_id, scan_claim_sha256) "
+          "VALUES ($1::UUID, $2::UUID, $3)")
 _TOKEN = "INSERT INTO doc_share_tokens (id, company_id, token) VALUES ($1::UUID, $2::UUID, $3)"
 _PROJECTION = ("SELECT projections.entity_id FROM projections WHERE projections.company_id = $1::UUID "
                "AND projections.entity_id = $2 FOR UPDATE")
@@ -444,11 +446,63 @@ def test_rows_of_a_committed_company_still_order(recorder):
 
 
 def test_an_own_companys_insert_under_a_unique_key_without_the_company_still_orders(recorder):
-    # Another transaction can insert the same token, whatever company it names.
+    # Another transaction can insert the same scan claim, whatever company it names.
     recorder.statement(1, _COMPANY, ("c1", "Co", "co"), 0.0)
-    recorder.statement(1, _TOKEN, ("t1", "c1", "tok"), 0.0)
+    recorder.statement(1, _CLAIM, ("r1", "c1", "sha"), 0.0)
     _chart(recorder)
     assert ("order", "adv:external-product") in _kinds(recorder)
+
+
+def test_an_insert_under_the_company_lock_keyed_by_a_fresh_secret_is_gated(recorder):
+    # No other transaction inserts the same secret, so the company's lock gates the insert.
+    recorder.statement(1, _LOCK_COMPANY, ("c1",), 0.0)
+    recorder.statement(1, _TOKEN, ("t1", "c1", "tok"), 0.0)
+    assert recorder.ungated_sites({"row:doc_share_tokens"}) == set()
+    assert recorder.classes["row:doc_share_tokens"].get("gated") == 1
+
+
+@pytest.mark.parametrize("table", sorted(lock_rank.SECRET_KEYED))
+def test_every_insert_into_a_secret_keyed_table_draws_a_new_secret(table):
+    """SECRET_KEYED holds: the table's unique keys are its primary key, keys holding the
+    company, and the one secret column; every model construction names that column in a
+    function that draws from ``secrets``; nothing inserts the table by SQL or insert(), and
+    company backups do not carry it (a restore would copy a stored secret)."""
+    import ast
+
+    from celerp.models.base import Base
+    from celerp.services import company_backup
+
+    column = lock_rank.SECRET_KEYED[table]
+    mapper = next(m for m in Base.registry.mappers if m.local_table.name == table)
+    t = mapper.local_table
+    keys = [[c.name for c in k.columns] for k in t.constraints if k.__class__.__name__ == "UniqueConstraint"]
+    keys += [[c.name for c in i.columns] for i in t.indexes if i.unique]
+    keys += [[c.name] for c in t.columns if c.unique]
+    assert {tuple(k) for k in keys if "company_id" not in k} == {(column,)}
+    assert table in company_backup.EXCLUDED_TABLES
+
+    model, built, wrong = mapper.class_.__name__, 0, []
+    for path, text in _production_sources():
+        if "INSERT INTO " + table in text:
+            wrong.append(f"{path}: SQL insert into {table}")
+        if model not in text:
+            continue
+        for fn in ast.walk(ast.parse(text)):
+            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            draws = any(isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name)
+                        and n.value.id == "secrets" for n in ast.walk(fn))
+            for node in ast.walk(fn):
+                if not isinstance(node, ast.Call):
+                    continue
+                name = node.func.id if isinstance(node.func, ast.Name) else getattr(node.func, "attr", "")
+                if name in ("insert", "pg_insert") and any(isinstance(a, ast.Name) and a.id == model for a in node.args):
+                    wrong.append(f"{path}:{node.lineno}: insert({model})")
+                if name == model:
+                    built += 1
+                    if not draws or column not in {kw.arg for kw in node.keywords}:
+                        wrong.append(f"{path}:{node.lineno}: {model}(...) without a fresh secret")
+    assert built and not wrong, wrong
 
 
 def test_another_companys_rows_are_not_the_transactions_own(recorder):

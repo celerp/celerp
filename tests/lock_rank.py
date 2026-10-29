@@ -939,8 +939,9 @@ def _has_company(table: str) -> bool:
 
 @functools.lru_cache(maxsize=None)
 def _company_keyed(table: str) -> bool:
-    """Whether every unique key of the table, its primary key aside, holds the company: two
-    inserts of one such key name one company. A primary key is a generated id."""
+    """Whether every unique key of the table, its primary key and its SECRET_KEYED column
+    aside, holds the company: two inserts of one such key name one company. A primary key is
+    a generated id."""
     from sqlalchemy import UniqueConstraint
 
     mapped = _app_tables().get(table)
@@ -950,7 +951,8 @@ def _company_keyed(table: str) -> bool:
     keys = [c.columns for c in mapped.constraints if isinstance(c, UniqueConstraint)]
     keys += [i.columns for i in mapped.indexes if i.unique]
     keys += [[c] for c in mapped.columns if c.unique]
-    return all(col in [c.name for c in k] for k in keys)
+    secret = [SECRET_KEYED.get(table)]
+    return all(col in names or names == secret for names in ([c.name for c in k] for k in keys))
 
 
 @functools.lru_cache(maxsize=None)
@@ -975,6 +977,12 @@ def _serial_keyed(table: str) -> str | None:
 # by the model's default or the writer): no two inserts carry one key, so an insert waits on
 # no row of its own table. tests/test_lock_rank_checker.py proves each table's writers do.
 FRESH_KEYED = frozenset({"notifications"})
+
+# Tables whose unique keys, those holding the company aside, are one column the writer draws
+# from ``secrets`` (stored as is or as its hash): no two inserts carry one value, so that key
+# never makes an insert of one company wait on another's. tests/test_lock_rank_checker.py
+# proves each table's writers do.
+SECRET_KEYED = {"doc_share_tokens": "token", "company_peer_grants": "token_hash"}
 
 
 def _company_param(table: str, where) -> tuple[int, ...] | None:

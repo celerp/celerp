@@ -10,10 +10,7 @@ import sys
 
 
 def _ungated() -> set[str]:
-    """The token insert stays "[insert|unknown]" under the lock: its only unique key besides the
-    id is the random token, which names no company, so the checker cannot tell whose it is."""
-    sites = sys.modules["lock_rank"].RECORDER.ungated_sites({"row:doc_share_tokens"}, "celerp_docs/")
-    return {s for s in sites if not s.endswith("[insert|unknown]")}
+    return sys.modules["lock_rank"].RECORDER.ungated_sites({"row:doc_share_tokens"}, "celerp_docs/")
 
 
 async def test_sharing_and_revoking_a_link_take_the_company_lock_first(client, auth):
