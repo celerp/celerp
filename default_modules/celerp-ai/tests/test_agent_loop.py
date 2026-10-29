@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import os
 import uuid
+from types import SimpleNamespace
 
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 
@@ -476,7 +477,7 @@ async def test_history_trimmed_oldest_first_to_fit_one_model_call(monkeypatch):
     fake = _install(monkeypatch, [tool_result(content="ok")])
     turn = "ก" * 20000  # Thai text is three bytes a character
     history = [{"role": "user", "content": f"old {n} {turn}"} for n in range(6)]
-    result = await _run(history=history)
+    result = await _run(history=[jobs.Earlier(SimpleNamespace(**h, tools_called=None)) for h in history])
     assert result.answer == "ok"
     sent = fake.calls[0]["messages"]
     kept = [m["content"] for m in sent if m["role"] == "user" and m["content"].startswith("old ")]

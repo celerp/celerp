@@ -942,16 +942,8 @@ class Journal:
         return {"step_id": step_id(self.question_id, turn=turn, generation=generation)}
 
     def stored_reads(self) -> dict[str, str | None]:
-        """The tool each kept read was made with, by call id, as the kept model step
-        that asked for it names it (None when none does)."""
-        names: dict[str, str] = {}
-        turn = 0
-        while (model := self._done.get(f"model:{turn}")) is not None:
-            for call in (model.get("message") or {}).get("tool_calls") or []:
-                names[call.get("id") or ""] = (call.get("function") or {}).get("name")
-            turn += 1
-        return {key.removeprefix("tool:"): names.get(key.removeprefix("tool:"))
-                for key in self._done if key.startswith("tool:")}
+        """The tool each kept read was made with, by call id (``kept_reads``)."""
+        return kept_reads(self._done)
 
     async def admit(self) -> None:
         """Raise when the question may not send its next model step."""
@@ -966,6 +958,34 @@ class Journal:
         """A step ended: ``done`` with what it returned, or without an answer."""
         if state == "done":
             self._done[key] = result
+
+
+def kept_reads(done: dict[str, dict]) -> dict[str, str | None]:
+    """The tool each read in a question's ended steps (``done``, by key) was made
+    with, by call id, as the kept model step that asked for it names it (None when
+    none does)."""
+    names: dict[str, str] = {}
+    turn = 0
+    while (model := done.get(f"model:{turn}")) is not None:
+        for call in (model.get("message") or {}).get("tool_calls") or []:
+            names[call.get("id") or ""] = (call.get("function") or {}).get("name")
+        turn += 1
+    return {key.removeprefix("tool:"): names.get(key.removeprefix("tool:"))
+            for key in done if key.startswith("tool:")}
+
+
+@dataclasses.dataclass(frozen=True)
+class Earlier:
+    """One earlier message of a question's thread. For an assistant answer, ``reads``
+    holds what its question's journal kept of each read it made, as (tool name, kept
+    step); None when no journal tells (``message`` is None for an answer the thread
+    no longer holds, whose question's journal is kept)."""
+    message: object | None
+    reads: list[tuple[str | None, dict]] | None = None
+
+    @property
+    def answer(self) -> bool:
+        return self.message is None or self.message.role == "assistant"
 
 
 class Stopped(Exception):
@@ -1117,23 +1137,54 @@ async def _question_context(session, job) -> dict | None:
     """Every argument of the question's agent run but its journal, from the job's rows
     and the app's current authorization: the one source for a run started by a request
     and for one resumed after a restart. None when the question's own message is gone."""
-    from celerp.ai.conversations import build_history_context, get_messages
+    from celerp.ai.conversations import get_messages
     from celerp.ai.memory import get_memory
     from celerp.main import app
     from celerp.models.ai import AIMessage
     from celerp.services.permissions import read_authority
     role, company_settings = await read_authority(session, job.company_id, job.user_id)
-    history: list[dict] = []
+    history: list[Earlier] = []
     if job.conversation_id is not None:
         asked = await session.get(AIMessage, job.question_id)
         if asked is None:
             return None
         prior = await get_messages(session, job.conversation_id)
-        history = build_history_context([m for m in prior if m.created_at < asked.created_at])
+        history = await _earlier(session, job, asked, [m for m in prior if m.created_at < asked.created_at])
     return dict(app=app, bearer=_bearer(job, role or ""), operation_id=job.id, query=job.query,
                 company_id=job.company_id, user_id=job.user_id, company_settings=company_settings,
                 role=role or "", memory=await get_memory(session, job.company_id),
                 file_ids=job.file_ids or None, history=history, read_only=job.conversation_id is None)
+
+
+async def _earlier(session, job, asked, messages: list) -> list[Earlier]:
+    """The thread's ``messages`` before ``asked`` as ``Earlier`` entries, in time order:
+    each assistant answer with the reads its question's journal kept, and each earlier
+    question of the thread whose answer the thread no longer holds, as an answer at the
+    time it was asked. A failed run's message holds only why it failed, so it read nothing."""
+    from celerp.ai.conversations import message_failure
+    from celerp.models.ai import AIBatchJob
+    rows = (await session.execute(select(AIBatchJob.id, AIBatchJob.results, AIBatchJob.created_at).where(
+        AIBatchJob.conversation_id == job.conversation_id, AIBatchJob.kind == "question",
+        AIBatchJob.id != job.id, AIBatchJob.created_at < asked.created_at))).all()
+    answered_by = {str((results or {}).get("message_id")): job_id for job_id, results, _ in rows}
+    steps = await job_steps(session, [job_id for job_id, _, _ in rows])
+
+    def reads(job_id) -> list[tuple[str | None, dict]]:
+        done = {step.key: step.result for step in steps[job_id] if answered(step)}
+        return [(name, done[f"tool:{call_id}"]) for call_id, name in kept_reads(done).items()]
+
+    def entry(msg) -> Earlier:
+        if msg.role != "assistant":
+            return Earlier(msg)
+        if message_failure(msg.tools_called) is not None:
+            return Earlier(msg, [])
+        job_id = answered_by.get(str(msg.id))
+        return Earlier(msg, None if job_id is None else reads(job_id))
+    held = {str(msg.id) for msg in messages}
+    gone = [(created_at, Earlier(None, reads(job_id))) for job_id, results, created_at in rows
+            if (results or {}).get("message_id") and str(results["message_id"]) not in held]
+    timed = [(msg.created_at, entry(msg)) for msg in messages] + gone
+    return [earlier for _, earlier in sorted(timed, key=lambda pair: pair[0])]
 
 
 async def _run_question(job_id: uuid.UUID, runner_id: str) -> None:

@@ -349,7 +349,7 @@ async def run_agent(
     role: str,
     memory: dict,
     file_ids: list[str] | None,
-    history: list[dict],
+    history: list[jobs.Earlier],
     operation_id: uuid.UUID,
     journal: jobs.Journal,
     read_only: bool = False,
@@ -405,7 +405,7 @@ async def _agent_loop(
     user_id: uuid.UUID,
     memory: dict,
     file_ids: list[str] | None,
-    history: list[dict],
+    history: list[jobs.Earlier],
     read_only: bool = False,
     tally: RunTally,
     journal: jobs.Journal,
@@ -417,8 +417,11 @@ async def _agent_loop(
             if not capability.get("requires_confirmation", False)
         }
     tools = agent_tool_specs(capabilities)
-    admit_reads = functools.partial(_admit_reads, journal, capabilities, company_id, user_id)
-    await admit_reads()
+    earlier = list(history or [])
+    shown = _shown_history(earlier, capabilities, role, company_settings)
+    admit_reads = functools.partial(_admit_reads, journal, capabilities, company_id, user_id, earlier)
+    narrowed = _narrowed(shown, await admit_reads())
+    shown = shown if narrowed is None else narrowed
 
     # Company memory rides in the system message, so the user message (which
     # names the question when it is asked again) depends on the question alone.
@@ -427,14 +430,25 @@ async def _agent_loop(
     user_text = f"<user_query>\n{query}\n</user_query>"
     user_content = _build_user_content(user_text, files)
 
-    # The oldest history goes first when the question would not fit in one model call.
-    history = list(history or [])
-    while True:
-        messages: list[dict] = [{"role": "system", "content": system}, *history,
-                                {"role": "user", "content": user_content}]
-        if not history or _request_text_bytes(messages, tools) <= REQUEST_TEXT_BUDGET:
-            break
-        history.pop(0)
+    def _fitted() -> list[dict]:
+        # The oldest history goes first when the question would not fit in one model call.
+        from celerp.ai.conversations import build_history_context
+        context = build_history_context(shown)
+        while context and _request_text_bytes(
+                [{"role": "system", "content": system}, *context, {"role": "user", "content": user_content}],
+                tools) > REQUEST_TEXT_BUDGET:
+            context.pop(0)
+        return context
+
+    context = _fitted()
+    messages: list[dict] = [{"role": "system", "content": system}, *context,
+                            {"role": "user", "content": user_content}]
+
+    async def _send_check() -> None:
+        # Just before a model step leaves: the kept reads, then the history it carries.
+        narrowed = _narrowed(shown, await admit_reads())
+        if narrowed is not None:
+            raise _HistoryWithdrawn(narrowed)
 
     reservation_id: str | None = None
     model_used = ""
@@ -448,8 +462,18 @@ async def _agent_loop(
                 pending_actions=[], error=_TOO_MUCH_DATA_TEXT, error_code="too_much_data",
             )
         try:
-            result = await _model_turn(messages, tools, turn=turn, journal=journal, admit_reads=admit_reads,
-                                       reservation_id=reservation_id, tally=tally)
+            while True:
+                try:
+                    result = await _model_turn(messages, tools, turn=turn, journal=journal,
+                                               admit_reads=_send_check, reservation_id=reservation_id,
+                                               tally=tally)
+                    break
+                except _HistoryWithdrawn as withdrawn:
+                    # Authority changed before the step left: it is sent without the
+                    # history no longer shown, never refused for it.
+                    shown = withdrawn.shown
+                    trimmed = _fitted()
+                    messages[1:1 + len(context)] = context = trimmed
         except HTTPException as exc:
             if turn and exc.status_code == 413:
                 # The question itself was accepted; the data read for it outgrew a model call.
@@ -567,7 +591,8 @@ async def _model_turn(
 ) -> dict:
     """Model turn ``turn``: what the journal holds for it, or one model call sent
     under the turn's identity inside an ``interactive`` gate slot and journaled. Each
-    send, a resend too, first admits the kept reads it carries (``admit_reads``).
+    send, a resend too, first admits the kept reads and the history it carries
+    (``admit_reads``; history no longer shown raises ``_HistoryWithdrawn`` unsent).
     Every charge it reports is added to ``tally`` before anything else happens,
     including the charge of a call whose answer was lost."""
     key = f"model:{turn}"
@@ -587,6 +612,8 @@ async def _model_turn(
             async with jobs.gate.slot("interactive", on_wait=journal.on_wait):
                 result = await jobs.send_step(_call, resend=journal.background,
                                               on_refusal=lambda exc: tally.charge(exc.credits, exc.operation_credits))
+        except _HistoryWithdrawn:
+            raise
         except RelayError as exc:
             await journal.ended(key, _STEP_STATES.get(exc.code, "failed"))
             raise
@@ -648,21 +675,64 @@ def _supports(capability: dict, kept: dict | None, role: str, settings: dict) ->
             and contract.get("visibility") == (field_visibility(settings) if capability["field_visibility"] else None))
 
 
+def _read_supported(capabilities: dict, name: str | None, kept: dict | None, role: str, settings: dict) -> bool:
+    capability = capabilities.get(name) if name else None
+    return capability is not None and _supports(capability, kept, role, settings)
+
+
+def _shown_history(earlier: list[jobs.Earlier], capabilities: dict, role: str, settings: dict) -> list:
+    """The earlier messages of a question's thread the model may be sent under this
+    authority: every question asked, and each answer before the first one whose kept
+    reads it no longer supports (``_supports``) or whose reads no journal tells. That
+    answer and every later one are left out, as a later answer may repeat what it
+    showed. The thread itself is not changed."""
+    shown, cut = [], False
+    for entry in earlier:
+        if entry.answer:
+            cut = cut or entry.reads is None or not all(
+                _read_supported(capabilities, name, kept, role, settings) for name, kept in entry.reads)
+            if cut:
+                continue
+        shown.append(entry.message)
+    return shown
+
+
+def _narrowed(shown: list, admitted: list | None) -> list | None:
+    """``shown`` without what ``admitted`` (``_shown_history`` under authority read
+    now) leaves out; None when nothing is left out."""
+    if admitted is None:
+        return None
+    ids = {id(message) for message in admitted}
+    kept = [message for message in shown if id(message) in ids]
+    return None if len(kept) == len(shown) else kept
+
+
+class _HistoryWithdrawn(Exception):
+    """A model step's history is no longer shown under its asker's authority read
+    just before it left; it was not sent. ``shown`` is the history it may carry."""
+
+    def __init__(self, shown: list) -> None:
+        super().__init__("history withdrawn")
+        self.shown = shown
+
+
 async def _admit_reads(journal: jobs.Journal, capabilities: dict, company_id: uuid.UUID,
-                       user_id: uuid.UUID) -> None:
+                       user_id: uuid.UUID, earlier: list[jobs.Earlier]) -> list | None:
     """Before a question run again replays the reads it kept, and again just before each
     model step leaves (after any wait for a slot): AI access, and each kept read still
     supported by its asker's authority read now (``_supports``). Otherwise the question
-    ends refused before anything is sent."""
+    ends refused before anything is sent. Returns the earlier messages its thread may
+    show under that authority (``_shown_history``); None when no kept read, its own or
+    an earlier answer's, asked for authority to be read."""
     reads = journal.stored_reads()
-    if not reads:
-        return
+    if not reads and not any(entry.reads for entry in earlier):
+        return None
     await journal.admit()
     role, settings = await _authority(company_id, user_id)
     for call_id, name in reads.items():
-        capability = capabilities.get(name) if name else None
-        if capability is None or not _supports(capability, journal.stored(f"tool:{call_id}"), role, settings):
+        if not _read_supported(capabilities, name, journal.stored(f"tool:{call_id}"), role, settings):
             raise _CallerRefused("read_refused")
+    return _shown_history(earlier, capabilities, role, settings)
 
 
 async def _tool_step(journal: jobs.Journal, call_id: str, run, contract) -> dict:
