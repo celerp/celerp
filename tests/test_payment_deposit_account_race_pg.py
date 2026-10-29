@@ -95,6 +95,14 @@ async def _kept_unmatched(engine, cloud, a, eid) -> None:
     assert await _unmatched(engine) == [("pi_paid", 50000, "USD", str(a), eid)]
 
 
+async def _archive(conn, company, code: str) -> None:
+    """Archive the chart account as the chart's own edit does: the company lock, which
+    holds the chart, then the change."""
+    await conn.execute(text("SELECT id FROM companies WHERE id = :c FOR NO KEY UPDATE"), {"c": company})
+    await conn.execute(text(
+        "UPDATE accounts SET is_active = false WHERE company_id = :c AND code = :k"), {"c": company, "k": code})
+
+
 async def test_archiving_the_deposit_account_while_its_bank_is_active_is_refused_and_the_payment_posts_there(
         monkeypatch, real_engine, real_client):
     """The owner archives the chart account behind the bank account online payments go
@@ -154,8 +162,7 @@ async def test_a_chart_account_archived_under_an_active_bank_while_the_payment_i
     await asyncio.wait_for(reached.wait(), 10)
     try:
         async with real_engine.begin() as archiving:
-            await archiving.execute(text(
-                "UPDATE accounts SET is_active = false WHERE company_id = :c AND code = :k"), {"c": a, "k": code})
+            await _archive(archiving, a, code)
     finally:
         release.set()
     await paying
@@ -174,11 +181,7 @@ async def test_an_archival_still_committing_when_the_payment_reaches_the_account
     await asyncio.wait_for(reached.wait(), 10)
     async with real_engine.connect() as archiving:
         try:
-            # As the chart's own edit does: the account's row lock, then the change.
-            await archiving.execute(text(
-                "SELECT id FROM accounts WHERE company_id = :c AND code = :k FOR UPDATE"), {"c": a, "k": code})
-            await archiving.execute(text(
-                "UPDATE accounts SET is_active = false WHERE company_id = :c AND code = :k"), {"c": a, "k": code})
+            await _archive(archiving, a, code)
             release.set()
             for _ in range(500):
                 if await _waiting_on_a_lock(real_engine):
@@ -208,8 +211,7 @@ async def test_an_archival_that_reaches_the_account_while_the_payment_posts_wait
     async def archive() -> None:
         async with real_engine.begin() as archiving:
             await archiving.execute(text("SET LOCAL lock_timeout = '20s'"))
-            await archiving.execute(text(
-                "UPDATE accounts SET is_active = false WHERE company_id = :c AND code = :k"), {"c": a, "k": code})
+            await _archive(archiving, a, code)
     archival = asyncio.create_task(archive())
     try:
         for _ in range(500):

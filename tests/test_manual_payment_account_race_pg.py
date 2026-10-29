@@ -15,7 +15,7 @@ from sqlalchemy import text
 from company_backup_support import token
 from migration_support import auth, code_config, maker, real_client, real_engine  # noqa: F401
 from test_company_reset_payments import _harbor, _invoice, _waiting_on_a_lock
-from test_payment_deposit_account_race_pg import _account, _posted_to
+from test_payment_deposit_account_race_pg import _account, _archive, _posted_to
 
 pytestmark = pytest.mark.asyncio
 
@@ -93,8 +93,7 @@ async def test_an_archival_that_reaches_the_account_while_the_payment_posts_wait
     async def archive() -> None:
         async with real_engine.begin() as archiving:
             await archiving.execute(text("SET LOCAL lock_timeout = '20s'"))
-            await archiving.execute(text(
-                "UPDATE accounts SET is_active = false WHERE company_id = :c AND code = :k"), {"c": a, "k": CODE})
+            await _archive(archiving, a, CODE)
     archival = asyncio.create_task(archive())
     try:
         for _ in range(500):
