@@ -852,8 +852,15 @@ def _locks(statement: str, parameters) -> list[tuple[str, str, str, str]]:
     if out or not _LOCKING.search(statement):
         return out
     found, names = _row_locks(statement)
-    return [(cls, mode, _row_key(numbers, names, parameters), _company(company, names, parameters))
-            for cls, mode, numbers, company in found if cls.split(":", 1)[1] in _app_tables()]
+    out = []
+    for cls, mode, numbers, company in found:
+        if cls.split(":", 1)[1] not in _app_tables():
+            continue
+        key = _row_key(numbers, names, parameters)
+        # A multi-row insert is one insert per row: each company it names is inserted (R1, R2).
+        companies = [company] if mode != "insert" else [(n,) for n in company or ()] or [company]
+        out += [(cls, mode, key, c) for c in dict.fromkeys(_company(n, names, parameters) for n in companies)]
+    return out
 
 
 def classify(statement: str, parameters) -> list[tuple[str, str]]:

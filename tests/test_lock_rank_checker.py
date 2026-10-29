@@ -268,6 +268,16 @@ def test_the_chart_lock_of_a_company_the_transaction_inserted_orders_nothing(rec
     assert (("order", "row:user_auth_state") in _kinds(recorder)) is violates
 
 
+def test_every_company_of_one_multi_row_insert_is_the_transactions_own(recorder):
+    # Two companies flushed together are one INSERT naming both: each is as unseen as one alone.
+    recorder.statement(1, "INSERT INTO companies (id, name, slug) VALUES ($1::UUID, $2, $3), ($4::UUID, $5, $6)",
+                       ("c1", "A", "a", "c2", "B", "b"), 0.0)
+    for company in ("c1", "c2"):
+        recorder.statement(1, _ACCOUNT, ("a-" + company, company, "1000"), 0.0)
+        recorder.statement(1, _LOCK_COMPANY, (company,), 0.0)
+    assert not recorder.violations
+
+
 def test_rows_of_a_committed_company_still_order(recorder):
     recorder.statement(1, _ACCOUNT, ("a1", "c1", "1000"), 0.0)
     recorder.statement(1, _LOCK_COMPANY, ("c1",), 0.0)
