@@ -86,10 +86,16 @@ class FakeComplete:
         return result
 
 
+async def _owner_authority(company_id, user_id):
+    return "owner", {}
+
+
 def _install(monkeypatch, results, execute=None):
-    """Wire the fake complete/compile/execute into the service module."""
+    """Wire the fake complete/compile/execute into the service module, and the asker's
+    authority (role and company settings) that read replay contracts are made under."""
     fake = FakeComplete(results)
     monkeypatch.setattr(service, "complete", fake)
+    monkeypatch.setattr(service, "_authority", _owner_authority)
     monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None: CAPS)
     if execute is not None:
         monkeypatch.setattr(service, "execute_agent_capability", execute)

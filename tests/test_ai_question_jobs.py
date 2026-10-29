@@ -27,6 +27,7 @@ AUTH = lambda token: {"Authorization": f"Bearer {token}"}  # noqa: E731
 def _cap(name: str, method: str, *, confirm: bool) -> dict:
     return {"name": name, "method": method, "path": f"/{name}", "path_names": (), "query_names": (),
             "expects_body": method != "GET", "inject_idempotency": False, "requires_confirmation": confirm,
+            "result_permissions": (), "field_visibility": False,
             "tool": {"type": "function", "function": {"name": name, "description": name, "parameters": {}}}}
 
 

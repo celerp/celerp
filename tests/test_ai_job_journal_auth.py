@@ -8,10 +8,14 @@ a module turned off) is never kept as the read's result. Signed out, the questio
 and asking it again, signed in, reads again. Refused the read, the question ends
 refused, and only a new question follows: the model is never asked to go on without it.
 
-A read the journal kept is replayed, when the question is asked again or resumed after
-a restart, only while its asker may still make it (AI access and every permission the
-read needs). Otherwise the question ends refused before anything is sent: the kept
-result is not shown to the model again and no step is sent under a new identity.
+A read the journal kept carries a replay contract beside its result, never sent to the
+model: its asker's role, whether they held each permission its result depends on, and
+the item field visibility config when that shapes the result. It is replayed, when the
+question is asked again or resumed after a restart, and again just before each model
+step leaves (after any wait for a slot), only while authority read fresh still supports
+that contract. Otherwise the question ends refused before anything is sent: the kept
+result is not shown to the model again and no step is sent under a new identity. The
+tests assert what the AI service received, not only how the question ended.
 
 Which refusals are never kept is one rule (``jobs.caller_refusal``) over the status
 codes the app's own authorization raises, read here from the app's auth modules.
@@ -60,9 +64,9 @@ def test_the_refusals_never_journaled_are_every_refusal_the_apps_authorization_r
         assert jobs.caller_refusal({"ok": request_answer == 200, "status": request_answer, "data": {}}) is None
 
 
-async def _sign_in(client, session) -> str:
+async def _sign_in(client, session, email="admin@perm.example", password="adminpw12") -> str:
     await clear_tracker(session)
-    r = await client.post("/auth/login", json={"email": "admin@perm.example", "password": "adminpw12"})
+    r = await client.post("/auth/login", json={"email": email, "password": password})
     assert r.status_code == 200, r.text
     return r.json()["access_token"]
 
@@ -321,23 +325,29 @@ def _name_shown_to_admins_only(settings):
                                         for f in settings.get("item_schema") or _BASE_FIELDS]}
 
 
-async def _item_read_kept_then_failed(client, owner_token, asker_token, cloud, monkeypatch) -> tuple:
-    """A question of ``asker_token`` reads an item through the real item capability and
-    keeps the read; the turn after it finds the AI service unreachable, so it fails.
-    Returns the conversation, the question id, every read result and the relay switch."""
+async def _item_read_kept_then_failed(client, owner_token, asker_token, cloud, monkeypatch, *,
+                                      status="available", also=None) -> tuple:
+    """A question of ``asker_token`` reads an item (of ``status``) through the real item
+    capability, and through ``also`` (another capability) when given, and keeps the
+    reads; the turn after them finds the AI service unreachable, so it fails. Returns
+    the conversation, the question id, every read result and the relay switch."""
     from celerp.main import app
     from test_helpers import real_agent_app
     r = await client.post("/items", headers=AUTH(owner_token), json={
-        "status": "available", "sku": "COST-1", "sell_by": "piece", "name": "Costly", "cost_price": COST,
-        "quantity": 1})
+        "status": status, "sku": f"COST-{uuid.uuid4().hex[:6]}", "sell_by": "piece", "name": "Costly",
+        "cost_price": COST, "quantity": 1})
     assert r.status_code == 200, r.text
     item_id = r.json()["id"]
     real_agent_app()
-    monkeypatch.setattr(service, "compile_agent_capabilities", tools.compile_agent_capabilities)
+    extra = {also["name"]: also} if also else {}
+    monkeypatch.setattr(service, "compile_agent_capabilities",
+                        lambda app_, settings, role=None: {**tools.compile_agent_capabilities(app_, settings, role),
+                                                           **extra})
     caps = tools.compile_agent_capabilities(app, {}, None)
     name = next(n for n, c in caps.items() if c["method"] == "GET" and c["path"].endswith("/items/{entity_id}"))
     assert caps[name]["required_permissions"] == ("view_inventory",)
-    assert "view_inventory_costs" in caps[name]["result_permissions"] and caps[name]["field_visibility"]
+    assert {"view_inventory_costs", "edit_inventory"} <= set(caps[name]["result_permissions"])
+    assert caps[name]["field_visibility"]
     real = service.execute_agent_capability
     results: list[dict] = []
 
@@ -348,18 +358,46 @@ async def _item_read_kept_then_failed(client, owner_token, asker_token, cloud, m
     conv = await _conversation(client, asker_token)
     qid = uuid.uuid4()
     down = {"on": True}
+    calls = [(name, {"path": {"entity_id": item_id}}, "call-1")] + ([(also["name"], {}, "call-2")] if also else [])
 
     def _script(identity, body):
-        if identity == str(qid):
-            return tool_turn((name, {"path": {"entity_id": item_id}}, "call-1"))
+        if not body.get("step_id"):                 # a question's first turn
+            return tool_turn(*calls)
         if down["on"]:
             cloud.state.pop(identity, None)
             return httpx.ConnectError("relay down")
         return answer("Done.")
     cloud.script = _script
     first = await _ask_again(client, asker_token, conv, qid)
-    assert results[0]["status"] == 200 and first["state"] == "failed", first
+    assert [read["status"] for read in results] == [200] * len(calls) and first["state"] == "failed", first
     return conv, qid, results, down
+
+
+def _sent_since(cloud, sends: int) -> str:
+    """Every model request sent after the first ``sends``, as the AI service received them."""
+    return json.dumps(cloud.bodies[sends:])
+
+
+def _replayed(cloud, call_id: str):
+    """What the last model step sent carried as the result of read ``call_id``."""
+    sent = [b for b in cloud.bodies if b.get("step_id")][-1]
+    return json.loads(next(m for m in sent["messages"] if m.get("tool_call_id") == call_id)["content"])
+
+
+async def _refused_unsent(client, token, conv, qid, cloud, results, reads: int = 1, *, shown: str) -> None:
+    """Asked again, the question ends refused: nothing read again and no model request
+    sent, so what the kept read showed (``shown``) never reaches the model again."""
+    sends = len(cloud.bodies)
+    state = await _ask_again(client, token, conv, qid)
+    assert (state["state"], state["message"]["error_code"], state["message"]["new_question"]) == (
+        "failed", "read_refused", True)
+    assert len(results) == reads and len(cloud.bodies) == sends
+    assert shown not in _sent_since(cloud, sends)
+
+
+async def _user_id(client, owner_token, email: str) -> str:
+    users = (await client.get("/companies/me/users", headers=AUTH(owner_token))).json()["items"]
+    return next(u["id"] for u in users if u["email"] == email)
 
 
 async def test_a_kept_read_that_showed_costs_ends_the_question_refused_once_costs_are_taken_away(
@@ -368,12 +406,8 @@ async def test_a_kept_read_that_showed_costs_ends_the_question_refused_once_cost
     conv, qid, results, down = await _item_read_kept_then_failed(client, token, token, cloud, monkeypatch)
     assert str(COST) in json.dumps(results[0])
     down["on"] = False
-    sends = len(cloud.bodies)
     await _settings(session, company_id, _costs(False))
-    state = await _ask_again(client, token, conv, qid)
-    assert (state["state"], state["message"]["error_code"], state["message"]["new_question"]) == (
-        "failed", "read_refused", True)
-    assert len(results) == 1 and len(cloud.bodies) == sends   # nothing read, nothing sent
+    await _refused_unsent(client, token, conv, qid, cloud, results, shown=str(COST))
 
 
 async def test_a_kept_read_made_without_costs_is_replayed_while_its_asker_still_may_not_see_them(
@@ -388,6 +422,7 @@ async def test_a_kept_read_made_without_costs_is_replayed_while_its_asker_still_
     state = await _ask_again(client, token, conv, qid)
     assert (state["state"], state["message"]["content"]) == ("answered", "Done.")
     assert len(results) == 1                                  # replayed, not read again
+    assert _replayed(cloud, "call-1") == results[0]           # the saved result, unchanged
 
 
 async def test_a_kept_read_that_showed_a_field_ends_the_question_refused_once_the_field_is_hidden(
@@ -398,10 +433,130 @@ async def test_a_kept_read_that_showed_a_field_ends_the_question_refused_once_th
     conv, qid, results, down = await _item_read_kept_then_failed(client, token, manager, cloud, monkeypatch)
     assert "Costly" in json.dumps(results[0])
     down["on"] = False
-    sends = len(cloud.bodies)
     await _settings(session, company_id, _name_shown_to_admins_only)
     assert "Costly" not in (await client.get(f"/items/{results[0]['data']['id']}", headers=AUTH(manager))).text
-    state = await _ask_again(client, manager, conv, qid)
-    assert (state["state"], state["message"]["error_code"], state["message"]["new_question"]) == (
-        "failed", "read_refused", True)
+    await _refused_unsent(client, manager, conv, qid, cloud, results, shown="Costly")
+
+
+async def test_a_kept_read_ends_the_question_refused_once_its_asker_is_moved_to_a_lower_role(
+        client, owner, cloud, session, monkeypatch):
+    """Costs are granted to operators too, so the operator role holds every permission
+    the read relied on: the lower role alone ends the question refused."""
+    from test_helpers import invite_user
+    token, company_id, _ = owner
+
+    def _costs_from_operator(settings):
+        grants = {**(settings.get("role_grants") or {}),
+                  "view_inventory_costs": ["operator", "manager", "admin", "owner"]}
+        return {**settings, "role_grants": grants}
+    await _settings(session, company_id, _costs_from_operator)
+    manager = await invite_user(client, session, AUTH(token), "downgraded@journal.example", "manager")
+    conv, qid, results, down = await _item_read_kept_then_failed(client, token, manager, cloud, monkeypatch)
+    assert str(COST) in json.dumps(results[0])
+    down["on"] = False
+    user_id = await _user_id(client, token, "downgraded@journal.example")
+    r = await client.patch(f"/companies/me/users/{user_id}", headers=AUTH(token), json={"role": "operator"})
+    assert r.status_code == 200, r.text
+    operator = await _sign_in(client, session, "downgraded@journal.example", "userpw123")  # a role change signs out
+    assert str(COST) in (await client.get(f"/items/{results[0]['data']['id']}", headers=AUTH(operator))).text
+    await _refused_unsent(client, operator, conv, qid, cloud, results, shown=str(COST))
+
+
+async def test_a_kept_read_of_a_draft_cost_ends_the_question_refused_once_its_asker_may_not_edit_items(
+        client, owner, cloud, session, monkeypatch):
+    """An operator, who may not see costs, sees a draft item's cost because they may
+    edit items: the read relied on edit_inventory, so it is not replayed without it."""
+    from test_helpers import invite_user
+    token, company_id, _ = owner
+    operator = await invite_user(client, session, AUTH(token), "drafter@journal.example", "operator")
+    conv, qid, results, down = await _item_read_kept_then_failed(client, token, operator, cloud, monkeypatch,
+                                                                 status="draft")
+    assert str(COST) in json.dumps(results[0])
+    down["on"] = False
+
+    def _no_editing(settings):
+        return {**settings, "role_grants": {**(settings.get("role_grants") or {}), "edit_inventory": []}}
+    await _settings(session, company_id, _no_editing)
+    assert str(COST) not in (await client.get(f"/items/{results[0]['data']['id']}", headers=AUTH(operator))).text
+    await _refused_unsent(client, operator, conv, qid, cloud, results, shown=str(COST))
+
+
+async def test_one_of_several_kept_reads_no_longer_supported_ends_the_question_refused_unsent(
+        client, owner, cloud, session, monkeypatch):
+    from celerp.main import app
+    token, company_id, _ = owner
+    conv, qid, results, down = await _item_read_kept_then_failed(client, token, token, cloud, monkeypatch,
+                                                                 also=_gated_read(app))
+    down["on"] = False
+    await _grant(session, company_id, False)        # the second read only; the item read still holds
+    await _refused_unsent(client, token, conv, qid, cloud, results, reads=2, shown=str(COST))
+
+
+async def test_several_kept_reads_all_still_supported_are_replayed_unchanged(
+        client, owner, cloud, session, monkeypatch):
+    from celerp.main import app
+    token, *_ = owner
+    conv, qid, results, down = await _item_read_kept_then_failed(client, token, token, cloud, monkeypatch,
+                                                                 also=_gated_read(app))
+    down["on"] = False
+    state = await _ask_again(client, token, conv, qid)
+    assert (state["state"], state["message"]["content"]) == ("answered", "Done.")
+    assert len(results) == 2
+    assert [_replayed(cloud, "call-1"), _replayed(cloud, "call-2")] == results
+
+
+async def test_costs_taken_away_while_the_question_waits_for_a_slot_end_it_refused_unsent(
+        client, owner, cloud, session, monkeypatch):
+    """The kept read is admitted when the question starts again, then the question
+    waits for a model slot; costs are taken away meanwhile. It is checked again with
+    fresh authority just before the step leaves, so nothing is sent."""
+    token, company_id, _ = owner
+    conv, qid, results, down = await _item_read_kept_then_failed(client, token, token, cloud, monkeypatch)
+    down["on"] = False
+    monkeypatch.setattr(jobs, "gate", jobs.ModelGate(1))
+    sends = len(cloud.bodies)
+    async with jobs.gate.slot("interactive"):
+        r = await client.post(f"/ai/conversations/{conv}/query", headers=AUTH(token),
+                              json={"query": QUERY, "operation_id": str(qid)})
+        assert r.status_code == 202, r.text
+        await until(lambda: jobs.gate._waiting["interactive"] == 1)
+        await _settings(session, company_id, _costs(False))
+    state = await _settled(client, token, conv, qid)
+    assert (state["state"], state["message"]["error_code"]) == ("failed", "read_refused")
     assert len(results) == 1 and len(cloud.bodies) == sends
+    assert str(COST) not in _sent_since(cloud, sends)
+
+
+async def test_a_kept_read_without_a_replay_contract_ends_the_question_refused(
+        client, owner, cloud, session, monkeypatch):
+    """A read kept in an earlier format, its result alone, is never replayed."""
+    from sqlalchemy import select
+    from celerp.models.ai import AIJobStep
+    token, *_ = owner
+    conv, qid, results, down = await _item_read_kept_then_failed(client, token, token, cloud, monkeypatch)
+    down["on"] = False
+    step = (await session.execute(select(AIJobStep).where(AIJobStep.key == "tool:call-1"))).scalar_one()
+    assert set(step.result) == {"result", "replay"}
+    step.result = {"result": step.result["result"]}
+    await session.commit()
+    await _refused_unsent(client, token, conv, qid, cloud, results, shown=str(COST))
+
+
+async def test_authority_that_changed_while_a_read_ran_ends_the_question_refused_before_its_next_step(
+        client, owner, cloud, session, monkeypatch):
+    """Costs are granted while the read runs: what it showed was not decided under one
+    authority, so its contract is empty and the step that would carry it is never sent."""
+    token, company_id, _ = owner
+    await _settings(session, company_id, _costs(False))
+    conv, qid, results, down = await _item_read_kept_then_failed(client, token, token, cloud, monkeypatch)
+    down["on"] = False
+    read = service.execute_agent_capability
+
+    async def _granted_meanwhile(*args, **kwargs):
+        result = await read(*args, **kwargs)
+        await _settings(session, company_id, _costs(True))
+        return result
+    monkeypatch.setattr(service, "execute_agent_capability", _granted_meanwhile)
+    state = await _asked_new(client, token, conv)
+    assert (state["state"], state["message"]["error_code"]) == ("failed", "read_refused")
+    assert len(results) == 2 and [b.get("step_id") for b in cloud.bodies[-1:]] == [None]

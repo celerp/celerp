@@ -43,12 +43,14 @@ _CAPS = {
     "help_search": {
         "name": "help_search", "method": "GET", "path": "/help/search",
         "path_names": (), "query_names": ("q", "module"), "expects_body": False,
-        "inject_idempotency": False, "tool": _tool("help_search"),
+        "inject_idempotency": False, "result_permissions": (), "field_visibility": False,
+        "tool": _tool("help_search"),
     },
     "help_read": {
         "name": "help_read", "method": "GET", "path": "/help/page/{page_id}",
         "path_names": ("page_id",), "query_names": (), "expects_body": False,
-        "inject_idempotency": False, "tool": _tool("help_read"),
+        "inject_idempotency": False, "result_permissions": (), "field_visibility": False,
+        "tool": _tool("help_read"),
     },
 }
 
