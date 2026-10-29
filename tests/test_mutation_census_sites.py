@@ -91,11 +91,18 @@ def test_a_driven_add_site_of_the_bundled_source_counts_on_its_own_line(tmp_path
 
 # A covered route gains a branch whose write no test drives: the census fails it as a
 # write site no request write passed through, whatever form the write is spelled in.
+HEAD = ("from sqlalchemy import Select, delete, insert, select, text, update\n"
+        "from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession\n"
+        "from sqlalchemy.orm import object_session\n"
+        "from starlette.requests import Request\n\n\n"
+        "def build() -> Select:\n    return delete(Item)\n\n\n")
 COVERED = '''\
 @router.post("/new")
-async def create(session: AsyncSession, row, flag):
+async def create(session: AsyncSession, engine: AsyncEngine, request: Request, row, flag, name):
     session.add(row)
 '''
+FIRST = HEAD.count("\n") + 1  # the route's decorator
+ADDED = FIRST + 2  # the covered add's line
 BRANCHES = {
     "chained update": "        await session.execute(update(Item).where(Item.id == row.id).values(name='x'))\n",
     "chained delete": "        await session.execute(delete(Item).where(Item.id == row.id))\n",
@@ -103,13 +110,32 @@ BRANCHES = {
     "text sql": "        await session.execute(text('UPDATE items SET name = 1'))\n",
     "renamed session": "        db = session\n        db.add(row)\n",
     "unknown receiver": "        db.add(row)\n",
+    "scalar update returning": "        await session.scalar(update(Item).values(name='x').returning(Item.id))\n",
+    "scalars insert returning": "        await session.scalars(insert(Item).values(name='x').returning(Item.id))\n",
+    "stream delete": "        await session.stream(delete(Item).returning(Item.id))\n",
+    "core data-changing cte": "        moved = update(Item).values(name='x').returning(Item.id).cte('m')\n"
+                              "        await session.execute(select(moved.c.id))\n",
+    "object_session add": "        object_session(row).add(row)\n",
+    "outside receiver execute": "        await request.state.db.execute(update(Item).values(name='x'))\n",
+    "helper annotated Select returns delete": "        await session.execute(build())\n",
+    "write bound under a Select annotation": "        stmt: Select = select(Item)\n        stmt = delete(Item)\n"
+                                             "        await session.execute(stmt)\n",
+    "multi-statement text": "        await session.execute(text('SELECT 1; DELETE FROM items'))\n",
+    "engine connection execute": "        async with engine.begin() as conn:\n"
+                                 "            await conn.execute(text('DELETE FROM items'))\n",
+}
+# Spellings the census cannot place on a line a write runs from: the guard lists them.
+UNREADABLE = {
+    "bound method alias": "        put = session.add\n        put(row)\n",
+    "getattr of a write method": "        getattr(session, 'add')(row)\n",
+    "getattr of a name": "        getattr(session, name)(row)\n",
+    "session method off the allowlist": "        session.bulk_save_objects([row])\n",
+    "raw dbapi connection": "        engine.sync_engine.raw_connection().cursor().execute(name)\n",
 }
 
 
-@pytest.mark.parametrize("branch", list(BRANCHES))
-def test_an_unexercised_write_branch_of_a_covered_route_fails_the_census(tmp_path, monkeypatch, branch):
-    source = "from sqlalchemy import delete, text, update\nfrom sqlalchemy.ext.asyncio import AsyncSession\n\n" \
-        + COVERED + "    if flag:\n" + BRANCHES[branch] + "    await session.commit()\n"
+def _route(tmp_path, monkeypatch, branch: str):
+    source = HEAD + COVERED + "    if flag:\n" + branch + "    await session.commit()\n"
     (tmp_path / "celerp" / "routers").mkdir(parents=True)
     (tmp_path / "celerp" / "routers" / "x.py").write_text(source)
     monkeypatch.setattr(mutation_census, "ROOT", str(tmp_path))
@@ -117,24 +143,37 @@ def test_an_unexercised_write_branch_of_a_covered_route_fails_the_census(tmp_pat
     folder = tmp_path / "census"
     folder.mkdir()
     (folder / "census-1-gw0.routes.json").write_text(json.dumps(
-        [{"app": "FastAPI", "methods": ["POST"], "path": "/new", "source": "celerp/routers/x.py:4"}]))
-    # a test requested POST /new and its add on line 6 was written: the covered path
+        [{"app": "FastAPI", "methods": ["POST"], "path": "/new", "source": f"celerp/routers/x.py:{FIRST}"}]))
+    # a test requested POST /new and its covered add was written: the covered path
     (folder / "census-1-gw0.json").write_text(json.dumps({
         "routes": {"api POST /new": {"requests": 1, "protected": 1}},
-        "sites": {"celerp/routers/x.py:6 create@4": 1}, "findings": []}))
+        "sites": {f"celerp/routers/x.py:{ADDED} create@{FIRST}": 1}, "findings": []}))
     (tmp_path / "b.json").write_text("[]")
     (tmp_path / "g.json").write_text("[]")
     status = mutation_census.main([str(folder), "--out", str(tmp_path / "c.md"), "--enforce",
                                    "--baseline", str(tmp_path / "b.json"), "--gaps", str(tmp_path / "g.json")])
-    text = (tmp_path / "c.md").read_text()
+    return status, (tmp_path / "c.md").read_text()
+
+
+@pytest.mark.parametrize("branch", list(BRANCHES))
+def test_an_unexercised_write_branch_of_a_covered_route_fails_the_census(tmp_path, monkeypatch, branch):
+    status, text = _route(tmp_path, monkeypatch, BRANCHES[branch])
     assert status == 1, text.split("## Mutation sites")[1][:400]
     assert "Write sites in the bundled source: 2;" in text
 
 
+@pytest.mark.parametrize("branch", list(UNREADABLE))
+def test_a_write_spelling_the_census_cannot_read_fails_the_guard(tmp_path, monkeypatch, branch):
+    _route(tmp_path, monkeypatch, UNREADABLE[branch])
+    assert mutation_census.static_calls.Graph().unclassified(), branch
+
+
 def test_every_session_call_of_the_bundled_source_is_classified():
-    """Each execute, add, add_all, delete and merge call under celerp/, default_modules/ and
-    ui/ is a write or matches a named read rule. A call the classifier cannot read fails
-    here, so a new spelling of a write is never counted as no write."""
+    """Each call under celerp/, default_modules/ and ui/ that runs a statement or writes a
+    row is a write or matches a named read rule, and each method or attribute of a session,
+    engine or factory it uses is a write or on a named read list. A call or reference the
+    classifier cannot read fails here, so a new spelling of a write is never counted as no
+    write."""
     found = mutation_census.static_calls.Graph().unclassified()
     assert not found, f"{len(found)} calls neither a write nor a named read:\n" + "\n".join(found[:80])
 

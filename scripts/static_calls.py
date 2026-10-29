@@ -14,9 +14,12 @@ resolve: the graph reports what the source names, never a guess.
 
 A write is read from what a call executes and what its receiver holds, not from how the
 call is spelled: a statement is followed through method chains and the names it is bound
-to, a receiver through annotations and the values its names are bound to. Every execute,
-add, add_all, delete and merge call is a write or matches a named read rule; one the graph
-cannot read counts as an unclassified write, and `unclassified` lists it.
+to, a receiver through annotations and the values its names are bound to. The rule denies
+by default: a call given a write statement is a write whatever its name or receiver; every
+method called or attribute referenced on a session, connection, engine or session factory
+is a write, or is named with its reason in the read lists below; a session call the graph
+cannot read counts as an unclassified write, and `unclassified` lists it, with every
+reference to a session's method it cannot place on a line.
 
 Standard library only, so the census job reads it without the app installed."""
 
@@ -38,16 +41,54 @@ MUTATING = frozenset({"post", "put", "patch", "delete"})
 _CLIENTS = frozenset({"c", "client", "_c", "http"})  # names the UI gives an HTTP client into the API
 _FUNCTIONS = (ast.FunctionDef, ast.AsyncFunctionDef)
 
-# The calls a database session writes through, each classified as a write or by a named rule.
-EXECUTES = frozenset({"execute", "exec_driver_sql"})
-SESSION_CALLS = EXECUTES | {"add", "add_all", "delete", "merge"}
+# The calls a session or connection runs a statement through: what they are given says what they do.
+EXECUTES = frozenset({"execute", "exec_driver_sql", "scalar", "scalars", "stream", "stream_scalars"})
+# The calls a session writes a mapped row through.
+ROW_WRITES = frozenset({"add", "add_all", "delete", "merge"})
+SESSION_CALLS = EXECUTES | ROW_WRITES
+# Every other method or attribute of a session or connection, engine or session factory the
+# source may use, with why it writes no data. Any name not listed fails the guard.
+DATABASE_READS = {
+    "database session": {
+        "get": "loads one row by its key",
+        "refresh": "reloads a row's attributes from the database",
+        "flush": "sends the rows already added, deleted or merged, whose own calls are the write sites",
+        "commit": "ends the transaction; it is counted as a commit, not a write site",
+        "rollback": "discards the transaction",
+        "begin": "opens a transaction", "begin_nested": "opens a savepoint",
+        "in_transaction": "reports transaction state", "in_nested_transaction": "reports transaction state",
+        "close": "returns the connection to its pool",
+        "expunge": "detaches a row from the session", "expunge_all": "detaches every row from the session",
+        "expire": "marks a row's attributes stale", "expire_all": "marks every row's attributes stale",
+        "connection": "the session's connection, itself checked as a session",
+        "get_bind": "the engine the session runs on, itself checked as an engine",
+        "bind": "the engine the session runs on, itself checked as an engine",
+        "sync_session": "the session's synchronous form, itself checked as a session",
+        "execution_options": "sets options for the statements it runs later",
+        "info": "a dictionary the application keeps on the session",
+        "get_transaction": "the open transaction, to tell it apart", "get_nested_transaction": "the open savepoint",
+        "dirty": "the rows changed since the last flush", "dialect": "the database dialect",
+        "run_sync": "hands the function it is given a synchronous connection; what that function runs "
+                    "is classified where the function is written",
+    },
+    "database engine": {
+        "connect": "opens a connection, itself checked as a session",
+        "begin": "opens a connection in a transaction, itself checked as a session",
+        "dispose": "closes the engine's pooled connections",
+        "sync_engine": "the engine's synchronous form, itself checked as an engine",
+        "url": "the database address", "dialect": "the database dialect", "pool": "the connection pool, for its counts",
+    },
+    "database session factory": {
+        "begin": "opens a session in a transaction, itself checked as a session",
+    },
+}
 # What an expression can hold, as Graph.kind names it.
 _DATABASE = "database "
 SESSION = "database session"  # an AsyncSession, Session or connection: it executes and adds
 FACTORY = "database session factory"  # calling it opens a session
 ENGINE = "database engine"  # connect() and begin() open a connection
 SQLA = "sqlalchemy"  # a name of the sqlalchemy package, as "sqlalchemy <name>"
-_SQL_WRITES = {f"statement {op}" for op in ("insert", "update", "delete", "merge", "truncate")}
+_SQL_WRITES = {f"statement {op}" for op in ("insert", "update", "delete", "merge", "truncate", "multiple")}
 _SQL_READS = {"statement select": "a SELECT",
               "statement control": "a session control statement (SET, LOCK, SAVEPOINT and the like)",
               "statement ddl": "schema DDL, which the observer counts as no data write"}
@@ -60,7 +101,8 @@ _SQLA_MADE = {"AsyncSession": SESSION, "Session": SESSION, "async_sessionmaker":
               "create_async_engine": ENGINE, "create_engine": ENGINE,
               "insert": "statement insert", "update": "statement update", "delete": "statement delete",
               "select": "statement select", "union": "statement select", "union_all": "statement select",
-              "exists": "statement select", "values": "statement select"}
+              "exists": "statement select", "values": "statement select",
+              "object_session": SESSION, "async_object_session": SESSION}
 _SQL_FIRST = {"INSERT": "insert", "UPDATE": "update", "DELETE": "delete", "MERGE": "merge", "TRUNCATE": "truncate",
               "SELECT": "select", "VALUES": "select", "SHOW": "select", "EXPLAIN": "select", "TABLE": "select",
               **dict.fromkeys(("SET", "RESET", "LOCK", "BEGIN", "COMMIT", "ROLLBACK", "SAVEPOINT", "RELEASE",
@@ -78,15 +120,20 @@ _YIELDS = {"AsyncIterator", "AsyncGenerator", "Iterator", "Generator", "AsyncCon
 
 
 def _sql_kind(text: str | None) -> str | None:
-    """A statement kind from the SQL a literal starts with; a data-changing CTE is a write."""
+    """A statement kind from the SQL a literal starts with; a data-changing CTE is a write,
+    and so is text that holds more than one statement."""
     if text is None:
         return None
     body = re.sub(r"--[^\n]*|/\*.*?\*/", " ", text, flags=re.S).lstrip(" \t\r\n(")
     first = body.split(None, 1)[0].upper() if body.split() else ""
+    if first not in _SQL_FIRST and first != "WITH":
+        return None
+    if len([part for part in re.sub(r"'(?:[^']|'')*'", "''", body).split(";") if part.strip()]) > 1:
+        return "statement multiple"
     if first == "WITH":
         op = re.search(r"\b(INSERT|UPDATE|DELETE|MERGE)\b", body, re.I)
         return f"statement {op.group(1).lower()}" if op else "statement select"
-    return f"statement {_SQL_FIRST[first]}" if first in _SQL_FIRST else None
+    return f"statement {_SQL_FIRST[first]}"
 
 
 _CYCLE = "cycle"  # a value still being worked out, met again while working it out
@@ -161,11 +208,26 @@ def _receiver(node: ast.Call) -> str:
     return ""
 
 
-def classify(node: ast.Call, kind=lambda expr: None, decorator: bool = False) -> tuple[str | None, str | None]:
-    """What a call does itself, and for a session call that writes nothing the named rule it
-    reads by. A call takes a company's lock, writes through a session, commits, emits an
-    event, or sends a mutating request to the API. *kind* tells what an expression holds
-    (Graph.kind): a session, a statement, or a value that is no session."""
+def _written(kind: str | None) -> str | None:
+    """The write a statement kind makes, as an effect; None for anything else."""
+    return f"write {kind.rpartition(' ')[2]}" if kind in _SQL_WRITES else None
+
+
+def _statement(name: str, statement: str | None) -> tuple[str | None, str | None]:
+    """What running *statement* through call *name* does."""
+    if statement in _SQL_READS:
+        return None, f"executes {_SQL_READS[statement]}"
+    return _written(statement) or f"write unclassified {name}", None
+
+
+def classify(node: ast.Call, kind=lambda expr: None, decorator: bool = False,
+             built=None) -> tuple[str | None, str | None]:
+    """What a call does itself, and for a call that writes nothing the named rule it reads
+    by. A call takes a company's lock, writes through a session, commits, emits an event,
+    or sends a mutating request to the API. *kind* tells what an expression holds
+    (Graph.kind): a session, a statement, or a value that is no session; *built* tells the
+    same with SQL in a string literal read as text, which only an executing call runs."""
+    built = built or kind
     name, receiver = _called(node), _receiver(node)
     if name in TAKES_THE_LOCK:
         return f"lock {name}", None
@@ -178,22 +240,35 @@ def classify(node: ast.Call, kind=lambda expr: None, decorator: bool = False) ->
     if name == "request" and receiver in _CLIENTS and node.args and isinstance(node.args[0], ast.Constant) \
             and str(node.args[0].value).lower() in MUTATING:
         return f"api {str(node.args[0].value).upper()}", None
-    if name not in SESSION_CALLS or not isinstance(node.func, ast.Attribute):
-        return None, None
     if decorator:
-        return None, f"{name} as a decorator, which registers a function"
-    held = kind(node.func.value)
-    if held not in (None, SESSION) and not held.startswith(_DATABASE):
+        return None, f"{name} as a decorator, which registers a function" if name in SESSION_CALLS else None
+    method = isinstance(node.func, ast.Attribute)
+    held = kind(node.func.value) if method else None
+    if held in DATABASE_READS:
+        # A session, engine or factory: each method is a write, or named with its reason.
+        if held == SESSION and name in EXECUTES:
+            return _statement(name, kind(node.args[0]) if node.args else None)
+        if held == SESSION and name in ROW_WRITES:
+            return f"write session.{name}", None
+        if name in DATABASE_READS[held]:
+            return None, f"{name} on a {held}: {DATABASE_READS[held][name]}"
+        return f"write unclassified {name}", None
+    # Given a write statement, a call writes whatever it is named and whatever receives it,
+    # unless it builds a further statement or is a function of the source or a builtin,
+    # whose own calls are classified where they are written.
+    given = next((w for a in (*node.args, *(k.value for k in node.keywords)) if (w := _written(built(a)))), None)
+    if given and not (kind(node) or "").startswith("statement ") \
+            and not (kind(node.func) or "").startswith(("function ", "builtin ", "type ")):
+        return given, None
+    if name not in SESSION_CALLS or not method:
+        return None, None
+    if held not in (None, _CYCLE):
         return None, f"{name} on {held}"
     if name in EXECUTES:
-        statement = kind(node.args[0]) if node.args else None
-        if statement in _SQL_READS:
-            return None, f"executes {_SQL_READS[statement]}"
-        if statement in _SQL_WRITES:
-            return f"write {statement.rpartition(' ')[2]}", None
-    elif held == SESSION:
-        return f"write session.{name}", None
-    elif node.args and name != "add_all":
+        if not node.args and name not in ("execute", "exec_driver_sql"):
+            return None, f"{name} of a result, which reads what the result holds"
+        return _statement(name, kind(node.args[0]) if node.args else None)
+    if node.args and name != "add_all":
         # A session adds, deletes and merges mapped rows only: what is passed says what the call is.
         given = kind(node.args[0])
         if given and given.startswith("row "):
@@ -203,8 +278,8 @@ def classify(node: ast.Call, kind=lambda expr: None, decorator: bool = False) ->
     return f"write unclassified {name}", None
 
 
-def effect(node: ast.Call, kind=lambda expr: None, decorator: bool = False) -> str | None:
-    return classify(node, kind, decorator)[0]
+def effect(node: ast.Call, kind=lambda expr: None, decorator: bool = False, built=None) -> str | None:
+    return classify(node, kind, decorator, built)[0]
 
 
 def _module_name(rel: str) -> str:
@@ -235,6 +310,8 @@ class Graph:
         self._kinds: dict[tuple, str | None] = {}
         self._open: set[tuple] = set()
         self._hit: set[tuple] = set()
+        self._partial: dict[tuple, str | None] = {}
+        self._literal_sql = True  # whether SQL in a string literal is read as a statement
         self._bound_names: dict[int, dict] = {}
         self._by_class: dict[str, list] | None = None
         trees = {}
@@ -363,10 +440,11 @@ class Graph:
     # -- what a call does --------------------------------------------------------
 
     def effect(self, node: ast.Call, fn: Function | None, module: str | None = None) -> str | None:
-        return effect(node, lambda expr: self.kind(expr, fn, module), id(node) in self._decorators)
+        return effect(node, lambda expr: self.kind(expr, fn, module), id(node) in self._decorators,
+                      lambda expr: self.built(expr, fn, module))
 
-    def calls(self):
-        """Every call of the source as (path, call, the innermost function it runs in, or
+    def _walk(self):
+        """Every node of the source as (path, node, the innermost function it runs in, or
         None at module level, its module). A function's decorators run in its own frame."""
         for rel, tree in self.trees.items():
             module = _module_name(rel)
@@ -376,17 +454,35 @@ class Graph:
                 if isinstance(node, _FUNCTIONS):
                     first = min([node.lineno] + [d.lineno for d in node.decorator_list])
                     fn = self.by_source.get((rel, first), fn)
-                elif isinstance(node, ast.Call):
-                    yield rel, node, fn, module
+                yield rel, node, fn, module
                 stack.extend((child, fn) for child in ast.iter_child_nodes(node))
 
+    def calls(self):
+        """Every call of the source, as _walk gives it."""
+        for rel, node, fn, module in self._walk():
+            if isinstance(node, ast.Call):
+                yield rel, node, fn, module
+
     def unclassified(self) -> list[str]:
-        """Each execute, add, add_all, delete and merge call the graph classifies neither as a
-        write it can read nor by a named read rule, as "path:line call"."""
-        found = []
-        for rel, node, fn, module in self.calls():
-            if (self.effect(node, fn, module) or "").startswith("write unclassified "):
-                found.append(f"{rel}:{node.lineno} {_called(node)}")
+        """Each call the graph classifies neither as a write it can read nor by a named read
+        rule, and each method or attribute of a session, connection, engine or factory that
+        no read list names and is referenced without being called (put = session.add) or
+        looked up by getattr, as "path:line name": a write the census cannot place on a line."""
+        found, called = [], set()
+        for rel, node, fn, module in self._walk():
+            if isinstance(node, ast.Call):
+                called.add(id(node.func))
+                if (self.effect(node, fn, module) or "").startswith("write unclassified "):
+                    found.append(f"{rel}:{node.lineno} {_called(node)}")
+                if isinstance(node.func, ast.Name) and node.func.id == "getattr" and node.args \
+                        and (held := self.kind(node.args[0], fn, module)) in DATABASE_READS:
+                    name = node.args[1] if len(node.args) > 1 else None
+                    if not (isinstance(name, ast.Constant) and name.value in DATABASE_READS[held]):
+                        found.append(f"{rel}:{node.lineno} getattr")
+            elif isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load) and id(node) not in called \
+                    and (held := self.kind(node.value, fn, module)) in DATABASE_READS \
+                    and node.attr not in DATABASE_READS[held]:
+                found.append(f"{rel}:{node.lineno} {node.attr}")
         return sorted(found, key=lambda s: (s.rpartition(":")[0], int(s.rpartition(":")[2].split()[0])))
 
     # -- what an expression holds ------------------------------------------------
@@ -399,12 +495,18 @@ class Graph:
 
     def _memo(self, key, compute):
         """*compute*'s answer, kept once it depends on no value still being worked out: a
-        value bound in terms of itself (query = query.where(..)) adds nothing to its kind."""
+        value bound in terms of itself (query = query.where(..)) adds nothing to its kind.
+        An answer that does depend on one is kept until the outermost question is answered,
+        so names bound in terms of each other are worked out once per question, not once
+        per path between them."""
+        key = (key, self._literal_sql)
         if key in self._kinds:
             return self._kinds[key]
         if key in self._open:
             self._hit.add(key)
             return _CYCLE
+        if key in self._partial:
+            return self._partial[key]
         if len(self._open) > 80:
             return None
         self._open.add(key)
@@ -415,12 +517,28 @@ class Graph:
             self._hit.discard(key)
         if not self._hit:
             self._kinds[key] = found
+        else:
+            self._partial[key] = found
+        if not self._open:
+            self._partial.clear()
         return found
 
     def kind(self, expr, fn: Function | None, module: str | None = None) -> str | None:
         """What *expr* holds when it runs in *fn* (or at the top level of *module*)."""
         module = fn.module if fn is not None else module
         return self._memo((id(expr), id(fn) if fn is not None else module), lambda: self._kind(expr, fn, module))
+
+    def built(self, expr, fn: Function | None, module: str | None = None) -> str | None:
+        """What *expr* holds with SQL in a string literal read as plain text: a string is
+        SQL only to a call that executes it or to text()."""
+        return self._reading(False, lambda: self.kind(expr, fn, module))
+
+    def _reading(self, literal_sql: bool, compute):
+        saved, self._literal_sql = self._literal_sql, literal_sql
+        try:
+            return compute()
+        finally:
+            self._literal_sql = saved
 
     def _kind(self, expr, fn, module):
         kind = lambda e: self.kind(e, fn, module)
@@ -429,9 +547,10 @@ class Graph:
         if isinstance(expr, ast.Constant):
             if expr.value is None:
                 return "none"
-            return (_sql_kind(expr.value) if isinstance(expr.value, str) else None) or "value"
+            return (_sql_kind(expr.value) if isinstance(expr.value, str) and self._literal_sql else None) or "value"
         if isinstance(expr, ast.JoinedStr):
-            return _sql_kind("".join(v.value if isinstance(v, ast.Constant) else "x" for v in expr.values)) or "value"
+            return (_sql_kind("".join(v.value if isinstance(v, ast.Constant) else "x" for v in expr.values))
+                    if self._literal_sql else None) or "value"
         if isinstance(expr, ast.Call):
             return self._call(expr, fn, module)
         if isinstance(expr, ast.Attribute):
@@ -514,9 +633,14 @@ class Graph:
         return self._entry(entry) if entry is not None else None
 
     def _held(self, bindings, fn, module):
-        """What a name holds across the values bound to it; an annotation declares it for all."""
+        """What a name holds across the values bound to it; an annotation declares it for
+        all, except that a write statement bound to it is what it holds whatever it is
+        annotated as."""
         declared = [b for b in bindings if b[0] == "annotation"]
-        return _combine(self._bound(b, fn, module) for b in declared or bindings)
+        if not declared:
+            return _combine(self._bound(b, fn, module) for b in bindings)
+        writes = sorted({k for b in bindings if b[0] != "annotation" and (k := self._bound(b, fn, module)) in _SQL_WRITES})
+        return writes[0] if writes else _combine(self._bound(b, fn, module) for b in declared)
 
     def _bound(self, binding, fn, module):
         how, what = binding
@@ -574,6 +698,8 @@ class Graph:
                     bind(target, ("value", node.value))
             elif isinstance(node, ast.AnnAssign):
                 bind(node.target, ("annotation", node.annotation))
+                if node.value is not None:
+                    bind(node.target, ("value", node.value))
             elif isinstance(node, (ast.With, ast.AsyncWith)):
                 for item in node.items:
                     if item.optional_vars is not None:
@@ -672,9 +798,10 @@ class Graph:
         if callee.startswith(f"{SQLA} "):
             name = callee[len(SQLA) + 1:]
             if name == "text":
-                held = self.kind(args[0], fn, module) if args else None
+                held = self._reading(True, lambda: self.kind(args[0], fn, module)) if args else None
                 return held if held and held.startswith("statement ") else None
-            return _SQLA_MADE.get(name, f"{SQLA} {name}()")
+            # A statement built from a data-changing one (select(cte.c.id)) runs its write.
+            return self._given_write(call, fn, module) or _SQLA_MADE.get(name, f"{SQLA} {name}()")
         if callee == FACTORY:
             return SESSION
         if callee.startswith("type "):
@@ -695,7 +822,9 @@ class Graph:
     def _method(self, held: str, name: str, call: ast.Call, fn, module):
         """What calling method *name* on a value of kind *held* returns."""
         if held.startswith("statement "):
-            return held  # update(T).where(..).values(..) stays the statement it was built from
+            # update(T).where(..).values(..) stays the statement it was built from, and one
+            # given a data-changing statement (.where(x.in_(cte))) runs its write.
+            return held if held in _SQL_WRITES else self._given_write(call, fn, module) or held
         if held == ENGINE:
             return SESSION if name in ("connect", "begin") else None
         if held == FACTORY:
@@ -705,10 +834,12 @@ class Graph:
                 model = self.kind(call.args[0], fn, module) or ""
                 return self._instance(model[5:]) if model.startswith("type ") else None
             return SESSION if name == "connection" else ENGINE if name == "get_bind" else None
-        if held == "value" and name == "join" and call.args and isinstance(call.args[0], (ast.List, ast.Tuple)) \
-                and call.args[0].elts:
+        items = call.args[0] if call.args else None
+        first = items.elt if isinstance(items, (ast.ListComp, ast.GeneratorExp)) else \
+            items.elts[0] if isinstance(items, (ast.List, ast.Tuple)) and items.elts else None
+        if held == "value" and name == "join" and first is not None:
             # sep.join([first, ...]) starts with its first item: the SQL it builds is that item's.
-            first = self.kind(call.args[0].elts[0], fn, module)
+            first = self.kind(first, fn, module)
             return first if first and first.startswith("statement ") else "value"
         if held == "set":
             return "set" if name in ("copy", "union", "difference", "intersection", "symmetric_difference") else None
@@ -730,6 +861,8 @@ class Graph:
         """What attribute *name* of a value of kind *held* holds."""
         if held is None or held == _CYCLE:
             return held
+        if held == f"{SQLA} inspect()" and name == "session":
+            return SESSION  # inspect(row).session: the session the row belongs to
         if held == SQLA or held.startswith(f"{SQLA} "):
             return f"{SQLA} {name}"
         if held.startswith("module "):
@@ -742,8 +875,18 @@ class Graph:
         if held.startswith(("class ", "row ")):
             return self._field(held.partition(" ")[2], name)
         if held == SESSION:
-            return ENGINE if name == "bind" else None
+            return ENGINE if name == "bind" else SESSION if name == "sync_session" else None
+        if held == ENGINE:
+            return ENGINE if name == "sync_engine" else None
+        if held in _SQL_WRITES:
+            return held  # a column of a data-changing CTE (moved.c.id) runs its write where it is selected
         return None
+
+    def _given_write(self, call: ast.Call, fn, module) -> str | None:
+        """The write statement among what *call* is given, if any (string literals read as text)."""
+        return self._reading(False, lambda: next(
+            (k for a in (*call.args, *(kw.value for kw in call.keywords)) if (k := self.kind(a, fn, module)) in _SQL_WRITES),
+            None))
 
     def _returns(self, key: str):
         """What calling the function *key* returns (or yields, for a generator)."""
@@ -755,6 +898,8 @@ class Graph:
             if fn.node.returns is None:
                 return returned
             # A str or list[str] annotation says less than the SQL the function builds.
+            if returned in _SQL_WRITES:  # a write statement returned is what it returns, whatever annotated
+                return returned
             annotated = self._annotation(fn.node.returns, fn, fn.module)
             return returned if annotated in ("value", "list:value") and returned and "statement " in returned \
                 else annotated
