@@ -110,8 +110,9 @@ jobs:
       # The route inventory, the writes made without the company lock and the write sites
       # the suite passed through, from every unit, process and browser shard together
       # (scripts/mutation_census.py).
-      # Fails on a write no baseline entry accepts, and on an entry no finding matched or
-      # its own test did not reproduce.
+      # Fails on a write no baseline entry accepts, on an entry no finding matched or its own
+      # test did not reproduce, and on a writer no test covers that mutation_coverage_gaps.json
+      # does not name, or an entry there that no longer matches its gap.
       - name: Report
         run: |
           status=0
@@ -534,7 +535,7 @@ jobs:
   # (this job), which passes only when every unit, process, browser, electron, AND lockfile job passed.
   test:
     name: Test
-    needs: [shard, process, integration, browser, embedded, electron, lockfile, constraints, mac-intel-deps, update-changes, update-e2e]
+    needs: [shard, census, process, integration, browser, embedded, electron, lockfile, constraints, mac-intel-deps, update-changes, update-e2e]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -542,6 +543,10 @@ jobs:
         run: |
           if [ "${{ needs.shard.result }}" != "success" ]; then
             echo "One or more unit-test shards failed (result: ${{ needs.shard.result }})"
+            exit 1
+          fi
+          if [ "${{ needs.census.result }}" != "success" ]; then
+            echo "The mutation census failed (result: ${{ needs.census.result }})"
             exit 1
           fi
           if [ "${{ needs.process.result }}" != "success" ]; then
@@ -584,4 +589,4 @@ jobs:
             echo "Self-update end to end failed (result: ${{ needs.update-e2e.result }})"
             exit 1
           fi
-          echo "All unit, process, browser, embedded, electron, lockfile, constraints, and self-update checks passed."
+          echo "All unit, census, process, browser, embedded, electron, lockfile, constraints, and self-update checks passed."
