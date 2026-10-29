@@ -58,10 +58,14 @@ async def _sink_context(client, session, read_attachment):
     return {"Authorization": f"Bearer {token}"}, context
 
 
-async def _persist_mappings(session, run_id, result) -> None:
-    """What the runner does after every batch: store the returned entity mappings once."""
-    from celerp.models.migration import MigrationEntityMap
+async def _persist_mappings(context, result) -> None:
+    """What the runner does after every batch: under the company's lock, take the run row,
+    then store the returned entity mappings once."""
+    from celerp.models.migration import MigrationEntityMap, MigrationRun
+    from celerp.services.migrations import _lock_run
 
+    session, run_id = context.session, context.run_id
+    await _lock_run(session, await session.get(MigrationRun, run_id))
     for m in result.mappings:
         stored = (await session.execute(select(MigrationEntityMap).where(
             MigrationEntityMap.migration_run_id == run_id,
@@ -112,7 +116,7 @@ async def test_internal_sinks_share_domain_import_services(client, session, monk
 
     async def via_sink(group: str, records: list):
         result = await sink_for(group).import_batch(context, records)
-        await _persist_mappings(session, context.run_id, result)
+        await _persist_mappings(context, result)
         return result
 
     # Core: a location is created once and maps to its Celerp location id.
@@ -289,7 +293,7 @@ async def test_core_sink_attaches_source_files_like_the_upload_routes(client, se
 
     async def via_sink(group: str, records: list):
         result = await sink_for(group).import_batch(context, records)
-        await _persist_mappings(session, context.run_id, result)
+        await _persist_mappings(context, result)
         return result
 
     customer = CIFContact(**_PROVENANCE, source_type="Customer", source_external_id="cust-1", name="Harbor Traders",

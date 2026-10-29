@@ -51,7 +51,7 @@ async def _via(context, group: str, records: list):
     from celerp.importers.sinks import sink_for
 
     result = await sink_for(group).import_batch(context, records)
-    await _persist_mappings(context.session, context.run_id, result)
+    await _persist_mappings(context, result)
     return result
 
 

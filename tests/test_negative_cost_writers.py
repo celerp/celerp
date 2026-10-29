@@ -150,7 +150,7 @@ async def test_migration_opening_position_with_a_negative_value_is_refused(clien
                    sku="NEG-2", name="Widget", status="available")
     created = await sink_for("items").import_batch(context, [item])
     assert created.created == 1, created
-    await _persist_mappings(session, context.run_id, created)
+    await _persist_mappings(context, created)
     opening = CIFInventoryAdjustment(
         source_system="manager_io", source_type="InventoryItem", source_external_id="neg-2-open",
         kind="opening", adjustment_date="2025-01-01", item_external_id="neg-2",

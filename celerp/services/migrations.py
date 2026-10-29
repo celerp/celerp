@@ -670,10 +670,12 @@ def _phase_entry(state: dict, phase: MigrationPhase) -> dict:
     return {"status": "pending", "cursor": 0, "created": 0, "skipped": 0, "errors": 0, **state.get(phase.value, {})}
 
 
-async def _checkpoint(session: AsyncSession, run_id: uuid.UUID, phase: MigrationPhase, state: dict) -> str:
-    """Persist progress (phase state, current phase, heartbeat only) and return the live status."""
+async def _checkpoint(session: AsyncSession, company_id: uuid.UUID, run_id: uuid.UUID, phase: MigrationPhase,
+                      state: dict) -> str:
+    """Persist progress (phase state, current phase, heartbeat only) and return the live status.
+    The run is named by its company as well, so a batch's write is seen under its company's lock."""
     return (await session.execute(
-        update(MigrationRun).where(MigrationRun.id == run_id)
+        update(MigrationRun).where(MigrationRun.id == run_id, MigrationRun.company_id == company_id)
         .values(phase_state=state, current_phase=phase.value, heartbeat_at=datetime.now(timezone.utc))
         .returning(MigrationRun.status)
     )).scalar_one()
@@ -823,7 +825,7 @@ async def _run_locked(run_id: uuid.UUID) -> None:
         if cursor >= len(phase_steps):
             state[phase.value] = {**entry, "status": "done"}
             async with maker() as s:
-                status = await _checkpoint(s, run_id, phase, state)
+                status = await _checkpoint(s, company_id, run_id, phase, state)
                 await s.commit()
             if await _stop_if_cancelled(maker, run_id, status):
                 return
@@ -843,10 +845,11 @@ async def _run_locked(run_id: uuid.UUID) -> None:
                                "skipped": entry["skipped"] + result.skipped, "errors": 0,
                                "status": "done" if advanced >= len(phase_steps) else "running"}
                     # The run row, then the linked files' cleanup tasks, then the mappings: rank order, one commit.
-                    status = await _checkpoint(s, run_id, phase, {**state, phase.value: written})
+                    status = await _checkpoint(s, company_id, run_id, phase, {**state, phase.value: written})
                     if context.linked_cleanup_tasks:
                         await s.execute(delete(MigrationCleanupTask)
-                                        .where(MigrationCleanupTask.id.in_(context.linked_cleanup_tasks)))
+                                        .where(MigrationCleanupTask.company_id == company_id,
+                                               MigrationCleanupTask.id.in_(context.linked_cleanup_tasks)))
                     await _record_mappings(s, run_id, batch[0].group, result.mappings, records)
                     await s.commit()
             except Exception as exc:
