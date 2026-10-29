@@ -126,12 +126,12 @@ def _labels(roles: list[str]) -> str:
     return ", ".join(ROLE_LABELS[AccountRole(r)] for r in roles)
 
 
-async def notify_unmapped(session: AsyncSession, company_id, refused=()) -> bool:
+async def notify_unmapped(session: AsyncSession, company_id, refused=()) -> None:
     """One high-priority notice while a role has no account that can take its postings
     and the company's workflows need it, a posting was just refused for it (``refused``),
     or the notice already names it. Deduped on the standing notice so a restart never
     stacks them and kept current with the roles still wrong; withdrawn once none is.
-    Returns whether a notice was created. The caller commits."""
+    The caller commits."""
     from celerp.models.notification import Notification
     from celerp.notifications import service as notification_service
     from celerp.services.journal_accounts import lock_accounts
@@ -148,8 +148,8 @@ async def notify_unmapped(session: AsyncSession, company_id, refused=()) -> bool
     missing = [role.value for role in AccountRole if role.value in problems]
     if not missing:
         await notification_service.clear_standing(session, company_id, NOTICE_CATEGORY, NOTICE_TITLE)
-        return False
-    return await notification_service.notify_standing(
+        return
+    await notification_service.notify_standing(
         session, company_id, NOTICE_CATEGORY, NOTICE_TITLE,
         f"Choose the account for: {_labels(missing)}. Until then, anything that posts to them is refused.",
         action_url=POSTING_ACCOUNTS_PATH,

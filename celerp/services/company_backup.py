@@ -420,22 +420,19 @@ async def undeclared_module_tables(session: AsyncSession) -> dict[str, list[str]
     return found
 
 
-async def notify_undeclared_module_tables(session: AsyncSession) -> int:
+async def notify_undeclared_module_tables(session: AsyncSession) -> None:
     """A bell notice in every company for each installed module keeping data its manifest
-    does not place in or out of a company backup, deduped while it stands. Caller commits.
-    Returns the number of notifications created."""
+    does not place in or out of a company backup, deduped while it stands. Caller commits."""
     from celerp.notifications import service as notif_service
 
-    created = 0
     for module, tables in (await undeclared_module_tables(session)).items():
         logger.warning("The %s module does not declare how %s travel with a company backup", module, tables)
         label = module_label(module)
-        created += await notif_service.notify_every_company(
+        await notif_service.notify_every_company(
             session, "modules", f"The {label} module needs an update",
             f"The {label} module keeps data it has not said belongs in a company copy. No company "
             "copy can be made of a company holding that data until the module is updated.",
             action_url="/modules")
-    return created
 
 
 async def classify(session: AsyncSession) -> list[str]:

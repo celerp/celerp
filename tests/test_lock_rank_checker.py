@@ -229,6 +229,76 @@ def test_the_guard_then_a_lease_taken_nowait_then_written_passes():
     assert not recorder.violations
 
 
+def test_an_insert_into_a_fresh_keyed_table_waits_on_nothing_of_its_own():
+    found = classify("INSERT INTO notifications (id, company_id, user_id, category, title, body) "
+                     "VALUES ($1, $2, $3, $4, $5, $6)", ("i", "c", None, "system", "t", "b"))
+    assert not any(cls == "row:notifications" for cls, _ in found)
+    assert ("key:companies", "key share wait") in found
+
+
+def test_a_notice_is_written_after_every_parent_key_and_nothing_after_it():
+    """Notices are their transaction's last writes: after a parent key taken exclusively they
+    order nothing, and their own key ranks with their row; any lock taken after one orders."""
+    after_key = Recorder()
+    after_key.statement(1, "DELETE FROM migration_runs WHERE migration_runs.id = $1", ("m",), 0.0)
+    after_key.statement(1, "SELECT notifications.id FROM notifications ORDER BY notifications.company_id, "
+                        "notifications.id FOR UPDATE", (), 0.0)
+    after_key.statement(1, "DELETE FROM notifications WHERE notifications.id = $1", ("n",), 0.0)
+    assert not after_key.violations
+    before = Recorder()
+    before.statement(1, "DELETE FROM notifications WHERE notifications.id = $1", ("n",), 0.0)
+    before.statement(1, "UPDATE work_centers SET name = $1 WHERE work_centers.id = $2", ("w", "1"), 0.0)
+    assert ("order", "row:work_centers") in _kinds(before)
+
+
+def _production_sources():
+    root = lock_rank.Path(lock_rank._ROOT)
+    for path in [*root.joinpath("celerp").rglob("*.py"), *root.joinpath("default_modules").glob("*/celerp_*/**/*.py")]:
+        yield path, path.read_text()
+
+
+@pytest.mark.parametrize("table", sorted(lock_rank.FRESH_KEYED))
+def test_every_insert_into_a_fresh_keyed_table_draws_a_new_key(table):
+    """FRESH_KEYED holds: the table's only unique key is a uuid primary key defaulting to
+    uuid.uuid4, every model construction leaves it to that default or passes uuid.uuid4(),
+    and every SQL insert into it takes gen_random_uuid(). Nothing builds the table through
+    insert() or copies a stored id into it."""
+    import ast
+    import uuid
+
+    from celerp.models.base import Base
+
+    mapper = next(m for m in Base.registry.mappers if m.local_table.name == table)
+    t = mapper.local_table
+    pk = list(t.primary_key.columns)
+    assert len(pk) == 1 and getattr(getattr(pk[0].default, "arg", None), "__wrapped__", None) is uuid.uuid4
+    assert not [c for c in t.constraints if c.__class__.__name__ == "UniqueConstraint"]
+    assert not [i for i in t.indexes if i.unique] and not [c for c in t.columns if c.unique]
+
+    model = mapper.class_.__name__
+    fresh = ast.parse("uuid.uuid4()").body[0].value
+    wrong = []
+    for path, text in _production_sources():
+        if table in text and "INSERT INTO " + table in text:
+            for chunk in text.split("INSERT INTO " + table)[1:]:
+                if "gen_random_uuid()" not in chunk.split(";")[0][:600]:
+                    wrong.append(f"{path}: SQL insert without gen_random_uuid()")
+        if model not in text:
+            continue
+        for node in ast.walk(ast.parse(text)):
+            if not isinstance(node, ast.Call):
+                continue
+            name = node.func.id if isinstance(node.func, ast.Name) else getattr(node.func, "attr", "")
+            args = [a for a in node.args if isinstance(a, ast.Name) and a.id == model]
+            if name in ("insert", "pg_insert") and args:
+                wrong.append(f"{path}:{node.lineno}: insert({model})")
+            if name == model:
+                for kw in node.keywords:
+                    if kw.arg is None or (kw.arg == pk[0].key and ast.dump(kw.value) != ast.dump(fresh)):
+                        wrong.append(f"{path}:{node.lineno}: {model}(...) with a key not drawn fresh")
+    assert not wrong, wrong
+
+
 # ── R1: rows of a company the transaction inserted; R2: inserts under the company lock ──
 
 _COMPANY = "INSERT INTO companies (id, name, slug) VALUES ($1::UUID, $2, $3)"

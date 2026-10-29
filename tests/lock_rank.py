@@ -81,10 +81,13 @@ RANKS: dict[str, int] = {
     "row:migration_attachment_fetches": 73, "adv:xero-attachments": 74, "adv:xero-attachments-round": 75,
     "row:migration_batch_files": 76, "row:migration_entity_maps": 77,
     "row:ai_conversations": 78, "row:ai_messages": 79,
-    "row:ai_batch_jobs": 80, "row:instance_meta": 81, "row:notifications": 82, "row:notification_reads": 83,
+    "row:ai_batch_jobs": 80, "row:instance_meta": 81,
     "row:session_registry": 84, "row:doc_share_tokens": 85, "row:label_templates": 86,
     "row:marketplace_configs": 87, "row:work_centers": 88, "row:supporter_badges": 89, "row:ai_usage": 90,
     "row:ai_job_steps": 91,
+    # Notices, written as their transaction's last statements (celerp/notifications/service.py
+    # _defer): after every other lock and parent key, their own key with their row.
+    "row:notifications": 96, "row:notification_reads": 97,
 }
 
 
@@ -98,7 +101,8 @@ TABLE_LOCK_RANK = 36
 # and FOR UPDATE, DELETE or a key change take exclusively, and the rest of the row). A
 # foreign-key check shares the parent's key, so it can wait only on a transaction holding
 # that key exclusively; that holder takes it last and waits on nothing after it, so a key
-# share closes no cycle and is never ordered.
+# share closes no cycle and is never ordered. A row ranked above it keeps its key at its own
+# rank: the key is taken with the row.
 KEY_RANK = 95
 
 
@@ -106,7 +110,8 @@ def rank(cls: str) -> int | None:
     if cls.startswith("tbl:"):
         return TABLE_LOCK_RANK if rank("row:" + cls[4:]) is not None else None
     if cls.startswith("key:"):
-        return KEY_RANK if rank("row:" + cls[4:]) is not None else None
+        row = rank("row:" + cls[4:])
+        return None if row is None else max(KEY_RANK, row)
     return RANKS.get(cls)
 
 
@@ -582,17 +587,30 @@ RECORDER = Recorder()
 _ROOT = str(Path(__file__).resolve().parent.parent)
 
 
+def _frames(frame):
+    """``frame`` and its callers, innermost first, entering each SQLAlchemy greenlet_spawn
+    at the frame its greenlet is suspended in (sqlalchemy.util.concurrency)."""
+    while frame is not None:
+        context = frame.f_locals.get("context") if frame.f_code.co_name == "greenlet_spawn" else None
+        inner = getattr(context, "gr_frame", None)
+        while inner is not None and inner is not frame:
+            yield inner
+            inner = inner.f_back
+        yield frame
+        frame = frame.f_back
+
+
 def _site() -> str:
     """The innermost application frame (file:line function) that sent the statement, else
     the innermost test frame; a conftest.py wrapper (the shared session's turn taking) is
-    the site only when nothing else in the project sent it."""
+    the site only when nothing else in the project sent it. A statement sent from
+    synchronous code SQLAlchemy runs in a greenlet (an ORM event hook, run_sync) is sent
+    from that greenlet's frames, which the awaiting coroutine's stack does not hold."""
     frames = []
-    frame = sys._getframe(2)
-    while frame is not None:
+    for frame in _frames(sys._getframe(2)):
         path = frame.f_code.co_filename
         if path.startswith(_ROOT) and "/.venv/" not in path and not path.endswith("lock_rank.py"):
             frames.append((path, path.rsplit("/", 1)[-1], frame))
-        frame = frame.f_back
     for chosen in ((f for p, n, f in frames if "/tests/" not in p and not n.startswith("test_") and n != "conftest.py"),
                    (f for p, n, f in frames if n != "conftest.py"),
                    (f for p, n, f in frames)):
@@ -819,6 +837,12 @@ def _serial_keyed(table: str) -> str | None:
     return pk[0].name if serial and not others else None
 
 
+# Tables whose only unique key is a uuid primary key every insert draws fresh (uuid.uuid4,
+# by the model's default or the writer): no two inserts carry one key, so an insert waits on
+# no row of its own table. tests/test_lock_rank_checker.py proves each table's writers do.
+FRESH_KEYED = frozenset({"notifications"})
+
+
 def _company_param(table: str, where) -> tuple[int, ...] | None:
     """The parameter a WHERE clause binds the table's company column to, when that equality
     is the whole clause or one of its top-level AND terms: every row it selects names that
@@ -896,7 +920,7 @@ def _row_locks(statement: str) -> tuple[tuple[tuple[str, str, tuple[int, ...] | 
                 numbers = [_params(v) for v in values]
                 if numbers and all(n and len(n) == 1 for n in numbers):
                     company = tuple(n[0] for n in numbers)
-            if _serial_keyed(table) is None or _serial_keyed(table) in cols:
+            if table not in FRESH_KEYED and (_serial_keyed(table) is None or _serial_keyed(table) in cols):
                 out.append((f"row:{table}", "insert", None, company))
             for col, ref in fks.items():
                 if cols and col not in cols:

@@ -311,16 +311,16 @@ async def test_a_credit_note_on_an_imported_invoice_sold_on_an_account_sales_do_
 
 @pytest.mark.asyncio
 async def test_a_credit_note_after_sales_move_to_another_account_reverses_where_the_invoice_sold(session):
-    from celerp.models.company import Company
     from celerp.services.account_roles import current_settings, role_map, with_role
+    from celerp.services.company_lock import locked_company
 
     context = await _staged_context(session)
     await _import_chart(context, _TWO_REVENUE_CHART)
     on_role = await _imported_invoice(context, {"sales": "100.00"}, ext="inv-1")
     split = await _imported_invoice(context, {"sales-a": "60.00", "sales-b": "40.00"}, ext="inv-2")
+    company = await locked_company(session, context.company_id)
     settings = await current_settings(session, context.company_id)
     assert role_map(settings).get("sales_revenue") == "400"
-    company = await session.get(Company, context.company_id)
     company.settings = with_role(settings, "sales_revenue", "4010")
     await session.flush()
     assert await _credit_note_revenue(context, on_role, 100.0) == {"400": 100.0}

@@ -122,12 +122,15 @@ async def test_notify_once_is_once_per_addressee(session, user, user_b, company)
     """The same notice told to two members reaches each of them once; telling it again
     to either creates nothing."""
     with patch("celerp.notifications.service.deliver"):
-        assert await svc.notify_once(session, company.id, "fa", "Due", "Van", user_id=user.id)
-        assert await svc.notify_once(session, company.id, "fa", "Due", "Van", user_id=user_b.id)
-        assert not await svc.notify_once(session, company.id, "fa", "Due", "Van", user_id=user.id)
-        assert await svc.notify_once(session, company.id, "fa", "Due", "Van")
-        assert not await svc.notify_once(session, company.id, "fa", "Due", "Van")
+        await svc.notify_once(session, company.id, "fa", "Due", "Van", user_id=user.id)
+        await svc.notify_once(session, company.id, "fa", "Due", "Van", user_id=user_b.id)
+        await svc.notify_once(session, company.id, "fa", "Due", "Van", user_id=user.id)
+        await svc.notify_once(session, company.id, "fa", "Due", "Van")
+        await svc.notify_once(session, company.id, "fa", "Due", "Van")
         await session.commit()
+
+    rows = (await session.execute(text("SELECT user_id FROM notifications WHERE title = 'Due'"))).scalars().all()
+    assert sorted(map(str, rows)) == sorted(map(str, [user.id, user_b.id, None]))
 
     assert await svc.get_unread_count(session, company.id, user.id) == 2
     assert await svc.get_unread_count(session, company.id, user_b.id) == 2
@@ -138,11 +141,12 @@ async def test_notify_once_again_moves_the_link_and_keeps_it_read(session, user,
     """Told again with another link, the notice already told takes that link and stays as the
     user left it: the link follows the condition without telling it a second time."""
     with patch("celerp.notifications.service.deliver"):
-        assert await svc.notify_once(session, company.id, "fa", "Due", "Van", action_url="/a")
+        await svc.notify_once(session, company.id, "fa", "Due", "Van", action_url="/a")
         await session.commit()
         notice, _read = (await svc.list_notifications(session, company.id, user.id))[0]
         assert await svc.mark_read(session, notice.id, company.id, user.id)
-        assert not await svc.notify_once(session, company.id, "fa", "Due", "Van", action_url="/b")
+        await session.commit()  # the read is its own request
+        await svc.notify_once(session, company.id, "fa", "Due", "Van", action_url="/b")
         await session.commit()
 
     rows = (await session.execute(text("SELECT action_url FROM notifications WHERE title = 'Due'"))).all()

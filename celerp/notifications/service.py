@@ -13,7 +13,8 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import Any
+from functools import partial
+from typing import Any, Callable
 
 import sqlalchemy as sa
 from sqlalchemy import delete, event, exists, func, literal, select, update
@@ -56,20 +57,63 @@ def link_for(notif: Notification, settings: dict | None, role: str) -> str | Non
         return None
     return url
 
-# session.info key: events waiting for their transaction to commit, each with
-# the (possibly nested) transaction that wrote its row.
+# session.info keys: notification writes waiting for their transaction to commit, and
+# events waiting for it to have committed, each with the (possibly nested) transaction
+# that made it.
+_WRITES = "celerp_notifications_writes"
 _PENDING = "celerp_notifications_pending"
 
 
-def _publish_after_commit(session: AsyncSession, company_id: uuid.UUID,
-                          user_id: uuid.UUID | None, event_data: dict[str, Any]) -> None:
-    sync = session.sync_session
-    if not event.contains(sync, "after_commit", _deliver_pending):
+def _listen(sync: Session) -> None:
+    if not event.contains(sync, "before_commit", _write_pending):
+        event.listen(sync, "before_commit", _write_pending)
         event.listen(sync, "after_commit", _deliver_pending)
         event.listen(sync, "after_soft_rollback", _drop_rolled_back)
         event.listen(sync, "after_transaction_end", _drop_on_end)
-    writer = sync.get_nested_transaction() or sync.get_transaction()
-    sync.info.setdefault(_PENDING, []).append((writer, company_id, user_id, event_data))
+
+
+def _made_in(sync: Session) -> SessionTransaction:
+    """The (possibly nested) transaction a write is asked in, begun now when the session has
+    not begun one yet, so its rollback or close drops the write."""
+    return sync.get_nested_transaction() or sync.get_transaction() or sync.begin()
+
+
+def _defer(session: AsyncSession, company_id: uuid.UUID | None, write: Callable[[Session], None]) -> None:
+    """A notification write to ``company_id``'s notices (every company's when None) runs
+    when its transaction commits, as its last statements. Notifications rank after every
+    other lock (tests/lock_rank.py RANKS), so a transaction never holds a notice row while it
+    waits for another lock, and a writer holding one never waits for a notice another
+    transaction took first. A rolled-back savepoint drops the
+    writes made in it, as it would their rows."""
+    sync = session.sync_session
+    _listen(sync)
+    sync.info.setdefault(_WRITES, []).append((_made_in(sync), company_id, write))
+
+
+def _write_pending(sync: Session) -> None:
+    """before_commit, which also fires when a savepoint is released: the writes wait for
+    the outermost commit, in the order they were asked for. First every notice of the
+    companies they write is locked in one order, (company, id), so two commits that update
+    or remove the same notices in different orders wait for each other instead of each
+    holding one the other needs."""
+    if sync.in_nested_transaction():
+        return
+    writes = sync.info.pop(_WRITES, [])
+    if not writes:
+        return
+    companies = {company_id for _, company_id, _ in writes}
+    notices = select(Notification.id).order_by(Notification.company_id, Notification.id).with_for_update()
+    if None not in companies:
+        notices = notices.where(Notification.company_id.in_(sorted(companies)))
+    sync.execute(notices)
+    for _, _, write in writes:
+        write(sync)
+
+
+def _publish_after_commit(sync: Session, company_id: uuid.UUID,
+                          user_id: uuid.UUID | None, event_data: dict[str, Any]) -> None:
+    _listen(sync)
+    sync.info.setdefault(_PENDING, []).append((_made_in(sync), company_id, user_id, event_data))
 
 
 def _deliver_pending(sync: Session) -> None:
@@ -93,16 +137,18 @@ def _within(txn: SessionTransaction | None, ended: SessionTransaction) -> bool:
 
 
 def _drop_rolled_back(sync: Session, previous_transaction: SessionTransaction) -> None:
-    """A rolled-back savepoint (or the whole transaction) takes its rows with it."""
-    pending = sync.info.get(_PENDING)
-    if pending:
-        pending[:] = [p for p in pending if not _within(p[0], previous_transaction)]
+    """A rolled-back savepoint (or the whole transaction) takes its writes with it."""
+    for key in (_WRITES, _PENDING):
+        pending = sync.info.get(key)
+        if pending:
+            pending[:] = [p for p in pending if not _within(p[0], previous_transaction)]
 
 
 def _drop_on_end(sync: Session, transaction: SessionTransaction) -> None:
     """The outermost transaction ended without a commit (closed or rolled back):
-    nothing it wrote exists, so nothing waits for a later one."""
+    nothing it asked for is written, so nothing waits for a later one."""
     if transaction.parent is None:
+        sync.info.pop(_WRITES, None)
         sync.info.pop(_PENDING, None)
 
 
@@ -139,12 +185,13 @@ async def create(
     priority: str = "medium",
     i18n: dict | None = None,
 ) -> Notification:
-    """Create a notification, prune old ones, and publish it to SSE subscribers
-    once the session commits.
+    """Create a notification when the session commits (_defer), prune the company's
+    oldest beyond MAX_PER_COMPANY, and publish it to SSE subscribers once committed.
 
     ``i18n`` ({"title": key, "body": key, "params": {...}}) names the message keys the
     English ``title`` and ``body`` were written from."""
     notif = Notification(
+        id=uuid.uuid4(),
         company_id=company_id,
         user_id=user_id,
         category=category,
@@ -154,39 +201,33 @@ async def create(
         priority=priority,
         i18n=i18n,
     )
-    session.add(notif)
-    await session.flush()
+    _defer(session, company_id, partial(_add, notif=notif))
+    return notif
+
+
+def _add(sync: Session, *, notif: Notification) -> None:
+    sync.add(notif)
+    sync.flush()
 
     # Prune: keep only newest MAX_PER_COMPANY per company
-    count_q = select(func.count()).select_from(Notification).where(
-        Notification.company_id == company_id,
-    )
-    total = (await session.execute(count_q)).scalar() or 0
+    company = Notification.company_id == notif.company_id
+    total = sync.execute(select(func.count()).select_from(Notification).where(company)).scalar() or 0
     if total > MAX_PER_COMPANY:
-        # Find the ID threshold - delete everything below it
-        cutoff_q = (
-            select(Notification.id)
-            .where(Notification.company_id == company_id)
-            .order_by(Notification.created_at.desc())
-            .offset(MAX_PER_COMPANY)
-        )
-        old_ids = list((await session.execute(cutoff_q)).scalars().all())
+        old_ids = list(sync.execute(
+            select(Notification.id).where(company).order_by(Notification.created_at.desc()).offset(MAX_PER_COMPANY)
+        ).scalars().all())
         if old_ids:
-            await session.execute(
-                delete(Notification).where(Notification.id.in_(old_ids))
-            )
+            sync.execute(delete(Notification).where(company, Notification.id.in_(old_ids)))
 
-    _publish_after_commit(session, company_id, user_id, {
+    _publish_after_commit(sync, notif.company_id, notif.user_id, {
         "type": "notification",
         "id": str(notif.id),
-        "category": category,
-        "title": title,
-        "body": body,
-        "action_url": action_url,
-        "priority": priority,
+        "category": notif.category,
+        "title": notif.title,
+        "body": notif.body,
+        "action_url": notif.action_url,
+        "priority": notif.priority,
     })
-
-    return notif
 
 
 def _addressed_to(user_id: uuid.UUID):
@@ -202,30 +243,6 @@ def _read_by(user_id: uuid.UUID):
     )
 
 
-async def _standing(session: AsyncSession, company_id: uuid.UUID, category: str, title: str) -> uuid.UUID | None:
-    """The id of a notice with this category and title that no user has dismissed yet."""
-    return (await session.execute(
-        select(Notification.id).where(
-            Notification.company_id == company_id,
-            Notification.category == category,
-            Notification.title == title,
-            ~exists().where(NotificationRead.notification_id == Notification.id),
-        ).limit(1)
-    )).scalar()
-
-
-async def has_standing(
-    session: AsyncSession,
-    company_id: uuid.UUID,
-    category: str,
-    title: str,
-) -> bool:
-    """A notice with this category and title that no user has dismissed yet. Notifiers
-    dedupe on it: while it stands nothing new is created, and once someone has
-    dismissed it a state that persists notifies again."""
-    return await _standing(session, company_id, category, title) is not None
-
-
 async def notify_once(
     session: AsyncSession,
     company_id: uuid.UUID,
@@ -236,11 +253,16 @@ async def notify_once(
     user_id: uuid.UUID | None = None,
     action_url: str | None = None,
     i18n: dict | None = None,
-) -> bool:
+) -> None:
     """A high-priority notice told once to the company, or to the member ``user_id``: never
     again to the same addressee with the same title and body, read or not. A notice already
     told takes ``action_url`` as its link, so the link follows the condition to where it is now.
-    ``action_url`` and ``i18n`` as for ``create``. Caller commits. Returns whether it was created."""
+    ``action_url`` and ``i18n`` as for ``create``; written when the session commits."""
+    _defer(session, company_id, partial(_notify_once, company_id=company_id, category=category, title=title, body=body,
+                            user_id=user_id, action_url=action_url, i18n=i18n))
+
+
+def _notify_once(sync: Session, *, company_id, category, title, body, user_id, action_url, i18n) -> None:
     same = (
         Notification.company_id == company_id,
         Notification.category == category,
@@ -248,13 +270,12 @@ async def notify_once(
         Notification.body == body,
         Notification.user_id == user_id if user_id is not None else Notification.user_id.is_(None),
     )
-    if (await session.execute(select(Notification.id).where(*same).limit(1))).first():
-        await session.execute(update(Notification).where(*same, Notification.action_url.is_distinct_from(action_url))
-                              .values(action_url=action_url))
-        return False
-    await create(session, company_id, category, title, body, user_id=user_id, action_url=action_url,
-                 priority="high", i18n=i18n)
-    return True
+    if sync.execute(select(Notification.id).where(*same).limit(1)).first():
+        sync.execute(update(Notification).where(*same, Notification.action_url.is_distinct_from(action_url))
+                     .values(action_url=action_url))
+        return
+    _add(sync, notif=Notification(company_id=company_id, user_id=user_id, category=category, title=title,
+                                  body=body, action_url=action_url, priority="high", i18n=i18n))
 
 
 async def notify_standing(
@@ -266,20 +287,32 @@ async def notify_standing(
     *,
     action_url: str | None = None,
     i18n: dict | None = None,
-) -> bool:
+) -> None:
     """A condition told to the company as a high-priority notice that stays current.
 
-    Deduped on a standing notice with the same category and title (has_standing): while
-    it stands it is brought up to date with this body, so it never shows an earlier
-    state, and once dismissed a condition that persists notifies again. ``action_url``
-    and ``i18n`` as for ``create``. Caller commits. Returns whether it was created."""
-    standing = await _standing(session, company_id, category, title)
+    Deduped on a standing notice with the same category and title, one no user has
+    dismissed yet: while it stands it is brought up to date with this body, so it never
+    shows an earlier state, and once dismissed a condition that persists notifies again.
+    ``action_url`` and ``i18n`` as for ``create``; written when the session commits."""
+    _defer(session, company_id, partial(_notify_standing, company_id=company_id, category=category, title=title, body=body,
+                            action_url=action_url, i18n=i18n))
+
+
+def _notify_standing(sync: Session, *, company_id, category, title, body, action_url, i18n) -> None:
+    standing = sync.execute(
+        select(Notification.id).where(
+            Notification.company_id == company_id,
+            Notification.category == category,
+            Notification.title == title,
+            ~exists().where(NotificationRead.notification_id == Notification.id),
+        ).limit(1)
+    ).scalar()
     if standing is not None:
-        await session.execute(update(Notification).where(Notification.id == standing)
-                              .values(body=body, action_url=action_url, i18n=i18n))
-        return False
-    await create(session, company_id, category, title, body, action_url=action_url, priority="high", i18n=i18n)
-    return True
+        sync.execute(update(Notification).where(Notification.id == standing)
+                     .values(body=body, action_url=action_url, i18n=i18n))
+        return
+    _add(sync, notif=Notification(company_id=company_id, category=category, title=title, body=body,
+                                  action_url=action_url, priority="high", i18n=i18n))
 
 
 async def notify_every_company(
@@ -290,37 +323,31 @@ async def notify_every_company(
     *,
     action_url: str | None = None,
     i18n: dict | None = None,
-) -> int:
+) -> None:
     """An instance-wide condition, told to every company (notify_standing): a reboot
-    while a notice stands brings it up to date instead of adding another. Caller commits.
-    Returns the number of notifications created."""
+    while a notice stands brings it up to date instead of adding another. Written when
+    the session commits."""
     from celerp.models.company import Company
 
-    created = 0
     for cid in (await session.execute(select(Company.id))).scalars().all():
-        created += await notify_standing(session, cid, category, title, body, action_url=action_url, i18n=i18n)
-    return created
+        await notify_standing(session, cid, category, title, body, action_url=action_url, i18n=i18n)
 
 
-async def clear_every_company(session: AsyncSession, category: str, title: str) -> int:
+async def clear_every_company(session: AsyncSession, category: str, title: str) -> None:
     """An instance-wide condition (see notify_every_company) no longer holds: every
-    company's notice of it is removed, so a notice that stands always means the
-    condition holds now. Caller commits. Returns the number removed."""
-    result = await session.execute(
-        delete(Notification).where(Notification.category == category, Notification.title == title)
-    )
-    return result.rowcount
+    company's notice of it is removed when the session commits, so a notice that stands
+    always means the condition holds now."""
+    _defer(session, None, lambda sync: sync.execute(
+        delete(Notification).where(Notification.category == category, Notification.title == title)))
 
 
-async def clear_standing(session: AsyncSession, company_id: uuid.UUID, category: str, title: str) -> int:
+async def clear_standing(session: AsyncSession, company_id: uuid.UUID, category: str, title: str) -> None:
     """A company's condition (see notify_standing) no longer holds: its notice is
-    removed, so a notice that stands always means the condition holds now. Caller
-    commits. Returns the number removed."""
-    result = await session.execute(
+    removed when the session commits, so a notice that stands always means the
+    condition holds now."""
+    _defer(session, company_id, lambda sync: sync.execute(
         delete(Notification).where(Notification.company_id == company_id, Notification.category == category,
-                                   Notification.title == title)
-    )
-    return result.rowcount
+                                   Notification.title == title)))
 
 
 async def get_unread_count(
@@ -405,17 +432,11 @@ async def mark_done(
     session: AsyncSession,
     company_id: uuid.UUID,
     action_url: str,
-) -> int:
+) -> None:
     """The action a notice asks for has been taken: every notice of the company linking
-    to it is removed, so the bell never asks for it again. Caller commits. Returns the
-    number removed."""
-    result = await session.execute(
-        delete(Notification).where(
-            Notification.company_id == company_id,
-            Notification.action_url == action_url,
-        )
-    )
-    return result.rowcount
+    to it is removed when the session commits, so the bell never asks for it again."""
+    _defer(session, company_id, lambda sync: sync.execute(
+        delete(Notification).where(Notification.company_id == company_id, Notification.action_url == action_url)))
 
 
 async def mark_all_read(
