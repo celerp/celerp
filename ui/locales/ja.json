@@ -756,6 +756,7 @@
   "file_tag.disposal": "除却",
   "file_tag.valuations": "評価",
   "filter.all_time": "全期間",
+  "filter.date_range": "期間",
   "filter.last_12m": "過去12ヶ月",
   "filter.last_3m": "過去3ヶ月",
   "filter.last_6m": "過去6ヶ月",

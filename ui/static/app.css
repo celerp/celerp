@@ -1216,6 +1216,12 @@ th.cell--number { font-family: inherit; }
 .search-scope { position: relative; display: inline-block; }
 .search-scope-label { position: absolute; bottom: 100%; left: 0; right: 0; text-align: center; font-size: 10px; color: var(--c-text2); margin-bottom: 2px; white-space: nowrap; }
 .date-custom-form { display: flex; align-items: center; gap: 6px; }
+/* List filter bar: the search box and the date dropdown on one row. The custom range appears only when Custom is chosen. */
+.list-filter-bar { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
+.date-range-form { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.date-range-custom { display: flex; align-items: center; gap: 6px; }
+.date-range-custom[hidden] { display: none; }
+.date-preset-select { width: auto; }
 .date-input {
   padding: 4px 8px; font-size: 11px; border-radius: var(--radius);
   background: var(--c-bg2); border: 1px solid var(--c-border); color: var(--c-text);

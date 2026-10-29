@@ -756,6 +756,7 @@
   "file_tag.disposal": "Baja",
   "file_tag.valuations": "Valoraciones",
   "filter.all_time": "Todo el tiempo",
+  "filter.date_range": "Rango de fechas",
   "filter.last_12m": "Últimos 12 meses",
   "filter.last_3m": "Últimos 3 meses",
   "filter.last_6m": "Últimos 6 meses",

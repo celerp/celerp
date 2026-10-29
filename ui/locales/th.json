@@ -756,6 +756,7 @@
   "file_tag.disposal": "การจำหน่าย",
   "file_tag.valuations": "การประเมินมูลค่า",
   "filter.all_time": "ทั้งหมด",
+  "filter.date_range": "ช่วงวันที่",
   "filter.last_12m": "12 เดือนที่ผ่านมา",
   "filter.last_3m": "3 เดือนที่ผ่านมา",
   "filter.last_6m": "6 เดือนที่ผ่านมา",

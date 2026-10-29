@@ -16,7 +16,7 @@ from fasthtml.common import *
 from starlette.requests import Request
 from starlette.responses import RedirectResponse
 
-from urllib.parse import quote_plus, urlencode
+from urllib.parse import parse_qsl, quote_plus, urlencode
 
 import ui.api_client as api
 from ui.components.icons import import_icon
@@ -441,7 +441,7 @@ def _doc_files_section(entity_type: str, entity_id: str, files: list[dict], **kw
 from ui.components.notes import _safe_id
 from ui.config import get_token as _token, get_role as _get_role
 from ui.i18n import category_label, doc_type_label, get_lang, refusal_text, t
-from ui.routes.reports import _company_today, _date_filter_bar, _get_company, _parse_dates, _resolve_preset
+from ui.routes.reports import _company_today, _date_presets, _get_company, _parse_dates, _resolve_preset
 
 logger = logging.getLogger(__name__)
 
@@ -727,16 +727,52 @@ def _docs_content(state: dict[str, str], docs: list[dict], total_count: int, sum
     )
 
 
+def _date_range_select(base_url: str, date_from: str, date_to: str, preset: str,
+                       extra_params: str = "", lang: str | None = None) -> FT:
+    """The one date control of a list page: a preset dropdown that reveals a from/to range (with
+    Apply) only when Custom is chosen. extra_params ("&k=v...") rides along as hidden fields so
+    switching the dates keeps the search and every other filter."""
+    hidden_params = [
+        Input(type="hidden", name=k, value=v)
+        for k, v in parse_qsl(extra_params.lstrip("&"), keep_blank_values=True)
+        if k and k not in _DATE_KEYS
+    ]
+    is_custom = preset == "custom"
+    # A preset submits at once; its from/to are dropped so they cannot override it.
+    on_change = (
+        "var f=this.form,r=f.querySelector('.date-range-custom'),c=this.value==='custom';"
+        "r.hidden=!c;"
+        "if(c){f.elements['from'].focus();return;}"
+        "f.querySelectorAll('.date-input').forEach(function(i){i.disabled=true;});f.submit();"
+    )
+    return Form(
+        *hidden_params,
+        Select(
+            *[Option(label, value=key, selected=key == preset) for key, label in _date_presets(lang)],
+            name="preset", cls="form-input form-input--sm date-preset-select",
+            aria_label=t("filter.date_range", lang), onchange=on_change,
+        ),
+        Span(
+            Input(type="date", name="from", value=date_from, max=date_to or "", cls="date-input"),
+            Span("--", cls="date-sep"),
+            Input(type="date", name="to", value=date_to, min=date_from or "", cls="date-input"),
+            Button(t("btn.apply", lang), type="submit", cls="btn btn--secondary btn--sm"),
+            cls="date-range-custom", hidden=not is_custom,
+        ),
+        action=base_url, method="get", cls="date-range-form",
+    )
+
+
 def _search_controls(base: str, state: dict[str, str], date_from: str, date_to: str, preset: str,
                      can_export: bool, lang: str, oob: bool = False) -> tuple[FT, FT]:
-    """(Export CSV link, date filter bar) for /docs or /lists. Both carry the page state, search
+    """(Export CSV link, date dropdown) for /docs or /lists. Both carry the page state, search
     included, so a search response sends them again out of band (oob=True)."""
     swap = {"hx_swap_oob": "true"} if oob else {}
     extra = _state_query(state, without=_DATE_KEYS)
     export = A(t("btn.export_csv"), href=f"/{base}/export/csv?" + _state_query(state), cls="btn btn--secondary",
                id=f"{base}-export", **swap) if can_export else ""
-    dates = Div(_date_filter_bar(f"/{base}", date_from, date_to, preset, extra_params=f"&{extra}" if extra else "",
-                                 lang=lang), id=f"{base}-dates", **swap)
+    dates = Div(_date_range_select(f"/{base}", date_from, date_to, preset, extra_params=f"&{extra}" if extra else "",
+                                   lang=lang), id=f"{base}-dates", cls="list-filter-dates", **swap)
     return export, dates
 
 
@@ -1666,13 +1702,6 @@ def setup_routes(app):
         return await base_shell(
             page_header(
                 section_title,
-                search_bar(
-                    placeholder=t("documents.search_docs_placeholder"),
-                    target="#doc-content",
-                    url=search_url,
-                    value=q,
-                    label=t(_DOC_TYPE_SEARCH_LABELS.get(doc_type, "documents.search_all")),
-                ),
                 Button(
                     new_label,
                     hx_post=f"/docs/create-blank?type={create_type}",
@@ -1683,7 +1712,17 @@ def setup_routes(app):
                 A(import_icon(), t("btn.import"), href="/docs/import", cls="btn btn--secondary", data_import_hint=True) if can_import_documents(_settings, _role) else "",
             ),
             _doc_type_intro(doc_type),
-            date_bar,
+            Div(
+                search_bar(
+                    placeholder=t("documents.search_docs_placeholder"),
+                    target="#doc-content",
+                    url=search_url,
+                    value=q,
+                    label=t(_DOC_TYPE_SEARCH_LABELS.get(doc_type, "documents.search_all")),
+                ),
+                date_bar,
+                cls="list-filter-bar",
+            ),
             _docs_content(state, docs, total_count, summary, page, per_page, currency, lang),
             title=page_title(section_label_key),
             nav_active=_doc_nav_key(doc_type),
@@ -3884,16 +3923,21 @@ celerpUpdateBulkAlloc();
                          Option(t("doc.other"), value="other")]
         _tab_enc, _q_enc = quote_plus(tab), quote_plus(q)
         _method_enc, _contact_enc = quote_plus(method_filter), quote_plus(contact_filter)
+        # The search, contact and method boxes navigate by URL; the chosen dates travel with them.
+        _dates_qs = urlencode({k: v for k in _DATE_KEYS if (v := request.query_params.get(k, ""))})
+        _dates_enc = f"&{_dates_qs}" if _dates_qs else ""
         filter_bar = Div(
             Input(type="search", name="q", value=q, placeholder=t("documents.search_doc_ref"),
                   cls="form-input form-input--sm", style="max-width:200px;",
-                  onchange=f"window.location='/payments?tab={_tab_enc}&q='+encodeURIComponent(this.value)+'&method={_method_enc}&contact={_contact_enc}'"),
+                  onchange=f"window.location='/payments?tab={_tab_enc}&q='+encodeURIComponent(this.value)+'&method={_method_enc}&contact={_contact_enc}{_dates_enc}'"),
             Input(type="text", name="contact", value=contact_filter, placeholder=t("documents.contact_placeholder"),
                   cls="form-input form-input--sm", style="max-width:200px;",
-                  onchange=f"window.location='/payments?tab={_tab_enc}&q={_q_enc}&method={_method_enc}&contact='+encodeURIComponent(this.value)"),
+                  onchange=f"window.location='/payments?tab={_tab_enc}&q={_q_enc}&method={_method_enc}{_dates_enc}&contact='+encodeURIComponent(this.value)"),
             Select(*_methods_opts, name="method",
                    cls="form-input form-input--sm", style="max-width:150px;",
-                   onchange=f"window.location='/payments?tab={_tab_enc}&q={_q_enc}&method='+encodeURIComponent(this.value)+'&contact={_contact_enc}'"),
+                   onchange=f"window.location='/payments?tab={_tab_enc}&q={_q_enc}&method='+encodeURIComponent(this.value)+'&contact={_contact_enc}{_dates_enc}'"),
+            _date_range_select("/payments", date_from, date_to, preset,
+                               extra_params=f"&tab={_tab_enc}{extra_params}", lang=get_lang(request)),
             cls="filter-bar",
             style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-bottom:1rem;",
         )
@@ -3927,7 +3971,6 @@ celerpUpdateBulkAlloc();
             breadcrumbs([(t("nav.dashboard"), "/dashboard"), (t("documents.payments"), None)]),
             page_header(t("documents.payments")),
             tabs,
-            _date_filter_bar("/payments", date_from, date_to, preset, extra_params=f"&tab={quote_plus(tab)}{extra_params}", lang=lang),
             summary_bar,
             filter_bar,
             payment_table,
@@ -4395,14 +4438,17 @@ celerpUpdateBulkAlloc();
         return await base_shell(
             page_header(
                 t("page.lists", lang),
-                search_bar(placeholder=t("documents.search_ref_customer_short"), target="#list-content",
-                           url="/lists/search?" + _state_query(state, without=("q",)), value=q,
-                           label=t("documents.search_lists")),
                 _new_btn if role_has_permission(_settings, _role, "edit_documents") else "",
                 export_link,
                 A(import_icon(), t("btn.import"), href="/lists/import", cls="btn btn--secondary", data_import_hint=True) if role_has_permission(_settings, _role, "import_export_data") else "",
             ),
-            date_bar,
+            Div(
+                search_bar(placeholder=t("documents.search_ref_customer_short"), target="#list-content",
+                           url="/lists/search?" + _state_query(state, without=("q",)), value=q,
+                           label=t("documents.search_lists")),
+                date_bar,
+                cls="list-filter-bar",
+            ),
             _list_type_tabs(list_type, state),
             # Self-explanatory page: the shipping tab says what these are and what to do next.
             (P(t("lists.shipping_intro", lang), cls="section-hint") if list_type == "shipping_doc" else ""),
