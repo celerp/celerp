@@ -586,11 +586,8 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
 
     from fastapi import HTTPException
 
-    from celerp_docs.routes_payments import (
-        WOOCOMMERCE_DEPOSIT_ACCOUNT_KEY,
-        deposit_account,
-        require_online_deposit_account,
-    )
+    from celerp.services.payments import WOOCOMMERCE_DEPOSIT_ACCOUNT_KEY
+    from celerp_docs.routes_payments import deposit_account, require_online_deposit_account
     from celerp_docs.routes import (
         finalize_document,
         _fulfill_lines_impl,
