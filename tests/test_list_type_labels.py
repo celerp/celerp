@@ -1,7 +1,7 @@
 # Copyright (c) 2026 Noah Severs. All rights reserved.
 # SPDX-License-Identifier: LicenseRef-Proprietary
-"""List types are shown in the user's language on the Lists tabs, while the raw
-type stays in the tab links."""
+"""List types are shown in the user's language in the Lists Type select, while the raw
+type stays the option value."""
 from __future__ import annotations
 
 import pytest
@@ -9,7 +9,7 @@ import pytest
 from ui import i18n
 from fasthtml.common import to_xml
 
-from ui.routes.documents import _list_type_tabs
+from ui.routes.documents import _list_type_options
 
 _DE = {"quotation": "Angebot", "transfer": "Umlagerung", "audit": "Inventur",
        "writeoff": "Abschreibung", "shipping_doc": "Versandbeleg"}
@@ -22,13 +22,19 @@ def de():
     i18n.set_lang("en")
 
 
-def test_list_type_tabs_are_translated(de):
-    html = to_xml(_list_type_tabs("", {}))
-    for raw, label in _DE.items():
-        assert f">{label}</a>" in html, raw
-        assert f"type={raw}" in html
+def test_list_type_options_are_translated(de):
+    options = dict(_list_type_options("de"))
+    assert options.pop("") == "Alle"
+    assert options == _DE
     for english in ("Quotation", "Transfer", "Audit", "Write-off", "Shipping Document"):
-        assert f">{english}</a>" not in html
+        assert english not in options.values()
+
+
+def test_list_type_select_renders_the_translated_options(de):
+    from ui.components.list_page import select_field
+    html = to_xml(select_field("type", "Typ", _list_type_options("de"), "audit"))
+    for raw, label in _DE.items():
+        assert f'value="{raw}"' in html and f">{label}</option>" in html, raw
 
 
 @pytest.mark.parametrize("lang", sorted(i18n._DISK_LANGS))

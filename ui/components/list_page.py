@@ -53,17 +53,19 @@ def filter_field(label: str, control, *, field_id: str, wide: bool = False) -> o
 
 
 def select_field(name: str, label: str, options: list[tuple[str, str]], value: str, *,
-                 lang: str | None = None, locked: bool = False) -> object:
+                 lang: str | None = None, locked: bool = False,
+                 on_change: str = "this.form.submit()") -> object:
     """A labelled select that submits its form on change. options: [(value, label)], labels
     already translated. locked=True means the page fixes the value (a menu entry chose it), so
-    only a hidden field carries it."""
+    only a hidden field carries it. on_change replaces the plain submit, e.g. to drop fields
+    that the new value makes stale first."""
     if locked:
         return Input(type="hidden", name=name, value=value)
     field_id = f"filter-{name}"
     return filter_field(label, Select(
         *[Option(text, value=key, selected=key == value) for key, text in options],
         name=name, id=field_id, cls="form-input form-input--sm filter-select",
-        onchange="this.form.submit()",
+        onchange=on_change,
     ), field_id=field_id)
 
 

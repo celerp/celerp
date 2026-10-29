@@ -45,7 +45,7 @@ def test_dashboard_links_use_filters_that_match_documents():
 
 def _card_hrefs(html: str) -> dict[str, str]:
     return {label: html_lib.unescape(href) for href, label in re.findall(
-        r'<a href="([^"]*)" class="status-card[^"]*"><span class="status-card-label">([^<]*)</span>', html)}
+        r'<a href="([^"]*)" class="status-card[^"]*"[^>]*><span class="status-card-label">([^<]*)</span>', html)}
 
 
 @pytest.mark.parametrize("doc_type, awaiting", [("invoice", _INVOICE_AWAITING), ("bill", _BILL_AWAITING)])
@@ -66,7 +66,7 @@ def test_all_documents_overdue_card_counts_and_links_the_overdue_list(doc_type):
     html = str(_doc_status_cards([], "", summary, "USD", doc_type=doc_type, lang="en"))
     href = _card_hrefs(html)["Overdue"]
     assert "overdue_only=1" in href and "status=overdue" not in href, href
-    count = re.search(r'overdue_only=1" class="status-card[^"]*">.*?<span class="status-card-count">(\d+)</span>', html)
+    count = re.search(r'overdue_only=1" class="status-card[^"]*"[^>]*>.*?<span class="status-card-count">(\d+)</span>', html)
     assert count and count.group(1) == "3", html
 
 

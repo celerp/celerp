@@ -307,35 +307,58 @@ class TestPickedPageSize:
         assert urls and all(filter_ in u and "per_page=100" in u for u in urls), urls
 
     @pytest.mark.asyncio
-    async def test_list_type_tabs_load_the_whole_page(self, ui_client):
-        """A type tab opens that type's page, so its search box, cards and pager all
-        follow the new type instead of keeping the previous one."""
+    async def test_list_type_select_submits_the_panel(self, ui_client):
+        """The Type select (it replaced the type tabs) reloads the whole page through the
+        filters panel, so its search box, cards and pager all follow the new type."""
         ui_client.cookies.update(_cookies())
         with patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)), \
              patch("ui.api_client.list_lists", new=AsyncMock(return_value={"items": [], "total": 0})), \
              patch("ui.api_client.get_list_summary", new=AsyncMock(return_value={"count_by_status": {}})):
             r = await ui_client.get("/lists?type=audit")
         assert r.status_code == 200
-        tabs = re.search(r'<div[^>]*id="type-tabs".*?</div>', r.text, re.S).group(0)
-        links = re.findall(r"<a[^>]*>", tabs)
-        assert links and all('href="/lists' in a and "hx-get" not in a for a in links), links
+        assert 'id="type-tabs"' not in r.text
+        panel = re.search(r'<form[^>]*id="list-filters".*?</form>', r.text, re.S).group(0)
+        assert re.search(r'<form[^>]*action="/lists"[^>]*method="get"', panel)
+        select = re.search(r'<select name="type"[^>]*>.*?</select>', panel, re.S).group(0)
+        assert "submit()" in select and "hx-get" not in select
+        assert re.findall(r'<option value="([^"]*)"', select) == ["", "quotation", "transfer", "audit", "writeoff", "shipping_doc"]
+        assert re.search(r'<option value="audit" selected>', select)
 
     @pytest.mark.asyncio
-    async def test_list_type_tabs_keep_dates_and_page_size(self, ui_client):
-        """Switching type keeps the chosen date range and page size, and starts a fresh
-        search and status filter for the new type."""
+    async def test_list_type_change_keeps_dates_and_page_size_and_drops_status(self, ui_client):
+        """Switching type keeps the search, the chosen dates and the page size; the status
+        filter fields are marked so the Type select drops them before it submits."""
         ui_client.cookies.update(_cookies())
         with patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)), \
              patch("ui.api_client.list_lists", new=AsyncMock(return_value={"items": [], "total": 0})), \
              patch("ui.api_client.get_list_summary", new=AsyncMock(return_value={"count_by_status": {}})):
             r = await ui_client.get("/lists?type=audit&q=abc&status=void&preset=custom&from=2026-01-01&to=2026-01-31&per_page=100")
         assert r.status_code == 200
-        tabs = re.search(r'<div[^>]*id="type-tabs".*?</div>', r.text, re.S).group(0)
-        hrefs = [h.replace("&amp;", "&") for h in re.findall(r'href="([^"]*)"', tabs)]
-        kept = "per_page=100&preset=custom&from=2026-01-01&to=2026-01-31"
-        assert hrefs[0] == f"/lists?{kept}", hrefs
-        assert f"/lists?type=quotation&{kept}" in hrefs, hrefs
-        assert not any("q=" in h or "status=" in h for h in hrefs), hrefs
+        panel = re.search(r'<form[^>]*id="list-filters".*?</form>', r.text, re.S).group(0)
+        hidden = dict(re.findall(r'<input type="hidden" name="([^"]*)" value="([^"]*)"', panel))
+        assert hidden == {"per_page": "100", "status": "void"}, hidden
+        status = re.search(r'<input type="hidden" name="status"[^>]*>', panel).group(0)
+        assert "list-status-filter" in status
+        select = re.search(r'<select name="type"[^>]*>', panel).group(0)
+        assert ".list-status-filter" in select and "submit()" in select
+        assert re.search(r'<input type="date" name="from" value="2026-01-01"', panel)
+        assert re.search(r'<input type="date" name="to" value="2026-01-31"', panel)
+        assert re.search(r'<input[^>]*name="q"[^>]*value="abc"', panel)
+        assert 'data-unchosen="1"' not in panel, "a chosen range is kept on a type change"
+
+    @pytest.mark.asyncio
+    async def test_list_type_change_does_not_turn_the_default_dates_into_a_choice(self, ui_client):
+        """With no dates in the address the panel shows the company default; those fields are
+        marked so a type change does not send them as a chosen range."""
+        ui_client.cookies.update(_cookies())
+        with patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)), \
+             patch("ui.api_client.list_lists", new=AsyncMock(return_value={"items": [], "total": 0})), \
+             patch("ui.api_client.get_list_summary", new=AsyncMock(return_value={"count_by_status": {}})):
+            r = await ui_client.get("/lists?type=audit")
+        panel = re.search(r'<form[^>]*id="list-filters".*?</form>', r.text, re.S).group(0)
+        for name in ("preset", "from", "to"):
+            control = re.search(rf'<(?:select|input)[^>]*name="{name}"[^>]*>', panel).group(0)
+            assert 'data-unchosen="1"' in control, control
 
     @pytest.mark.asyncio
     async def test_subscriptions_honor_per_page(self, ui_client):
@@ -372,7 +395,14 @@ class TestLiveSearchResults:
         area = re.search(rf'<div[^>]*id="{content_id}"', r.text)
         assert area, content_id
         after = r.text[area.start():]
-        assert 'class="status-card' in after and "pagination" in after
+        assert "pagination" in after
+        if content_id == "list-content":
+            # The cards sit above the filters panel, outside the area the search replaces.
+            cards = r.text.index('id="list-cards"')
+            assert cards < r.text.index('id="list-filters"') < area.start()
+            assert 'class="status-card' in r.text[cards:area.start()]
+        else:
+            assert 'class="status-card' in after
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("path, api_fn, summary_fn, prefix, content_id", [
@@ -471,7 +501,6 @@ class TestLiveSearchResults:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("path, page, base", [
         ("/docs/search?type=invoice&q=ruby", "/docs?type=invoice", "docs"),
-        ("/lists/search?type=audit&q=ruby", "/lists?type=audit", "lists"),
     ])
     async def test_search_updates_export_and_date_presets(self, ui_client, path, page, base):
         """After a search, Export CSV and the date presets keep the search, like a reload would."""
@@ -496,12 +525,35 @@ class TestLiveSearchResults:
         assert re.search(r'<input[^>]*name="q"[^>]*value="ruby"|<input[^>]*value="ruby"[^>]*name="q"', form.group(0))
         assert "q=ruby" in re.search(rf'href="(/{base}/export/csv\?[^"]*)"', r.text).group(1)
 
+    @pytest.mark.asyncio
+    async def test_lists_search_updates_export_and_cards(self, ui_client):
+        """After a search on /lists, Export CSV and the status cards keep the search, like a
+        reload would. The panel needs nothing: the search box is in it."""
+        listed = AsyncMock(return_value={"items": [_DOC], "total": 1})
+        ui_client.cookies.update(_cookies())
+        with patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)), \
+             patch("ui.api_client.list_lists", new=listed), \
+             patch("ui.api_client.get_list_summary", new=AsyncMock(return_value={"count_by_status": {}, "draft_count": 1})):
+            full = await ui_client.get("/lists?type=audit")
+            r = await ui_client.get("/lists/search?type=audit&q=ruby", headers={"HX-Request": "true"})
+        assert r.status_code == 200
+        for text, oob in ((full.text, False), (r.text, True)):
+            export = re.search(r'<a[^>]*href="/lists/export/csv\?[^"]*"[^>]*>', text)
+            cards = re.search(r'<div[^>]*id="list-cards"[^>]*>', text)
+            assert export and cards, text[:300]
+            assert ('hx-swap-oob="true"' in export.group(0)) is oob
+            assert ('hx-swap-oob="true"' in cards.group(0)) is oob
+        assert 'id="list-filters"' not in r.text and 'id="lists-dates"' not in r.text
+        assert "q=ruby" in re.search(r'href="(/lists/export/csv\?[^"]*)"', r.text).group(1)
+        card_links = [h.replace("&amp;", "&") for h in re.findall(r'<a href="([^"]*)" class="status-card', r.text)]
+        assert card_links and all("q=ruby" in h and "type=audit" in h for h in card_links), card_links
+
 
 class TestDateRangeDropdown:
     """One date control per list page: a preset dropdown, with the from/to range only for Custom."""
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("page", ["/docs", "/lists"])
+    @pytest.mark.parametrize("page", ["/docs"])
     @pytest.mark.parametrize("query, shown", [
         ("?preset=this_month", False),
         ("?preset=custom&from=2026-01-01&to=2026-02-01", True),
@@ -523,12 +575,42 @@ class TestDateRangeDropdown:
         assert (selected.group(1) or selected.group(2)) == query.split("preset=")[1].split("&")[0]
 
     @pytest.mark.asyncio
-    async def test_search_shares_the_bar_with_the_dates(self, ui_client):
+    @pytest.mark.parametrize("query, shown", [
+        ("?preset=this_month", False),
+        ("?preset=custom&from=2026-01-01&to=2026-02-01", True),
+    ])
+    async def test_lists_custom_range_only_for_custom(self, ui_client, query, shown):
+        listed = AsyncMock(return_value={"items": [_DOC], "total": 1})
+        ui_client.cookies.update(_cookies())
+        with patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)), \
+             patch("ui.api_client.list_lists", new=listed), \
+             patch("ui.api_client.get_list_summary", new=AsyncMock(return_value={"count_by_status": {}})):
+            r = await ui_client.get("/lists" + query)
+        assert r.status_code == 200
+        assert "preset-btn" not in r.text and "date-range-form" not in r.text
+        assert r.text.count('name="preset"') == 1
+        custom = re.findall(r'<(?:div|button)[^>]*class="[^"]*period-custom[^"]*"[^>]*>', r.text)
+        assert len(custom) == 3, custom  # From, To and Apply
+        assert all(("hidden" in tag) is not shown for tag in custom), custom
+        preset = re.search(r'<select name="preset".*?</select>', r.text, re.S).group(0)
+        assert re.search(r'<option value="([^"]*)" selected>', preset).group(1) == query.split("preset=")[1].split("&")[0]
+
+    @pytest.mark.asyncio
+    async def test_lists_filters_are_one_panel_with_labels(self, ui_client):
+        """Search, Type and Period sit in one GET panel with a label above each, and Reset
+        is a link back to the page."""
         listed = AsyncMock(return_value={"items": [_DOC], "total": 1})
         ui_client.cookies.update(_cookies())
         with patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)), \
              patch("ui.api_client.list_lists", new=listed), \
              patch("ui.api_client.get_list_summary", new=AsyncMock(return_value={"count_by_status": {}})):
             r = await ui_client.get("/lists")
-        bar = re.search(r'<div class="list-filter-bar".*?id="lists-dates"', r.text, re.S)
-        assert bar and 'id="search-input"' in bar.group(0)
+        assert "list-filter-bar" not in r.text
+        panel = re.search(r'<form[^>]*id="list-filters".*?</form>', r.text, re.S).group(0)
+        labels = dict((v, k) for k, v in re.findall(r'<label for="([^"]*)" class="filter-field-label">([^<]*)</label>', panel))
+        assert labels == {"Search": "search-input", "Type": "filter-type", "Period": "filter-preset",
+                          "From": "filter-from", "To": "filter-to"}, labels
+        for control_id in labels.values():
+            assert f'id="{control_id}"' in panel, control_id
+        assert re.search(r'<a href="/lists" class="[^"]*filter-reset', panel)
+        assert re.search(r'<div class="list-page">', r.text)

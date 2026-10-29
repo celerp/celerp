@@ -152,7 +152,11 @@ def status_cards(cards: list[dict], base_url: str, active_status: str | None = N
         ]
         if total is not None:
             inner.append(Span(fmt_money(total, currency), cls="status-card-total"))
-        return A(*inner, href=href, cls=cls, **({"title": title} if title else {}))
+        card = A(*inner, href=href, cls=cls, **({"title": title} if title else {}))
+        if is_active:
+            # Set after the class so the card's markup still opens href, class (pages and tests read it so).
+            card.attrs["aria-current"] = "true"
+        return card
 
     # Ensure "All" card is first (optional)
     _all_label = all_label if all_label is not None else t("doc.all")

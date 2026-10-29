@@ -28,7 +28,7 @@ from celerp.services.units import (
 )
 from celerp.services.line_measures import identifier_backfill, item_measure_meta, line_identifier, measure_locks, measure_sublines, qty_label, resolve_line_measures, splitting_allowed
 from ui.components.shell import base_shell, page_header, toast_header, page_title
-from ui.components.list_page import date_range_select
+from ui.components.list_page import date_range_select, filter_field, filter_panel, list_page_header, period_fields, select_field
 from ui.security import not_permitted_redirect
 from ui.components.table import search_bar, search_results, EMPTY, pagination, per_page_value, server_pager, searchable_select, breadcrumbs, status_cards, empty_state_cta, fmt_money, fmt_rate, format_value, currency_symbol, unwrap_address, col_resize_script, bank_account_options as _bank_account_options, display_cell, editable_cell, display_enum, display_unit, doc_href
 from celerp.services.background import spawn_background
@@ -738,11 +738,19 @@ def _search_controls(base: str, state: dict[str, str], date_from: str, date_to: 
     included, so a search response sends them again out of band (oob=True)."""
     swap = {"hx_swap_oob": "true"} if oob else {}
     extra = _state_query(state, without=_DATE_KEYS)
-    export = A(t("btn.export_csv"), href=f"/{base}/export/csv?" + _state_query(state), cls="btn btn--secondary",
-               id=f"{base}-export", **swap) if can_export else ""
+    export = _export_link(base, state, can_export, oob=oob)
     dates = Div(_date_range_select(f"/{base}", date_from, date_to, preset, extra_params=f"&{extra}" if extra else "",
                                    lang=lang), id=f"{base}-dates", cls="list-filter-dates", **swap)
     return export, dates
+
+
+def _export_link(base: str, state: dict[str, str], can_export: bool, *, oob: bool = False) -> FT:
+    """Export CSV for /docs or /lists, carrying the page state (search included), so a search
+    response sends it again out of band (oob=True)."""
+    if not can_export:
+        return ""
+    return A(t("btn.export_csv"), href=f"/{base}/export/csv?" + _state_query(state), cls="btn btn--secondary",
+             id=f"{base}-export", **({"hx_swap_oob": "true"} if oob else {}))
 
 
 async def _list_results(token: str, state: dict[str, str], date_from: str, date_to: str,
@@ -755,19 +763,65 @@ async def _list_results(token: str, state: dict[str, str], date_from: str, date_
     return lists, result.get("total", len(lists)), summary
 
 
-def _lists_content(state: dict[str, str], lists: list[dict], total_count: int, summary: dict,
-                   page: int, per_page: int, lang: str) -> FT:
-    """Status cards, table and pager for a lists page state: the page embeds it and the live
-    search replaces it, so all three always describe the same result set."""
+def _list_cards(state: dict[str, str], summary: dict, *, oob: bool = False) -> FT:
+    """The status widgets for a lists page state. They sit above the filters panel, outside the
+    area the live search replaces, so a search response sends them again out of band."""
     all_issued = _list_api_params(state, "", "", limit=None).get("all_issued") == "1"
     return Div(
         _list_status_cards(summary, "all_issued" if all_issued else state.get("status", ""),
                            converted_to_type=state.get("converted_to_type", ""),
                            base_url="/lists?" + _state_query(state, without=_LIST_STATUS_KEYS),
                            dates_chosen=any(state.get(k) for k in _DATE_KEYS)),
+        id="list-cards", **({"hx_swap_oob": "true"} if oob else {}),
+    )
+
+
+def _lists_content(state: dict[str, str], lists: list[dict], total_count: int,
+                   page: int, per_page: int, lang: str) -> FT:
+    """Table and pager for a lists page state: the page embeds it and the live search replaces
+    it (with the cards out of band), so both always describe the same result set."""
+    return Div(
         _list_table(lists, lang=lang),
         pagination(page, total_count, per_page, "/lists", _state_query(state, without=("per_page",))),
         id="list-content",
+    )
+
+
+# Changing Type starts a fresh status filter for the new type and keeps the search, the dates
+# and the page size. Dates the user never chose (the company default) and a hidden custom range
+# are not sent, so they do not become a chosen range.
+_LIST_TYPE_ON_CHANGE = (
+    "var f=this.form;"
+    "f.querySelectorAll('.list-status-filter,[data-unchosen],.period-custom[hidden] input')"
+    ".forEach(function(i){i.disabled=true;});f.submit();"
+)
+
+
+def _list_type_options(lang: str | None = None) -> list[tuple[str, str]]:
+    return [("", t("doc.all", lang))] + [(lt, _list_type_label(lt)) for lt in _LIST_TYPES]
+
+
+def _list_filters(state: dict[str, str], date_from: str, date_to: str, preset: str, lang: str,
+                  *, type_locked: bool = False) -> FT:
+    """The /lists filters panel: Search, Type, Period (From / To for Custom). It sits outside
+    #list-content, so typing keeps the focus; a select reloads the page with the panel's values.
+    type_locked (SAL-001) keeps the type as a hidden field when a menu entry fixes it."""
+    period = period_fields(date_from, date_to, preset, lang=lang)
+    if not any(state.get(k) for k in _DATE_KEYS):
+        for field in period:
+            field.children[1].attrs["data-unchosen"] = "1"
+    search = search_bar(placeholder=t("documents.search_ref_customer_short"), target="#list-content",
+                        url="/lists/search?" + _state_query(state, without=("q",)), value=state.get("q", ""))
+    return filter_panel(
+        "/lists",
+        filter_field(t("label.search", lang), search, field_id="search-input", wide=True),
+        select_field("type", t("th.doc_type", lang), _list_type_options(lang), state.get("type", ""),
+                     lang=lang, locked=type_locked, on_change=_LIST_TYPE_ON_CHANGE),
+        *period,
+        *[Input(type="hidden", name=k, value=state[k], cls="list-status-filter")
+          for k in _LIST_STATUS_KEYS if state.get(k)],
+        hidden={"per_page": state.get("per_page", "")},
+        reset_href="/lists", show_apply=preset == "custom", lang=lang, panel_id="list-filters",
     )
 
 _DOC_TYPES = ["invoice", "purchase_order", "bill", "receipt", "credit_note", "memo", "consignment_in", "list"]
@@ -4401,27 +4455,22 @@ celerpUpdateBulkAlloc();
                               hx_swap="none", cls="btn btn--primary", title=t("documents.new_shipping_doc_tooltip"))
         else:
             _new_btn = Button(t("page.new_list"), hx_post="/lists/create-blank", hx_swap="none", cls="btn btn--primary", title=t("documents.new_list_tooltip"))
-        export_link, date_bar = _search_controls(
-            "lists", state, date_from, date_to, preset,
-            role_has_permission(_settings, _role, "import_export_data"), lang)
+        export_link = _export_link("lists", state, role_has_permission(_settings, _role, "import_export_data"))
         return await base_shell(
-            page_header(
-                t("page.lists", lang),
-                _new_btn if role_has_permission(_settings, _role, "edit_documents") else "",
-                export_link,
-                A(import_icon(), t("btn.import"), href="/lists/import", cls="btn btn--secondary", data_import_hint=True) if role_has_permission(_settings, _role, "import_export_data") else "",
-            ),
             Div(
-                search_bar(placeholder=t("documents.search_ref_customer_short"), target="#list-content",
-                           url="/lists/search?" + _state_query(state, without=("q",)), value=q,
-                           label=t("documents.search_lists")),
-                date_bar,
-                cls="list-filter-bar",
+                list_page_header(
+                    t("page.lists", lang),
+                    _new_btn if role_has_permission(_settings, _role, "edit_documents") else "",
+                    export_link,
+                    A(import_icon(), t("btn.import"), href="/lists/import", cls="btn btn--secondary", data_import_hint=True) if role_has_permission(_settings, _role, "import_export_data") else "",
+                ),
+                _list_cards(state, summary),
+                _list_filters(state, date_from, date_to, preset, lang),
+                # Self-explanatory page: the shipping type says what these are and what to do next.
+                (P(t("lists.shipping_intro", lang), cls="section-hint") if list_type == "shipping_doc" else ""),
+                _lists_content(state, lists, filtered_total, page, per_page, lang),
+                cls="list-page",
             ),
-            _list_type_tabs(list_type, state),
-            # Self-explanatory page: the shipping tab says what these are and what to do next.
-            (P(t("lists.shipping_intro", lang), cls="section-hint") if list_type == "shipping_doc" else ""),
-            _lists_content(state, lists, filtered_total, summary, page, per_page, lang),
             title=page_title("page.lists"),
             nav_active="lists",
             request=request,
@@ -4464,9 +4513,10 @@ celerpUpdateBulkAlloc();
         lang = get_lang(request)
         can_export = role_has_permission(company.get("settings") or {}, _get_role(request), "import_export_data")
         return search_results(
-            _lists_content(state, lists, filtered_total, summary, page, per_page, lang),
+            _lists_content(state, lists, filtered_total, page, per_page, lang),
             "/lists?" + _state_query(state),
-            *_search_controls("lists", state, date_from, date_to, preset, can_export, lang, oob=True),
+            _list_cards(state, summary, oob=True),
+            _export_link("lists", state, can_export, oob=True),
         )
 
     @app.get("/lists/export/csv")
@@ -11219,14 +11269,3 @@ def _list_status_cards(summary: dict, active_status: str = "", converted_to_type
         {"label": t("enum.doc_status.void"),                 "count": void_cnt,       "total": None, "status": "void",             "color": "gray"},
     ]
     return status_cards(cards, base_url, _active_key or None, show_all_card=False)
-
-
-def _list_type_tabs(active: str, state: dict[str, str]) -> FT:
-    """Type tabs keep the date range and page size; search and status filters start fresh."""
-    kept = {k: state[k] for k in ("per_page", *_DATE_KEYS) if k in state}
-    all_cls = "category-tab" + (" category-tab--active" if not active else "")
-    tabs = [A(t("doc.all"), href="/lists" + (f"?{urlencode(kept)}" if kept else ""), cls=all_cls)]
-    for lt in _LIST_TYPES:
-        cls = "category-tab" + (" category-tab--active" if lt == active else "")
-        tabs.append(A(_list_type_label(lt), href="/lists?" + urlencode({"type": lt, **kept}), cls=cls))
-    return Div(*tabs, cls="category-tabs", id="type-tabs")
