@@ -15,12 +15,13 @@ import uuid
 
 import pytest
 from fastapi import HTTPException
-from sqlalchemy import delete, func, select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from celerp.models.company import Company
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
+from test_helpers import remove_company
 
 
 def _bundle(revision: int, price: str) -> tuple[dict, dict]:
@@ -81,8 +82,4 @@ async def test_same_revision_with_different_content_at_once_records_only_one(_db
     finally:
         await s1.close()
         await s2.close()
-        async with factory() as s:
-            await s.execute(delete(Projection).where(Projection.company_id == company_id))
-            await s.execute(delete(LedgerEntry).where(LedgerEntry.company_id == company_id))
-            await s.execute(delete(Company).where(Company.id == company_id))
-            await s.commit()
+        await remove_company(factory, company_id)

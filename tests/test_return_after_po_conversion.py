@@ -452,7 +452,7 @@ async def _as_legacy_receipt(session, auth, doc_id: str) -> None:
 
     [suffix] = [s for s in await _je_status(session, auth, doc_id) if s.startswith("rcv:")]
     old, new = f"je:auto:{doc_id}:{suffix}", f"je:auto:{doc_id}:rcv"
-    for model in (Projection, LedgerEntry):
+    for model in (LedgerEntry, Projection):
         await session.execute(update(model).where(
             model.company_id == auth["company_id"], model.entity_id == old).values(entity_id=new))
     await session.commit()

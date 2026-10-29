@@ -158,8 +158,8 @@ async def test_backfilled_inactive_company_reactivated_accounting_works(real_cli
     company_id = uuid.UUID(str(decode_access_token(token)["company_id"]))
 
     # The company as it stood before accounting was enabled: no chart, no bank account.
-    async with real_engine.begin() as conn:
-        for table in ("bank_accounts", "accounts"):
+    for table in ("bank_accounts", "accounts"):
+        async with real_engine.begin() as conn:
             await conn.execute(text(f"DELETE FROM {table} WHERE company_id = :c"), {"c": str(company_id)})
 
     r = await real_client.delete("/companies/me", headers=headers)

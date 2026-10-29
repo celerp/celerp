@@ -76,11 +76,11 @@ async def _imported(session, client, auth, costs: list[float], **fields) -> list
     rows = (await session.execute(select(Projection).where(
         Projection.company_id == auth["company_id"], Projection.entity_id.in_(ids))
         .execution_options(populate_existing=True))).scalars().all()
-    for row in rows:
-        row.state = {k: v for k, v in row.state.items() if k != _FIELD}
     await session.execute(delete(LedgerEntry).where(
         LedgerEntry.company_id == auth["company_id"], LedgerEntry.entity_id.in_(ids),
         LedgerEntry.event_type == "item.inventory_account.recorded"))
+    for row in rows:
+        row.state = {k: v for k, v in row.state.items() if k != _FIELD}
     await session.commit()
     return ids
 

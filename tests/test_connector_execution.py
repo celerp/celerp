@@ -47,8 +47,8 @@ async def stub(_db_engine):
     await connected(connector.company_id, connector, connector.default_directions)
     yield connector
     async with get_session_ctx() as s:
-        await s.execute(sa.delete(ConnectorConfig).where(ConnectorConfig.connector == connector.name))
         await forget_executions(s, [connector.company_id], connector.name)
+        await s.execute(sa.delete(ConnectorConfig).where(ConnectorConfig.connector == connector.name))
         await s.commit()
 
 

@@ -634,6 +634,7 @@ async def test_merge_racing_disconnect_is_clean(real_engine, real_client):
     Its preview was refused while the item was still listed, so it is refused too and
     changes nothing; previewed again, it sees the detached identity and merges."""
     from celerp.models.connector_config import ConnectorConfig
+    from celerp.services.company_lock import lock_company
     from celerp_inventory.services import detach_external_links_for_platform
     _, cid, tok = await _real_setup(real_engine)
     await _set_shopify_owner(real_engine, str(cid))
@@ -646,8 +647,9 @@ async def test_merge_racing_disconnect_is_clean(real_engine, real_client):
         task = _merge_task(real_client, tok, a, b)
         try:
             await _await_advisory_waiter(real_engine, task)
-            await detach_external_links_for_platform(holder, cid, "shopify")
+            await lock_company(holder, cid)
             await holder.execute(sa.delete(ConnectorConfig).where(ConnectorConfig.company_id == str(cid)))
+            await detach_external_links_for_platform(holder, cid, "shopify")
         finally:
             await holder.commit()
         r = await task

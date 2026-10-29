@@ -107,18 +107,19 @@ async def _older_books(engine, client):
     await _post(client, tok, f"/docs/{inv}/finalize")
     await _post(client, tok, f"/docs/{inv}/fulfill-lines", {"line_entity_ids": [sold]})
     async with maker(engine)() as s:
-        for lot in (held, sold):
-            row = await s.get(Projection, {"company_id": cid, "entity_id": lot})
-            row.state = {k: v for k, v in row.state.items() if k != _FIELD}
+        found = await locked_company(s, cid)
+        found.settings = {k: v for k, v in found.settings.items()
+                          if not k.startswith("posting_") and k != "inventory_origin_schema"}
         for row in (await s.execute(select(LedgerEntry).where(
                 LedgerEntry.company_id == cid, LedgerEntry.entity_id.like(f"je:auto:{inv}:%")))).scalars():
             if (allocations := (row.metadata_ or {}).get("cogs_allocations")):
                 row.metadata_ = {**row.metadata_, "cogs_allocations": {
                     line: {**a, "lots": [{k: v for k, v in lot.items() if k != "account"} for lot in a["lots"]]}
                     for line, a in allocations.items()}}
-        found = await locked_company(s, cid)
-        found.settings = {k: v for k, v in found.settings.items()
-                          if not k.startswith("posting_") and k != "inventory_origin_schema"}
+        await s.flush()
+        for lot in (held, sold):
+            row = await s.get(Projection, {"company_id": cid, "entity_id": lot})
+            row.state = {k: v for k, v in row.state.items() if k != _FIELD}
         await s.commit()
     assert (await _net(engine, cid, "1130-P"), await _net(engine, cid, "1130-OB")) == (-100.0, 130.0)
     return cid, tok, inv, held, sold

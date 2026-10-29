@@ -169,10 +169,10 @@ async def test_deleted_draft_credit_note_gives_the_reduction_back(client, sessio
     inv = await _svc_invoice(client, auth, 80.0)
     cn = await _legacy_cn(client, session, auth, inv, 40.0, issued=False)
     number = await _number(session, auth, cn)
-    await session.execute(sa.delete(Projection).where(Projection.company_id == auth["company_id"],
-                                                       Projection.entity_id == cn))
     await session.execute(sa.delete(LedgerEntry).where(LedgerEntry.company_id == auth["company_id"],
                                                         LedgerEntry.entity_id == cn))
+    await session.execute(sa.delete(Projection).where(Projection.company_id == auth["company_id"],
+                                                       Projection.entity_id == cn))
     await session.commit()
     out = await _backfill(session, auth)
     assert out["restored"] == 1, out

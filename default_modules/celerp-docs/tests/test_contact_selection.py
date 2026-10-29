@@ -14,7 +14,7 @@ import uuid
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from test_helpers import grant_permission, perm_setup
+from test_helpers import grant_permission, perm_setup, remove_company
 from celerp.services.permissions import missing_permission_text
 from ui.i18n import t
 
@@ -429,10 +429,8 @@ async def _seed(factory, company_id, events):
 @pytest.mark.parametrize("kind", ["doc", "list"])
 async def test_concurrent_selections_have_one_coherent_winner(_db_engine, kind):
     from fastapi import HTTPException
-    from sqlalchemy import delete
 
     from celerp.models.company import Company, User
-    from celerp.models.ledger import LedgerEntry
     from celerp.models.projections import Projection
     from celerp_docs import routes
     from celerp_docs.routes import DocPatch, ListPatch
@@ -481,10 +479,4 @@ async def test_concurrent_selections_have_one_coherent_winner(_db_engine, kind):
         assert state["contact_name"] == ("Alpha" if winner == "contact:A" else "Beta")
         assert state["currency"] == ("EUR" if winner == "contact:A" else "JPY")
     finally:
-        async with factory() as s:
-            await s.execute(delete(Projection).where(Projection.company_id == company_id))
-            await s.execute(delete(LedgerEntry).where(LedgerEntry.company_id == company_id))
-            await s.execute(delete(Company).where(Company.id == company_id))
-            await s.commit()
-            await s.execute(delete(User).where(User.id == user_id))
-            await s.commit()
+        await remove_company(factory, company_id, user_id)
