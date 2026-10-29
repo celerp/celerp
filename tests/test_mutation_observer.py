@@ -16,6 +16,7 @@ import inspect
 import uuid
 from datetime import datetime, timedelta, timezone
 
+import httpx
 import pytest
 from fastapi import HTTPException
 from sqlalchemy import delete, func, insert, select, text, update
@@ -121,6 +122,21 @@ async def test_a_ui_request_names_itself_to_the_api_it_calls_over_http(session, 
 
     await mutation_observer.observed(ui, "ui")({"type": "http", "method": "GET", "path": "/lists/new"}, None, None)
     assert seen["read_route"] == "ui GET /lists/new -> api POST /lists"
+
+
+async def test_every_http_request_the_apps_make_names_the_request_it_is_made_for(session, auth):
+    """The suite's hook sends the header from any httpx client, not only the UI's API client."""
+    sent = []
+    transport = httpx.MockTransport(lambda request: sent.append(request.headers) or httpx.Response(204))
+
+    async def ui(scope, receive, send):
+        async with httpx.AsyncClient(transport=transport) as c:
+            await c.post("http://api/api/labels/templates")
+
+    await mutation_observer.observed(ui, "ui")({"type": "http", "method": "GET", "path": "/labels"}, None, None)
+    async with httpx.AsyncClient(transport=transport) as c:
+        await c.get("http://api/outside")
+    assert mutation_observer.OUTER_HEADER in sent[0] and mutation_observer.OUTER_HEADER not in sent[1]
 
 
 async def test_a_read_request_that_writes_nothing_durable_is_not_reported(session, auth):

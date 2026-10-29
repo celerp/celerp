@@ -6,7 +6,7 @@
 A call graph over celerp/, default_modules/ and ui/: each function, the places it writes
 or takes a company's lock itself, and the calls it makes that resolve by name to another
 function of the source (a function in the same scope or module, one imported by name, a
-function of an imported module, a method of the same class). `reaches` follows those
+function of an imported module, a method of the same class). `doing` follows those
 calls to their end, so a guard sees a lock or a write however many wrappers stand between.
 
 A call on any other object (a method of an argument, a callable passed in) does not
@@ -227,25 +227,26 @@ class Graph:
 
     # -- reachability ----------------------------------------------------------
 
-    def closure(self, starts) -> dict[str, tuple[str, int] | None]:
+    def closure(self, starts, stop=frozenset()) -> dict[str, tuple[str, int] | None]:
         """Every function the *starts* reach through calls the graph resolves, each with
-        the function and line it is first reached from (None for a start)."""
+        the function and line it is first reached from (None for a start). Functions
+        named in *stop* are neither entered nor reported."""
         parents: dict[str, tuple[str, int] | None] = {key: None for key in starts}
         frontier = list(parents)
         while frontier:
             following = []
             for current in frontier:
                 for line, callee in self.functions[current].calls:
-                    if callee not in parents:
+                    if callee not in parents and callee not in stop:
                         parents[callee] = (current, line)
                         following.append(callee)
             frontier = following
         return parents
 
-    def doing(self, starts, wanted) -> list[list[tuple[str, int, str]]]:
+    def doing(self, starts, wanted, stop=frozenset()) -> list[list[tuple[str, int, str]]]:
         """Each reached function that does something *wanted* accepts itself, as the chain
         of calls to it: [(function key, line, what it calls or does there), ...]."""
-        parents = self.closure(starts)
+        parents = self.closure(starts, stop)
         found = []
         for key in parents:
             for line, what in self.functions[key].effects:

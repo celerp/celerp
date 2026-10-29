@@ -11,6 +11,8 @@ process, so the folders of all CI shards together give the whole suite) and writ
 - the route inventory: every mutating route the test apps serve, checked against the
   mutating route decorators in the bundled source, with each route's class: it made a
   durable write of company data, it was requested and wrote nothing, or no test requested it;
+- the read routes: every GET and HEAD route, whether a test requested it, and for each one
+  no test requested, whether its source reaches a write (scripts/static_calls.py);
 - the findings: each distinct write that was not protected by the company lock, SQL the
   observer could not classify, and writes to tables that hold no company's data;
 - mutation-site coverage: the places in the bundled source that write (emit_event, a
@@ -22,8 +24,8 @@ process, so the folders of all CI shards together give the whole suite) and writ
 - the baseline: each accepted finding (mutation_baseline.json) with its tracking issue, and
   every entry no finding matched or its own reproducing test did not see.
 
-With --enforce the exit status is 1 when a finding matches no baseline entry, or an entry
-is stale or not reproduced by its test."""
+With --enforce the exit status is 1 when a finding matches no baseline entry, an entry
+is stale or not reproduced by its test, or a read route no test requested reaches a write."""
 
 from __future__ import annotations
 
@@ -37,10 +39,23 @@ from collections import defaultdict
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+sys.path.insert(0, os.path.join(ROOT, "scripts"))
 import mutation_baseline  # noqa: E402
+import static_calls  # noqa: E402
+from static_calls import _called, _receiver  # noqa: E402
+
 MUTATING = {"POST", "PUT", "PATCH", "DELETE"}
-SOURCES = ("celerp", "default_modules", "ui")
-_SKIP_PARTS = ("/tests/", "/migrations/", "/__pycache__/")
+READING = {"GET", "HEAD"}
+# Functions a read route reaches whose writes no read makes, each with the reason: the
+# static scan of a read route no test requested neither enters nor reports them.
+READ_SAFE = {
+    "ui.api_client.get_items_metadata": "POST /items/metadata carries the id list; the route only reads",
+    "ui.api_client.manufacturing_requirements": "POST /manufacturing/to-make/requirements carries the item ids; "
+                                                "the route only reads",
+    "ui.api_client.doctor_report": "POST /admin/doctor without fix is the dry-run report; it writes nothing",
+    "ui.api_client.get_billing_portal_url": "POST /settings/cloud/billing-portal asks the relay for a portal link; "
+                                            "nothing is saved",
+}
 
 
 def _read(path: str) -> str:
@@ -48,70 +63,51 @@ def _read(path: str) -> str:
         return fh.read()
 
 
-def _python_files(top: str):
-    for folder, _, files in os.walk(os.path.join(ROOT, top)):
-        for name in files:
-            path = os.path.join(folder, name)
-            if name.endswith(".py") and not any(p in path + "/" for p in _SKIP_PARTS):
-                yield path
-
-
-def _called(node: ast.Call) -> str:
-    func = node.func
-    if isinstance(func, ast.Attribute):
-        return func.attr
-    return func.id if isinstance(func, ast.Name) else ""
-
-
-def _receiver(node: ast.Call) -> str:
-    func = node.func
-    if isinstance(func, ast.Attribute):
-        value = func.value
-        if isinstance(value, ast.Attribute):
-            return value.attr
-        if isinstance(value, ast.Name):
-            return value.id
-    return ""
-
-
 def static_inventory():
     """Mutating route decorators and write sites in the bundled source."""
     decorators, sites = [], []
-    for top in SOURCES:
-        for path in _python_files(top):
-            rel = os.path.relpath(path, ROOT)
-            try:
-                tree = ast.parse(_read(path))
-            except SyntaxError:
-                continue
-            functions = [n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
-            for fn in functions:
-                for deco in fn.decorator_list:
-                    if isinstance(deco, ast.Call) and _called(deco).upper() in MUTATING:
-                        # the line the function's source starts on, the first decorator's
-                        decorators.append((rel, fn.decorator_list[0].lineno, fn.name, _called(deco).upper(),
-                                           _receiver(deco)))
-            owner = {}  # node -> the innermost function holding it, the frame its write runs in
-            for fn in functions:  # outer functions first (ast.walk is breadth first)
-                for child in ast.walk(fn):
-                    if hasattr(child, "lineno"):
-                        owner[id(child)] = fn
-            for node in ast.walk(tree):
-                if not isinstance(node, ast.Call):
-                    continue
-                name, receiver = _called(node), _receiver(node).lower()
-                write = name == "emit_event" or (
-                    name in ("add", "add_all", "delete", "merge") and "session" in receiver) or (
-                    name == "execute" and "session" in receiver and node.args
-                    and isinstance(node.args[0], ast.Call) and _called(node.args[0]) in ("insert", "update", "delete"))
-                if write:
-                    fn = owner.get(id(node))
-                    # The function's span from its first decorator, the line its code object starts on.
-                    first = min([fn.lineno] + [d.lineno for d in fn.decorator_list]) if fn else node.lineno
-                    sites.append((rel, node.lineno, node.end_lineno or node.lineno,
-                                  fn.name if fn else "<module>", name,
-                                  (first, fn.end_lineno) if fn else (node.lineno, node.end_lineno)))
+    for rel in static_calls._python_files():
+        try:
+            tree = ast.parse(_read(os.path.join(ROOT, rel)))
+        except SyntaxError:
+            continue
+        functions = [n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+        for fn in functions:
+            for deco in fn.decorator_list:
+                if isinstance(deco, ast.Call) and _called(deco).upper() in MUTATING:
+                    # the line the function's source starts on, the first decorator's
+                    decorators.append((rel, fn.decorator_list[0].lineno, fn.name, _called(deco).upper(),
+                                       _receiver(deco)))
+        owner = {}  # node -> the innermost function holding it, the frame its write runs in
+        for fn in functions:  # outer functions first (ast.walk is breadth first)
+            for child in ast.walk(fn):
+                if hasattr(child, "lineno"):
+                    owner[id(child)] = fn
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and (static_calls.effect(node) or "").startswith("write "):
+                fn = owner.get(id(node))
+                # The function's span from its first decorator, the line its code object starts on.
+                first = min([fn.lineno] + [d.lineno for d in fn.decorator_list]) if fn else node.lineno
+                sites.append((rel, node.lineno, node.end_lineno or node.lineno,
+                              fn.name if fn else "<module>", _called(node),
+                              (first, fn.end_lineno) if fn else (node.lineno, node.end_lineno)))
     return decorators, sites
+
+
+def read_routes_that_write(rows) -> dict[tuple, list]:
+    """Each read route among *rows* whose handler the static call graph shows reaching a
+    write (a session write, a commit, a company lock or a mutating API request), with one
+    chain to each, through no function of READ_SAFE."""
+    graph = static_calls.Graph()
+    found = {}
+    for (app, method, path), row in rows.items():
+        rel, _, line = row["source"].rpartition(":")
+        handler = graph.by_source.get((rel, int(line))) if line.isdigit() else None
+        if handler is not None:
+            chains = graph.doing([handler.key], lambda what: True, stop=READ_SAFE)
+            if chains:
+                found[(app, method, path)] = chains
+    return found
 
 
 def load(folders):
@@ -202,6 +198,29 @@ def report(folders, out, coverage_path=None, baseline=mutation_baseline.PATH):
         lines += ["### Decorated but not served by the test apps", ""]
         lines += [f"- {m} {f}:{n} {fn}" for f, n, fn, m, _ in unmounted] + [""]
 
+    # -- read routes -----------------------------------------------------------
+    # A read route must write nothing durable. A requested one is judged by the observer;
+    # one no test requested is judged from its source, and fails when its handler reaches a write.
+    reading = {}
+    for (app, method, path), row in sorted(inventory.items()):
+        if method in READING:
+            reading.setdefault((app, path), row)
+    def _requested(app, path):
+        return any(routes.get(f"{_APP_LABEL.get(app, app)} {m} {path}", {}).get("requests") for m in READING)
+    unrequested = {(app, "GET", path): row for (app, path), row in reading.items() if not _requested(app, path)}
+    writing = read_routes_that_write(unrequested)
+    lines += ["## Read routes", "",
+              f"- GET and HEAD routes the test apps serve: {len(reading)} "
+              f"(api {sum(1 for k in reading if k[0] == 'FastAPI')}, ui {sum(1 for k in reading if k[0] == 'FastHTML')}); "
+              f"requested: {len(reading) - len(unrequested)}; never requested: {len(unrequested)}.",
+              f"- Never requested and reaching a write in their source: {len(writing)}.", "",
+              "### Never requested", "", "| App | Route | Source | Reaches a write |", "|---|---|---|---|"]
+    for (app, method, path), row in unrequested.items():
+        chains = writing.get((app, method, path), [])
+        reach = "; ".join(f"`{static_calls.describe(c)}`" for c in chains[:3]) or "no"
+        lines.append(f"| {_APP_LABEL.get(app, app)} | {path} | {row['source']} | {reach} |")
+    lines.append("")
+
     # -- findings --------------------------------------------------------------
     entries = mutation_baseline.load(baseline)
     by_kind, by_entry = defaultdict(list), defaultdict(list)
@@ -287,7 +306,7 @@ def report(folders, out, coverage_path=None, baseline=mutation_baseline.PATH):
             fh.write(text)
     else:
         sys.stdout.write(text)
-    return sum(len(v) for v in by_kind.values()) + failing
+    return sum(len(v) for v in by_kind.values()) + failing + len(writing)
 
 
 def main(argv=None) -> int:
