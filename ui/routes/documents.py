@@ -865,7 +865,7 @@ def _list_filters(state: dict[str, str], date_from: str, date_to: str, preset: s
                         url="/lists/search?" + _state_query(state, without=("q",)), value=state.get("q", ""))
     return filter_panel(
         "/lists",
-        filter_field(t("label.search", lang), search, field_id="search-input", wide=True),
+        filter_field(t("documents.search_lists", lang), search, field_id="search-input", wide=True),
         select_field("type", t("th.doc_type", lang), _list_type_options(lang), state.get("type", ""),
                      lang=lang, locked=type_locked, on_change=_LIST_TYPE_ON_CHANGE),
         *period,

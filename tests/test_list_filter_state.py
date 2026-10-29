@@ -582,7 +582,7 @@ class TestDateRangeDropdown:
         assert "list-filter-bar" not in r.text
         panel = re.search(r'<form[^>]*id="list-filters".*?</form>', r.text, re.S).group(0)
         labels = dict((v, k) for k, v in re.findall(r'<label for="([^"]*)" class="filter-field-label">([^<]*)</label>', panel))
-        assert labels == {"Search": "search-input", "Type": "filter-type", "Period": "filter-preset",
+        assert labels == {"Search lists": "search-input", "Type": "filter-type", "Period": "filter-preset",
                           "From": "filter-from", "To": "filter-to"}, labels
         for control_id in labels.values():
             assert f'id="{control_id}"' in panel, control_id
