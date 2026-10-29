@@ -54,7 +54,7 @@
   "remove_when": "the write takes the company lock (lock_company) at its owning service"
  },
  {
-  "route": "api GET /api/labels/sources/{source}",
+  "route": "ui GET /labels/print-source -> api GET /api/labels/sources/{source}",
   "kind": "read-route-write",
   "table": "label_templates",
   "fingerprint": "66666111f73d39ef",
@@ -90,7 +90,7 @@
   "remove_when": "the write takes the company lock (lock_company) at its owning service"
  },
  {
-  "route": "api GET /api/labels/sources/{source}",
+  "route": "ui GET /labels/print-source -> api GET /api/labels/sources/{source}",
   "kind": "read-route-write",
   "table": "label_templates",
   "fingerprint": "66666111f73d39ef",
