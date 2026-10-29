@@ -28,6 +28,7 @@ from celerp.services.units import (
 )
 from celerp.services.line_measures import identifier_backfill, item_measure_meta, line_identifier, measure_locks, measure_sublines, qty_label, resolve_line_measures, splitting_allowed
 from ui.components.shell import base_shell, page_header, toast_header, page_title
+from ui.components.list_page import date_range_select
 from ui.security import not_permitted_redirect
 from ui.components.table import search_bar, search_results, EMPTY, pagination, per_page_value, server_pager, searchable_select, breadcrumbs, status_cards, empty_state_cta, fmt_money, fmt_rate, format_value, currency_symbol, unwrap_address, col_resize_script, bank_account_options as _bank_account_options, display_cell, editable_cell, display_enum, display_unit, doc_href
 from celerp.services.background import spawn_background
@@ -727,40 +728,8 @@ def _docs_content(state: dict[str, str], docs: list[dict], total_count: int, sum
     )
 
 
-def _date_range_select(base_url: str, date_from: str, date_to: str, preset: str,
-                       extra_params: str = "", lang: str | None = None) -> FT:
-    """The one date control of a list page: a preset dropdown that reveals a from/to range (with
-    Apply) only when Custom is chosen. extra_params ("&k=v...") rides along as hidden fields so
-    switching the dates keeps the search and every other filter."""
-    hidden_params = [
-        Input(type="hidden", name=k, value=v)
-        for k, v in parse_qsl(extra_params.lstrip("&"), keep_blank_values=True)
-        if k and k not in _DATE_KEYS
-    ]
-    is_custom = preset == "custom"
-    # A preset submits at once; its from/to are dropped so they cannot override it.
-    on_change = (
-        "var f=this.form,r=f.querySelector('.date-range-custom'),c=this.value==='custom';"
-        "r.hidden=!c;"
-        "if(c){f.elements['from'].focus();return;}"
-        "f.querySelectorAll('.date-input').forEach(function(i){i.disabled=true;});f.submit();"
-    )
-    return Form(
-        *hidden_params,
-        Select(
-            *[Option(label, value=key, selected=key == preset) for key, label in _date_presets(lang)],
-            name="preset", cls="form-input form-input--sm date-preset-select",
-            aria_label=t("filter.date_range", lang), onchange=on_change,
-        ),
-        Span(
-            Input(type="date", name="from", value=date_from, max=date_to or "", cls="date-input"),
-            Span("--", cls="date-sep"),
-            Input(type="date", name="to", value=date_to, min=date_from or "", cls="date-input"),
-            Button(t("btn.apply", lang), type="submit", cls="btn btn--secondary btn--sm"),
-            cls="date-range-custom", hidden=not is_custom,
-        ),
-        action=base_url, method="get", cls="date-range-form",
-    )
+# Moved to the list page kit (GEN-012); the pages not yet on the panel still call it here.
+_date_range_select = date_range_select
 
 
 def _search_controls(base: str, state: dict[str, str], date_from: str, date_to: str, preset: str,

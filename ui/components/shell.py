@@ -3091,9 +3091,17 @@ def load_error(message: str, lang: str = "en", *, href: str | None = None,
     return Div(P(message, cls="load-error__text"), retry, cls="load-error")
 
 
-def page_header(title: str, *actions: FT) -> FT:
+def page_header(title: str, *actions: FT, summary: str | FT = "") -> FT:
+    """Title and actions; a summary (str or FT) adds a muted line under the title. Without one
+    the markup is exactly what it always was (the report goldens hold it)."""
+    if not summary:
+        return Div(
+            H1(title, cls="page-title"),
+            Div(*actions, cls="page-actions"),
+            cls="page-header",
+        )
     return Div(
-        H1(title, cls="page-title"),
+        Div(H1(title, cls="page-title"), Div(summary, cls="page-subtitle"), cls="page-heading"),
         Div(*actions, cls="page-actions"),
         cls="page-header",
     )
