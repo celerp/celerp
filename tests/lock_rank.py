@@ -207,6 +207,8 @@ class Recorder:
     contention: list[dict] = field(default_factory=list)
     violations: list[dict] = field(default_factory=list)
     seen: dict[str, dict] = field(default_factory=dict)  # each distinct violation, its first example
+    # R5: each distinct wait across connections made under the fixed keys its flow held, with those keys.
+    serial_cross: dict[str, dict] = field(default_factory=dict)
     test: str = ""
     # The connections each task has used, and the task that last used each connection.
     task_conns: weakref.WeakKeyDictionary = field(default_factory=weakref.WeakKeyDictionary)
@@ -418,7 +420,7 @@ class Recorder:
         waits = lock.mode.split(" ")[-1] not in ("nowait", "try", "skip")
         if lock.cls in _TRY_ONLY and waits:
             self._violate("try-only", lock)
-        self._other_connections(conn_key, lock, waits)
+        self._other_connections(conn_key, lock, waits, serial)
         # One entry per run of a class, in the order taken: a class taken again with nothing
         # else between adds no order, so the list stays as short as the order is.
         held = self.session_held[conn_key] + self.held[conn_key]
@@ -533,10 +535,12 @@ class Recorder:
         if edge["example"] is None:
             edge["example"] = {"held": h.site, "acquired": lock.site, "test": self.test}
 
-    def _other_connections(self, conn_key: int, lock: Lock, waits: bool) -> None:
+    def _other_connections(self, conn_key: int, lock: Lock, waits: bool, serial: set[str]) -> None:
         """A task that waits on one connection while it holds a lock on another can wait on
         itself: the lock it holds is released only when this wait ends. Every take ties its
-        connection to the task, a try included, so what that connection holds is seen."""
+        connection to the task, a try included, so what that connection holds is seen. A wait
+        made under fixed keys the flow holds exclusively (``serial``) is judged offline (R5): it
+        cannot wait if every take of its class held one of those keys."""
         try:
             task = asyncio.current_task()
         except RuntimeError:
@@ -552,6 +556,11 @@ class Recorder:
                        if not _own_connection(h) and h.cls not in _TRY_ONLY]
             if any(h.cls == lock.cls and h.key == lock.key and _conflict(h, lock) for h in holding):
                 self._violate("self-deadlock", lock, held_lock=holding[0])
+                break
+            if holding and serial:
+                v = {"kind": "cross-connection", "cls": lock.cls, "site": lock.site, "test": self.test,
+                     "held": holding[0].cls, "held_site": holding[0].site, "gate": sorted(serial)}
+                self.serial_cross.setdefault(f"{violation_key(v)} {v['gate']}", v)
                 break
             if holding:
                 self._violate("cross-connection", lock, held_lock=holding[0])
@@ -591,6 +600,7 @@ class Recorder:
                             **{c: v.get(c, 0) for c in _COUNTS}, **{c: sorted(v.get(c, ())) for c in _SETS}}
                         for k, v in self.classes.items()},
             "contention": self.contention,
+            "serial_cross": list(self.serial_cross.values()),
             "violations": list({**self.seen, **{violation_key(v): v for v in self.violations}}.values()),
         }
 
@@ -1290,7 +1300,7 @@ _SETS = ("unsorted_strengths", "multi_strengths", "multi_sites", "ungated_takes"
 def _merge(directory: Path) -> dict:
     edges: dict[tuple[str, str], dict] = {}
     classes: dict[str, dict] = {}
-    contention, violations, writers = [], [], defaultdict(set)
+    contention, violations, serial_cross, writers = [], [], [], defaultdict(set)
     for f in sorted(directory.glob("lock-graph-*.json")):
         d = json.loads(f.read_text())
         for k, v in d.get("writers", {}).items():
@@ -1327,8 +1337,9 @@ def _merge(directory: Path) -> dict:
             cur["serial"] = cur["serial"] & serial if "serial" in cur else serial
         contention += d["contention"]
         violations += d["violations"]
+        serial_cross += d.get("serial_cross", [])
     return {"edges": edges, "classes": classes, "contention": contention, "violations": violations,
-            "writers": dict(writers)}
+            "serial_cross": serial_cross, "writers": dict(writers)}
 
 
 def _sccs(nodes, adj) -> list[list[str]]:
@@ -1477,14 +1488,19 @@ def _serialized_keys(g: dict) -> set[str]:
     """R5, offline: "serialized <held> -> <taken>" for each decreasing edge taken under a fixed
     key its flow held exclusively (a migration run's table, then its stamp), unless every
     recorded take of the taken class held one of the edge's keys too, and the run exercised
-    every production writer of that class. No order ranks such a class; the key serializes it."""
+    every production writer of that class. No order ranks such a class; the key serializes it.
+    A wait across connections under such keys keeps its "cross-connection" key on the same terms."""
     unexercised = _unexercised(g)
+
+    def unproven(cls: str, gate: set[str]) -> bool:
+        return cls in unexercised or not gate & g["classes"].get(cls, {}).get("serial", set())
     out = set()
     for (a, b), e in g["edges"].items():
         if not e.get("serialized") or rank(a) is None or rank(b) is None or rank(a) <= rank(b):
             continue
-        if b in unexercised or not e["gate"] & g["classes"].get(b, {}).get("serial", set()):
+        if unproven(b, e["gate"]):
             out.add(f"serialized {a} -> {b}")
+    out |= {violation_key(v) for v in g["serial_cross"] if unproven(v["cls"], set(v["gate"]))}
     return out
 
 

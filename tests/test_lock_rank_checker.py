@@ -230,7 +230,9 @@ def test_a_waiting_take_of_a_key_every_taker_should_only_try_fails():
     assert ("try-only", "adv:xero-attachments-round") in _kinds(recorder)
 
 
-def test_a_key_others_wait_on_still_fails_when_held_across_connections():
+def test_a_key_others_wait_on_still_fails_when_held_across_connections(tmp_path):
+    """Held under the migration key, the wait is judged offline (R5); a take of the class
+    outside the key, as every import runner makes, leaves it unproven."""
     recorder = Recorder()
 
     async def body():
@@ -238,7 +240,11 @@ def test_a_key_others_wait_on_still_fails_when_held_across_connections():
         recorder.acquire(2, _lock("row:migration_runs", "update wait"), 0.0)
 
     asyncio.run(body())
-    assert ("cross-connection", "row:migration_runs") in _kinds(recorder)
+    recorder.acquire(3, _lock("row:migration_runs", "update wait"), 0.0)
+    (tmp_path / "lock-graph-gw0.json").write_text(json.dumps(recorder.dump()))
+    report = lock_rank.check(tmp_path)
+    assert "- cross-connection adv:migration -> row:migration_runs celerp/x.py f" in report
+    assert lock_rank.check_failed(report)
 
 
 def test_a_text_key_named_like_a_fixed_key_is_unranked():
@@ -860,3 +866,44 @@ def test_a_key_of_many_values_is_no_serializing_gate(recorder):
     recorder.acquire(9, _lock("adv:chart", "session exclusive wait", key="chart"), 0.0)
     _migration_run(recorder)
     assert ("order", "row:alembic_version") in _kinds(recorder)
+
+
+def _stamp_across_connections(recorder: Recorder) -> None:
+    """A flow holds the migration key on one connection and stamps on another, as every
+    alembic run does: its wait on the stamp crosses connections."""
+    async def body():
+        recorder.statement(9, _TAKE_KEY, (), 0.0)
+        recorder.acquire(2, _lock("row:alembic_version", "write"), 0.0)
+        recorder.end(2)
+        recorder.statement(9, _DROP_KEY, (), 0.0)
+
+    asyncio.run(body())
+
+
+_CROSS_STAMP = "cross-connection adv:migration -> row:alembic_version celerp/x.py f"
+
+
+def test_a_cross_connection_wait_on_a_class_the_flow_serializes_is_proven_offline(recorder, tmp_path):
+    _stamp_across_connections(recorder)
+    assert not recorder.violations
+    (tmp_path / "lock-graph-gw0.json").write_text(json.dumps(recorder.dump()))
+    assert _CROSS_STAMP not in lock_rank.debt_listing(tmp_path)
+    assert not lock_rank.check_failed(lock_rank.check(tmp_path))
+
+
+def test_one_take_of_the_class_outside_the_key_fails_the_cross_connection_wait(recorder, tmp_path):
+    _stamp_across_connections(recorder)
+    recorder.acquire(3, _lock("row:alembic_version", "write"), 0.0)
+    (tmp_path / "lock-graph-gw0.json").write_text(json.dumps(recorder.dump()))
+    assert _CROSS_STAMP in lock_rank.debt_listing(tmp_path)
+    report = lock_rank.check(tmp_path)
+    assert f"- {_CROSS_STAMP}" in report and lock_rank.check_failed(report)
+
+
+def test_a_cross_connection_wait_without_a_serializing_key_stays_a_live_violation(recorder):
+    async def body():
+        recorder.acquire(9, _lock("adv:chart", "session exclusive wait", key="chart"), 0.0)
+        recorder.acquire(2, _lock("row:alembic_version", "write"), 0.0)
+
+    asyncio.run(body())
+    assert ("cross-connection", "row:alembic_version") in _kinds(recorder)
