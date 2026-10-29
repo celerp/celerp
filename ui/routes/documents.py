@@ -4881,6 +4881,7 @@ celerpUpdateBulkAlloc();
         token = _token(request)
         if not token:
             return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+        done = ""
         try:
             form = await request.form()
             if action == "finalize":
@@ -4921,8 +4922,10 @@ celerpUpdateBulkAlloc();
                 })
             elif action == "mark_sent":
                 await api.send_list(token, entity_id, {"sent_via": "manual"})
+                done = t("documents.marked_as_sent")
             elif action == "unmark_sent":
                 await api.unmark_list_sent(token, entity_id)
+                done = t("documents.sent_marker_cleared")
             elif action in ("adjust", "undo-adjust", "write-off", "undo-write-off",
                             "recalculate-total", "restore-total"):
                 await api.list_action(token, entity_id, action)
@@ -4935,7 +4938,9 @@ celerpUpdateBulkAlloc();
                 return _action_error(error_message(e), action={
                     "href": "#list-old-rule-notice", "label": t("documents.btn_recalculate_total")})
             return _action_error(error_message(e))
-        return _R("", status_code=204, headers={"HX-Redirect": f"/lists/{entity_id}"})
+        # The page reloads to show the new state; the shell keeps the toast across that redirect.
+        return _R("", status_code=204, headers={"HX-Redirect": f"/lists/{entity_id}",
+                                                **(toast_header(done, "success") if done else {})})
 
     async def _audit_line_tbody(token: str, entity_id: str, offset: int, limit: int) -> FT:
         """Render the editable audit tbody for #line-body swap.

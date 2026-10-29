@@ -948,3 +948,89 @@ class TestListIndexStatusLabel:
         r = await client.get("/lists/export/csv", headers=_h(token))
         assert r.status_code == 200
         assert r.text.splitlines()[0] == "id,ref_id,list_type,customer,date,total,status"
+
+
+# ---------------------------------------------------------------------------
+# Send / Mark as sent commits what it writes
+# ---------------------------------------------------------------------------
+
+def _count_commits(session, monkeypatch) -> list[int]:
+    """Count the session.commit() calls from now on. The test harness runs every request inside one
+    outer transaction, so a request that never commits still looks saved to a later read here;
+    counting the commits is how a test sees that production would have rolled the write back."""
+    calls: list[int] = []
+    real_commit = session.commit
+
+    async def spy():
+        calls.append(1)
+        await real_commit()
+
+    monkeypatch.setattr(session, "commit", spy)
+    return calls
+
+
+class TestListSendCommits:
+
+    @pytest.mark.asyncio
+    async def test_mark_as_sent_commits_once(self, client, session, monkeypatch):
+        token = await _register(client)
+        eid = await _create_list(client, token, list_type="quotation")
+        assert (await client.post(f"/lists/{eid}/finalize", headers=_h(token))).status_code == 200
+
+        calls = _count_commits(session, monkeypatch)
+        r = await client.post(f"/lists/{eid}/send", headers=_h(token), json={"sent_via": "manual"})
+        assert r.status_code == 200, r.text
+        assert len(calls) == 1, "Mark as Sent must commit its write exactly once"
+
+        detail = (await client.get(f"/lists/{eid}", headers=_h(token))).json()
+        assert detail["status"] == "finalized" and detail["sent_at"] and detail["sent_via"] == "manual"
+
+    @pytest.mark.asyncio
+    async def test_unmark_sent_commits_once(self, client, session, monkeypatch):
+        token = await _register(client)
+        eid = await _create_list(client, token, list_type="quotation")
+        await client.post(f"/lists/{eid}/finalize", headers=_h(token))
+        await client.post(f"/lists/{eid}/send", headers=_h(token), json={"sent_via": "manual"})
+
+        calls = _count_commits(session, monkeypatch)
+        assert (await client.post(f"/lists/{eid}/unmark-sent", headers=_h(token))).status_code == 200
+        assert len(calls) == 1
+        assert not (await client.get(f"/lists/{eid}", headers=_h(token))).json().get("sent_at")
+
+    @pytest.mark.asyncio
+    async def test_email_send_commits_once(self, client, session, monkeypatch):
+        """The email path commits before it hands the message to the relay, and only once."""
+        import celerp_docs.routes as docs_routes
+        import celerp_docs.routes_share as docs_share
+
+        sent: list[dict] = []
+
+        async def no_link(*_a, **_k):
+            return None
+
+        async def no_reply_to(*_a, **_k):
+            return None
+
+        monkeypatch.setattr(docs_share, "send_view_url", no_link)
+        monkeypatch.setattr(docs_routes, "_sender_reply_to", no_reply_to)
+        monkeypatch.setattr(docs_routes, "_email_with_receipt", lambda *a, **k: sent.append(k))
+
+        token = await _register(client)
+        eid = await _create_list(client, token, list_type="quotation")
+        await client.post(f"/lists/{eid}/finalize", headers=_h(token))
+
+        calls = _count_commits(session, monkeypatch)
+        r = await client.post(f"/lists/{eid}/send", headers=_h(token),
+                              json={"sent_to": "buyer@example.com", "sent_via": "email"})
+        assert r.status_code == 200, r.text
+        assert len(calls) == 1
+        assert len(sent) == 1
+        assert (await client.get(f"/lists/{eid}", headers=_h(token))).json()["sent_to"] == "buyer@example.com"
+
+    @pytest.mark.asyncio
+    async def test_send_before_issue_is_refused_with_a_keyed_message(self, client):
+        token = await _register(client)
+        eid = await _create_list(client, token, list_type="quotation")
+        r = await client.post(f"/lists/{eid}/send", headers=_h(token), json={"sent_via": "manual"})
+        assert r.status_code == 409
+        assert r.json()["detail"]["message_key"] == "docs.list_issue_before_send"

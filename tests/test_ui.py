@@ -12858,6 +12858,19 @@ class TestListFieldPatch:
         assert r.headers.get("HX-Redirect") == "/lists/list:1"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("action,api_call,toast", [
+        ("mark_sent", "send_list", "Marked as sent."),
+        ("unmark_sent", "unmark_list_sent", "Sent marker cleared."),
+    ])
+    async def test_mark_and_unmark_sent_reload_with_a_toast(self, ui_client, action, api_call, toast):
+        ui_client.cookies.update(_authed())
+        with patch(f"ui.api_client.{api_call}", new=AsyncMock(return_value={"ok": True})):
+            r = await ui_client.post(f"/lists/list:1/action/{action}")
+        assert r.status_code == 204, r.text
+        assert r.headers.get("HX-Redirect") == "/lists/list:1"
+        assert json.loads(r.headers["HX-Trigger"])["celerpToast"] == {"message": toast, "type": "success"}
+
+    @pytest.mark.asyncio
     async def test_patch_receiver_type_returns_display_cell(self, ui_client):
         ui_client.cookies.update(_authed())
         with (
