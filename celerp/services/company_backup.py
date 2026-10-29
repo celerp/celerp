@@ -1239,8 +1239,11 @@ def _landing_key(company_id) -> int:
 async def _land(session: AsyncSession, company_id) -> None:
     """Mark the new company's attachment files as landing, held by this transaction: the
     mark outlives a crash, and the lock ends with the transaction, whether it commits,
-    rolls back or its connection is lost."""
-    await session.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": _landing_key(company_id)})
+    rolls back or its connection is lost. The id was just drawn and reconciling only tries
+    its key, so the key is free; it is tried, never waited on, while this restore holds
+    its other locks."""
+    if not await session.scalar(text("SELECT pg_try_advisory_xact_lock(:k)"), {"k": _landing_key(company_id)}):
+        raise RuntimeError("A new company's landing mark is already held.")
     await asyncio.to_thread(attachments.mark_landing, str(company_id))
 
 

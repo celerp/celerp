@@ -5418,3 +5418,21 @@ async def test_attachments_of_a_restore_that_stopped_are_reconciled(real_engine,
     await cb.reconcile_landings()
     assert (stored / new / "photo.png").is_file() and cb.attachments.landing_companies() == []
     assert (stored / str(cid) / "photo.png").read_bytes() == b"alpha-photo"
+
+
+async def test_a_restore_never_waits_for_its_landing_mark(real_engine, tmp_path, monkeypatch):
+    """A restore lands a company id it just drew, so no one else can hold that id's landing
+    key (reconciling only tries it): finding it held is a broken invariant and fails at once
+    instead of waiting while the restore holds its other locks."""
+    from sqlalchemy.ext.asyncio import AsyncSession
+    cb = _bk_cb()
+    _bk_local(monkeypatch, tmp_path)
+    company_id = uuid.uuid4()
+    async with AsyncSession(bind=real_engine) as holder, AsyncSession(bind=real_engine) as session:
+        await cb._land(holder, company_id)
+        with pytest.raises(RuntimeError):
+            await asyncio.wait_for(cb._land(session, company_id), timeout=10)
+        await session.rollback()
+        await holder.rollback()
+    assert cb.attachments.landing_companies() == [str(company_id)]
+    cb.attachments.clear_landing(str(company_id))

@@ -186,7 +186,7 @@ def _own_connection(lock: Lock) -> bool:
 
 # Keys every taker only tries (pg_try_advisory_lock): no one waits on them, so holding one
 # closes no cycle, on its own connection or another. A waiting take of one fails ("try-only").
-_TRY_ONLY = ("adv:migration-run", "adv:xero-attachments-round")
+_TRY_ONLY = ("adv:migration-run", "adv:xero-attachments-round", "adv:backup-landing")
 
 
 def _copy_state(value):
