@@ -329,6 +329,18 @@ class Recorder:
         held = self.taken[conn_key].get(("row:companies", repr((lock.company,))), ())
         return bool(set(held) & {"nokey", "update"})
 
+    def _keys_gated(self, conn_key: int, lock: Lock) -> bool:
+        """R3: another key of ``lock``'s class taken while this transaction holds a lock every
+        taker of the class's keys waits on: its company's row exclusively, or, for account
+        rows, the company's chart lock exclusively (every account-row take holds it)."""
+        if self._company_held(conn_key, lock):
+            return True
+        if lock.cls != "row:accounts" or not lock.company:
+            return False
+        from celerp.services.company_lock import chart_key
+
+        return "exclusive" in self.taken[conn_key].get(("adv:chart", str(chart_key(lock.company))), ())
+
     def _company_gate(self, conn_key: int, h: Lock, lock: Lock) -> str:
         """R4: ``lock`` and every lock of ``h``'s class this transaction holds are rows of one
         company whose row it took exclusively before them (transaction-scoped). Another
@@ -450,10 +462,11 @@ class Recorder:
             # keys of one class are taken in sorted order (by their helper), or two
             # transactions taking two keys in opposite orders wait on each other.
             self._edge(lock, lock, waits, set())
-            if self._company_held(conn_key, lock):
-                # R3: two takers holding the company's lock never interleave, so the order of
-                # their keys orders nothing; the offline check fails the class when it has a
-                # taker of more than one key without that lock.
+            if self._keys_gated(conn_key, lock):
+                # R3: two takers holding the company's lock (or its chart lock, for account
+                # rows) never interleave, so the order of their keys orders nothing; the
+                # offline check fails the class when it has a taker of more than one key
+                # without that lock.
                 if not decreasing and lock.key < last:
                     info["gated_unsorted"] = info.get("gated_unsorted", 0) + 1
                     info.setdefault("unsorted_strengths", set()).add(_strength(lock))

@@ -8,9 +8,9 @@ Lock order: the company lock (when a caller takes it), then the chart lock, then
 account rows. Every change to the chart's shape (adding an account, moving it,
 retyping it, switching it on or off, pointing a posting role at it) takes the chart
 lock first, so those changes happen one at a time and each checks the parents,
-children and role targets the previous one left. A posting holds the accounts it
-uses FOR SHARE until it commits and never takes the chart lock; a change to an
-account row takes that row FOR UPDATE, so it waits for postings in flight.
+children and role targets the previous one left. A posting takes the chart lock
+shared before it reads the accounts it uses and holds it until it commits, so a
+change waits for postings in flight; it takes no account row.
 """
 
 from __future__ import annotations
@@ -112,16 +112,17 @@ PARENT_TYPES: dict[str, frozenset[str]] = {
 
 
 async def lock_accounts(session: AsyncSession, company_id: uuid.UUID, codes: set[str]) -> dict[str, dict]:
-    """The company's accounts among ``codes``, share-locked in code order.
+    """The company's accounts among ``codes``, held as read until the transaction ends
+    by the shared chart lock.
 
     The core journal boundary's view of the chart (``ChartAccess.lock_accounts``)."""
     if not codes:
         return {}
+    await lock_chart(session, company_id, shared=True)
     rows = (await session.execute(
         select(Account)
         .where(Account.company_id == company_id, Account.code.in_(sorted(codes)))
         .order_by(Account.code)
-        .with_for_update(read=True)
         .execution_options(populate_existing=True)
     )).scalars().all()
     parents = set((await session.execute(
@@ -214,8 +215,10 @@ def parent_problem(
 
 
 async def _account(session: AsyncSession, company_id: uuid.UUID, code: str, *, lock: bool = False) -> Account | None:
+    """The account ``code``; with ``lock``, under the chart lock and FOR UPDATE, to change it."""
     stmt = select(Account).where(Account.company_id == company_id, Account.code == code)
     if lock:
+        await lock_chart(session, company_id)
         stmt = stmt.with_for_update()
     return (await session.execute(stmt.execution_options(populate_existing=True))).scalar_one_or_none()
 
@@ -266,8 +269,6 @@ async def change_account(
     """Change one account. ``...`` leaves a field alone. The code never changes:
     postings, parents, banks and posting roles all refer to the account by it."""
     moving = parent_code is not ...
-    if moving or account_type is not None or is_active is not None:
-        await lock_chart(session, company_id)
     acc = await _account(session, company_id, code, lock=True)
     if acc is None:
         raise HTTPException(status_code=404, detail=refusal(
@@ -416,7 +417,6 @@ async def removal_problem(session: AsyncSession, company_id: uuid.UUID, code: st
 
 async def remove_account(session: AsyncSession, company_id: uuid.UUID, code: str) -> None:
     """Delete an unused account from the chart; any other is refused with the reason."""
-    await lock_chart(session, company_id)
     acc = await _account(session, company_id, code, lock=True)
     problem = await removal_problem(session, company_id, code)
     if problem:

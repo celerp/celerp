@@ -553,6 +553,44 @@ def test_the_offline_check_passes_an_ungated_multi_row_taker_that_conflicts_with
     assert ("- row:projections:" in lock_rank.check(tmp_path)) is listed
 
 
+_ACCOUNT_ROW = ("SELECT accounts.id FROM accounts WHERE accounts.company_id = $1::UUID "
+                "AND accounts.code = $2 FOR UPDATE")
+
+
+def _chart_of(recorder: Recorder, conn: int, company: str, mode: str = "xact exclusive wait") -> None:
+    from celerp.services.company_lock import chart_key
+
+    recorder.acquire(conn, _lock("adv:chart", mode, key=str(chart_key(company))), 0.0)
+
+
+@pytest.mark.parametrize("chart, mode, violates", [
+    ("c1", "xact exclusive wait", False),  # the company's chart lock gates its account rows
+    ("c2", "xact exclusive wait", True),   # another company's chart lock gates nothing here
+    ("c1", "xact shared wait", True),      # shared holders interleave
+    (None, None, True),
+])
+def test_unsorted_account_rows_under_the_companys_chart_lock_record_no_violation(recorder, chart, mode, violates):
+    if chart:
+        _chart_of(recorder, 1, chart, mode)
+    recorder.statement(1, _ACCOUNT_ROW, ("c1", "1200"), 0.0)
+    recorder.statement(1, _ACCOUNT_ROW, ("c1", "1100"), 0.0)
+    assert (("unsorted", "row:accounts") in _kinds(recorder)) is violates
+
+
+@pytest.mark.parametrize("chart, listed", [(True, False), (False, True)])
+def test_the_offline_check_fails_unsorted_account_rows_with_a_multi_row_taker_outside_the_chart_lock(
+        recorder, tmp_path, chart, listed):
+    _chart_of(recorder, 1, "c1")
+    recorder.statement(1, _ACCOUNT_ROW, ("c1", "1200"), 0.0)
+    recorder.statement(1, _ACCOUNT_ROW, ("c1", "1100"), 0.0)
+    if chart:
+        _chart_of(recorder, 2, "c1")
+    for code in ("1100", "1200"):
+        recorder.statement(2, _ACCOUNT_ROW, ("c1", code), 0.0)
+    (tmp_path / "lock-graph-gw0.json").write_text(json.dumps(recorder.dump()))
+    assert ("- row:accounts:" in lock_rank.check(tmp_path)) is listed
+
+
 def test_a_statement_sent_through_a_conftest_wrapper_is_sited_at_its_caller():
     """The suite's shared session wraps every operation in a conftest.py; the site is the
     application frame that called it, or every lock would carry the wrapper's line."""

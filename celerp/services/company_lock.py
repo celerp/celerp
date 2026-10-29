@@ -72,20 +72,24 @@ async def _judge_authority_again(session: AsyncSession, company_id) -> None:
         raise
 
 
-async def lock_chart(session: AsyncSession, company_id) -> None:
-    """Serialize changes to the shape of the company's chart of accounts.
+async def lock_chart(session: AsyncSession, company_id, *, shared: bool = False) -> None:
+    """Serialize changes to the company's chart of accounts against each other and
+    against the postings that read it.
 
-    Adding an account, moving one, changing its type, switching it on or off, and
-    pointing a posting role at one each read other accounts (a parent, the children)
-    before writing. Taking this lock first makes those changes happen one at a time
-    for a company, so each one checks the chart the previous one left. Postings
-    never take it. Lock order: the company lock, when the caller holds it, then this
-    lock, then account rows. Held until the transaction ends; SQLite writes one
-    transaction at a time already.
+    Every change to an account row (adding, moving, retyping, renaming, switching it on
+    or off, removing it, pointing a posting role at it) takes this lock first, so those
+    changes happen one at a time for a company and each checks the chart the previous
+    one left. A posting takes it ``shared`` before it reads the accounts it posts to, so
+    the accounts stay as read until it commits; postings never wait for each other, and
+    a change waits for the postings in flight (or they for it). The posting holds no
+    account row, so the order in which it reads accounts orders nothing. Lock order: the
+    company lock, when the caller holds it, then this lock, then account rows. Held until
+    the transaction ends; SQLite writes one transaction at a time already.
     """
     if session.get_bind().dialect.name != "postgresql":
         return
-    await session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": chart_key(company_id)})
+    take = "pg_advisory_xact_lock_shared" if shared else "pg_advisory_xact_lock"
+    await session.execute(text(f"SELECT {take}(:key)"), {"key": chart_key(company_id)})
 
 
 def chart_key(company_id) -> int:
