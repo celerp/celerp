@@ -2486,3 +2486,94 @@ async def test_an_imported_line_naming_an_unknown_contact_is_refused(client):
     assert body["created"] == 0, "the entry was imported despite naming no real contact"
     assert any("contact:nobody" in e for e in body["errors"]), body["errors"]
     assert (await _journal(client, tok))["entries"] == start["entries"]
+
+
+# ---------------------------------------------------------------------------
+# GL impact of one document: GET /accounting/journal/by-doc/{doc_id}
+# ---------------------------------------------------------------------------
+
+async def _by_doc(client, tok, doc_id):
+    r = await client.get(f"/accounting/journal/by-doc/{doc_id}", headers=_h(tok))
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+@pytest.mark.asyncio
+async def test_by_doc_returns_only_that_documents_entries_with_party_and_items(client):
+    tok = await _reg(client)
+    doc = await _doc_with_items(client, tok, "invoice", [("WIDGET", 2, 30.0), ("GIZMO", 1, 40.0)])
+    other = await _doc_with_items(client, tok, "invoice", [("BOLT", 1, 5.0)], issue_date="2026-02-03")
+    await _post_manual_je(client, tok, _bal(12.0), ts="2026-02-05")
+
+    impact = await _by_doc(client, tok, doc)
+    assert impact["doc_id"] == doc and impact["doc_type"] == "invoice"
+    assert {(e.get("source_doc") or {}).get("doc_id") for e in impact["entries"]} == {doc}
+    assert other not in str(impact["entries"])
+    # The same lines the extended journal shows for that entry, plus the party.
+    ext = _entry_for(await _extended(client, tok), doc)
+    got = next(e for e in impact["entries"] if e["je_id"] == ext["je_id"])
+    assert [(l["account"], l["debit"], l["credit"], l.get("item")) for l in got["lines"]] == \
+        [(l["account"], l["debit"], l["credit"], l.get("item")) for l in ext["lines"]]
+    assert got["items_status"] == "expanded"
+    assert all(l["party_id"] == "contact:1" for l in got["lines"])
+    assert impact["total_debit"] == impact["total_credit"] == 100.0
+
+
+@pytest.mark.asyncio
+async def test_by_doc_includes_the_cost_of_sales_and_inventory_legs(client, session):
+    from celerp.services.auto_je import create_for_doc_fulfilled
+
+    tok = await _reg(client)
+    doc = await _doc_with_items(client, tok, "invoice", [("WIDGET", 1, 60.0)])
+    company_id, user_id = _ids(tok)
+    r = await client.post("/items", headers=_h(tok), json={
+        "sku": "WIDGET-LOT", "name": "Widget", "quantity": 1, "sell_by": "piece", "cost_total": 42.0,
+        "status": "available"})
+    assert r.status_code == 200, r.text
+    await create_for_doc_fulfilled(session, company_id=company_id, user_id=user_id,
+                                   doc_id=doc, lot_costs={r.json()["id"]: 42.0}, ts="2026-02-02")
+    await session.commit()
+
+    impact = await _by_doc(client, tok, doc)
+    ids = {e["je_id"] for e in impact["entries"]}
+    assert f"je:auto:{doc}:fulfill" in ids and len(ids) == 2
+    cost = next(e for e in impact["entries"] if e["je_id"].endswith(":fulfill"))
+    assert sum(l["debit"] for l in cost["lines"]) == sum(l["credit"] for l in cost["lines"]) == 42.0
+    assert impact["total_debit"] == impact["total_credit"] == 102.0
+
+
+@pytest.mark.asyncio
+async def test_by_doc_lines_carry_the_documents_contact_as_party(client):
+    tok = await _reg(client)
+    doc = await _doc_with_items(client, tok, "invoice", [("WIDGET", 1, 10.0)])
+    lines = [l for e in (await _by_doc(client, tok, doc))["entries"] for l in e["lines"]]
+    assert lines and all(l["party_id"] == "contact:1" and "party_name" in l for l in lines)
+
+
+@pytest.mark.asyncio
+async def test_by_doc_for_a_draft_or_unposted_document_has_no_entries(client):
+    tok = await _reg(client)
+    r = await client.post("/docs", headers=_h(tok), json={
+        "doc_type": "invoice", "contact_id": "contact:1", "issue_date": "2026-02-01",
+        "line_items": [{"name": "Widget", "quantity": 1, "unit_price": 9.0, "line_total": 9.0}],
+        "subtotal": 9.0, "tax": 0.0, "total": 9.0})
+    assert r.status_code == 200, r.text
+    impact = await _by_doc(client, tok, r.json()["id"])
+    assert impact["entries"] == [] and impact["status"] == "draft"
+    assert impact["total_debit"] == impact["total_credit"] == 0
+
+
+@pytest.mark.asyncio
+async def test_by_doc_unknown_document_is_not_found(client):
+    tok = await _reg(client)
+    r = await client.get("/accounting/journal/by-doc/doc:nope", headers=_h(tok))
+    assert r.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_by_doc_requires_view_financial_reports(client, session):
+    admin = await _reg(client)
+    doc = await _doc_with_items(client, admin, "invoice", [("WIDGET", 1, 10.0)])
+    operator = await _user_with_role(client, session, admin, "operator")
+    assert (await client.get(f"/accounting/journal/by-doc/{doc}",
+                             headers=_h(operator))).status_code == 403
