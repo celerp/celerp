@@ -20,6 +20,7 @@ _PREFIX_BY_DOC_TYPE = {
     "bill": "BILL",
     "memo": "MEMO",
     "list": "LST",
+    "transfer": "TRF",
     "consignment_in": "CI",
     "subscription_invoice": "SUBI",
     "subscription_po": "SUBP",
@@ -29,14 +30,18 @@ _PREFIX_BY_DOC_TYPE = {
 }
 
 
-# List types that get their own numbering counter; every other list shares LST.
-_LIST_PREFIX_KEYS = {"shipping_doc", "writeoff"}
+# Every list type has its own numbering counter. The shared "list" counter (LST) is no longer
+# drawn from; it stays in the table so a company's old settings and numbers are still read.
+_LIST_PREFIX_KEYS = {"quotation", "transfer", "audit", "writeoff", "shipping_doc"}
 
 
 def list_sequence_key(list_type: str | None) -> str:
-    """Numbering key for a list: shipping documents get their own SHIP counter;
-    every other list type shares the generic LST counter (unchanged)."""
-    return list_type if list_type in _LIST_PREFIX_KEYS else "list"
+    """Numbering key for a list: its own type's counter (QUO, TRF, AUD, WO, SHIP). A list
+    with no type, or one this version does not know, is a quotation, as everywhere else."""
+    if list_type in _LIST_PREFIX_KEYS:
+        return list_type
+    return "quotation"
+
 
 # Default pattern for all new companies
 DEFAULT_PATTERN = "{PREFIX}-{YY}{MM}-{####}"

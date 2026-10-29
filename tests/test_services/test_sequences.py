@@ -14,6 +14,7 @@ from celerp_docs.sequences import (
     validate_pattern,
     get_all_sequences,
     update_sequence,
+    list_sequence_key,
     DEFAULT_PATTERN,
     _expand_pattern,
 )
@@ -154,3 +155,24 @@ def test_expand_pattern_hash_padding():
     assert _expand_pattern("{#####}", "X", day, 42) == "00042"
     assert _expand_pattern("{##}", "X", day, 42) == "42"
     assert _expand_pattern("{##}", "X", day, 1) == "01"
+
+
+@pytest.mark.parametrize("list_type,prefix", [
+    ("quotation", "QUO"), ("transfer", "TRF"), ("audit", "AUD"), ("writeoff", "WO"), ("shipping_doc", "SHIP"),
+])
+def test_each_list_type_has_its_own_counter_and_prefix(list_type, prefix):
+    c = _company()
+    key = list_sequence_key(list_type)
+    assert key == list_type
+    assert next_doc_ref(c, key).startswith(f"{prefix}-")
+
+
+@pytest.mark.parametrize("list_type", [None, "", "sale", "something_new"])
+def test_an_untyped_or_unknown_list_is_a_quotation(list_type):
+    assert list_sequence_key(list_type) == "quotation"
+
+
+def test_the_old_shared_list_counter_is_not_drawn_from_by_lists():
+    c = _company(sequences={"list": {"prefix": "OLD", "pattern": "{PREFIX}-{####}", "next": 40}})
+    assert next_doc_ref(c, list_sequence_key("quotation")).startswith("QUO-")
+    assert c.settings["sequences"]["list"]["next"] == 40
