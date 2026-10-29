@@ -16,7 +16,7 @@ import uuid
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass
 
-from sqlalchemy import delete, select
+from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -39,7 +39,6 @@ from celerp.importers.sinks import (
     SinkEntityMapping,
     SinkError,
 )
-from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, Location, User
 from celerp.models.migration import MigrationCleanupTask, MigrationEntityMap
 from celerp.models.projections import Projection
@@ -245,8 +244,8 @@ async def _import_attachment(context: SinkContext, record: CIFAttachment) -> tup
     The adapter sends only files for records that can hold them, so a file for any other
     record is a defect in the adapter: it fails the batch rather than being skipped. The
     file is stored under an id derived from its identity and content, after a cleanup task
-    naming it is committed; the batch that links it deletes the task, so a file whose
-    batch rolls back is removed by the runner or the startup sweep."""
+    naming it is committed; the batch that links it deletes the task (the runner does, after
+    its checkpoint), so a file whose batch rolls back is removed by the runner or the startup sweep."""
     key = context.idempotency_key(record, "attached")
     replay = await find_event_by_idempotency(context.session, context.company_id, key)
     if replay is not None:
@@ -286,7 +285,7 @@ async def _import_attachment(context: SinkContext, record: CIFAttachment) -> tup
         is_hero, document_tag = item_file_role(row.state.get("files", []), mime, as_hero=record.item_image)
     await attach_file(context.session, context.company_id, entity_type, entity_id, meta, context.user_id,
                       source="migration", idempotency_key=key, document_tag=document_tag, is_hero=is_hero)
-    await context.session.execute(delete(MigrationCleanupTask).where(MigrationCleanupTask.id == task_id))
+    context.linked_cleanup_tasks.append(task_id)
     return meta["id"], None
 
 

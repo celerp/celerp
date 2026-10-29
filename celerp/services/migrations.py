@@ -836,12 +836,16 @@ async def _run_locked(run_id: uuid.UUID) -> None:
                     records = [b.record for b in batch]
                     result = await batch[0].sink.import_batch(context, records)
                     validate_batch_result(records, result)  # any rejected record rolls the batch back
-                    await _record_mappings(s, run_id, batch[0].group, result.mappings, records)
                     advanced = cursor + len(batch)
                     written = {**entry, "cursor": advanced, "created": entry["created"] + result.created,
                                "skipped": entry["skipped"] + result.skipped, "errors": 0,
                                "status": "done" if advanced >= len(phase_steps) else "running"}
+                    # The run row, then the linked files' cleanup tasks, then the mappings: rank order, one commit.
                     status = await _checkpoint(s, run_id, phase, {**state, phase.value: written})
+                    if context.linked_cleanup_tasks:
+                        await s.execute(delete(MigrationCleanupTask)
+                                        .where(MigrationCleanupTask.id.in_(context.linked_cleanup_tasks)))
+                    await _record_mappings(s, run_id, batch[0].group, result.mappings, records)
                     await s.commit()
             except Exception as exc:
                 # The cursor the database last confirmed: a commit whose outcome is unknown is
