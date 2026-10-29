@@ -24,9 +24,9 @@ def test_document_list_names_the_type():
     _shows_supplier_credit_note(to_xml(_doc_table([SCN], doc_type="debit_note")))
 
 
-def test_count_chip_names_the_type():
-    from ui.routes.documents import _summary_bar
-    _shows_supplier_credit_note(to_xml(_summary_bar({"debit_note_count": 1}, "debit_note")))
+def test_count_summary_names_the_type():
+    from ui.routes.documents import _doc_summary_line
+    _shows_supplier_credit_note(to_xml(_doc_summary_line({"debit_note_count": 1}, "debit_note")))
 
 
 def test_list_cards_count_issued_notes():

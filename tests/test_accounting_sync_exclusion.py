@@ -71,14 +71,16 @@ async def test_accounting_connectors_skip_excluded_invoices_without_affecting_sh
 
 def test_document_list_accounting_filter_and_bulk_control():
     from fasthtml.common import to_xml
-    from ui.routes.documents import _doc_api_params, _doc_table, _accounting_sync_filter
+    from ui.routes.documents import _doc_api_params, _doc_table, _doc_filters
 
     state = {"type": "bill", "q": "vendor", "accounting_sync": "excluded"}
     params = _doc_api_params(state, "", "", limit=50)
     assert params["doc_type"] == "bill" and params["accounting_sync"] == "excluded"
-    controls = to_xml(_accounting_sync_filter(state))
-    assert "accounting_sync=included" in controls
-    assert "type=bill" in controls and "q=vendor" in controls
+    # The Records select in the /docs filters panel: one GET form that keeps the type and search.
+    controls = to_xml(_doc_filters(state, "", "", "all", "en"))
+    assert 'name="accounting_sync"' in controls and '<option value="included">' in controls
+    assert '<option value="excluded" selected>' in controls
+    assert '<input type="hidden" name="type" value="bill">' in controls and 'value="vendor"' in controls
 
     html = to_xml(_doc_table([
         {"entity_id": "doc:bill-a", "doc_number": "BILL-001",
@@ -94,9 +96,10 @@ def test_an_unknown_accounting_filter_says_every_record_is_shown():
     """A sync filter Celerp does not know is named as such, the way Client companies names a
     bad filter, instead of silently showing every record with no choice lit."""
     from fasthtml.common import to_xml
-    from ui.routes.documents import _accounting_sync_filter
+    from ui.routes.documents import _accounting_sync_warning
 
-    controls = to_xml(_accounting_sync_filter({"accounting_sync": "bogus"}))
-    assert "flash flash--warning" in controls
-    assert "This sync filter is not one Celerp knows, so every record is shown." in controls
-    assert "flash" not in to_xml(_accounting_sync_filter({"accounting_sync": "included"}))
+    warning = to_xml(_accounting_sync_warning({"accounting_sync": "bogus"}))
+    assert "flash flash--warning" in warning
+    assert "This sync filter is not one Celerp knows, so every record is shown." in warning
+    assert _accounting_sync_warning({"accounting_sync": "included"}) == ""
+    assert _accounting_sync_warning({}) == ""

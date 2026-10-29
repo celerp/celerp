@@ -375,13 +375,13 @@ async def test_doc_summary_counts_a_text_amount_as_unvalued(client, session):
     assert r.json()["unvalued_count"] == 1
 
 
-def test_summary_bar_says_how_many_documents_are_left_out_of_the_totals():
+def test_summary_line_says_how_many_documents_are_left_out_of_the_totals():
     from fasthtml.common import to_xml
-    from ui.routes.documents import _summary_bar
+    from ui.routes.documents import _doc_summary_line
 
-    assert "2 not in the totals" in to_xml(_summary_bar({"unvalued_count": 2}, lang="en"))
-    assert "not in the totals" not in to_xml(_summary_bar({"unvalued_count": 0}, lang="en"))
-    assert "3 not in the totals" in to_xml(_summary_bar({"unvalued_count": 3}, doc_type="memo", lang="en"))
+    assert "2 not in the totals" in to_xml(_doc_summary_line({"unvalued_count": 2}, lang="en"))
+    assert "not in the totals" not in to_xml(_doc_summary_line({"unvalued_count": 0}, lang="en"))
+    assert "3 not in the totals" in to_xml(_doc_summary_line({"unvalued_count": 3}, doc_type="memo", lang="en"))
 
 
 @pytest.mark.asyncio

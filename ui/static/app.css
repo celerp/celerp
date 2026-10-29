@@ -1216,8 +1216,6 @@ th.cell--number { font-family: inherit; }
 .search-scope { position: relative; display: inline-block; }
 .search-scope-label { position: absolute; bottom: 100%; left: 0; right: 0; text-align: center; font-size: 10px; color: var(--c-text2); margin-bottom: 2px; white-space: nowrap; }
 .date-custom-form { display: flex; align-items: center; gap: 6px; }
-/* List filter bar: the search box and the date dropdown on one row. The custom range appears only when Custom is chosen. */
-.list-filter-bar { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
 .date-range-form { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .date-range-custom { display: flex; align-items: center; gap: 6px; }
 .date-range-custom[hidden] { display: none; }
@@ -1572,6 +1570,8 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 .list-page .page-heading { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .list-page .page-title { font-size: 22px; }
 .list-page .page-subtitle { font-size: 13px; color: var(--c-text2); }
+.list-page .doc-summary-item + .doc-summary-item::before { content: "\00b7"; margin: 0 8px; }
+.list-page .doc-summary-alert { color: var(--c-red); }
 .list-page .status-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); }
 .list-page .status-card { min-width: 0; }
 .list-page .status-card-label { font-size: 10px; display: flex; align-items: center; gap: 6px; }

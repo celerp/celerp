@@ -396,13 +396,11 @@ class TestLiveSearchResults:
         assert area, content_id
         after = r.text[area.start():]
         assert "pagination" in after
-        if content_id == "list-content":
-            # The cards sit above the filters panel, outside the area the search replaces.
-            cards = r.text.index('id="list-cards"')
-            assert cards < r.text.index('id="list-filters"') < area.start()
-            assert 'class="status-card' in r.text[cards:area.start()]
-        else:
-            assert 'class="status-card' in after
+        # The cards sit above the filters panel, outside the area the search replaces.
+        base = content_id.split("-")[0]
+        cards = r.text.index(f'id="{base}-cards"')
+        assert cards < r.text.index(f'id="{base}-filters"') < area.start()
+        assert 'class="status-card' in r.text[cards:area.start()]
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("path, api_fn, summary_fn, prefix, content_id", [
@@ -499,31 +497,27 @@ class TestLiveSearchResults:
         assert r.headers.get("HX-Redirect", "").startswith("/login"), (r.status_code, dict(r.headers))
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("path, page, base", [
-        ("/docs/search?type=invoice&q=ruby", "/docs?type=invoice", "docs"),
-    ])
-    async def test_search_updates_export_and_date_presets(self, ui_client, path, page, base):
-        """After a search, Export CSV and the date presets keep the search, like a reload would."""
+    async def test_docs_search_updates_export_cards_and_summary(self, ui_client):
+        """After a search on /docs, Export CSV, the status cards and the header summary follow
+        the search, like a reload would. The panel needs nothing: the search box is in it."""
         listed = AsyncMock(return_value={"items": [_DOC], "total": 1})
+        summary = AsyncMock(return_value={**_SUMMARY, "ar_outstanding": 40, "ar_total": 90, "invoice_count": 2})
         ui_client.cookies.update(_cookies())
         with patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)), \
-             patch("ui.api_client.list_docs", new=listed), patch("ui.api_client.list_lists", new=listed), \
-             patch("ui.api_client.get_doc_summary", new=AsyncMock(return_value=_SUMMARY)), \
-             patch("ui.api_client.get_list_summary", new=AsyncMock(return_value={"count_by_status": {}})):
-            full = await ui_client.get(page)
-            r = await ui_client.get(path, headers={"HX-Request": "true"})
+             patch("ui.api_client.list_docs", new=listed), patch("ui.api_client.get_doc_summary", new=summary):
+            full = await ui_client.get("/docs?type=invoice")
+            r = await ui_client.get("/docs/search?type=invoice&q=ruby", headers={"HX-Request": "true"})
         assert r.status_code == 200
         for text, oob in ((full.text, False), (r.text, True)):
-            export = re.search(rf'<a[^>]*href="/{base}/export/csv\?[^"]*"[^>]*>', text)
-            dates = re.search(r'<div[^>]*id="[^"]*-dates"[^>]*>', text)
-            assert export and dates, text[:300]
-            assert export.group(0).count('id="') == 1
-            assert ('hx-swap-oob="true"' in export.group(0)) is oob
-            assert ('hx-swap-oob="true"' in dates.group(0)) is oob
-        form = re.search(rf'<form[^>]*action="/{base}"[^>]*class="date-range-form".*?</form>', r.text, re.S)
-        assert form, r.text[:300]
-        assert re.search(r'<input[^>]*name="q"[^>]*value="ruby"|<input[^>]*value="ruby"[^>]*name="q"', form.group(0))
-        assert "q=ruby" in re.search(rf'href="(/{base}/export/csv\?[^"]*)"', r.text).group(1)
+            for pattern in (r'<a[^>]*href="/docs/export/csv\?[^"]*"[^>]*>', r'<div[^>]*id="doc-cards"[^>]*>',
+                            r'<span[^>]*id="docs-summary"[^>]*>'):
+                tag = re.search(pattern, text)
+                assert tag, (pattern, text[:300])
+                assert ('hx-swap-oob="true"' in tag.group(0)) is oob, tag.group(0)
+        assert summary.call_args.args[1].get("q") == "ruby"
+        assert "2 invoices in this period" in r.text
+        assert 'id="doc-filters"' not in r.text and 'id="docs-dates"' not in r.text
+        assert "q=ruby" in re.search(r'href="(/docs/export/csv\?[^"]*)"', r.text).group(1)
 
     @pytest.mark.asyncio
     async def test_lists_search_updates_export_and_cards(self, ui_client):
@@ -553,7 +547,7 @@ class TestDateRangeDropdown:
     """One date control per list page: a preset dropdown, with the from/to range only for Custom."""
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("page", ["/docs"])
+    @pytest.mark.parametrize("page", ["/docs", "/lists"])
     @pytest.mark.parametrize("query, shown", [
         ("?preset=this_month", False),
         ("?preset=custom&from=2026-01-01&to=2026-02-01", True),
@@ -566,26 +560,6 @@ class TestDateRangeDropdown:
              patch("ui.api_client.get_doc_summary", new=AsyncMock(return_value=_SUMMARY)), \
              patch("ui.api_client.get_list_summary", new=AsyncMock(return_value={"count_by_status": {}})):
             r = await ui_client.get(page + query)
-        assert r.status_code == 200
-        assert "preset-btn" not in r.text  # the row of preset buttons is gone
-        assert r.text.count('name="preset"') == 1
-        range_tag = re.search(r'<span[^>]*class="date-range-custom"[^>]*>', r.text).group(0)
-        assert ("hidden" in range_tag) is not shown
-        selected = re.search(r'<option[^>]*selected[^>]*value="([^"]*)"|<option[^>]*value="([^"]*)"[^>]*selected', r.text)
-        assert (selected.group(1) or selected.group(2)) == query.split("preset=")[1].split("&")[0]
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("query, shown", [
-        ("?preset=this_month", False),
-        ("?preset=custom&from=2026-01-01&to=2026-02-01", True),
-    ])
-    async def test_lists_custom_range_only_for_custom(self, ui_client, query, shown):
-        listed = AsyncMock(return_value={"items": [_DOC], "total": 1})
-        ui_client.cookies.update(_cookies())
-        with patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)), \
-             patch("ui.api_client.list_lists", new=listed), \
-             patch("ui.api_client.get_list_summary", new=AsyncMock(return_value={"count_by_status": {}})):
-            r = await ui_client.get("/lists" + query)
         assert r.status_code == 200
         assert "preset-btn" not in r.text and "date-range-form" not in r.text
         assert r.text.count('name="preset"') == 1
@@ -614,3 +588,70 @@ class TestDateRangeDropdown:
             assert f'id="{control_id}"' in panel, control_id
         assert re.search(r'<a href="/lists" class="[^"]*filter-reset', panel)
         assert re.search(r'<div class="list-page">', r.text)
+
+
+class TestDocsFilterPanel:
+    """/docs uses the list page kit: header summary, cards, one filters panel, then the table."""
+
+    async def _get(self, ui_client, url, summary=None):
+        ui_client.cookies.update(_cookies())
+        with patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)), \
+             patch("ui.api_client.list_docs", new=AsyncMock(return_value={"items": [_DOC], "total": 1})), \
+             patch("ui.api_client.get_doc_summary", new=AsyncMock(return_value=summary or _SUMMARY)):
+            r = await ui_client.get(url)
+        assert r.status_code == 200
+        return r
+
+    @pytest.mark.asyncio
+    async def test_records_select_keeps_accounting_sync_and_the_other_filters(self, ui_client):
+        r = await self._get(ui_client, "/docs?type=bill&q=vendor&status=final&sort=total&accounting_sync=excluded")
+        panel = re.search(r'<form[^>]*id="doc-filters".*?</form>', r.text, re.S).group(0)
+        select = re.search(r'<select name="accounting_sync".*?</select>', panel, re.S).group(0)
+        assert re.findall(r'<option value="([^"]*)"', select) == ["", "included", "excluded"]
+        assert re.search(r'<option value="excluded" selected>Excluded</option>', select)
+        assert re.search(r'<label for="filter-accounting_sync" class="filter-field-label">Records</label>', panel)
+        hidden = dict(re.findall(r'<input type="hidden" name="([^"]*)" value="([^"]*)"', panel))
+        assert hidden == {"type": "bill", "status": "final", "sort": "total"}, hidden
+        assert re.search(r'<input[^>]*name="q"[^>]*value="vendor"', panel)
+        assert re.search(r'<a href="/docs\?type=bill" class="[^"]*filter-reset', panel)
+        assert "list-filter-bar" not in r.text and "accounting_sync=included" not in r.text
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_records_value_still_warns(self, ui_client):
+        r = await self._get(ui_client, "/docs?type=invoice&accounting_sync=bogus")
+        assert "This sync filter is not one Celerp knows, so every record is shown." in r.text
+        select = re.search(r'<select name="accounting_sync".*?</select>', r.text, re.S).group(0)
+        assert "selected" not in select.split("</option>", 1)[1]
+        ok = await self._get(ui_client, "/docs?type=invoice&accounting_sync=included")
+        assert "flash--warning" not in ok.text
+
+    @pytest.mark.asyncio
+    async def test_header_summary_shows_ar_billed_and_count(self, ui_client):
+        summary = {**_SUMMARY, "ar_outstanding": 1234.5, "ar_total": 5000, "invoice_count": 12, "unvalued_count": 2}
+        r = await self._get(ui_client, "/docs?type=invoice", summary)
+        header = re.search(r'<div class="page-header">.*?<div class="page-actions">', r.text, re.S).group(0)
+        subtitle = re.search(r'<div class="page-subtitle">\s*(<span id="docs-summary".*?)\s*</div>', header, re.S)
+        assert subtitle, header
+        items = re.findall(r'<span class="doc-summary-item[^"]*">([^<]*)</span>', subtitle.group(1))
+        assert items[0].startswith("AR: ") and "1,234.50" in items[0], items
+        assert items[1].startswith("Billed: ") and "5,000.00" in items[1], items
+        assert items[2] == "12 invoices in this period", items
+        assert items[3].startswith("2 not in the totals"), items
+        assert "valuation-bar" not in r.text
+
+    @pytest.mark.asyncio
+    async def test_header_summary_counts_other_types(self, ui_client):
+        r = await self._get(ui_client, "/docs?type=memo", {**_SUMMARY, "memo_count": 4})
+        line = re.search(r'<span id="docs-summary" class="doc-summary">(.*?)\s*</div>', r.text, re.S).group(1)
+        items = re.findall(r'<span class="doc-summary-item[^"]*">([^<]*)</span>', line)
+        assert len(items) == 1 and "AR:" not in items[0] and "4" in items[0], items
+
+    @pytest.mark.asyncio
+    async def test_type_is_carried_by_the_menu_not_a_select(self, ui_client):
+        r = await self._get(ui_client, "/docs?type=invoice")
+        panel = re.search(r'<form[^>]*id="doc-filters".*?</form>', r.text, re.S).group(0)
+        assert '<select name="type"' not in panel
+        assert '<input type="hidden" name="type" value="invoice">' in panel
+        assert re.search(r'<div class="list-page">', r.text)
+        order = [r.text.index(m) for m in ('id="docs-summary"', 'id="doc-cards"', 'id="doc-filters"', 'id="doc-content"')]
+        assert order == sorted(order), order
