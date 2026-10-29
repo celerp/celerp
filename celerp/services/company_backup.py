@@ -1691,12 +1691,6 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
             await session.execute(text("SET LOCAL TimeZone = 'UTC'"))
             # Before any lock that waits, so a restore started twice is refused at once.
             await _claim(session, backup_id, source)
-            if replacing is not None:
-                # As a company reset takes them: before any other lock on the company.
-                from celerp.connectors.ownership import lock_connector_maintenance
-                await lock_connector_maintenance(session)
-                if not await lock_company_for_deletion(session, replacing.company_id):
-                    raise BackupError(404, t("error.company_unavailable") + _NOT_REPLACED)
             if mode == "bootstrap":
                 await _wait_for(session, bootstrap.lock_bootstrap)  # any other first-owner setup
             await hold_module_state(session)
@@ -1721,6 +1715,13 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
                 if mode == "start_company" and not await hold_companyless_login(session, user_id):
                     raise BackupError(409, t(HAS_COMPANY))
                 await hold_owner(session, user_id)  # the create's login lock, before _plan locks companies
+                if replacing is not None:
+                    # As a company reset takes them: before any other lock on the company, after
+                    # the owner's locks, which another restore by this owner takes before it.
+                    from celerp.connectors.ownership import lock_connector_maintenance
+                    await lock_connector_maintenance(session)
+                    if not await lock_company_for_deletion(session, replacing.company_id):
+                        raise BackupError(404, t("error.company_unavailable") + _NOT_REPLACED)
                 plan, destination = await _plan(session, backup, mode, user_id, current_company_id, lock=True)
                 if plan.action == REFUSE:
                     raise BackupError(409, t(NOT_A_MEMBER))
