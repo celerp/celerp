@@ -56,7 +56,7 @@ from celerp.services.attachments import (
 from celerp.services import peer_access
 from celerp.services.auth import AuthContext, get_auth_context, get_current_company_id, get_current_user
 from celerp.services.peer_import import SourceRevision, peer_batch
-from celerp.services.company_lock import lock_chart, locked_company
+from celerp.services.company_lock import lock_company, locked_company
 from celerp.services.doc_balance import canonical_doc_type
 from celerp.services.je_keys import je_void_data
 from celerp.services.journal_accounts import require_destinations
@@ -215,7 +215,7 @@ async def seed_chart_of_accounts(session: AsyncSession, company_id: uuid.UUID) -
     """Seed Thai default chart of accounts for a new company. Idempotent."""
     from sqlalchemy import select as _select
 
-    await lock_chart(session, company_id)
+    await lock_company(session, company_id)
     existing_codes = set(
         (await session.execute(
             _select(Account.code).where(Account.company_id == company_id)
@@ -307,7 +307,6 @@ async def _add_seeded_accounts(session: AsyncSession, company_id: uuid.UUID) -> 
     wanted = {role: anchors for role, anchors in _SEEDED_ANCHORS.items() if not mapped.get(role.value)}
     if not wanted:
         return frozenset()
-    await lock_chart(session, company_id)
     chart = {e["code"]: e for e in THAI_CHART_OF_ACCOUNTS}
     codes = {code for role, anchors in wanted.items() for code in (*anchors, SEEDED_TARGETS[role])}
     rows = {a.code: a for a in (await session.execute(_select(Account).where(
@@ -370,13 +369,12 @@ async def backfill_chart_of_accounts_hook(*, session: AsyncSession) -> None:
     imported books when the migration is finalized.
 
     Every company is backfilled in one transaction, so it first takes the lock of every
-    company it backfills and then their chart locks, each set in its helper's order;
-    every later take is a retake, and no chart lock is held while a company's is awaited.
+    company it backfills, in lock_companies' order; every later take is a retake.
     """
     from celerp.accounting_roles import UNGUESSED_ROLES
     from celerp.models.company import Company
     from celerp.services import migrations
-    from celerp.services.company_lock import lock_charts, lock_companies
+    from celerp.services.company_lock import lock_companies
     from celerp.services.lot_origin import place_company_stock
     from sqlalchemy import select as _select
 
@@ -387,7 +385,6 @@ async def backfill_chart_of_accounts_hook(*, session: AsyncSession) -> None:
                  for company_id in (await session.execute(_select(Company.id).order_by(Company.id))).scalars()
                  if not await migrations.is_company_migration_staged(session, company_id)]
     await lock_companies(session, companies)
-    await lock_charts(session, companies)
     for company_id in companies:
         if company_id in unseeded:
             await seed_chart_of_accounts(session, company_id)
@@ -600,7 +597,7 @@ async def seed_chart_endpoint(
     """Seed the default chart of accounts for this company. Only adds missing accounts,
     each as one added by hand is; a default account whose parent cannot take it now
     (inactive, or posted to by a role) is left out and listed."""
-    await lock_chart(session, company_id)
+    await lock_company(session, company_id)
     existing_codes = set(
         (await session.execute(
             select(Account.code).where(Account.company_id == company_id)
@@ -749,7 +746,6 @@ async def import_chart_accounts(
     # Hold the company lock so two imports of one file cannot both see a code as new,
     # and judge the caller's authority as it stands once nothing can change it.
     await locked_authority(session, company_id, user.id, ("manage_accounting", "import_export_data"))
-    await lock_chart(session, company_id)
     plan = await _planned_chart_import(request, body, company_id, session)
     # Each account goes in as one added by hand does, so its parent is locked against a
     # posting that has just checked it has nothing under it.

@@ -10,7 +10,7 @@ back through here, so history is never revalidated or rewritten.
 
 The chart of accounts belongs to the accounting module. When its API starts it
 registers a ``ChartAccess`` here (``register_chart``): reading account rows under
-the shared chart lock, listing the chart, and adding an account. Core never touches its
+the company lock, listing the chart, and adding an account. Core never touches its
 table. Only the bundled accounting module can register; with nothing registered,
 or the module stopped, accounting is not running and only the role snapshot is
 written.
@@ -53,7 +53,7 @@ class ChartAccess:
     """The accounting module's chart, as core reads and extends it.
 
     lock_accounts(session, company_id, codes) -> {code: {"code", "account_type",
-    "is_active", "has_children"}}, held as read by the shared chart lock; list_accounts(session, company_id) ->
+    "is_active", "has_children"}}, held as read by the company lock; list_accounts(session, company_id) ->
     the chart's rows, each with its id, code, name, account_type, parent_code,
     cash_flow_category, is_active, has_children and currency (a bank account's, else
     None); add_account(session, company_id, *, code, name, account_type, parent_code=None,
@@ -181,7 +181,7 @@ async def require_destinations(session: AsyncSession, company_id, codes) -> dict
     """Refuse a new posting a user directed to any of ``codes`` unless each is an account
     in the chart, active, with nothing under it (a header only sums the accounts below it).
 
-    The accounts stay as read until the transaction ends (the shared chart lock), so switching one off or
+    The accounts stay as read until the transaction ends (the company lock), so switching one off or
     putting an account under it waits for the posting, and a posting that waited for such
     a change sees it and is refused. Returns the locked accounts, for the caller's own
     rule on their type; None when the accounting module is not running, so there is no

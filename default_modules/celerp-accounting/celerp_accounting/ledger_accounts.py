@@ -12,7 +12,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.services.company_lock import lock_chart
+from celerp.services.company_lock import lock_company
 from celerp_accounting.models import Account, BankAccount
 from ui.i18n import t
 
@@ -28,9 +28,9 @@ def require_open_account(acc: Account | None, code: str) -> Account:
 
 async def require_money_account(session: AsyncSession, company_id: uuid.UUID, code: str) -> Account:
     """422 unless *code* is one of the company's active asset accounts. It is read under
-    the shared chart lock, so it cannot be archived or retyped until the caller's
-    transaction ends."""
-    await lock_chart(session, company_id, shared=True)
+    the company lock, so it cannot be archived or retyped until the caller's transaction
+    ends."""
+    await lock_company(session, company_id)
     acc = await session.scalar(select(Account).where(Account.company_id == company_id, Account.code == code))
     require_open_account(acc, code)
     if acc.account_type != "asset":

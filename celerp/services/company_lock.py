@@ -5,9 +5,7 @@
 
 from __future__ import annotations
 
-import hashlib
-
-from sqlalchemy import event, select, text
+from sqlalchemy import event, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import get_history
@@ -41,7 +39,11 @@ async def lock_company(session: AsyncSession, company_id) -> None:
     KEY SHARE, so the upgrade never happens, while it still conflicts with another
     FOR NO KEY UPDATE.
 
-    Canonical lock order: take this lock first, then any Projection row locks.
+    It is also the company's chart lock: every change to an account row, and every
+    posting's read of the accounts it posts to, is made under it, so a change checks the
+    chart the previous one left and a posting's accounts stay as read until it commits.
+
+    Canonical lock order: take this lock first, then any Projection or account row locks.
     Never acquire it after SELECT ... FOR UPDATE on a Projection.
     """
     await session.execute(
@@ -72,31 +74,6 @@ async def _judge_authority_again(session: AsyncSession, company_id) -> None:
         raise
 
 
-async def lock_chart(session: AsyncSession, company_id, *, shared: bool = False) -> None:
-    """Serialize changes to the company's chart of accounts against each other and
-    against the postings that read it.
-
-    Every change to an account row (adding, moving, retyping, renaming, switching it on
-    or off, removing it, pointing a posting role at it) takes this lock first, so those
-    changes happen one at a time for a company and each checks the chart the previous
-    one left. A posting takes it ``shared`` before it reads the accounts it posts to, so
-    the accounts stay as read until it commits; postings never wait for each other, and
-    a change waits for the postings in flight (or they for it). The posting holds no
-    account row, so the order in which it reads accounts orders nothing. Lock order: the
-    company lock, when the caller holds it, then this lock, then account rows. Held until
-    the transaction ends; SQLite writes one transaction at a time already.
-    """
-    if session.get_bind().dialect.name != "postgresql":
-        return
-    take = "pg_advisory_xact_lock_shared" if shared else "pg_advisory_xact_lock"
-    await session.execute(text(f"SELECT {take}(:key)"), {"key": chart_key(company_id)})
-
-
-def chart_key(company_id) -> int:
-    """The advisory key ``lock_chart`` takes for one company."""
-    return int.from_bytes(hashlib.sha256(b"chart:" + str(company_id).encode()).digest()[:8], "big", signed=True)
-
-
 async def hold_company(session: AsyncSession, company_id) -> bool:
     """Keep the company from being deleted until the caller's transaction ends; False when
     it is already gone.
@@ -116,14 +93,6 @@ async def lock_companies(session: AsyncSession, company_ids) -> None:
     overlapping set meet in the same order."""
     for company_id in sorted(set(company_ids), key=str):
         await lock_company(session, company_id)
-
-
-async def lock_charts(session: AsyncSession, company_ids) -> None:
-    """``lock_chart`` (exclusive) for several companies, in key order, so two callers
-    taking an overlapping set meet in the same order. Taken after ``lock_companies`` for
-    the same set."""
-    for company_id in sorted(set(company_ids), key=lambda c: str(chart_key(c))):
-        await lock_chart(session, company_id)
 
 
 async def lock_company_for_deletion(session: AsyncSession, company_id) -> bool:

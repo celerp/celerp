@@ -230,10 +230,10 @@ async def _harbor(engine):
     boss = await owner(engine)
     a = await company(engine, boss, NAME, "alpha")
     b = await company(engine, boss, "Hillside Supply Co", "bravo")
-    async with maker(engine)() as s:  # each keeps books, as a company made in Celerp does
-        for cid in (a, b):
+    for cid in (a, b):  # each keeps books, seeded as a company made in Celerp is, on its own
+        async with maker(engine)() as s:
             await seed_chart_of_accounts_hook(session=s, company_id=cid)
-        await s.commit()
+            await s.commit()
     return boss, a, b
 
 

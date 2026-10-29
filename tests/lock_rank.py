@@ -71,7 +71,7 @@ RANKS: dict[str, int] = {
     "row:company_peer_grants": 45, "row:company_peer_accounts": 46, "row:company_peer_deliveries": 47,
     "row:company_peer_attention": 48,
     # Chart and posting (R3a).
-    "adv:chart": 50, "row:accounts": 51, "row:bank_accounts": 52, "row:reconciliation_sessions": 53,
+    "row:accounts": 51, "row:bank_accounts": 52, "row:reconciliation_sessions": 53,
     "row:bank_statement_lines": 54, "row:unmatched_payments": 55, "row:reconciliation_rules": 56,
     "row:unmatched_refunds": 57, "row:payment_closures": 58,
     # Items (R6), then import batches (R7), the items' ledger rows and the outbound queue (R8).
@@ -133,7 +133,6 @@ _SERIAL_KEYS = frozenset(NUMERIC_KEYS.values()) - {"adv:version-fence"}
 
 # Numeric advisory keys computed per call (a hash) -> class, by the function that takes them.
 CALLSITE_KEYS: dict[str, str] = {
-    "celerp.services.company_lock.lock_chart": "adv:chart",
     "celerp.services.company_backup._land": "adv:backup-landing",
     "celerp.services.company_backup.reconcile_landings": "adv:backup-landing",
     "celerp.services.company_backup.<lambda>": "adv:backup",
@@ -304,8 +303,7 @@ class Recorder:
         sees the company, so nobody holds, waits on or inserts a row naming it: its locks are
         granted at once and make nobody wait. An insert is own only on a table whose every
         unique key holds the company (``_row_locks`` names the company only then); the
-        company's own row is not (its slug is unique across companies). The chart lock of such
-        a company is its own too (``_chart_company``)."""
+        company's own row is not (its slug is unique across companies)."""
         if not lock.company or lock.company not in self.own[conn_key]:
             return False
         return lock.cls != "row:companies" or lock.mode != "insert"
@@ -327,23 +325,8 @@ class Recorder:
 
     def _keys_gated(self, conn_key: int, lock: Lock) -> bool:
         """R3: another key of ``lock``'s class taken while this transaction holds a lock every
-        taker of the class's keys waits on: its company's row exclusively, or, for account
-        rows, the company's chart lock exclusively (every account-row take holds it)."""
-        if self._company_held(conn_key, lock):
-            return True
-        if lock.cls != "row:accounts" or not lock.company:
-            return False
-        from celerp.services.company_lock import chart_key
-
-        return "exclusive" in self.taken[conn_key].get(("adv:chart", str(chart_key(lock.company))), ())
-
-    def _chart_company(self, conn_key: int, lock: Lock) -> str:
-        """The company whose chart lock ``lock`` is, among the companies whose row this
-        transaction holds or inserted; "" when none (its key is a hash of the company id).
-        A chart lock is then judged as a row of that company (R1, R4)."""
-        from celerp.services.company_lock import chart_key
-
-        return next((c for c in self.company_rows[conn_key] if lock.key == str(chart_key(c))), "")
+        taker of the class's keys waits on: its company's row exclusively."""
+        return self._company_held(conn_key, lock)
 
     def _company_gate(self, conn_key: int, h: Lock, lock: Lock) -> str:
         """R4: ``lock`` and every lock of ``h``'s class this transaction holds are rows of one
@@ -369,7 +352,7 @@ class Recorder:
             if company:
                 self.company_rows[conn_key].setdefault(company, set()).add(_strength(lock))
             return
-        if lock.cls != "adv:chart" and (not lock.cls.startswith(("row:", "key:")) or not _has_company(table)):
+        if not lock.cls.startswith(("row:", "key:")) or not _has_company(table):
             return
         if lock.company and self._company_held(conn_key, lock):
             return
@@ -421,8 +404,6 @@ class Recorder:
             self._violate("guard", lock)
         if lock.cls in _LEASE_ROWS:
             self._lease(conn_key, lock)
-        if lock.cls == "adv:chart" and not lock.company:
-            lock.company = self._chart_company(conn_key, lock)
         own = self._own(conn_key, lock)
         if not own:
             self._census(conn_key, lock, info)
@@ -475,8 +456,7 @@ class Recorder:
             # transactions taking two keys in opposite orders wait on each other.
             self._edge(lock, lock, waits, set())
             if self._keys_gated(conn_key, lock):
-                # R3: two takers holding the company's lock (or its chart lock, for account
-                # rows) never interleave, so the order of their keys orders nothing; the
+                # R3: two takers holding the company's lock never interleave, so the order of their keys orders nothing; the
                 # offline check fails the class when it has a taker of more than one key
                 # without that lock.
                 if not decreasing and lock.key < last:

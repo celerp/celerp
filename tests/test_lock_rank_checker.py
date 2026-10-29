@@ -412,7 +412,8 @@ def recorder() -> Recorder:
 
 
 def _chart(recorder: Recorder, conn: int = 1) -> None:
-    recorder.acquire(conn, _lock("adv:chart", "xact exclusive wait", key="chart"), 0.0)
+    """An advisory key ranked between the company and its account rows."""
+    recorder.acquire(conn, _lock("adv:external-product", "xact exclusive wait", key="p"), 0.0)
 
 
 def test_rows_of_a_company_the_transaction_inserted_order_nothing(recorder):
@@ -422,16 +423,6 @@ def test_rows_of_a_company_the_transaction_inserted_order_nothing(recorder):
     recorder.statement(1, _LOCK_COMPANY, ("c1",), 0.0)
     _chart(recorder)
     assert not recorder.violations
-
-
-@pytest.mark.parametrize("chart_of, violates", [("c1", False), ("c2", True)])
-def test_the_chart_lock_of_a_company_the_transaction_inserted_orders_nothing(recorder, chart_of, violates):
-    from celerp.services.company_lock import chart_key
-
-    recorder.statement(1, _COMPANY, ("c1", "Co", "co"), 0.0)
-    recorder.acquire(1, _lock("adv:chart", "xact exclusive wait", key=str(chart_key(chart_of))), 0.0)
-    recorder.acquire(1, _lock("row:user_auth_state", "no key update wait", key="u"), 0.0)
-    assert (("order", "row:user_auth_state") in _kinds(recorder)) is violates
 
 
 def test_every_company_of_one_multi_row_insert_is_the_transactions_own(recorder):
@@ -449,7 +440,7 @@ def test_rows_of_a_committed_company_still_order(recorder):
     recorder.statement(1, _LOCK_COMPANY, ("c1",), 0.0)
     _chart(recorder)
     assert ("order", "row:companies") in _kinds(recorder)
-    assert ("order", "adv:chart") in _kinds(recorder)
+    assert ("order", "adv:external-product") in _kinds(recorder)
 
 
 def test_an_own_companys_insert_under_a_unique_key_without_the_company_still_orders(recorder):
@@ -457,14 +448,14 @@ def test_an_own_companys_insert_under_a_unique_key_without_the_company_still_ord
     recorder.statement(1, _COMPANY, ("c1", "Co", "co"), 0.0)
     recorder.statement(1, _TOKEN, ("t1", "c1", "tok"), 0.0)
     _chart(recorder)
-    assert ("order", "adv:chart") in _kinds(recorder)
+    assert ("order", "adv:external-product") in _kinds(recorder)
 
 
 def test_another_companys_rows_are_not_the_transactions_own(recorder):
     recorder.statement(1, _COMPANY, ("c1", "Co", "co"), 0.0)
     recorder.statement(1, _ACCOUNT, ("a1", "c2", "1000"), 0.0)
     _chart(recorder)
-    assert ("order", "adv:chart") in _kinds(recorder)
+    assert ("order", "adv:external-product") in _kinds(recorder)
 
 
 def test_an_insert_under_the_company_lock_records_no_order_violation(recorder):
@@ -557,75 +548,31 @@ _ACCOUNT_ROW = ("SELECT accounts.id FROM accounts WHERE accounts.company_id = $1
                 "AND accounts.code = $2 FOR UPDATE")
 
 
-def _chart_of(recorder: Recorder, conn: int, company: str, mode: str = "xact exclusive wait") -> None:
-    from celerp.services.company_lock import chart_key
-
-    recorder.acquire(conn, _lock("adv:chart", mode, key=str(chart_key(company))), 0.0)
-
-
-@pytest.mark.parametrize("chart, mode, violates", [
-    ("c1", "xact exclusive wait", False),  # the company's chart lock gates its account rows
-    ("c2", "xact exclusive wait", True),   # another company's chart lock gates nothing here
-    ("c1", "xact shared wait", True),      # shared holders interleave
-    (None, None, True),
+@pytest.mark.parametrize("locked, violates", [
+    ("c1", False),  # the company's lock gates its account rows
+    ("c2", True),   # another company's lock gates nothing here
+    (None, True),
 ])
-def test_unsorted_account_rows_under_the_companys_chart_lock_record_no_violation(recorder, chart, mode, violates):
-    if chart:
-        _chart_of(recorder, 1, chart, mode)
+def test_unsorted_account_rows_under_the_companys_lock_record_no_violation(recorder, locked, violates):
+    if locked:
+        recorder.statement(1, _LOCK_COMPANY, (locked,), 0.0)
     recorder.statement(1, _ACCOUNT_ROW, ("c1", "1200"), 0.0)
     recorder.statement(1, _ACCOUNT_ROW, ("c1", "1100"), 0.0)
     assert (("unsorted", "row:accounts") in _kinds(recorder)) is violates
 
 
-@pytest.mark.parametrize("chart, listed", [(True, False), (False, True)])
-def test_the_offline_check_fails_unsorted_account_rows_with_a_multi_row_taker_outside_the_chart_lock(
-        recorder, tmp_path, chart, listed):
-    _chart_of(recorder, 1, "c1")
+@pytest.mark.parametrize("locked, listed", [(True, False), (False, True)])
+def test_the_offline_check_fails_unsorted_account_rows_with_a_multi_row_taker_outside_the_company_lock(
+        recorder, tmp_path, locked, listed):
+    recorder.statement(1, _LOCK_COMPANY, ("c1",), 0.0)
     recorder.statement(1, _ACCOUNT_ROW, ("c1", "1200"), 0.0)
     recorder.statement(1, _ACCOUNT_ROW, ("c1", "1100"), 0.0)
-    if chart:
-        _chart_of(recorder, 2, "c1")
+    if locked:
+        recorder.statement(2, _LOCK_COMPANY, ("c1",), 0.0)
     for code in ("1100", "1200"):
         recorder.statement(2, _ACCOUNT_ROW, ("c1", code), 0.0)
     (tmp_path / "lock-graph-gw0.json").write_text(json.dumps(recorder.dump()))
     assert ("- row:accounts:" in lock_rank.check(tmp_path)) is listed
-
-
-@pytest.mark.parametrize("locked, chart, violates", [
-    ("c1", "c1", False),  # the company's chart lock under that company's lock
-    ("c1", "c2", True),   # another company's chart lock
-    (None, "c1", True),   # no company lock
-])
-def test_a_chart_lock_taken_under_its_companys_lock_is_a_row_of_that_company(recorder, locked, chart, violates):
-    # A posting holds an item row, then reads the chart: both are the company's, under its lock.
-    if locked:
-        recorder.statement(1, _LOCK_COMPANY, (locked,), 0.0)
-    _projection(recorder, 1, "item")
-    _chart_of(recorder, 1, chart, "xact shared wait")
-    assert (("order", "adv:chart") in _kinds(recorder)) is violates
-    if not violates:
-        assert recorder.edges[("row:projections", "adv:chart")]["company_gated"] == {"row:projections", "adv:chart"}
-
-
-@pytest.mark.parametrize("other, listed", [
-    (None, False),                              # every chart taker holds the company
-    (("xact exclusive wait", None), True),      # a chart change without the company lock
-    (("xact shared wait", None), False),        # another posting: shared takes never conflict
-    (("xact exclusive wait", "c1"), False),     # a chart change under the company lock
-])
-def test_the_offline_check_fails_a_gated_chart_inversion_whose_chart_has_an_ungated_conflicting_taker(
-        recorder, tmp_path, other, listed):
-    recorder.statement(1, _LOCK_COMPANY, ("c1",), 0.0)
-    _projection(recorder, 1, "item")
-    _chart_of(recorder, 1, "c1", "xact shared wait")
-    if other:
-        mode, locked = other
-        if locked:
-            recorder.statement(2, _LOCK_COMPANY, (locked,), 0.0)
-        _chart_of(recorder, 2, "c1", mode)
-    assert not recorder.violations
-    (tmp_path / "lock-graph-gw0.json").write_text(json.dumps(recorder.dump()))
-    assert ("- gated row:projections -> adv:chart" in lock_rank.check(tmp_path)) is listed
 
 
 def test_a_statement_sent_through_a_conftest_wrapper_is_sited_at_its_caller():
@@ -938,7 +885,7 @@ def test_a_key_held_by_another_thread_gates_nothing(recorder):
 
 
 def test_a_key_of_many_values_is_no_serializing_gate(recorder):
-    recorder.acquire(9, _lock("adv:chart", "session exclusive wait", key="chart"), 0.0)
+    recorder.acquire(9, _lock("adv:external-product", "session exclusive wait", key="p"), 0.0)
     _migration_run(recorder)
     assert ("order", "row:alembic_version") in _kinds(recorder)
 
@@ -977,7 +924,7 @@ def test_one_take_of_the_class_outside_the_key_fails_the_cross_connection_wait(r
 
 def test_a_cross_connection_wait_without_a_serializing_key_stays_a_live_violation(recorder):
     async def body():
-        recorder.acquire(9, _lock("adv:chart", "session exclusive wait", key="chart"), 0.0)
+        recorder.acquire(9, _lock("adv:external-product", "session exclusive wait", key="p"), 0.0)
         recorder.acquire(2, _lock("row:alembic_version", "write"), 0.0)
 
     asyncio.run(body())
@@ -996,6 +943,6 @@ def test_one_statement_over_rows_each_already_held_is_a_retake(recorder, held, v
     # The notice writer shares, at commit, every company its notices name in one statement.
     for company in held:
         recorder.statement(1, _LOCK_COMPANY, (company,), 0.0)
-    _chart_of(recorder, 1, "c1", "xact exclusive wait")
+    _chart(recorder)
     recorder.statement(1, _SHARE_COMPANIES, ("c1", "c2"), 0.0)
     assert (("order", "row:companies") in _kinds(recorder)) is violates

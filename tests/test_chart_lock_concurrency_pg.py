@@ -4,7 +4,7 @@
 """A posting and a chart change meet on real PostgreSQL connections.
 
 A posting reads the accounts it posts to more than once in a transaction, in no fixed
-order; a chart change locks the accounts it edits. The chart lock orders the two: the
+order; a chart change locks the accounts it edits. The company lock orders the two: the
 change waits for the posting (or the posting for the change), then both commit. Neither
 is aborted as a deadlock."""
 
@@ -75,3 +75,36 @@ async def test_a_posting_and_a_chart_move_never_deadlock(committed_engine, secon
     results = await _race(committed_engine, posting, lambda: _move_1100_under_1200(factory, company_id))
     assert results == [None, None]
     assert await _parent(factory, company_id, "1100") == "1200"
+
+
+@pytest.mark.parametrize("read", ["lock_accounts", "require_money_account"])
+async def test_a_posting_and_a_role_change_never_deadlock(committed_engine, read):
+    """A posting reads its accounts, then records its event under the company lock
+    (events.engine.emit_event); a role change takes the company lock, then reads and
+    changes the chart. The posting's read takes the company lock, so the change waits
+    for it at the company and both commit."""
+    from celerp.services.account_roles import reconcile_company
+    from celerp.services.company_lock import lock_company
+    from celerp.services.journal_accounts import lock_accounts
+    from celerp_accounting.ledger_accounts import require_money_account
+
+    factory = _factory(committed_engine)
+    company_id = await _company_with_accounts(factory)
+
+    async def posting(entered: asyncio.Event, go: asyncio.Event) -> None:
+        async with factory() as s:
+            if read == "lock_accounts":
+                assert set(await lock_accounts(s, company_id, {"1100"})) == {"1100"}
+            else:
+                await require_money_account(s, company_id, "1100")
+            entered.set()
+            await go.wait()
+            await lock_company(s, company_id)
+            await s.commit()
+
+    async def role_change() -> None:
+        async with factory() as s:
+            await reconcile_company(s, company_id)
+            await s.commit()
+
+    assert await _race(committed_engine, posting, role_change) == [None, None]

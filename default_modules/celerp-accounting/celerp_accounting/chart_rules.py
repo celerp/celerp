@@ -4,13 +4,13 @@
 """The chart of accounts' own rules: the one place an account is checked before it is
 added or changed, and the account lookup the core journal boundary uses.
 
-Lock order: the company lock (when a caller takes it), then the chart lock, then
-account rows. Every change to the chart's shape (adding an account, moving it,
-retyping it, switching it on or off, pointing a posting role at it) takes the chart
-lock first, so those changes happen one at a time and each checks the parents,
-children and role targets the previous one left. A posting takes the chart lock
-shared before it reads the accounts it uses and holds it until it commits, so a
-change waits for postings in flight; it takes no account row.
+The company lock is the chart's lock; account rows are taken after it. Every change
+to the chart's shape (adding an account, moving it, retyping it, switching it on or
+off, pointing a posting role at it) takes it first, so those changes happen one at a
+time and each checks the parents, children and role targets the previous one left. A
+posting takes it before it reads the accounts it uses and holds it until it commits,
+as it does to record its event, so a change waits for postings in flight; it takes no
+account row.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.accounting_roles import CONTINUED_ROLES, POSTABLE_ROLES, ROLE_LABELS, AccountRole, allowed_types, refusal
 from celerp.models.projections import Projection
 from celerp.services.account_roles import current_settings, role_map, scope_codes
-from celerp.services.company_lock import lock_chart
+from celerp.services.company_lock import lock_company
 from celerp.services.lot_origin import account_balances
 from celerp_accounting.ledger_accounts import check_account_change
 from celerp_accounting.models import Account, BankAccount
@@ -113,12 +113,12 @@ PARENT_TYPES: dict[str, frozenset[str]] = {
 
 async def lock_accounts(session: AsyncSession, company_id: uuid.UUID, codes: set[str]) -> dict[str, dict]:
     """The company's accounts among ``codes``, held as read until the transaction ends
-    by the shared chart lock.
+    by the company lock.
 
     The core journal boundary's view of the chart (``ChartAccess.lock_accounts``)."""
     if not codes:
         return {}
-    await lock_chart(session, company_id, shared=True)
+    await lock_company(session, company_id)
     rows = (await session.execute(
         select(Account)
         .where(Account.company_id == company_id, Account.code.in_(sorted(codes)))
@@ -215,10 +215,10 @@ def parent_problem(
 
 
 async def _account(session: AsyncSession, company_id: uuid.UUID, code: str, *, lock: bool = False) -> Account | None:
-    """The account ``code``; with ``lock``, under the chart lock and FOR UPDATE, to change it."""
+    """The account ``code``; with ``lock``, under the company lock and FOR UPDATE, to change it."""
     stmt = select(Account).where(Account.company_id == company_id, Account.code == code)
     if lock:
-        await lock_chart(session, company_id)
+        await lock_company(session, company_id)
         stmt = stmt.with_for_update()
     return (await session.execute(stmt.execution_options(populate_existing=True))).scalar_one_or_none()
 
@@ -229,7 +229,7 @@ async def check_new_account(
     """A new account's parent is a same-company, active, compatible account that no
     role posts to directly. A new code cannot close a loop, since nothing hangs under
     it yet."""
-    await lock_chart(session, company_id)
+    await lock_company(session, company_id)
     if parent_code is None:
         return
     parent = await _account(session, company_id, parent_code, lock=True)
