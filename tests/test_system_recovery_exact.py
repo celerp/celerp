@@ -22,6 +22,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from alembic_support import history_by_hand_async
 from company_backup_support import company, owner, token
 from test_helpers import released_migration_history
 from migration_support import auth, code_config, maker, real_client, real_engine  # noqa: F401
@@ -933,7 +934,7 @@ async def _recovery_of_a_real_dump(tmp_path, monkeypatch, real_engine, history: 
     user = await owner(real_engine)
     await company(real_engine, user, "Alpha Trading", "alpha")
     with released_migration_history():
-        async with real_engine.begin() as conn:
+        async with history_by_hand_async(real_engine) as conn:
             if history is None:
                 await conn.execute(text("DROP TABLE alembic_version"))
             else:

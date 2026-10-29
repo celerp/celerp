@@ -29,7 +29,7 @@ import pytest
 from sqlalchemy import create_engine, text
 
 from celerp import __version__
-from alembic_support import run_migrations as _run_migrations
+from alembic_support import history_by_hand, run_migrations as _run_migrations
 from celerp.cli import _reconcile_after_migrate
 from celerp.migrations._data_reconcile import (
     BACKFILL_VERSION_KEY,
@@ -51,32 +51,28 @@ def _build_dev_schema(sync_url: str, *, stamp: str | None) -> None:
     `stamp` sets alembic_version to mimic the develop build's guessed stamp;
     pass None to mimic a freshly create_all'd DB that was never stamped.
     """
-    eng = create_engine(sync_url)
-    try:
-        with eng.begin() as conn:
-            Base.metadata.create_all(conn)
-            if stamp is not None:
-                conn.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)"))
-                conn.execute(text("INSERT INTO alembic_version (version_num) VALUES (:r)"), {"r": stamp})
-            cid = uuid.uuid4()
-            conn.execute(
-                text(
-                    "INSERT INTO companies (id, name, slug, settings, is_active, created_at) "
-                    "VALUES (:id, 'Adv', :slug, '{}'::json, true, now())"
-                ),
-                {"id": cid, "slug": f"adv-{cid.hex[:8]}"},
-            )
-            conn.execute(
-                text(
-                    "INSERT INTO ledger "
-                    "(company_id, entity_id, entity_type, event_type, data, source, idempotency_key, ts) "
-                    "VALUES (:cid, 'doc:INV-1', 'doc', 'doc.payment.received', "
-                    "CAST(:data AS json), 'auto_je', 'idem-1', :ts)"
-                ),
-                {"cid": cid, "data": '{"amount": 100}', "ts": _PAYMENT_TS},
-            )
-    finally:
-        eng.dispose()
+    with history_by_hand(sync_url) as conn:
+        Base.metadata.create_all(conn)
+        if stamp is not None:
+            conn.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)"))
+            conn.execute(text("INSERT INTO alembic_version (version_num) VALUES (:r)"), {"r": stamp})
+        cid = uuid.uuid4()
+        conn.execute(
+            text(
+                "INSERT INTO companies (id, name, slug, settings, is_active, created_at) "
+                "VALUES (:id, 'Adv', :slug, '{}'::json, true, now())"
+            ),
+            {"id": cid, "slug": f"adv-{cid.hex[:8]}"},
+        )
+        conn.execute(
+            text(
+                "INSERT INTO ledger "
+                "(company_id, entity_id, entity_type, event_type, data, source, idempotency_key, ts) "
+                "VALUES (:cid, 'doc:INV-1', 'doc', 'doc.payment.received', "
+                "CAST(:data AS json), 'auto_je', 'idem-1', :ts)"
+            ),
+            {"cid": cid, "data": '{"amount": 100}', "ts": _PAYMENT_TS},
+        )
 
 
 def _payment_date(sync_url: str) -> str | None:

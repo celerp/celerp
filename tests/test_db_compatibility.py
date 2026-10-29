@@ -20,7 +20,7 @@ import pytest
 import sqlalchemy as sa
 from sqlalchemy.pool import NullPool
 
-from alembic_support import alembic_run
+from alembic_support import alembic_run, history_by_hand
 
 from celerp.db_url import sync_url
 
@@ -88,24 +88,20 @@ def scratch():
         names.append(name)
         base, _, _ = DATABASE_URL.rpartition("/")
         url = f"{base}/{name}"
-        engine = sa.create_engine(sync_url(url), poolclass=NullPool)
-        try:
-            with engine.begin() as conn:
-                Base.metadata.create_all(conn)
-                conn.execute(sa.text("CREATE TABLE zz_sentinel (id int PRIMARY KEY, note text NOT NULL)"))
-                conn.execute(sa.text("INSERT INTO zz_sentinel VALUES (1, 'sentinel-before')"))
-                if revision is not None:
-                    conn.execute(sa.text("CREATE TABLE alembic_version (version_num varchar(32) PRIMARY KEY)"))
-                    conn.execute(sa.text("INSERT INTO alembic_version VALUES (:v)"),
-                                 {"v": _head() if revision == "head" else revision})
-                meta = (("projection_version", version), ("backfill_version", backfill), (OPENED_KEY, opened))
-                if any(value is not None for _, value in meta):
-                    conn.execute(sa.text("CREATE TABLE instance_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"))
-                    for key, value in meta:
-                        if value is not None:
-                            conn.execute(sa.text("INSERT INTO instance_meta VALUES (:k, :v)"), {"k": key, "v": value})
-        finally:
-            engine.dispose()
+        with history_by_hand(url) as conn:
+            Base.metadata.create_all(conn)
+            conn.execute(sa.text("CREATE TABLE zz_sentinel (id int PRIMARY KEY, note text NOT NULL)"))
+            conn.execute(sa.text("INSERT INTO zz_sentinel VALUES (1, 'sentinel-before')"))
+            if revision is not None:
+                conn.execute(sa.text("CREATE TABLE alembic_version (version_num varchar(32) PRIMARY KEY)"))
+                conn.execute(sa.text("INSERT INTO alembic_version VALUES (:v)"),
+                             {"v": _head() if revision == "head" else revision})
+            meta = (("projection_version", version), ("backfill_version", backfill), (OPENED_KEY, opened))
+            if any(value is not None for _, value in meta):
+                conn.execute(sa.text("CREATE TABLE instance_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"))
+                for key, value in meta:
+                    if value is not None:
+                        conn.execute(sa.text("INSERT INTO instance_meta VALUES (:k, :v)"), {"k": key, "v": value})
         return url
 
     def refused(case: str) -> str:

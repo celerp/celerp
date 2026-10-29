@@ -28,7 +28,7 @@ from sqlalchemy import create_engine, text
 from celerp.alembic_config import build_alembic_config
 from celerp.migrations.compatibility import NEWEST_CELERP_KEY, running_version
 
-from alembic_support import alembic_run, apply_migrations as _apply_migrations
+from alembic_support import alembic_run, apply_migrations as _apply_migrations, history_by_hand
 
 from .conftest import head_rev, schema_of, throwaway_db, upgrade_to
 
@@ -318,13 +318,9 @@ def test_a_database_from_before_the_revisions_were_reordered_reaches_the_same_sc
     present. Migrating it must add the refunds table rather than trust the stamp."""
     with throwaway_db("graph_old") as (old_async, old_sync), throwaway_db("graph_new") as (new_async, new_sync):
         upgrade_to(old_sync, "r5g6b7c8d9e0")
-        eng = create_engine(old_sync)
-        try:
-            with eng.begin() as conn:
-                conn.execute(text("ALTER TABLE import_batches ADD COLUMN reversible BOOLEAN DEFAULT false NOT NULL"))
-                conn.execute(text("UPDATE alembic_version SET version_num = 's6h7c8d9e0f1'"))
-        finally:
-            eng.dispose()
+        with history_by_hand(old_sync) as conn:
+            conn.execute(text("ALTER TABLE import_batches ADD COLUMN reversible BOOLEAN DEFAULT false NOT NULL"))
+            conn.execute(text("UPDATE alembic_version SET version_num = 's6h7c8d9e0f1'"))
 
         _apply_migrations(old_async)
         _apply_migrations(new_async)
