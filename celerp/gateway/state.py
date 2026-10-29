@@ -21,6 +21,10 @@ _instance_id: str = ""
 _SUPPORTED_SCHEMA_VERSION = 1
 _VALID_COMMERCIAL_MODES = ("celerp_direct", "partner_managed")
 
+# Billing tiers above free, in offer order. Unknown entitlement is represented
+# separately and must never be rendered as an authoritative Free account.
+PAID_TIERS = ("cloud", "ai", "team")
+
 
 def get_instance_id() -> str:
     """Return the current connected instance id, if any."""
@@ -303,7 +307,7 @@ def _validated_commercial_shape(new) -> dict | None:
         return None
     normalized_offers: dict[str, dict] = {}
     for tier, offer_value in raw_offers.items():
-        if tier not in ("cloud", "ai", "team"):
+        if tier not in PAID_TIERS:
             log.warning("Commercial context rejected: unrecognised offer tier.")
             return None
         validated = _validated_offer(offer_value)

@@ -640,9 +640,10 @@ async def test_history_includes_old_unresolved_action_beyond_limit(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("status", ["pending", "running"])
-async def test_history_includes_old_active_batch_job_beyond_limit(
-    session, company, user, status,
+@pytest.mark.parametrize("status,listed", [("pending", True), ("running", True), ("completed", False),
+                                           ("failed", False), ("cancelled", False)])
+async def test_history_includes_old_open_batch_job_beyond_limit(
+    session, company, user, status, listed,
 ):
     old = AIConversation(
         company_id=company.id, user_id=user.id, title="old",
@@ -661,14 +662,13 @@ async def test_history_includes_old_active_batch_job_beyond_limit(
         company_id=company.id,
         user_id=user.id,
         status=status,
-        total_files=1,
         query="read",
         file_ids=["f1"],
     ))
     await session.commit()
 
     history = await list_conversation_history(session, company.id, user.id, limit=1)
-    assert [c.id for c in history] == [recent.id, old.id]
+    assert [c.id for c in history] == ([recent.id, old.id] if listed else [recent.id])
 
 
 @pytest.mark.asyncio

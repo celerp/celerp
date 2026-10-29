@@ -1,0 +1,30 @@
+{
+  "id": "ai.review-proposals",
+  "title": "Review what Celerp AI wants to change",
+  "summary": "Celerp AI proposes each change as a card you confirm or dismiss; nothing is written until you confirm it.",
+  "keywords": ["ai", "assistant", "proposal", "confirm", "dismiss", "action"],
+  "routes": ["/ai"],
+  "permission": "use_ai_assistant",
+  "order": 2,
+  "steps": [
+    {
+      "text": "Before the assistant changes anything in your books, it shows the change as a card naming what it wants to create or update.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/ai", "selector": "main", "actions": []}
+    },
+    {
+      "text": "Confirm applies the change and links to the record it created or updated; Dismiss discards the proposal and nothing is written. Several proposals from the same answer can be confirmed together with one Confirm all.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/ai", "selector": "main", "actions": []}
+    },
+    {
+      "text": "A proposal that failed can be retried from the same card; one still waiting on something else shows why, so you know what to do next.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/ai", "selector": "main", "actions": []}
+    }
+  ],
+  "related": ["ai.ask-questions"]
+}

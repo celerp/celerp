@@ -695,7 +695,8 @@ def test_init_force_aborts_on_no_keeps_everything(tmp_config, tmp_path, monkeypa
     """Without --yes, answering No to the wipe warning aborts: DB and files untouched."""
     att, ai = _seed_data_dir(tmp_path, monkeypatch)
     runner = CliRunner()
-    with patch("celerp.cli._provision_db") as prov, \
+    with patch(_INIT_PATCHES["test_db"], return_value=None), \
+         patch("celerp.cli._provision_db") as prov, \
          patch("celerp.cli._stop_servers") as stop:
         result = runner.invoke(main, ["init", "--force"], input="n\n")
     assert "Aborted" in result.output

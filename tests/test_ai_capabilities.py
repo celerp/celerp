@@ -3,12 +3,20 @@
 """Generic OpenAPI capability compiler/executor tests."""
 from __future__ import annotations
 
+import ast
+import importlib.util
+import inspect
+import sys
+import textwrap
+
+import pytest
 from fastapi import Depends, FastAPI, Query
 from fastapi.responses import PlainTextResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
 from celerp.ai import tools as ai_tools
+from celerp.services import cost_visibility, permissions
 from test_helpers import real_agent_app
 
 
@@ -22,6 +30,8 @@ _bearer = HTTPBearer()
 # forces this test - and therefore review - as the spec requires.
 _EXPECTED_AGENT_ROUTES = {
     ("GET", "/search"),
+    ("GET", "/help/search"),
+    ("GET", "/help/page/{page_id}"),
     ("POST", "/crm/contacts"),
     ("GET", "/crm/contacts"),
     ("GET", "/crm/contacts/{contact_id}"),
@@ -332,3 +342,158 @@ def test_bulk_delete_and_lifecycle_never_compile():
         assert "/bulk/" not in path, path
         if "/import/" in path:
             assert (method, path) in allowed_import, (method, path)
+
+
+# ---------------------------------------------------------------------------
+# Every permission that shapes a capability's result is declared
+# ---------------------------------------------------------------------------
+
+def _resolve(expr, namespace: dict):
+    if isinstance(expr, ast.Name):
+        return namespace.get(expr.id)
+    if isinstance(expr, ast.Attribute):
+        base = _resolve(expr.value, namespace)
+        return getattr(base, expr.attr, None) if base is not None else None
+    return None
+
+
+def _namespace(fn, tree) -> dict:
+    """The names ``fn`` sees: its module's, plus what it imports in its own body."""
+    namespace = dict(fn.__globals__)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            name = node.module or ""
+            if node.level:
+                name = importlib.util.resolve_name("." * node.level + name, fn.__module__.rpartition(".")[0])
+            module = sys.modules.get(name)
+            for alias in node.names:
+                namespace[alias.asname or alias.name] = (
+                    getattr(module, alias.name, None) or sys.modules.get(f"{name}.{alias.name}"))
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                name = alias.name if alias.asname else alias.name.split(".")[0]
+                namespace[alias.asname or name] = sys.modules.get(name)
+    return namespace
+
+
+def _consulted(fn, seen: set | None = None) -> tuple[set[str], bool, set[str]]:
+    """What ``fn`` and every Celerp function it calls consult of the caller's authority:
+    the permission keys named to a permission primitive, whether field visibility is
+    applied (``restricted_field_keys``), and each permission check whose key is not
+    written at the call (decided by data, so only every key covers it)."""
+    seen = set() if seen is None else seen
+    fn = inspect.unwrap(fn)
+    module = getattr(fn, "__module__", "") or ""
+    if fn in seen or not inspect.isfunction(fn) or not module.startswith(("celerp.", "celerp_")):
+        return set(), False, set()
+    seen.add(fn)
+    tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
+    namespace = _namespace(fn, tree)
+    keys, visibility, opaque = set(), False, set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        target = _resolve(node.func, namespace)
+        if target is None:
+            continue
+        if getattr(target, "__module__", None) == permissions.__name__:
+            named = {
+                const.value
+                for arg in (*node.args, *(keyword.value for keyword in node.keywords))
+                for const in ast.walk(arg)
+                if isinstance(const, ast.Constant) and permissions.is_permission_key(const.value)
+            }
+            keys |= named
+            # The primitives pass on the key they were given; their callers name it.
+            if (not named and module != permissions.__name__
+                    and target in (permissions.role_has_permission, permissions.assert_role_permission)):
+                opaque.add(f"{module}.{fn.__name__}: {ast.unparse(node)}")
+        visibility |= target is cost_visibility.restricted_field_keys
+        found = _consulted(target, seen)
+        keys |= found[0]
+        visibility |= found[1]
+        opaque |= found[2]
+    return keys, visibility, opaque
+
+
+def _undeclared(app) -> list[str]:
+    every_key = {p.key for p in permissions.PERMISSIONS}
+    routes = {(method, path): route for path, methods, route in ai_tools._api_routes(app) for method in methods}
+    found = []
+    for name, capability in sorted(ai_tools.compile_agent_capabilities(app, {}).items()):
+        route = routes[(capability["method"], capability["path"])]
+        keys, visibility, opaque = _consulted(route.endpoint)
+        for dependency in route.dependant.dependencies:
+            more = _consulted(dependency.call)
+            keys, visibility, opaque = keys | more[0], visibility or more[1], opaque | more[2]
+        declared = set(capability["result_permissions"])
+        if declared == every_key:
+            keys, opaque = every_key, set()
+        consulted = keys | set(capability["required_permissions"])
+        if declared != consulted or opaque:
+            found.append(f"{name}: declared {sorted(declared)}, consults {sorted(consulted)}, by data {sorted(opaque)}")
+        if visibility != capability["field_visibility"]:
+            found.append(f"{name}: field visibility applied {visibility}, declared {capability['field_visibility']}")
+    return found
+
+
+def test_every_permission_a_capabilitys_result_depends_on_is_declared():
+    """A kept read is replayed only while its asker still holds every permission its
+    result depended on (celerp.ai.service._admit_reads). So a capability
+    declares exactly the permissions its handler, or any Celerp function it calls,
+    consults, and whether it applies field visibility. A check whose key comes from
+    data (a registry) needs every key declared."""
+    assert _undeclared(real_agent_app()) == []
+
+
+def _costs_helper(settings, role):
+    return permissions.role_has_permission(settings, role, "view_inventory_costs")
+
+
+def _visibility_helper(role):
+    return cost_visibility.restricted_field_keys(role, [])
+
+
+def test_the_declaration_guard_finds_a_check_in_a_handler_or_a_helper_it_calls():
+    app = FastAPI()
+
+    @app.get("/direct", operation_id="direct", openapi_extra={"x-celerp-agent": True})
+    async def direct():
+        return {"ok": permissions.role_has_permission({}, "owner", "view_contacts")}
+
+    @app.get("/helper", operation_id="helper", openapi_extra={"x-celerp-agent": True})
+    async def helper():
+        return {"ok": _costs_helper({}, "owner"), "hidden": sorted(_visibility_helper("owner"))}
+
+    @app.get("/by-data", operation_id="by_data", openapi_extra={"x-celerp-agent": True})
+    async def by_data(key: str = "view_contacts"):
+        return {"ok": permissions.role_has_permission({}, "owner", key)}
+
+    @app.get("/declared", operation_id="declared", openapi_extra={
+        "x-celerp-agent": True, "x-celerp-agent-result-permissions": ["view_inventory_costs"],
+        "x-celerp-agent-field-visibility": True})
+    async def declared():
+        return {"ok": _costs_helper({}, "owner"), "hidden": sorted(_visibility_helper("owner"))}
+
+    for fn in (_costs_helper, _visibility_helper, direct, helper, by_data, declared):
+        fn.__module__ = "celerp.routers.agent_test"
+    app.openapi_schema = None
+    found = "\n".join(_undeclared(app))
+    assert "direct: declared [], consults ['view_contacts']" in found
+    assert "helper: declared [], consults ['view_inventory_costs']" in found
+    assert "helper: field visibility applied True, declared False" in found
+    assert "by_data: declared [], consults [], by data" in found
+    assert "declared:" not in found
+
+
+def test_a_declared_result_permission_must_be_a_permission_key():
+    app = FastAPI()
+
+    @app.get("/typo", operation_id="typo", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-result-permissions": ["view_costs"]})
+    async def typo():
+        return {"ok": True}
+
+    typo.__module__ = "celerp.routers.agent_test"
+    app.openapi_schema = None
+    with pytest.raises(ValueError, match="permission keys"):
+        ai_tools.compile_agent_capabilities(app, {})

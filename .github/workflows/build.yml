@@ -1259,13 +1259,15 @@ jobs:
       - name: Every account name passed
         run: test "${{ needs.win-names.result }}" = success
 
-  # ── Attach the OpenAPI schema as a release asset (tag builds only) ────────
-  # The website renders a static API reference from this schema, fetching
-  # openapi.json from the latest release. Generated without booting a server:
-  # app.openapi() builds the same document /openapi.json serves when the schema
-  # is exposed. Uploaded to the still-draft release before publish-release flips
-  # it live, so every published release carries it alongside the platform
-  # binaries; a failure here leaves the release a draft, like any platform build.
+  # ── Attach the OpenAPI schema and importer list as release assets (tag builds only)
+  # The website renders a static API reference from openapi.json and lists the
+  # sources Celerp imports from from importers.json, fetching both from the
+  # latest release. Generated without booting a server: app.openapi() builds the
+  # same document /openapi.json serves when the schema is exposed, and the
+  # importer list is read from the importer registry. Uploaded to the still-draft
+  # release before publish-release flips it live, so every published release
+  # carries them alongside the platform binaries; a failure here leaves the
+  # release a draft, like any platform build.
   openapi-asset:
     needs: [build]
     if: ${{ success() && startsWith(github.ref, 'refs/tags/v') }}
@@ -1282,7 +1284,9 @@ jobs:
         run: pip install uv && uv pip install --system -e . -c constraints.txt
       - name: Export the OpenAPI schema
         run: python scripts/export_openapi.py --out openapi.json
-      - name: Verify OpenAPI release version
+      - name: Export the importer list
+        run: python scripts/export_importers.py --out importers.json
+      - name: Verify the release version of both assets
         shell: bash
         run: |
           set -euo pipefail
@@ -1290,17 +1294,19 @@ jobs:
           import json
           import os
 
+          expected = os.environ["GITHUB_REF_NAME"].removeprefix("v")
           with open("openapi.json", encoding="utf-8") as f:
               schema = json.load(f)
+          with open("importers.json", encoding="utf-8") as f:
+              importers = json.load(f)
 
-          expected = os.environ["GITHUB_REF_NAME"].removeprefix("v")
-          actual = schema["info"]["version"]
-          if actual != expected:
-              raise SystemExit(
-                  f"OpenAPI version mismatch: tag={expected!r}, schema={actual!r}"
-              )
+          for name, actual in (("OpenAPI", schema["info"]["version"]), ("Importers", importers["version"])):
+              if actual != expected:
+                  raise SystemExit(f"{name} version mismatch: tag={expected!r}, asset={actual!r}")
+          if not importers["importers"]:
+              raise SystemExit("Importer list is empty")
           PY
-      - name: Attach openapi.json to the draft release
+      - name: Attach openapi.json and importers.json to the draft release
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -1314,28 +1320,30 @@ jobs:
             "https://api.github.com/repos/celerp/celerp/releases?per_page=100" \
             | python3 -c "import sys,json; tag='$TAG'; r=next((r for r in json.load(sys.stdin) if r['tag_name']==tag), None); print('' if r is None else r['id'])" 2>/dev/null || true)
           if [ -z "$RELEASE_ID" ]; then
-            echo "ERROR: no release found for tag $TAG to attach openapi.json" >&2
+            echo "ERROR: no release found for tag $TAG to attach openapi.json and importers.json" >&2
             exit 1
           fi
-          EXISTING_ASSET_ID=$(curl -fsS -H "Authorization: token $GH_TOKEN" \
-            "https://api.github.com/repos/celerp/celerp/releases/$RELEASE_ID/assets?per_page=100" \
-            | python3 -c "import sys,json; a=next((a for a in json.load(sys.stdin) if a.get('name')=='openapi.json'), None); print('' if a is None else a['id'])")
-          if [ -n "$EXISTING_ASSET_ID" ]; then
-            echo "Replacing existing openapi.json asset $EXISTING_ASSET_ID"
-            curl -fsS -X DELETE -H "Authorization: token $GH_TOKEN" \
-              "https://api.github.com/repos/celerp/celerp/releases/assets/$EXISTING_ASSET_ID" \
-              >/dev/null
-          fi
-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
-            -H "Authorization: token $GH_TOKEN" \
-            -H "Content-Type: application/json" \
-            --data-binary @openapi.json \
-            "https://uploads.github.com/repos/celerp/celerp/releases/$RELEASE_ID/assets?name=openapi.json")
-          if [ "$STATUS" -ge 300 ]; then
-            echo "ERROR: openapi.json upload returned HTTP $STATUS" >&2
-            exit 1
-          fi
-          echo "Attached openapi.json to release $RELEASE_ID ($TAG)."
+          for ASSET in openapi.json importers.json; do
+            EXISTING_ASSET_ID=$(curl -fsS -H "Authorization: token $GH_TOKEN" \
+              "https://api.github.com/repos/celerp/celerp/releases/$RELEASE_ID/assets?per_page=100" \
+              | python3 -c "import sys,json; a=next((a for a in json.load(sys.stdin) if a.get('name')=='$ASSET'), None); print('' if a is None else a['id'])")
+            if [ -n "$EXISTING_ASSET_ID" ]; then
+              echo "Replacing existing $ASSET asset $EXISTING_ASSET_ID"
+              curl -fsS -X DELETE -H "Authorization: token $GH_TOKEN" \
+                "https://api.github.com/repos/celerp/celerp/releases/assets/$EXISTING_ASSET_ID" \
+                >/dev/null
+            fi
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+              -H "Authorization: token $GH_TOKEN" \
+              -H "Content-Type: application/json" \
+              --data-binary @"$ASSET" \
+              "https://uploads.github.com/repos/celerp/celerp/releases/$RELEASE_ID/assets?name=$ASSET")
+            if [ "$STATUS" -ge 300 ]; then
+              echo "ERROR: $ASSET upload returned HTTP $STATUS" >&2
+              exit 1
+            fi
+            echo "Attached $ASSET to release $RELEASE_ID ($TAG)."
+          done
 
   # ── Upgrade test of this release's binaries (tag builds only) ─────────────
   # The Linux and Windows binaries this run built, installed over the latest

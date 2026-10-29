@@ -30,6 +30,7 @@ from celerp.services.line_measures import identifier_backfill, item_measure_meta
 from ui.components.shell import base_shell, page_header, toast_header, page_title
 from ui.security import not_permitted_redirect
 from ui.components.table import search_bar, search_results, EMPTY, pagination, per_page_value, server_pager, searchable_select, breadcrumbs, status_cards, empty_state_cta, fmt_money, fmt_rate, format_value, currency_symbol, unwrap_address, col_resize_script, bank_account_options as _bank_account_options, display_cell, editable_cell, display_enum, display_unit, doc_href
+from celerp.services.background import spawn_background
 from celerp.services.business_time import business_today
 from celerp.services.doc_balance import doc_tax, doc_value, is_awaiting_payment, is_owed, outstanding_balance
 from celerp.services.record_quantities import FULFILLABLE_STATUSES, RECEIVABLE_STATUSES
@@ -77,7 +78,6 @@ def _scan_added_label(result: dict, unit_map: dict) -> str:
 
 
 def _free_send_quota(token: str) -> int:
-    import asyncio
     # fetched_at None means never fetched. It must not be a numeric sentinel:
     # time.monotonic() counts from boot, so 0.0 would read as "fetched at boot"
     # and suppress the first refresh for the TTL on a freshly started machine.
@@ -96,14 +96,10 @@ def _free_send_quota(token: str) -> int:
             _free_send_quota_cache.update(
                 {"value": value, "fetched_at": time.monotonic()})
 
-        def _done(task: asyncio.Task) -> None:
-            _free_send_quota_cache.update({"pending": False, "task": None})
+        def _done(_task) -> None:
+            _free_send_quota_cache["pending"] = False
 
-        task = asyncio.create_task(_refresh())
-        # The cache holds a strong reference so the task cannot be collected
-        # mid-flight, which would leave pending=True wedged forever.
-        _free_send_quota_cache["task"] = task
-        task.add_done_callback(_done)
+        spawn_background(_refresh()).add_done_callback(_done)
     return int(_free_send_quota_cache["value"])
 
 

@@ -102,4 +102,5 @@ PLUGIN_MANIFEST = {
     # ── No DB migrations needed ───────────────────────────────────────────────
     # Manufacturing data lives in core projections/ledger tables.
     # No module-owned tables.
+    "help": {"dir": "celerp_manufacturing/help"},
 }

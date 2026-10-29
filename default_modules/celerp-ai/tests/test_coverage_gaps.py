@@ -7,7 +7,7 @@ Covers:
   - files.py: load_file, load_file_for_llm (valid, missing, wrong company)
   - cleanup.py: _delete_file_pair OSError, cleanup stat OSError, orphan OSError, run_cleanup_loop
   - batch.py: _process_single_file wrong company, notification failure
-  - llm.py: history injection through the gateway
+  - service.py: history injection through the gateway
   - page_count.py: PDF 0 pages
   - quota.py: get_quota_status branches
   - conversations.py: rename not found
@@ -264,35 +264,6 @@ def test_batch_load_file_wrong_company(tmp_path):
     with patch.object(settings, "data_dir", tmp_path):
         with pytest.raises(PermissionError):
             load_file(fid, co_id)
-
-
-# ── llm.py: history injection through the gateway ────────────────────────────
-
-@pytest.mark.asyncio
-async def test_call_llm_with_history():
-    """History messages are injected between system and user."""
-    from celerp.ai.llm import call_llm
-
-    captured = {}
-
-    async def mock_post(url, json=None, **kw):
-        captured["messages"] = json["messages"]
-        resp = MagicMock()
-        resp.status_code = 200
-        resp.json.return_value = {"message": {"role": "assistant", "content": "result"}}
-        return resp
-
-    with patch("celerp.ai.llm.relay_session_headers", return_value={"X-Session-Token": "s", "X-Instance-ID": "i"}):
-        with patch("celerp.ai.llm.relay_http_url", return_value="https://relay"):
-            with patch("httpx.AsyncClient.post", side_effect=mock_post):
-                result = await call_llm(
-                    "test-model", "system prompt", "user question",
-                    history=[{"role": "user", "content": "prior"}, {"role": "assistant", "content": "reply"}],
-                )
-
-    assert result.message["content"] == "result"
-    roles = [m["role"] for m in captured["messages"]]
-    assert roles == ["system", "user", "assistant", "user"]
 
 
 # ── page_count.py: PDF 0 pages ──────────────────────────────────────────────

@@ -32,4 +32,5 @@ PLUGIN_MANIFEST = {
             "permission": "view_financial_reports",
         },
     },
+    "help": {"dir": "celerp_accounting/help"},
 }

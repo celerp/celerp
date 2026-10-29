@@ -17,4 +17,5 @@ PLUGIN_MANIFEST = {
     "depends_on": [],
     "slots": {},
     "migrations": None,
+    "help": {"dir": "celerp_backup/help"},
 }

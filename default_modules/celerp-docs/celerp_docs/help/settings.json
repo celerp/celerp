@@ -1,0 +1,24 @@
+{
+  "id": "docs.settings",
+  "title": "Sales and purchasing settings",
+  "summary": "Set up taxes, numbering and line items for sales and purchasing documents.",
+  "keywords": ["settings", "taxes", "numbering", "line items", "sales", "purchasing"],
+  "routes": ["/settings/sales", "/settings/purchasing"],
+  "permission": "manage_module_settings",
+  "order": 6,
+  "steps": [
+    {
+      "text": "On {title}, the tabs cover {taxes}, {numbering} and {lines} for sales documents.",
+      "labels": {"title": "settings_sales.page_title", "taxes": "settings.tab_taxes", "numbering": "settings_sales.tab_numbering", "lines": "settings.tab_line_items"},
+      "image": null,
+      "capture": {"route": "/settings/sales", "selector": "main", "actions": []}
+    },
+    {
+      "text": "On {title}, the same {taxes} and {numbering} tabs apply to purchasing documents.",
+      "labels": {"title": "settings_purchasing.page_title", "taxes": "settings.tab_taxes", "numbering": "settings_sales.tab_numbering"},
+      "image": null,
+      "capture": {"route": "/settings/purchasing", "selector": "main", "actions": []}
+    }
+  ],
+  "related": ["docs.sales-documents", "docs.purchasing-documents"]
+}

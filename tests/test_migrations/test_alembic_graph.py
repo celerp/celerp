@@ -51,10 +51,13 @@ RELEASE_CHAIN = ["p3e4f5a6b7c8", "q4f5a6b7c8d9", "r5g6b7c8d9e0", "s6h7c8d9e0f1",
 # it: company peer grants, then removing per-user API keys, then the firm view's key last
 # use and refused records, then the revisions two-way sync sent or declined, then the
 # account links two-way sync keeps, then the attachments a Xero migration fetches, then the
-# firm name a company key carries, then the password reset method check a restore keeps.
+# firm name a company key carries, then the password reset method check a restore keeps,
+# then the record of every AI charge, then the AI job table's question columns, then when a
+# pending AI charge may be read back.
 SHIPPED_HEAD = "y3p4q5r6s7t8"
 AFTER_SHIPPED = ["x2p3q4r5s6t7", "y3q4r5s6t7u8", "z4r5s6t7u8v9", "a5t6u7v8w9x0", "b6u7v8w9x0y1",
-                 "c7v8w9x0y1z2", "d8w9x0y1z2a3", "e9x0y1z2a3b4", "f0y1z2a3b4c5", "g1z2a3b4c5d6"]
+                 "c7v8w9x0y1z2", "d8w9x0y1z2a3", "e9x0y1z2a3b4", "f0y1z2a3b4c5", "g1z2a3b4c5d6",
+                 "h2a3b4c5d6e7", "h4c5d6e7f8a9", "i3b4c5d6e7f8"]
 
 # The newest revision a database can already carry from the module and payment work
 # that reaches main before this release.
@@ -190,6 +193,67 @@ def test_peer_downgrade_preserves_persisted_records(table):
                 assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == head_rev()
         finally:
             eng.dispose()
+
+
+def test_ai_charges_from_before_the_usage_record_are_carried_over():
+    """The assistant's tables are created at startup, so a database that has started the
+    app holds them before the usage record exists; each charged question and receipts
+    job becomes one final usage row, and nothing that was not charged does."""
+    from alembic import command
+
+    from celerp.alembic_config import build_alembic_config
+    from celerp.models.base import Base
+
+    ai = [Base.metadata.tables[t] for t in ("ai_conversations", "ai_messages", "ai_batch_jobs")]
+    ids = {k: uuid.uuid4() for k in ("company", "user", "conversation", "asked", "free", "answer", "job", "idle")}
+    with throwaway_db("ai_usage") as (_, sync_url):
+        upgrade_to(sync_url, AFTER_SHIPPED[AFTER_SHIPPED.index("h2a3b4c5d6e7") - 1])
+        eng = create_engine(sync_url)
+        try:
+            with eng.begin() as conn:
+                conn.execute(text("INSERT INTO companies (id, name, slug, settings, is_active, created_at) "
+                                  "VALUES (:c, 'Kept', 'kept', '{}', true, now())"), {"c": ids["company"]})
+                conn.execute(text("INSERT INTO users (id, email, name, auth_hash, is_active, created_at) "
+                                  "VALUES (:u, 'owner@example.test', 'Owner', 'x', true, now())"),
+                             {"u": ids["user"]})
+                for table in ai:
+                    table.create(conn)
+                # The jobs table as the app of that time created it, with its counters.
+                conn.execute(text("ALTER TABLE ai_batch_jobs ADD COLUMN total_files integer NOT NULL DEFAULT 0, "
+                                  "ADD COLUMN completed_files integer NOT NULL DEFAULT 0, "
+                                  "ADD COLUMN failed_files integer NOT NULL DEFAULT 0, "
+                                  "ADD COLUMN credits_consumed integer NOT NULL DEFAULT 0"))
+                conversations, messages, jobs = ai
+                conn.execute(conversations.insert().values(
+                    id=ids["conversation"], company_id=ids["company"], user_id=ids["user"]))
+                conn.execute(messages.insert(), [
+                    {"id": ids["asked"], "conversation_id": ids["conversation"], "role": "user",
+                     "content": "q", "credits_used": 2},
+                    {"id": ids["free"], "conversation_id": ids["conversation"], "role": "user",
+                     "content": "q", "credits_used": 0},
+                    {"id": ids["answer"], "conversation_id": ids["conversation"], "role": "assistant",
+                     "content": "a", "credits_used": 5},
+                ])
+                conn.execute(jobs.insert(), [
+                    {"id": ids["job"], "company_id": ids["company"], "user_id": ids["user"], "status": "done",
+                     "query": "q", "file_ids": []},
+                    {"id": ids["idle"], "company_id": ids["company"], "user_id": ids["user"], "status": "failed",
+                     "query": "q", "file_ids": []},
+                ])
+                # The counters are not columns of today's model, so they are written as that app wrote them.
+                conn.execute(text("UPDATE ai_batch_jobs SET total_files = :n, credits_consumed = :c WHERE id = :j"),
+                             [{"j": ids["job"], "n": 3, "c": 3}, {"j": ids["idle"], "n": 1, "c": 0}])
+            carried = []
+            for _ in range(2):  # carried over again (down, then up): the same rows, once each
+                upgrade_to(sync_url, head_rev())
+                with eng.connect() as conn:
+                    carried.append(conn.execute(text(
+                        "SELECT operation_id, company_id, user_id, credits, pending FROM ai_usage")).all())
+                command.downgrade(build_alembic_config(), "-1")
+        finally:
+            eng.dispose()
+    expected = [(ids["asked"], ids["company"], ids["user"], 2, False), (ids["job"], ids["company"], ids["user"], 3, False)]
+    assert [sorted(rows) for rows in carried] == [sorted(expected)] * 2
 
 
 def _without_instance_meta(schema: dict[str, set]) -> dict[str, set]:

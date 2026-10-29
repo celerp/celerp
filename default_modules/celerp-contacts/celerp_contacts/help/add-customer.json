@@ -1,0 +1,24 @@
+{
+  "id": "contacts.add-customer",
+  "title": "Add a customer",
+  "summary": "Create a customer record to sell to.",
+  "keywords": ["customer", "contact", "add", "create"],
+  "routes": ["/contacts/customers", "/contacts/{contact_id}"],
+  "permission": "view_contacts",
+  "order": 1,
+  "steps": [
+    {
+      "text": "Open {cust} from the sidebar to see the customer list.",
+      "labels": {"cust": "nav.customers"},
+      "image": null,
+      "capture": {"route": "/contacts/customers", "selector": "main", "actions": []}
+    },
+    {
+      "text": "Click {new} to create a blank customer. Its detail page opens so you can fill in addresses, people and other fields.",
+      "labels": {"new": "contacts.new_customer"},
+      "image": null,
+      "capture": {"route": "/contacts/customers", "selector": "main", "actions": []}
+    }
+  ],
+  "related": ["contacts.add-vendor", "contacts.settings"]
+}

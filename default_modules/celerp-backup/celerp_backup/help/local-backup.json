@@ -1,0 +1,24 @@
+{
+  "id": "backup.local-backup",
+  "title": "Backing up or restoring without the cloud",
+  "summary": "Download a full installation backup to your own disk, or load one back in, with no subscription needed.",
+  "keywords": ["local backup", "export", "import", "restore", "installation", "system recovery"],
+  "routes": ["/settings/system-recovery"],
+  "permission": null,
+  "order": 2,
+  "steps": [
+    {
+      "text": "Open {recovery} from the installation owner's account; its {local} section works with no Celerp Connect subscription.",
+      "labels": {"recovery": "system_recovery.title", "local": "page.local_backup"},
+      "image": null,
+      "capture": {"route": "/settings/system-recovery", "selector": "main", "actions": []}
+    },
+    {
+      "text": "Choose {download} to save every company and setting to one file, or {import} to replace this installation with a file saved earlier.",
+      "labels": {"download": "settings.download_backup", "import": "btn.import_backup"},
+      "image": null,
+      "capture": {"route": "/settings/system-recovery", "selector": "main", "actions": []}
+    }
+  ],
+  "related": ["backup.cloud-backup"]
+}

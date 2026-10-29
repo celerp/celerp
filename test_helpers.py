@@ -11,6 +11,7 @@ tests/helpers.py is a shim that re-exports from here for backward compatibility.
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import gc
 import json
@@ -66,6 +67,60 @@ def mark_running(monkeypatch, *names: str) -> None:
     loader would otherwise list none of them as running."""
     from celerp.modules import loader
     monkeypatch.setattr(loader, "_loaded", [*loader._loaded, *({"name": n, "version": "1.0.0"} for n in names)])
+
+
+async def until(predicate, timeout: float = 10.0) -> None:
+    """Wait for ``predicate`` (sync or async), polling; fails the test at ``timeout``."""
+    async def _wait():
+        while True:
+            value = predicate()
+            if asyncio.iscoroutine(value):
+                value = await value
+            if value:
+                return
+            await asyncio.sleep(0.01)
+    await asyncio.wait_for(_wait(), timeout)
+
+
+async def settled_question(client, headers: dict, conversation_id: str, question_id) -> dict:
+    """A thread question's state (GET .../questions/{id}) once its job has ended. The
+    test's requests and the job share one connection, which runs one query at a time,
+    so the state is read once the job's task has ended, never while it runs."""
+    from celerp.ai import jobs
+    await until(lambda: not jobs.task_alive(uuid.UUID(str(question_id))))
+    r = await client.get(f"/ai/conversations/{conversation_id}/questions/{question_id}", headers=headers)
+    assert r.status_code == 200, r.text
+    state = r.json()
+    assert state["state"] != "running", state
+    return state
+
+
+async def asked_in_thread(client, headers: dict, conversation_id: str, body: dict, run_agent=None) -> dict:
+    """Send a thread question and wait for its job: the send answers 202, the
+    question's assistant message is returned. ``run_agent`` (a mock) stands in for the
+    agent run when given."""
+    from contextlib import nullcontext
+    from unittest.mock import patch
+    with patch("celerp.ai.service.run_agent", run_agent) if run_agent is not None else nullcontext():
+        r = await client.post(f"/ai/conversations/{conversation_id}/query", headers=headers, json=body)
+        assert r.status_code == 202, r.text
+        return (await settled_question(client, headers, conversation_id, r.json()["job_id"]))["message"]
+
+
+async def drain_jobs(release=lambda: None) -> None:
+    """Let every running AI job finish, then shut the runner down. A task cancelled in
+    the middle of a query would leave the test's one shared connection unusable for
+    its teardown, so jobs are drained, never cancelled, before the client and session
+    go. ``release`` is called on every poll (a fake service lets held calls go)."""
+    from celerp.ai import jobs
+
+    def _drained() -> bool:
+        release()
+        return not jobs.running_tasks()
+    try:
+        await until(_drained)
+    finally:
+        await jobs.shutdown()
 
 
 def make_test_token(
@@ -439,14 +494,17 @@ def sidebar_label(item: str, lang: str) -> str:
 def real_agent_app() -> FastAPI:
     """The real Celerp API surface with every first-party module enabled.
 
-    Built the same way `celerp.main` builds the live app: the core search router
-    plus every bundled pluggable module's routes. `docs_url`/`redoc_url` are off
+    Built the same way `celerp.main` builds the live app: the core search and help
+    routers plus every bundled pluggable module's routes. `docs_url`/`redoc_url` are off
     exactly as in production, so FastAPI's own `/docs` never shadows the
     documents module. The autouse loader-reset fixture tears `_loaded` and the
     slot registry back down after the test.
     """
+    from celerp.routers import help as help_router_mod
+
     app = FastAPI(docs_url=None, redoc_url=None)
     app.include_router(search_router_mod.router, tags=["search"])
+    app.include_router(help_router_mod.router, tags=["help"])
     loaded = load_all(_BUNDLED_MODULES_DIRS[0], _bundled_pluggable_names())
     register_api_routes(app, loaded)
     app.openapi_schema = None
@@ -466,9 +524,9 @@ def invoices_booking_one_lot_twice():
         yield
 
 
-async def ui_get(headers: dict, path: str):
+async def ui_get(headers: dict, path: str, *, lang: str | None = None):
     """GET a UI page as the user whose API ``headers`` are given, the UI talking to the real
-    API in process (the ``client`` fixture's database and transaction)."""
+    API in process (the ``client`` fixture's database and transaction), in ``lang`` when given."""
     from unittest.mock import patch
 
     from httpx import ASGITransport, AsyncClient
@@ -482,8 +540,9 @@ async def ui_get(headers: dict, path: str):
 
     token = headers["Authorization"].removeprefix("Bearer ")
     with patch("ui.api_client._client", _bridged):
+        cookies = {"celerp_token": token, **({"celerp_lang": lang} if lang else {})}
         async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui",
-                               cookies={"celerp_token": token}) as ui:
+                               cookies=cookies) as ui:
             return await ui.get(path)
 
 
@@ -522,6 +581,16 @@ def released_migration_history(database_url: str = DATABASE_URL):
             else:
                 cur.execute("DROP TABLE IF EXISTS alembic_version")
         conn.close()
+
+
+async def settle_background() -> None:
+    """Wait for the background work the app started on this event loop (and any work
+    that work starts) to finish, so none of it is cut off when the loop closes."""
+    from celerp.services import background
+
+    loop = asyncio.get_running_loop()
+    while pending := [t for t in background._BG_TASKS if t.get_loop() is loop and not t.done()]:
+        await asyncio.gather(*pending, return_exceptions=True)
 
 
 def fastest_cpu_seconds(*runs, times: int = 3) -> list[float]:

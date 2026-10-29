@@ -1,0 +1,30 @@
+{
+  "id": "fixed-assets.depreciation-and-disposals",
+  "title": "Run depreciation, then move, sell or dispose of an asset",
+  "summary": "Run a month's depreciation, and act on assets ticked on the register.",
+  "keywords": ["depreciation", "depreciation run", "dispose", "disposal", "move", "sell", "write off"],
+  "routes": ["/fixed-assets/runs", "/fixed-assets/move", "/fixed-assets/dispose", "/fixed-assets/assets/{entity_id}/dispose", "/fixed-assets/assets/{entity_id}/move", "/fixed-assets/assets/{entity_id}/sell"],
+  "permission": "manage_accounting",
+  "order": 2,
+  "steps": [
+    {
+      "text": "Open {runs} to run a month's depreciation; each run shows its journal before it posts.",
+      "labels": {"runs": "fixed_assets.runs_title"},
+      "image": null,
+      "capture": {"route": "/fixed-assets/runs", "selector": "main", "actions": []}
+    },
+    {
+      "text": "Tick assets on the register, then use {move} from the toolbar to relocate them.",
+      "labels": {"move": "fixed_assets.move"},
+      "image": null,
+      "capture": {"route": "/fixed-assets/move", "selector": "main", "actions": []}
+    },
+    {
+      "text": "Or use {dispose} from the same toolbar to retire them.",
+      "labels": {"dispose": "fixed_assets.dispose"},
+      "image": null,
+      "capture": {"route": "/fixed-assets/dispose", "selector": "main", "actions": []}
+    }
+  ],
+  "related": ["fixed-assets.register", "fixed-assets.settings"]
+}

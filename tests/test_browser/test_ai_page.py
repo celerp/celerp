@@ -16,6 +16,11 @@ import re
 import pytest
 from playwright.sync_api import Page, expect
 
+# A fragment loaded by HTMX on page load is read once it has text, not after a fixed
+# pause: its server read can take longer than any pause on a busy runner.
+_LOADED = re.compile(r"\S")
+_FRAGMENT_MS = 20_000
+
 pytestmark = pytest.mark.browser
 
 
@@ -26,6 +31,9 @@ def _assert_no_crash(page: Page, context: str = "") -> None:
 
 
 # ── Showcase page (no session token = non-cloud user) ─────────────────────────
+
+_PLAN_CARDS = ".ai-showcase__cta-cards > .ai-showcase__cta-card"
+
 
 class TestShowcasePage:
     """AI showcase page renders for users without Cloud subscription."""
@@ -104,15 +112,15 @@ class TestShowcasePage:
         assert "ai-showcase__tab--active" not in (tabs.nth(0).get_attribute("class") or "")
 
     def test_showcase_cta_cards(self, page, ui_server):
-        """Two CTA pricing cards are rendered."""
+        """The free account card sits above the two subscribe cards."""
         page.goto(f"{ui_server}/ai", wait_until="domcontentloaded")
-        cards = page.locator(".ai-showcase__cta-card")
-        assert cards.count() == 2
+        assert page.locator(".ai-showcase__cta-card.ai-showcase__free").count() == 1
+        assert page.locator(_PLAN_CARDS).count() == 2
 
     def test_showcase_cta_cloud_card(self, page, ui_server):
         """Celerp Connect card has correct content."""
         page.goto(f"{ui_server}/ai", wait_until="domcontentloaded")
-        cards = page.locator(".ai-showcase__cta-card")
+        cards = page.locator(_PLAN_CARDS)
         cloud_card = cards.first
         assert "Celerp Connect" in cloud_card.inner_text()
         assert "$29/mo" not in cloud_card.inner_text()
@@ -125,7 +133,7 @@ class TestShowcasePage:
     def test_showcase_cta_ai_card(self, page, ui_server):
         """Connect + AI card has correct content and featured styling."""
         page.goto(f"{ui_server}/ai", wait_until="domcontentloaded")
-        cards = page.locator(".ai-showcase__cta-card")
+        cards = page.locator(_PLAN_CARDS)
         ai_card = cards.last
         assert "Celerp Connect + AI" in ai_card.inner_text()
         assert "$49/mo" not in ai_card.inner_text()
@@ -144,7 +152,7 @@ class TestShowcasePage:
             lambda route: route.fulfill(
                 status=200,
                 content_type="application/json",
-                body='{"tier":"ai","remaining":200}',
+                body='{"tier":"ai","remaining":200,"paid":true}',
             ),
         )
         page.route(
@@ -167,10 +175,13 @@ class TestShowcasePage:
         expect(page.locator("#paid-reload")).to_be_visible(timeout=5000)
 
     def test_showcase_feature_checkmarks(self, page, ui_server):
-        """Feature items use CSS checkmark pseudo-elements."""
+        """Feature items use CSS checkmark pseudo-elements. Without the relay's offer the
+        question count lines are left out, so the four fixed features remain."""
         page.goto(f"{ui_server}/ai", wait_until="domcontentloaded")
-        features = page.locator(".ai-showcase__cta-feature")
-        assert features.count() >= 6, f"Expected 6+ features, got {features.count()}"
+        features = page.locator(f"{_PLAN_CARDS} .ai-showcase__cta-feature")
+        assert features.count() == 4, f"Expected 4 features, got {features.count()}"
+        mark = features.first.evaluate("(el) => getComputedStyle(el, '::before').content")
+        assert mark == '"\u2713"'
 
     def test_showcase_no_inline_styles_on_cta(self, page, ui_server):
         """CTA cards have no inline style attributes (all moved to CSS)."""
@@ -287,7 +298,9 @@ class TestChatView:
 
     def test_chat_composer_wraps_on_mobile(self, page, ui_server):
         page.set_viewport_size({"width": 390, "height": 844})
-        page.goto(f"{ui_server}/ai", wait_until="domcontentloaded")
+        # Measure after the stylesheet has loaded: at DOMContentLoaded the narrow-screen
+        # rules may not apply yet, and the buttons sit on the field's row.
+        page.goto(f"{ui_server}/ai", wait_until="load")
         field = page.locator("#ai-query-input").bounding_box()
         send = page.locator(".ai-input__send").bounding_box()
         receipts = page.locator(".ai-input__receipts").bounding_box()
@@ -358,9 +371,8 @@ class TestChatView:
     def test_chat_conversations_list_loads(self, page, ui_server):
         """Conversation list HTMX endpoint loads."""
         page.goto(f"{ui_server}/ai", wait_until="domcontentloaded")
-        page.wait_for_timeout(1500)
         history = page.locator("#ai-history")
-        expect(history).to_be_visible()
+        expect(history).to_have_text(_LOADED, timeout=_FRAGMENT_MS)
         text = history.inner_text()
         assert len(text) > 0
 
@@ -402,9 +414,8 @@ class TestSettingsPage:
     def test_settings_content_loads(self, page, ui_server):
         """HTMX settings content fragment loads."""
         page.goto(f"{ui_server}/ai/settings", wait_until="domcontentloaded")
-        page.wait_for_timeout(1500)  # Let HTMX load
         content = page.locator("#ai-settings-content")
-        expect(content).to_be_visible()
+        expect(content).to_have_text(_LOADED, timeout=_FRAGMENT_MS)
         # Should have loaded content (not empty)
         assert len(content.inner_text()) > 0
 
@@ -412,7 +423,7 @@ class TestSettingsPage:
         """Without session token, shows local install message."""
         # No session token set → local install
         page.goto(f"{ui_server}/ai/settings", wait_until="domcontentloaded")
-        page.wait_for_timeout(1500)
+        expect(page.locator("#ai-settings-content")).to_have_text(_LOADED, timeout=_FRAGMENT_MS)
         body = page.locator("body").inner_text()
         assert "local install" in body.lower() or "AI Settings" in body
 
@@ -431,8 +442,8 @@ class TestSettingsPage:
     def test_settings_with_session_has_quota_section(self, page, ui_server, _set_session_token):
         """With session token, quota section is rendered."""
         page.goto(f"{ui_server}/ai/settings", wait_until="domcontentloaded")
-        page.wait_for_timeout(1500)
         content = page.locator("#ai-settings-content")
+        expect(content).to_have_text(_LOADED, timeout=_FRAGMENT_MS)
         text = content.inner_text()
         # Should have quota-related content or error message
         assert len(text) > 10

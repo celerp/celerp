@@ -23,7 +23,7 @@ from test_peer_two_way_sync import (
 )
 from ui.i18n import t
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [pytest.mark.asyncio, pytest.mark.timeout(120)]  # two companies each seed the demo
 
 SCOPES = ["contacts", "products", "documents", "inventory", "journals"]
 

@@ -1,0 +1,24 @@
+{
+  "id": "ai.usage-settings",
+  "title": "Check your AI question usage",
+  "summary": "AI settings shows how many questions this period included, used and topped up, and who asked them.",
+  "keywords": ["ai", "assistant", "settings", "usage", "quota", "credits"],
+  "routes": ["/ai/settings"],
+  "permission": "use_ai_assistant",
+  "order": 3,
+  "steps": [
+    {
+      "text": "Open {settings} from the AI page's settings link, or from Settings directly. It shows how many questions are included, used and topped up this period.",
+      "labels": {"settings": "page.ai_settings"},
+      "image": null,
+      "capture": {"route": "/ai/settings", "selector": "main", "actions": []}
+    },
+    {
+      "text": "Owners and admins who can manage users also see a table of how many questions each person asked this month, so usage can be reviewed without reading every conversation.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/ai/settings", "selector": "main", "actions": []}
+    }
+  ],
+  "related": ["ai.ask-questions"]
+}

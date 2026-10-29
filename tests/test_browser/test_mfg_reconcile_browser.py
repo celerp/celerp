@@ -63,6 +63,8 @@ def _run_needing_reconciliation(api) -> tuple[str, str, str]:
     return product, run_id, company_id
 
 
+# Both tests run in their own company: whether a run's value may come from retained earnings
+# depends on every inventory account's balance, which other tests move in the shared one.
 def test_a_run_needing_reconciliation_is_reconciled_on_its_page(page, ui_server, value_beyond_stock_in_shared_company, fresh_company):
     SHOTS.mkdir(parents=True, exist_ok=True)
     product, run_id, _ = _run_needing_reconciliation(fresh_company)

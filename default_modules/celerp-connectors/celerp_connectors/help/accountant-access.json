@@ -1,0 +1,24 @@
+{
+  "id": "connectors.accountant-access",
+  "title": "Letting an accounting firm send entries into this company",
+  "summary": "Give your bookkeeper or accountant's own Celerp a pairing link so their postings land straight in your books.",
+  "keywords": ["accountant", "bookkeeper", "firm", "pairing link", "celerp connect", "peer access"],
+  "routes": ["/settings/accountant-access"],
+  "permission": "manage_integrations",
+  "order": 2,
+  "steps": [
+    {
+      "text": "Open {title} from Settings. {hint}",
+      "labels": {"title": "accountant_access.title", "hint": "accountant_access.direction_warning"},
+      "image": null,
+      "capture": {"route": "/settings/accountant-access", "selector": "main", "actions": []}
+    },
+    {
+      "text": "Create a pairing link for the firm, then hand it to them; every link you have issued is listed under {grants}.",
+      "labels": {"grants": "accountant_access.active_grants"},
+      "image": null,
+      "capture": {"route": "/settings/accountant-access", "selector": "main", "actions": []}
+    }
+  ],
+  "related": ["connectors.connect-store"]
+}

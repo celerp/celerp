@@ -970,6 +970,22 @@ _IMPORT_TARGETS = (
 )
 
 
+async def _getting_started_ai_line(token: str, settings: dict, role: str) -> FT | str:
+    """Points people who may use the AI assistant at /ai, naming the free account's
+    included questions when the install is not on a paid plan and the count is known.
+    A failed read only drops the number."""
+    if not _role_has_permission(settings, role, "use_ai_assistant"):
+        return ""
+    try:
+        offer = await api.ai_offer(token)
+    except APIError:
+        offer = {}
+    text = t("dashboard.getting_started_ai")
+    if not offer.get("paid_ai") and (n := offer.get("free_ai_questions")):
+        text = f"{text} {t('ai.free_questions_included', n=n)}"
+    return P(A(text, href="/ai"), cls="getting-started-ai")
+
+
 async def _getting_started_card(token: str, settings: dict, role: str) -> FT | None:
     """Shown to people who manage the company, until it is dismissed or the company
     holds a real product, contact or document (setup's [DEMO] items and the company's
@@ -1015,6 +1031,7 @@ async def _getting_started_card(token: str, settings: dict, role: str) -> FT | N
         ),
         P(t("dashboard.getting_started_from_spreadsheet"), cls="getting-started-lead"),
         Div(*links, cls="getting-started-links"),
+        await _getting_started_ai_line(token, settings, role),
         P(t("dashboard.getting_started_where"), cls="getting-started-note"),
         options,
         NotStr("<!-- /getting-started-card -->"),

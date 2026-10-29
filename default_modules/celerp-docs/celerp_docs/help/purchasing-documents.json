@@ -1,0 +1,18 @@
+{
+  "id": "docs.purchasing-documents",
+  "title": "Purchasing documents",
+  "summary": "Purchase orders, vendor bills, supplier credit notes and consignment-in documents.",
+  "keywords": ["purchase order", "bill", "supplier credit note", "consignment", "purchasing"],
+  "routes": ["/docs"],
+  "permission": "view_documents",
+  "order": 2,
+  "steps": [
+    {
+      "text": "The sidebar groups purchasing documents into {po}, {bill}, {scn} and {ci}. Each opens the same document list filtered to that type.",
+      "labels": {"po": "nav.purchase_orders", "bill": "nav.vendor_bills", "scn": "nav.supplier_credit_notes", "ci": "nav.consignment_in"},
+      "image": null,
+      "capture": {"route": "/docs", "selector": "main", "actions": []}
+    }
+  ],
+  "related": ["docs.sales-documents", "docs.received", "docs.settings"]
+}

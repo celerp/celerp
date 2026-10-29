@@ -1,0 +1,30 @@
+{
+  "id": "ai.ask-questions",
+  "title": "Ask Celerp AI a question",
+  "summary": "Celerp AI answers questions about your business data and about using Celerp, in your own language. Eligible free accounts with a verified email address receive free questions, and a paid plan adds more.",
+  "keywords": ["ai", "assistant", "chat", "ask", "question", "natural language"],
+  "routes": ["/ai"],
+  "permission": "use_ai_assistant",
+  "order": 1,
+  "steps": [
+    {
+      "text": "Open {ai} from the sidebar. Without a Celerp account it shows example conversations and a {create} button; eligible free accounts with a verified email address receive AI questions at no cost.",
+      "labels": {"ai": "nav.ai_assistant", "create": "ai.free_create_account"},
+      "image": null,
+      "capture": {"route": "/ai", "selector": "main", "actions": []}
+    },
+    {
+      "text": "With an account, type a question in your own language in the box at the bottom and send it; you can also drop a receipt, PDF or spreadsheet onto the box for the assistant to read.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/ai", "selector": "main", "actions": []}
+    },
+    {
+      "text": "The {plan} card on this page lists what a paid plan adds over the free questions: more monthly questions, batch invoice processing, and letting the assistant create records for you.",
+      "labels": {"plan": "msg.get_the_ai_plan"},
+      "image": null,
+      "capture": {"route": "/ai", "selector": "main", "actions": []}
+    }
+  ],
+  "related": ["ai.review-proposals", "ai.usage-settings"]
+}

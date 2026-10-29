@@ -1678,7 +1678,10 @@ def setup_ui_routes(app) -> None:
                     headers={"Authorization": f"Bearer {token}"},
                 )
                 if r.status_code == 200:
-                    entity_ids = [it["entity_id"] for it in r.json().get("items", []) if it.get("entity_id")]
+                    entity_ids = [
+                        eid for it in r.json().get("items", [])
+                        if (eid := it.get("entity_id") or it.get("id"))
+                    ]
         except Exception:
             pass
         if not entity_ids:

@@ -722,7 +722,7 @@ async def _bk_add_conversation(engine, cid, user, marker):
 async def _bk_add_ai_job(engine, cid, user, marker):
     from celerp.models.ai import AIBatchJob
     async with maker(engine)() as s:
-        s.add(AIBatchJob(company_id=cid, user_id=user, total_files=1, query=marker, file_ids=[marker]))
+        s.add(AIBatchJob(company_id=cid, user_id=user, query=marker, file_ids=[marker]))
         await s.commit()
 
 

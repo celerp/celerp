@@ -1,0 +1,18 @@
+{
+  "id": "accounting.settings",
+  "title": "Chart of accounts, bank accounts and closing the books",
+  "summary": "Set up accounts, bank accounts, reconciliation rules, period locks and year-end closing.",
+  "keywords": ["chart of accounts", "bank account", "period lock", "close year", "posting accounts", "settings"],
+  "routes": ["/settings/accounting"],
+  "permission": "manage_module_settings",
+  "order": 4,
+  "steps": [
+    {
+      "text": "On {title}, the tabs cover {bank}, {chart}, {rules}, {lock} and {posting}.",
+      "labels": {"title": "settings_accounting.finance_settings", "bank": "settings_accounting.tab_bank_accounts", "chart": "settings_accounting.chart_of_accounts", "rules": "page.reconciliation_rules", "lock": "page.period_lock", "posting": "posting.tab"},
+      "image": null,
+      "capture": {"route": "/settings/accounting", "selector": "main", "actions": []}
+    }
+  ],
+  "related": ["accounting.journal-entries", "accounting.reconcile"]
+}

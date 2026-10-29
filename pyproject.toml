@@ -107,7 +107,8 @@ prod = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-# Async fixtures run on the test's own loop unless they name another (_db_engine is session-wide).
+# Explicit: pytest-asyncio warns when it is unset, and a warning is a failure here. An async
+# fixture runs on its test's loop unless it names a wider loop_scope itself.
 asyncio_default_fixture_loop_scope = "function"
 # --timeout guards against a hung test wedging the run. 30s was under the real
 # cost of a page-rendering test on a slow filesystem: fixture setup alone measures
@@ -154,6 +155,7 @@ include = ["celerp", "celerp.*", "ui", "ui.*", "default_modules"]
     "openapi_parameter_descriptions.json",
     "importers/sample/*.manager",
     "output/fonts/*",
+    "help/**/*",
 ]
 "ui" = [
     "static/**/*",
@@ -169,7 +171,7 @@ include = ["celerp", "celerp.*", "ui", "ui.*", "default_modules"]
     "celerp-contacts/**/*",
     "celerp-dashboard/**/*",
     "celerp-docs/**/*",
-    "celerp-fulfillment/**/*",
+    "celerp-fixed-assets/**/*",
     "celerp-inventory/**/*",
     "celerp-labels/**/*",
     "celerp-manufacturing/**/*",
