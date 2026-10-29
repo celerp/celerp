@@ -16,9 +16,7 @@ _CLASSES = ("row:bank_accounts", "row:reconciliation_sessions", "row:reconciliat
 
 
 def _ungated() -> set[str]:
-    classes = sys.modules["lock_rank"].RECORDER.dump()["classes"]
-    return {s for c in _CLASSES for s in classes.get(c, {}).get("ungated_sites", ())
-            if "celerp_accounting/routes.py" in s}
+    return sys.modules["lock_rank"].RECORDER.ungated_sites(_CLASSES, "celerp_accounting/routes.py")
 
 
 async def test_every_reconciliation_writer_takes_the_company_lock_first(client):

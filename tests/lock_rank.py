@@ -597,6 +597,13 @@ class Recorder:
             "kind": kind, "cls": lock.cls, "site": lock.site, "test": self.test,
             "held": held_lock.cls if held_lock else None, "held_site": held_lock.site if held_lock else None})
 
+    def ungated_sites(self, classes=None, path: str = "") -> set[str]:
+        """The sites that took a row of ``classes`` (every class when None) outside its
+        company's lock, as "<file>:<line> <function> [<strength>|<company>]", limited to
+        sites in files whose path contains ``path``."""
+        return {s for c, v in self.classes.items() if classes is None or c in classes
+                for s in v.get("ungated_sites", ()) if path in s.split(":", 1)[0]}
+
     def dump(self) -> dict:
         return {
             "edges": [{"from": a, "to": b, **v, "gate": sorted(v["gate"]), "modes": sorted(v["modes"]),

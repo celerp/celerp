@@ -42,6 +42,7 @@ from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.models.share import DocShareToken, is_active as share_is_active
 from celerp.services.auth import get_current_company_id, get_current_user
+from celerp.services.company_lock import lock_company
 from celerp.services.money import document_line_amount, round_money, to_decimal, to_stored_float
 from celerp.services.permissions import require_permission
 from celerp.services.outbound_url import validate_public_base_url
@@ -344,7 +345,9 @@ async def _active_share_row(session: AsyncSession, token: str) -> DocShareToken 
 async def get_or_create_share_token(session: AsyncSession, company_id, entity_id: str) -> DocShareToken:
     """Return the entity's share token row, minting a deactivated one if none
     exists. A document's link is stable for its lifetime: activation (Share),
-    deactivation (Revoke) and expiry toggle the same token. Caller commits."""
+    deactivation (Revoke) and expiry toggle the same token. Taken under the company's lock,
+    as every share writer does, so two first shares mint one token. Caller commits."""
+    await lock_company(session, company_id)
     row = await _find_share_row(session, company_id, entity_id)
     if row is None:
         row = DocShareToken(
@@ -518,6 +521,7 @@ async def revoke_share_link(
 ) -> dict:
     """Deactivate the share link immediately. The token row persists so the
     document keeps its stable URL; Share turns the same link back on."""
+    await lock_company(session, company_id)
     token_row = await _find_share_row(session, company_id, entity_id)
     if not token_row:
         raise HTTPException(status_code=404, detail=t("documents.err_share_none"))

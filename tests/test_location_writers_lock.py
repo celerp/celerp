@@ -8,8 +8,7 @@ import sys
 
 
 def _ungated_locations() -> set[str]:
-    info = sys.modules["lock_rank"].RECORDER.dump()["classes"].get("row:locations", {})
-    return set(info.get("ungated_sites", ()))
+    return sys.modules["lock_rank"].RECORDER.ungated_sites({"row:locations"})
 
 
 async def test_creating_importing_and_deleting_a_location_take_the_company_lock_first(client, auth):

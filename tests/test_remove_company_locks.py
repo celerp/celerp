@@ -15,8 +15,8 @@ from test_helpers import remove_company
 _LEASES = {"row:connector_execution_leases", "row:connector_execution_heartbeats"}
 
 
-def _ungated(cls_info: dict) -> set[str]:
-    return {s for c, v in cls_info.items() if c not in _LEASES for s in v.get("ungated_sites", ())}
+def _ungated(recorder) -> set[str]:
+    return recorder.ungated_sites(set(recorder.classes) - _LEASES)
 
 
 async def test_removing_a_company_takes_none_of_its_rows_without_its_lock(real_engine):
@@ -32,7 +32,7 @@ async def test_removing_a_company_takes_none_of_its_rows_without_its_lock(real_e
             s.add(Location(id=uuid.uuid4(), company_id=company_id, name="Main", type="warehouse"))
         await s.commit()
     recorder = sys.modules["lock_rank"].RECORDER
-    before = _ungated(recorder.dump()["classes"])
+    before = _ungated(recorder)
     await remove_company(maker(real_engine), ids)
-    added = _ungated(recorder.dump()["classes"]) - before
+    added = _ungated(recorder) - before
     assert not {s for s in added if "remove_company" in s}, sorted(added)
