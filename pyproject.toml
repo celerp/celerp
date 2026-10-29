@@ -104,6 +104,7 @@ prod = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 # --timeout guards against a hung test wedging the run. 30s was under the real
 # cost of a page-rendering test on a slow filesystem: fixture setup alone measures
 # 8-19s per worker there, and a two-render test lands at 20-25s, so shards failed
