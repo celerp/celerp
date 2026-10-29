@@ -11015,7 +11015,8 @@ def _list_table(lists: list[dict], lang: str = "en") -> FT:
             Td(count_cell, cls="cell--number"),
             Td(f"{weight:.2f}" if weight else EMPTY, cls="cell--number"),
             Td(format_value(d.get("total"), "money"), cls="cell--number"),
-            Td(format_value(d.get("status"), "badge", domain="doc_status")),
+            # The label the list's own page shows (_list_status_label), computed by the index.
+            Td(format_value(d.get("status_label") or d.get("status"), "badge", domain="doc_status")),
             cls="data-row",
         )
 

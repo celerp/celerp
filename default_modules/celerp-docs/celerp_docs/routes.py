@@ -77,7 +77,7 @@ from celerp_docs.doc_constants import WRITEOFF_ACCOUNT_TYPES, INBOUND_DOC_TYPES,
 from celerp.services.doc_balance import DOC_FIELD_FALLBACKS, doc_value, is_awaiting_payment, is_overdue_document, is_owed, outstanding_balance
 from celerp.services.list_behavior import (
     DRAFT, FINALIZED, CLOSED, VOID, DEFAULT_LIST_TYPE, LIST_TYPES, SCAN_RUNS_FIELD, SUPPLIER_DOC_TYPES, ScanBehavior,
-    behavior, scan_behavior, terminal_action, is_money_list,
+    behavior, scan_behavior, status_key, terminal_action, is_money_list,
 )
 from celerp.services.shipping import (
     INCOTERMS_2020, ITEM_AT_ISSUE, REASONS_FOR_EXPORT, customs_backfill, issued_item, item_at_issue)
@@ -8254,6 +8254,10 @@ def _list_index_where(company_id, f: ListIndexFilters, sort_date) -> list:
     return base_where
 
 
+# The state fields, besides status and list_type, that status_key reads to name a list's status.
+_LIST_STATUS_KEY_FIELDS = ("result", "sent_at", "accepted_at")
+
+
 def _list_columns(sort_date) -> dict:
     """Every header value the index shows and the CSV exports, by column name, as one set of
     SQL expressions, so a row on screen and its CSV line carry the same values. ``date`` is
@@ -8298,6 +8302,8 @@ async def list_lists(
             *(expr.label(name) for name, expr in columns.items()),
             item_count.label("item_count"),
             weight_sum.label("total_weight"),
+            # What status_key reads beyond the columns above; only the page's rows carry them, the CSV never does.
+            *(Projection.state[key].as_string().label(key) for key in _LIST_STATUS_KEY_FIELDS),
         )
         .where(*base_where)
         # Descending newest-first with the unique entity_id tiebreak so equal-date rows have a
@@ -8312,6 +8318,10 @@ async def list_lists(
         **{name: getattr(r, name) for name in columns},
         "item_count": r.item_count,
         "total_weight": None if r.total_weight is None else float(r.total_weight),
+        # The label the list's page shows (Issued, Sent, In transit, ...); status stays the raw
+        # lifecycle value the filters and status cards use.
+        "status_label": status_key({"status": r.status, "list_type": r.list_type,
+                                    **{key: getattr(r, key) for key in _LIST_STATUS_KEY_FIELDS}}),
     } for r in rows]
     return {"items": out, "total": total}
 

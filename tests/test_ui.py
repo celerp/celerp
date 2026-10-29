@@ -3330,6 +3330,40 @@ class TestDocumentPolish:
         assert b"ct:CUST-001" in r.content
 
 
+class TestListsTableStatus:
+
+    @pytest.mark.asyncio
+    async def test_table_shows_the_label_the_list_page_shows(self, ui_client):
+        rows = [
+            {"id": "list:1", "ref_id": "LST-1", "list_type": "quotation", "customer": "Acme", "date": "2026-10-24",
+             "total": 100, "status": "finalized", "status_label": "issued", "item_count": 1, "total_weight": None},
+            {"id": "list:2", "ref_id": "LST-2", "list_type": "transfer", "customer": None, "date": "2026-10-24",
+             "total": 0, "status": "finalized", "status_label": "in_transit", "item_count": 1, "total_weight": None},
+        ]
+        ui_client.cookies.update(_authed())
+        with (
+            patch("ui.api_client.list_lists", new=AsyncMock(return_value={"items": rows, "total": 2})),
+            patch("ui.api_client.get_list_summary", new=AsyncMock(return_value={})),
+        ):
+            r = await ui_client.get("/lists")
+        assert r.status_code == 200
+        html = r.content.decode()
+        assert ">Issued<" in html and ">In transit<" in html
+        assert ">Finalized<" not in html
+
+    @pytest.mark.asyncio
+    async def test_table_falls_back_to_the_raw_status_without_a_label(self, ui_client):
+        rows = [{"id": "list:1", "ref_id": "LST-1", "list_type": "quotation", "customer": "Acme", "date": "2026-10-24",
+                 "total": 100, "status": "finalized", "item_count": 1, "total_weight": None}]
+        ui_client.cookies.update(_authed())
+        with (
+            patch("ui.api_client.list_lists", new=AsyncMock(return_value={"items": rows, "total": 1})),
+            patch("ui.api_client.get_list_summary", new=AsyncMock(return_value={})),
+        ):
+            r = await ui_client.get("/lists")
+        assert ">Finalized<" in r.content.decode()
+
+
 class TestWriteoffListDetail:
     """A draft write-off list renders qty_out / account / comment as on-page click-to-edit cells
     (GDR 2f), the account picker is filtered to expense and equity chart accounts (function-level
