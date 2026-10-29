@@ -559,10 +559,12 @@ async def get_owned_migration_run(session: AsyncSession, run_id: uuid.UUID, user
 
 
 async def _lock_run(session: AsyncSession, run: MigrationRun, *, company: bool = True) -> None:
-    """Canonical lock order: the company first, then the run row."""
+    """Canonical lock order: the company first, then the run row, named within its company."""
     if company:
         await lock_company(session, run.company_id)
-    await session.refresh(run, with_for_update=True)
+    (await session.execute(select(MigrationRun)
+                           .where(MigrationRun.id == run.id, MigrationRun.company_id == run.company_id)
+                           .with_for_update().execution_options(populate_existing=True))).scalar_one()
 
 
 async def request_start(session: AsyncSession, run: MigrationRun) -> None:
