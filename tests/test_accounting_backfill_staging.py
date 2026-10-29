@@ -102,6 +102,8 @@ async def test_inactive_company_without_staged_run_is_not_staged(real_engine):
     async with maker(real_engine)() as s:
         owner = await _owner(s)
         paused = await _plain_company(s, "Paused Co", active=False)
+        await s.commit()  # its own transaction, as every company is created
+    async with maker(real_engine)() as s:
         staged = await provisioning.provision_migration_company(s, owner=owner, company_name="Staged Co")
         await s.commit()
     assert await _staged(real_engine, paused.id) is False
@@ -183,6 +185,9 @@ PHONE = "+66 2 123 4567"
 
 
 async def _drop_chart(s, company_id) -> None:
+    from celerp.services.company_lock import lock_company
+
+    await lock_company(s, company_id)  # as every chart writer, the company first
     for table in ("bank_accounts", "accounts"):
         await s.execute(text(f"DELETE FROM {table} WHERE company_id = :c"), {"c": str(company_id)})
 
@@ -484,6 +489,8 @@ async def test_no_lifecycle_backfill_filters_on_is_active_alone(real_engine):
     async with maker(real_engine)() as s:
         owner = await _owner(s)
         paused = await _plain_company(s, "Paused Co", active=False)
+        await s.commit()  # its own transaction, as every company is created
+    async with maker(real_engine)() as s:
         staged = await provisioning.provision_migration_company(s, owner=owner, company_name="Staged Co")
         for handler, (need, _) in sorted(LIFECYCLE_BACKFILLS.items()):
             await need(s, paused.id)

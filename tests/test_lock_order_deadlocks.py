@@ -154,3 +154,50 @@ async def test_an_attention_list_change_and_a_company_reset_wait_for_each_other(
         await _until_blocked_or_done(committed_engine, second)
         go.set()
         await _both_finish(first, second)
+
+
+async def test_two_company_creates_by_one_owner_with_the_same_name_wait_for_each_other(committed_engine):
+    """A company create (company row, then the owner's membership, whose foreign key shares
+    the login) against a start for the same login (login FOR UPDATE, then a company with the
+    same web address). Each create holds the owner's login before its company row, so the
+    second waits for the first instead of waiting on its company row in a cycle."""
+    from celerp.models.company import User
+    from celerp.services import provisioning
+    from celerp.services.auth import hold_companyless_login
+
+    factory = _factory(committed_engine)
+    user_id = uuid.uuid4()
+    async with factory() as s:
+        s.add(User(id=user_id, email=f"owner-{user_id.hex[:8]}@example.test", name="Owner",
+                   auth_hash="x", is_active=True))
+        await s.commit()
+    name = f"Same Name {user_id.hex[:8]}"
+    entered, go = asyncio.Event(), asyncio.Event()
+
+    async with factory() as creator, factory() as starter:
+        real_flush = creator.flush
+
+        async def flush(*args, **kwargs):
+            await real_flush(*args, **kwargs)
+            if not entered.is_set():  # the company row is written, the membership is not
+                entered.set()
+                await go.wait()
+        creator.flush = flush
+
+        async def create():
+            user = await creator.get(User, user_id)
+            await provisioning.provision_additional_company(creator, user=user, company_name=name)
+            await creator.commit()
+
+        async def start():
+            if await hold_companyless_login(starter, user_id):
+                user = await starter.get(User, user_id)
+                await provisioning.provision_additional_company(starter, user=user, company_name=name)
+            await starter.commit()
+
+        first = asyncio.create_task(create())
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        second = asyncio.create_task(start())
+        await _until_blocked_or_done(committed_engine, second)
+        go.set()
+        await _both_finish(first, second)

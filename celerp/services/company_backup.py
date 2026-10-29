@@ -75,7 +75,7 @@ from celerp.services.company_backup_files import private_file
 from celerp.services.company_lock import hold_company, lock_company, lock_company_for_deletion, locked_company
 from celerp.services.lot_origin import place_company_stock
 from celerp.services.migrations import COMPANY_NAME_MAX, company_name_error
-from celerp.services.provisioning import create_install_owner, provision_restored_company
+from celerp.services.provisioning import create_install_owner, hold_owner, provision_restored_company
 from ui.i18n import t
 
 logger = logging.getLogger(__name__)
@@ -1720,6 +1720,7 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
                                       {"k": _lock_key(f"names:{user_id}")})
                 if mode == "start_company" and not await hold_companyless_login(session, user_id):
                     raise BackupError(409, t(HAS_COMPANY))
+                await hold_owner(session, user_id)  # the create's login lock, before _plan locks companies
                 plan, destination = await _plan(session, backup, mode, user_id, current_company_id, lock=True)
                 if plan.action == REFUSE:
                     raise BackupError(409, t(NOT_A_MEMBER))
