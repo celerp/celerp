@@ -923,6 +923,28 @@ def test_the_census_names_the_production_writers_the_record_sites():
     assert "celerp/services/company_lock.py lock_company" in writers["row:companies"]
 
 
+def test_the_census_reads_a_parent_rows_key_share_as_the_recorder_does(tmp_path):
+    """A FOR KEY SHARE of a parent row is the foreign-key check's lock (key:<t>), so the census
+    of row:<t> writers leaves it out, as the recorder never counts it there; a share of a
+    table no foreign key names stays a row lock in both."""
+    (tmp_path / "m.py").write_text('''
+class Company(Base):
+    __tablename__ = "companies"
+class Tag(Base):
+    __tablename__ = "tags"
+
+async def orm(s): await s.execute(select(Company.id).with_for_update(read=True, key_share=True))
+async def raw(s): await s.execute(text("SELECT id FROM companies WHERE id = 1 FOR KEY SHARE"))
+async def share(s): await s.execute(select(Company.id).with_for_update(read=True))
+async def other(s): await s.execute(select(Tag.id).with_for_update(read=True, key_share=True))
+''')
+    found = lock_rank._scan_writers([tmp_path / "m.py"])
+    path = lock_rank.os.path.relpath(tmp_path / "m.py", lock_rank._ROOT)
+    assert {t: {f for p, f, _ in v if p == path} for t, v in found.items()} == {
+        "companies": {"share"}, "tags": {"other"}}
+    assert "celerp/notifications/service.py _write_pending" not in lock_rank.static_writers()["row:companies"]
+
+
 def test_every_worker_dump_carries_the_census(tmp_path):
     lock_rank.dump(tmp_path / "lock-graph-gw0.json")
     assert json.loads((tmp_path / "lock-graph-gw0.json").read_text())["writers"] == lock_rank.static_writers()

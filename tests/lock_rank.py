@@ -1053,8 +1053,7 @@ def _row_locks(statement: str) -> tuple[tuple[tuple[str, str, tuple[int, ...] | 
                 named = [r["RangeVar"]["relname"] for r in c.get("lockedRels", ())]
                 for t in ([tables.get(n, n) for n in named] if named else list(tables.values())):
                     company = _company_param(t, where) if len(tables) == 1 else None
-                    # FOR KEY SHARE of a parent row is the lock a foreign-key check takes: its key, shared.
-                    shares_key = mode.startswith("key share ") and t in _parents()
+                    shares_key = _foreign_key_share(t, _ROW_STRENGTH[c["strength"]])
                     out.append((f"{'key' if shares_key else 'row'}:{t}", mode, key, company, None))
                     if mode.startswith("update ") and t in _parents():
                         out.append((f"key:{t}", mode, key, company, None))
@@ -1261,7 +1260,21 @@ def dump(path: Path) -> None:
 _WRITE_CALLS = {"insert": "insert", "pg_insert": "insert", "update": "write", "delete": "delete"}
 _SA_MODULES = {"sa", "_sa", "sqlalchemy", "postgresql"}  # aliases the code imports SQLAlchemy as
 _TEXT_DML = re.compile(r"\b(?:(INSERT)\s+INTO|UPDATE|DELETE\s+FROM)\s+\"?(\w+)", re.I)
-_TEXT_FOR = re.compile(r"\bFROM\s+\"?(\w+)[^;]*?\bFOR\s+(?:NO\s+KEY\s+UPDATE|UPDATE|KEY\s+SHARE|SHARE)\b", re.I | re.S)
+_TEXT_FOR = re.compile(r"\bFROM\s+\"?(\w+)[^;]*?\bFOR\s+(NO\s+KEY\s+UPDATE|UPDATE|KEY\s+SHARE|SHARE)\b", re.I | re.S)
+
+
+def _foreign_key_share(table: str, strength: str) -> bool:
+    """FOR KEY SHARE of a parent row is the lock a foreign-key check takes: its key, shared
+    (key:<t>, never a row:<t> take). The recorder and the census both ask this."""
+    return strength == "key share" and table in _parents()
+
+
+def _orm_strength(call: ast.Call) -> str:
+    """The row-lock strength of a ``with_for_update(read=, key_share=)`` call."""
+    flag = {k.arg: isinstance(k.value, ast.Constant) and k.value.value is True for k in call.keywords}
+    read, key = flag.get("read", False), flag.get("key_share", False)
+    return {(True, True): "key share", (True, False): "share",
+            (False, True): "no key update", (False, False): "update"}[(read, key)]
 
 
 def _production_files():
@@ -1320,13 +1333,14 @@ def _writes(call: ast.Call, tables: dict[str, str]) -> list[tuple[str, str]]:
     if name == "with_for_update" and isinstance(call.func, ast.Attribute):
         root = _chain_root(call.func.value)
         if isinstance(root, ast.Call) and root.args and (t := _named_table(root.args[0], tables)):
-            return [(t, "lock")]
+            return [] if _foreign_key_share(t, _orm_strength(call)) else [(t, "lock")]
     if name == "get" and call.args and any(k.arg == "with_for_update" for k in call.keywords):
         return [(t, "lock")] if (t := _named_table(call.args[0], tables)) else []
     if name == "text" and call.args:
         sql = _text(call.args[0])
         return ([(t, "insert" if ins else "write") for ins, t in _TEXT_DML.findall(sql)]
-                + [(t, "lock") for t in _TEXT_FOR.findall(sql)])
+                + [(t, "lock") for t, strength in _TEXT_FOR.findall(sql)
+                   if not _foreign_key_share(t, " ".join(strength.lower().split()))])
     return []
 
 
