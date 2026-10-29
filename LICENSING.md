@@ -14,6 +14,7 @@ operative statement for that file; this map governs by path otherwise.
 | `celerp/output/` (official document/PDF + public share renderers) | Celerp Official Components License (LicenseRef-Proprietary) | `legal/OFFICIAL-COMPONENTS.md` |
 | `celerp/output/fonts/` (DejaVu Sans, bundled for PDFs) | Bitstream Vera Fonts license; DejaVu changes public domain | `celerp/output/fonts/LICENSE` |
 | `ui/` (application UI layer) | Celerp Official Components License (LicenseRef-Proprietary) | `legal/OFFICIAL-COMPONENTS.md` |
+| `ui/components/icons.py` (the Lucide icon shapes it draws) | ISC (Feather-derived icons: MIT) | `NOTICE` |
 | `default_modules/celerp-admin/` | Business Source License 1.1 | `LICENSE` |
 | `default_modules/celerp-ai/`, `celerp-backup/`, `celerp-connectors/` | Celerp Official Components License (LicenseRef-Proprietary) | `legal/OFFICIAL-COMPONENTS.md` |
 | `default_modules/celerp-accounting/` | MIT | module `LICENSE` |
