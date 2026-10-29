@@ -15,6 +15,7 @@ from celerp.db import get_session_ctx
 from celerp.models.connector_config import ConnectorConfig
 from celerp.models.connector_first_sync import ConnectorFirstSync
 from connector_test_support import record_first_sync
+from migration_support import real_engine  # noqa: F401
 
 pytestmark = pytest.mark.asyncio
 
@@ -36,11 +37,10 @@ def run(monkeypatch):
 
 
 @pytest.fixture
-async def _config(_db_engine):
-    """Add one company's connection, the only one for its connector while the test runs."""
+def _config(real_engine):
+    """Add one company's connection, the only one for its connector while the test runs;
+    real_engine truncates what the test commits."""
     import sqlalchemy as sa
-
-    made: list[str] = []
 
     async def add(connector: str, *, first_sync: str, **fields) -> str:
         company_id = str(uuid.uuid4())
@@ -53,14 +53,9 @@ async def _config(_db_engine):
             await session.flush()
             await record_first_sync(session, config, first_sync)
             await session.commit()
-        made.append(company_id)
         return company_id
 
-    yield add
-    async with get_session_ctx() as session:
-        await session.execute(sa.delete(ConnectorConfig).where(ConnectorConfig.company_id.in_(made)))
-        await session.execute(sa.delete(ConnectorFirstSync).where(ConnectorFirstSync.company_id.in_(made)))
-        await session.commit()
+    return add
 
 
 async def test_no_reconcile_before_first_sync(_config, run):

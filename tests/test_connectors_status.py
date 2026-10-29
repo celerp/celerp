@@ -15,6 +15,7 @@ from fasthtml.common import to_xml
 from celerp.models.company import Company
 from connector_test_support import stand_in_connector
 
+from test_helpers import remove_company
 from ui.routes.settings_connectors import (
     _any_in_progress,
     _connector_status_view,
@@ -510,7 +511,6 @@ async def test_orders_from_a_different_store_do_not_mix_with_imported_ones(_db_e
     nothing imported yet may move to a new store."""
     from datetime import datetime, timezone
 
-    import sqlalchemy as sa
 
     from celerp.connectors.base import ConnectorContext, EntityFlow, SyncEntity, SyncResult
     from celerp.connectors.sync_runner import run_sync
@@ -518,11 +518,7 @@ async def test_orders_from_a_different_store_do_not_mix_with_imported_ones(_db_e
     from celerp.models.company import Company
     from unittest.mock import AsyncMock
 
-    from celerp.models.connector_config import ConnectorConfig
-    from celerp.models.connector_first_sync import ConnectorFirstSync
-    from celerp.models.connector_source import ConnectorSource
     from celerp.models.projections import Projection
-    from celerp.models.sync_run import SyncRun
     from connector_test_support import connected
 
     class _Store:
@@ -579,12 +575,7 @@ async def test_orders_from_a_different_store_do_not_mix_with_imported_ones(_db_e
         same = await _sync("https://second.example")
         assert not same.errors and _Store.calls == 1
     finally:
-        async with get_session_ctx() as session:
-            for model in (SyncRun, ConnectorSource, ConnectorConfig, ConnectorFirstSync):
-                await session.execute(sa.delete(model).where(model.company_id == cid))
-            await session.execute(sa.delete(Projection).where(Projection.company_id == cid_uuid))
-            await session.execute(sa.delete(Company).where(Company.id == cid_uuid))
-            await session.commit()
+        await remove_company(get_session_ctx, cid_uuid)
 
 
 @pytest.mark.asyncio

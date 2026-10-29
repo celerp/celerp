@@ -20,6 +20,7 @@ from celerp.connectors.base import ConnectorContext, EntityFlow, SyncEntity, Syn
 from celerp.db import get_session_ctx
 from celerp.models.sync_run import SyncRun
 from connector_test_support import connected
+from migration_support import real_engine  # noqa: F401
 
 pytestmark = pytest.mark.asyncio
 
@@ -44,18 +45,10 @@ def _active_company_guard(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-async def _stub_connections(_db_engine):
-    """The stub connectors' connections end with each test: a connector connected to
-    two companies is refused."""
-    from celerp.models.connector_config import ConnectorConfig
-    from celerp.models.connector_first_sync import ConnectorFirstSync
-
-    yield
-    names = ("stub_lifecycle", "stub_attention", "stub_products")
-    async with get_session_ctx() as s:
-        await s.execute(sa.delete(ConnectorConfig).where(ConnectorConfig.connector.in_(names)))
-        await s.execute(sa.delete(ConnectorFirstSync).where(ConnectorFirstSync.connector.in_(names)))
-        await s.commit()
+def _committed_state_cleared(real_engine):
+    """A run commits through the app's own sessions (connections, runs, the execution
+    lease); real_engine truncates all of it after each test, so a stub connector
+    connected in one test is not connected to another company in the next."""
 
 
 async def _run(stub, cid, entity="orders", **kwargs):

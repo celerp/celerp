@@ -20,10 +20,10 @@ from celerp.connectors.base import ConnectorContext
 from celerp.connectors.outbound_queue import process_outbound_queue_once
 from celerp.connectors.xero import XeroConnector
 from celerp.models.company import Company
-from celerp.models.connector_config import ConnectorConfig, OutboundQueue
-from celerp.models.connector_first_sync import ConnectorFirstSync
+from celerp.models.connector_config import OutboundQueue
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
+from test_helpers import remove_company
 
 API = "https://relay.test/connectors/xero/api"
 DOC_ID = "doc:inv-1"
@@ -73,14 +73,7 @@ async def company(_db_engine):
     try:
         yield company_id
     finally:
-        async with get_session_ctx() as cleanup:
-            key = str(company_id)
-            for model in (OutboundQueue, ConnectorConfig, ConnectorFirstSync):
-                await cleanup.execute(sa.delete(model).where(model.company_id == key))
-            for model in (LedgerEntry, Projection):
-                await cleanup.execute(sa.delete(model).where(model.company_id == company_id))
-            await cleanup.execute(sa.delete(Company).where(Company.id == company_id))
-            await cleanup.commit()
+        await remove_company(get_session_ctx, company_id)
 
 
 def _ctx(company_id) -> ConnectorContext:

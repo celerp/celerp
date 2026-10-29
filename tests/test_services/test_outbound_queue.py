@@ -15,18 +15,19 @@ from celerp.models.connector_first_sync import ConnectorFirstSync
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from connector_test_support import connect, stand_in_connector
+from test_helpers import remove_company
 
 
 async def _purge_committed(*companies: uuid.UUID, legacy_key: str | None = None) -> None:
     """Delete what a test committed outside the per-test rollback, so later
     tests on the same worker see only their own companies."""
     from celerp.db import get_session_ctx
-    keys = [str(c) for c in companies] + ([legacy_key] if legacy_key else [])
-    async with get_session_ctx() as cleanup:
-        for model in (OutboundQueue, ConnectorConfig, ConnectorFirstSync):
-            await cleanup.execute(sa.delete(model).where(model.company_id.in_(keys)))
-        await cleanup.execute(sa.delete(Company).where(Company.id.in_(companies)))
-        await cleanup.commit()
+    if legacy_key:
+        async with get_session_ctx() as cleanup:
+            for model in (OutboundQueue, ConnectorConfig, ConnectorFirstSync):
+                await cleanup.execute(sa.delete(model).where(model.company_id == legacy_key))
+                await cleanup.commit()
+    await remove_company(get_session_ctx, list(companies))
 
 
 @pytest.mark.asyncio
