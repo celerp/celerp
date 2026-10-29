@@ -528,7 +528,8 @@ async def release(ex: Execution, resource: str) -> None:
 
 async def _release(ex: Execution, resources: list[str], connector=None) -> list[str]:
     """Release ``resources`` and return the ones kept. With ``connector``, a resource
-    whose recorded rerun may run now is kept, its rerun taken (cleared in the same
+    whose recorded rerun may run now (for the webhooks, also a dirty mark on the
+    config) is kept, its rerun taken (cleared in the same
     transaction), for the holder to run before it releases it; a rerun the
     directions no longer call for is dropped. Released resources leave
     ``ex.resources`` before any later transaction begins."""
@@ -551,9 +552,14 @@ async def _release(ex: Execution, resources: list[str], connector=None) -> list[
                                       sa.column("rerun_requested", sa.JSON)), key)).all()
             pending = [b.resource for b in beats if b.rerun_requested and b.holder is not None
                        and uuid.UUID(str(b.holder)) == ex.holder]
-            if connector is not None and pending and not ex.lost:
+            config = None
+            if connector is not None and not ex.lost and (pending or WEBHOOKS in resources):
                 config = await s.scalar(sa.select(ConnectorConfig).where(
                     ConnectorConfig.company_id == ex.company_id, ConnectorConfig.connector == ex.connector))
+                if WEBHOOKS in resources and WEBHOOKS not in pending and config is not None \
+                        and config.webhooks_dirty:
+                    pending.append(WEBHOOKS)
+            if pending and config is not None:
                 first_sync = await s.get(ConnectorFirstSync, (ex.company_id, ex.connector))
                 reasons = {r: eligible(connector, config, first_sync, "rerun", r) for r in pending}
                 taken = [r for r in pending if reasons[r] is None]
@@ -614,8 +620,8 @@ async def _rerun(connector, ex: Execution, resource: str) -> None:
 
 
 async def sweep_reruns() -> None:
-    """Start an execution for each recorded rerun that no live execution holds and
-    whose connection may run it; the execution runs it as it releases. A busy or
+    """Start an execution for each recorded rerun, and each connection whose webhooks
+    are marked dirty, that no live execution holds and whose connection may run it; the execution runs it as it releases. A busy or
     refused one waits for the next tick; one the directions no longer call for is
     dropped. Runs in a task of its own, outside any execution."""
     with _internal():
@@ -626,7 +632,14 @@ async def sweep_reruns() -> None:
                 "WHERE CAST(h.rerun_requested AS text) <> '[]' "
                 "AND (h.holder IS NULL OR h.expires_at <= now()) "
                 "AND (f.state IN (:done) OR (h.resource = :w AND f.state NOT IN (:new))) "
-                "ORDER BY 1, 2, 3"), {"w": WEBHOOKS, "done": "completed", "new": "pending"})).all()
+                "UNION SELECT c.company_id, c.connector, CAST(:w AS VARCHAR) FROM connector_configs c "
+                "JOIN connector_first_syncs f ON f.company_id = c.company_id AND f.connector = c.connector "
+                "LEFT JOIN connector_execution_heartbeats h ON h.company_id = c.company_id "
+                "AND h.connector = c.connector AND h.resource = :w "
+                "WHERE c.webhooks_dirty = :dirty AND f.state NOT IN (:new) "
+                "AND (h.holder IS NULL OR h.expires_at <= now()) "
+                "ORDER BY 1, 2, 3"), {"w": WEBHOOKS, "done": "completed", "new": "pending",
+                                      "dirty": True})).all()
             await s.commit()
     for company_id, connector, resource in rows:
         try:
@@ -708,12 +721,14 @@ async def refuse_live_execution(session, company_id, connector: str | None = Non
         raise ConnectorBusyError(t("error.connector_sync_running_company", service=service_name(live[0][1])))
 
 
-async def forget_executions(session, company_ids, connector: str) -> None:
-    """With a connection's config: its first-sync record, leases and heartbeats."""
-    for table in ("connector_first_syncs", "connector_execution_leases", "connector_execution_heartbeats"):
-        await session.execute(sa.text(
-            f"DELETE FROM {table} WHERE connector = :k AND company_id IN :c"
-        ).bindparams(sa.bindparam("c", expanding=True)), {"k": connector, "c": sorted(map(str, company_ids))})
+async def forget_first_sync(session, company_ids, connector: str) -> None:
+    """With a connection's config: its first-sync record. Its lease and heartbeat rows
+    stay: the caller refused while one was live, a lease row is changed only by an
+    acquire, takeover or release (1.4), so no fence ever meets a delete, and a later
+    connection's execution takes them over."""
+    await session.execute(sa.text(
+        "DELETE FROM connector_first_syncs WHERE connector = :k AND company_id IN :c"
+    ).bindparams(sa.bindparam("c", expanding=True)), {"k": connector, "c": sorted(map(str, company_ids))})
 
 
 async def _credentials(ex: Execution):

@@ -604,11 +604,6 @@ async def revoke_credentials(
         return failure
 
     try:
-        if connector_name in PRODUCT_CHANNEL_PLATFORMS:
-            from celerp_inventory.services import detach_external_links_for_platform
-            await detach_external_links_for_platform(
-                session, company_id, connector_name
-            )
         await release_connector_ownership(
             session, company_id, connector_name,
             status=RESET_STATUS_FORCED if force else RESET_STATUS_DISCONNECTED,

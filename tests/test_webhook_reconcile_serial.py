@@ -140,43 +140,67 @@ async def _set_orders_inbound(factory, company_id) -> None:
                                       str(company_id), None, s)
 
 
-async def _webhook_state(factory, company_id) -> tuple[bool, list[str]]:
+async def _set_orders_off(factory, company_id) -> None:
+    from celerp_connectors.routes import DirectionRequest, set_connector_direction
+
     async with factory() as s:
-        dirty = (await s.execute(sa.text(
+        await set_connector_direction("woocommerce", DirectionRequest(entity="orders", direction="off"),
+                                      str(company_id), None, s)
+
+
+async def _webhooks_dirty(factory, company_id) -> bool:
+    async with factory() as s:
+        return bool((await s.execute(sa.text(
             "SELECT webhooks_dirty FROM connector_configs WHERE company_id = :c AND connector = 'woocommerce'"),
-            {"c": str(company_id)})).scalar_one()
-        reruns = (await s.execute(sa.text(
-            "SELECT rerun_requested FROM connector_execution_heartbeats "
-            "WHERE company_id = :c AND connector = 'woocommerce' AND resource = 'webhooks'"),
-            {"c": str(company_id)})).scalar_one_or_none()
-    return bool(dirty), list(reruns or [])
+            {"c": str(company_id)})).scalar_one())
 
 
-async def test_a_reconcile_from_a_stale_read_never_removes_a_hook_a_newer_direction_needs(store):
+async def test_a_reconcile_from_a_stale_read_never_removes_a_hook_a_newer_direction_needs(store, monkeypatch):
     """A reconcile that read the directions with orders off meets a person turning orders on.
-    Its result is not recorded as current (dirty stays set), and the rerun the change recorded
-    leaves the order hooks active."""
+    Its result is not recorded as current (dirty stays set while the holder's rerun is held
+    back), and the holder's rerun before it releases leaves the order hooks active."""
+    from unittest.mock import AsyncMock
+
+    from celerp.connectors import execution
     from celerp.connectors.webhook_reconcile import run_webhook_reconcile
 
     fake, factory = store
     company_id = await _connected(factory, fake, _NO_ORDERS)
-    entered, go = asyncio.Event(), asyncio.Event()
-    fake.pause_list = (entered, go)
 
-    stale = asyncio.create_task(run_webhook_reconcile(str(company_id), "woocommerce"))
-    await asyncio.wait_for(entered.wait(), timeout=5)
-    await _set_orders_inbound(factory, company_id)
-    go.set()
-    await asyncio.wait_for(stale, timeout=10)
+    async def _stale_run(rerun: bool) -> None:
+        entered, go = asyncio.Event(), asyncio.Event()
+        fake.pause_list = (entered, go)
+        stale = asyncio.create_task(run_webhook_reconcile(str(company_id), "woocommerce"))
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        await _set_orders_inbound(factory, company_id)
+        with monkeypatch.context() as m:
+            if not rerun:
+                m.setattr(execution, "_run_reruns", AsyncMock())
+            go.set()
+            await asyncio.wait_for(stale, timeout=10)
 
-    dirty, _reruns = await _webhook_state(factory, company_id)
-    assert dirty, "a reconcile that read the directions before a change cleared the dirty mark"
+    await _stale_run(rerun=False)
+    assert await _webhooks_dirty(factory, company_id), "a reconcile that read the directions before a change cleared the dirty mark"
 
+    await _set_orders_off(factory, company_id)
     await asyncio.wait_for(run_webhook_reconcile(str(company_id), "woocommerce"), timeout=10)
-    assert _ORDER_TOPICS <= set(fake.topics()), f"order hooks missing after the rerun: {fake.topics()}"
-    assert not any(kind == "delete" and fake.hooks.get(i, {}).get("topic") in _ORDER_TOPICS
-                   for kind, i, _t in fake.writes)
-    assert (await _webhook_state(factory, company_id))[0] is False
+    await _stale_run(rerun=True)
+    assert _ORDER_TOPICS <= set(fake.topics()), f"order hooks missing after the holder's rerun: {fake.topics()}"
+    assert await _webhooks_dirty(factory, company_id) is False
+
+
+async def test_a_direction_change_is_reconciled_within_one_sweeper_tick(store):
+    """No execution holds the webhooks when a person turns orders on: the dirty mark the
+    change committed is the request, and the next sweeper tick adds the order hooks."""
+    from celerp.connectors.execution import sweep_reruns
+
+    fake, factory = store
+    company_id = await _connected(factory, fake, _NO_ORDERS)
+    await _set_orders_inbound(factory, company_id)
+
+    await asyncio.wait_for(sweep_reruns(), timeout=10)
+    assert _ORDER_TOPICS <= set(fake.topics()), f"order hooks missing after the sweep: {fake.topics()}"
+    assert await _webhooks_dirty(factory, company_id) is False
 
 
 async def test_two_reconcilers_over_duplicates_leave_exactly_the_lowest_hook_per_topic(store):
@@ -205,9 +229,9 @@ async def test_two_reconcilers_over_duplicates_leave_exactly_the_lowest_hook_per
 
 
 async def test_a_direction_change_never_writes_to_the_store_and_a_disconnect_leaves_nothing_to_create(store):
-    """The direction route changes no webhook itself: it marks them dirty and records a
-    rerun for the webhooks holder. A disconnect right after it leaves that rerun with no
-    connection, so nothing is ever created on the disconnected store."""
+    """The direction route changes no webhook itself: it marks them dirty, which the
+    webhooks holder or the sweeper reconciles. A disconnect right after it leaves that
+    mark with no connection, so nothing is ever created on the disconnected store."""
     from celerp_connectors.routes import revoke_credentials
 
     fake, factory = store
@@ -215,8 +239,7 @@ async def test_a_direction_change_never_writes_to_the_store_and_a_disconnect_lea
 
     await _set_orders_inbound(factory, company_id)
     assert fake.writes == [], f"the direction route wrote to the store itself: {fake.writes}"
-    dirty, reruns = await _webhook_state(factory, company_id)
-    assert dirty and "webhooks" in reruns
+    assert await _webhooks_dirty(factory, company_id)
 
     from unittest.mock import AsyncMock, patch
     # The relay's own copy of the key is not under test: the local disconnect is.

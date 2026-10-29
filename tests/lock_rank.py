@@ -60,10 +60,11 @@ RANKS: dict[str, int] = {
     # The company (R3) and what is read under it.
     "row:companies": 30, "row:user_auth_state": 31, "row:user_companies": 32,
     "row:company_peer_identities": 33, "row:locations": 34, "row:sync_runs": 35,
-    "row:connector_configs": 39, "row:connector_sources": 43,
+    # A connection's config, then its first-sync record (a disconnect forgets it, a first sync
+    # locks it, before either touches the store's identities).
+    "row:connector_configs": 38, "row:connector_first_syncs": 39, "row:connector_sources": 43,
     # Shop identity namespaces, after the company and before any item row.
     "adv:woocommerce-order": 40, "adv:external-link": 41, "adv:external-product": 42,
-    "row:connector_first_syncs": 44,
     # Peer links between companies, after the company's own identity rows.
     "row:company_peer_grants": 45, "row:company_peer_accounts": 46, "row:company_peer_deliveries": 47,
     "row:company_peer_attention": 48,

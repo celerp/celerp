@@ -489,8 +489,9 @@ async def release_connector_ownership(
     status: str = RESET_STATUS_DISCONNECTED,
 ) -> None:
     """Release one company's connector state: its own row plus any legacy
-    row with no company, so a disconnect also works while ownership is ambiguous."""
-    from celerp.connectors.execution import forget_executions, refuse_live_execution
+    row with no company, so a disconnect also works while ownership is ambiguous.
+    A product channel's links to the store become history in the same transaction."""
+    from celerp.connectors.execution import forget_first_sync, refuse_live_execution
     from celerp.connectors.outbound_queue import release_connector_queue
 
     company_id = str(company_id)
@@ -498,7 +499,10 @@ async def release_connector_ownership(
     await lock_connector_key(session, connector, exclusive=True)
     mine = await connector_release_scope(session, company_id, connector)
     await refuse_live_execution(session, company_id, connector)
-    await forget_executions(session, {company_id, legacy_id}, connector)
+    await forget_first_sync(session, {company_id, legacy_id}, connector)
+    if connector in PRODUCT_CHANNEL_PLATFORMS:
+        from celerp_inventory.services import detach_external_links_for_platform
+        await detach_external_links_for_platform(session, company_id, connector)
 
     for queue_owner in {company_id, legacy_id}:
         await release_connector_queue(session, queue_owner, connector)

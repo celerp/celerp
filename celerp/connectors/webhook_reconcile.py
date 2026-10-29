@@ -48,11 +48,11 @@ async def run_webhook_reconcile(company_id, connector_name: str) -> None:
 
 async def mark_webhooks_dirty(session, config) -> None:
     """In the caller's transaction, which holds ``config`` FOR UPDATE: the hooks must be
-    reconciled, by the holder of the webhooks resource, which a rerun asks for."""
+    reconciled by the holder of the webhooks resource. The mark is the request: the
+    holder runs it before it releases, the sweeper when no execution holds them."""
     config.webhooks_dirty = True
     config.webhooks_version = (config.webhooks_version or 0) + 1
     await session.flush()
-    await record_rerun(config.company_id, config.connector, WEBHOOKS, session=session)
 
 
 async def _read(ex: Execution):

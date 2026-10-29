@@ -39,7 +39,7 @@ def _relay(monkeypatch):
 @pytest.fixture
 async def stub(_db_engine):
     """A connector connected to a fresh company, its connection removed afterwards."""
-    from celerp.connectors.execution import forget_executions
+    from celerp.connectors.execution import forget_first_sync
     from celerp.models.connector_config import ConnectorConfig
 
     connector = _Stub()
@@ -47,9 +47,13 @@ async def stub(_db_engine):
     await connected(connector.company_id, connector, connector.default_directions)
     yield connector
     async with get_session_ctx() as s:
-        await forget_executions(s, [connector.company_id], connector.name)
         await s.execute(sa.delete(ConnectorConfig).where(ConnectorConfig.connector == connector.name))
+        await forget_first_sync(s, [connector.company_id], connector.name)
         await s.commit()
+    for table in ("connector_execution_leases", "connector_execution_heartbeats"):
+        async with get_session_ctx() as s:
+            await s.execute(sa.text(f"DELETE FROM {table} WHERE company_id = :c"), {"c": connector.company_id})
+            await s.commit()
 
 
 def _run(stub, purpose="manual_sync"):
