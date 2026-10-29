@@ -413,3 +413,124 @@ def test_a_test_statement_sent_through_a_conftest_wrapper_is_sited_at_the_test()
     wrapper = compiled("conftest.py", "def call(f):\n    return f()\n", "call")
     caller = compiled("tests/test_x.py", "def test_y(call, probe):\n    return call(probe)\n", "test_y")
     assert caller(wrapper, probe) == "tests/test_x.py:2 test_y"
+
+
+# ── R4: edges between rows of one company, under that company's exclusive lock ──
+
+_DELETE_COMPANY = "SELECT companies.id FROM companies WHERE companies.id = $1::UUID FOR UPDATE"
+_TABLE = "LOCK TABLE projections IN SHARE ROW EXCLUSIVE MODE"
+
+
+def _gated_inversion(recorder: Recorder, gate: str | None = "c1", held: str = "c1", taken: str = "c1",
+                     gate_first: bool = True) -> None:
+    """Outbound (63) then projections (lower), both of one company, under that company's lock."""
+    if gate and gate_first:
+        recorder.statement(1, _DELETE_COMPANY, (gate,), 0.0)
+    recorder.statement(1, _OUTBOUND, (held, 7), 0.0)
+    if gate and not gate_first:
+        recorder.statement(1, _DELETE_COMPANY, (gate,), 0.0)
+    _projection(recorder, 1, "item", company=taken)
+
+
+@pytest.mark.parametrize("query", [_DELETE_COMPANY, _LOCK_COMPANY])
+def test_an_inversion_between_rows_of_the_locked_company_records_no_violation(recorder, query):
+    recorder.statement(1, query, ("c1",), 0.0)
+    recorder.statement(1, _OUTBOUND, ("c1", 7), 0.0)
+    _projection(recorder, 1, "item")
+    assert not recorder.violations
+    assert recorder.edges[("row:outbound_queue", "row:projections")]["company_gated"] == {
+        "row:outbound_queue", "row:projections"}
+
+
+@pytest.mark.parametrize("case", [
+    {"gate": None},                    # no company lock
+    {"gate": "c2"},                    # another company's lock
+    {"held": "c2", "gate": "c1"},      # the held row is another company's
+    {"taken": "", "gate": "c1"},       # the acquired row names no one company
+    {"gate_first": False},             # the company lock came after the held row
+])
+def test_an_inversion_not_wholly_under_one_companys_prior_lock_is_an_order_violation(recorder, case):
+    _gated_inversion(recorder, **case)
+    assert ("order", "row:projections") in _kinds(recorder)
+
+
+def test_a_table_lock_under_the_company_lock_still_orders(recorder):
+    recorder.statement(1, _DELETE_COMPANY, ("c1",), 0.0)
+    recorder.statement(1, _OUTBOUND, ("c1", 7), 0.0)
+    recorder.statement(1, _TABLE, (), 0.0)
+    assert ("order", "tbl:projections") in _kinds(recorder)
+
+
+def test_a_session_advisory_lock_is_not_the_company_gate(recorder):
+    recorder.acquire(1, Lock("adv:company", "session exclusive wait", "celerp/x.py:1 f", "t", "c1", company="c1"), 0.0)
+    recorder.statement(1, _OUTBOUND, ("c1", 7), 0.0)
+    _projection(recorder, 1, "item")
+    assert ("order", "row:projections") in _kinds(recorder)
+
+
+def test_every_company_keyed_row_taken_without_its_company_lock_is_counted(recorder):
+    recorder.statement(1, _LOCK_COMPANY, ("c1",), 0.0)
+    _projection(recorder, 1, "gated")
+    _projection(recorder, 2, "ungated")
+    recorder.statement(3, "SELECT projections.entity_id FROM projections WHERE projections.entity_id = $1 FOR SHARE",
+                       ("unknown-company",), 0.0)
+    info = recorder.dump()["classes"]["row:projections"]
+    assert info["company_ungated"] == 2
+    assert info["ungated_strengths"] == ["share", "update"]
+
+
+@pytest.mark.parametrize("other, listed", [
+    (None, False),                                                          # every taker holds the company
+    ((_PROJECTION, None), True),                                            # projections without it
+    ((_OUTBOUND, None), True),                                              # outbound without it
+    ((_PROJECTION.replace("FOR UPDATE", "FOR KEY SHARE"), None), True),     # key share conflicts with FOR UPDATE
+    ((_PROJECTION, "c1"), False),                                           # under the company lock
+])
+def test_the_offline_check_fails_a_company_gated_inversion_whose_classes_have_an_ungated_taker(
+        recorder, tmp_path, other, listed):
+    _gated_inversion(recorder)
+    if other:
+        query, locked = other
+        if locked:
+            recorder.statement(2, _LOCK_COMPANY, (locked,), 0.0)
+        recorder.statement(2, query, ("c1", 9), 0.0)
+    assert not recorder.violations
+    (tmp_path / "lock-graph-gw0.json").write_text(json.dumps(recorder.dump()))
+    assert ("row:outbound_queue (63) -> row:projections" in lock_rank.check(tmp_path)) is listed
+
+
+# ── The debt inventory: exact keys, printed for review, never written ──
+
+def _debt_run(tmp_path, monkeypatch, entries: str):
+    debt_file = tmp_path / "debt.txt"
+    debt_file.write_text(entries)
+    monkeypatch.setattr(lock_rank, "DEBT_FILE", debt_file)
+    recorder = Recorder()
+    recorder.acquire(1, _lock("row:projections", "update wait"), 0.0)
+    recorder.acquire(1, Lock("row:companies", "update wait", "celerp/x.py:9 g", "t", "1"), 0.0)
+    graphs = tmp_path / "graphs"
+    graphs.mkdir()
+    (graphs / "lock-graph-gw0.json").write_text(json.dumps(recorder.dump()))
+    return debt_file, graphs, recorder
+
+
+def test_the_debt_listing_prints_every_recorded_key_with_its_owner_and_writes_nothing(tmp_path, monkeypatch):
+    entries = "order row:projections -> row:companies celerp/x.py g  # 402 F1\n"
+    debt_file, graphs, _ = _debt_run(tmp_path, monkeypatch, entries)
+    assert lock_rank.debt_listing(graphs) == "order row:projections -> row:companies celerp/x.py g  # 402 F1\n"
+    assert debt_file.read_text() == entries
+
+
+def test_the_debt_diff_lists_added_and_removed_keys(tmp_path, monkeypatch):
+    _, graphs, _ = _debt_run(tmp_path, monkeypatch, "order row:ledger -> row:companies celerp/y.py h  # 402 G2\n")
+    out = lock_rank.debt_diff(graphs)
+    assert "Added: 1\n+ order row:projections -> row:companies celerp/x.py g\n" in out
+    assert "Removed: 1\n- order row:ledger -> row:companies celerp/y.py h  # 402 G2\n" in out
+
+
+def test_a_debt_entry_matches_only_its_exact_key(tmp_path, monkeypatch):
+    # The same kind, classes and file in another function is a new violation.
+    _, _, recorder = _debt_run(tmp_path, monkeypatch, "order row:projections -> row:companies celerp/x.py f  # 402 F1\n")
+    monkeypatch.setattr(lock_rank, "RECORDER", recorder)
+    assert [lock_rank.violation_key(v) for v in lock_rank.new_violations()] == [
+        "order row:projections -> row:companies celerp/x.py g"]

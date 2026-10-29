@@ -190,9 +190,12 @@ class Recorder:
     last_key: dict[int, dict[str, str]] = field(default_factory=lambda: defaultdict(dict))
     # Per transaction: the companies it inserted, uncommitted (R1).
     own: dict[int, set[str]] = field(default_factory=lambda: defaultdict(set))
+    # Per transaction, per class: the one company every lock of the class was taken under
+    # that company's exclusive lock, or None when one was not (R4).
+    under_company: dict[int, dict[str, str | None]] = field(default_factory=lambda: defaultdict(dict))
 
     def _transaction_state(self) -> tuple:
-        return self.held, self.taken, self.explicit, self.last_key, self.own
+        return self.held, self.taken, self.explicit, self.last_key, self.own, self.under_company
 
     def end(self, conn_key: int) -> None:
         for state in self._transaction_state():
@@ -252,6 +255,27 @@ class Recorder:
         held = self.taken[conn_key].get(("row:companies", repr((lock.company,))), ())
         return bool(set(held) & {"nokey", "update"})
 
+    def _company_gate(self, conn_key: int, h: Lock, lock: Lock) -> bool:
+        """R4: ``lock`` and every lock of ``h``'s class this transaction holds are rows of one
+        company whose row it took exclusively before them (transaction-scoped). Another
+        transaction holding either row while it waits on the other would hold that company's
+        lock too, so the two cannot wait on each other; the offline check fails the edge when
+        either class has a taker without the company lock, at a strength that conflicts."""
+        return bool(lock.company) and self._company_held(conn_key, lock) \
+            and self.under_company[conn_key].get(h.cls) == lock.company
+
+    def _census(self, conn_key: int, lock: Lock, info: dict) -> None:
+        """R4: count each take of a company's row made without that company's exclusive lock,
+        or whose company the statement does not name. The company's own row is the gate."""
+        table = lock.cls.split(":", 1)[1]
+        if not lock.cls.startswith(("row:", "key:")) or table == "companies" or not _has_company(table):
+            return
+        if lock.company and self._company_held(conn_key, lock):
+            return
+        info["company_ungated"] = info.get("company_ungated", 0) + 1
+        info.setdefault("ungated_strengths", set()).add(_strength(lock))
+        info.setdefault("ungated_sites", set()).add(f"{lock.site} [{_strength(lock)}]")
+
     def _retake(self, conn_key: int, lock: Lock) -> bool:
         """Whether this connection already holds what ``lock`` asks for: the same key at no
         less strength, or (for an implicit write) an explicit lock of the class that covers
@@ -278,9 +302,12 @@ class Recorder:
             self._violate("guard", lock)
         if lock.cls in _LEASE_ROWS:
             self._lease(conn_key, lock)
+        own = self._own(conn_key, lock)
+        if not own:
+            self._census(conn_key, lock, info)
         if lock.cls.startswith("key:") and _strength(lock) == "keyshare":
             return
-        if self._own(conn_key, lock):
+        if own:
             info["own"] = info.get("own", 0) + 1
             return
         if lock.mode == "insert":
@@ -308,8 +335,9 @@ class Recorder:
             # transaction taking them waits on, so it cannot interleave with this edge.
             gate = {g.cls for g in held[:i] if _exclusive(g.mode)} - {h.cls, lock.cls}
             gated = {x.cls for x in (h, lock) if x.gated}
-            self._edge(h, lock, waits, gate, gated)
-            if gated:
+            company_gated = not gated and self._company_gate(conn_key, h, lock)
+            self._edge(h, lock, waits, gate, gated, company_gated)
+            if gated or company_gated:
                 continue
             if waits and rank(lock.cls) is not None and rank(h.cls) is not None and rank(lock.cls) < rank(h.cls):
                 decreasing = True
@@ -337,6 +365,9 @@ class Recorder:
             self.session_held[conn_key].append(lock)
             return
         self.taken[conn_key].setdefault((lock.cls, lock.key), set()).add(_strength(lock))
+        under = self.under_company[conn_key]
+        company = lock.company if lock.company and self._company_held(conn_key, lock) else None
+        under[lock.cls] = company if under.get(lock.cls, company) == company else None
         if _explicit(lock.mode):
             self.explicit[conn_key].setdefault(lock.cls, set()).add(_strength(lock))
             self.last_key[conn_key][lock.cls] = lock.key
@@ -362,17 +393,24 @@ class Recorder:
                 and not lock.mode.endswith("nowait"):
             self._violate("lease-wait", lock)
 
-    def _edge(self, h: Lock, lock: Lock, waits: bool, gate: set[str], gated: set[str] = frozenset()) -> None:
+    def _edge(self, h: Lock, lock: Lock, waits: bool, gate: set[str], gated: set[str] = frozenset(),
+              company_gated: bool = False) -> None:
         edge = self.edges.get((h.cls, lock.cls))
         if edge is None:
             edge = self.edges[(h.cls, lock.cls)] = {
                 "count": 0, "example": None, "waits": False, "gate": gate, "modes": set(),
-                "call_sites": {}, "gated": set()}
+                "call_sites": {}, "gated": set(), "company_gated": set(), "company_gated_modes": set()}
         edge["gate"] = edge["gate"] & gate
         edge["count"] += 1
         if waits and gated:
             # R2: judged offline against the inserted tables' ungated inserters.
             edge["gated"] |= gated
+            waits = False
+        if waits and company_gated:
+            # R4: judged offline against both classes' takers without the company lock.
+            edge["company_gated"] |= {h.cls, lock.cls}
+            edge["company_gated_modes"].add(f"{_strength(h)}>{_strength(lock)}")
+            edge.setdefault("company_example", {"held": h.site, "acquired": lock.site, "test": self.test})
             waits = False
         edge["waits"] = edge["waits"] or waits
         if waits:
@@ -437,6 +475,8 @@ class Recorder:
         return {
             "edges": [{"from": a, "to": b, **v, "gate": sorted(v["gate"]), "modes": sorted(v["modes"]),
                        "call_modes": sorted(v.get("call_modes", ())), "gated": sorted(v["gated"]),
+                       "company_gated": sorted(v["company_gated"]),
+                       "company_gated_modes": sorted(v["company_gated_modes"]),
                        "call_sites": {k: sorted(m) for k, m in v["call_sites"].items()}}
                       for (a, b), v in self.edges.items()],
             "classes": {k: {"count": v["count"], "modes": sorted(v["modes"]), "sites": sorted(v["sites"]),
@@ -709,6 +749,13 @@ def _company_column(table: str) -> str:
 
 
 @functools.lru_cache(maxsize=None)
+def _has_company(table: str) -> bool:
+    """Whether the table's rows each belong to one company (a company column)."""
+    mapped = _app_tables().get(table)
+    return mapped is not None and _company_column(table) in mapped.c
+
+
+@functools.lru_cache(maxsize=None)
 def _company_keyed(table: str) -> bool:
     """Whether every unique key of the table, its primary key aside, holds the company: two
     inserts of one such key name one company. A primary key is a generated id."""
@@ -960,10 +1007,11 @@ def dump(path: Path) -> None:
 # ── Report: merge worker dumps into one graph ─────────────────────────────────
 
 # Per class counts the offline check judges: inserts without their company's lock (R2), keys
-# taken out of order under it, and second keys taken without it (R3).
-_COUNTS = ("ungated", "gated_unsorted", "ungated_multi")
-# The strengths of those R3 takes, and where each second key without the lock was taken.
-_SETS = ("unsorted_strengths", "multi_strengths", "multi_sites")
+# taken out of order under it, and second keys taken without it (R3), and every take of a
+# company's row without its company's lock (R4).
+_COUNTS = ("ungated", "gated_unsorted", "ungated_multi", "company_ungated")
+# The strengths of those R3 and R4 takes, and where each was taken.
+_SETS = ("unsorted_strengths", "multi_strengths", "multi_sites", "ungated_strengths", "ungated_sites")
 
 
 def _merge(directory: Path) -> dict:
@@ -976,9 +1024,13 @@ def _merge(directory: Path) -> dict:
             cur = edges.setdefault((e["from"], e["to"]),
                                    {"count": 0, "example": e["example"], "waits": False, "gate": set(e["gate"]),
                                     "modes": set(), "call_modes": set(), "call_example": None,
-                                    "call_sites": {}, "gated": set()})
+                                    "call_sites": {}, "gated": set(), "company_gated": set(),
+                                    "company_gated_modes": set(), "company_example": None})
             cur["gate"] &= set(e["gate"])
             cur["gated"].update(e.get("gated", ()))
+            cur["company_gated"].update(e.get("company_gated", ()))
+            cur["company_gated_modes"].update(e.get("company_gated_modes", ()))
+            cur["company_example"] = cur["company_example"] or e.get("company_example")
             for pair, combos in e.get("call_sites", {}).items():
                 cur["call_sites"].setdefault(pair, set()).update(combos)
             cur["modes"].update(e["modes"])
@@ -1114,6 +1166,29 @@ def new_violations() -> list[dict]:
     return [v for v in RECORDER.take_violations() if violation_key(v) not in known]
 
 
+def _recorded_keys(directory: Path) -> set[str]:
+    return {violation_key(v) for v in _merge(directory)["violations"]}
+
+
+def _entry(key: str, owner: str) -> str:
+    return f"{key}  # {owner}" if owner else key
+
+
+def debt_listing(directory: Path) -> str:
+    """Every violation key a recorded run hit, sorted, each with its owner in the debt file
+    ("untriaged" when it has none): for review, never written to the file."""
+    known = debt()
+    return "".join(_entry(k, known.get(k, "untriaged")) + "\n" for k in sorted(_recorded_keys(directory)))
+
+
+def debt_diff(directory: Path) -> str:
+    """The keys a recorded run hit that the debt file lacks, and the entries it no longer hits."""
+    known, hit = debt(), _recorded_keys(directory)
+    added, removed = sorted(hit - set(known)), sorted(set(known) - hit)
+    return "".join([f"Added: {len(added)}\n", *(f"+ {k}\n" for k in added),
+                    f"Removed: {len(removed)}\n", *(f"- {_entry(k, known[k])}\n" for k in removed)])
+
+
 def check(directory: Path) -> str:
     """Judge a recorded graph against ``RANKS``: every class the suite locked, wrote or
     referenced must be ranked, and every waiting acquisition after a lock of a higher rank
@@ -1121,18 +1196,29 @@ def check(directory: Path) -> str:
     insert made under its company's lock (R2) waits only when its table also has an insert
     made without that lock; keys of a class taken out of order under the company lock (R3)
     fail only when the class has a taker of more than one key without that lock, at a
-    strength that conflicts."""
+    strength that conflicts. An edge between rows of one company under that company's lock
+    (R4) waits only when either class has a take without that lock whose strength conflicts
+    with the edge's own take of the class."""
     g = _merge(directory)
     lines = [f"Unranked classes: {sorted(c for c in g['classes'] if rank(c) is None) or 'none'}", ""]
 
-    def waits(v: dict) -> bool:
-        return v["waits"] or any(g["classes"].get(c, {}).get("ungated") for c in v["gated"])
+    def ungated(cls: str, strength: str) -> bool:
+        return any((strength, u) in _CONFLICTS or (u, strength) in _CONFLICTS
+                   for u in g["classes"].get(cls, {}).get("ungated_strengths", ()))
+
+    def company_waits(a: str, b: str, v: dict) -> bool:
+        pairs = [m.split(">") for m in v["company_gated_modes"]]
+        return any(ungated(a, sa) or ungated(b, sb) for sa, sb in pairs)
+
+    def waits(a: str, b: str, v: dict) -> bool:
+        return v["waits"] or any(g["classes"].get(c, {}).get("ungated") for c in v["gated"]) \
+            or company_waits(a, b, v)
     bad = sorted((a, b) for (a, b), v in g["edges"].items()
-                 if waits(v) and rank(a) is not None and rank(b) is not None and rank(a) > rank(b))
+                 if waits(a, b, v) and rank(a) is not None and rank(b) is not None and rank(a) > rank(b))
     lines.append(f"Decreasing waiting edges: {len(bad)}")
     for a, b in bad:
         e = g["edges"][(a, b)]
-        ex = e["call_example"] or e["example"]
+        ex = e["call_example"] or e["company_example"] or e["example"]
         lines.append(f"- {a} ({rank(a)}) -> {b} ({rank(b)}): {ex['held']} -> {ex['acquired']} ({ex['test']})")
     # R3: a class whose keys a transaction took out of order under the company lock, and that
     # another transaction takes more than one key of without it: each can hold the key the
@@ -1145,7 +1231,7 @@ def check(directory: Path) -> str:
         lines.append(f"- {c}: {v['gated_unsorted']} unsorted, {v['ungated_multi']} ungated: "
                      + ", ".join(sorted(v["multi_sites"])))
     # Rule (e): the debt list only shrinks, so an entry the run no longer hits must go.
-    hit = {violation_key(v) for v in g["violations"]}
+    hit = _recorded_keys(directory)
     stale = sorted(set(debt()) - hit)
     lines += ["", f"Stale debt entries: {len(stale)}", *(f"- {e}" for e in stale)]
     return "\n".join(lines) + "\n"
@@ -1166,7 +1252,11 @@ if __name__ == "__main__":
         print(out, end="")
         if "\nStale debt entries: 0\n" not in out:
             raise SystemExit(1)
+    elif sys.argv[1:2] == ["debt"]:
+        print(debt_listing(Path(sys.argv[2])), end="")
+    elif sys.argv[1:2] == ["debt-diff"]:
+        print(debt_diff(Path(sys.argv[2])), end="")
     elif sys.argv[1:2] == ["table"]:
         print(table(), end="")
     else:
-        raise SystemExit("usage: tests/lock_rank.py report <dir> | check <dir> | table")
+        raise SystemExit("usage: tests/lock_rank.py report <dir> | check <dir> | debt <dir> | debt-diff <dir> | table")
