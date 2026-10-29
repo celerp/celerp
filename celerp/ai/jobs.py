@@ -1166,8 +1166,9 @@ async def _earlier(session, job, asked, messages: list) -> list[Earlier]:
     rows = (await session.execute(select(AIBatchJob.id, AIBatchJob.results, AIBatchJob.created_at).where(
         AIBatchJob.conversation_id == job.conversation_id, AIBatchJob.kind == "question",
         AIBatchJob.id != job.id, AIBatchJob.created_at < asked.created_at))).all()
-    answered_by = {str((results or {}).get("message_id")): job_id for job_id, results, _ in rows}
-    steps = await job_steps(session, [job_id for job_id, _, _ in rows])
+    answered_by = {str(results["message_id"]): (job_id, created_at) for job_id, results, created_at in rows
+                   if (results or {}).get("message_id")}
+    steps = await job_steps(session, [job_id for job_id, _ in answered_by.values()])
 
     def reads(job_id) -> list[tuple[str | None, dict]]:
         done = {step.key: step.result for step in steps[job_id] if answered(step)}
@@ -1178,11 +1179,11 @@ async def _earlier(session, job, asked, messages: list) -> list[Earlier]:
             return Earlier(msg)
         if message_failure(msg.tools_called) is not None:
             return Earlier(msg, [])
-        job_id = answered_by.get(str(msg.id))
-        return Earlier(msg, None if job_id is None else reads(job_id))
+        job = answered_by.get(str(msg.id))
+        return Earlier(msg, None if job is None else reads(job[0]))
     held = {str(msg.id) for msg in messages}
-    gone = [(created_at, Earlier(None, reads(job_id))) for job_id, results, created_at in rows
-            if (results or {}).get("message_id") and str(results["message_id"]) not in held]
+    gone = [(created_at, Earlier(None, reads(job_id))) for message_id, (job_id, created_at) in answered_by.items()
+            if message_id not in held]
     timed = [(msg.created_at, entry(msg)) for msg in messages] + gone
     return [earlier for _, earlier in sorted(timed, key=lambda pair: pair[0])]
 
