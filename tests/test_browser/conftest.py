@@ -172,7 +172,7 @@ _API_LIMITS = httpx.Limits(keepalive_expiry=3.0)
 def seeded_user(api_server):
     """
     Register an admin user + seed a company via the API.
-    Returns {"email": str, "password": str, "access_token": str}.
+    Returns {"email": str, "password": str, "access_token": str, "refresh_token": str}.
     """
     with httpx.Client(base_url=api_server, timeout=10, limits=_API_LIMITS) as client:
         # Bootstrap the app first (creates DB tables)
@@ -194,12 +194,12 @@ def seeded_user(api_server):
             })
         assert r.status_code == 200, f"Auth failed: {r.text}"
         data = r.json()
-        access_token = data["access_token"]
 
     return {
         "email": _TEST_EMAIL,
         "password": _TEST_PASSWORD,
-        "access_token": access_token,
+        "access_token": data["access_token"],
+        "refresh_token": data["refresh_token"],
     }
 
 
@@ -307,12 +307,38 @@ def pytest_runtest_makereport(item, call):
 
 # ── API helper (for seeding in tests) ────────────────────────────────────────
 
+class _RenewingAuth(httpx.Auth):
+    """Renews the client's sign-in once when the API answers 401, as the UI does: an
+    access token lives minutes and a worker's run outlives it. The renewed token goes
+    on the client's own Authorization header, which tests read."""
+
+    def __init__(self, refresh_token: str) -> None:
+        self.refresh_token = refresh_token
+        self.client: httpx.Client | None = None
+
+    def auth_flow(self, request):
+        response = yield request
+        if response.status_code != 401 or self.client is None:
+            return
+        renewed = yield httpx.Request("POST", request.url.copy_with(path="/auth/token/refresh", query=None),
+                                      json={"refresh_token": self.refresh_token})
+        if renewed.status_code != 200:
+            return
+        renewed.read()
+        pair = renewed.json()
+        self.refresh_token = pair["refresh_token"]
+        self.client.headers["Authorization"] = request.headers["Authorization"] = f"Bearer {pair['access_token']}"
+        yield request
+
+
 @pytest.fixture(scope="session")
 def api(api_server, seeded_user):
-    """Synchronous httpx client pre-authed against the API."""
+    """Synchronous httpx client signed in to the API, renewing its sign-in when it lapses."""
+    auth = _RenewingAuth(seeded_user["refresh_token"])
     headers = {"Authorization": f"Bearer {seeded_user['access_token']}"}
-    with httpx.Client(base_url=api_server, headers=headers, timeout=10,
+    with httpx.Client(base_url=api_server, headers=headers, auth=auth, timeout=10,
                       limits=_API_LIMITS) as client:
+        auth.client = client
         yield client
 
 
