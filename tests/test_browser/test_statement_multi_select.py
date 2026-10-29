@@ -37,8 +37,14 @@ def statement_url(ui_server, api):
     return f"{ui_server}/reports/statement"
 
 
+# No part of the page is still loading or settling: a banner that lands later moves the
+# field down after the list is placed.
+_SETTLED = "!document.querySelector('.htmx-request, .htmx-swapping, .htmx-settling')"
+
+
 def _open_picker(page, url):
-    page.goto(url, wait_until="domcontentloaded")
+    page.goto(url, wait_until="load")
+    page.wait_for_function(_SETTLED)
     page.wait_for_selector(".combobox-wrap[data-multiple]", timeout=10000)
     page.locator(".combobox-wrap[data-multiple] .combobox-input").first.click()
     page.wait_for_selector(".combobox-list.open", timeout=3000)
@@ -135,8 +141,7 @@ def test_the_open_list_follows_the_field_when_a_notice_shows_above_it(page, stat
     page.route("**/health/system", lambda route: held.append(route))
     with page.expect_request(lambda r: r.url.endswith("/health/system")):
         page.goto(statement_url, wait_until="load")
-    # No part of the page is still loading or settling, so no later page update places the list.
-    page.wait_for_function("!document.querySelector('.htmx-request, .htmx-swapping, .htmx-settling')")
+    page.wait_for_function(_SETTLED)
     page.locator(".combobox-wrap[data-multiple] .combobox-input").first.click()
     page.wait_for_selector(".combobox-list.open", timeout=3000)
     offset = page.evaluate(_LIST_OFFSET)
