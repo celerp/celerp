@@ -757,6 +757,7 @@
   "file_tag.disposal": "Cession",
   "file_tag.valuations": "Évaluations",
   "filter.all_time": "Toute la période",
+  "filter.date_range": "Période",
   "filter.last_12m": "12 derniers mois",
   "filter.last_3m": "3 derniers mois",
   "filter.last_6m": "6 derniers mois",
