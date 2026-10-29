@@ -169,10 +169,14 @@ def _lock_writers(schema: dict) -> list[str]:
     outlive the company (a payment closure is recorded from its own connection during the
     reset), but no key can be added to it. So do sessions: issuing one holds the company FOR
     KEY SHARE, which waits for the reset, and a sign-out during the reset only deletes them.
-    Concurrent resets take it in the same order, one after the other."""
+    Concurrent resets take it in the same order, one after the other.
+
+    NOWAIT: the reset already holds its company's key exclusively, and a transaction writing
+    one of these tables may go on to share that key (a notice naming the company, a row
+    referring to it), so waiting here could close a cycle. A busy table refuses the reset."""
     writable = sorted(set(schema) & (INSTALL_WIDE.keys() | {SessionRegistry.__tablename__}))
     company = sorted(set(schema) - set(writable))
-    return [f"LOCK TABLE {', '.join(map(db_catalog.ident, names))} IN {mode} MODE"
+    return [f"LOCK TABLE {', '.join(map(db_catalog.ident, names))} IN {mode} MODE NOWAIT"
             for names, mode in ((company, "SHARE ROW EXCLUSIVE"), (writable, "ROW EXCLUSIVE")) if names]
 
 
@@ -245,9 +249,8 @@ async def _company_schema(session: AsyncSession, cid: str) -> dict:
         raise _changed_outside("partition_key", await db_catalog.label(session, tables[0]))
     _placed(schema)
     _company_rows(schema)
-    # Another transaction writing these tables can hold them for longer than a request
-    # may wait, or lock in the opposite order so Postgres aborts one of the two. Either
-    # way the rollback leaves everything as it was and the owner is asked to try again.
+    # Another transaction writing these tables makes the lock fail at once (NOWAIT); the
+    # rollback leaves everything as it was and the owner is asked to try again.
     for lock in _lock_writers(schema):
         await session.execute(text(lock))
     if await db_catalog.read(session) != schema:  # a table or key added before the lock
