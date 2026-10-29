@@ -78,10 +78,12 @@ def _census(tmp_path, findings, entries) -> int:
     (folder / "census-1-gw0.json").write_text(json.dumps({"routes": {}, "sites": {}, "findings": findings}))
     baseline = tmp_path / "baseline.json"
     baseline.write_text(json.dumps(entries))
+    gaps = tmp_path / "gaps.json"
+    gaps.write_text("[]")
     with pytest.MonkeyPatch.context() as patch:  # findings alone: no source, so no coverage gap
         patch.setattr(mutation_census, "static_inventory", lambda: ([], []))
         return mutation_census.main([str(folder), "--out", str(tmp_path / "census.md"),
-                                     "--baseline", str(baseline), "--enforce"])
+                                     "--baseline", str(baseline), "--gaps", str(gaps), "--enforce"])
 
 
 def test_the_census_passes_when_every_finding_matches_one_entry(tmp_path):

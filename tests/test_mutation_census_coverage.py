@@ -59,7 +59,7 @@ def _route_gap(route=WRITER, cls="never requested") -> dict:
 
 
 def _site_gap(site=SITE, count=1) -> dict:
-    return {"site": site, "count": count, "class": "request write no test reaches", "reason": "no test creates one yet"}
+    return {"site": site, "count": count, "class": "reached from a route", "reason": "no test creates one yet"}
 
 
 WROTE = {WRITER: {"requests": 1, "protected": 1}}
