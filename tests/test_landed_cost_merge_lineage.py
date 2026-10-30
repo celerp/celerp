@@ -402,3 +402,51 @@ async def test_two_holders_with_other_stock_are_not_refused(client, session, aut
     assert await _pools(session, auth, doc, s, x) == [0.0, 0.0]
     assert round((await _b(session, auth, "5100"))["5100"] - before["5100"], 2) == -2.25
     await assert_settled(client, session, auth)
+
+
+async def test_a_supplier_credit_note_for_refused_freight_leaves_it_on_freight_clearing(client, session, auth):
+    """The remedy the refusal names when the merge can no longer be undone: a supplier credit
+    note for the bill's freight. The freight already in the stock's cost stays there, so the note
+    leaves freight clearing 30 in credit; a later change that clears it turns this red."""
+    await _seed(session, auth)
+    doc, lot = await _shared_lot(client, auth)
+    [part] = await _split(client, auth, lot, 10)
+    x = await _merge(client, auth, [part, await _like(client, session, auth, lot, 5, 50.0)])
+    await _as_an_earlier_release_merged_it(session, auth, x)
+    await _refused(client, session, auth, doc, lot, part)
+    before = await _b(session, auth, "1130-FRT")
+    # The bill carried its freight as shipping; the note takes it back the same way (a note needs a line).
+    note = await _doc(client, auth, "debit_note", [{"name": "Freight", "quantity": 1, "unit_price": 0.0}],
+                      original_doc_id=doc, shipping=FREIGHT)
+    await _finalize(client, auth, note)
+    assert round((await _b(session, auth, "1130-FRT"))["1130-FRT"] - before["1130-FRT"], 2) == -FREIGHT
+
+
+async def _freight_item(client, auth) -> str:
+    r = await client.post("/items", headers=auth["headers"], json={
+        "status": "available", "sku": "FRT", "name": "Freight", "quantity": 0, "sell_by": "piece",
+        "inventory_type": "freight", "landed_cost_kind": "freight"})
+    assert r.status_code == 200, r.text
+    return r.json()["id"]
+
+
+async def test_a_bill_whose_goods_all_went_back_reverts_as_before(client, session, auth):
+    """A bill (not from an order) of 10 units with a freight line, received into a lot of its own,
+    every unit sent back before anything else happened to them: the revert writes as it did."""
+    await _seed(session, auth)
+    bill = await _doc(client, auth, "bill", [
+        {"sku": "GOODS", "name": "Goods", "quantity": 10, "unit_price": 10.0},
+        {"entity_id": await _freight_item(client, auth), "sku": "FRT", "name": "Freight", "quantity": 1,
+         "unit_price": FREIGHT}])
+    await _finalize(client, auth, bill)
+    r = await _receive(client, auth, bill, {"po_line_index": 0, "sku": "GOODS", "name": "Goods",
+                                            "quantity_received": 10})
+    assert r.status_code == 200, r.text
+    [parcel] = (await _state(session, auth, bill))["received_item_ids"]
+    assert await _pools(session, auth, bill, parcel) == [FREIGHT]
+    r = await _return(client, auth, bill, parcel, 10)
+    assert r.status_code == 200, r.text
+    assert (await _post(client, auth, bill, "revert-to-draft")).status_code == 200
+    assert await _pools(session, auth, bill, parcel) == [0.0]
+    assert await _b(session, auth, "1130-FRT", "1130-P") == {"1130-FRT": 0.0, "1130-P": 0.0}
+    await assert_settled(client, session, auth)
