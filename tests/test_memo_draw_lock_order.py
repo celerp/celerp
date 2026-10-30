@@ -54,9 +54,12 @@ def _assert_company_first(r, seen: list[str]) -> None:
 
 
 def _assert_new_writer_order(r, seen: list[str]) -> None:
-    """Company first, then contact, invoices, memos, lots."""
+    """Company first, then contact, invoices, memos, lots, each where it is first locked: a
+    service the writer calls later in the same transaction locks rows it already holds again,
+    which the database grants at once."""
     _assert_company_first(r, seen)
-    ranks = [_RANK[name.split(":")[0]] for name in seen[1:] if name.split(":")[0] in _RANK]
+    first = dict.fromkeys(name.split(":")[0] for name in seen[1:])
+    ranks = [_RANK[name] for name in first if name in _RANK]
     assert ranks == sorted(ranks), seen
 
 
@@ -107,7 +110,9 @@ async def test_writers_take_company_lock_first(client, session, writer):
 async def test_writers_take_company_lock_first_new_writers(client, session, writer):
     h = await auth(session)
     cid = await contact(client, h, "Lock order store")
-    memo, lids, labels = await _memo(client, h, cid, tax=35.0)
+    # The rate correction needs a tax amount with no rate; a draw of all of it onto a draft
+    # with lines is refused for one, so the draw's memo has none.
+    memo, lids, labels = await _memo(client, h, cid, **({} if writer == "draw" else {"tax": 35.0}))
     labels.update({memo: "memo", cid: "contact"})
     if writer == "draw":
         d = await draft(client, h, contact_id=cid, lines=[service_line()])
