@@ -9,7 +9,7 @@ import uuid
 
 import pytest
 
-from test_reconciliation_history import admin, deposit, start
+from test_reconciliation_history import legacy_deposit, admin, deposit, start
 
 pytestmark = pytest.mark.asyncio
 
@@ -78,9 +78,9 @@ async def test_mislabelled_bank_is_corrected_from_the_notice_and_its_reconciliat
     from test_reconciliation_reopen import _ui_as
     tok, h = await admin(client)
     b = await bank(client, h, currency="THB", opening=0.0)
-    paid = await deposit(client, h, b, "2026-08-10", 300.0)
+    paid = await legacy_deposit(client, h, session, b, "2026-08-10", 300.0)
     done = await legacy_session(session, b, "2026-08-31", je_ids=[paid], balance=300.0)
-    je = await deposit(client, h, b, "2026-09-10", 200.0)
+    je = await legacy_deposit(client, h, session, b, "2026-09-10", 200.0)
     sid = (await start(client, h, b["id"], "2026-09-30", 200.0)).json()["id"]
     assert (await client.post(f"/accounting/reconciliation/{sid}/match", json={"je_ids": [je]}, headers=h)).status_code == 200
 

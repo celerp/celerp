@@ -61,6 +61,20 @@ async def deposit(client, h, b: dict, day, amount, memo="Deposit") -> str:
     return await post_je(client, h, day, [(b["chart_account_code"], amount, 0.0), ("4100", 0.0, amount)], memo)
 
 
+async def legacy_deposit(client, h, session, b: dict, day, amount) -> str:
+    """A books-currency-only posting on a foreign-currency account, as written before
+    bank lines carried the account's own amount (the manual journal now refuses it)."""
+    async def label(currency):
+        await session.execute(text("UPDATE bank_accounts SET currency = :c WHERE id = :b"),
+                              {"c": currency, "b": b["id"]})
+        await session.commit()
+    await label("USD")
+    try:
+        return await deposit(client, h, b, day, amount)
+    finally:
+        await label(b["currency"])
+
+
 async def match(client, h, sid, je_ids):
     return await client.post(f"/accounting/reconciliation/{sid}/match", json={"je_ids": je_ids}, headers=h)
 
@@ -600,7 +614,7 @@ async def test_foreign_currency_account_refuses_the_base_figure(client, session)
 async def test_entry_with_no_amount_in_the_account_currency_is_flagged_not_converted(client, session):
     _, h = await admin(client)
     b = await bank(client, h, currency="JPY", opening=0)
-    je = await deposit(client, h, b, "2026-09-10", 12.40)
+    je = await legacy_deposit(client, h, session, b, "2026-09-10", 12.40)
     sid = (await start(client, h, b["id"], "2026-09-30", 12)).json()["id"]
     assert (await match(client, h, sid, [je])).status_code == 200
     got = (await client.get(f"/accounting/reconciliation/{sid}", headers=h)).json()
@@ -677,5 +691,5 @@ async def test_a_zero_decimal_currency_steps_in_whole_units():
     from ui.routes.reconciliation import _create_form, _split_form
     line = {"id": "l1", "amount": -1850, "description": "Fee", "date": "2026-09-10"}
     for form in (_create_form, _split_form):
-        html = to_xml(form("s1", "l1", line, [], "JPY"))
+        html = to_xml(form("s1", "l1", line, [], {"currency": "JPY", "books_currency": "JPY"}))
         assert 'step="1"' in html and 'step="0.01"' not in html, form.__name__

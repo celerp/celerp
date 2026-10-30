@@ -1010,6 +1010,14 @@ def setup_routes(app):
                                 Td(Input(type="number", name="opening_balance", value="0",
                                          step="0.01", cls="cell-input cell-input--number")),
                             ),
+                            Tr(
+                                Td(t("acct.opening_rate", base=currency), cls="detail-label"),
+                                Td(
+                                    Input(type="number", name="rate", step="any", min="0",
+                                          cls="cell-input cell-input--number"),
+                                    P(t("acct.opening_rate_hint", base=currency), cls="form-hint"),
+                                ),
+                            ),
                             cls="detail-table",
                         ),
                         Div(
@@ -1049,6 +1057,11 @@ def setup_routes(app):
             opening_balance = float(opening_balance_raw)
         except ValueError:
             return P(t("acct.opening_balance_must_be_a_number"), cls="error-banner")
+        rate_raw = str(form.get("rate", "")).strip()
+        try:
+            rate = float(rate_raw) if rate_raw else None
+        except ValueError:
+            return P(t("acct.err_bank_rate_invalid", raw=rate_raw), cls="error-banner")
         try:
             await api.create_bank_account(token, {
                 "bank_name": bank_name,
@@ -1056,6 +1069,7 @@ def setup_routes(app):
                 "bank_type": bank_type,
                 "currency": currency,
                 "opening_balance": opening_balance,
+                "rate": rate,
             })
         except APIError as e:
             return P(str(e.detail), cls="error-banner")

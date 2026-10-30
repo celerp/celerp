@@ -2001,11 +2001,11 @@ async def create_recon_expense(token: str, session_id: str, line_id: str, data: 
         )).json()
 
 
-async def split_recon_line(token: str, session_id: str, line_id: str, splits: list[dict]) -> dict:
+async def split_recon_line(token: str, session_id: str, line_id: str, data: dict) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.post(
             f"/accounting/reconciliation/{session_id}/lines/{line_id}/split",
-            json={"splits": splits},
+            json=data,
         )).json()
 
 

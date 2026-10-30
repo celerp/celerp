@@ -10,7 +10,7 @@ import uuid
 import pytest
 from sqlalchemy import select, text
 
-from test_reconciliation_history import admin, bank, deposit, fx_deposit, legacy_session, match, start
+from test_reconciliation_history import legacy_deposit, admin, bank, deposit, fx_deposit, legacy_session, match, start
 from ui.i18n import t
 
 pytestmark = pytest.mark.asyncio
@@ -19,7 +19,7 @@ pytestmark = pytest.mark.asyncio
 async def test_an_entry_with_no_amount_in_the_account_currency_is_refused_naming_the_correction(client, session):
     _, h = await admin(client)
     b = await bank(client, h, currency="THB", opening=0.0)
-    je = await deposit(client, h, b, "2026-09-10", 200.0)
+    je = await legacy_deposit(client, h, session, b, "2026-09-10", 200.0)
     sid = (await start(client, h, b["id"], "2026-09-30", 200.0)).json()["id"]
     r = await match(client, h, sid, [je])
     assert r.status_code == 409 and r.json()["detail"] == t("acct.err_recon_book_entry_no_amount"), r.text
@@ -38,7 +38,7 @@ async def test_a_counted_entry_with_no_amount_is_let_go_of_with_undo_then_the_se
     tok, h = await admin(client)
     b = await bank(client, h, currency="EUR", opening=0.0)
     eur = await fx_deposit(client, h, b, 100, 1.08, 108)
-    base_only = await deposit(client, h, b, "2026-09-12", 50.0)
+    base_only = await legacy_deposit(client, h, session, b, "2026-09-12", 50.0)
     sid = await legacy_session(session, b, "2026-09-30", status="open", je_ids=[eur, base_only], balance=100.0)
 
     r = await client.post(f"/accounting/reconciliation/{sid}/complete", headers=h)

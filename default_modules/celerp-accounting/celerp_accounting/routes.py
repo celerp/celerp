@@ -2653,6 +2653,7 @@ async def _bank_dicts(
         # than the books', whose postings carry books-currency amounts only, reads none of
         # them, and setting it to the books' currency makes every one readable.
         d["relabel_to"] = base if b.currency != base and not foreign else None
+        d["books_currency"] = base
         out.append(d)
     return out
 

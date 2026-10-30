@@ -188,10 +188,37 @@ def _stmt_line_row(line: dict, session_id: str, currency: str, *, read_only: boo
     )
 
 
+# ── Exchange rate (bank kept in another currency than the books) ─────────────
+
+def _rate_field(bank: dict) -> FT | None:
+    """The rate an entry booked on *bank* converts at into the books' currency, asked
+    only when the account is kept in another currency than the books'."""
+    if bank["currency"] == bank["books_currency"]:
+        return None
+    return Div(
+        Label(t("recon.rate_label", currency=bank["currency"], base=bank["books_currency"]), cls="form-label"),
+        Input(type="number", name="rate", step="any", min="0", required=True, cls="form-input max-w-sm"),
+        cls="form-field",
+    )
+
+
+def _form_rate(form, data: dict) -> str | None:
+    """Put the form's rate into *data*; the refusal to show when it is not a number."""
+    raw = str(form.get("rate", "")).strip()
+    if not raw:
+        return None
+    try:
+        data["rate"] = float(raw)
+    except ValueError:
+        return t("acct.err_bank_rate_invalid", raw=raw)
+    return None
+
+
 # ── Create expense form (inline partial) ─────────────────────────────────────
 
-def _create_form(session_id: str, line_id: str, line: dict, chart: list[dict], currency: str,
+def _create_form(session_id: str, line_id: str, line: dict, chart: list[dict], bank: dict,
                  contacts: list[dict] | None = None) -> FT:
+    currency = bank["currency"]
     amount = abs(float(line.get("amount", 0)))
     contact_opts = party_options(contacts or [])
     account_options = [
@@ -227,6 +254,7 @@ def _create_form(session_id: str, line_id: str, line: dict, chart: list[dict], c
                       step=money_step(currency), cls="form-input"),
                 cls="form-field",
             ),
+            _rate_field(bank),
             Div(
                 Button(t("btn.create_match"), type="submit", cls="btn btn--primary btn--sm"),
                 Button(t("btn.cancel"), type="button",
@@ -244,8 +272,9 @@ def _create_form(session_id: str, line_id: str, line: dict, chart: list[dict], c
 
 # ── Split form (inline partial) ───────────────────────────────────────────────
 
-def _split_form(session_id: str, line_id: str, line: dict, chart: list[dict], currency: str,
+def _split_form(session_id: str, line_id: str, line: dict, chart: list[dict], bank: dict,
                 contacts: list[dict] | None = None) -> FT:
+    currency = bank["currency"]
     amount = abs(float(line.get("amount", 0)))
     contact_opts = party_options(contacts or [])
     account_options = [
@@ -274,6 +303,7 @@ def _split_form(session_id: str, line_id: str, line: dict, chart: list[dict], cu
                     )
                 ],
             ),
+            _rate_field(bank),
             Div(
                 Button(t("btn.split_match"), type="submit", cls="btn btn--primary btn--sm"),
                 Button(t("btn.cancel"), type="button",
@@ -394,11 +424,13 @@ def _workspace_view(
                 cls="btn btn--primary btn--sm",
             )]
             if balanced else
-            [Button(t("btn.write_off_diff"),
+            [Form(
+                _rate_field(bank),
+                Button(t("btn.write_off_diff"), type="submit", cls="btn btn--outline btn--sm"),
                 hx_post=f"/accounting/reconcile/{session_id}/write-off",
                 hx_target="#recon-workspace",
                 hx_swap="outerHTML",
-                cls="btn btn--outline btn--sm",
+                cls="flex-row gap-sm",
             )]
             if writable_off else []
         ),
@@ -937,7 +969,7 @@ def setup_routes(app):
         if not token:
             return P(t("error.session_expired"), cls="error-banner")
         try:
-            currency = (await api.get_reconciliation(token, session_id))["bank_account"]["currency"]
+            bank = (await api.get_reconciliation(token, session_id))["bank_account"]
             lines_data = await api.get_statement_lines(token, session_id)
             line = next((l for l in lines_data.get("items", []) if l["id"] == line_id), None)
             if not line:
@@ -947,7 +979,7 @@ def setup_routes(app):
             contacts = (await api.list_contacts(token, {"limit": PARTY_PRELOAD})).get("items") or []
         except APIError:
             return P(t("acct.error_loading_data"), cls="error-banner")
-        return _create_form(session_id, line_id, line, chart, currency, contacts)
+        return _create_form(session_id, line_id, line, chart, bank, contacts)
 
     @app.get("/accounting/reconcile/{session_id}/lines/{line_id}/split-form")
     async def split_form_partial(request: Request, session_id: str, line_id: str):
@@ -955,7 +987,7 @@ def setup_routes(app):
         if not token:
             return P(t("error.session_expired"), cls="error-banner")
         try:
-            currency = (await api.get_reconciliation(token, session_id))["bank_account"]["currency"]
+            bank = (await api.get_reconciliation(token, session_id))["bank_account"]
             lines_data = await api.get_statement_lines(token, session_id)
             line = next((l for l in lines_data.get("items", []) if l["id"] == line_id), None)
             if not line:
@@ -965,7 +997,7 @@ def setup_routes(app):
             contacts = (await api.list_contacts(token, {"limit": PARTY_PRELOAD})).get("items") or []
         except APIError:
             return P(t("acct.error_loading_data"), cls="error-banner")
-        return _split_form(session_id, line_id, line, chart, currency, contacts)
+        return _split_form(session_id, line_id, line, chart, bank, contacts)
 
     @app.post("/accounting/reconcile/{session_id}/lines/{line_id}/match-confirm")
     async def match_confirm(request: Request, session_id: str, line_id: str):
@@ -1007,6 +1039,8 @@ def setup_routes(app):
                 data["amount"] = float(amount_raw)
             except ValueError:
                 pass
+        if refused := _form_rate(form, data):
+            return await _fresh_workspace(token, session_id, notice=refused)
         try:
             await api.create_recon_expense(token, session_id, line_id, data)
         except APIError as e:
@@ -1041,8 +1075,11 @@ def setup_routes(app):
         if not splits:
             return await _fresh_workspace(token, session_id,
                                           notice=t("acct.at_least_one_split_entry_required"))
+        extra: dict = {}
+        if refused := _form_rate(form, extra):
+            return await _fresh_workspace(token, session_id, notice=refused)
         try:
-            await api.split_recon_line(token, session_id, line_id, splits)
+            await api.split_recon_line(token, session_id, line_id, {"splits": splits, **extra})
         except APIError as e:
             if e.status == 401:
                 return Response("", status_code=401, headers={"HX-Redirect": "/login"})
@@ -1164,8 +1201,11 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return P(t("error.session_expired"), cls="error-banner")
+        data: dict = {}
+        if refused := _form_rate(await request.form(), data):
+            return await _fresh_workspace(token, session_id, notice=refused)
         try:
-            await api.write_off_recon(token, session_id, {})
+            await api.write_off_recon(token, session_id, data)
         except APIError as e:
             if e.status == 401:
                 return Response("", status_code=401, headers={"HX-Redirect": "/login"})
