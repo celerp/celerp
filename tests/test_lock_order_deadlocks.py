@@ -156,6 +156,42 @@ async def test_an_attention_list_change_and_a_company_reset_wait_for_each_other(
         await _both_finish(first, second)
 
 
+async def test_a_payment_recorded_on_an_invoice_and_a_company_reset_wait_for_each_other(committed_engine):
+    """A payment from the unmatched list recorded on one of the company's invoices (the
+    company, then the unmatched payment) against a reset of the company (company FOR UPDATE,
+    then the payments recorded on its invoices, then its rows): the reset waits for the
+    payment and puts it back on the list once the payment commits."""
+    from celerp.models.payment_closure import UnmatchedPayment
+    from celerp.services import payments
+    from celerp.services.company_lock import lock_company_for_deletion
+
+    factory = _factory(committed_engine)
+    company_id, _user_id, _entity_id = await _seed_member_with_item(factory)
+    reference = f"pi_{uuid.uuid4().hex}"
+    async with factory() as s:
+        s.add(UnmatchedPayment(reference=reference, amount_minor=1000, currency="USD",
+                               former_company=str(uuid.uuid4()), document="doc:gone",
+                               recorded_company=str(company_id), recorded_document="doc:1"))
+        await s.commit()
+
+    async with factory() as person, factory() as resetter:
+        assert await payments._lock_recorded(person, reference, (company_id, "doc:1")) is not None
+
+        async def reset():
+            await lock_company_for_deletion(resetter, company_id)
+            await payments.unrecord_company(resetter, company_id)
+            await resetter.commit()
+
+        second = asyncio.create_task(reset())
+        await _until_blocked_or_done(committed_engine, second)
+        assert not second.done(), "the reset did not wait for the payment's company lock"
+        await person.commit()
+        await asyncio.wait_for(second, timeout=5)
+    async with factory() as s:
+        kept = await s.get(UnmatchedPayment, reference)
+        assert (kept.recorded_company, kept.recorded_document) == (None, None)
+
+
 async def test_two_company_creates_by_one_owner_with_the_same_name_wait_for_each_other(committed_engine):
     """A company create (company row, then the owner's membership, whose foreign key shares
     the login) against a start for the same login (the login, then a company with the

@@ -4,3 +4,4 @@
 # (with an xfail(strict=True) pair test naming that group) and a named whole-company
 # maintenance protocol (with a test showing a live sale waits on its gate). The list only
 # shrinks: `python tests/lock_rank.py check <dir>` lists any entry the run no longer hits.
+order key:companies -> row:unmatched_payments celerp/services/payments.py unrecord_company # maintenance: company_reset.reset puts back the payments recorded on the company's invoices under lock_company_for_deletion; every writer that holds such a payment took the company's lock first (payments._lock_company_of), and one that meets it under another company's lock raises _Moved without waiting (tests/test_lock_order_deadlocks.py test_a_payment_recorded_on_an_invoice_and_a_company_reset_wait_for_each_other)

@@ -45,19 +45,21 @@ async def _seed(engine, tmp_path, cid, user_id, marker: str) -> None:
     from celerp.models.ai import AIConversation, AIMessage
     from celerp.models.company import WorkCenter
     from celerp.models.notification import Notification
-    async with maker(engine)() as s:  # each row in lock-rank order, as the writers that make them do
+    from celerp.services.company_lock import lock_company
+    async with maker(engine)() as s:  # under the company's lock, each row in the order its writer makes it
+        await lock_company(s, cid)
         loc = await s.scalar(text("SELECT id FROM locations WHERE company_id = :c LIMIT 1"), {"c": cid})
         s.add(Account(company_id=cid, code="1111", name=f"{marker} cash", account_type="asset"))
         await s.flush()
-        await s.execute(text(
-            "INSERT INTO projections (company_id, entity_id, entity_type, state, version, location_id, updated_at) "
-            "VALUES (:c, 'doc:1', 'doc', CAST(:d AS json), 1, :l, now())"),
-            {"c": cid, "d": json.dumps({"doc_type": "invoice", "ref": marker}), "l": loc})
         await s.execute(text(
             "INSERT INTO ledger (company_id, entity_id, entity_type, event_type, data, actor_id, location_id, "
             "source, idempotency_key) VALUES (:c, 'doc:1', 'doc', 'doc.created', CAST(:d AS json), :u, :l, 'api', :k)"),
             {"c": cid, "d": json.dumps({"doc_type": "invoice", "ref": marker}), "u": user_id, "l": loc,
              "k": f"doc-{marker}"})
+        await s.execute(text(
+            "INSERT INTO projections (company_id, entity_id, entity_type, state, version, location_id, updated_at) "
+            "VALUES (:c, 'doc:1', 'doc', CAST(:d AS json), 1, :l, now())"),
+            {"c": cid, "d": json.dumps({"doc_type": "invoice", "ref": marker}), "l": loc})
         conv = AIConversation(company_id=cid, user_id=user_id, title=marker)
         s.add(conv)
         await s.flush()

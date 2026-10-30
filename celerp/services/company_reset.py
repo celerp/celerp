@@ -321,9 +321,11 @@ async def reset(session: AsyncSession, company: Company, typed_name: str) -> Res
     except payments.PaymentsNotClosed as exc:
         raise ResetRefused(*PAYMENTS_NOT_CLOSED[exc.reason]) from None
     try:
+        # Payments recorded on the company's invoices first: every writer of a payment takes
+        # the company, then the unmatched payment, then the company's documents.
+        await payments.unrecord_company(session, company.id)
         for statement in _company_deletes(keys):
             await session.execute(text(statement), {"c": cid})
-        await payments.unrecord_company(session, company.id)
         # A login left with no company is signed out everywhere, so it no longer holds
         # the single direct sign-in place.
         left = [u for u in members if await first_usable_company_link(session, u) is None]
