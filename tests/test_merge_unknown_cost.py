@@ -351,3 +351,58 @@ async def test_a_transform_keeping_an_unknown_cost_keeps_it_unknown(client, sess
     assert r.status_code == 200, r.text
     st = await _state(session, auth, r.json()["child_id"])
     assert st[MARK] is True and st["cost_total"] == 100.0, st
+
+
+async def _made_from(client, session, auth, component: str) -> dict:
+    """The lot a one-tap build of a product made from one unit of ``component`` produces."""
+    from test_mfg_creation_contract import _build, _recipe
+    made = await _item(client, auth, qty=0)
+    assert (await _recipe(client, auth, made, [(component, 1)])).status_code == 200
+    r = await _build(client, auth, made, 1, uuid.uuid4().hex, complete_it=True)
+    assert r.status_code == 200, r.text
+    run = await _state(session, auth, r.json()["id"])
+    return await _state(session, auth, run["receipts"][0]["lot_item_id"])
+
+
+async def test_goods_made_from_an_unknown_cost_are_of_unknown_cost(client, session, auth):
+    await _seed(session, auth)
+    a = await _item(client, auth, qty=2, cost_total=100.0)
+    b = await _item(client, auth, qty=3)
+    lot = await _made_from(client, session, auth, await _merge(client, auth, [a, b]))
+    assert lot[MARK] is True and lot["cost_total"] == 20.0, lot
+
+
+async def test_goods_made_from_a_known_cost_are_of_known_cost(client, session, auth):
+    await _seed(session, auth)
+    lot = await _made_from(client, session, auth, await _item(client, auth, qty=5, cost_total=100.0))
+    assert MARK not in lot and lot["cost_total"] == 20.0, lot
+
+
+async def test_a_recipe_with_an_unknown_component_has_no_cost(client, session, auth):
+    from test_mfg_creation_contract import _recipe
+    await _seed(session, auth)
+    a = await _item(client, auth, qty=2, cost_total=100.0)
+    b = await _item(client, auth, qty=3)
+    known = await _item(client, auth, qty=5, cost_total=100.0)
+    made = await _item(client, auth, qty=0)
+    assert (await _recipe(client, auth, made, [(await _merge(client, auth, [a, b]), 1), (known, 1)])).status_code == 200
+    recipe = (await _state(session, auth, made))["recipe"]
+    assert recipe["unit_cost"] is None and recipe["materials_cost"] is None, recipe
+    assert [c["unit_cost"] for c in recipe["components"]] == [None, 20.0]
+
+
+@pytest.mark.parametrize("known", [True, False])
+async def test_a_copy_keeps_a_known_cost_and_never_an_unknown_one(client, session, auth, known):
+    from ui.routes.inventory import _duplicate_payload
+    await _seed(session, auth)
+    a = await _item(client, auth, qty=2, cost_total=100.0)
+    source = a if known else await _merge(client, auth, [a, await _item(client, auth, qty=3)])
+    payload = _duplicate_payload(await _read(client, auth, source), f"CP-{uuid.uuid4().hex[:6]}", can_set_prices=True)
+    assert not {"cost_total", "cost_price", MARK} & set(payload.get("attributes") or {}), payload
+    r = await client.post("/items", headers=auth["headers"], json=payload)
+    assert r.status_code == 200, r.text
+    copy = await _state(session, auth, r.json()["id"])
+    if known:
+        assert copy["cost_total"] == 100.0 and MARK not in copy, copy
+    else:
+        assert not {"cost_total", "cost_price", "cost_base", MARK} & set(copy), copy

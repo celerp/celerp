@@ -50,6 +50,7 @@ from celerp.services.line_measures import FULL, proposed_sell_qty, splitting_all
 from celerp_inventory.services import (
     apply_source_semantics,
     build_item_import_spec,
+    goods_cost_known,
     is_item_field_key,
     importable_price_lists,
     item_price_mutex_groups,
@@ -1257,19 +1258,25 @@ def _duplicate_payload(source: dict, new_sku: str, *, can_set_prices: bool) -> d
     path), barcode and the fields only the app sets (SYSTEM_ITEM_KEYS: a copy starts
     with no files, lineage, documents or inventory account of its own). Barcode is globally unique, so a copy never inherits the
     source's: auto_barcode tells the create path to mint a fresh unique one from the
-    shared sequence (the same reset a split child gets). Core columns and any *_price
-    stay top-level; everything else goes into attributes. Without set_inventory_prices
-    the copy leaves the sell prices out (the create path refuses them); the cost is kept,
-    because the copy is a draft its creator may still cost. Shared by the single-item
-    and bulk duplicate paths."""
+    shared sequence (the same reset a split child gets). Core columns, the cost and any
+    *_price stay top-level; everything else goes into attributes. Without
+    set_inventory_prices the copy leaves the sell prices out (the create path refuses
+    them); the cost is kept, because the copy is a draft its creator may still cost. A
+    source whose goods cost is not known gives a copy without cost: unknown is never
+    copied as a number. Shared by the single-item and bulk duplicate paths."""
     _SKIP = {"id", "status", "location_name", "created_at", "updated_at", "barcode",
              "idempotency_key", "external_links", "_channel_state"} | SYSTEM_ITEM_KEYS
     _CORE = {"sku", "name", "quantity", "category", "location_id",
              "description", "unit", "sell_by", "tax_codes", "allow_splitting", "default_sell_qty"}
     payload: dict = {"sku": new_sku, "auto_barcode": True}
     attrs: dict = {}
+    known = goods_cost_known(source)
     for k, v in source.items():
         if k in _SKIP or k == "sku" or v is None:
+            continue
+        if k in COST_ITEM_KEYS:
+            if known:
+                payload[k] = v
             continue
         if not can_set_prices and is_price_item_key(k) and k not in COST_ITEM_KEYS:
             continue

@@ -5182,6 +5182,7 @@ async def record_receipt(session: AsyncSession, company_id, row: Projection, pay
     from celerp_inventory.services import (
         allocate_internal_codes,
         goods_basis,
+        goods_cost_known,
         resolve_catalog_anchor_for_item,
         topped_up_cost,
     )
@@ -5332,6 +5333,9 @@ async def record_receipt(session: AsyncSession, company_id, row: Projection, pay
                 "allow_splitting", "default_sell_qty", "pick_method", "gtin",
             )
             item_data: dict = {k: sku_ref[k] for k in _INHERIT if k in sku_ref and sku_ref[k] is not None}
+            if not goods_cost_known(sku_ref):
+                # An unknown goods cost is never copied as a number.
+                item_data.pop("cost_price", None)
             if catalog_item_id:
                 item_data["catalog_item_id"] = catalog_item_id
             # Copy dynamic category-specific attributes (measurements, shape/cut, etc.)
@@ -5992,7 +5996,7 @@ async def record_historical_delivery(session: AsyncSession, company_id, entity_i
     used for these deliveries. Each lot is stock of the product its line's item records
     (``historical_lots``)."""
     from celerp_docs.historical_lots import link_historical_lots
-    from celerp_inventory.services import allocate_internal_codes, lot_fields
+    from celerp_inventory.services import allocate_internal_codes, goods_cost_known, lot_fields
 
     row, replay = await _historical_doc(session, company_id, entity_id, doc_type="invoice",
                                         event_types=("doc.fulfilled", "doc.partially_fulfilled"),
@@ -6015,7 +6019,9 @@ async def record_historical_delivery(session: AsyncSession, company_id, entity_i
             session, company_id=company_id, entity_id=lot_id, entity_type="item", event_type="item.created",
             data={**lot_fields(item.state), "sku": item.state.get("sku", ""), "name": item.state.get("name", ""),
                   "quantity": quantity, "status": "available", "barcode": barcode,
-                  "allow_splitting": splitting_allowed(item.state), "cost_total": float(moved["cost"])},
+                  "allow_splitting": splitting_allowed(item.state), "cost_total": float(moved["cost"]),
+                  # Goods leave as costed as they were held: unknown when the lot's was.
+                  **({GOODS_COST_UNKNOWN: True} if not goods_cost_known(item.state) else {})},
             actor_id=actor_id, location_id=None, source=source,
             idempotency_key=f"{idempotency_key}:lot:{lot_id}", metadata_={"parent_id": moved["item_id"]},
         )
