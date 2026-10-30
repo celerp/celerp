@@ -171,16 +171,11 @@
  },
  {
   "route": "ui POST /accounting/reconcile/start",
-  "class": "never requested",
-  "reason": "No test requests this route; its source reaches api POST."
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
  },
  {
   "route": "ui POST /accounting/reconcile/{session_id}/auto-match",
-  "class": "never requested",
-  "reason": "No test requests this route; its source reaches api POST."
- },
- {
-  "route": "ui POST /accounting/reconcile/{session_id}/bulk-confirm",
   "class": "never requested",
   "reason": "No test requests this route; its source reaches api POST."
  },
