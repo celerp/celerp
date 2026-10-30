@@ -837,15 +837,17 @@ async def recorded_unmatched(session, company_id, entity_id: str) -> set[str]:
         UnmatchedPayment.recorded_document == entity_id))).all())
 
 
-async def lock_recorded_unmatched(session, company_id, entity_id: str) -> None:
-    """Lock the company, then the payments a person recorded on this document from the
-    unmatched payments, before a caller locks the document to delete one of its
-    payments (``return_unmatched``): the order every writer of a payment takes
-    (_lock_company_of)."""
+async def lock_recorded_unmatched(session, company_id, entity_id: str | None = None) -> None:
+    """Lock the company, then the payments a person recorded from the unmatched payments
+    on its documents (on the document *entity_id* when given), before a caller locks
+    the documents to delete one of their payments (``return_unmatched``) or the company
+    (``unrecord_company``): the order every writer of a payment takes (_lock_company_of)."""
     await _lock_company_of(session, company_id)
-    await session.execute(select(UnmatchedPayment.reference).where(
-        UnmatchedPayment.recorded_company == str(company_id), UnmatchedPayment.recorded_document == entity_id)
-        .order_by(UnmatchedPayment.reference).with_for_update())
+    recorded = UnmatchedPayment.recorded_company == str(company_id)
+    if entity_id is not None:
+        recorded &= UnmatchedPayment.recorded_document == entity_id
+    await session.execute(select(UnmatchedPayment.reference).where(recorded)
+                          .order_by(UnmatchedPayment.reference).with_for_update())
 
 
 async def return_unmatched(session, company_id, entity_id: str, reference: str | None) -> None:

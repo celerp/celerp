@@ -68,7 +68,7 @@ from celerp.modules import requirements
 from celerp.modules.boundary import take_company_locks
 from celerp.modules.loader import module_label
 from celerp.modules.registry import commit_with_load_set, company_modules, hold_module_state, set_enabled
-from celerp.services import attachments, bootstrap, company_lifecycle
+from celerp.services import attachments, bootstrap, company_lifecycle, payments
 from celerp.services.auth import HAS_COMPANY, hold_companyless_login, password_attempts
 from celerp.services.company_settings import SET_BY_KEYS
 from celerp.services import company_backup_files as files
@@ -2030,6 +2030,7 @@ async def _check_replacing(session: AsyncSession, replacing: _Replacing, user_id
         raise BackupError(403, t(REPLACE_OWNER_ONLY, company=company.name), "not_owner")
     act_for(session, company.id, user_id, role, LIFECYCLE)
     await lock_company(session, company.id)
+    await payments.lock_recorded_unmatched(session, company.id)  # put back by the replace, before its rows
     if replacing.typed_name != company.name:
         raise BackupError(422, t(REPLACE_NAME, company=company.name), "name_mismatch")
     canonical = lambda value: json.dumps(value, sort_keys=True)  # noqa: E731
