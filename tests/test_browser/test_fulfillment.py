@@ -28,9 +28,10 @@ from .conftest import css_class
 pytestmark = pytest.mark.browser
 
 
-def _create_item(api, sku, qty=10):
+def _create_item(api, sku, qty=10, **fields):
     """Create an inventory item via API; return its entity_id."""
-    r = api.post("/items", json={"status": "available", "sku": sku, "name": sku, "quantity": qty, "sell_by": "piece"})
+    r = api.post("/items", json={"status": "available", "sku": sku, "name": sku, "quantity": qty, "sell_by": "piece",
+                                 **fields})
     assert r.status_code in {200, 201}, f"create item failed: {r.text}"
     return r.json()["id"]
 
@@ -440,10 +441,11 @@ def test_set_as_available_mixed_selection_routes_both(page, ui_server, api):
     )
 
 
-def _shipped_memo(api, sku, qty):
-    item = _create_item(api, sku, qty=qty)
+def _shipped_memo(api, sku, qty, contact_id=None):
+    # A customer's price list prices the line from the item, so the item carries the line's price.
+    item = _create_item(api, sku, qty=qty, retail_price=10.0)
     r = api.post("/docs", json={
-        "doc_type": "memo", "ref_id": f"MR-{uuid.uuid4().hex[:6]}",
+        "doc_type": "memo", "ref_id": f"MR-{uuid.uuid4().hex[:6]}", "contact_id": contact_id,
         "line_items": [{"sku": sku, "name": sku, "quantity": qty, "unit_price": 10.0,
                         "line_total": 10.0 * qty, "item_id": item, "sell_by": "piece"}],
         "total": 10.0 * qty,
@@ -619,6 +621,44 @@ def test_invoice_selected_on_a_memo_previews_then_invoices_the_units_typed(page,
     invoice = api.get(f"/docs/{invoice_id}").json()
     assert invoice["doc_type"] == "invoice" and float(invoice["total"]) == 10.0
     assert float(api.get(f"/docs/{doc_id}").json()["line_items"][0]["out_quantity"]) == 3
+
+
+@pytest.mark.parametrize(("read_for", "sent_to"), [("new", "a"), ("a", "b"), ("a", "new")])
+def test_choosing_another_invoice_after_a_preview_invoices_onto_it(page, ui_server, api, read_for, sent_to):
+    """Invoice selected re-previews for each invoice chosen, and the button adds the units to
+    the invoice chosen last, whatever the earlier preview read."""
+    r = api.post("/crm/contacts", json={"name": f"Memo Customer {uuid.uuid4().hex[:6]}", "contact_type": "customer"})
+    assert r.status_code in {200, 201}, r.text
+    contact = r.json()["id"]
+    doc_id, _item = _shipped_memo(api, f"MDT-{uuid.uuid4().hex[:6]}", 4, contact_id=contact)
+    currency = api.get(f"/docs/{doc_id}").json().get("currency")
+    drafts, totals = {"new": ""}, {"new": "$10.00"}
+    for name, price in (("a", 5.0), ("b", 7.0)):
+        r = api.post("/docs", json={
+            "doc_type": "invoice", "ref_id": f"PF-{uuid.uuid4().hex[:6]}", "contact_id": contact, "currency": currency,
+            "line_items": [{"name": "Service", "quantity": 1, "unit_price": price, "line_total": price}]})
+        assert r.status_code in {200, 201}, r.text
+        drafts[name], totals[name] = r.json()["id"], f"${10 + price:.2f}"
+    doc = api.get(f"/docs/{drafts['b']}").json()
+    assert api.patch(f"/docs/{drafts['b']}", json={"fields_changed": {"notes": {"new": "changed"}},
+                                                   "expected_version": doc["version"]}).status_code == 200
+
+    page.goto(f"{ui_server}/docs/{doc_id}", wait_until="domcontentloaded")
+    _assert_no_crash(page, "memo invoice target")
+    page.locator(".li-select").first.check()
+    page.locator("#li-bulk-select").select_option(value="li-invoice")
+    preview = page.locator("#draw-preview")
+    page.locator("#draw-panel input[name=qty_0]").fill("1")
+    expect(preview).to_contain_text(f"Invoice total after this: {totals['new']}")
+    for name in (read_for, sent_to):
+        page.locator("#draw-panel .combobox-input").click()
+        page.locator(f'#draw-panel .combobox-option[data-value="{drafts[name]}"]').click()
+        expect(preview).to_contain_text(f"Invoice total after this: {totals[name]}")
+    page.locator("#draw-panel button[type=submit]").click()
+    page.wait_for_url(lambda url: f"/docs/{doc_id}" not in url and "/docs/" in url)
+    invoice_id = page.url.rsplit("/docs/", 1)[1].split("?")[0]
+    assert invoice_id == drafts[sent_to] if sent_to != "new" else invoice_id not in drafts.values()
+    assert float(api.get(f"/docs/{invoice_id}").json()["total"]) == float(totals[sent_to].strip("$"))
 
 
 def test_setting_a_memo_tax_rate_previews_each_rate_typed_then_saves(page, ui_server, api):
