@@ -187,3 +187,17 @@ async def test_back_to_memo_races_finalize_one_winner(committed_engine, back_fir
         assert [_status(a), _status(b)].count(200) == 1
         where = await owner(client, h, lots[0][0])
         assert where == (("memo_out", memo) if back_first else ("sold", inv))
+
+
+async def test_close_races_draw_one_winner(committed_engine):
+    c = await _setup(committed_engine)
+    h = c["h"]["owner"]
+    async with _app_client(_factory(committed_engine)) as (client, pending):
+        memo, lids, lots = await memo_out(client, h, [(1, 10.0)])
+        one, two = await _racing(committed_engine, pending,
+                                 lambda: draw(client, h, memo, line_ids=lids),
+                                 lambda: client.post(f"/docs/{memo}/close", headers=h, json={}))
+        assert sorted((_status(one), _status(two))) == [200, 409]
+        m = await state(client, h, memo)
+        on_invoice = [i for i in lots[0] if (await owner(client, h, i))[1] != memo]
+        assert (m["status"] == "closed") != bool(on_invoice)
