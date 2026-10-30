@@ -1627,6 +1627,34 @@ def _take_label(number: str, status: str | None) -> str:
     return f"Sold {number}" if status else number
 
 
+async def _sales_taken_back(session: AsyncSession, company_id, takes: list[dict]) -> dict[str, set[str]]:
+    """The drawn lots each invoice of *takes* took back to stock after selling them, by invoice
+    id: a lot whose latest reversal on that invoice follows its latest sale."""
+    from celerp.models.ledger import LedgerEntry
+
+    lots = {lot for t in takes for ln in t["lines"] for lot in ln.get("lot_ids") or []}
+    if not lots:
+        return {}
+    rows = (await session.execute(
+        select(LedgerEntry.id, LedgerEntry.entity_id, LedgerEntry.event_type, LedgerEntry.data)
+        .where(LedgerEntry.company_id == company_id, LedgerEntry.entity_id.in_(lots),
+               LedgerEntry.event_type.in_(("item.fulfillment_reversed", "item.status.set")))
+        .order_by(LedgerEntry.id))).all()
+    sold: dict[str, int] = {}
+    reversed_on: dict[tuple[str, str], int] = {}
+    for ledger_id, lot, event_type, data in rows:
+        data = data or {}
+        if event_type == "item.status.set" and data.get("new_status") == "sold":
+            sold[lot] = ledger_id
+        elif event_type == "item.fulfillment_reversed" and data.get("source_doc_id"):
+            reversed_on[(data["source_doc_id"], lot)] = ledger_id
+    back: dict[str, set[str]] = {}
+    for (invoice_id, lot), ledger_id in reversed_on.items():
+        if ledger_id > sold.get(lot, 0):
+            back.setdefault(invoice_id, set()).add(lot)
+    return back
+
+
 async def _attach_memo_takes(session: AsyncSession, company_id, doc: dict, state: dict) -> None:
     """Add to a memo response what its draws left: ``memo_fixed_amounts``, and on each memo line
     the invoices holding its drawn units (``invoiced_on``: id, current number and status,
@@ -1640,6 +1668,7 @@ async def _attach_memo_takes(session: AsyncSession, company_id, doc: dict, state
     lines = list(doc.get("line_items") or [])
     out = {li.get("line_id"): float(li.get("out_quantity") or 0) for li in lines if isinstance(li, dict)}
     fixed = memo_fixed_amounts(state, out)
+    taken_back = await _sales_taken_back(session, company_id, takes)
     by_id = {t["invoice_id"]: t for t in takes}
     doc["memo_fixed_amounts"] = {**fixed, "takes": [{**t, "doc_number": number(by_id[t["invoice_id"]])}
                                                     for t in fixed["takes"]]}
@@ -1647,12 +1676,13 @@ async def _attach_memo_takes(session: AsyncSession, company_id, doc: dict, state
         if not isinstance(line, dict):
             continue
         held = [{"invoice_id": t["invoice_id"], "doc_number": number(t),
-                 "status": current.get(t["invoice_id"], (None, None))[1], "quantity": ln["quantity"]}
+                 "status": current.get(t["invoice_id"], (None, None))[1], "quantity": ln["quantity"],
+                 "taken_back": bool(ln.get("lot_ids")) and set(ln["lot_ids"]) <= taken_back.get(t["invoice_id"], set())}
                 for t in takes for ln in t["lines"] if ln["memo_line_id"] == line.get("line_id")]
         if not held:
             continue
         labels = (["On Memo"] if out.get(line.get("line_id")) else []) + [
-            _take_label(h["doc_number"], h["status"]) for h in held]
+            "Returned" if h.pop("taken_back") else _take_label(h["doc_number"], h["status"]) for h in held]
         lines[i] = {**line, "invoiced_on": held, "shipped_label": ", ".join(labels)}
     doc["line_items"] = lines
 
