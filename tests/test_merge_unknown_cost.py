@@ -476,6 +476,46 @@ async def test_a_cost_list_leaves_an_unknown_cost_unpriced(client, session, auth
     assert {"item_id": x, "reason": "unpriced"} in result["skipped"] and line["unit_price"] == 7.0, result
 
 
+async def _entries(session, auth) -> int:
+    session.expire_all()
+    return (await session.execute(select(func.count()).select_from(LedgerEntry).where(
+        LedgerEntry.company_id == auth["company_id"]))).scalar_one()
+
+
+@pytest.mark.parametrize("doc_type", ["bill", "purchase_order", "consignment_in"])
+async def test_a_supplier_line_left_unpriced_is_refused_until_priced(client, session, auth, doc_type):
+    await _seed(session, auth)
+    x = await _merge(client, auth, [await _item(client, auth, qty=2, cost_total=100.0),
+                                    await _item(client, auth, qty=3)])
+    if doc_type == "consignment_in":
+        from test_consignor_payable_per_consignor import _consignor
+        r = await client.post("/docs", headers=auth["headers"], json={
+            "doc_type": doc_type, "contact_id": await _consignor(client, auth, "Consignor"), "line_items": []})
+        assert r.status_code == 200, r.text
+        doc = r.json()["id"]
+    else:
+        doc = await _doc(client, auth, doc_type)
+    line = await _scanned(client, auth, doc_type, x, "Cost", doc)
+    assert "unit_price" not in line
+    before = await _entries(session, auth)
+    r = await client.post(f"/docs/{doc}/finalize", headers=auth["headers"], json={})
+    assert r.status_code == 422 and r.json()["detail"]["message_key"] == "docs.unpriced_line", r.text
+    assert r.json()["detail"]["params"]["goods"] == line["sku"] and await _entries(session, auth) == before
+    priced = {**line, "unit_price": 7.0, "line_total": 7.0}
+    r = await client.patch(f"/docs/{doc}", headers=auth["headers"], json={
+        "fields_changed": {"line_items": {"new": [priced]}},
+        "expected_version": (await client.get(f"/docs/{doc}", headers=auth["headers"])).json()["version"]})
+    assert r.status_code == 200, r.text
+    r = await client.post(f"/docs/{doc}/finalize", headers=auth["headers"], json={})
+    assert r.status_code == 200, r.text
+    if doc_type == "consignment_in":
+        r = await _receive(client, auth, doc, {"po_line_index": 0, "item_id": x, "name": "Beads",
+                                               "quantity_received": 1, "receive_as": "stock"})
+        assert r.status_code == 200, r.text
+        r = await client.post(f"/docs/{doc}/convert", headers=auth["headers"], json={})
+        assert r.status_code == 200, r.text
+
+
 async def test_a_sales_list_still_prices_an_unpriced_item_at_zero(client, session, auth):
     await _seed(session, auth)
     _result, line = await _repriced(client, auth, "invoice", await _item(client, auth, qty=2), "Retail")

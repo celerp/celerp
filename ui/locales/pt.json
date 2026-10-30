@@ -6125,6 +6125,7 @@
   "docs.void_under_credit_note": "Esta fatura não pode ser anulada: as notas de crédito {numbers} foram emitidas sobre ela. Anule primeiro essas notas de crédito e tente novamente.",
   "docs.revert_under_credit_note": "Esta fatura não pode voltar a rascunho: as notas de crédito {numbers} foram emitidas sobre ela. Anule primeiro essas notas de crédito e tente novamente.",
   "docs.unpriced_receipt": "{goods}: nenhuma linha de {document} lhe dá preço, por isso não é possível custear as mercadorias recebidas. Adicione primeiro uma linha para ele em {document} e depois receba-o.",
+  "docs.unpriced_line": "{goods}: this line has no price. Enter its price, then try again.",
   "posting.role_missing": "Escolha primeiro uma conta para {role} nas configurações contabilísticas e tente novamente.",
   "doc_import.treatment_required": "O documento {number} não foi importado porque não indica como entra nos livros. Importe-o novamente e escolha \"Já está nos meus saldos de abertura\" ou \"Registrar agora\" na tela de revisão, ou defina antes uma data de saldos de abertura em Detalhes da empresa para que a escolha seja feita pela data do documento.",
   "doc_import.treatment_unknown": "O documento {number} indica um tratamento de importação ({given}) que o aplicativo não conhece. Use Já está nos meus saldos de abertura ou Registrar agora, ou deixe em branco, e importe-o novamente.",

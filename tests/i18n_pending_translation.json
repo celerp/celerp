@@ -692,6 +692,12 @@
         "paid",
         "where"
       ]
+    },
+    "docs.unpriced_line": {
+      "en": "{goods}: this line has no price. Enter its price, then try again.",
+      "params": [
+        "goods"
+      ]
     }
   }
 }

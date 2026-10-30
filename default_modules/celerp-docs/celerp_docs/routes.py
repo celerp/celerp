@@ -2510,6 +2510,8 @@ async def finalize_document(
     if not (row.state.get("line_items") or []):
         raise HTTPException(status_code=422, detail="Add at least one line item before finalizing this document.")
     refuse_unset_line_tax(row.state["line_items"])
+    if row.state.get("doc_type") in _BILL_POSTED or row.state.get("doc_type") == "consignment_in":
+        refuse_unpriced_lines(row.state)
     auto_je.refuse_unissuable_taxes((_company.settings or {}) if _company else {}, row.state.get("doc_type"), row.state)
     if row.state.get("doc_type") in _BILL_POSTED:
         await require_line_destinations(session, company_id, row.state["line_items"])
@@ -4979,6 +4981,20 @@ def _unpriced_receipt(goods: str, doc: dict) -> HTTPException:
         f"{goods}: no line of {number} prices it, so the received goods cannot be costed. "
         f"Add a line for it to {number} first, then receive it.",
         goods=goods, document=number))
+
+
+def refuse_unpriced_lines(doc: dict) -> None:
+    """Refuse to finalize or buy a supplier document holding a line without a price: a scan or
+    an add from inventory at a cost list leaves the line of an item whose goods cost is unknown
+    unpriced, and the bill's entry needs an amount for every line (auto_je.bill_line_charges).
+    A consignment is checked at finalize, while its lines can still be priced."""
+    currency = doc.get("currency") or "USD"
+    for li in doc.get("line_items") or []:
+        if document_line_amount(li, currency) is None:
+            goods = str(li.get("sku") or li.get("name") or li.get("description") or li.get("item_id") or "")
+            raise HTTPException(status_code=422, detail=refusal(
+                "docs.unpriced_line", f"{goods}: this line has no price. Enter its price, then try again.",
+                goods=goods))
 
 
 async def _received_goods_cost(session: AsyncSession, company_id, doc: dict, it: ReceivedItem, stock_qty: float,
@@ -7811,6 +7827,7 @@ async def convert_doc(entity_id: str, payload: DocConvertBody | None = None, com
         if state.get("status") not in CONVERTIBLE_STATUSES["consignment_in"]:
             raise HTTPException(status_code=409, detail=t("documents.err_consignment_issue_first"))
         await require_line_destinations(session, company_id, state.get("line_items"))
+        refuse_unpriced_lines(state)
         new_doc_id = await buy_consignment(
             session, company_id=company_id, user_id=user.id, consignment_id=entity_id, state=state,
             ref=next_doc_ref(company, "bill"),

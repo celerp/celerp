@@ -6125,6 +6125,7 @@
   "docs.void_under_credit_note": "Cette facture ne peut pas être annulée : les avoirs {numbers} sont émis sur elle. Annulez d'abord ces avoirs, puis réessayez.",
   "docs.revert_under_credit_note": "Cette facture ne peut pas repasser en brouillon : les avoirs {numbers} sont émis sur elle. Annulez d'abord ces avoirs, puis réessayez.",
   "docs.unpriced_receipt": "{goods} : aucune ligne de {document} ne lui donne de prix, donc les marchandises reçues ne peuvent pas être valorisées. Ajoutez d'abord une ligne pour lui dans {document}, puis réceptionnez-le.",
+  "docs.unpriced_line": "{goods}: this line has no price. Enter its price, then try again.",
   "posting.role_missing": "Choisissez d'abord un compte pour {role} dans les paramètres comptables, puis réessayez.",
   "doc_import.treatment_required": "Le document {number} n'a pas été importé car il n'indique pas comment il entre dans les comptes. Importez-le à nouveau et choisissez « Déjà dans mes soldes d'ouverture » ou « L'enregistrer maintenant » sur l'écran de vérification, ou définissez d'abord une date de soldes d'ouverture dans Détails de l'entreprise pour que le choix se fasse selon la date du document.",
   "doc_import.treatment_unknown": "Le document {number} indique un traitement d'import ({given}) que l'application ne connaît pas. Utilisez Déjà dans mes soldes d'ouverture ou L'enregistrer maintenant, ou laissez-le vide, puis importez-le à nouveau.",

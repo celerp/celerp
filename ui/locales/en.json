@@ -6130,6 +6130,7 @@
   "docs.void_under_credit_note": "This invoice cannot be voided: credit notes {numbers} are issued against it. Void those credit notes first, then try again.",
   "docs.revert_under_credit_note": "This invoice cannot be reverted to draft: credit notes {numbers} are issued against it. Void those credit notes first, then try again.",
   "docs.unpriced_receipt": "{goods}: no line of {document} prices it, so the received goods cannot be costed. Add a line for it to {document} first, then receive it.",
+  "docs.unpriced_line": "{goods}: this line has no price. Enter its price, then try again.",
   "posting.role_missing": "Choose an account for {role} in the accounting settings first, then try again.",
   "doc_import.treatment_required": "Document {number} was not imported because it does not say how it enters the books. Import it again and choose \"Already in my opening balances\" or \"Record it now\" for it on the review screen, or first set an opening balance date in Company Details so the choice is made from the document's date.",
   "doc_import.treatment_unknown": "Document {number} gives an import treatment ({given}) the app does not know. Use Already in my opening balances or Record it now, or leave it out, then import it again.",
