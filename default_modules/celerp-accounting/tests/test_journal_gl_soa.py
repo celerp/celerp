@@ -1252,7 +1252,8 @@ async def test_manual_je_token_reuse_with_different_payload_conflicts(client):
     assert r1.status_code == 200
     r2 = await _post_manual_je(client, tok, _bal(99.0), token=shared)
     assert r2.status_code == 409
-    assert "already posted" in r2.json()["detail"].lower()
+    assert r2.json()["detail"]["code"] == "idempotency_conflict"
+    assert "already posted" in r2.json()["detail"]["message"].lower()
     # The books still hold only the original entry
     entries = [e for e in (await _journal(client, tok))["entries"] if e not in start["entries"]]
     assert len(entries) == 1

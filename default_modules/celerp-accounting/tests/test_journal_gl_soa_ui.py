@@ -22,7 +22,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from test_helpers import make_test_token
-from ui.api_client import APIError
+from ui.api_client import APIError, _api_error
 from ui.i18n import t
 
 
@@ -437,7 +437,8 @@ async def test_journal_csv_neutralizes_formula_memo(ui_client, lead):
 
 @pytest.mark.asyncio
 async def test_je_form_conflict_rerenders_with_fresh_token(ui_client):
-    conflict = AsyncMock(side_effect=APIError(409, "already posted"))
+    conflict = AsyncMock(side_effect=_api_error(
+        409, {"detail": {"code": "idempotency_conflict", "message": "already posted"}}, ""))
     ps = _patches()
     for p in ps:
         p.start()
