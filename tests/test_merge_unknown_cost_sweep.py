@@ -30,7 +30,7 @@ from celerp_inventory.services import goods_cost_empty, goods_cost_known
 
 from celerp.services.lot_origin import recorded_value
 from celerp.services.money import round_basis, round_rate
-from celerp.services.pricing import coerce_price
+from celerp.services.pricing import stored_price
 from stock_books import assert_books_carry_stock, assert_settled
 from test_cost_restatement import _state
 from test_import_invariants import _set_company_settings
@@ -42,7 +42,7 @@ pytestmark = pytest.mark.asyncio
 
 _LISTS = [{"name": "Retail"}, {"name": "Wholesale"}, {"name": "Cost"},
           {"name": "Trade", "base": "Retail", "multiplier": 1.2}]
-_PRICE_KEYS = ("retail_price", "wholesale_price")
+_PRICE_KEYS = {"retail_price": "Retail", "wholesale_price": "Wholesale"}
 _COSTS = ("known", "unknown_value", "no_cost", "negative", "waiting", "zero_marked_value", "zero_marked_nothing",
           "landed_only")
 _STOCKED = ("known", "unknown_value", "no_cost")
@@ -106,11 +106,11 @@ def _pools(states) -> dict[str, float]:
 def _check_prices(sources: list[dict], merged: dict, currency: str) -> None:
     stocked = [s for s in sources if float(s.get("quantity") or 0) > 0] or sources
     assert "trade_price" not in merged and "Trade" not in (merged.get("attributes") or {}), merged
-    for key in _PRICE_KEYS:
+    for key, name in _PRICE_KEYS.items():
         if key not in merged:
             continue
         got = merged[key]
-        units = [coerce_price(s.get(key)) for s in stocked]
+        units = [stored_price(s, name) for s in stocked]
         assert None not in units, (key, units, got)
         assert float(round_rate(got, currency)) == got, (key, got)
         if len(set(units)) == 1:
