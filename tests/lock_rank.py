@@ -191,6 +191,11 @@ def _own_connection(lock: Lock) -> bool:
 # Keys every taker only tries (pg_try_advisory_lock): no one waits on them, so holding one
 # closes no cycle, on its own connection or another. A waiting take of one fails ("try-only").
 _TRY_ONLY = ("adv:migration-run", "adv:xero-attachments-round", "adv:restore-landing")
+# Keys every taker takes shared: a version's fence (compatibility.py; versions are kept apart by
+# polling under the admit lock, never by an exclusive take). No one waits on them, so holding one
+# closes no cycle either. An exclusive take of one fails ("shared-only").
+_SHARED_ONLY = ("adv:version-fence",)
+_NEVER_WAITED = _TRY_ONLY + _SHARED_ONLY
 
 
 def _copy_state(value):
@@ -569,6 +574,8 @@ class Recorder:
         waits = lock.mode.split(" ")[-1] not in ("nowait", "try", "skip")
         if lock.cls in _TRY_ONLY and waits:
             self._violate("try-only", lock)
+        if lock.cls in _SHARED_ONLY and _exclusive(lock.mode):
+            self._violate("shared-only", lock)
         self._other_connections(conn_key, lock, waits, serial)
         # One entry per run of a class, in the order taken: a class taken again with nothing
         # else between adds no order, so the list stays as short as the order is.
@@ -583,7 +590,7 @@ class Recorder:
             gate = ({g.cls for g in held[:i] if _exclusive(g.mode)} | serial) - {h.cls, lock.cls}
             gated = {x.cls for x in (h, lock) if x.gated}
             company_gated = "" if gated else self._company_gate(conn_key, lock)
-            inverts = waits and h.cls not in _TRY_ONLY and rank(lock.cls) is not None \
+            inverts = waits and h.cls not in _NEVER_WAITED and rank(lock.cls) is not None \
                 and rank(h.cls) is not None and rank(lock.cls) < rank(h.cls)
             # R5: judged offline against every take of the class outside those keys.
             serialized = inverts and bool(gate & serial)
@@ -704,7 +711,7 @@ class Recorder:
             if ref is None or ref() is not task:
                 continue
             holding = [h for h in self.session_held.get(other, []) + self.held.get(other, [])
-                       if not _own_connection(h) and h.cls not in _TRY_ONLY]
+                       if not _own_connection(h) and h.cls not in _NEVER_WAITED]
             if any(h.cls == lock.cls and h.key == lock.key and _conflict(h, lock) for h in holding):
                 self._violate("self-deadlock", lock, held_lock=holding[0])
                 break

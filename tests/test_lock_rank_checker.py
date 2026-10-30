@@ -391,6 +391,35 @@ def test_a_waiting_take_of_a_key_every_taker_should_only_try_fails():
     assert ("try-only", "adv:xero-attachments-round") in _kinds(recorder)
 
 
+def test_a_key_every_taker_takes_shared_orders_nothing_it_is_held_before():
+    """Boot's create_tables runs in a guarded transaction: the version fence first, shared,
+    then the schema key. No one takes the fence exclusively (versions are kept apart under
+    the admit lock), so no one waits on it and the hold closes no cycle."""
+    recorder = Recorder()
+    recorder.acquire(1, _lock("adv:version-fence", "xact shared wait"), 0.0)
+    recorder.acquire(1, _lock("adv:migration", "xact exclusive wait"), 0.0)
+    assert not _kinds(recorder)
+
+
+def test_a_key_every_taker_takes_shared_may_be_held_while_waiting_on_another_connection():
+    """``celerp migrate`` joins the fence on a connection of its own, then waits for the
+    migration key on another."""
+    recorder = Recorder()
+
+    async def body():
+        recorder.acquire(1, _lock("adv:version-fence", "session shared wait"), 0.0)
+        recorder.acquire(2, _lock("adv:migration", "session exclusive wait"), 0.0)
+
+    asyncio.run(body())
+    assert not {k for k, _ in _kinds(recorder)} & {"cross-connection", "self-deadlock"}
+
+
+def test_an_exclusive_take_of_a_key_every_taker_should_take_shared_fails():
+    recorder = Recorder()
+    recorder.acquire(1, _lock("adv:version-fence", "xact exclusive wait"), 0.0)
+    assert ("shared-only", "adv:version-fence") in _kinds(recorder)
+
+
 def test_a_key_others_wait_on_still_fails_when_held_across_connections(tmp_path):
     """Held under the migration key, the wait is judged offline (R5); a take of the class
     outside the key, as every import runner makes, leaves it unproven. The flow also holds a
