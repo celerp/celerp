@@ -333,8 +333,11 @@ def _record_order(monkeypatch, target, holder_name: str, enum_target, enum_name:
     return seen
 
 
-async def test_purge_takes_module_state_then_schema(real_engine, real_client, widgets_company, tmp_path,  # noqa: F811
+async def test_purge_takes_schema_then_module_state(real_engine, real_client, widgets_company, tmp_path,  # noqa: F811
                                                     monkeypatch):
+    """The schema key first, as every holder of it takes it (the instance locks lead the lock
+    order). Its wait is bounded, so a running copy or restore, which holds the module state for
+    its whole run, refuses the purge before the purge queues for the module state."""
     from celerp.modules import registry
     from celerp.routers import companies
 
@@ -345,7 +348,7 @@ async def test_purge_takes_module_state_then_schema(real_engine, real_client, wi
         seen = _record_order(monkeypatch, registry, "hold_module_state", companies, "_module_tables_with_row_counts")
         r = await real_client.post(f"/companies/me/modules/{name}/purge-data", headers=auth(tok))
         assert r.status_code == 200, r.text
-        assert seen == [set(), {"module-state"}, {"module-state", "schema"}]
+        assert seen == [{"schema"}, {"schema", "module-state"}, {"schema", "module-state"}]
     finally:
         await _bk_drop(real_engine, "zy_things")
 

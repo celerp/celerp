@@ -2127,9 +2127,10 @@ async def purge_module_data(
     """Drop every table carrying the module's declared prefix, in one transaction. Installation owner only.
 
     Refused while any company uses the module or it is still running: its data
-    must be quiet before it is dropped. Holds the schema key (lock_schema) from
-    before the tables are listed until the drop commits, so it waits for, or is
-    refused during, a company backup or restore. The drop list is read from the manifest prefix at the time of the
+    must be quiet before it is dropped. Takes the schema key (lock_schema) first, as
+    every holder of it does, and holds it until the drop commits, so it waits for, or is
+    refused during, a company backup or restore (which holds the module state for its
+    whole run), before it waits for the module state. The drop list is read from the manifest prefix at the time of the
     drop, not from the preview. A module with no matching tables is a clean
     no-op success. A table outside the module still depending on one of these
     tables blocks the whole drop, which rolls back with a plain explanation.
@@ -2141,13 +2142,13 @@ async def purge_module_data(
     from celerp.modules.loader import read_manifest, resolve_module_path
     from celerp.modules.registry import hold_module_state
 
-    await hold_module_state(session)
     try:
         await lock_schema(session)
     except DBAPIError as exc:
         if sqlstate(exc) != "55P03":
             raise
         raise HTTPException(status_code=409, detail=t("company.err_purge_copy_running")) from None
+    await hold_module_state(session)
     pkg_path = resolve_module_path(module_name)
     if pkg_path is None:
         raise HTTPException(status_code=404, detail=t("company.err_module_not_found"))
