@@ -316,6 +316,18 @@ async def get_current_company_settings(
     return view
 
 
+async def admit_permission(session: AsyncSession, company_id, role: str, key: str) -> None:
+    """403 unless *role* holds *key* under the company settings read now (registry
+    defaults when the company row is missing). The key joins the request's authority, so
+    the company lock judges it again; nothing is locked here, so a caller that goes on to
+    wait for work in another session holds no row that work needs."""
+    company = await session.get(Company, company_id)
+    assert_role_permission(company.settings if company else {}, role, key)
+    authority = _authority_for(session, company_id)
+    if authority is not None and authority.role == role:
+        authority.keys.add(key)
+
+
 def require_permission(key: str):
     """FastAPI dependency: 403 unless the caller's role holds *key*.
 
@@ -331,11 +343,7 @@ def require_permission(key: str):
         company_id: uuid.UUID = Depends(get_current_company_id),
         session: AsyncSession = Depends(get_session),
     ) -> None:
-        company = await session.get(Company, company_id)
-        assert_role_permission(company.settings if company else {}, role, key)
-        authority = _authority_for(session, company_id)
-        if authority is not None and authority.role == role:
-            authority.keys.add(key)
+        await admit_permission(session, company_id, role, key)
 
     # Recorded on the guard so a test can read back what each route requires.
     # Without it the key is only visible inside this closure, and "did exactly the

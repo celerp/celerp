@@ -32,7 +32,7 @@ from migration_support import count, maker, real_client, real_engine  # noqa: F4
 from test_ai_jobs import AUTH, _files, _finished, _op
 from test_ai_usage import _claims, _conversation, _messages, _settled
 from test_company_reset import RESET, _local_files, _two_companies
-from test_helpers import register_admin, until, until_a_lock_waits
+from test_helpers import as_another_client, register_admin, until, until_a_lock_waits
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.process]
 
@@ -51,10 +51,11 @@ def pg(real_engine, monkeypatch):
 
 @asynccontextmanager
 async def _company_held(engine, company_id):
-    """Another transaction holds the company lock until the block ends, as any company
-    write does."""
+    """Another client's transaction holds the company lock until the block ends, as any
+    company write does: taken in a task of its own, as that client would."""
     async with engine.connect() as conn:
-        await conn.execute(text("SELECT id FROM companies WHERE id = :c FOR NO KEY UPDATE"), {"c": str(company_id)})
+        await as_another_client(conn.execute(text("SELECT id FROM companies WHERE id = :c FOR NO KEY UPDATE"),
+                                             {"c": str(company_id)}))
         try:
             yield
         finally:
