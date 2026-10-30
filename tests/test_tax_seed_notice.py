@@ -305,8 +305,9 @@ async def test_saving_the_sales_list_fixed_moves_the_notice_link_to_the_purchasi
 
 
 async def test_a_company_past_the_notification_cap_keeps_only_its_newest(client, monkeypatch):
-    """Two notices raised by one save with the cap at one: the older is pruned in the same request."""
+    """Two notices raised by one save with the cap at one: the older is pruned in the same request,
+    and the one kept is the newer, raised second in RETIRED_SEED_ROWS order."""
     monkeypatch.setattr("celerp.notifications.service.MAX_PER_COMPANY", 1)
     h = await _register(client)
     assert (await client.patch("/companies/me/taxes", headers=h, json={"taxes": _OLD_ET})).status_code == 200
-    assert len(await _bell(client, h)) == 1
+    assert await _bell(client, h) == {"et-tot-2025"}
