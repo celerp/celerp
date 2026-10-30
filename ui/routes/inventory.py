@@ -3492,7 +3492,10 @@ function celerpPrintLabel(entityId, templateId) {
         except APIError as e:
             return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
         updated = result.get("updated", len(entity_ids))
-        return _bulk_destructive_success(request, t("inventory.bulk_transferred", n=updated))
+        refused = [row["detail"] for row in result.get("refused") or []]
+        return _bulk_destructive_success(request, t("inventory.bulk_transferred", n=updated),
+                                         cls="flash--warning" if refused else "flash--success",
+                                         notice=refusal_text(refused))
 
     @app.post("/api/items/bulk/delete")
     async def bulk_item_delete(request: Request):

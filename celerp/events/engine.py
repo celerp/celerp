@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date
 
 from fastapi import HTTPException
@@ -460,7 +461,75 @@ def _may_take_set_aside(event_type: str, data: dict) -> bool:
     return event_type != "item.fulfilled" or (data or {}).get("doc_type") == "memo"
 
 
-async def _item_applied(session, entry: LedgerEntry, transition) -> None:
+# What the customer holds of a lot out on a memo; only the memo changes it (_refuse_held_lot_change).
+_HELD_FIELDS = ("quantity", "sell_by", "weight", "weight_unit", "gross_weight", "gross_weight_unit", "location_id",
+                "pieces")
+
+
+@dataclass(frozen=True)
+class HeldLotCarve:
+    """The grant of the one physical change a memo makes to a lot it holds: a carve
+    (split_off_child) lowers the mother by the measures of the child it has just made off it.
+    Built only there and passed to emit_event as an argument, never read from a request."""
+    lot_id: str
+    quantity: float
+    weight: float | None
+    pieces: float | None
+
+
+def _held_value(state: dict, field: str):
+    if field == "pieces":
+        value = state.get("pieces")
+        return (state.get("attributes") or {}).get("pieces") if value is None else value
+    return state.get(field)
+
+
+def _carved_by(carve: HeldLotCarve | None, entity_id: str, changed: dict) -> bool:
+    """Whether *changed* (field: (before, after)) is exactly the carve *carve* grants on this
+    lot: quantity, weight and pieces each lowered by the child's measure, or a measure the
+    child has none of becoming unknown, and nothing else."""
+    if carve is None or carve.lot_id != entity_id:
+        return False
+    grants = {"quantity": carve.quantity, "weight": carve.weight, "pieces": carve.pieces}
+    for field, (before, after) in changed.items():
+        if field not in grants:
+            return False
+        part = grants[field]
+        if part is None:
+            if after is not None:
+                return False
+        elif after is None or abs(float(before or 0) - float(part) - float(after)) > 1e-9:
+            return False
+    return True
+
+
+async def _refuse_held_lot_change(session, entry: LedgerEntry, transition, carve: HeldLotCarve | None) -> None:
+    """A lot out on a memo is in the customer's hands: an event that leaves it out on the same
+    memo may not change what it physically is or where it is, unless it is that memo's carve."""
+    before, after = transition.before, transition.after or {}
+    if before is None or before.get("status") != "memo_out" or after.get("status") != "memo_out":
+        return
+    holder_id = before.get("status_doc_id")
+    if not holder_id or after.get("status_doc_id") != holder_id:
+        return
+    changed = {f: (_held_value(before, f), _held_value(after, f)) for f in _HELD_FIELDS
+               if _held_value(before, f) != _held_value(after, f)}
+    if not changed or _carved_by(carve, entry.entity_id, changed):
+        return
+    holder = await session.get(Projection, (entry.company_id, holder_id))
+    if holder is None or (holder.state or {}).get("doc_type") != "memo":
+        return
+    from celerp.accounting_roles import refusal
+
+    sku = str(before.get("sku") or entry.entity_id)
+    memo = str(holder.state.get("doc_number") or holder.state.get("ref_id") or holder_id)
+    raise HTTPException(status_code=409, detail=refusal(
+        "inventory.err_held_by_memo",
+        f"Item {sku} is held by memo {memo}. Invoice or return it from that memo before changing its physical stock.",
+        sku=sku, memo=memo))
+
+
+async def _item_applied(session, entry: LedgerEntry, transition, held_lot_carve: HeldLotCarve | None) -> None:
     """Checks and effects of one live item event, on the state its row lock applied it to.
 
     Births (item.created, item.snapshot) and changes are exclusive. A birth must find no
@@ -489,6 +558,7 @@ async def _item_applied(session, entry: LedgerEntry, transition) -> None:
     # output, for one); a handler that cannot be resolved fails the event, never skips it.
     for handler in sorted({c["handler"] for c in get_slot("item_lineage_guard")}):
         await resolve_handler(handler)(session=session, entry=entry, transition=transition)
+    await _refuse_held_lot_change(session, entry, transition, held_lot_carve)
     if units_leaving(transition.before, transition.after) > 1e-9:
         from celerp.services.auto_je import recognized_cogs, refuse_stranding_set_aside
 
@@ -539,7 +609,7 @@ async def _check_asset_lines(session, kwargs: dict) -> None:
 
 async def emit_event(
     session, *, preserve_external_code_conflicts: bool = False,
-    memo_draw: MemoDraw | MemoReturn | None = None, **kwargs
+    memo_draw: MemoDraw | MemoReturn | None = None, held_lot_carve: HeldLotCarve | None = None, **kwargs
 ) -> LedgerEntry:
     # A backup represents a clean point in time: while one is building, pause writes
     # (reads, which never emit, are unaffected) so nothing changes mid-backup.
@@ -793,7 +863,7 @@ async def emit_event(
     try:
         transition = await ProjectionEngine.apply_event(session, entry)
         if item:
-            await _item_applied(session, entry, transition)
+            await _item_applied(session, entry, transition, held_lot_carve)
     except BaseException:
         await savepoint.rollback()
         raise

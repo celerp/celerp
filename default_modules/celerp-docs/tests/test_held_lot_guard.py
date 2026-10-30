@@ -104,7 +104,7 @@ async def test_held_lot_import_quantity_refused(client, session):
     rows = [{"entity_id": eid, "event_type": "item.patched", "source": "csv", "idempotency_key": uuid.uuid4().hex,
              "data": {"sku": s, "quantity": 7}} for eid, s in ((held, sku), (free, free_sku))]
     body = await ok(await client.post("/items/import/batch", headers=h, json={"records": rows}))
-    assert len(body["errors"]) == 1 and "is held by memo" in body["errors"][0]
+    assert len(body["errors"]) == 1 and HELD in str(body["errors"][0])
     assert (await item(client, h, held))["quantity"] == 1
     assert (await item(client, h, free))["quantity"] == 7
 
