@@ -44,6 +44,7 @@ from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, PRICE_LISTS_FALLBAC
 from celerp.events.schemas import _WORKFLOW_TIME_UNITS
 from celerp.importers.tabular import known_headers
 from celerp.services.goods_cost import GOODS_COST_UNKNOWN
+from celerp.services.money import currency_dp, rate_dp
 from ui.routes.documents import _ICON_PRINT as _ICON_PRINT_SVG
 from ui.i18n import t, get_lang, is_rtl, field_label, price_list_label, category_label, category_labels, refusal_text, doc_type_label
 from celerp.services.units import format_qty, is_weight_unit, is_pieces_unit
@@ -52,7 +53,7 @@ from celerp_inventory.services import (
     apply_source_semantics,
     build_item_import_spec,
     CostTotalBelowLanded,
-    goods_cost_from_total,
+    cost_written_back,
     goods_cost_known,
     is_item_field_key,
     importable_price_lists,
@@ -2474,7 +2475,8 @@ function celerpPrintLabel(entityId, templateId) {
                 # The cell opens on the lot's value only where its goods cost is known: a
                 # value of unknown cost is not offered as a number to confirm by accident.
                 known = goods_cost_known(item)
-                display_val = f"{float(item['cost_total']):.2f}" if known and item.get("cost_total") is not None else ""
+                display_val = (f"{float(item['cost_total']):.{currency_dp(company.get('currency') or 'USD')}f}"
+                               if known and item.get("cost_total") is not None else "")
                 cell = editable_cell(entity_id=entity_id, field=field, value=display_val if typed is None else typed,
                                      cell_type="money", options=[], allow_custom=True)
                 if not known and float(item.get("cost_total") or 0):
@@ -2798,11 +2800,12 @@ function celerpPrintLabel(entityId, templateId) {
                     # The cell shows the lot's whole value, landed cost included; the item's
                     # goods cost is what is left of the entered total without it.
                     try:
-                        goods = goods_cost_from_total(old_item, float(value), confirm=True)
+                        change = cost_written_back(old_item, float(value), dp=currency_dp(await _company_currency(token)),
+                                                   confirm=True)
                     except CostTotalBelowLanded as exc:
                         return await _refused_cell(request, entity_id, field, refusal_text(exc.detail), str(form.get("value", "")))
-                    if goods is not None:
-                        corrections.append(await api.patch_item(token, entity_id, {"cost_total": {"old": old_item.get("cost_total"), "new": goods}}))
+                    if change:
+                        corrections.append(await _patch_cost(token, entity_id, old_item, change))
                 else:
                     qty = float(old_item.get("quantity") or 0)
                     if qty == 0:
@@ -2852,19 +2855,14 @@ function celerpPrintLabel(entityId, templateId) {
                 # promoted to top level, so old_item.get(field) is always authoritative.
                 old_item = await api.get_item(token, entity_id)
                 if field == "cost_price":
-                    # The unit cost shown is the lot's value per unit, landed cost included: the
-                    # entered unit cost times the quantity is a cost total, read like the total cell's.
-                    # A lot without stock keeps it as the cost its next units wait at.
-                    qty = float(old_item.get("quantity") or 0)
-                    if not qty:
-                        corrections.append(await api.patch_item(token, entity_id, {"cost_price": {"old": old_item.get("cost_price"), "new": float(value)}}))
-                    else:
-                        try:
-                            goods = goods_cost_from_total(old_item, float(value) * qty, confirm=True)
-                        except CostTotalBelowLanded as exc:
-                            return await _refused_cell(request, entity_id, field, refusal_text(exc.detail), str(form.get("value", "")))
-                        if goods is not None:
-                            corrections.append(await api.patch_item(token, entity_id, {"cost_total": {"old": old_item.get("cost_total"), "new": goods}}))
+                    # The unit cost shown is the lot's value per unit, landed cost included.
+                    try:
+                        change = cost_written_back(old_item, float(value), dp=currency_dp(await _company_currency(token)),
+                                                   per_unit=True, confirm=True)
+                    except CostTotalBelowLanded as exc:
+                        return await _refused_cell(request, entity_id, field, refusal_text(exc.detail), str(form.get("value", "")))
+                    if change:
+                        corrections.append(await _patch_cost(token, entity_id, old_item, change))
                 else:
                     old_val = old_item.get(field)
                     await api.patch_item(token, entity_id, {field: {"old": old_val, "new": value}})
@@ -3887,8 +3885,7 @@ function celerpPrintLabel(entityId, templateId) {
             _sp_static_td(str(int(parent_pieces)) if parent_pieces is not None else "--", num=True),
         ]
         if can_see_cost:
-            mother_cells.append(Td(fmt(parent_cost_total), *(() if parent_cost_known else (
-                Span(t("inventory.goods_cost_unknown"), cls="cell-price-unit"),)), cls="sp-td sp-td--num"))
+            mother_cells.append(Td(*_cost_total_view(item, company.get("currency")), cls="sp-td sp-td--num"))
 
         child_qty_input = Td(
             Input(type="number", name="child_qty", value=fmt(parent_qty), step="any", min="0",
@@ -4326,9 +4323,7 @@ function celerpPrintLabel(entityId, templateId) {
         except Exception:
             price_lists = PRICE_LISTS_FALLBACK
         try:
-            # Fetch item once to get qty (needed for cost_price → cost_total conversion)
             item_for_price = await api.get_item(token, entity_id)
-            item_qty = float(item_for_price.get("quantity") or 0)
             # Same re-injection as the Cost card and its input: without it, a draft's cost
             # field is never recognized below and a submitted cost is silently dropped.
             try:
@@ -4341,9 +4336,14 @@ function celerpPrintLabel(entityId, templateId) {
             for pl in price_lists:
                 pl_name = pl.get("name", "")
                 conventional_key = price_key(pl_name)
-                if conventional_key not in form:
+                per_unit = conventional_key in form
+                if conventional_key == "cost_price" and not per_unit and "cost_price_total" in form:
+                    submitted = "cost_price_total"  # the Cost total, typed as a total
+                elif per_unit:
+                    submitted = conventional_key
+                else:
                     continue  # field not submitted — leave it untouched
-                val = str(form.get(conventional_key, "")).strip()
+                val = str(form.get(submitted, "")).strip()
                 if val == "":
                     # Cleared price → unset it (issue #202). Cost is canonically cost_total. Use
                     # patch_item with new=None so the field is removed, not stored as "" / 0.
@@ -4357,17 +4357,21 @@ function celerpPrintLabel(entityId, templateId) {
                     price = float(val)
                 except ValueError:
                     continue
-                # cost_price is a derived field; always save as cost_total to avoid being
-                # overwritten by flatten_item on the next read.
-                # Use patch_item (not set_item_price) so price_type normalization doesn't mangle "cost_total".
-                if conventional_key == "cost_price" and item_qty > 0:
-                    old_cost_total = item_for_price.get("cost_total")
-                    corrections.append(await api.patch_item(token, entity_id, {"cost_total": {"old": old_cost_total, "new": round(price * item_qty, 10)}}))
-                    cost_changed = True
+                if conventional_key == "cost_price":
+                    # The cost as shown (unit at rate precision, total at the currency's), read
+                    # like every other cost door; the unit input of an unknown cost opens empty.
+                    cur = (company_for_price.get("currency") or "").strip() or "USD"
+                    try:
+                        change = cost_written_back(item_for_price, price, per_unit=per_unit, confirm=True,
+                                                   dp=rate_dp(cur) if per_unit else currency_dp(cur))
+                    except CostTotalBelowLanded as exc:
+                        return Div(t("inventory.not_saved_detail", detail=refusal_text(exc.detail)), id="pricing-save-status",
+                                   cls="recipe-save-status hint error", hx_swap_oob="true")
+                    if change:
+                        corrections.append(await _patch_cost(token, entity_id, item_for_price, change))
+                        cost_changed = True
                 else:
                     await api.set_item_price(token, entity_id, pl_name, price)
-                    if conventional_key == "cost_price":
-                        cost_changed = True
             # A cost change ripples into every recipe that uses this item — recost them now so
             # the Manufacturing tab and margins stay current without any manual step.
             if cost_changed:
@@ -4388,8 +4392,7 @@ function celerpPrintLabel(entityId, templateId) {
             try:
                 item_after = await api.get_item(token, entity_id)
                 company_after = await api.get_company(token)
-                from celerp.services.money import rate_dp as _rate_dp
-                rdp = _rate_dp((company_after.get("currency") or "").strip() or "USD")
+                rdp = rate_dp((company_after.get("currency") or "").strip() or "USD")
                 qty_after = float(item_after.get("quantity") or 0)
                 for pl in derived_lists:
                     name = pl.get("name", "")
@@ -5533,28 +5536,33 @@ def _label_price_cols(schema: list[dict]) -> list[dict]:
     return result
 
 
+def _cost_total_view(row: dict, currency: str | None) -> tuple:
+    """A lot's cost total as every surface shows it: its book value ("--" only when it carries
+    no cost, a known 0 reads 0.00), with "goods cost unknown" beside a value whose goods cost
+    is not known."""
+    total = row.get("cost_total")
+    if total is None:
+        return (Span("--"),)
+    note = (Span(t("inventory.goods_cost_unknown"), cls="cell-price-unit"),) if not goods_cost_known(row) else ()
+    return (Span(fmt_money(float(total), currency), cls="cell-money"), *note)
+
+
 def _virtual_total_cell(entity_id: str, field: str, row: dict, currency: str | None, oob: bool = False) -> FT:
-    """The display Td of a virtual total column from a flattened item. Cost total is the
-    lot's book value: "--" only when the lot carries no cost, a known 0 reads 0.00, and a
-    value whose goods cost is unknown says so beside it. Other totals are unit price x qty."""
-    note = ""
+    """The display Td of a virtual total column from a flattened item: the cost total as
+    _cost_total_view shows it, other totals as unit price x qty."""
     try:
         if field == "cost_price_total":
-            total = row.get("cost_total")
-            formatted = "--" if total is None else fmt_money(float(total), currency)
-            if total is not None and row.get(GOODS_COST_UNKNOWN):
-                note = Span(t("inventory.goods_cost_unknown"), cls="cell-price-unit")
+            view = _cost_total_view(row, currency)
         else:
             paired = field[: -len("_total")]
             total = float(row.get(paired) or 0) * float(row.get("quantity") or 0)
-            formatted = fmt_money(total, currency) if total != 0 else "--"
+            view = (Span(fmt_money(total, currency), cls="cell-money") if total != 0 else Span("--"),)
     except (ValueError, TypeError):
-        formatted = "--"
-    inner = Span(formatted, cls="cell-money") if formatted != "--" else Span("--")
+        view = (Span("--"),)
     safe_eid = entity_id.replace(":", "-")
     attrs = {"hx_swap_oob": "true"} if oob else {}
     return Td(
-        inner, note,
+        *view,
         id=f"cell-{safe_eid}-{field}",
         cls="cell cell--money cell--clickable",
         data_col=field,
@@ -5562,6 +5570,19 @@ def _virtual_total_cell(entity_id: str, field: str, row: dict, currency: str | N
         hx_target="this", hx_swap="outerHTML", hx_trigger="dblclick",
         **attrs,
     )
+
+
+async def _company_currency(token: str) -> str:
+    """The company's currency code, USD when it cannot be read (the money helpers' default)."""
+    try:
+        return (((await api.get_company(token)).get("currency")) or "").strip() or "USD"
+    except APIError:
+        return "USD"
+
+
+async def _patch_cost(token: str, entity_id: str, old_item: dict, change: dict) -> dict:
+    """Write the goods-cost change cost_written_back returned, each key with its old value."""
+    return await api.patch_item(token, entity_id, {k: {"old": old_item.get(k), **v} for k, v in change.items()})
 
 
 async def _units_by_name(token: str) -> dict:
@@ -7531,8 +7552,7 @@ def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency:
     cur_sym = currency or ""
     has_recipe = bool((item.get("recipe") or {}).get("components"))
 
-    from celerp.services.money import currency_dp as _currency_dp, rate_dp as _rate_dp
-    cdp, rdp = _currency_dp(currency or "USD"), _rate_dp(currency or "USD")
+    cdp, rdp = currency_dp(currency or "USD"), rate_dp(currency or "USD")
 
     unit_hdr = t("inventory.pricing_unit_hdr", sym=cur_sym, sell_by=sell_by) if cur_sym else t("inventory.pricing_unit_hdr_nosym", sell_by=sell_by)
     total_hdr = t("inventory.pricing_total_hdr", qty=f"{qty:g}", sell_by=sell_by) if has_qty else t("inventory.pricing_total_hdr_nostock")
@@ -7587,13 +7607,20 @@ def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency:
                            step="any", min="0", placeholder="--", cls="form-input",
                            oninput=f"syncPricingTotal('{unit_id}','{total_id}',{qty})",
                            onkeydown=enter_commits, **_save)
+        if conventional_key == "cost_price":
+            # The cost total saves as the total typed (the lot's whole value), not as a unit
+            # rounded from it; a lot whose goods cost is unknown shows the value it carries.
+            total_save = {"name": f"{conventional_key}_total", **_save}
+            carried = () if goods_cost_known(item) or item.get("cost_total") is None else _cost_total_view(item, currency)
+        else:
+            # Editing the total back-fills the unit, then re-fires its autosave.
+            total_save = {"onchange": f"document.getElementById('{unit_id}').dispatchEvent(new Event('change'))"}
+            carried = ()
         total_input = Input(type="number", id=total_id, value=total_val, step="0.01", min="0",
                             placeholder="--", cls="form-input", disabled=not has_qty,
                             oninput=f"syncPricingUnit('{unit_id}','{total_id}',{qty},{cdp},{rdp})",
-                            onkeydown=enter_commits,
-                            # Editing the total back-fills the unit, then re-fires its autosave.
-                            onchange=f"document.getElementById('{unit_id}').dispatchEvent(new Event('change'))")
-        return (Td(pl_name, cls="detail-label"), Td(_cur(unit_input)), Td(_cur(total_input))), actions
+                            onkeydown=enter_commits, **total_save)
+        return (Td(pl_name, cls="detail-label"), Td(_cur(unit_input)), Td(_cur(total_input), *carried)), actions
 
     def _card(title: str, lists: list[dict], editable: bool, note: str | None = None) -> FT:
         rows = [_row(pl, editable) for pl in lists]

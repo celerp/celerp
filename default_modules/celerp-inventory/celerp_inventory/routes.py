@@ -4312,17 +4312,24 @@ def _merged_prices(sources: list[Projection], price_lists: list[dict], currency:
     stocked sources' (quantity above 0), to the currency's rate ceiling, and left unset when
     a stocked source has none. A source without stock neither sets nor blocks a price; with
     no stocked source, a price every source agrees on is kept. Read from the item as the
-    read model shows it (a list's raw name under attributes is a price); derived lists and
-    cost are never stored."""
+    read model shows it: a list's price is one price whether a source holds it under the
+    list's raw name (under attributes) or its conventional key, and the merged lot holds it
+    under the conventional key; derived lists and cost are never stored."""
     flats = [(flatten_item(p.state, p.entity_id), float(p.state.get("quantity") or 0)) for p in sources]
     skip = {"cost_total", "cost_price", *COST_DERIVED_ITEM_KEYS, *derived_price_keys(price_lists)}
-    keys = {k for flat, _ in flats for k in flat
+    list_of = {k: pl["name"] for pl in price_lists if pl.get("name") for k in (pl["name"], price_key(pl["name"]))}
+
+    def price(flat: dict, key: str) -> float | None:
+        return stored_price(flat, list_of[key]) if key in list_of else coerce_price(flat.get(key))
+
+    keys = {price_key(list_of[k]) if k in list_of else k for flat, _ in flats for k in flat
             if k not in skip and not k.endswith("_price_total") and is_price_item_key(k, price_lists)}
+    keys -= skip
     stocked = [(flat, qty) for flat, qty in flats if qty > 0]
     out: dict = {}
     for key in sorted(keys):
         if stocked:
-            units = [(coerce_price(flat.get(key)), qty) for flat, qty in stocked]
+            units = [(price(flat, key), qty) for flat, qty in stocked]
             if any(unit is None for unit, _ in units):
                 continue
             if len({unit for unit, _ in units}) == 1:
@@ -4331,7 +4338,7 @@ def _merged_prices(sources: list[Projection], price_lists: list[dict], currency:
             total = sum((to_decimal(unit) * to_decimal(qty) for unit, qty in units), Decimal(0))
             out[key] = float(round_rate(total / sum((to_decimal(qty) for _, qty in units), Decimal(0)), currency))
         else:
-            units = {coerce_price(flat.get(key)) for flat, _ in flats}
+            units = {price(flat, key) for flat, _ in flats}
             if len(units) == 1 and None not in units:
                 out[key] = next(iter(units))
     return out

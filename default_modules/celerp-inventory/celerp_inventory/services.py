@@ -42,7 +42,7 @@ from celerp.services.demo import delete_untouched_demo_items
 from celerp.services.goods_cost import (GOODS_COST_UNKNOWN, clears_goods_cost, event_goods_costs, lot_label,
                                        negative_cost_error, writes_goods_cost)
 from celerp.services.cost_visibility import COST_ITEM_KEYS
-from celerp.services.money import allocate_pro_rata, round_basis, to_decimal
+from celerp.services.money import BASIS_DP, allocate_pro_rata, round_basis, to_decimal
 from celerp.services.company_lock import holds_company_lock, lock_company, lock_projections, locked_company
 from celerp.services.physical_codes import code_in_use, lock_item_code_namespace
 from celerp.services.lot_origin import (
@@ -236,20 +236,36 @@ class CostTotalBelowLanded(ValueError):
         super().__init__(self.detail["message"])
 
 
-def goods_cost_from_total(state: dict, total: float, *, confirm: bool = False) -> float | None:
-    """The goods cost a cost total written back by the user means, the lot's whole value as
-    shown and exported: the total less the landed cost the lot carries. None when the total
-    is what the lot carries already, so an unchanged save is no change; with ``confirm`` a
-    lot whose goods cost is not known takes it as a deliberate set (its edit cell opens
-    empty, so what the user typed is what they know).
+def cost_written_back(state: dict, shown: float, *, dp: int, per_unit: bool = False,
+                      confirm: bool = False) -> dict | None:
+    """The goods-cost change (``fields_changed`` of an item.updated) a cost the user wrote back
+    means, or None when it changes nothing. Every door that takes a cost as it was shown or
+    exported (inventory cells, the Pricing tab, the item import) reads it here, never by itself.
+
+    ``shown`` is the lot's whole value as shown, landed cost included: a total, or with
+    ``per_unit`` that value per unit, either at the ``dp`` decimals the door shows or exports
+    it. A value equal to what the door shows for the lot, compared at those decimals (the unit
+    as a unit, never unit x quantity), is no change; with ``confirm`` a lot whose goods cost is
+    not known takes it as a deliberate set (its edit opens empty, so what the user typed is
+    what they know). Otherwise the goods cost is the total less the landed cost the lot
+    carries. A unit cost of a lot without stock is the cost its next units wait at.
     Raises CostTotalBelowLanded when the total is below the landed cost."""
-    total = round_basis(float(total))
-    if total == round_basis(float(recorded_value(state))) and not (confirm and not goods_cost_known(state)):
+    shown = float(shown)
+    qty = float(state.get("quantity") or 0)
+    value = float(recorded_value(state))
+    if per_unit and not qty:
+        waiting = state.get("cost_price")
+        if waiting is not None and round(shown, dp) == round(float(waiting), dp):
+            return None
+        return {"cost_price": {"new": shown}}
+    carried = value / qty if per_unit else value
+    if round(shown, dp) == round(carried, dp) and not (confirm and not goods_cost_known(state)):
         return None
+    total = round_basis(shown * qty if per_unit else shown)
     landed = round_basis(sum(float(v or 0) for v in (state.get("landed_costs") or {}).values()))
     if total < landed:
         raise CostTotalBelowLanded(landed)
-    return round_basis(total - landed)
+    return {"cost_total": {"new": round_basis(total - landed)}}
 
 
 def topped_up_cost(state: dict, added: float) -> dict:
@@ -577,7 +593,10 @@ async def _restatement(session: AsyncSession, company_id, entity_id: str, event_
 
     successors: list[tuple[str, dict]] = []
     restated: list[tuple[str, dict, dict]] = [(entity_id, old, new)]   # (entity_id, before, after)
-    if status in ("merged", "sold", "disposed") and old_basis != new_basis:
+    # A merge result's known-ness follows its parts' (P3), so a part whose goods cost turns
+    # known or unknown at the same value is walked like a value change, with no delta.
+    if status in ("merged", "sold", "disposed") and (
+            cost_changed or goods_cost_known(old) != goods_cost_known(new)):
         # A write-off of a whole traceable lot can be restated below. Other disposals
         # are refused because their financial counterparty is not a write-off list.
         # A lot that left with no cost left at cost 0, so adding or clearing a cost
@@ -605,6 +624,8 @@ async def _restatement(session: AsyncSession, company_id, entity_id: str, event_
             current = lot_label(state, next_id)
             succ_status = str(state.get("status") or "").lower()
             if not await cost_can_be_restated(session, company_id, next_id, state):
+                if not delta:
+                    break  # no value to carry; past an untraceable lot its goods cost stays as it is
                 raise CostRestatementConflict(
                     f"{label}'s cost went into {current}, which was later split, transformed, used, or "
                     "written off, so the correction cannot be carried through it automatically"
@@ -626,6 +647,8 @@ async def _restatement(session: AsyncSession, company_id, entity_id: str, event_
                     st = prev_state if part == prev_id else (row.state or {}) if row is not None else None
                     known = known and st is not None and (goods_cost_empty(st) or goods_cost_known(st))
                 adjusted[GOODS_COST_UNKNOWN] = not known
+            if not delta and (parts is None or adjusted[GOODS_COST_UNKNOWN] == (not goods_cost_known(state))):
+                break  # neither its value nor its known-ness moves, so nothing further down does
             prev_id, prev_basis = next_id, adjusted["cost_total"]
             prev_state = apply_item_event(state, "item.cost_adjusted", adjusted)
             successors.append((next_id, adjusted))
@@ -3362,25 +3385,19 @@ def _permission_errors(
 def _pop_cost_change(data: dict, state: dict) -> dict | None:
     """Take the goods cost out of patch data as the item page's cost edit.
 
-    A cost total is the lot's whole value as the export writes it, and a unit cost of a lot
-    holding stock is that value per unit, so both are read through goods_cost_from_total: a
-    value equal to what the lot carries is no change. A unit cost of a lot without stock is
-    the cost its next units wait at. Returns
-    ``fields_changed`` for an item.updated restatement, or None when the row changes no
-    cost. Raises TypeError or ValueError for a cost that is not a number, and
+    A cost total is the lot's whole value as the export writes it, and a unit cost is that
+    value per unit, both at the export's BASIS_DP decimals, so both are read through
+    cost_written_back: a value equal to what the export holds for the lot is no change.
+    Returns ``fields_changed`` for an item.updated restatement, or None when the row
+    changes no cost. Raises TypeError or ValueError for a cost that is not a number, and
     CostTotalBelowLanded for a total below the lot's landed cost.
     """
     cost_total, cost_price = data.pop("cost_total", None), data.pop("cost_price", None)
     if cost_total not in (None, ""):
-        goods = goods_cost_from_total(state, float(cost_total))
-        return None if goods is None else {"cost_total": {"new": goods}}
+        return cost_written_back(state, float(cost_total), dp=BASIS_DP)
     if cost_price in (None, ""):
         return None
-    qty = float(state.get("quantity") or 0)
-    if not qty:
-        return {"cost_price": {"new": float(cost_price)}}
-    goods = goods_cost_from_total(state, float(cost_price) * qty)
-    return None if goods is None else {"cost_total": {"new": goods}}
+    return cost_written_back(state, float(cost_price), dp=BASIS_DP, per_unit=True)
 
 
 async def _cost_restatement_error(session: AsyncSession, company_id, record: dict, row: dict) -> dict | None:

@@ -8,7 +8,8 @@ into. Each goes through one of the things done to stock: a rename, a count up or
 to zero and back, a split, a sale of part or all of it, a write-off, a return to the supplier, a
 customer's return, a transform, undoing the merge or the receipt, setting its cost, correcting
 the cost of a merged part in either order, setting the merged lot's cost before a part's is
-corrected, or merging it again. After each, the books carry exactly the stock, whether its goods
+corrected, merging it again, or merging it again and confirming each part's cost at the value it
+carries, in either order. After each, the books carry exactly the stock, whether its goods
 cost is known is as the operation leaves it, and rebuilding the company from its events gives the
 same states. Its backup restores as a new company with the same states."""
 from __future__ import annotations
@@ -192,10 +193,15 @@ async def _result_then_part(c, s, auth, x: _Lot):
     return {x.lot: True}
 
 
-async def _merged_again(c, s, auth, x: _Lot):
+async def _merged_with_known(c, s, auth, x: _Lot) -> tuple[str, str]:
+    """The lot merged again with a lot of known cost 10.00: the second merge and that lot."""
     sku = (await _state(s, auth, x.lot))["sku"]
     other = await _item(c, auth, qty=1, cost_total=10.0, sku=sku)
-    y = await _merge(c, auth, [x.lot, other])
+    return await _merge(c, auth, [x.lot, other]), other
+
+
+async def _merged_again(c, s, auth, x: _Lot):
+    y, _other = await _merged_with_known(c, s, auth, x)
     if x.parts is None:
         return {y: False}
     assert (await _state(s, auth, y))[MARK] is True
@@ -203,12 +209,36 @@ async def _merged_again(c, s, auth, x: _Lot):
     return {y: True}
 
 
+async def _confirmed_known_first(c, s, auth, x: _Lot):
+    """Both parts of the second merge have their cost confirmed at the value they carry, the known
+    part first: the second merge is known once its last unknown part is."""
+    y, other = await _merged_with_known(c, s, auth, x)
+    await _set_cost(c, auth, other, 10.0)
+    assert (await _state(s, auth, y))[MARK] is True
+    await _set_cost(c, auth, x.lot, 100.0)
+    st = await _state(s, auth, y)
+    assert st["cost_total"] == 110.0, st
+    return {x.lot: True, y: True}
+
+
+async def _confirmed_unknown_first(c, s, auth, x: _Lot):
+    """As above, the part of unknown cost first."""
+    y, other = await _merged_with_known(c, s, auth, x)
+    await _set_cost(c, auth, x.lot, 100.0)
+    assert MARK not in await _state(s, auth, y)
+    await _set_cost(c, auth, other, 10.0)
+    st = await _state(s, auth, y)
+    assert st["cost_total"] == 110.0, st
+    return {x.lot: True, y: True}
+
+
 _OPS = {f.__name__.lstrip("_"): f for f in (
     _rename, _count_up, _count_down, _zero_and_back, _split_off, _partial_sale, _full_sale, _write_off,
     _supplier_return, _customer_return, _transform_it, _undo_merge, _undo_receipt, _cost_set, _parts_known_first,
-    _parts_unknown_first, _result_then_part, _merged_again)}
+    _parts_unknown_first, _result_then_part, _merged_again, _confirmed_known_first, _confirmed_unknown_first)}
 _ONLY = {"supplier_return": ("cleared",), "undo_receipt": ("topped",), "undo_merge": ("merged",),
-         "parts_known_first": ("merged",), "parts_unknown_first": ("merged",), "result_then_part": ("merged",)}
+         "parts_known_first": ("merged",), "parts_unknown_first": ("merged",), "result_then_part": ("merged",),
+         "confirmed_known_first": ("merged",), "confirmed_unknown_first": ("merged",)}
 _CASES = [(o, op) for op in _OPS for o in _ORIGINS if o in _ONLY.get(op, _ORIGINS)]
 
 
