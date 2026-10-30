@@ -26,6 +26,16 @@ def _no_debt(tmp_path, monkeypatch):
     monkeypatch.setattr(lock_rank, "DEBT_FILE", tmp_path / "no-debt.txt")
 
 
+_PRODUCTION_SITE = lock_rank._production_site
+
+
+@pytest.fixture(autouse=True)
+def _statements_sited_in_production(monkeypatch):
+    """The recorder census counts only statements production code sends; a synthetic
+    statement here is sent from this file, so it stands for one production sends."""
+    monkeypatch.setattr(lock_rank, "_production_site", lambda site: True)
+
+
 def _lock(cls: str, mode: str, key: str = "1") -> Lock:
     return Lock(cls, mode, "celerp/x.py:1 f", "test_x.py:1", key)
 
@@ -1782,3 +1792,29 @@ def test_a_login_is_deleted_after_its_company_notices_and_nothing_is_written_aft
     if notice_last:
         recorder.statement(1, "DELETE FROM notifications WHERE company_id = :c", {"c": "c2"}, 0.0)
     assert bool({k for k in _kinds(recorder) if k[0] == "order"}) is violates
+
+
+@pytest.mark.parametrize("site, production", [
+    ("celerp/services/permissions.py:263 read_authority", True),
+    ("default_modules/celerp-accounting/celerp_accounting/routes.py:3207 reopen_reconciliation", True),
+    ("tests/test_firm_view.py:131 test_firm_view", False),
+    ("tests/company_backup_support.py:81 member", False),
+    ("default_modules/celerp-ai/tests/test_batch.py:107 user", False),
+    ("?", False),
+])
+def test_a_site_is_production_only_in_the_files_the_census_scans(site, production):
+    assert _PRODUCTION_SITE(site) is production
+
+
+def test_a_take_a_test_sends_outside_the_company_lock_proves_nothing_against_production(
+        recorder, monkeypatch):
+    """R4 asks whether a production transaction can hold a company's row without that
+    company's lock while it waits. A seed or edit the test itself sends is no such
+    transaction, so it is not counted; the same take sent from production code is."""
+    monkeypatch.setattr(lock_rank, "_production_site", _PRODUCTION_SITE)
+    for site, counted in (("tests/test_seed.py:5 seed", []), ("celerp/x.py:1 f", ["nokey|unknown"])):
+        monkeypatch.setattr(lock_rank, "_site", lambda site=site: site)
+        rec = Recorder()
+        rec.statement(1, _FLUSH_UPDATE, ("done", "r1"), 0.0)
+        rec.statement(1, _LOCK_COMPANY, ("c2",), 0.0)
+        assert rec.dump()["classes"]["row:outbound_queue"].get("ungated_takes", []) == counted

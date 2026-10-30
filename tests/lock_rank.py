@@ -475,7 +475,8 @@ class Recorder:
         when the statement names no one company): a gate that conflicts with that still makes
         the take wait or keeps the gate's holder out. The company's own row is the gate. A take
         is counted once a lock that can wait follows it in the process before its transaction
-        ends (a leaf otherwise); a retake adds nothing to what its covering take holds."""
+        ends (a leaf otherwise); a retake adds nothing to what its covering take holds. Only a
+        take production code sends is counted (``_production_site``)."""
         table = lock.cls.split(":", 1)[1]
         if table == "companies":
             company = _companies_row(lock)
@@ -484,7 +485,8 @@ class Recorder:
             return
         if not lock.cls.startswith(("row:", "key:")) or not _company_owned(table):
             return
-        if lock.company and self._company_held(conn_key, lock):
+        if lock.company and self._company_held(conn_key, lock) or not _production_site(lock.site):
+            # A take the test itself sends is no production transaction: it proves nothing.
             return
         held = self.company_rows[conn_key].get(lock.company, ()) if lock.company else ("unknown",)
         company = max(held, key=_STRENGTH_ORDER.index) if held and lock.company else (held or ("none",))[0]
@@ -1560,10 +1562,19 @@ def _get_strength(value) -> str:
     return "update"
 
 
+_PRODUCTION_PATH = re.compile(r"(celerp|default_modules/[^/]+/celerp_[^/]*)/")
+
+
+def _production_site(site: str) -> bool:
+    """Whether a recorded site ("path:line function") is in a file the census scans: the
+    application and the first-party modules' packages, never a test or test helper."""
+    return bool(_PRODUCTION_PATH.match(site))
+
+
 def _production_files():
     root = Path(_ROOT)
-    yield from sorted([*root.joinpath("celerp").rglob("*.py"),
-                       *root.joinpath("default_modules").glob("*/celerp_*/**/*.py")])
+    yield from sorted(p for p in [*root.joinpath("celerp").rglob("*.py"), *root.joinpath("default_modules").rglob("*.py")]
+                      if _production_site(os.path.relpath(p, _ROOT)))
 
 
 def _model_tables(trees) -> dict[str, str]:
