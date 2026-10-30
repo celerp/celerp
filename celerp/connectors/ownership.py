@@ -153,13 +153,29 @@ async def _lock_active_company(
     return company
 
 
-async def _connector_rows(
-    session: AsyncSession, connector: str, *, for_update: bool
-) -> list[ConnectorConfig]:
+async def _connector_rows(session: AsyncSession, connector: str) -> list[ConnectorConfig]:
+    """Every company's row of ``connector``, read without a row lock: which company holds it
+    changes only under the exclusive connector-owner fence (or a company's own deactivation,
+    under its company lock), so a caller locks only the rows it writes (``_locked_row``)."""
     query = sa.select(ConnectorConfig).where(ConnectorConfig.connector == connector)
-    if for_update:
-        query = query.with_for_update()
     return list((await session.execute(query)).scalars().all())
+
+
+async def _locked_row(session: AsyncSession, owner: str, connector: str) -> ConnectorConfig | None:
+    """The row of ``connector`` keyed by ``owner`` (a company the caller holds the lock of,
+    or the instance id of a legacy row, which is no company's), FOR UPDATE, named by its key."""
+    return await session.scalar(sa.select(ConnectorConfig).where(
+        ConnectorConfig.company_id == str(owner), ConnectorConfig.connector == connector,
+    ).with_for_update().execution_options(populate_existing=True))
+
+
+async def lock_connection_row(session: AsyncSession, company_id, connector: str) -> ConnectorConfig | None:
+    """The one way to take a company's connection row for a write: the company's lock first,
+    as every writer of the company's connector rows takes it, then the row FOR UPDATE. None
+    when the company or the row is gone."""
+    if not await lock_company(session, uuid.UUID(str(company_id))):
+        return None
+    return await _locked_row(session, str(company_id), connector)
 
 
 async def lock_connector_key(
@@ -217,10 +233,9 @@ async def lock_connector_operation(
     company_id = str(company_id)
     await lock_connector_key(session, connector, exclusive=exclusive)
     await _lock_active_company(session, company_id, connector, for_update=exclusive)
-    rows = await _connector_rows(session, connector, for_update=exclusive)
-    current = _resolve_connector_owner(rows, company_id)
+    current = _resolve_connector_owner(await _connector_rows(session, connector), company_id)
     if current is not None:
-        return current
+        return await _locked_row(session, company_id, connector) if exclusive else current
     if require_owner:
         raise ConnectorOwnershipError(t("error.connector_not_here", service=_service(connector)))
     reset_at = await session.scalar(
@@ -249,17 +264,18 @@ async def claim_connector_ownership(
     legacy_id = ensure_instance_id()
     await lock_connector_key(session, connector, exclusive=True)
     company = await _lock_active_company(session, company_id, connector)
-    rows = await _connector_rows(session, connector, for_update=True)
     others = {
         str(row.company_id)
-        for row in rows
+        for row in await _connector_rows(session, connector)
         if str(row.company_id) not in {company_id, legacy_id}
     }
     if others:
         raise ConnectorOwnershipError(t("error.connector_other_company", service=_service(connector)))
 
-    current = next((r for r in rows if str(r.company_id) == company_id), None)
-    legacy = next((r for r in rows if str(r.company_id) == legacy_id), None)
+    # Two keys of one class, taken in key order as every multi-key take is.
+    locked = {o: await _locked_row(session, o, connector) for o in sorted({company_id, legacy_id})}
+    current = locked[company_id]
+    legacy = locked[legacy_id] if legacy_id != company_id else None
     if current is not None and legacy is not None and current is not legacy:
         if (
             current.webhook_secret
@@ -319,16 +335,14 @@ async def _ensure_first_sync(session: AsyncSession, company_id: str, legacy_id: 
     from celerp.connectors.registry import get as get_connector
     from celerp.models.connector_first_sync import ConnectorFirstSync
 
-    keys = {
-        str(row.company_id): row
-        for row in (await session.execute(
-            sa.select(ConnectorFirstSync)
-            .where(ConnectorFirstSync.connector == connector,
-                   ConnectorFirstSync.company_id.in_({company_id, legacy_id}))
-            .with_for_update()
-        )).scalars()
-    }
-    current, legacy = keys.get(company_id), keys.get(legacy_id)
+    async def _record(owner: str):
+        return await session.scalar(sa.select(ConnectorFirstSync).where(
+            ConnectorFirstSync.connector == connector, ConnectorFirstSync.company_id == owner,
+        ).with_for_update())
+
+    records = {o: await _record(o) for o in sorted({company_id, legacy_id})}
+    current = records[company_id]
+    legacy = records[legacy_id] if legacy_id != company_id else None
     if legacy is not None and legacy_id != company_id:
         if current is None:
             legacy.company_id = company_id
@@ -369,7 +383,7 @@ async def connector_ownership_state(
     company: owned, none, other (another company uses it), ambiguous
     (linked to more than one company) or unassigned (set up before companies
     had their own connectors)."""
-    rows = await _connector_rows(session, connector, for_update=False)
+    rows = await _connector_rows(session, connector)
     if _unassigned_only(rows):
         return OWNERSHIP_UNASSIGNED
     try:
@@ -497,11 +511,11 @@ async def connector_release_scope(
     legacy row with no company. Raises when this company holds no row."""
     company_id = str(company_id)
     legacy_id = ensure_instance_id()
-    rows = await _connector_rows(session, connector, for_update=True)
-    mine = [row for row in rows if str(row.company_id) in {company_id, legacy_id}]
-    if not any(str(row.company_id) == company_id for row in mine):
+    owners = {str(row.company_id) for row in await _connector_rows(session, connector)}
+    if company_id not in owners:
         raise ConnectorOwnershipError(t("error.connector_not_here", service=_service(connector)))
-    return mine
+    return [await _locked_row(session, owner, connector)
+            for owner in sorted({company_id, legacy_id}) if owner in owners]
 
 
 async def release_connector_ownership(
@@ -539,10 +553,9 @@ async def lock_unassigned_connector(
     """Lock a connector that no company owns for a reset. Raises when any
     company holds it, so a reset never removes a company's connection."""
     await lock_connector_key(session, connector, exclusive=True)
-    rows = await _connector_rows(session, connector, for_update=True)
-    if not _unassigned_only(rows):
+    if not _unassigned_only(await _connector_rows(session, connector)):
         raise ConnectorOwnershipError(t("error.connector_nothing_to_reset", service=_service(connector)))
-    return rows
+    return [await _locked_row(session, ensure_instance_id(), connector)]
 
 
 async def release_unassigned_connector(
