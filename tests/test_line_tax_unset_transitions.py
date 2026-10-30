@@ -314,6 +314,7 @@ _CANNOT_CROSS = {
     "/docs/{entity_id}/fulfill-lines": "ships goods; the document's status and taxes stay as they were",
     "/docs/{entity_id}/revert-lines": "takes shipped goods back",
     "/docs/{entity_id}/invoice-lines": "draws lines of an issued memo, which Issue already refused with a tax unset",
+    "/docs/{entity_id}/back-to-memo": "sends drawn lines of a draft back to their memo; the draft stays a draft",
     "/docs/{entity_id}/reserve-lines": "ledger-neutral reservation",
     "/lists/{entity_id}/reserve-lines": "ledger-neutral reservation",
     "/docs/{entity_id}/set-available": "releases a reservation",

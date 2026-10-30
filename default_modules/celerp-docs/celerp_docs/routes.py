@@ -2771,7 +2771,7 @@ async def void_document(entity_id: str, payload: DocVoidBody, company_id: str, u
         raise HTTPException(status_code=409, detail=t("documents.err_already_submitted"))
     key, digest = _operation("void", entity_id, payload)
     if (done := await _earlier_run(session, company_id, key, event_type="doc.voided",
-                                   entity_id=entity_id, digest=digest)) is not None:
+                                   entity_id=entity_id, digest=digest, with_event_id=True)) is not None:
         return done
     # A void document already reversed its entries: voiding it again would record "void" as
     # the status to restore, so unvoid could never bring it back.
@@ -2847,7 +2847,7 @@ async def void_document(entity_id: str, payload: DocVoidBody, company_id: str, u
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.voided",
         data=event_data, actor_id=user.id, location_id=None, source="api",
-        idempotency_key=key, metadata_={"request": digest},
+        idempotency_key=key, metadata_={"request": digest, "result": {"reopened_memos": reopened}},
     )
     await _settle_moved_cost(session, company_id, user.id, entity_id, row.state, f"void-{entry.id}", "doc.voided")
     if commit:
