@@ -27,6 +27,14 @@ _STABLE_READS = {
         "the classes only label an overflowing element in the failure message; the check is its geometry",
     ("test_bulk_delete_drafts.py", "test_a_reloaded_row_matches_the_row_the_list_drew"):
         "the row shape drops htmx's transient classes, so what it reads does not change while a swap settles",
+    ("test_fixed_assets_journeys.py", "_alignments"):
+        "its caller _aligned only checks for cell--number as a substring, which htmx's transient classes cannot remove",
+    ("test_fixed_assets_journeys.py", "_aligned"):
+        "it checks the classes _alignments read for cell--number as a substring, which htmx's transient classes "
+        "cannot remove",
+    ("test_data_table_match_column.py", "_assert_aligned"):
+        "it is given cell classes read after a full page reload and wait_for_selector, and htmx marks only the "
+        "top-level nodes it swaps, never the table's cells",
 }
 
 
