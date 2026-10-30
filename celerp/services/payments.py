@@ -371,6 +371,7 @@ async def receive_fees(payload: dict) -> bool:
             problem = "books"
         else:
             from celerp.services.account_roles import PostingRoleError
+            from celerp.services.journal_accounts import ReconciledHistoryChanged
             from celerp_docs.routes_payments import _company_owner_id
             actor = await _company_owner_id(session, cid)
             try:
@@ -383,6 +384,10 @@ async def receive_fees(payload: dict) -> bool:
                 await session.rollback()
                 roles = [p["params"]["role"] for p in exc.detail["params"]["problems"]]
                 await _fee_not_recorded(cid, target_doc, document, fees, "account", roles)
+                return False
+            except ReconciledHistoryChanged:
+                await session.rollback()
+                await _fee_not_recorded(cid, target_doc, document, fees, "reconciled")
                 return False
             except ValueError:
                 await session.rollback()

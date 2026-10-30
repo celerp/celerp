@@ -4545,7 +4545,6 @@
   "documents.err_payment_already_void": "Diese Zahlung ist bereits storniert. Wählen Sie „Erneut versuchen“, um das Ergebnis zu sehen.",
   "documents.err_payment_not_active": "Diese Zahlung ist bereits storniert oder erstattet und kann nicht gelöscht werden.",
   "documents.err_payment_partly_refunded": "Ein Teil dieser Zahlung wurde erstattet, daher kann sie nicht gelöscht werden. Stornieren Sie sie stattdessen.",
-  "documents.err_payment_reconciled": "Diese Zahlung ist in einem abgeschlossenen Bankabgleich zugeordnet und kann nicht gelöscht werden. Öffnen Sie diesen Abgleich wieder und heben Sie zuerst die Zuordnung der Zahlung auf.",
   "documents.err_only_credit_note_apply": "Nur eine Gutschrift kann auf eine Rechnung angewendet werden.",
   "documents.err_credit_note_finalize_apply": "Schließen Sie die Gutschrift ab, bevor Sie sie auf eine Rechnung anwenden.",
   "documents.err_apply_target_invoice": "Eine Gutschrift kann nur auf eine Rechnung angewendet werden. Wählen Sie eine Rechnung.",

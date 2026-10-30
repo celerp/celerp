@@ -4545,7 +4545,6 @@
   "documents.err_payment_already_void": "Khoản thanh toán này đã bị hủy. Hãy chọn Thử lại để xem.",
   "documents.err_payment_not_active": "Khoản thanh toán này đã bị hủy hoặc đã hoàn tiền nên không thể xóa.",
   "documents.err_payment_partly_refunded": "Một phần khoản thanh toán này đã được hoàn nên không thể xóa. Hãy hủy nó thay vào đó.",
-  "documents.err_payment_reconciled": "Khoản thanh toán này đã được khớp trong một lần đối chiếu ngân hàng đã hoàn tất nên không thể xóa. Hãy mở lại lần đối chiếu đó và bỏ khớp khoản thanh toán trước.",
   "documents.err_only_credit_note_apply": "Chỉ giấy báo có mới có thể áp vào hóa đơn.",
   "documents.err_credit_note_finalize_apply": "Hãy hoàn tất giấy báo có trước khi áp vào hóa đơn.",
   "documents.err_apply_target_invoice": "Giấy báo có chỉ có thể áp vào hóa đơn. Hãy chọn một hóa đơn.",

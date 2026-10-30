@@ -4545,7 +4545,6 @@
   "documents.err_payment_already_void": "Este pago ya está anulado. Seleccione Reintentar para verlo.",
   "documents.err_payment_not_active": "Este pago ya está anulado o reembolsado, así que no se puede eliminar.",
   "documents.err_payment_partly_refunded": "Parte de este pago se reembolsó, así que no se puede eliminar. Anúlelo en su lugar.",
-  "documents.err_payment_reconciled": "Este pago está conciliado en una conciliación bancaria completada, así que no se puede eliminar. Reabra esa conciliación y quite primero el pago.",
   "documents.err_only_credit_note_apply": "Solo una nota de crédito se puede aplicar a una factura.",
   "documents.err_credit_note_finalize_apply": "Finalice la nota de crédito antes de aplicarla a una factura.",
   "documents.err_apply_target_invoice": "Una nota de crédito solo se puede aplicar a una factura. Elija una factura.",

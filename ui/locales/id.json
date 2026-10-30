@@ -4545,7 +4545,6 @@
   "documents.err_payment_already_void": "Pembayaran ini sudah dibatalkan. Pilih Coba lagi untuk melihatnya.",
   "documents.err_payment_not_active": "Pembayaran ini sudah dibatalkan atau dikembalikan, jadi tidak bisa dihapus.",
   "documents.err_payment_partly_refunded": "Sebagian pembayaran ini sudah dikembalikan, jadi tidak bisa dihapus. Batalkan saja.",
-  "documents.err_payment_reconciled": "Pembayaran ini dicocokkan dalam rekonsiliasi bank yang sudah selesai, jadi tidak bisa dihapus. Buka kembali rekonsiliasi itu dan lepaskan pencocokan pembayaran dulu.",
   "documents.err_only_credit_note_apply": "Hanya nota kredit yang bisa diterapkan ke faktur.",
   "documents.err_credit_note_finalize_apply": "Finalisasi nota kredit sebelum menerapkannya ke faktur.",
   "documents.err_apply_target_invoice": "Nota kredit hanya bisa diterapkan ke faktur. Pilih faktur.",

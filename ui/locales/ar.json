@@ -4545,7 +4545,6 @@
   "documents.err_payment_already_void": "هذه الدفعة ملغاة بالفعل. اختر إعادة المحاولة لرؤية النتيجة.",
   "documents.err_payment_not_active": "هذه الدفعة ملغاة أو مستردة بالفعل، لذا لا يمكن حذفها.",
   "documents.err_payment_partly_refunded": "تم استرداد جزء من هذه الدفعة، لذا لا يمكن حذفها. ألغِها بدلًا من ذلك.",
-  "documents.err_payment_reconciled": "هذه الدفعة مطابقة في تسوية بنكية مكتملة، لذا لا يمكن حذفها. أعد فتح تلك التسوية وألغِ مطابقة الدفعة أولًا.",
   "documents.err_only_credit_note_apply": "لا يمكن تطبيق سوى إشعار دائن على فاتورة.",
   "documents.err_credit_note_finalize_apply": "اعتمد إشعار الدائن قبل تطبيقه على فاتورة.",
   "documents.err_apply_target_invoice": "لا يمكن تطبيق إشعار الدائن إلا على فاتورة. اختر فاتورة.",

@@ -4563,7 +4563,6 @@
   "documents.err_payment_already_void": "This payment is already void. Select Try again to see it.",
   "documents.err_payment_not_active": "This payment is already void or refunded, so it can't be deleted.",
   "documents.err_payment_partly_refunded": "Part of this payment has been refunded, so it can't be deleted. Void it instead.",
-  "documents.err_payment_reconciled": "This payment is matched in a completed bank reconciliation, so it can't be deleted. Reopen that reconciliation and unmatch the payment first.",
   "documents.err_only_credit_note_apply": "Only a credit note can be applied to an invoice.",
   "documents.err_credit_note_finalize_apply": "Finalize the credit note before applying it to an invoice.",
   "documents.err_apply_target_invoice": "A credit note can only be applied to an invoice. Choose an invoice.",

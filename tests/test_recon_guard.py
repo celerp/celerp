@@ -356,6 +356,7 @@ async def test_delete_payment_refused_while_matched_in_a_reconciliation(client, 
     r = await client.request("DELETE", f"/docs/{inv}/payments/0", headers=h, json={})
     assert r.status_code == 409, r.text
     assert "Harbor Bank" in r.json()["detail"] and "2026-09-30" in r.json()["detail"]
+    await session.rollback()  # production never commits a refused request; the test client shares the session
     assert len(await _live_payments(client, h, inv)) == 1
     assert await _status(session, await _company(session, b), je) == "posted"
 
@@ -382,11 +383,13 @@ async def test_refusal_copy_follows_the_callers_role(client, session):
     assert held_ask.status_code == 409, held_ask.text
     assert "Ask someone who manages accounting" in held_ask.json()["detail"]
     assert "Unmatch it there" not in held_ask.json()["detail"]
+    await session.rollback()  # production never commits a refused request; the test client shares the session
 
     held = await client.request("DELETE", f"/docs/{inv}/payments/0", headers=manager, json={})
     assert held.status_code == 409, held.text
     assert "Unmatch it there first" in held.json()["detail"]
     assert "Ask someone" not in held.json()["detail"]
+    await session.rollback()  # production never commits a refused request; the test client shares the session
 
     late = await _invoice(client, h)
     period_ask = await client.post(f"/docs/{late}/payment", headers=operator, json={

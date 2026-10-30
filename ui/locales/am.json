@@ -4545,7 +4545,6 @@
   "documents.err_payment_already_void": "ይህ ክፍያ አስቀድሞ ተሰርዟል። ለማየት እንደገና ሞክር ይምረጡ።",
   "documents.err_payment_not_active": "ይህ ክፍያ አስቀድሞ ተሰርዟል ወይም ተመልሷል፣ ስለዚህ ሊሰረዝ አይችልም።",
   "documents.err_payment_partly_refunded": "የዚህ ክፍያ ከፊሉ ተመልሷል፣ ስለዚህ ሊሰረዝ አይችልም። በምትኩ ይሰርዙት።",
-  "documents.err_payment_reconciled": "ይህ ክፍያ በተጠናቀቀ የባንክ ማስታረቅ ውስጥ ተዛምዷል፣ ስለዚህ ሊሰረዝ አይችልም። ያንን ማስታረቅ እንደገና ይክፈቱና መጀመሪያ የክፍያውን ማዛመድ ያንሱ።",
   "documents.err_only_credit_note_apply": "በደረሰኝ ላይ ሊተገበር የሚችለው የክሬዲት ማስታወሻ ብቻ ነው።",
   "documents.err_credit_note_finalize_apply": "የክሬዲት ማስታወሻውን በደረሰኝ ላይ ከመተግበርዎ በፊት ያጠናቅቁት።",
   "documents.err_apply_target_invoice": "የክሬዲት ማስታወሻ በደረሰኝ ላይ ብቻ ሊተገበር ይችላል። ደረሰኝ ይምረጡ።",

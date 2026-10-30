@@ -4545,7 +4545,6 @@
   "documents.err_payment_already_void": "この支払いはすでに無効になっています。「再試行」を選ぶと確認できます。",
   "documents.err_payment_not_active": "この支払いはすでに無効または返金済みのため、削除できません。",
   "documents.err_payment_partly_refunded": "この支払いは一部が返金済みのため削除できません。代わりに無効にしてください。",
-  "documents.err_payment_reconciled": "この支払いは完了済みの銀行照合で照合されているため、削除できません。その照合を再度開き、先に支払いの照合を外してください。",
   "documents.err_only_credit_note_apply": "請求書に充当できるのはクレジットノートだけです。",
   "documents.err_credit_note_finalize_apply": "請求書に充当する前に、クレジットノートを確定してください。",
   "documents.err_apply_target_invoice": "クレジットノートは請求書にのみ充当できます。請求書を選んでください。",
