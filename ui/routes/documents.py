@@ -28,6 +28,7 @@ from celerp.services.units import (
 )
 from celerp.services.line_measures import identifier_backfill, item_measure_meta, line_identifier, measure_locks, measure_sublines, qty_label, resolve_line_measures, splitting_allowed
 from ui.components.shell import base_shell, page_header, toast_header, page_title
+from ui.components.list_page import date_range_select, filter_field, filter_panel, list_page_header, period_fields, select_field
 from ui.security import not_permitted_redirect
 from ui.components.table import search_bar, search_results, EMPTY, pagination, per_page_value, server_pager, searchable_select, breadcrumbs, status_cards, empty_state_cta, fmt_money, fmt_rate, format_value, currency_symbol, unwrap_address, col_resize_script, bank_account_options as _bank_account_options, display_cell, editable_cell, display_enum, display_unit, doc_href
 from celerp.services.background import spawn_background
@@ -411,21 +412,46 @@ async def _exact_physical_lot(token: str, code: str, *, doc_type: str, doc_id: s
     return lots[0]
 
 
-async def _sales_options(token: str, items: list[dict], company_settings: dict, code: str, *,
-                         doc_id: str | None, line_id: str | None, source_memo_id: str | None) -> list[dict]:
-    """Forward-sale picker options for matched lots: drafts dropped, then splittable lots
-    held for another record or another line, or out on another memo, dropped before
-    consolidation, so a SKU's option only ever stands for (and counts) stock this line may
-    draw. Raises ``_PickerRefusal`` when every matched lot is held elsewhere, rather than
-    letting the caller fall through to a different item."""
+def _drawable_lots(items: list[dict], doc_id: str | None, line_id: str | None,
+                   source_memo_id: str | None) -> list[dict]:
+    """The lots a line may newly draw: drafts dropped, then splittable lots held for another
+    record or another line, or out on another memo."""
     from celerp_inventory.projections import held_elsewhere
 
-    items = [i for i in items if str(i.get("status") or "").lower() != "draft"]
-    drawable = [i for i in items
-                if not (splitting_allowed(i) and held_elsewhere(i, doc_id, line_id, source_memo_id))]
-    if items and not drawable:
-        raise _PickerRefusal(await _held_by_another_record(token, items, code))
+    return [i for i in items if str(i.get("status") or "").lower() != "draft"
+            and not (splitting_allowed(i) and held_elsewhere(i, doc_id, line_id, source_memo_id))]
+
+
+async def _sales_options(token: str, items: list[dict], company_settings: dict, code: str, *,
+                         doc_id: str | None, line_id: str | None, source_memo_id: str | None) -> list[dict]:
+    """Forward-sale picker options for matched lots: the drawable lots, consolidated, so a
+    SKU's option only ever stands for (and counts) stock this line may draw. Raises
+    ``_PickerRefusal`` when every matched lot is held elsewhere, rather than letting the
+    caller fall through to a different item."""
+    stock = [i for i in items if str(i.get("status") or "").lower() != "draft"]
+    drawable = _drawable_lots(stock, doc_id, line_id, source_memo_id)
+    if stock and not drawable:
+        raise _PickerRefusal(await _held_by_another_record(token, stock, code))
     return _consolidate_sales_lots(drawable, company_settings)
+
+
+async def _starting_options(token: str, company_settings: dict, *, doc_id: str | None,
+                            line_id: str | None, source_memo_id: str | None) -> list[dict]:
+    """The line-item picker's list before anything is typed, on every document type: the first
+    _PICKER_START_LIMIT options in the inventory list's default order (most recently updated
+    first) that this line may draw. Lots held elsewhere are skipped and the reading goes on, so
+    the newest items being held by another record (a quotation's reservation, a memo) never
+    leaves the list empty while other stock is free. At most _PICKER_START_PAGES pages are read."""
+    drawable: list[dict] = []
+    options: list[dict] = []
+    for page in range(_PICKER_START_PAGES):
+        found = (await api.list_items(token, {"limit": _PICKER_START_LIMIT,
+                                              "offset": page * _PICKER_START_LIMIT}))["items"]
+        drawable += _drawable_lots(found, doc_id, line_id, source_memo_id)
+        options = _consolidate_sales_lots(drawable, company_settings)
+        if len(options) >= _PICKER_START_LIMIT or len(found) < _PICKER_START_LIMIT:
+            break
+    return options[:_PICKER_START_LIMIT]
 
 
 def _enrich_doc_files(doc: dict) -> list[dict]:
@@ -445,8 +471,10 @@ from ui.routes.reports import _company_today, _date_presets, _get_company, _pars
 
 logger = logging.getLogger(__name__)
 
-# How many items the line-item picker offers before anything is typed.
+# How many items the line-item picker offers before anything is typed, and how many pages of
+# that size it reads at most to find them past lots held for other records.
 _PICKER_START_LIMIT = 20
+_PICKER_START_PAGES = 5
 
 # ---------------------------------------------------------------------------
 # Lists constants
@@ -676,42 +704,41 @@ _ACCOUNTING_SYNC_CHOICES = (
 )
 
 
-def _accounting_sync_filter(state: dict[str, str]) -> FT:
-    """Document-list view filter; keep every other selection and sort key. A value it does not
-    know filters nothing, and says so."""
-    links = []
-    for choice, title in _ACCOUNTING_SYNC_CHOICES:
-        params = {k: v for k, v in state.items() if k != "accounting_sync"}
-        if choice:
-            params["accounting_sync"] = choice
-        links.append(A(
-            t(title), href="/docs?" + urlencode(params),
-            cls="btn btn--sm " + (
-                "btn--primary" if state.get("accounting_sync", "") == choice else "btn--secondary"),
-        ))
-    if state.get("accounting_sync", "") not in dict(_ACCOUNTING_SYNC_CHOICES):
-        return Div(P(t("documents.accounting_sync_unknown"), cls="flash flash--warning"),
-                   Div(*links, cls="filter-actions"))
-    return Div(*links, cls="filter-actions")
+def _accounting_sync_warning(state: dict[str, str], lang: str | None = None) -> FT:
+    """A sync filter Celerp does not know filters nothing, and says so."""
+    if state.get("accounting_sync", "") in dict(_ACCOUNTING_SYNC_CHOICES):
+        return ""
+    return P(t("documents.accounting_sync_unknown", lang), cls="flash flash--warning")
 
 
-def _docs_content(state: dict[str, str], docs: list[dict], total_count: int, summary: dict,
-                  page: int, per_page: int, currency: str | None, lang: str) -> FT:
-    """Summary, status cards, table and pager for a document list state: the page embeds it
-    and the live search replaces it, so all four always describe the same result set."""
+def _doc_cards(state: dict[str, str], docs: list[dict], summary: dict, currency: str | None, lang: str,
+               *, oob: bool = False) -> FT:
+    """The status widgets for a document list state. They sit above the filters panel, outside
+    the area the live search replaces, so a search response sends them again out of band."""
     doc_type = state.get("type", "")
     status = state.get("status", "")
     # The status cards keep the dates and sort; the sort links and pages keep everything.
     cards_base_url = "/docs?" + urlencode({"type": doc_type, **{k: v for k, v in state.items() if k not in _DOC_STATUS_KEYS and k != "type"}})
     return Div(
-        _accounting_sync_filter(state),
-        _summary_bar(summary, doc_type, currency, lang),
         _doc_status_cards(docs, status, summary, currency, doc_type=doc_type, lang=lang,
                           status_in=state.get("status_in", ""), overdue_only=bool(state.get("overdue_only")),
                           unfulfilled_only=bool(state.get("unfulfilled_only")),
                           not_restocked=bool(state.get("not_restocked")), not_stocked=bool(state.get("not_stocked")),
                           all_issued=_doc_api_params(state, "", "", limit=None).get("all_issued") == "1",
                           converted_to_type=state.get("converted_to_type", ""), base_url=cards_base_url),
+        id="doc-cards", **({"hx_swap_oob": "true"} if oob else {}),
+    )
+
+
+def _docs_content(state: dict[str, str], docs: list[dict], total_count: int,
+                  page: int, per_page: int, currency: str | None, lang: str) -> FT:
+    """Table and pager for a document list state: the page embeds it and the live search
+    replaces it (with the cards and the header summary out of band), so all of them always
+    describe the same result set."""
+    doc_type = state.get("type", "")
+    status = state.get("status", "")
+    return Div(
+        _accounting_sync_warning(state, lang),
         _doc_table(
             docs,
             sort=state.get("sort", "date"),
@@ -727,53 +754,54 @@ def _docs_content(state: dict[str, str], docs: list[dict], total_count: int, sum
     )
 
 
-def _date_range_select(base_url: str, date_from: str, date_to: str, preset: str,
-                       extra_params: str = "", lang: str | None = None) -> FT:
-    """The one date control of a list page: a preset dropdown that reveals a from/to range (with
-    Apply) only when Custom is chosen. extra_params ("&k=v...") rides along as hidden fields so
-    switching the dates keeps the search and every other filter."""
-    hidden_params = [
-        Input(type="hidden", name=k, value=v)
-        for k, v in parse_qsl(extra_params.lstrip("&"), keep_blank_values=True)
-        if k and k not in _DATE_KEYS
-    ]
-    is_custom = preset == "custom"
-    # A preset submits at once; its from/to are dropped so they cannot override it.
-    on_change = (
-        "var f=this.form,r=f.querySelector('.date-range-custom'),c=this.value==='custom';"
-        "r.hidden=!c;"
-        "if(c){f.elements['from'].focus();return;}"
-        "f.querySelectorAll('.date-input').forEach(function(i){i.disabled=true;});f.submit();"
-    )
-    return Form(
-        *hidden_params,
-        Select(
-            *[Option(label, value=key, selected=key == preset) for key, label in _date_presets(lang)],
-            name="preset", cls="form-input form-input--sm date-preset-select",
-            aria_label=t("filter.date_range", lang), onchange=on_change,
-        ),
-        Span(
-            Input(type="date", name="from", value=date_from, max=date_to or "", cls="date-input"),
-            Span("--", cls="date-sep"),
-            Input(type="date", name="to", value=date_to, min=date_from or "", cls="date-input"),
-            Button(t("btn.apply", lang), type="submit", cls="btn btn--secondary btn--sm"),
-            cls="date-range-custom", hidden=not is_custom,
-        ),
-        action=base_url, method="get", cls="date-range-form",
+# A select in the /docs panel keeps every other filter, as the old date and sync controls did;
+# dates the user never chose (the company default) and a hidden custom range are not sent.
+_DOC_FILTER_ON_CHANGE = (
+    "var f=this.form;"
+    "f.querySelectorAll('[data-unchosen],.period-custom[hidden] input').forEach(function(i){i.disabled=true;});"
+    "f.submit();"
+)
+# The panel's own fields; every other state key rides along hidden (the type fixed by the menu
+# entry, the status filter, contact, sort, page size).
+_DOC_PANEL_KEYS = ("q", "accounting_sync", *_DATE_KEYS)
+
+
+def _doc_filters(state: dict[str, str], date_from: str, date_to: str, preset: str, lang: str) -> FT:
+    """The /docs filters panel: Search, Records (accounting sync), Period (From / To for Custom).
+    It sits outside #doc-content, so typing keeps the focus; a select reloads the page with the
+    panel's values. The document type is fixed by the menu entry and carried hidden."""
+    doc_type = state.get("type", "")
+    period = period_fields(date_from, date_to, preset, lang=lang)
+    if not any(state.get(k) for k in _DATE_KEYS):
+        for field in period:
+            field.children[1].attrs["data-unchosen"] = "1"
+    search = search_bar(placeholder=t("documents.search_docs_placeholder"), target="#doc-content",
+                        url="/docs/search?" + _state_query(state, without=("q",)), value=state.get("q", ""))
+    return filter_panel(
+        "/docs",
+        filter_field(t(_DOC_TYPE_SEARCH_LABELS.get(doc_type, "documents.search_all"), lang), search,
+                     field_id="search-input", wide=True),
+        select_field("accounting_sync", t("filter.records", lang),
+                     [(choice, t(title, lang)) for choice, title in _ACCOUNTING_SYNC_CHOICES],
+                     state.get("accounting_sync", ""), lang=lang, on_change=_DOC_FILTER_ON_CHANGE),
+        *period,
+        hidden={k: v for k, v in state.items() if k not in _DOC_PANEL_KEYS},
+        reset_href="/docs" + (f"?{urlencode({'type': doc_type})}" if doc_type else ""),
+        show_apply=preset == "custom", lang=lang, panel_id="doc-filters",
     )
 
 
-def _search_controls(base: str, state: dict[str, str], date_from: str, date_to: str, preset: str,
-                     can_export: bool, lang: str, oob: bool = False) -> tuple[FT, FT]:
-    """(Export CSV link, date dropdown) for /docs or /lists. Both carry the page state, search
-    included, so a search response sends them again out of band (oob=True)."""
-    swap = {"hx_swap_oob": "true"} if oob else {}
-    extra = _state_query(state, without=_DATE_KEYS)
-    export = A(t("btn.export_csv"), href=f"/{base}/export/csv?" + _state_query(state), cls="btn btn--secondary",
-               id=f"{base}-export", **swap) if can_export else ""
-    dates = Div(_date_range_select(f"/{base}", date_from, date_to, preset, extra_params=f"&{extra}" if extra else "",
-                                   lang=lang), id=f"{base}-dates", cls="list-filter-dates", **swap)
-    return export, dates
+# Moved to the list page kit (GEN-012); the pages not yet on the panel still call it here.
+_date_range_select = date_range_select
+
+
+def _export_link(base: str, state: dict[str, str], can_export: bool, *, oob: bool = False) -> FT:
+    """Export CSV for /docs or /lists, carrying the page state (search included), so a search
+    response sends it again out of band (oob=True)."""
+    if not can_export:
+        return ""
+    return A(t("btn.export_csv"), href=f"/{base}/export/csv?" + _state_query(state), cls="btn btn--secondary",
+             id=f"{base}-export", **({"hx_swap_oob": "true"} if oob else {}))
 
 
 async def _list_results(token: str, state: dict[str, str], date_from: str, date_to: str,
@@ -786,19 +814,65 @@ async def _list_results(token: str, state: dict[str, str], date_from: str, date_
     return lists, result.get("total", len(lists)), summary
 
 
-def _lists_content(state: dict[str, str], lists: list[dict], total_count: int, summary: dict,
-                   page: int, per_page: int, lang: str) -> FT:
-    """Status cards, table and pager for a lists page state: the page embeds it and the live
-    search replaces it, so all three always describe the same result set."""
+def _list_cards(state: dict[str, str], summary: dict, *, oob: bool = False) -> FT:
+    """The status widgets for a lists page state. They sit above the filters panel, outside the
+    area the live search replaces, so a search response sends them again out of band."""
     all_issued = _list_api_params(state, "", "", limit=None).get("all_issued") == "1"
     return Div(
         _list_status_cards(summary, "all_issued" if all_issued else state.get("status", ""),
                            converted_to_type=state.get("converted_to_type", ""),
                            base_url="/lists?" + _state_query(state, without=_LIST_STATUS_KEYS),
                            dates_chosen=any(state.get(k) for k in _DATE_KEYS)),
+        id="list-cards", **({"hx_swap_oob": "true"} if oob else {}),
+    )
+
+
+def _lists_content(state: dict[str, str], lists: list[dict], total_count: int,
+                   page: int, per_page: int, lang: str) -> FT:
+    """Table and pager for a lists page state: the page embeds it and the live search replaces
+    it (with the cards out of band), so both always describe the same result set."""
+    return Div(
         _list_table(lists, lang=lang),
         pagination(page, total_count, per_page, "/lists", _state_query(state, without=("per_page",))),
         id="list-content",
+    )
+
+
+# Changing Type starts a fresh status filter for the new type and keeps the search, the dates
+# and the page size. Dates the user never chose (the company default) and a hidden custom range
+# are not sent, so they do not become a chosen range.
+_LIST_TYPE_ON_CHANGE = (
+    "var f=this.form;"
+    "f.querySelectorAll('.list-status-filter,[data-unchosen],.period-custom[hidden] input')"
+    ".forEach(function(i){i.disabled=true;});f.submit();"
+)
+
+
+def _list_type_options(lang: str | None = None) -> list[tuple[str, str]]:
+    return [("", t("doc.all", lang))] + [(lt, _list_type_label(lt)) for lt in _LIST_TYPES]
+
+
+def _list_filters(state: dict[str, str], date_from: str, date_to: str, preset: str, lang: str,
+                  *, type_locked: bool = False) -> FT:
+    """The /lists filters panel: Search, Type, Period (From / To for Custom). It sits outside
+    #list-content, so typing keeps the focus; a select reloads the page with the panel's values.
+    type_locked (SAL-001) keeps the type as a hidden field when a menu entry fixes it."""
+    period = period_fields(date_from, date_to, preset, lang=lang)
+    if not any(state.get(k) for k in _DATE_KEYS):
+        for field in period:
+            field.children[1].attrs["data-unchosen"] = "1"
+    search = search_bar(placeholder=t("documents.search_ref_customer_short"), target="#list-content",
+                        url="/lists/search?" + _state_query(state, without=("q",)), value=state.get("q", ""))
+    return filter_panel(
+        "/lists",
+        filter_field(t("documents.search_lists", lang), search, field_id="search-input", wide=True),
+        select_field("type", t("th.doc_type", lang), _list_type_options(lang), state.get("type", ""),
+                     lang=lang, locked=type_locked, on_change=_LIST_TYPE_ON_CHANGE),
+        *period,
+        *[Input(type="hidden", name=k, value=state[k], cls="list-status-filter")
+          for k in _LIST_STATUS_KEYS if state.get(k)],
+        hidden={"per_page": state.get("per_page", "")},
+        reset_href="/lists", show_apply=preset == "custom", lang=lang, panel_id="list-filters",
     )
 
 _DOC_TYPES = ["invoice", "purchase_order", "bill", "receipt", "credit_note", "memo", "consignment_in", "list"]
@@ -1678,8 +1752,6 @@ def setup_routes(app):
             docs, total_count, summary = [], 0, {}
         draft_count = summary.get("draft_count", 0)
 
-        # The date bar keeps the filters when it switches the dates.
-
         # Auto-redirect to drafts when no finalized docs exist but drafts do.
         # Prevents the "where did my draft go?" confusion for new users.
         if not is_drafts_view and not docs and draft_count > 0 and not q and not has_status_filter:
@@ -1692,38 +1764,30 @@ def setup_routes(app):
         section_label_key = _DOC_TYPE_PAGE_LABELS.get(doc_type, "page.documents")
         section_title = t(section_label_key)
         new_label = _doc_type_new_label(doc_type, lang)
-        search_url = "/docs/search?" + _state_query(state, without=("q",))
         create_type = doc_type or "invoice"
         _role = _get_role(request)
         _settings = company.get("settings") or {}
-        export_link, date_bar = _search_controls(
-            "docs", state, date_from, date_to, preset,
-            role_has_permission(_settings, _role, "import_export_data"), lang)
+        export_link = _export_link("docs", state, role_has_permission(_settings, _role, "import_export_data"))
         return await base_shell(
-            page_header(
-                section_title,
-                Button(
-                    new_label,
-                    hx_post=f"/docs/create-blank?type={create_type}",
-                    hx_swap="none",
-                    cls="btn btn--primary",
-                ) if role_has_permission(_settings, _role, "edit_documents") else "",
-                export_link,
-                A(import_icon(), t("btn.import"), href="/docs/import", cls="btn btn--secondary", data_import_hint=True) if can_import_documents(_settings, _role) else "",
-            ),
-            _doc_type_intro(doc_type),
             Div(
-                search_bar(
-                    placeholder=t("documents.search_docs_placeholder"),
-                    target="#doc-content",
-                    url=search_url,
-                    value=q,
-                    label=t(_DOC_TYPE_SEARCH_LABELS.get(doc_type, "documents.search_all")),
+                list_page_header(
+                    section_title,
+                    Button(
+                        new_label,
+                        hx_post=f"/docs/create-blank?type={create_type}",
+                        hx_swap="none",
+                        cls="btn btn--primary",
+                    ) if role_has_permission(_settings, _role, "edit_documents") else "",
+                    export_link,
+                    A(import_icon(), t("btn.import"), href="/docs/import", cls="btn btn--secondary", data_import_hint=True) if can_import_documents(_settings, _role) else "",
+                    summary=_doc_summary_line(summary, doc_type, currency, lang),
                 ),
-                date_bar,
-                cls="list-filter-bar",
+                _doc_type_intro(doc_type),
+                _doc_cards(state, docs, summary, currency, lang),
+                _doc_filters(state, date_from, date_to, preset, lang),
+                _docs_content(state, docs, total_count, page, per_page, currency, lang),
+                cls="list-page",
             ),
-            _docs_content(state, docs, total_count, summary, page, per_page, currency, lang),
             title=page_title(section_label_key),
             nav_active=_doc_nav_key(doc_type),
             lang=lang,
@@ -1748,10 +1812,13 @@ def setup_routes(app):
             docs, total_count, summary = [], 0, {}
         lang = get_lang(request)
         can_export = role_has_permission(company.get("settings") or {}, _get_role(request), "import_export_data")
+        currency = company.get("currency") or None
         return search_results(
-            _docs_content(state, docs, total_count, summary, page, per_page, company.get("currency") or None, lang),
+            _docs_content(state, docs, total_count, page, per_page, currency, lang),
             "/docs?" + _state_query(state),
-            *_search_controls("docs", state, date_from, date_to, preset, can_export, lang, oob=True),
+            _doc_cards(state, docs, summary, currency, lang, oob=True),
+            _doc_summary_line(summary, state.get("type", ""), currency, lang, oob=True),
+            _export_link("docs", state, can_export, oob=True),
         )
 
     @app.get("/docs/export/csv")
@@ -1936,12 +2003,8 @@ def setup_routes(app):
                             seen.add(key)
                             items.append(item)
                     return _J([extract(i) for i in items])
-                found = (await api.list_items(token, {"limit": _PICKER_START_LIMIT}))["items"]
-                try:
-                    items = await _sales_options(token, found, ctx["settings"], q, doc_id=ctx["doc_id"],
-                                                 line_id=ctx["line_id"], source_memo_id=ctx["source_memo_id"])
-                except _PickerRefusal:
-                    items = []
+                items = await _starting_options(token, ctx["settings"], doc_id=ctx["doc_id"],
+                                                line_id=ctx["line_id"], source_memo_id=ctx["source_memo_id"])
                 return _J([extract(i) for i in items])
             lot = await _exact_physical_lot(token, q, doc_type=ctx["doc_type"], doc_id=ctx["doc_id"],
                                             line_id=ctx["line_id"], source_memo_id=ctx["source_memo_id"])
@@ -4432,27 +4495,22 @@ celerpUpdateBulkAlloc();
                               hx_swap="none", cls="btn btn--primary", title=t("documents.new_shipping_doc_tooltip"))
         else:
             _new_btn = Button(t("page.new_list"), hx_post="/lists/create-blank", hx_swap="none", cls="btn btn--primary", title=t("documents.new_list_tooltip"))
-        export_link, date_bar = _search_controls(
-            "lists", state, date_from, date_to, preset,
-            role_has_permission(_settings, _role, "import_export_data"), lang)
+        export_link = _export_link("lists", state, role_has_permission(_settings, _role, "import_export_data"))
         return await base_shell(
-            page_header(
-                t("page.lists", lang),
-                _new_btn if role_has_permission(_settings, _role, "edit_documents") else "",
-                export_link,
-                A(import_icon(), t("btn.import"), href="/lists/import", cls="btn btn--secondary", data_import_hint=True) if role_has_permission(_settings, _role, "import_export_data") else "",
-            ),
             Div(
-                search_bar(placeholder=t("documents.search_ref_customer_short"), target="#list-content",
-                           url="/lists/search?" + _state_query(state, without=("q",)), value=q,
-                           label=t("documents.search_lists")),
-                date_bar,
-                cls="list-filter-bar",
+                list_page_header(
+                    t("page.lists", lang),
+                    _new_btn if role_has_permission(_settings, _role, "edit_documents") else "",
+                    export_link,
+                    A(import_icon(), t("btn.import"), href="/lists/import", cls="btn btn--secondary", data_import_hint=True) if role_has_permission(_settings, _role, "import_export_data") else "",
+                ),
+                _list_cards(state, summary),
+                _list_filters(state, date_from, date_to, preset, lang),
+                # Self-explanatory page: the shipping type says what these are and what to do next.
+                (P(t("lists.shipping_intro", lang), cls="section-hint") if list_type == "shipping_doc" else ""),
+                _lists_content(state, lists, filtered_total, page, per_page, lang),
+                cls="list-page",
             ),
-            _list_type_tabs(list_type, state),
-            # Self-explanatory page: the shipping tab says what these are and what to do next.
-            (P(t("lists.shipping_intro", lang), cls="section-hint") if list_type == "shipping_doc" else ""),
-            _lists_content(state, lists, filtered_total, summary, page, per_page, lang),
             title=page_title("page.lists"),
             nav_active="lists",
             request=request,
@@ -4495,9 +4553,10 @@ celerpUpdateBulkAlloc();
         lang = get_lang(request)
         can_export = role_has_permission(company.get("settings") or {}, _get_role(request), "import_export_data")
         return search_results(
-            _lists_content(state, lists, filtered_total, summary, page, per_page, lang),
+            _lists_content(state, lists, filtered_total, page, per_page, lang),
             "/lists?" + _state_query(state),
-            *_search_controls("lists", state, date_from, date_to, preset, can_export, lang, oob=True),
+            _list_cards(state, summary, oob=True),
+            _export_link("lists", state, can_export, oob=True),
         )
 
     @app.get("/lists/export/csv")
@@ -11154,25 +11213,25 @@ def _doc_status_cards(docs: list[dict], active_status: str, summary: dict | None
     return status_cards(cards, base_url, "overdue" if overdue_only else (active_status or None), total_override=sum(counts.values()), currency=currency)
 
 
-def _summary_bar(summary: dict, doc_type: str = "", currency: str | None = None, lang: str = "en") -> FT:
-    # Totals leave out documents that cannot be valued in the company currency; say how many.
-    unvalued = summary.get("unvalued_count") or 0
-    unvalued_chip = Span(t("chip.not_in_totals", lang, n=unvalued), cls="val-chip val-chip--alert") if unvalued else None
-    # Only show invoice-specific metrics when viewing invoices or all types
+def _doc_summary_line(summary: dict, doc_type: str = "", currency: str | None = None, lang: str = "en",
+                      *, oob: bool = False) -> FT:
+    """The /docs header summary: AR, Billed and the invoice count for invoices (and all types),
+    the count for any other type. The live search sends it again out of band (oob=True)."""
     if doc_type and doc_type != "invoice":
         count = summary.get(f"{doc_type}_count", summary.get("total_count", 0))
-        return Div(
-            Span(t("documents.doc_type_count", type=doc_type_label(doc_type), count=count), cls="val-chip"),
-            unvalued_chip,
-            cls="valuation-bar",
-        )
-    return Div(
-        Span(f"{t('chip.ar', lang)}: {fmt_money(float(summary.get('ar_outstanding', 0) or 0), currency)}", cls="val-chip val-chip--alert"),
-        Span(f"{t('chip.billed', lang)}: {fmt_money(float(summary.get('ar_total', 0) or 0), currency)}", cls="val-chip"),
-        Span(f"{t('chip.invoices', lang)}: {summary.get('invoice_count', 0)}", cls="val-chip"),
-        unvalued_chip,
-        cls="valuation-bar",
-    )
+        parts = [t("documents.doc_type_count", lang, type=doc_type_label(doc_type), count=count)]
+    else:
+        parts = [
+            f"{t('chip.ar', lang)}: {fmt_money(float(summary.get('ar_outstanding', 0) or 0), currency)}",
+            f"{t('chip.billed', lang)}: {fmt_money(float(summary.get('ar_total', 0) or 0), currency)}",
+            t("filter.invoices_in_period", lang, n=summary.get("invoice_count", 0)),
+        ]
+    items = [Span(part, cls="doc-summary-item") for part in parts]
+    # Totals leave out documents that cannot be valued in the company currency; say how many.
+    unvalued = summary.get("unvalued_count") or 0
+    if unvalued:
+        items.append(Span(t("chip.not_in_totals", lang, n=unvalued), cls="doc-summary-item doc-summary-alert"))
+    return Span(*items, id="docs-summary", cls="doc-summary", **({"hx_swap_oob": "true"} if oob else {}))
 
 
 # ---------------------------------------------------------------------------
@@ -11250,14 +11309,3 @@ def _list_status_cards(summary: dict, active_status: str = "", converted_to_type
         {"label": t("enum.doc_status.void"),                 "count": void_cnt,       "total": None, "status": "void",             "color": "gray"},
     ]
     return status_cards(cards, base_url, _active_key or None, show_all_card=False)
-
-
-def _list_type_tabs(active: str, state: dict[str, str]) -> FT:
-    """Type tabs keep the date range and page size; search and status filters start fresh."""
-    kept = {k: state[k] for k in ("per_page", *_DATE_KEYS) if k in state}
-    all_cls = "category-tab" + (" category-tab--active" if not active else "")
-    tabs = [A(t("doc.all"), href="/lists" + (f"?{urlencode(kept)}" if kept else ""), cls=all_cls)]
-    for lt in _LIST_TYPES:
-        cls = "category-tab" + (" category-tab--active" if lt == active else "")
-        tabs.append(A(_list_type_label(lt), href="/lists?" + urlencode({"type": lt, **kept}), cls=cls))
-    return Div(*tabs, cls="category-tabs", id="type-tabs")

@@ -4572,3 +4572,21 @@ async def label_source(token: str, source: str) -> dict:
 async def label_source_rows(token: str, source: str, ids: list[str]) -> list[dict]:
     async with _api_client(token) as c:
         return _raise(await c.get("/api/labels/source-rows", params={"source": source, "ids": ",".join(ids)})).json()["rows"]
+
+
+async def get_nav_overrides(token: str) -> dict:
+    """The company's side-menu choices: hidden entries and groups, and their order."""
+    async with _api_client(token) as c:
+        return _raise(await c.get("/companies/me/nav-overrides")).json()
+
+
+async def patch_nav_overrides(token: str, overrides: dict) -> dict:
+    """Replace the company's side-menu choices. Owner-gated by the backing endpoint."""
+    async with _api_client(token) as c:
+        return _raise(await c.patch("/companies/me/nav-overrides", json=overrides)).json()
+
+
+async def reset_nav_overrides(token: str) -> dict:
+    """Put the side menu back to its defaults. Owner-gated by the backing endpoint."""
+    async with _api_client(token) as c:
+        return _raise(await c.delete("/companies/me/nav-overrides")).json()

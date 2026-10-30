@@ -1216,8 +1216,6 @@ th.cell--number { font-family: inherit; }
 .search-scope { position: relative; display: inline-block; }
 .search-scope-label { position: absolute; bottom: 100%; left: 0; right: 0; text-align: center; font-size: 10px; color: var(--c-text2); margin-bottom: 2px; white-space: nowrap; }
 .date-custom-form { display: flex; align-items: center; gap: 6px; }
-/* List filter bar: the search box and the date dropdown on one row. The custom range appears only when Custom is chosen. */
-.list-filter-bar { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
 .date-range-form { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .date-range-custom { display: flex; align-items: center; gap: 6px; }
 .date-range-custom[hidden] { display: none; }
@@ -1565,6 +1563,39 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 .status-card-label { font-size: 11px; color: var(--c-text2); text-transform: uppercase; letter-spacing: 0.04em; }
 .status-card-count { font-size: 18px; font-weight: 700; font-family: var(--font-mono); color: var(--c-text); line-height: 1.2; }
 .status-card-total { font-size: 11px; font-family: var(--font-mono); color: var(--c-text2); }
+
+/* ─── List page layout (GEN-012) ──────────────────────────────────────────
+   Header with a summary line, status widgets across the full width, one filters panel with a
+   label above every filter, then the table. Scoped to .list-page so no other page changes. */
+.list-page .page-heading { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.list-page .page-title { font-size: 22px; }
+.list-page .page-subtitle { font-size: 13px; color: var(--c-text2); }
+.list-page .doc-summary-item + .doc-summary-item::before { content: "\00b7"; margin: 0 8px; }
+.list-page .doc-summary-alert { color: var(--c-red); }
+.list-page .status-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); }
+.list-page .status-card { min-width: 0; }
+.list-page .status-card-label { font-size: 10px; display: flex; align-items: center; gap: 6px; }
+.list-page .status-card-label::before {
+  content: ""; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--c-text2);
+}
+.list-page .status-card--green .status-card-label::before { background: var(--c-green); }
+.list-page .status-card--yellow .status-card-label::before { background: var(--c-yellow); }
+.list-page .status-card--red .status-card-label::before { background: var(--c-red); }
+.list-page .status-card--blue .status-card-label::before { background: var(--c-accent); }
+.list-page .status-card-count { font-size: 22px; }
+.list-page .list-filters {
+  display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px 16px; margin-bottom: 16px;
+  padding: 12px 14px; background: var(--c-bg2); border: 1px solid var(--c-border); border-radius: var(--radius);
+}
+.list-page .filter-field { display: flex; flex-direction: column; gap: 4px; min-width: 140px; }
+.list-page .filter-field--wide { flex: 1 1 240px; }
+.list-page .filter-field[hidden] { display: none; }
+.list-page .filter-field-label { font-size: 11px; color: var(--c-text2); font-weight: 500; }
+.list-page .list-filters .form-input,
+.list-page .list-filters .search-input { height: 35px; }
+.list-page .filter-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+.list-page .filter-actions .btn { height: 35px; }
+.list-page .filter-actions [hidden] { display: none; }
 
 /* ─── Empty state CTA ─────────────────────────────────────────────────── */
 .empty-state-cta {
@@ -3683,3 +3714,13 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
 .doctor-failures { margin: 0 0 12px; }
 .doctor-failures dd { margin: 4px 0 0; }
 .doctor-error { white-space: pre-wrap; word-break: break-word; }
+.menu-icon { display: inline-flex; vertical-align: -0.125em; margin-inline-end: 0.5em; }
+.lang-switcher__globe { display: inline-flex; align-items: center; }
+.notif-bell-btn svg, .sidebar-toggle svg { display: block; }
+.menu-editor__row, .menu-editor__group-head { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--c-border); }
+.menu-editor__group-head { margin-top: 12px; }
+.menu-editor__group-head .settings-section-title { flex: 1; margin: 0; }
+.menu-editor__label { flex: 1; }
+.menu-editor__badge { font-size: 11px; color: var(--c-text2); }
+.menu-editor__row--hidden .menu-editor__label, .menu-editor__section--hidden .menu-editor__label { color: var(--c-text2); text-decoration: line-through; }
+.menu-editor__move { display: inline-flex; gap: 4px; }

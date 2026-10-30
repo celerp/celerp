@@ -25,7 +25,7 @@ from celerp.output.branding import BRAND_TEXT as _BRAND_LABEL, brand_url as _bra
 from celerp.output.document_context import prepare_document_output
 from celerp.services.doc_balance import is_awaiting_payment, outstanding_balance
 from celerp.services.line_measures import line_identifier as _line_identifier, measure_sublines, qty_label
-from celerp.services.list_behavior import SUPPLIER_DOC_TYPES
+from celerp.services.list_behavior import DEFAULT_LIST_TYPE, LIST_BEHAVIOR, SUPPLIER_DOC_TYPES
 from celerp.services.money import document_line_amount, to_decimal
 from celerp.services.shipping import REASON_EXPORT_LABELS, SHIPPING_LIST_TYPE
 from celerp.services.units import DEFAULT_UNITS, build_unit_map
@@ -34,6 +34,15 @@ EMPTY = "--"
 
 # Doc types that show pieces/weight measure sub-lines (the invoice layout).
 INVOICE_LAYOUT_DOC_TYPES: frozenset[str] = frozenset({"invoice", "memo", "list"})
+# A list prints under its own type's name; its doc_type stays "list" because the layout
+# branches read it. A shipping document keeps its paper names (Delivery Note, Commercial Invoice).
+LIST_PRINT_TITLES: dict[str, str] = {list_type: b.label for list_type, b in LIST_BEHAVIOR.items()}
+# What a list's contact is on paper; any other list type keeps "Bill To". The print template is
+# English (ENH-008 translates it), so this is the English string of the detail page's label
+# (documents.party_quote_to).
+LIST_PARTY_LABELS: dict[str, str] = {"quotation": "Quote to"}
+# Stock lists with no customer: they print no customer block.
+LIST_TYPES_WITHOUT_CUSTOMER: frozenset[str] = frozenset({"transfer", "audit", "writeoff"})
 
 # The celerp.com page a recipient lands on to import a shared document. It is
 # handed the share page's own address as `link`.
@@ -289,6 +298,10 @@ def render_doc_print_html(doc: dict, *, import_url: str | None = None,
     doc = prepare_document_output(doc)
     entity_id = doc.get("id") or doc.get("entity_id") or ""
     doc_type = doc.get("doc_type", "")
+    # A list stored before list types existed is a quotation, as everywhere else; "quote" is the
+    # old name of the type.
+    list_type = (doc.get("list_type") or DEFAULT_LIST_TYPE) if doc_type == "list" else ""
+    list_type = "quotation" if list_type == "quote" else list_type
     is_shipping = doc_type == "list" and doc.get("list_type") == SHIPPING_LIST_TYPE
     if layout is not None and not is_shipping:
         raise ValueError("layout is only valid for shipping documents")
@@ -300,13 +313,15 @@ def render_doc_print_html(doc: dict, *, import_url: str | None = None,
                        for s in (doc.get("source_docs") or []) if s]
     if ship_layout:
         title = "Delivery Note" if ship_layout == "delivery_note" else "Commercial Invoice"
+    elif list_type in LIST_PRINT_TITLES:
+        title = LIST_PRINT_TITLES[list_type]
     else:
         title = doc_type.replace("_", " ").title() if doc_type else "Document"
     issue_date = (doc.get("issue_date") or "")[:10]
     due_date = (doc.get("due_date") or "")[:10]
     reference = str(doc.get("reference") or "")
     valid_until = str(doc.get("valid_until") or "")[:10]
-    is_quotation = doc_type == "quotation" or doc.get("list_type") in ("quote", "quotation")
+    is_quotation = doc_type == "quotation" or list_type == "quotation"
     currency = doc.get("currency") or "USD"
 
     company_name = doc.get("company_name") or ""
@@ -622,10 +637,12 @@ def render_doc_print_html(doc: dict, *, import_url: str | None = None,
         ) if ship_to_address else None
         parties_section = Div(vendor_box, bill_to_box, ship_to_box, cls="dp-parties")
     else:
-        # Sales docs: Bill To = the contact (customer)
+        # Sales docs: Bill To = the contact (customer); a list names its party per type, and a
+        # list type without a customer prints none.
+        party_label = None if list_type in LIST_TYPES_WITHOUT_CUSTOMER else LIST_PARTY_LABELS.get(list_type, "Bill To")
         parties_section = Div(
             Div(
-                P("Bill To", cls="dp-party-label"),
+                P(party_label, cls="dp-party-label"),
                 P(contact_primary, cls="dp-party-name") if contact_primary else None,
                 Div(
                     P(billing_person) if billing_person else None,
@@ -635,7 +652,7 @@ def render_doc_print_html(doc: dict, *, import_url: str | None = None,
                     P(contact_email) if contact_email else None,
                     cls="dp-party-sub",
                 ),
-            ) if contact_primary else None,
+            ) if contact_primary and party_label else None,
             Div(
                 P("Ship To", cls="dp-party-label"),
                 P(shipping_attn, cls="dp-party-name") if shipping_attn else None,

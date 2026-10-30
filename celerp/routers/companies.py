@@ -46,7 +46,7 @@ from celerp.services.permissions import (
 )
 from celerp.schemas.numbers import FiniteFloat
 from celerp.tax_regimes import TAX_REGIMES, configured, get_regime, purchasing_taxes, sales_taxes
-from celerp.services import company_lifecycle
+from celerp.services import company_lifecycle, nav_overrides
 from celerp.services.currencies import require_phone
 from celerp.services.provisioning import provision_additional_company
 from celerp.services.terms import terms_templates
@@ -102,6 +102,14 @@ class RolePermissionPatch(BaseModel):
     perm_key: str
     role_key: str
     granted: bool
+
+
+class NavOverridesPatch(BaseModel):
+    """The whole of the company's side-menu choices; what is not listed is shown in its default place."""
+    hidden_entries: list[str] = Field(default_factory=list, description="Menu entries to hide, by stable key or href.")
+    hidden_groups: list[str] = Field(default_factory=list, description="Menu groups to hide, by stable group key.")
+    entry_order: list[str] = Field(default_factory=list, description="Entries in the order they are shown within their group.")
+    group_order: list[str] = Field(default_factory=list, description="Groups in the order they are shown.")
 
 
 class LocationCreate(BaseModel):
@@ -486,6 +494,64 @@ async def patch_role_permissions(
     company.settings = settings
     await session.commit()
     return {"ok": True, "perm_key": perm.key, "roles": grants[perm.key]}
+
+
+@router.get("/me/nav-overrides")
+async def get_nav_overrides(
+    company_id=Depends(get_current_company_id),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """The company's side-menu choices: hidden entries and groups, and their order."""
+    company = await session.get(Company, company_id)
+    if company is None:
+        raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
+    stored = (company.settings or {}).get(nav_overrides.KEY) or {}
+    return {field: list(stored.get(field) or []) for field in nav_overrides.FIELDS}
+
+
+@router.patch("/me/nav-overrides")
+async def patch_nav_overrides(
+    payload: NavOverridesPatch,
+    company_id=Depends(get_current_company_id),
+    _: None = require_permission("manage_permissions"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Replace the company's side-menu choices.
+
+    Gated like the role-permission matrix (manage_permissions, owner only), because what the menu
+    shows is part of what each role is offered. The choices only hide and reorder entries a role's
+    permissions already show; they cannot grant access, and Settings cannot be hidden. Saving no
+    choices at all is the same as a reset.
+    """
+    cleaned = nav_overrides.normalize(payload.model_dump())
+    company = await locked_company(session, company_id)
+    if company is None:
+        raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
+    settings = dict(company.settings or {})
+    if cleaned:
+        settings[nav_overrides.KEY] = cleaned
+    else:
+        settings.pop(nav_overrides.KEY, None)
+    company.settings = settings
+    await session.commit()
+    return {field: cleaned.get(field, []) for field in nav_overrides.FIELDS}
+
+
+@router.delete("/me/nav-overrides")
+async def reset_nav_overrides(
+    company_id=Depends(get_current_company_id),
+    _: None = require_permission("manage_permissions"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Put the side menu back to its default entries and order."""
+    company = await locked_company(session, company_id)
+    if company is None:
+        raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
+    settings = dict(company.settings or {})
+    settings.pop(nav_overrides.KEY, None)
+    company.settings = settings
+    await session.commit()
+    return {field: [] for field in nav_overrides.FIELDS}
 
 
 # ---------------------------------------------------------------------------

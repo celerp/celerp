@@ -107,7 +107,7 @@ def test_html_company_only_customer_and_quotation_expiry():
         "due_date": "2026-10-01",
         "line_items": [],
     })
-    assert "Bill To" in html
+    assert "Quote to" in html and "Bill To" not in html  # SAL-006: the detail page's label
     assert "Company Only Ltd" in html
     assert "Valid until:" in html
     assert "2026-10-31" in html

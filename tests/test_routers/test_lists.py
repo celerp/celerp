@@ -932,6 +932,70 @@ async def test_list_lists_stable_order_on_issue_date_tie(client):
 
 
 # ---------------------------------------------------------------------------
+# The index names a list's status the way its page does
+# ---------------------------------------------------------------------------
+
+async def _index_row(client, token, eid) -> dict:
+    items = (await client.get("/lists?limit=100", headers=_h(token))).json()["items"]
+    return next(x for x in items if x["id"] == eid)
+
+
+class TestListIndexStatusLabel:
+
+    @pytest.mark.asyncio
+    async def test_quotation_reads_issued_then_sent_then_accepted(self, client, session):
+        from celerp.events.engine import emit_event
+        token = await _register(client)
+        eid = await _create_list(client, token, list_type="quotation")
+        assert (await _index_row(client, token, eid))["status_label"] == "draft"
+
+        await client.post(f"/lists/{eid}/finalize", headers=_h(token))
+        row = await _index_row(client, token, eid)
+        assert row["status"] == "finalized" and row["status_label"] == "issued"
+
+        await client.post(f"/lists/{eid}/send", headers=_h(token), json={"sent_via": "manual"})
+        row = await _index_row(client, token, eid)
+        assert row["status"] == "finalized" and row["status_label"] == "sent"
+
+        company_id = (await client.get("/companies/me", headers=_h(token))).json()["id"]
+        await emit_event(
+            session, company_id=company_id, entity_id=eid, entity_type="list", event_type="list.updated",
+            data={"fields_changed": {"accepted_at": {"new": "2026-10-24T00:00:00+00:00"}}},
+            actor_id=None, location_id=None, source="api", idempotency_key=uuid.uuid4().hex, metadata_={})
+        row = await _index_row(client, token, eid)
+        assert row["status"] == "finalized" and row["status_label"] == "accepted"
+
+    @pytest.mark.asyncio
+    async def test_finalized_transfer_is_in_transit_and_audit_is_counting(self, client):
+        token = await _register(client)
+        transfer = await _create_list(client, token, list_type="transfer", line_items=[], subtotal=0, total=0)
+        audit = await _create_list(client, token, list_type="audit", line_items=[], subtotal=0, total=0)
+        for eid in (transfer, audit):
+            assert (await client.post(f"/lists/{eid}/finalize", headers=_h(token))).status_code == 200
+        assert (await _index_row(client, token, transfer))["status_label"] == "in_transit"
+        assert (await _index_row(client, token, audit))["status_label"] == "counting"
+
+    @pytest.mark.asyncio
+    async def test_converted_quotation_reads_converted_and_filters_still_use_the_raw_status(self, client):
+        token = await _register(client)
+        eid = await _create_list(client, token, list_type="quotation")
+        await client.post(f"/lists/{eid}/finalize", headers=_h(token))
+        await client.post(f"/lists/{eid}/convert", headers=_h(token), json={"target_type": "memo"})
+        row = await _index_row(client, token, eid)
+        assert row["status"] == "closed" and row["status_label"] == "converted"
+        closed = (await client.get("/lists?status=closed&limit=100", headers=_h(token))).json()["items"]
+        assert eid in {x["id"] for x in closed}
+
+    @pytest.mark.asyncio
+    async def test_csv_export_keeps_its_columns(self, client):
+        token = await _register(client)
+        await _create_list(client, token, list_type="quotation")
+        r = await client.get("/lists/export/csv", headers=_h(token))
+        assert r.status_code == 200
+        assert r.text.splitlines()[0] == "id,ref_id,list_type,customer,date,total,status"
+
+
+# ---------------------------------------------------------------------------
 # Send / Mark as sent commits what it writes
 # ---------------------------------------------------------------------------
 
@@ -1122,67 +1186,3 @@ class TestListIssueDate:
         assert row["issue_date"] == today
         outside = (await client.get("/docs?doc_type=memo&date_from=2020-01-01&date_to=2020-12-31", headers=_h(token))).json()["items"]
         assert doc not in {x["id"] for x in outside}
-
-
-# ---------------------------------------------------------------------------
-# The index names a list's status the way its page does
-# ---------------------------------------------------------------------------
-
-async def _index_row(client, token, eid) -> dict:
-    items = (await client.get("/lists?limit=100", headers=_h(token))).json()["items"]
-    return next(x for x in items if x["id"] == eid)
-
-
-class TestListIndexStatusLabel:
-
-    @pytest.mark.asyncio
-    async def test_quotation_reads_issued_then_sent_then_accepted(self, client, session):
-        from celerp.events.engine import emit_event
-        token = await _register(client)
-        eid = await _create_list(client, token, list_type="quotation")
-        assert (await _index_row(client, token, eid))["status_label"] == "draft"
-
-        await client.post(f"/lists/{eid}/finalize", headers=_h(token))
-        row = await _index_row(client, token, eid)
-        assert row["status"] == "finalized" and row["status_label"] == "issued"
-
-        await client.post(f"/lists/{eid}/send", headers=_h(token), json={"sent_via": "manual"})
-        row = await _index_row(client, token, eid)
-        assert row["status"] == "finalized" and row["status_label"] == "sent"
-
-        company_id = (await client.get("/companies/me", headers=_h(token))).json()["id"]
-        await emit_event(
-            session, company_id=company_id, entity_id=eid, entity_type="list", event_type="list.updated",
-            data={"fields_changed": {"accepted_at": {"new": "2026-10-24T00:00:00+00:00"}}},
-            actor_id=None, location_id=None, source="api", idempotency_key=uuid.uuid4().hex, metadata_={})
-        row = await _index_row(client, token, eid)
-        assert row["status"] == "finalized" and row["status_label"] == "accepted"
-
-    @pytest.mark.asyncio
-    async def test_finalized_transfer_is_in_transit_and_audit_is_counting(self, client):
-        token = await _register(client)
-        transfer = await _create_list(client, token, list_type="transfer", line_items=[], subtotal=0, total=0)
-        audit = await _create_list(client, token, list_type="audit", line_items=[], subtotal=0, total=0)
-        for eid in (transfer, audit):
-            assert (await client.post(f"/lists/{eid}/finalize", headers=_h(token))).status_code == 200
-        assert (await _index_row(client, token, transfer))["status_label"] == "in_transit"
-        assert (await _index_row(client, token, audit))["status_label"] == "counting"
-
-    @pytest.mark.asyncio
-    async def test_converted_quotation_reads_converted_and_filters_still_use_the_raw_status(self, client):
-        token = await _register(client)
-        eid = await _create_list(client, token, list_type="quotation")
-        await client.post(f"/lists/{eid}/finalize", headers=_h(token))
-        await client.post(f"/lists/{eid}/convert", headers=_h(token), json={"target_type": "memo"})
-        row = await _index_row(client, token, eid)
-        assert row["status"] == "closed" and row["status_label"] == "converted"
-        closed = (await client.get("/lists?status=closed&limit=100", headers=_h(token))).json()["items"]
-        assert eid in {x["id"] for x in closed}
-
-    @pytest.mark.asyncio
-    async def test_csv_export_keeps_its_columns(self, client):
-        token = await _register(client)
-        await _create_list(client, token, list_type="quotation")
-        r = await client.get("/lists/export/csv", headers=_h(token))
-        assert r.status_code == 200
-        assert r.text.splitlines()[0] == "id,ref_id,list_type,customer,date,total,status"

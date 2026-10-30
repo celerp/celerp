@@ -14,6 +14,7 @@ from fasthtml.common import *
 from celerp.services.update import CARD_REASONS, PIP_BLOCKERS, REASON_CODES, reason_key
 from ui.config import COOKIE_NAME, get_role
 from ui.i18n import t, get_lang, available_langs, lang_label, try_again_pattern
+from ui.components.icons import icon
 from ui.components.table import searchable_select
 
 # Cache-bust static assets by hashing app.css content
@@ -2466,7 +2467,7 @@ def search_help(lang: str = "en", panel_id: str = "global-search-help-panel") ->
 def _topbar(companies: list[dict], lang: str = "en", user_email: str | None = None, relay_info: dict | None = None, help_path: str | None = None) -> FT:
     """Top bar with hamburger toggle, global search, and optional company switcher."""
     parts: list[FT] = [
-        Button("☰", cls="sidebar-toggle", type="button"),
+        Button(icon("menu", 1.25), cls="sidebar-toggle", type="button", aria_label=t("settings_menu.title", lang)),
         Div(
             Input(
                 type="search",
@@ -2510,7 +2511,7 @@ def _topbar(companies: list[dict], lang: str = "en", user_email: str | None = No
     # Language switcher: searchable combobox showing each locale's native name.
     parts.append(
         Div(
-            Span("🌐", cls="lang-switcher__globe"),
+            Span(icon("globe"), cls="lang-switcher__globe"),
             searchable_select(
                 "lang",
                 [(code, lang_label(code)) for code in available_langs()],
@@ -2524,10 +2525,11 @@ def _topbar(companies: list[dict], lang: str = "en", user_email: str | None = No
     parts.append(
         Div(
             Button(
-                "🔔",
+                icon("bell", 1.1),
                 Span("", id="notif-badge", cls="notif-badge", style="display:none;"),
                 cls="notif-bell-btn",
                 type="button",
+                aria_label=t("msg.notifications", lang),
                 onclick="toggleNotifPanel()",
             ),
             Div(
@@ -2633,7 +2635,7 @@ def _topbar(companies: list[dict], lang: str = "en", user_email: str | None = No
                 # Dropdown
                 Div(
                     A(
-                        "🐞 " + t("nav.report_bug", lang, default="Report a bug"),
+                        _menu_icon("bug"), t("nav.report_bug", lang, default="Report a bug"),
                         href=_bug_report_url(),
                         target="_blank",
                         rel="noopener",
@@ -2644,14 +2646,14 @@ def _topbar(companies: list[dict], lang: str = "en", user_email: str | None = No
                         **{"data-base": _bug_report_url()},
                     ),
                     A(
-                        "💡 " + t("nav.suggest_feature", lang, default="Suggest a feature"),
+                        _menu_icon("lightbulb"), t("nav.suggest_feature", lang, default="Suggest a feature"),
                         href="https://github.com/celerp/celerp/discussions/new?category=ideas",
                         target="_blank",
                         rel="noopener",
                         cls="user-menu__item",
                     ),
                     A(
-                        "🔑 " + t("nav.change_password", lang, default="Change password"),
+                        _menu_icon("key"), t("nav.change_password", lang, default="Change password"),
                         href="/settings/general?tab=password",
                         cls="user-menu__item",
                     ),
@@ -2819,10 +2821,14 @@ def module_active(settings: dict | None, name: str) -> bool:
 
 
 def visible_nav(settings: dict | None, role: str) -> list[dict]:
-    """The nav entries this role sees for the company, in display order."""
+    """The nav entries this role sees for the company, in display order: what its permissions allow,
+    less what the company hides, in the order the company chose."""
     from ui.module_slots import slot_permission_allows
+    from ui.nav_overrides import apply_nav_overrides
     settings = settings or {}
-    return [item for item in module_nav(settings) if slot_permission_allows(item, settings, role)]
+    permitted = [item for item in module_nav(settings) if slot_permission_allows(item, settings, role)]
+    # The company's choices come last: they hide and reorder what the role may see, never add to it.
+    return apply_nav_overrides(permitted, settings)
 
 
 def landing_path(settings: dict | None, role: str) -> str:
@@ -2901,7 +2907,7 @@ def _sidebar(active: str, lang: str = "en", role: str = "owner", request=None, s
         settings_href = next((i["settings_href"] for i in items if i.get("settings_href")), None)
         if settings_href:
             header = Div(
-                A("⚙️ " + group_label, href=settings_href, cls="sidebar-group-settings-link"),
+                A(_menu_icon("settings"), group_label, href=settings_href, cls="sidebar-group-settings-link"),
                 Span("›", cls="sidebar-group-arrow"),
                 cls="sidebar-group-header",
             )
@@ -3017,6 +3023,11 @@ def sign_in_fields(email: str = "", *, autofocus: bool = False) -> tuple[FT, ...
     )
 
 
+def _menu_icon(name: str) -> FT:
+    """An icon placed before the text of a menu link, level with it."""
+    return Span(icon(name), cls="menu-icon")
+
+
 def flash(msg: str, kind: str = "error", raw: bool = False) -> FT:
     content = NotStr(msg) if raw else msg
     return Div(content, cls=f"flash flash--{kind}", id="flash")
@@ -3080,9 +3091,17 @@ def load_error(message: str, lang: str = "en", *, href: str | None = None,
     return Div(P(message, cls="load-error__text"), retry, cls="load-error")
 
 
-def page_header(title: str, *actions: FT) -> FT:
+def page_header(title: str, *actions: FT, summary: str | FT = "") -> FT:
+    """Title and actions; a summary (str or FT) adds a muted line under the title. Without one
+    the markup is exactly what it always was (the report goldens hold it)."""
+    if not summary:
+        return Div(
+            H1(title, cls="page-title"),
+            Div(*actions, cls="page-actions"),
+            cls="page-header",
+        )
     return Div(
-        H1(title, cls="page-title"),
+        Div(H1(title, cls="page-title"), Div(summary, cls="page-subtitle"), cls="page-heading"),
         Div(*actions, cls="page-actions"),
         cls="page-header",
     )
