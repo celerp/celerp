@@ -1822,7 +1822,8 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
                 if grants:
                     settings["role_grants"] = grants
                 if replacing is not None:
-                    company = await locked_company(session, new_id)
+                    # The row this transaction inserted above, so the lock waits on nothing.
+                    [company] = await take_company_locks(session, lambda: locked_company(session, new_id))
                     company.name, company.settings = name, settings
                 else:
                     company = await provision_restored_company(session, owner=user, company_name=name,
