@@ -23,7 +23,7 @@ import uuid
 import pytest
 from playwright.sync_api import expect
 
-from .conftest import css_class
+from .conftest import css_class, release_held_routes
 
 pytestmark = pytest.mark.browser
 
@@ -668,18 +668,7 @@ def _open_draw_panel(page, ui_server, doc_id):
     page.locator("#li-bulk-select").select_option(value="li-invoice")
 
 
-def _hold_previews(page):
-    """Holds every Invoice selected preview request until the test lets it through."""
-    held = []
-    page.route("**/invoice-lines/preview", lambda route: held.append(route))
-    return held
-
-
-def _let_through(route):
-    try:
-        route.continue_()
-    except Exception:
-        pass  # the page already cancelled it for a newer preview
+_PREVIEWS = "**/invoice-lines/preview"
 
 
 def test_invoice_selected_cannot_confirm_until_the_preview_of_the_selection_returns(page, ui_server, api):
@@ -692,14 +681,15 @@ def test_invoice_selected_cannot_confirm_until_the_preview_of_the_selection_retu
     expect(preview).to_contain_text("Invoice total after this: $10.00")
     expect(confirm).to_be_enabled()
 
-    held = _hold_previews(page)
+    held = []
+    page.route(_PREVIEWS, lambda route: held.append(route))
     page.locator("#draw-panel input[name=qty_0]").fill("3")
     expect(confirm).to_be_disabled()
     page.wait_for_timeout(600)
     expect(confirm).to_be_disabled()
     assert held, "the preview of the new quantity was sent"
-    for route in held:
-        _let_through(route)
+    held.pop().continue_()
+    release_held_routes(page, _PREVIEWS, held)
     expect(preview).to_contain_text("Invoice total after this: $30.00")
     expect(confirm).to_be_enabled()
     confirm.click()
@@ -718,7 +708,7 @@ def test_invoice_selected_keeps_the_newest_preview_when_an_older_answer_comes_la
     expect(preview).to_contain_text("Invoice total after this: $40.00")
 
     held = []
-    page.route("**/invoice-lines/preview",
+    page.route(_PREVIEWS,
                lambda route: held.append(route) if "qty_0=1&" in (route.request.post_data or "") + "&"
                else route.continue_())
     page.locator("#draw-panel input[name=qty_0]").fill("1")
@@ -727,7 +717,7 @@ def test_invoice_selected_keeps_the_newest_preview_when_an_older_answer_comes_la
     older = held.pop()
     page.locator("#draw-panel input[name=qty_0]").fill("2")
     expect(preview).to_contain_text("Invoice total after this: $20.00")
-    _let_through(older)
+    older.continue_()
     page.wait_for_timeout(600)
     expect(preview).to_contain_text("Invoice total after this: $20.00")
     expect(confirm).to_be_enabled()
