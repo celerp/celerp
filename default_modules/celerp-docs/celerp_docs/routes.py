@@ -309,7 +309,7 @@ async def _earlier_run(session: AsyncSession, company_id, key: str, *, event_typ
     return result or {"event_id": replay.id}
 
 
-_PROTECTED_FIELDS = frozenset({"status", "entity_type", "company_id", "source_memo_id",
+_PROTECTED_FIELDS = frozenset({"status", "entity_type", "company_id", "source_memo_id", "invoiced_on",
                               "received_items", "received_item_ids", "credited", SCAN_RUNS_FIELD})
 
 

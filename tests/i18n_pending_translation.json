@@ -692,6 +692,14 @@
         "paid",
         "where"
       ]
+    },
+    "event.doc.lines_invoiced": {
+      "en": "Memo products invoiced",
+      "params": []
+    },
+    "event.doc.lines_returned": {
+      "en": "Products back on memo",
+      "params": []
     }
   }
 }

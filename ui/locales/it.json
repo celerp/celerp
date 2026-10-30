@@ -6585,5 +6585,7 @@
   "documents.list_old_rule_notice": "Il totale di questo preventivo è stato calcolato con la precedente regola di arrotondamento: {stored}. La regola attuale dà {current}. Ricalcola il totale per applicare la regola attuale. Potrai poi ripristinare il totale precedente.",
   "documents.btn_recalculate_total": "Ricalcola il totale",
   "documents.list_total_recalculated": "Totale ricalcolato da {old} a {new}.",
-  "documents.btn_restore_total": "Ripristina il totale precedente"
+  "documents.btn_restore_total": "Ripristina il totale precedente",
+  "event.doc.lines_invoiced": "Memo products invoiced",
+  "event.doc.lines_returned": "Products back on memo"
 }

@@ -186,6 +186,36 @@ def _has_rate(state: dict) -> bool:
     return any(isinstance(line, dict) and line_has_tax(line) for line in state.get("line_items") or [])
 
 
+def fixed_discount(state: dict) -> Decimal:
+    """A document's header discount when it is a fixed amount; 0 for a percentage."""
+    if state.get("discount_type") == "percentage":
+        return to_decimal(0)
+    return max(to_decimal(0), to_decimal(state.get("discount", 0) or 0))
+
+
+def unrated_tax(state: dict) -> Decimal:
+    """A document's tax amount when nothing gives it a rate (_has_rate); otherwise 0."""
+    return to_decimal(0) if _has_rate(state) else to_decimal(state.get("tax", 0) or 0)
+
+
+def memo_draws(state: dict) -> list[dict]:
+    """The takes that still count on a memo *state*, each with its lines not yet back on the memo.
+
+    A take is what one draw put on an invoice (``invoiced_on``, written only by the memo's
+    ``doc.lines_invoiced`` and ``doc.lines_returned`` events). It counts until a release names
+    its draw, whatever happened to the invoice since; a released take's lines count for nothing.
+    A memo converted before draws existed holds no takes: its invoice ``converted_to`` holds
+    every fixed amount of the memo, as one take with no lines, until that invoice's void
+    reopens the memo.
+    """
+    if state.get("status") == "converted" and state.get("converted_to"):
+        return [{"draw_id": None, "invoice_id": state["converted_to"], "doc_number": None, "lines": [],
+                 "shipping": float(state.get("shipping") or 0), "discount": to_stored_float(fixed_discount(state)),
+                 "tax": to_stored_float(unrated_tax(state)), "released": False, "legacy": True}]
+    return [{**take, "lines": [ln for ln in take["lines"] if not ln.get("returned")]}
+            for take in state.get("invoiced_on") or [] if not take.get("released")]
+
+
 def document_money(state: dict, lines: list[dict], currency: str, *, keep_unrated_tax: bool,
                    stored: dict | None = None) -> dict:
     """Subtotal, discount, taxes and total of a document with these lines.

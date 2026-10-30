@@ -6585,5 +6585,7 @@
   "documents.list_old_rule_notice": "Die Gesamtsumme dieses Angebots wurde nach der früheren Rundungsregel berechnet: {stored}. Nach der aktuellen Regel ergibt sich {current}. Berechnen Sie die Gesamtsumme neu, um die aktuelle Regel anzuwenden. Anschließend können Sie die vorherige Summe wiederherstellen.",
   "documents.btn_recalculate_total": "Gesamtsumme neu berechnen",
   "documents.list_total_recalculated": "Gesamtsumme von {old} auf {new} neu berechnet.",
-  "documents.btn_restore_total": "Vorherige Gesamtsumme wiederherstellen"
+  "documents.btn_restore_total": "Vorherige Gesamtsumme wiederherstellen",
+  "event.doc.lines_invoiced": "Memo products invoiced",
+  "event.doc.lines_returned": "Products back on memo"
 }

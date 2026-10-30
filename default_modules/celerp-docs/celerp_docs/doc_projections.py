@@ -474,6 +474,17 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         current["converted_to_type"] = data.get("target_doc_type")
         if data.get("pre_convert_status"):
             current["pre_convert_status"] = data["pre_convert_status"]
+    elif event_type == "doc.lines_invoiced":
+        take = data["take"]
+        current["invoiced_on"] = [*(current.get("invoiced_on") or []), {
+            **take, "released": False, "lines": [{**ln, "returned": False} for ln in take["lines"]]}]
+    elif event_type == "doc.lines_returned":
+        returned = {(ln["invoice_line_id"], ln["draw_id"]) for ln in data.get("lines") or []}
+        released = set(data.get("release") or [])
+        current["invoiced_on"] = [{
+            **take, "released": take.get("released") or take["draw_id"] in released,
+            "lines": [{**ln, "returned": ln.get("returned") or (ln["invoice_line_id"], take["draw_id"]) in returned}
+                      for ln in take["lines"]]} for take in current.get("invoiced_on") or []]
     elif event_type == "doc.received":
         current.setdefault("pre_receipt_status", current.get("status"))
         received = data.get("received_items", [])

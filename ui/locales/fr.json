@@ -6585,5 +6585,7 @@
   "documents.list_old_rule_notice": "Le total de ce devis a été calculé selon l’ancienne règle d’arrondi : {stored}. La règle actuelle donne {current}. Recalculez le total pour appliquer la règle actuelle. Vous pourrez ensuite rétablir le total précédent.",
   "documents.btn_recalculate_total": "Recalculer le total",
   "documents.list_total_recalculated": "Total recalculé de {old} à {new}.",
-  "documents.btn_restore_total": "Rétablir le total précédent"
+  "documents.btn_restore_total": "Rétablir le total précédent",
+  "event.doc.lines_invoiced": "Memo products invoiced",
+  "event.doc.lines_returned": "Products back on memo"
 }
