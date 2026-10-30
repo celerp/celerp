@@ -692,6 +692,80 @@
         "paid",
         "where"
       ]
+    },
+    "acct.err_bank_currency_in_use": {
+      "en": "This account already has transactions or reconciliations in {currency}, so its currency can't change. Add a new bank account in the new currency and move the balance with a transfer.",
+      "params": [
+        "currency"
+      ]
+    },
+    "error.recon_entry_held": {
+      "en": "The reconciliation of {account} for the statement of {dates} counts this entry. Unmatch it there first. If that reconciliation is completed, reopen it to do that.",
+      "params": [
+        "account",
+        "dates"
+      ]
+    },
+    "error.recon_entry_held_ask": {
+      "en": "The reconciliation of {account} for the statement of {dates} counts this entry. Ask someone who manages accounting to reopen that reconciliation and unmatch the entry.",
+      "params": [
+        "account",
+        "dates"
+      ]
+    },
+    "error.recon_period_changed": {
+      "en": "This would change the completed reconciliation of {account} for the statement of {dates}. Changes dated after {last_date} don't affect it. To make this change, reopen that reconciliation first.",
+      "params": [
+        "account",
+        "dates",
+        "last_date"
+      ]
+    },
+    "error.recon_period_changed_ask": {
+      "en": "This would change the completed reconciliation of {account} for the statement of {dates}. Changes dated after {last_date} don't affect it. To make this change, ask someone who manages accounting to reopen that reconciliation.",
+      "params": [
+        "account",
+        "dates",
+        "last_date"
+      ]
+    },
+    "enum.recon_session_status.open": {
+      "en": "In progress",
+      "params": []
+    },
+    "enum.recon_session_status.completed": {
+      "en": "Completed",
+      "params": []
+    },
+    "recon.history": {
+      "en": "Reconciliation history",
+      "params": []
+    },
+    "recon.history_intro": {
+      "en": "Every reconciliation of this account, newest statement first. Completed ones open read-only. Reopen one to change it.",
+      "params": []
+    },
+    "recon.history_empty": {
+      "en": "This account has no reconciliations yet. Start one with Reconcile.",
+      "params": []
+    },
+    "recon.reopen_confirm": {
+      "en": "Reopen this reconciliation? Its matches stay as they are and your books don't change. Complete it again when you're done.",
+      "params": []
+    },
+    "recon.bulk_confirm_skipped": {
+      "en": "{count} lines weren't confirmed. Each one shows why. Match them by hand.",
+      "params": [
+        "count"
+      ]
+    },
+    "recon.needs_review": {
+      "en": "Needs review: this reconciliation counts an entry that's no longer in this account's books, or it no longer balances with its statement. Open it to check.",
+      "params": []
+    },
+    "notice.online_fee_failed.reconciled": {
+      "en": "the fee's date falls inside a completed bank reconciliation. Someone who manages accounting can reopen that reconciliation; the fee is recorded when Celerp Cloud delivers it again.",
+      "params": []
     }
   }
 }
