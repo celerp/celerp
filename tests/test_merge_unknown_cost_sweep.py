@@ -14,7 +14,8 @@ quantity. After each merge:
 4. each selling unit price lies between the stocked sources' lowest and highest, equals it
    when they agree, sits at the rate ceiling, or is absent; no derived list key is stored;
 5. its goods cost is known exactly when every source holding something had a known one;
-6. whether the goods cost is known is the lot's own field, never an attribute.
+6. whether the goods cost is known is the lot's own field, never an attribute;
+7. the merge preview showed exactly the prices, value, unit cost and known-ness the merged lot reads.
 """
 from __future__ import annotations
 
@@ -139,9 +140,19 @@ async def test_every_merge_keeps_value_freight_books_and_unknowns(client, sessio
         extra = {} if resulting is None else {"resulting_quantity": {
             "zero": 0, "equal": natural, "lower": max(natural - 1, 0), "higher": natural + 2}[resulting]}
         books = await assert_books_carry_stock(session, auth["company_id"])
-        merged_id = await _merge(client, auth, ids, **extra)
+        body = {"source_entity_ids": ids, "target_sku_from": ids[0], **extra}
+        preview = await client.post("/items/merge/preview", headers=auth["headers"], json=body)
+        assert preview.status_code == 200, preview.text
+        r = await client.post("/items/merge", headers=auth["headers"],
+                              json={**body, "plan_fingerprint": preview.json()["plan_fingerprint"]})
+        assert r.status_code == 200, r.text
+        merged_id = r.json()["id"]
         merged = await _state(session, auth, merged_id)
         step = (n, picked, resulting, before, merged)
+        read = (await client.get(f"/items/{merged_id}", headers=auth["headers"])).json()
+        shown = preview.json()["result"]
+        assert shown.pop("goods_cost_known") == goods_cost_known(merged), step
+        assert shown == {k: read.get(k) for k in shown}, (step, shown, read)
 
         value = round_basis(sum(recorded_value(st) for st in before))
         assert round_basis(recorded_value(merged)) == value, step

@@ -615,6 +615,21 @@ async def test_the_merge_note_states_prices_value_and_unknown_cost(client, sessi
     assert "16.00" in message and "100.00" in message and t("inventory.goods_cost_unknown") in message, message
 
 
+async def test_the_merge_preview_hides_a_price_list_a_role_may_not_see(client, session, auth):
+    from test_company_settings_owners import _user_with_role
+    from test_permissions import _restrict_item_fields
+    a = await _item(client, auth, qty=2, cost_total=41.0, retail_price=10.0, wholesale_price=37.0)
+    b = await _item(client, auth, qty=3, cost_total=13.0, retail_price=10.0, wholesale_price=37.0)
+    await _restrict_item_fields(client, auth["headers"], {"wholesale_price"})
+    operator = await _user_with_role(client, session, auth["headers"], "operator")
+    assert await _preview(client, operator, [a, b]) == {"retail_price": 10.0}
+    assert (await _preview(client, auth["headers"], [a, b]))["wholesale_price"] == 37.0
+    async with _browser(operator["Authorization"].split()[1]) as ui:
+        r = await ui.post("/api/items/merge/preview", data={"selected": [a, b], "target_sku_from": a})
+    message = r.json()["message"]
+    assert "10.00" in message and not any(v in message for v in ("37.00", "54.00", "10.80")), message
+
+
 async def test_the_unit_cost_cell_saved_as_shown_keeps_freight_separate(client, session, auth):
     await _cost_column(session, auth)
     lot = await _with_freight(client, session, auth)
