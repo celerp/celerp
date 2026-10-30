@@ -8,6 +8,7 @@ previews a tax rate before saving it, and Back to memo names a memo it reopens."
 from __future__ import annotations
 
 import os
+import re
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 
 from unittest.mock import AsyncMock, patch
@@ -159,3 +160,50 @@ def test_a_drawn_invoice_line_badge_names_the_memo_its_goods_are_out_on():
     drawn = {"item_id": "item:1", "drawn_from": {"memo_id": MEMO, "memo_number": "M-12"}}
     assert _line_status_doc(drawn, "item:1", held_by) == (MEMO, "M-12")
     assert _line_status_doc({"item_id": "item:1"}, "item:1", held_by) == ("doc:inv-1", "PF-1")
+
+
+_PICKS = {"line_id_0": LINE, "qty_0": "1", "currency": "USD"}
+_HELD = {"expected_memo": "3", "expected_target": "5", "expected_target_id": "doc:pf-1"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("target", ["", "doc:pf-2"])
+async def test_a_draw_preview_reads_fresh_whatever_versions_the_panel_holds(ui_client, target):
+    """Choosing another invoice re-previews; the versions an earlier preview read are never
+    sent with it, so they cannot make the new preview stale."""
+    preview = AsyncMock(return_value={"problems": [], "memo_version": 3, "target": {"id": target or None},
+                                      "target_version": 7 if target else None, "totals_after": {"total": 10.0}})
+    with patch("ui.api_client.invoice_lines_preview", new=preview):
+        r = await ui_client.post(f"/docs/{MEMO}/invoice-lines/preview", data={**_PICKS, **_HELD, "target_doc_id": target})
+    assert r.status_code == 200, r.text
+    body = preview.await_args.args[2]
+    assert "expected_versions" not in body and body["target_doc_id"] == (target or None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("held", "sent"), [
+    (_HELD, {"memo": 3, "target": 5, "target_id": "doc:pf-1"}),
+    ({"expected_memo": "3"}, {"memo": 3, "target": None, "target_id": None}),
+])
+async def test_a_draw_submit_sends_the_versions_bound_to_the_invoice_they_were_read_for(ui_client, held, sent):
+    draw = AsyncMock(return_value={"target_doc_id": "doc:pf-1"})
+    with patch("ui.api_client.invoice_lines", new=draw):
+        r = await ui_client.post(f"/docs/{MEMO}/invoice-lines",
+                                 data={**_PICKS, **held, "target_doc_id": "doc:pf-1", "idempotency_key": "k-1"})
+    assert r.status_code == 204, r.text
+    assert draw.await_args.args[2]["expected_versions"] == sent
+
+
+@pytest.mark.parametrize(("target", "hidden"), [
+    ({"id": "doc:pf-1"}, {"expected_memo": "3", "expected_target": "5", "expected_target_id": "doc:pf-1"}),
+    ({"id": None}, {"expected_memo": "3"}),
+])
+def test_a_draw_preview_carries_the_invoice_its_versions_were_read_for(target, hidden):
+    from fasthtml.common import to_xml
+    from ui.routes.documents import _draw_panel_preview
+
+    preview = {"problems": [], "memo_version": 3, "target": target,
+               "target_version": 5 if target["id"] else None, "totals_after": {"total": 10.0}}
+    panel = to_xml(_draw_panel_preview(_memo(), preview))
+    found = dict(re.findall(r'name="(expected_\w+)" value="([^"]*)"', panel))
+    assert found == hidden
