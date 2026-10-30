@@ -16,8 +16,6 @@ KEY_LOCKS = {
         "a commit's notice writes update or remove the notices it locks",
     "celerp/routers/companies.py delete_location locations":
         "removes the location, after an import placing items there commits",
-    "celerp/services/auth.py hold_companyless_login users":
-        "no other transaction may add a membership for the login until this one ends",
     "celerp/services/migrations.py discard migration_runs":
         "removes the staged company's runs, this one included",
     "celerp/services/company_lock.py lock_company_for_deletion companies":

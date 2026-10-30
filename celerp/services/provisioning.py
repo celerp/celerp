@@ -45,7 +45,7 @@ async def unique_slug(session: AsyncSession, name: str) -> str:
 
 async def hold_owner(session: AsyncSession, owner_id) -> None:
     """Lock the owner's login FOR NO KEY UPDATE until the transaction ends (a retake when the
-    caller already holds it FOR UPDATE). Every company create takes it before any company
+    caller already holds it, ``hold_companyless_login``). Every company create takes it before any company
     row, so one owner's creates run one after another: none waits on another's company row
     with the same web address while that one's membership waits on the login. It leaves the
     foreign-key share free, so other logins' memberships never wait on it."""

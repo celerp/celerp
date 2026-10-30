@@ -158,7 +158,7 @@ async def test_an_attention_list_change_and_a_company_reset_wait_for_each_other(
 
 async def test_two_company_creates_by_one_owner_with_the_same_name_wait_for_each_other(committed_engine):
     """A company create (company row, then the owner's membership, whose foreign key shares
-    the login) against a start for the same login (login FOR UPDATE, then a company with the
+    the login) against a start for the same login (the login, then a company with the
     same web address). Each create holds the owner's login before its company row, so the
     second waits for the first instead of waiting on its company row in a cycle."""
     from celerp.models.company import User
@@ -196,6 +196,44 @@ async def test_two_company_creates_by_one_owner_with_the_same_name_wait_for_each
             await starter.commit()
 
         first = asyncio.create_task(create())
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        second = asyncio.create_task(start())
+        await _until_blocked_or_done(committed_engine, second)
+        go.set()
+        await _both_finish(first, second)
+
+
+async def test_a_companyless_hold_and_a_session_issued_for_the_same_login_wait_for_each_other(committed_engine):
+    """A session issued for a login (its session generation, then the session row, whose
+    foreign key shares the login) against a start for the same login (the login, then its
+    session generation as the new company's session is issued). The start holds the login
+    without its key, so the session row's key share never waits on it and the start simply
+    waits for the issue."""
+    from celerp.services.auth import hold_companyless_login
+    from celerp.services.session_tracker import lock_auth_state, register_token
+
+    factory = _factory(committed_engine)
+    company_id, user_id, _ = await _seed_member_with_item(factory)
+    async with factory() as s:  # the login's session generation exists, as after any sign-in
+        await lock_auth_state(s, str(user_id))
+        await s.commit()
+    entered, go = asyncio.Event(), asyncio.Event()
+
+    async with factory() as issuer, factory() as starter:
+        async def issue():
+            await lock_auth_state(issuer, str(user_id))
+            entered.set()
+            await go.wait()
+            await register_token(issuer, uuid.uuid4().hex, str(user_id), str(company_id),
+                                 datetime.now(timezone.utc), commit=False)
+            await issuer.commit()
+
+        async def start():
+            await hold_companyless_login(starter, user_id)
+            await lock_auth_state(starter, str(user_id))
+            await starter.commit()
+
+        first = asyncio.create_task(issue())
         await asyncio.wait_for(entered.wait(), timeout=5)
         second = asyncio.create_task(start())
         await _until_blocked_or_done(committed_engine, second)
