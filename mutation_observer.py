@@ -153,7 +153,8 @@ _TOKEN_ISSUE = RowLocked(
     "issuance point checks the login's membership under the company's row lock first")
 _TOKEN_REVOKE = RowLocked(
     "user_auth_state",
-    ("celerp/services/session_tracker.py invalidate_sessions", "celerp/services/session_tracker.py _rotate_every_nonce"),
+    tuple(f"celerp/services/session_tracker.py {name}" for name in (
+        "invalidate_sessions", "invalidate_all_sessions", "end_all_sessions")),
     "a login's session tokens ended with its session state rotated: every company the login worked in")
 UNDER_ROW_LOCK: dict[tuple[str, str], RowLocked] = {
     ("migration_cleanup_tasks", "DELETE"): RowLocked(
