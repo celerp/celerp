@@ -42,6 +42,7 @@ from celerp.services.auth import get_current_company_id, get_current_user
 from celerp.services.permissions import require_permission
 from celerp.services.je_keys import je_idempotency_key, je_void_data
 from celerp.services.physical_codes import physical_code_conflicts
+from ui.i18n import refusal_text
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -81,7 +82,7 @@ async def _repair_one(session: AsyncSession, detail: dict, label: str, emit) -> 
         async with session.begin_nested():
             await emit()
     except HTTPException as exc:
-        detail["blocked_reason"] = str(exc.detail)
+        detail["blocked_reason"] = refusal_text(exc.detail) or str(exc.detail)
         return False
     except ValueError as exc:
         detail["blocked_reason"] = str(exc)

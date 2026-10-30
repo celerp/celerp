@@ -71,10 +71,13 @@ class ChartAccess:
 class ReconciledHistoryChanged(HTTPException):
     """A journal change refused because it would change a bank reconciliation: an entry
     a reconciliation counts, or a day inside a completed one. Core callers catch it
-    without importing accounting."""
+    without importing accounting. The refusal carries its own code: 409 also answers
+    other conflicts on the same routes."""
 
-    def __init__(self, detail: str):
-        super().__init__(status_code=409, detail=detail)
+    CODE = "reconciled_history_changed"
+
+    def __init__(self, message: str):
+        super().__init__(status_code=409, detail={"code": self.CODE, "message": message})
 
 
 class UntrustedChartError(ValueError):

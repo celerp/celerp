@@ -74,7 +74,16 @@ async def _refused(session, company_id, je_id, event_type, data, metadata_=None)
         await _emit(session, company_id, je_id, event_type, data, metadata_)
     await session.rollback()
     assert refused.value.status_code == 409, refused.value.detail
-    return str(refused.value.detail)
+    assert refused.value.detail["code"] == "reconciled_history_changed"
+    return refused.value.detail["message"]
+
+
+def refusal(r) -> str:
+    """The reconciliation refusal a response carries, by its own code."""
+    assert r.status_code == 409, r.text
+    detail = r.json()["detail"]
+    assert detail["code"] == "reconciled_history_changed", detail
+    return detail["message"]
 
 
 async def _unvoid(session, company_id, je_id) -> dict:
@@ -97,7 +106,7 @@ async def test_void_of_an_entry_a_completed_reconciliation_holds_is_refused(clie
     await completed(client, h, b, "2026-09-30", OPENING + 50.0, [je])
     r = await void(client, h, je, "2026-10-15")
     assert r.status_code == 409, r.text
-    detail = r.json()["detail"]
+    detail = refusal(r)
     assert "Harbor Bank" in detail and "2026-09-30" in detail
     assert await _status(session, await _company(session, b), je) == "posted"
 
@@ -110,7 +119,7 @@ async def test_void_of_an_entry_an_open_reconciliation_holds_is_refused(client, 
     assert (await match(client, h, sid, [je])).status_code == 200
     r = await void(client, h, je, "2026-10-15")
     assert r.status_code == 409, r.text
-    assert "Harbor Bank" in r.json()["detail"] and "2026-09-30" in r.json()["detail"]
+    assert "Harbor Bank" in refusal(r) and "2026-09-30" in refusal(r)
     assert await _status(session, await _company(session, b), je) == "posted"
 
 
@@ -175,7 +184,7 @@ async def test_held_entry_stays_protected_when_another_bank_shares_the_ledger_ac
     await second_bank_on(client, h, a)
     r = await void(client, h, je)
     assert r.status_code == 409, r.text
-    assert "Harbor Bank" in r.json()["detail"]
+    assert "Harbor Bank" in refusal(r)
 
 
 async def test_backdated_posting_is_refused_when_another_bank_shares_the_ledger_account(client, session):
@@ -189,7 +198,7 @@ async def test_backdated_posting_is_refused_when_another_bank_shares_the_ledger_
         "entries": [{"account": a["chart_account_code"], "debit": 5.0, "credit": 0},
                     {"account": "4100", "debit": 0, "credit": 5.0}]})
     assert r.status_code == 409, r.text
-    detail = r.json()["detail"]
+    detail = refusal(r)
     assert "Harbor Bank" in detail and "2026-09-30" in detail
 
 
@@ -204,7 +213,7 @@ async def test_backdated_bank_posting_into_a_completed_period_is_refused(client,
         "entries": [{"account": b["chart_account_code"], "debit": 5.0, "credit": 0.0},
                     {"account": "4100", "debit": 0.0, "credit": 5.0}]})
     assert r.status_code == 409, r.text
-    detail = r.json()["detail"]
+    detail = refusal(r)
     assert "Harbor Bank" in detail and "2026-09-30" in detail
     assert "Changes dated after 2026-09-30" in detail
 
@@ -217,7 +226,7 @@ async def test_backdated_payment_from_another_module_is_refused(client, session)
     r = await client.post(f"/docs/{inv}/payment", headers=h, json={
         "payment_date": "2026-09-15", "amount": 100.0, "bank_account": b["chart_account_code"]})
     assert r.status_code == 409, r.text
-    assert "Harbor Bank" in r.json()["detail"]
+    assert "Harbor Bank" in refusal(r)
     await session.rollback()  # production never commits a refused request; the test client shares the session
     doc = (await client.get(f"/docs/{inv}", headers=h)).json()
     assert not [p for p in doc.get("payments", []) if p.get("status") != "deleted"]
@@ -245,11 +254,11 @@ async def test_legacy_statement_date_bounds_no_period(client, session):
     # Read as January 31 the legacy row would end the September period there; it bounds nothing.
     r = await deposit_response(client, h, b, "2026-01-15")
     assert r.status_code == 409, r.text
-    assert "2026-09-30" in r.json()["detail"] and "31/01/2026" not in r.json()["detail"]
+    assert "2026-09-30" in refusal(r) and "31/01/2026" not in refusal(r)
     # Its own match is still protected, by id.
     r = await void(client, h, je, "2026-10-15")
     assert r.status_code == 409, r.text
-    assert "31/01/2026" in r.json()["detail"]
+    assert "31/01/2026" in refusal(r)
 
 
 async def deposit_response(client, h, b, day, amount=5.0):
@@ -266,7 +275,7 @@ async def test_a_session_started_after_completion_does_not_shrink_protection(cli
     assert (await start(client, h, b["id"], "2026-08-31")).status_code == 200
     r = await deposit_response(client, h, b, "2026-08-15")
     assert r.status_code == 409, r.text
-    assert "2026-09-30" in r.json()["detail"]
+    assert "2026-09-30" in refusal(r)
 
 
 async def test_reopened_earlier_session_bounds_the_later_period(client, session):
@@ -279,7 +288,7 @@ async def test_reopened_earlier_session_bounds_the_later_period(client, session)
     assert r.status_code == 200, r.text
     r = await deposit_response(client, h, b, "2026-09-15")
     assert r.status_code == 409, r.text
-    assert "2026-09-30" in r.json()["detail"] and "2026-08-31" not in r.json()["detail"]
+    assert "2026-09-30" in refusal(r) and "2026-08-31" not in refusal(r)
 
 
 async def test_correcting_an_earlier_statement_names_only_the_affected_later_periods(client, session):
@@ -293,7 +302,7 @@ async def test_correcting_an_earlier_statement_names_only_the_affected_later_per
     assert (await client.post(f"/accounting/reconciliation/{first}/reopen", headers=h)).status_code == 200
     r = await void(client, h, held, "2026-08-25")
     assert r.status_code == 409, r.text
-    detail = r.json()["detail"]
+    detail = refusal(r)
     assert "2026-09-30" in detail
     assert "2026-10-31" not in detail and "2026-08-31" not in detail
 
@@ -393,7 +402,7 @@ async def test_delete_payment_refused_while_matched_in_a_reconciliation(client, 
     assert (await match(client, h, sid, [je])).status_code == 200
     r = await client.request("DELETE", f"/docs/{inv}/payments/0", headers=h, json={})
     assert r.status_code == 409, r.text
-    assert "Harbor Bank" in r.json()["detail"] and "2026-09-30" in r.json()["detail"]
+    assert "Harbor Bank" in refusal(r) and "2026-09-30" in refusal(r)
     await session.rollback()  # production never commits a refused request; the test client shares the session
     assert len(await _live_payments(client, h, inv)) == 1
     assert await _status(session, await _company(session, b), je) == "posted"
@@ -419,25 +428,25 @@ async def test_refusal_copy_follows_the_callers_role(client, session):
 
     held_ask = await client.request("DELETE", f"/docs/{inv}/payments/0", headers=operator, json={})
     assert held_ask.status_code == 409, held_ask.text
-    assert "Ask someone who manages accounting" in held_ask.json()["detail"]
-    assert "Unmatch it there" not in held_ask.json()["detail"]
+    assert "Ask someone who manages accounting" in refusal(held_ask)
+    assert "Unmatch it there" not in refusal(held_ask)
     await session.rollback()  # production never commits a refused request; the test client shares the session
 
     held = await client.request("DELETE", f"/docs/{inv}/payments/0", headers=manager, json={})
     assert held.status_code == 409, held.text
-    assert "Unmatch it there first" in held.json()["detail"]
-    assert "Ask someone" not in held.json()["detail"]
+    assert "Unmatch it there first" in refusal(held)
+    assert "Ask someone" not in refusal(held)
     await session.rollback()  # production never commits a refused request; the test client shares the session
 
     late = await _invoice(client, h)
     period_ask = await client.post(f"/docs/{late}/payment", headers=operator, json={
         "payment_date": "2026-09-15", "amount": 100.0, "bank_account": b["chart_account_code"]})
     assert period_ask.status_code == 409, period_ask.text
-    assert "Changes dated after 2026-09-30" in period_ask.json()["detail"]
-    assert "ask someone who manages accounting to reopen" in period_ask.json()["detail"]
+    assert "Changes dated after 2026-09-30" in refusal(period_ask)
+    assert "ask someone who manages accounting to reopen" in refusal(period_ask)
 
     for r in (held_ask, held, period_ask):
-        detail = r.json()["detail"].lower()
+        detail = refusal(r).lower()
         assert "harbor bank" in detail and "2026-09-30" in detail
         assert "another date" not in detail and "change the date" not in detail and "redate" not in detail
 
@@ -560,7 +569,7 @@ async def test_backdated_posting_waiting_on_a_completion_is_refused(monkeypatch,
     assert (await completing).status_code == 200
     r = await posting
     assert r.status_code == 409, r.text
-    assert "2026-09-30" in r.json()["detail"]
+    assert "2026-09-30" in refusal(r)
 
 
 async def test_completion_waits_for_a_backdated_posting(monkeypatch, real_engine, real_client):

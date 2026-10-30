@@ -407,6 +407,15 @@ def error_message(e: APIError) -> str:
     return text or t("error.unexpected_error_body")
 
 
+def error_code(e: APIError) -> str:
+    """The machine code a refusal carries (``detail.code``), else "". Pages branch on
+    this, never on the status alone: one status can carry several refusals."""
+    for source in (e.data, e.detail):
+        if isinstance(source, dict) and source.get("code"):
+            return str(source["code"])
+    return ""
+
+
 def refusal_response(e: APIError) -> PlainTextResponse:
     """The reply a UI route gives for an APIError it caught: the refusal as short plain
     text with its status, which the page's error banner shows. An ended session is raised

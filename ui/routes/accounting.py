@@ -329,13 +329,11 @@ def setup_routes(app):
             except APIError as e:
                 if e.status == 401:
                     return RedirectResponse("/login", status_code=302)
-                if e.status == 409:
+                if api.error_code(e) == "idempotency_conflict":
                     # Same token, different payload: the original already posted.
                     # A fresh token lets a deliberately corrected resubmit succeed.
                     idem_token = str(uuid.uuid4())
-                    error = t("acct.err_already_posted")
-                else:
-                    error = t("acct.not_authorized") if e.status == 403 else str(e.detail)
+                error = t("acct.not_authorized") if e.status == 403 else api.error_message(e)
 
         # Validation failed: re-render the form with the message and the values intact.
         return await _render_journal_form(request, token, ts=ts, memo=memo, lines=lines,

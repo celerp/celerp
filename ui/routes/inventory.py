@@ -1795,9 +1795,10 @@ def setup_routes(app):
                 preview_hash=preview_hash, decisions=decisions,
             )
         except APIError as e:
-            if e.status in (409, 422):
+            stale = api.error_code(e) == "preview_stale"
+            if stale or e.status == 422:
                 return await _item_import_review(
-                    token, csv_ref, notice=t("inventory.import_review_changed") if e.status == 409 else "",
+                    token, csv_ref, notice=t("inventory.import_review_changed") if stale else "",
                 )
             return _item_import_api_error(e)
 

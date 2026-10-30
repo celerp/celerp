@@ -1723,7 +1723,7 @@ async def create_manual_journal_entry(
                 or _norm(orig.get("entries")) != _norm(entries)):
             raise HTTPException(
                 status_code=409,
-                detail="This entry was already posted with different amounts. Review the journal, then post again if a new entry is intended.",
+                detail={"code": "idempotency_conflict", "message": t("acct.err_already_posted")},
             )
         je_id = created.entity_id
     await emit_event(
