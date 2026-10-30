@@ -288,6 +288,7 @@ async def test_a_sign_out_during_a_company_reset_waits_for_the_reset_and_its_nex
     from celerp.models.auth import SessionRegistry, UserAuthState
     from celerp.models.company import Company, User
     from celerp.services import company_reset
+    from celerp.connectors.ownership import lock_connector_maintenance
     from celerp.services.company_lock import lock_company_for_deletion
     from celerp.services.session_tracker import invalidate_sessions
 
@@ -311,6 +312,7 @@ async def test_a_sign_out_during_a_company_reset_waits_for_the_reset_and_its_nex
             return await issue_token_pair(resetter, user=user, company_id=other, expected_snonce=nonce,
                                           commit=False)
 
+        await lock_connector_maintenance(resetter)  # as the router takes them
         await lock_company_for_deletion(resetter, company_id)
         company = await resetter.get(Company, company_id)
         done = await company_reset.reset(resetter, company, company.name, next_session)
@@ -328,3 +330,58 @@ async def test_a_sign_out_during_a_company_reset_waits_for_the_reset_and_its_nex
         assert await s.get(Company, company_id) is None
         assert (await s.scalars(sa.select(SessionRegistry.jti).where(
             SessionRegistry.user_id == user_id))).all() == []
+
+
+async def test_a_lease_released_during_a_company_reset_refuses_the_reset_instead_of_deadlocking(committed_engine):
+    """A connector execution releasing its lease (the lease row, then the heartbeat row, each
+    FOR UPDATE, then both written) while a reset of its company deletes the company's rows:
+    the reset takes the company's lease and heartbeat rows in that order without waiting, so
+    a release in flight refuses the reset as busy at once (no deadlock for the database to
+    break) and finishes; nothing is deleted."""
+    from celerp.connectors.execution import _ensure_rows
+    from celerp.models.company import Company
+    from celerp.services import company_reset
+    from celerp.connectors.ownership import lock_connector_maintenance
+    from celerp.services.company_lock import lock_company_for_deletion
+
+    factory = _factory(committed_engine)
+    company_id, _user_id, _entity_id = await _seed_member_with_item(factory)
+    key = {"c": str(company_id), "k": _PLATFORM, "r": ["products"]}
+    async with factory() as s:
+        await _ensure_rows(s, key)
+        await s.commit()
+
+    async with factory() as releaser, factory() as resetter:
+        await releaser.execute(sa.text(
+            "SELECT resource FROM connector_execution_leases WHERE company_id = :c AND connector = :k "
+            "ORDER BY resource FOR UPDATE"), key)
+
+        async def reset():
+            await lock_connector_maintenance(resetter)  # as the router takes them
+            await lock_company_for_deletion(resetter, company_id)
+            company = await resetter.get(Company, company_id)
+            try:
+                await company_reset.reset(resetter, company, company.name)
+            finally:
+                await resetter.rollback()
+
+        first = asyncio.create_task(reset())
+        await _until_blocked_or_done(committed_engine, first)
+        waited = not first.done()
+
+        async def release():
+            await releaser.execute(sa.text(
+                "SELECT resource FROM connector_execution_heartbeats WHERE company_id = :c "
+                "AND connector = :k ORDER BY resource FOR UPDATE"), key)
+            await releaser.execute(sa.text(
+                "UPDATE connector_execution_leases SET holder = NULL WHERE company_id = :c AND connector = :k"), key)
+            await releaser.commit()
+
+        second = asyncio.create_task(release())
+        results = await asyncio.wait_for(asyncio.gather(first, second, return_exceptions=True), timeout=5)
+    refused, released = results
+    assert not waited, f"the reset waited on the release's lease row: {refused!r}"
+    assert released is None, f"the release failed: {released!r}"
+    assert isinstance(refused, company_reset.ResetRefused) and refused.status == 409, refused
+    async with factory() as s:
+        assert await s.get(Company, company_id) is not None

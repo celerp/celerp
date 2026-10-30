@@ -19,6 +19,13 @@ import lock_rank
 from lock_rank import Lock, Recorder, classify
 
 
+@pytest.fixture(autouse=True)
+def _no_debt(tmp_path, monkeypatch):
+    """A synthetic graph is judged against an empty debt file (a test that needs entries
+    writes its own): the suite's entries would read as stale in every graph that lacks them."""
+    monkeypatch.setattr(lock_rank, "DEBT_FILE", tmp_path / "no-debt.txt")
+
+
 def _lock(cls: str, mode: str, key: str = "1") -> Lock:
     return Lock(cls, mode, "celerp/x.py:1 f", "test_x.py:1", key)
 
@@ -425,6 +432,27 @@ def test_a_lease_taken_while_holding_more_than_the_guard_fails():
     recorder.acquire(1, _lock("row:companies", "no key update wait"), 0.0)
     recorder.acquire(1, _lock("row:connector_execution_leases", "update nowait"), 0.0)
     assert ("lease-held", "row:connector_execution_leases") in _kinds(recorder)
+
+
+def test_maintenance_takes_a_lease_nowait_holding_more_but_never_waiting_on_one():
+    """A whole-company maintenance protocol holds the guard exclusively (no execution runs)
+    and the company's rows; it may take the company's lease rows NOWAIT, then write them, but
+    a waiting take, or one under the guard's shared lock, still fails."""
+    recorder = Recorder()
+    recorder.acquire(1, _lock("adv:connector-runtime", "xact exclusive wait"), 0.0)
+    recorder.acquire(1, _lock("row:companies", "update wait"), 0.0)
+    recorder.acquire(1, _lock("row:connector_execution_leases", "update nowait"), 0.0)
+    recorder.acquire(1, _lock("row:connector_execution_heartbeats", "update nowait"), 0.0)
+    recorder.acquire(1, _lock("row:connector_execution_leases", "write"), 0.0)
+    # Its later deletes of the rows it already holds FOR UPDATE wait for nothing.
+    recorder.acquire(1, _lock("row:connector_execution_leases", "delete"), 0.0)
+    recorder.acquire(1, _lock("row:connector_execution_heartbeats", "delete"), 0.0)
+    assert not [k for k in _kinds(recorder) if k[0].startswith("lease")]
+    waiting = Recorder()
+    waiting.acquire(1, _lock("adv:connector-runtime", "xact exclusive wait"), 0.0)
+    waiting.acquire(1, _lock("row:companies", "update wait"), 0.0)
+    waiting.acquire(1, _lock("row:connector_execution_heartbeats", "update wait"), 0.0)
+    assert ("lease-held", "row:connector_execution_heartbeats") in _kinds(waiting)
 
 
 def test_a_lease_taken_under_the_guard_without_nowait_fails():

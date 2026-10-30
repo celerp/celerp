@@ -175,7 +175,8 @@ class Lock:
 # The connector guard (rule (c)): an execution takes 20 and 21 only in its guard + acquire
 # transaction, which commits before its body runs.
 _GUARD = ("adv:connector-runtime", "adv:connector-owner")
-# Lease rows (rule (d)): an exclusive take holds nothing but the guard's shared 20/21, the
+# Lease rows (rule (d)): an exclusive take holds nothing but the guard's shared 20/21 (or,
+# taken NOWAIT, anything under the guard held exclusively by a maintenance protocol), the
 # acquire or takeover (the take under the guard) does not wait, and a lease row (its
 # generation is the fence) is written only after its FOR UPDATE.
 _LEASE_ROWS = ("row:connector_execution_leases", "row:connector_execution_heartbeats")
@@ -503,7 +504,7 @@ class Recorder:
             self._violate("unknown", lock)
         if lock.cls in _GUARD and lock.in_execution:
             self._violate("guard", lock)
-        if lock.cls in _LEASE_ROWS:
+        if lock.cls in _LEASE_ROWS and not retake:  # a retake of rows held FOR UPDATE waits on none
             self._lease(conn_key, lock)
         own = self._own(conn_key, lock)
         if not own:
@@ -596,7 +597,11 @@ class Recorder:
         held = self.session_held[conn_key] + self.held[conn_key]
         others = [h for h in held if h.cls not in _LEASE_ROWS
                   and not (h.cls in _GUARD and _strength(h) == "shared")]
-        if others:
+        # A whole-company maintenance protocol (company_reset) holds the guard exclusively, so
+        # no execution runs; it takes its company's lease rows NOWAIT and so waits on none.
+        maintenance = lock.mode.endswith("nowait") and any(
+            h.cls == _GUARD[0] and _exclusive(h.mode) for h in held)
+        if others and not maintenance:
             self._violate("lease-held", lock, held_lock=others[0])
         if lock.cls == _LEASE_ROWS[0] and any(h.cls in _GUARD for h in held) \
                 and not lock.mode.endswith("nowait"):

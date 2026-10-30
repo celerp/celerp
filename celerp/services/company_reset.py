@@ -54,6 +54,7 @@ INSTALL_WIDE = {
 AI_BATCH_ACTIVE = ("Wait for the assistant to finish its work before resetting this company. "
                    "Nothing was deleted.")
 # Another transaction in the way: the reset rolls back and is refused as busy.
+_LEASE_TABLES = ("connector_execution_leases", "connector_execution_heartbeats")
 _BUSY = ("40P01", "40001", "55P03")  # deadlock, serialization failure, lock wait timed out
 PAYMENTS_NOT_CLOSED = {
     "disconnected": (503, "Reconnect Celerp Cloud so this company's online invoice payments can be "
@@ -256,6 +257,14 @@ async def _company_schema(session: AsyncSession, cid: str) -> dict:
     # rollback leaves everything as it was and the owner is asked to try again.
     for lock in _lock_writers(schema):
         await session.execute(text(lock))
+    # A connector execution's release takes its lease row, then its heartbeat row, then writes
+    # them, which the locks above make wait: the company's rows are taken here in that order
+    # without waiting, so a release in flight refuses the reset instead of deadlocking with it.
+    for table in _LEASE_TABLES:
+        if table in schema:
+            await session.execute(text(
+                f"SELECT 1 FROM {table} WHERE company_id = :c ORDER BY connector, resource "
+                "FOR UPDATE NOWAIT"), {"c": cid})
     if await db_catalog.read(session) != schema:  # a table or key added before the lock
         raise _busy()
     if changed := await db_catalog.changed_outside(session, schema):
