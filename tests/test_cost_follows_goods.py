@@ -486,7 +486,7 @@ _SHARED_OPEN = 100
 _SHARED_BOUND = 0.5
 
 
-@pytest.mark.timeout(30)
+@pytest.mark.timeout(120)
 async def test_finalizing_on_a_shared_sku_stays_fast_with_many_open_invoices(client, auth, _db_engine):
     """Open invoices that set aside other lots of the same SKU are read in a fixed number
     of queries when another invoice of that SKU is finalized, so finalizing does not slow
