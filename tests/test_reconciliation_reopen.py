@@ -108,10 +108,10 @@ async def test_reopen_refused_while_another_reconciliation_of_that_statement_is_
     h = {"Authorization": f"Bearer {await register_admin(client)}"}
     sid = await _completed(client, h)
     bank_id = (await client.get(f"/accounting/reconciliation/{sid}", headers=h)).json()["bank_account_id"]
-    r = await client.post("/accounting/reconciliation/start", json={
-        "bank_account_id": bank_id, "statement_date": "2026-09-30", "statement_balance": _OPENING}, headers=h)
-    other = r.json()["id"]
-    assert other != sid
+    # Start resumes or opens the one reconciliation of a statement, so only a row from
+    # before one statement kept one reconciliation can be the other open one.
+    from test_reconciliation_history import legacy_session
+    await legacy_session(session, {"id": bank_id}, "2026-09-30", status="open")
     r = await client.post(f"/accounting/reconciliation/{sid}/reopen", headers=h)
     assert r.status_code == 409, r.text
     assert "already open" in r.json()["detail"]
@@ -270,7 +270,9 @@ async def test_two_reopens_of_the_same_statement_leave_one_open(monkeypatch, rea
     h = auth(await token(real_engine, boss, a))
     bank = await _bank(real_client, h)
     s1 = await _complete_one(real_client, h, bank)
-    s2 = await _complete_one(real_client, h, bank)
+    from test_reconciliation_history import legacy_session
+    async with maker(real_engine)() as s:
+        s2 = await legacy_session(s, {"id": bank}, "2026-09-30")
     reached, release = _hold_reopen(monkeypatch)
     first = asyncio.create_task(real_client.post(f"/accounting/reconciliation/{s1}/reopen", headers=h))
     await asyncio.wait_for(reached.wait(), 10)
