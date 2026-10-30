@@ -181,38 +181,70 @@ class AuthoritySettings(dict):
 
 @dataclass(eq=False)
 class RequestAuthority:
-    """What a request was authorized as: its company, user and role, the permissions
-    it relied on, and the settings it was handed. Registered on the request's session
+    """What a request was authorized as: its company, user and role, the module whose
+    route it reached, the permissions it relied on, and the settings it was handed. Registered on the request's session
     by get_auth_context and judged again under the company lock (company_lock)."""
 
     company_id: uuid.UUID
     user_id: uuid.UUID
     role: str
+    module: str | None = None
     keys: set[str] = field(default_factory=set)
     views: list[AuthoritySettings] = field(default_factory=list)
+    # The request's own authority when this one is what the request acts with in
+    # another company (act_for); None for the request's own.
+    request: "RequestAuthority | None" = None
 
     async def judge_again(self, session: AsyncSession) -> None:
         """403 unless the caller still holds the same role, active, with every
-        permission the request relied on; then refresh the settings it was handed."""
+        permission the request relied on, and the company still uses the module whose
+        route it reached; then refresh the settings it was handed."""
         role, settings = await read_authority(session, self.company_id, self.user_id)
         if role != self.role:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=t("error.access_changed"))
         for key in sorted(self.keys):
             assert_role_permission(settings, role, key)
+        if self.module:
+            from celerp.modules.boundary import require_company_uses
+            require_company_uses(settings, self.module)
         for view in self.views:
             view.clear()
             view.update(settings)
 
 
-def authorize_request(session: AsyncSession, company_id, user_id, role: str) -> RequestAuthority:
+def authorize_request(session: AsyncSession, company_id, user_id, role: str,
+                      module: str | None = None) -> RequestAuthority:
     """Register the request's authority on its session (get_auth_context)."""
-    authority = RequestAuthority(company_id=company_id, user_id=user_id, role=role)
+    authority = RequestAuthority(company_id=company_id, user_id=user_id, role=role, module=module)
     session.info[AUTHORITY] = authority
     return authority
 
 
+def carry_authority(request_session: AsyncSession, session: AsyncSession) -> None:
+    """Register the request's authority on another session its handler writes through
+    (the unbounded lifecycle session), so that session's company lock judges it again too."""
+    authority = request_session.info.get(AUTHORITY)
+    if authority is not None:
+        session.info[AUTHORITY] = authority
+
+
+def act_for(session: AsyncSession, company_id, user_id, role: str, key: str) -> None:
+    """The request goes on to act in *company_id*, where the caller holds *role* granting
+    *key* (a migration's staged company, run from the owner's working session): register
+    that authority on its session, so the company's lock judges membership, role and *key*
+    there again and the request's writes are judged as that company's."""
+    current = session.info.get(AUTHORITY)
+    if current is not None and str(current.company_id) == str(company_id) and current.role == role:
+        current.keys.add(key)
+        return
+    request = current.request if current is not None and current.request is not None else current
+    session.info[AUTHORITY] = RequestAuthority(company_id=company_id, user_id=user_id, role=role, keys={key},
+                                               request=request)
+
+
 def end_request(session: AsyncSession, authority: RequestAuthority) -> None:
-    if session.info.get(AUTHORITY) is authority:
+    current = session.info.get(AUTHORITY)
+    if current is authority or (current is not None and current.request is authority):
         session.info.pop(AUTHORITY, None)
 
 

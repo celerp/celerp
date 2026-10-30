@@ -98,6 +98,9 @@ class SyncResult:
     # that tracks attention always returns a list (empty when nothing waits);
     # None means the run produced no list and the previous one stands.
     attention: list[dict] | None = None
+    # The run did not go ahead because modules were being changed (ModuleBusy): the same
+    # run can succeed when tried again.
+    busy: bool = False
 
     @property
     def ok(self) -> bool:

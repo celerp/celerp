@@ -11,7 +11,7 @@ each company once. Until a list is saved (``customs_saved``) its print and share
 a list this pass could not save never prints blank.
 
 Runs at startup, gated by a marker so it runs once per database. A company staged for a
-migration is skipped. Each list is saved in its own savepoint: a list that fails is rolled back
+migration, or that has Documents turned off, is skipped and waits for a later start. Each list is saved in its own savepoint: a list that fails is rolled back
 alone and logged. Either way the marker stays unset so the next start tries it again. The hook never raises, so the module is never held back by it.
 """
 
@@ -33,6 +33,8 @@ _NOTICE = "notice.customs_freeze"
 async def freeze_issued_customs_lists(session: AsyncSession) -> dict:
     """Save the item details on every issued customs list that lacks them. Caller commits."""
     from celerp.migrations._data_reconcile import get_meta, set_meta
+    from celerp.models.company import Company
+    from celerp.modules.registry import uses_module
     from celerp.models.projections import Projection
     from celerp.notifications.service import notify_once
     from celerp.services.list_behavior import DRAFT, LIST_TYPES, behavior
@@ -49,7 +51,8 @@ async def freeze_issued_customs_lists(session: AsyncSession) -> dict:
         select(Projection.company_id, Projection.entity_id)
         .where(Projection.entity_type == "list",
                Projection.state["list_type"].as_string().in_(customs_types),
-               Projection.state["status"].as_string() != DRAFT)
+               Projection.state["status"].as_string() != DRAFT,
+               Projection.state["customs_saved"].as_boolean().isnot(True))
         .order_by(Projection.company_id, Projection.entity_id)
     )).all()
     frozen: dict = {}
@@ -57,7 +60,9 @@ async def freeze_issued_customs_lists(session: AsyncSession) -> dict:
     staged: dict = {}
     for company_id, entity_id in rows:
         if company_id not in staged:
-            staged[company_id] = await is_company_migration_staged(session, company_id)
+            company = await session.get(Company, company_id)
+            staged[company_id] = (await is_company_migration_staged(session, company_id)
+                                  or not uses_module(company.settings if company is not None else None, "celerp-docs"))
         if staged[company_id]:
             continue
         try:
@@ -90,7 +95,8 @@ async def freeze_issued_customs_lists(session: AsyncSession) -> dict:
     total = sum(frozen.values())
     waiting = sum(staged.values())
     if total or failed or waiting:
-        log.info("Saved item details on %d issued list(s); %d failed, %d company(ies) staged for a migration%s",
+        log.info("Saved item details on %d issued list(s); %d failed, %d company(ies) staged for a migration "
+                 "or without Documents%s",
                  total, failed, waiting, " (marker left unset; the next start retries)" if failed or waiting else "")
     return {"frozen": total, "failed": failed, "staged": waiting}
 

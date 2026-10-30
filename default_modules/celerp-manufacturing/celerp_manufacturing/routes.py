@@ -38,6 +38,7 @@ from celerp.services.fulfill import outstanding_physical_lines
 from celerp.services.journal_accounts import UnbalancedJournalEntry
 from celerp.services.lot_origin import refuse_deleted, refuse_draft
 from celerp.services.goods_cost import lot_label, negative_cost_error
+from celerp.services.record_quantities import INCOMPLETE_RUN_STATUSES, outstanding_output
 from celerp.services.permissions import locked_authority, require_permission
 from celerp.schemas.numbers import FiniteFloat
 from ui.i18n import t
@@ -51,7 +52,7 @@ DEFAULT_HOURS_PER_DAY = 8.0
 from .expansion import expand_recipe, explode_demand, for_product, mfg_idem_key, output_line
 from . import movements
 from .labor import apply_labor_providers
-from .search import _INCOMPLETE_STATUSES, search_orders
+from .search import search_orders
 
 # Every endpoint, reads included, requires manage_manufacturing: work orders carry costs.
 router = APIRouter(
@@ -705,12 +706,12 @@ def _in_progress_by_item(runs: list) -> dict[str, float]:
     out: dict[str, float] = {}
     for r in runs:
         rs = r.state or {}
-        if (rs.get("status") or "").lower() not in _INCOMPLETE_STATUSES:
+        if (rs.get("status") or "").lower() not in INCOMPLETE_RUN_STATUSES:
             continue
         item_id = rs.get("output_item_id")
         if not item_id:
             continue
-        out[item_id] = out.get(item_id, 0.0) + movements.outstanding_output(rs)
+        out[item_id] = out.get(item_id, 0.0) + outstanding_output(rs)
     return out
 
 
@@ -1474,6 +1475,16 @@ async def _wip_location(session: AsyncSession, company_id, value: str | None):
     return loc_id
 
 
+async def _locked_work_center(session: AsyncSession, company_id, wc_id: str) -> WorkCenter:
+    """The work center a change applies to, read under the company lock so the change is
+    judged and written as one step with no other write to the company in flight."""
+    await lock_company(session, company_id)
+    wc = await session.get(WorkCenter, _parse_loc(wc_id), populate_existing=True)
+    if wc is None or wc.company_id != company_id:
+        raise HTTPException(status_code=404, detail=t("manufacturing.err_wc_not_found"))
+    return wc
+
+
 @router.get("/work-centers")
 async def list_work_centers(
     company_id=Depends(get_current_company_id),
@@ -1494,6 +1505,7 @@ async def create_work_center(
 ) -> dict:
     if not payload.name.strip():
         raise HTTPException(status_code=422, detail=t("manufacturing.err_wc_name_required"))
+    await lock_company(session, company_id)
     # A company's first center becomes its default, so the board always has a
     # working-day length to read once any center exists.
     wip_location_id = await _wip_location(session, company_id, payload.wip_location_id)
@@ -1522,9 +1534,7 @@ async def patch_work_center(
     _: None = require_permission("manage_manufacturing"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    wc = await session.get(WorkCenter, _parse_loc(wc_id))
-    if wc is None or wc.company_id != company_id:
-        raise HTTPException(status_code=404, detail=t("manufacturing.err_wc_not_found"))
+    wc = await _locked_work_center(session, company_id, wc_id)
     fields = payload.model_dump(exclude_unset=True)
     if "name" in fields:
         if not (fields["name"] or "").strip():
@@ -1567,9 +1577,7 @@ async def set_default_work_center(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Make this the company's default work center, clearing the previous one."""
-    wc = await session.get(WorkCenter, _parse_loc(wc_id))
-    if wc is None or wc.company_id != company_id:
-        raise HTTPException(status_code=404, detail=t("manufacturing.err_wc_not_found"))
+    wc = await _locked_work_center(session, company_id, wc_id)
     await _unset_other_defaults(session, company_id, wc.id)
     wc.is_default = True
     name = wc.name or ""
@@ -1588,9 +1596,7 @@ async def delete_work_center(
     _: None = require_permission("manage_manufacturing"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    wc = await session.get(WorkCenter, _parse_loc(wc_id))
-    if wc is None or wc.company_id != company_id:
-        raise HTTPException(status_code=404, detail=t("manufacturing.err_wc_not_found"))
+    wc = await _locked_work_center(session, company_id, wc_id)
     others = (await session.execute(
         select(WorkCenter.id).where(
             WorkCenter.company_id == company_id, WorkCenter.id != wc.id,
@@ -1641,7 +1647,7 @@ def _stock_by_product(states: dict[str, dict]) -> tuple[dict[str, float], dict[t
 # ---------------------------------------------------------------------------
 
 # Canonical run statuses. "incomplete" = everything still needing attention.
-# _INCOMPLETE_STATUSES is single-sourced in search.py, which owns the list filter.
+# INCOMPLETE_RUN_STATUSES is single-sourced in celerp.services.record_quantities.
 _RUN_STATUSES = ("planned", "in_progress", "on_hold", "completed", "cancelled")
 
 

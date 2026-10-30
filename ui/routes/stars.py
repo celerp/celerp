@@ -5,7 +5,7 @@
 
 The UI server (8080) proxies the star endpoints to the API (so the shell JS can call
 same-origin) and hosts /stars/claim, which bounces the browser to the relay verify
-flow and stores the returned credential.
+flow and, once the user confirms, stores the returned credential.
 """
 from __future__ import annotations
 
@@ -26,16 +26,33 @@ def _claim_success_body(escaped_label: str) -> str:
     return t("stars.claim_success_body", label=f"<strong>{escaped_label}</strong>")
 
 
-def _claim_result_page(title: str, body: str) -> str:
+_CLAIM_BUTTON = ("display:inline-block;margin-top:12px;padding:10px 20px;background:#1f883d;color:#fff;"
+                 "border:0;border-radius:6px;font:inherit;text-decoration:none;cursor:pointer")
+
+
+def _claim_result_page(title: str, body: str, action: str = "") -> str:
+    action = action or f"<p><a href='/' style='{_CLAIM_BUTTON}'>{t('stars.back_to_celerp')}</a></p>"
     return (
         "<!doctype html><meta charset=utf-8><title>Celerp</title>"
         "<div style='font-family:system-ui,sans-serif;max-width:560px;margin:80px auto;"
         "text-align:center;line-height:1.5'>"
         f"<h1>{html.escape(title)}</h1><p style='color:#555'>{body}</p>"
-        "<p><a href='/' style='display:inline-block;margin-top:12px;padding:10px 20px;"
-        f"background:#1f883d;color:#fff;border-radius:6px;text-decoration:none'>{t('stars.back_to_celerp')}</a></p>"
+        f"{action}"
         "</div>"
     )
+
+
+def _claim_confirm_page(cred: str) -> str:
+    """The relay returns the browser here by a GET carrying the credential; the badge is
+    saved only when the signed-in user confirms it with a POST, so a link alone never
+    stores a credential to whoever opens it."""
+    action = (
+        "<form method='post' action='/stars/claim'>"
+        f"<input type='hidden' name='cred' value='{html.escape(cred, quote=True)}'>"
+        f"<button type='submit' style='{_CLAIM_BUTTON}'>{html.escape(t('stars.claim_confirm_button'))}</button></form>"
+        f"<p><a href='/' style='color:#555'>{t('stars.back_to_celerp')}</a></p>"
+    )
+    return _claim_result_page(t("stars.claim_confirm_title"), html.escape(t("stars.claim_confirm_body")), action)
 
 
 def setup_routes(app):
@@ -79,26 +96,14 @@ def setup_routes(app):
     @app.get("/stars/claim")
     async def stars_claim(request: Request):
         """Badge-claim handshake. No cred -> bounce to the relay verify flow with this
-        page as the return URL. With cred -> store the badge and confirm."""
+        page as the return URL. With cred -> ask the user to confirm saving the badge."""
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
 
         cred = request.query_params.get("cred")
         if cred:
-            async with api._local_client(token, timeout=10.0, follow_redirects=False) as c:
-                try:
-                    r = await c.post("/stars/badge", json={"cred": cred})
-                    data = r.json()
-                except Exception:
-                    return HTMLResponse(_claim_result_page(
-                        t("stars.claim_save_failed_title"), t("stars.claim_save_failed_body")))
-            if data.get("error") or not data.get("badge"):
-                return HTMLResponse(_claim_result_page(
-                    t("stars.claim_no_star_title"), t("stars.claim_no_star_body")))
-            label = html.escape(data["badge"]["label"])
-            return HTMLResponse(_claim_result_page(
-                t("stars.claim_success_title"), _claim_success_body(label)))
+            return HTMLResponse(_claim_confirm_page(cred))
 
         # No cred yet: ask the API for the relay verify-start URL, return here after.
         return_url = str(request.base_url).rstrip("/") + "/stars/claim"
@@ -112,3 +117,26 @@ def setup_routes(app):
             return HTMLResponse(_claim_result_page(
                 t("stars.claim_unavailable_title"), t("stars.claim_unavailable_body")))
         return RedirectResponse(url, status_code=302)
+
+    @app.post("/stars/claim")
+    async def stars_claim_save(request: Request):
+        """Store the confirmed badge and say how it went."""
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=303)
+        cred = (await request.form()).get("cred")
+        if not cred:
+            return RedirectResponse("/stars/claim", status_code=303)
+        async with api._local_client(token, timeout=10.0, follow_redirects=False) as c:
+            try:
+                r = await c.post("/stars/badge", json={"cred": cred})
+                data = r.json()
+            except Exception:
+                return HTMLResponse(_claim_result_page(
+                    t("stars.claim_save_failed_title"), t("stars.claim_save_failed_body")))
+        if data.get("error") or not data.get("badge"):
+            return HTMLResponse(_claim_result_page(
+                t("stars.claim_no_star_title"), t("stars.claim_no_star_body")))
+        label = html.escape(data["badge"]["label"])
+        return HTMLResponse(_claim_result_page(
+            t("stars.claim_success_title"), _claim_success_body(label)))

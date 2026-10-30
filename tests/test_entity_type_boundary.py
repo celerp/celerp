@@ -24,6 +24,7 @@ from celerp.models.connector_config import OutboundQueue
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.projections.engine import ProjectionEngine
+from celerp.services.company_lock import lock_company
 from test_helpers import perm_setup
 from ui.i18n import t
 
@@ -61,6 +62,10 @@ async def _snapshot(session, company_id, entity_id):
 
 
 async def _emit(session, company_id, entity_id, entity_type, event_type, data):
+    if event_type.startswith("shop.sync."):
+        # As the bulk opt-in route does: the Shopify fence first.
+        from celerp.connectors.ownership import lock_connector_key
+        await lock_connector_key(session, "shopify")
     return await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type=entity_type,
         event_type=event_type, data=data, actor_id=None, location_id=None, source="test",
@@ -277,9 +282,11 @@ async def test_rebuild_with_a_historical_crossed_row_is_deterministic(client, se
         )).scalars().all()
         return {r.entity_id: (r.entity_type, r.state, r.version) for r in rows}
 
+    await lock_company(session, company_id)
     await ProjectionEngine.rebuild(session, company_id)
     await session.flush()
     first = await _states()
+    await lock_company(session, company_id)
     await ProjectionEngine.rebuild(session, company_id)
     await session.flush()
     assert await _states() == first

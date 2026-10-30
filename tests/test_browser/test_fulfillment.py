@@ -172,10 +172,20 @@ def test_fulfill_action_marks_fulfilled_and_shows_revert(page, ui_server, api, f
         "Fulfilled badge/text not shown after fulfill"
 
 
-def test_fulfilled_line_reads_sold_and_offers_set_as_available(page, ui_server, api, final_doc_id):
+def _ensure_fulfilled(api, final_doc) -> None:
+    """Ship the doc's line unless an earlier test in this run already did. The browser
+    shards split a module by measured time, so a test cannot count on another's state."""
+    doc_id = final_doc["doc_id"]
+    if api.get(f"/docs/{doc_id}").json().get("fulfillment_status") != "fulfilled":
+        r = api.post(f"/docs/{doc_id}/fulfill-lines", json={"line_entity_ids": [final_doc["item_id"]]})
+        assert r.status_code in {200, 201}, f"Fulfill failed ({r.status_code}): {r.text}"
+    assert api.get(f"/docs/{doc_id}").json().get("fulfillment_status") == "fulfilled"
+
+
+def test_fulfilled_line_reads_sold_and_offers_set_as_available(page, ui_server, api, final_doc):
     """FULFILL-04: A fulfilled line reads as sold and the line actions offer Set as available."""
-    assert api.get(f"/docs/{final_doc_id}").json().get("fulfillment_status") == "fulfilled", \
-        "FULFILL-03 must leave the doc fulfilled"
+    _ensure_fulfilled(api, final_doc)
+    final_doc_id = final_doc["doc_id"]
     page.goto(f"{ui_server}/docs/{final_doc_id}", wait_until="domcontentloaded")
     _assert_no_crash(page, "fulfilled doc")
     _save_screenshot(page, "04-fulfilled-doc-set-available")
@@ -190,13 +200,8 @@ def test_fulfilled_line_reads_sold_and_offers_set_as_available(page, ui_server, 
 
 def test_revert_fulfillment_restores_fulfill_button(page, ui_server, api, final_doc):
     """FULFILL-05: Setting the lines as available (via API) takes the line out of sold."""
+    _ensure_fulfilled(api, final_doc)
     final_doc_id = final_doc["doc_id"]
-    # Ensure doc is fulfilled (may already be from FULFILL-03, re-fulfill if needed)
-    eids = [final_doc["item_id"]]
-    state_r = api.get(f"/docs/{final_doc_id}")
-    if state_r.json().get("fulfillment_status") != "fulfilled":
-        r = api.post(f"/docs/{final_doc_id}/fulfill-lines", json={"line_entity_ids": eids})
-        assert r.status_code in {200, 201}, f"Pre-revert fulfill failed ({r.status_code}): {r.text}"
 
     # A partial fulfill splits the parcel and rewrites the line to the child, so
     # revert using the doc's CURRENT line refs rather than the original item id.

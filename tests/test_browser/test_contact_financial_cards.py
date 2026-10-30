@@ -17,14 +17,17 @@ _TILES_JS = r"""() => Array.from(document.querySelectorAll('.financial-card')).m
     const r = document.createRange(); r.selectNodeContents(s);
     const b = r.getBoundingClientRect(); return {left: b.left, right: b.right};
   });
-  // Widest single word of the label against the room the tile gives it.
-  const cs = getComputedStyle(l), ctx = document.createElement('canvas').getContext('2d');
-  ctx.font = cs.fontStyle + ' ' + cs.fontWeight + ' ' + cs.fontSize + ' ' + cs.fontFamily;
-  const ls = parseFloat(cs.letterSpacing) || 0;
-  const widest = Math.max(...l.innerText.toUpperCase().split(/\s+/).filter(Boolean)
-    .map(w => ctx.measureText(w).width + ls * w.length));
-  return {text: l.innerText, left: c.left, right: c.right, top: c.top, bottom: c.bottom, words,
-          widest, room: l.clientWidth};
+  // Words the browser broke across lines: a whole word sits on one line, so its rendered
+  // boxes share one top; a word split mid-letter has boxes on two lines.
+  const split = [], walker = document.createTreeWalker(l, NodeFilter.SHOW_TEXT);
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+    for (const m of n.data.matchAll(/\S+/g)) {
+      const r = document.createRange(); r.setStart(n, m.index); r.setEnd(n, m.index + m[0].length);
+      const tops = new Set(Array.from(r.getClientRects()).filter(b => b.width > 0).map(b => Math.round(b.top)));
+      if (tops.size > 1) split.push(m[0]);
+    }
+  }
+  return {text: l.innerText, left: c.left, right: c.right, top: c.top, bottom: c.bottom, words, split};
 })"""
 
 
@@ -44,7 +47,7 @@ def test_contact_money_tile_labels_stay_inside_their_tiles(page: Page, fresh_com
         for w in t["words"]:
             assert w["left"] >= t["left"] - 0.5 and w["right"] <= t["right"] + 0.5, \
                 f"label {t['text']!r} spills out of its tile: {w} vs {t}"
-        assert t["widest"] <= t["room"] + 1, f"a word of {t['text']!r} is split mid-letter: {t}"
+        assert not t["split"], f"{t['split']} split mid-letter in {t['text']!r}: {t}"
     for a, b in zip(tiles, tiles[1:]):
         same_row = a["top"] < b["bottom"] and b["top"] < a["bottom"]
         assert not (same_row and a["right"] > b["left"] + 0.5), f"{a['text']!r} overlaps {b['text']!r}"

@@ -220,7 +220,7 @@ async def recognized_balances(session, company_id, module: str,
         Projection.entity_type == "journal_entry",
         Projection.state["status"].as_string() == "posted")
     if not days:
-        query = query.where(Projection.entity_id.startswith(f"je:mod:{module}:") | Projection.entity_id.in_(named))
+        query = query.where(Projection.entity_id.startswith(f"je:mod:{module}:", autoescape=True) | Projection.entity_id.in_(named))
     rows = (await session.execute(query)).all()
     dated = {eid: str(state.get("ts") or "")[:10] for eid, state in rows}
     balances = dict.fromkeys(keys, Decimal(0))

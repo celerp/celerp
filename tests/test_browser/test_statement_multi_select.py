@@ -15,10 +15,15 @@ Proves:
 4. Clicking a ticked option unticks it.
 5. The closed input names a single selection and counts several.
 6. Submitting renders one section per selected subject.
+7. The open list follows the field when content loads above it, and a pick made
+   while the list moves keeps it open.
 """
 from __future__ import annotations
 
 import pytest
+from playwright.sync_api import expect
+
+from .conftest import css_class
 
 pytestmark = pytest.mark.browser
 
@@ -35,8 +40,14 @@ def statement_url(ui_server, api):
     return f"{ui_server}/reports/statement"
 
 
+# No part of the page is still loading or settling: a banner that lands later moves the
+# field down after the list is placed.
+_SETTLED = "!document.querySelector('.htmx-request, .htmx-swapping, .htmx-settling')"
+
+
 def _open_picker(page, url):
-    page.goto(url, wait_until="domcontentloaded")
+    page.goto(url, wait_until="load")
+    page.wait_for_function(_SETTLED)
     page.wait_for_selector(".combobox-wrap[data-multiple]", timeout=10000)
     page.locator(".combobox-wrap[data-multiple] .combobox-input").first.click()
     page.wait_for_selector(".combobox-list.open", timeout=3000)
@@ -81,7 +92,7 @@ def test_clicking_an_option_ticks_it_and_keeps_the_list_open(page, statement_url
     _open_picker(page, statement_url)
     first = _options(page).first
     first.click()
-    assert "combobox-option--selected" in (first.get_attribute("class") or "")
+    expect(first).to_have_class(css_class("combobox-option--selected"))
     assert page.locator(".combobox-list.open").is_visible(), "list closed after one pick"
 
 
@@ -104,7 +115,60 @@ def test_clicking_a_ticked_option_unticks_it(page, statement_url):
     assert _selected_inputs(page).count() == 1
     opt.click()
     assert _selected_inputs(page).count() == 0
-    assert "combobox-option--selected" not in (opt.get_attribute("class") or "")
+    expect(opt).not_to_have_class(css_class("combobox-option--selected"))
+
+
+_LIST_OFFSET = """(() => {
+    const w = document.querySelector('.combobox-wrap[data-multiple]');
+    return w.querySelector('.combobox-list').getBoundingClientRect().top
+        - w.querySelector('.combobox-input').getBoundingClientRect().bottom;
+})()"""
+
+
+def test_the_open_list_follows_the_field_when_content_loads_above_it(page, statement_url):
+    """The list is position:fixed and placed when it opens. A notice that loads above the
+    form afterwards moves the field down, and the list has to move with it."""
+    _open_picker(page, statement_url)
+    offset = page.evaluate(_LIST_OFFSET)
+    page.evaluate(
+        "htmx.swap('#main-content', '<div style=\"height:80px\"></div>', {swapStyle: 'afterbegin'})")
+    page.wait_for_function(f"Math.abs({_LIST_OFFSET} - {offset}) < 1", timeout=3000)
+
+
+def test_the_open_list_follows_the_field_when_a_notice_shows_above_it(page, statement_url):
+    """The system health notice is shown by script once its check answers, which can be
+    after the list opened. Nothing is swapped in, but the field still moves down. The check
+    is held until the page has settled and the list is open, then answers that disk space is
+    low, and the list must follow the field once the notice script has shown the notice."""
+    held = []
+    page.route("**/health/system", lambda route: held.append(route))
+    with page.expect_request(lambda r: r.url.endswith("/health/system")):
+        page.goto(statement_url, wait_until="load")
+    page.wait_for_function(_SETTLED)
+    page.locator(".combobox-wrap[data-multiple] .combobox-input").first.click()
+    page.wait_for_selector(".combobox-list.open", timeout=3000)
+    offset = page.evaluate(_LIST_OFFSET)
+    assert len(held) == 1, held
+    held[0].fulfill(json={"overall": "warning", "disk": {"status": "warning", "message": "Disk space is low."}})
+    page.wait_for_function("document.getElementById('sys-health-banner').style.display === 'flex'", timeout=3000)
+    page.wait_for_function(f"Math.abs({_LIST_OFFSET} - {offset}) < 1", timeout=3000)
+
+
+def test_a_pick_keeps_the_list_open_when_the_list_moves_under_the_pointer(page, statement_url):
+    """Content that lands above the form while the list is open moves the field at once,
+    before the list follows. A pick then places the list under its field mid-click, so the
+    button comes up over the page around it. The pick still counts, and the list stays
+    open for the next one."""
+    _open_picker(page, statement_url)
+    page.evaluate("document.querySelector('#main-content')"
+                  ".insertAdjacentHTML('afterbegin', '<div style=\"height:80px\"></div>')")
+    opt = _options(page).first
+    opt.click()
+    assert _selected_inputs(page).count() == 1
+    assert page.locator(".combobox-list.open").is_visible(), "the pick closed the list"
+    opt.click()
+    assert _selected_inputs(page).count() == 0
+    assert page.locator(".combobox-list.open").is_visible(), "unticking closed the list"
 
 
 def test_closed_input_names_one_selection_and_counts_several(page, statement_url):
@@ -170,8 +234,8 @@ def test_a_search_keeps_the_tick_on_an_already_picked_subject(page, statement_ur
 
     swapped = _option_by_value(page, value)
     assert swapped.count() == 1, "the searched-for subject should be in the results"
-    assert "combobox-option--selected" in (swapped.first.get_attribute("class") or ""), (
-        "the search results dropped the tick on an already picked subject")
+    expect(swapped.first, "the search results dropped the tick on an already picked subject").to_have_class(
+        css_class("combobox-option--selected"))
     assert _selected_inputs(page).count() == 1, "the search changed the submitted set"
 
 
@@ -191,6 +255,6 @@ def test_clearing_the_search_keeps_the_tick(page, statement_url):
 
     restored = _option_by_value(page, value)
     assert restored.count() == 1, "clearing the box should bring the full list back"
-    assert "combobox-option--selected" in (restored.first.get_attribute("class") or ""), (
-        "the restored list dropped the tick on an already picked subject")
+    expect(restored.first, "the restored list dropped the tick on an already picked subject").to_have_class(
+        css_class("combobox-option--selected"))
     assert _selected_inputs(page).count() == 1

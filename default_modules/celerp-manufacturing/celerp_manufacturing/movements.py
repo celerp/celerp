@@ -70,17 +70,16 @@ from celerp.services.lot_origin import (
     value_moved,
 )
 from celerp.services.money import allocate_pro_rata, round_money
+from celerp.services.record_quantities import EPS, outstanding_inputs, outstanding_output, run_name
 from celerp.services.units import build_unit_map, get_company_units, require_moving_fits_units, validate_line_quantity
 
 from . import run_events  # noqa: F401  (registers the run's own event types)
 from .expansion import merge_inputs, output_line
 from .projection_handler import reopened
-from .search import _INCOMPLETE_STATUSES
 
 # Namespace for produced-lot ids: a receipt retried with its key resolves to the same lot id.
 MFG_LOT_NS = uuid.UUID("6f1d0c2a-7b3e-4a9c-8d5f-2e0a1b4c6d8e")
 CLOSED_RUN_STATUSES = frozenset({"completed", "cancelled"})
-_EPS = 1e-9
 _ZERO = Decimal(0)
 # Every stock event a run writes carries the run's id (older releases marked consumed components
 # the same way), so a lot's history shows what the run did to it.
@@ -139,34 +138,6 @@ async def require_not_merged(session: AsyncSession, company_id, state: dict, ite
 async def mfg_settings(session: AsyncSession, company_id) -> dict:
     company = await session.get(Company, company_id)
     return (company.settings or {}).get("manufacturing", {}) if company else {}
-
-
-def outstanding_inputs(run_state: dict) -> list[dict]:
-    """Per input, the quantity still to issue (required - already issued)."""
-    out = []
-    for inp in run_state.get("inputs", []):
-        rem = float(inp.get("quantity") or 0) - float(inp.get("issued_qty") or 0)
-        if rem > _EPS:
-            out.append({"item_id": inp.get("item_id"), "quantity": round(rem, 6)})
-    return out
-
-
-def outstanding_output(run_state: dict) -> float:
-    """Finished-goods quantity still to receive (expected - already received)."""
-    expected = float((run_state.get("expected_outputs") or [{}])[0].get("quantity") or 0)
-    return max(0.0, round(expected - float(run_state.get("received_qty") or 0), 6))
-
-
-def quantities_still_moving(run_state: dict) -> list[tuple[dict, float]]:
-    """What an open run can still move, as (line naming its item, quantity): each component's
-    quantity still to issue and the output still to receive. A completed or cancelled run
-    moves nothing more."""
-    if run_state.get("status") not in _INCOMPLETE_STATUSES:
-        return []
-    lines = [({"item_id": i["item_id"]}, i["quantity"]) for i in outstanding_inputs(run_state)]
-    if (left := outstanding_output(run_state)) > _EPS:
-        lines.append(({"item_id": run_state.get("output_item_id")}, left))
-    return lines
 
 
 async def require_unit_precision(session: AsyncSession, company_id, lines: list[tuple[dict, float]]) -> None:
@@ -303,12 +274,6 @@ async def _require_executable_shape(op: _Op, state: dict) -> None:
                      "or overhead.", items=names)
 
 
-def run_name(state: dict) -> str:
-    """A run as the user knows it: by the product it makes (the production queue's label)."""
-    out = (state.get("expected_outputs") or [{}])[0]
-    return out.get("sku") or out.get("name") or state.get("description") or "a production run"
-
-
 def _wip(state: dict) -> Decimal:
     """What the run holds: issued value not yet moved to its lots or waste."""
     return _money(state.get("wip_issued")) - _money(state.get("wip_transferred")) - _money(state.get("wip_wasted"))
@@ -379,7 +344,7 @@ async def _issue(op: _Op, run: Projection, wanted: list[dict], rk: str, request:
         if line["item_id"] not in planned:
             raise refuse(422, "not_an_input", f"{line['item_id']} is not a component of this run.",
                          item=line["item_id"])
-        if line["quantity"] > remaining.get(line["item_id"], 0.0) + _EPS:
+        if line["quantity"] > remaining.get(line["item_id"], 0.0) + EPS:
             raise refuse(409, "over_issue",
                          f"Only {remaining.get(line['item_id'], 0.0):g} of {line['item_id']} is still to be "
                          "issued to this run.", item=line["item_id"], remaining=remaining.get(line["item_id"], 0.0))
@@ -407,7 +372,7 @@ async def _issue(op: _Op, run: Projection, wanted: list[dict], rk: str, request:
                          f"{sku} is not stock the company holds and can use (it is {s.get('status') or 'unknown'}).",
                          sku=sku, status=s.get("status"))
         free = float(s.get("quantity") or 0) - float(s.get("reserved_quantity") or 0)
-        if free + _EPS < line["quantity"]:
+        if free + EPS < line["quantity"]:
             raise refuse(409, "insufficient_stock",
                          f"Only {max(free, 0.0):g} of {sku} is in stock and not reserved; {line['quantity']:g} is needed.",
                          sku=sku, available=max(free, 0.0), needed=line["quantity"])
@@ -456,7 +421,7 @@ def _to_return(run_state: dict, items: list[dict] | None) -> list[dict]:
     """The components to return: the request with each item once, or everything issued."""
     if not items:
         return [{"item_id": i.get("item_id"), "quantity": round(float(i.get("issued_qty") or 0), 6)}
-                for i in run_state.get("inputs", []) if float(i.get("issued_qty") or 0) > _EPS]
+                for i in run_state.get("inputs", []) if float(i.get("issued_qty") or 0) > EPS]
     for line in items:
         if not line.get("item_id") or float(line.get("quantity") or 0) <= 0:
             raise refuse(422, "return_quantity", "Each component returned needs a quantity greater than zero.")
@@ -491,14 +456,14 @@ async def _return(op: _Op, run: Projection, wanted: list[dict], rk: str, request
             raise refuse(422, "not_an_input", f"{line['item_id']} is not a component of this run.",
                          item=line["item_id"])
         have = float(inp.get("issued_qty") or 0)
-        if line["quantity"] > have + _EPS:
+        if line["quantity"] > have + EPS:
             lot = await op.session.get(Projection, {"company_id": op.company_id, "entity_id": line["item_id"]})
             sku = ((lot.state or {}).get("sku") if lot is not None else None) or line["item_id"]
             raise refuse(409, "over_return", f"Only {have:g} of {sku} was issued to this run, so no more can be "
                          "returned.", sku=sku, issued=have)
     if not wanted:
         return {"returned": [], "value": "0"}
-    if float(state.get("received_qty") or 0) > _EPS or state.get("receipts"):
+    if float(state.get("received_qty") or 0) > EPS or state.get("receipts"):
         # Every receipt took a share of every component, so what is left is no longer the
         # components alone.
         raise refuse(409, "return_after_receipt",
@@ -510,7 +475,7 @@ async def _return(op: _Op, run: Projection, wanted: list[dict], rk: str, request
         if "issued_value" not in inp:
             raise _reconcile()
         have, recorded = float(inp.get("issued_qty") or 0), _money(inp["issued_value"])
-        values[line["item_id"]] = (recorded if line["quantity"] >= have - _EPS
+        values[line["item_id"]] = (recorded if line["quantity"] >= have - EPS
                                    else op.round(recorded * _money(line["quantity"]) / _money(have)))
 
     from celerp_inventory.projections import is_item_available
@@ -595,7 +560,7 @@ async def receive(session: AsyncSession, company_id, user_id, order_id: str, qua
     qty = outstanding_output(run.state) if quantity is None else float(quantity)
     lot_id = await _receive(op, run, qty, rk, request)
     run = await _run(op)
-    if outstanding_output(run.state) <= _EPS:
+    if outstanding_output(run.state) <= EPS:
         await _close(op, run, {}, request, f"receive:{rk}")
     return {"received": qty, "lot_item_id": lot_id}
 
@@ -608,7 +573,7 @@ async def _receive(op: _Op, run: Projection, qty: float, rk: str, request: str) 
     outstanding = outstanding_output(state)
     if qty <= 0:
         raise refuse(422, "receive_quantity", "The quantity received must be greater than zero.")
-    if qty > outstanding + _EPS:
+    if qty > outstanding + EPS:
         raise refuse(409, "over_receipt",
                      f"Only {outstanding:g} is still to be received from this run; {qty:g} cannot be received.",
                      remaining=outstanding, quantity=qty)
@@ -620,7 +585,7 @@ async def _receive(op: _Op, run: Projection, qty: float, rk: str, request: str) 
     await require_unit_precision(op.session, op.company_id, [(p, qty)])
 
     wip = _wip(state)
-    amount = wip if qty >= outstanding - _EPS else op.round(wip * _money(qty) / _money(outstanding))
+    amount = wip if qty >= outstanding - EPS else op.round(wip * _money(qty) / _money(outstanding))
     wip_code = state.get("wip_account_code")
     if op.books:
         code = await resolve(op.session, op.company_id, AccountRole.INVENTORY_PURCHASED)
@@ -690,7 +655,7 @@ async def complete(session: AsyncSession, company_id, user_id, order_id: str, pa
     else:
         # Everything issued was wasted: nothing was made, so no output lot is received.
         qty = 0.0 if _all_wasted(run.state, wasted) else outstanding_output(run.state)
-    if qty > _EPS:
+    if qty > EPS:
         await _receive(op, run, qty, f"{rk}:receive", request)
         run = await _run(op)
     await _close(op, run, payload, request, rk, wasted, names)
@@ -763,7 +728,7 @@ def check_waste(run_state: dict, waste_items: list[dict], names: dict[str, str] 
         if item_id not in inputs:
             raise refuse(422, "not_an_input", f"{item_id} is not a component of this run.", item=item_id)
         have, sku = float(inputs[item_id].get("issued_qty") or 0), names.get(item_id) or item_id
-        if line["quantity"] > have + _EPS:
+        if line["quantity"] > have + EPS:
             raise refuse(422, "over_waste", f"Only {have:g} of {sku} was issued to this run, so no more "
                          "can be wasted.", sku=sku, issued=have)
     return wasted
@@ -783,7 +748,7 @@ def value_waste(run_state: dict, waste_items: list[dict], currency: str,
         if inp.get("issued_value") is None:
             raise _reconcile()
         have, recorded = float(inp.get("issued_qty") or 0), _money(inp["issued_value"])
-        value = recorded if qty >= have - _EPS else round_money(recorded * _money(qty) / _money(have), currency)
+        value = recorded if qty >= have - EPS else round_money(recorded * _money(qty) / _money(have), currency)
         lines.append({"item_id": item_id, "quantity": qty, "value": str(value)})
         total += value
     return lines, total
@@ -1003,7 +968,7 @@ async def _require_untouched(op: _Op, row: Projection | None, lot_id: str, quant
         LedgerEntry.event_type != RECORDED))).all()
     held = held_value(row) if s else None
     if (not s or await listing_record(op.session, op.company_id, lot_id) is not None or not marks or any(op.order_id not in ((d or {}).get(_ORDER_MARK), (m or {}).get(_ORDER_MARK)) for d, m in marks)
-            or abs(float(s.get("quantity") or 0) - quantity) > _EPS or float(s.get("reserved_quantity") or 0) > _EPS
+            or abs(float(s.get("quantity") or 0) - quantity) > EPS or float(s.get("reserved_quantity") or 0) > EPS
             or s.get("status_doc_id") or not is_item_available(s) or held is None or op.round(held) != value):
         sku = s.get("sku") or lot_id
         raise refuse(409, "output_changed",
@@ -1153,8 +1118,8 @@ async def cancel(session: AsyncSession, company_id, user_id, order_id: str, reas
     _require_open(run.state, "cancelled")
     # Its materials cannot be returned until it is reconciled, so that comes first.
     _require_settled(op, run.state)
-    if float(run.state.get("received_qty") or 0) > _EPS or _wip(run.state) or any(
-            float(i.get("issued_qty") or 0) > _EPS for i in run.state.get("inputs", [])):
+    if float(run.state.get("received_qty") or 0) > EPS or _wip(run.state) or any(
+            float(i.get("issued_qty") or 0) > EPS for i in run.state.get("inputs", [])):
         raise refuse(409, "cancel_moved",
                      "This run still holds materials or output, so it cannot be cancelled. Return its "
                      "materials and undo its receipts first.")
@@ -1358,10 +1323,10 @@ async def still_held(session: AsyncSession, company_id, order_id: str,
     otherwise what it recorded as issued."""
     if state.get("wip_untracked"):
         facts = (await consumed_facts(session, company_id, _ORDER_MARK, {order_id}))[order_id]
-        return {i: (q, v or None) for i, (q, v) in facts.items() if q > _EPS}
+        return {i: (q, v or None) for i, (q, v) in facts.items() if q > EPS}
     held: dict[str, float] = {}
     for i in state.get("inputs", []):
-        if float(i.get("issued_qty") or 0) > _EPS:
+        if float(i.get("issued_qty") or 0) > EPS:
             held[i["item_id"]] = held.get(i["item_id"], 0.0) + float(i["issued_qty"])
     return {i: (q, None) for i, q in held.items()}
 
@@ -1386,7 +1351,7 @@ async def _untracked_lots(session: AsyncSession, company_id, order_id: str, stat
         mine = [e for e in events if order_id in ((e.data or {}).get(_ORDER_MARK), (e.metadata_ or {}).get(_ORDER_MARK))]
         created = [e for e in mine if e.event_type == "item.created"]
         quantity = sum(float((e.data or {}).get("quantity_produced") or 0) for e in mine if e.event_type == "item.produced")
-        if len(created) != 1 or quantity <= _EPS:
+        if len(created) != 1 or quantity <= EPS:
             return None
         found.append({"lot_item_id": lot, "quantity": quantity, "value": _money(created[0].data.get("cost_total"))})
     return found
@@ -1403,7 +1368,7 @@ async def legacy_output(session: AsyncSession, company_id, order_id: str, state:
     """The output an older release received from a run before value was tracked
     (_untracked_lots). None when that history does not account for everything the run received."""
     found = await _untracked_lots(session, company_id, order_id, state)
-    if found is None or abs(sum(r["quantity"] for r in found) - _untracked_qty(state)) > _EPS:
+    if found is None or abs(sum(r["quantity"] for r in found) - _untracked_qty(state)) > EPS:
         return None
     return found
 
@@ -1429,7 +1394,7 @@ async def repair_output(session: AsyncSession, company_id, user_id, order_id: st
     _require_open(run.state, "repaired")
     state = run.state
     discarded = await unlotted(session, company_id, order_id, state)
-    if discarded is None or discarded < -_EPS:
+    if discarded is None or discarded < -EPS:
         raise refuse(409, "output_unknown", "Output was received from this run, but its history does not show "
                      "which lots it went into, so what it received cannot be put right.")
     data: dict = {"discarded": max(discarded, 0.0), "repaired_by": str(op.user_id), "request": request}

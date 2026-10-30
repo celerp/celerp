@@ -16,6 +16,8 @@ import re
 import pytest
 from playwright.sync_api import Page, expect
 
+from .conftest import css_class
+
 # A fragment loaded by HTMX on page load is read once it has text, not after a fixed
 # pause: its server read can take longer than any pause on a busy runner.
 _LOADED = re.compile(r"\S")
@@ -109,7 +111,7 @@ class TestShowcasePage:
         tabs.nth(1).click()
         page.wait_for_timeout(500)
         expect(tabs.nth(1)).to_have_class(re.compile(r"ai-showcase__tab--active"))
-        assert "ai-showcase__tab--active" not in (tabs.nth(0).get_attribute("class") or "")
+        expect(tabs.nth(0)).not_to_have_class(css_class("ai-showcase__tab--active"))
 
     def test_showcase_cta_cards(self, page, ui_server):
         """The free account card sits above the two subscribe cards."""
@@ -139,7 +141,7 @@ class TestShowcasePage:
         assert "$49/mo" not in ai_card.inner_text()
         assert "Recommended" in ai_card.inner_text()
         assert "Cancel anytime" in ai_card.inner_text()
-        assert "ai-showcase__cta-card--featured" in (ai_card.get_attribute("class") or "")
+        expect(ai_card).to_have_class(css_class("ai-showcase__cta-card--featured"))
         btn = ai_card.locator(".btn--accent")
         expect(btn).to_be_visible()
 
@@ -360,13 +362,13 @@ class TestChatView:
         """Memory drawer toggles open/closed on button click."""
         page.goto(f"{ui_server}/ai", wait_until="domcontentloaded")
         drawer = page.locator("#ai-memory-drawer")
-        assert "ai-memory-drawer--open" not in (drawer.get_attribute("class") or "")
+        expect(drawer).not_to_have_class(css_class("ai-memory-drawer--open"))
         page.locator(".ai-sidebar__memory-btn").click()
         page.wait_for_timeout(300)
-        assert "ai-memory-drawer--open" in (drawer.get_attribute("class") or "")
+        expect(drawer).to_have_class(css_class("ai-memory-drawer--open"))
         page.locator(".ai-sidebar__memory-btn").click()
         page.wait_for_timeout(300)
-        assert "ai-memory-drawer--open" not in (drawer.get_attribute("class") or "")
+        expect(drawer).not_to_have_class(css_class("ai-memory-drawer--open"))
 
     def test_chat_conversations_list_loads(self, page, ui_server):
         """Conversation list HTMX endpoint loads."""

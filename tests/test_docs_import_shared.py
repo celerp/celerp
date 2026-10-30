@@ -231,7 +231,7 @@ def _mock_api(monkeypatch, handler):
 @pytest.mark.asyncio
 async def test_api_client_returns_the_received_doc_path(monkeypatch):
     def _handler(request):
-        if request.url.path == "/docs/import":
+        if request.url.path == "/docs/import-link":
             return httpx.Response(302, headers={"location": "/docs/received/rcv:abc"})
         return httpx.Response(200, json={"id": "doc:rcv:abc"})
 
@@ -239,7 +239,7 @@ async def test_api_client_returns_the_received_doc_path(monkeypatch):
     path = await api.import_shared_doc("tok", "https://shop.example.com/share/abc123")
 
     assert path == "/docs/received/rcv:abc"
-    assert [r.url.path for r in seen] == ["/docs/import"]
+    assert [(r.method, r.url.path) for r in seen] == [("POST", "/docs/import-link")]
     assert seen[0].url.params["link"] == "https://shop.example.com/share/abc123"
     assert seen[0].headers["authorization"] == "Bearer tok"
 
@@ -437,12 +437,12 @@ async def test_book_failure_is_explained_on_the_received_page(ui_routes, monkeyp
     monkeypatch.setattr(di.api, "get_received", _get)
     html = to_xml(await ui_routes[("POST", "/docs/received/{rid}/book")](_FormReq({}), "rcv:abc"))
     assert "kept in Received for review" in html and "flash--error" in html
-    assert 'href="/lists/new"' not in html
+    assert 'hx-post="/lists/create-blank"' not in html
 
 
 @pytest.mark.asyncio
 async def test_a_total_a_quotation_cannot_hold_links_to_a_new_quotation(ui_routes, monkeypatch):
-    """The refusal says why the document cannot become a quotation and links to entering one by hand."""
+    """The refusal says why the document cannot become a quotation and offers to enter one by hand."""
     message = t("documents.err_received_list_total", total="205.00", list_total="200.00")
     body = {"detail": {"message": message, "message_key": "documents.err_received_list_total",
                        "params": {"total": "205.00", "list_total": "200.00"}, "code": "received_list_total"}}
@@ -457,7 +457,7 @@ async def test_a_total_a_quotation_cannot_hold_links_to_a_new_quotation(ui_route
     monkeypatch.setattr(di.api, "get_received", _get)
     html = to_xml(await ui_routes[("POST", "/docs/received/{rid}/book")](_FormReq({}), "rcv:abc"))
     assert message.split(".")[0] in html and "flash--error" in html
-    assert 'href="/lists/new"' in html and t("page.new_quotation") in html
+    assert 'hx-post="/lists/create-blank"' in html and t("page.new_quotation") in html
 
 
 @pytest.mark.asyncio

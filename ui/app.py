@@ -355,13 +355,12 @@ class ModuleGateMiddleware:
 
 
 async def _module_refusal(request: Request, module: str) -> Response | None:
-    from celerp.modules.registry import uses_module
     import ui.api_client as api
     token = request.cookies.get(COOKIE_NAME)
     if not token:
         return _auth_guard(request)
     from fasthtml.common import to_xml
-    from ui.components.shell import base_shell, minimal_shell, page_header
+    from ui.components.shell import minimal_shell, page_header
     from ui.i18n import t
     try:
         company = await api.get_company(token)
@@ -379,32 +378,11 @@ async def _module_refusal(request: Request, module: str) -> Response | None:
             request=request,
         )
         return HTMLResponse(to_xml(page), status_code=exc.status)
-    settings = company.get("settings")
     from celerp.modules.loader import reads_when_off
-    if uses_module(settings, module) or reads_when_off(request.scope, module):
+    if reads_when_off(request.scope, module):
         return None
-    if request.headers.get("hx-request"):
-        # The full page at this same address is the refusal that says the module is off.
-        return hx_redirect(str(request.url.replace(scheme="", netloc="")))
-    from celerp.modules.loader import module_label
-    from ui.routes.modules_page import manages_modules
-    from ui.security import not_permitted_pending
-    if not_permitted_pending(request):
-        # Sent here by a refusal: the caller never asked for this module, so the
-        # shell's no-access notice is the whole answer.
-        body = ()
-    else:
-        way_on = (A(t("nav.modules"), href="/modules", cls="btn btn--primary")
-                  if manages_modules(api.role_from_company(company)) else P(t("modules.ask_admin_to_turn_on")))
-        body = (page_header(t("modules.off_for_company_title")),
-                Div(P(t("modules.off_for_company", module=module_label(module)), cls="flash flash--error"), way_on))
-    page = await base_shell(
-        *body,
-        title=t("modules.off_for_company_title"),
-        request=request,
-        company_settings=settings or {},
-    )
-    return HTMLResponse(to_xml(page), status_code=403)
+    from ui.components.module_off import module_off_page
+    return await module_off_page(request, module, company)
 
 
 app.add_middleware(ModuleGateMiddleware)

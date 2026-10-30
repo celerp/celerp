@@ -7,10 +7,12 @@ from __future__ import annotations
 import logging
 import os
 import re
+import uuid
 from datetime import datetime, timezone
 from urllib.parse import quote
 
 from fasthtml.common import *
+from starlette.exceptions import HTTPException
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, RedirectResponse
 
@@ -18,7 +20,7 @@ from ui.components.attrs import hx_vals
 from ui.components.shell import secret_input
 from ui.components.activity import relative_time
 from ui.i18n import get_lang, refusal_text, t
-from ui.routes.settings import _check_permission, _token
+from ui.routes.settings import _check_permission, _token, authorize_in_process
 from ui.security import is_safe_authorize_url
 
 from celerp.accounting_roles import PERIOD_LOCK_PATH
@@ -314,6 +316,12 @@ def _open_attention_by_entity(entries: list[dict]) -> dict[str, int]:
         if not e.get("reconciled"):
             counts[e.get("entity", "")] = counts.get(e.get("entity", ""), 0) + 1
     return counts
+
+
+def _refusal(exc: Exception) -> str:
+    """What a refused connector change tells the user: the ownership reason, or the
+    API's reason when the caller's access changed before the write (403)."""
+    return str(getattr(exc, "detail", None) or exc)
 
 
 def _request_company_id(request: Request) -> str:
@@ -892,7 +900,7 @@ def _connector_card(
                     cls="btn btn--sm btn--primary",
                     style="margin-left:8px;white-space:nowrap;",
                 ),
-                hx_get=f"/settings/connectors/{cid}/oauth-redirect",
+                hx_post=f"/settings/connectors/{cid}/oauth-redirect",
                 hx_target=f"#connector-card-{cid}",
                 hx_swap="outerHTML",
                 style="display:flex;align-items:center;gap:4px;",
@@ -901,7 +909,7 @@ def _connector_card(
             connect = Button(
                 connect_label,
                 cls="btn btn--sm btn--primary",
-                hx_get=f"/settings/connectors/{cid}/oauth-redirect",
+                hx_post=f"/settings/connectors/{cid}/oauth-redirect",
                 hx_target=f"#connector-card-{cid}",
                 hx_swap="outerHTML",
             )
@@ -1538,7 +1546,7 @@ def setup_routes(app):
         from ui import api_client as api
         return await _grant_action(request, grant_id, api.revoke_accountant_peer_grant)
 
-    @app.get("/settings/connectors/{platform}/oauth-redirect")
+    @app.post("/settings/connectors/{platform}/oauth-redirect")
     async def connector_oauth_redirect(request: Request, platform: str, shop: str = ""):
         """HTMX: get OAuth authorize URL and return JS to open it in a new tab."""
         token = _token(request)
@@ -1555,7 +1563,7 @@ def setup_routes(app):
         except APIError as exc:
             if exc.status == 402:  # no active/trialing subscription
                 return _entitlement_cta(lang)
-            return Span(str(exc), cls="flash flash--warning")
+            return Span(exc.detail, cls="flash flash--warning")
         except Exception as exc:
             return Span(str(exc), cls="flash flash--warning")
 
@@ -1596,6 +1604,7 @@ def setup_routes(app):
             ConnectorOwnershipError,
             lock_connector_operation,
         )
+        from celerp.services.company_lock import lock_company
         from celerp.db import get_session_ctx
         from ui.config import RELAY_URL
         from ui.i18n import get_lang
@@ -1609,13 +1618,15 @@ def setup_routes(app):
             frequency = "manual"
 
         async with get_session_ctx() as session:
+            authorize_in_process(session, request, "manage_integrations")
             try:
                 config = await lock_connector_operation(
                     session, company_id, platform, require_owner=True
                 )
-            except ConnectorOwnershipError as exc:
+                await lock_company(session, uuid.UUID(str(company_id)))
+            except (ConnectorOwnershipError, HTTPException) as exc:
                 await session.rollback()
-                return Span(str(exc), cls="flash flash--warning")
+                return Span(_refusal(exc), cls="flash flash--warning")
             config.sync_frequency = frequency
             await session.commit()
         if request.query_params.get("detail"):
@@ -1647,6 +1658,7 @@ def setup_routes(app):
             ConnectorOwnershipError,
             lock_connector_operation,
         )
+        from celerp.services.company_lock import lock_company
         from celerp.db import get_session_ctx
         from ui.config import RELAY_URL
         from ui.i18n import get_lang
@@ -1659,16 +1671,18 @@ def setup_routes(app):
             return Span(t("connectors.invalid_direction", lang), cls="flash flash--warning")
 
         async with get_session_ctx() as session:
+            authorize_in_process(session, request, "manage_integrations")
             try:
                 config = await lock_connector_operation(
                     session, company_id, platform, require_owner=True
                 )
-            except ConnectorOwnershipError as exc:
+                await lock_company(session, uuid.UUID(str(company_id)))
+            except (ConnectorOwnershipError, HTTPException) as exc:
                 await session.rollback()
                 # Nothing is swapped, so the buttons stay; the reason is a toast.
                 from starlette.responses import Response
                 from ui.components.shell import toast_header
-                return Response(headers={**toast_header(str(exc), "error", persist=True),
+                return Response(headers={**toast_header(_refusal(exc), "error", persist=True),
                                          "HX-Reswap": "none"})
             config.direction = direction
             await session.commit()

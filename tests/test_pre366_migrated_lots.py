@@ -56,7 +56,9 @@ async def test_a_lot_its_line_names_the_product_of_is_stock_of_that_product(clie
     assert board.get(fg) == 3 and lot not in board, board
 
     from celerp.projections.engine import ProjectionEngine
+    from celerp.services.company_lock import lock_company
 
+    await lock_company(session, old["company_id"])
     await ProjectionEngine.rebuild(session, company_id=old["company_id"])
     await session.commit()
     assert (await _row(session, old, lot)).state["catalog_item_id"] == fg

@@ -211,6 +211,22 @@ async def test_s2_intangible_indefinite_and_active_market(fa):
     await fa.ok(await fa.post(path, body))
 
 
+async def test_only_the_latest_review_is_withdrawn_and_the_earlier_one_sets_the_due_date_again(fa):
+    await _managed_from(fa)
+    other = (await fa.classes())["Other intangibles"]
+    await fa.ok(await fa.patch(f"/classes/{other['id']}", {"method": "none", "life_months": None}))
+    licence = await _contributed(fa, "Broadcast licence", cls="Other intangibles", cost="5000", on="2025-09-01")
+    first = await fa.ok(await fa.post(f"/assets/{licence}/reviews", {
+        "date": "2026-09-01", "outcome": "no_indication", "basis": "Licence renewed"}))
+    latest = await fa.ok(await fa.post(f"/assets/{licence}/reviews", {
+        "date": "2026-10-01", "outcome": "no_indication", "basis": "Entered twice"}))
+    refused = await fa.post(f"/assets/{licence}/reviews/{first['id']}/withdraw", {})
+    assert refused.status_code == 409, refused.text
+    assert await fa.ok(await fa.post(f"/assets/{licence}/reviews/{latest['id']}/withdraw", {})) == {
+        "id": latest["id"], "status": "withdrawn"}
+    assert (await fa.asset(licence))["review_due"] == "2027-09-01"
+
+
 async def test_corrections_do_not_restate_across_a_remeasurement(fa):
     """Impaired at the end of March: an error correction would restate what the impairment
     measured, so it is refused; a change in estimate from April on is still made."""

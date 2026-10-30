@@ -26,11 +26,9 @@ from ui.config import get_token as _token
 from ui.i18n import reconcile_reason, refusal_text, t
 from ui.routes.reports import _company_today, _get_company
 from celerp.services.business_time import business_today
+from celerp.services.record_quantities import INCOMPLETE_RUN_STATUSES
 
 logger = logging.getLogger(__name__)
-
-# Canonical run statuses; "incomplete" = still needs attention (default queue view).
-_INCOMPLETE_STATUSES = frozenset({"planned", "in_progress", "on_hold"})
 
 # Plain-language help for the status indicators, shown as hover tooltips so users know what each
 # means. Values are i18n KEYS resolved at render time (R1), never frozen English at import.
@@ -71,7 +69,7 @@ def _mfg_status_cards(orders: list[dict], active_status: str, base_url: str) -> 
     ]
     statuses = [str(o.get("status") or "").lower() for o in orders]
     counts: dict[str, int] = {
-        "active": sum(1 for s in statuses if s in _INCOMPLETE_STATUSES),
+        "active": sum(1 for s in statuses if s in INCOMPLETE_RUN_STATUSES),
     }
     for s, _ in _CARD_DEFS:
         counts.setdefault(s, sum(1 for x in statuses if x == s))
@@ -544,7 +542,7 @@ def setup_routes(app):
         # legacy ?status=all links fall back to the default Active queue.
         if active in ("active", "incomplete", "all"):
             active = "active"
-            shown = [o for o in orders_all if str(o.get("status") or "").lower() in _INCOMPLETE_STATUSES]
+            shown = [o for o in orders_all if str(o.get("status") or "").lower() in INCOMPLETE_RUN_STATUSES]
         else:
             shown = [o for o in orders_all if str(o.get("status") or "").lower() == active]
         if q:
@@ -740,7 +738,7 @@ def setup_routes(app):
 
     def _runs_for_status(orders: list[dict], status: str) -> list[dict]:
         if status in ("active", "incomplete", "all"):
-            return [o for o in orders if str(o.get("status") or "").lower() in _INCOMPLETE_STATUSES]
+            return [o for o in orders if str(o.get("status") or "").lower() in INCOMPLETE_RUN_STATUSES]
         return [o for o in orders if str(o.get("status") or "").lower() == status]
 
     async def _incomplete_runs_table(token: str) -> FT:

@@ -2,9 +2,7 @@
 from __future__ import annotations
 
 import uuid
-from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from types import SimpleNamespace
 
 import pytest
 
@@ -33,58 +31,37 @@ async def test_bill_proposal_does_not_leave_transient_upload_id_in_notes():
 
 
 @pytest.mark.asyncio
-async def test_attach_receipt_is_canonical_company_scoped_and_replay_safe(monkeypatch):
+async def test_attach_receipt_is_canonical_company_scoped_and_replay_safe(monkeypatch, session, auth):
+    """The receipt lands on the bill as an ordinary file attachment, written under the
+    company lock (so the request's access is judged again first), once per proposal."""
+    from sqlalchemy import func, select
+    import mutation_observer
     from celerp.ai import files
-    from celerp.events import engine
-    from celerp.services import attachments
-    company_id, user_id, message_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    from celerp.models.ledger import LedgerEntry
+    from celerp.models.projections import Projection
+    from celerp.services.permissions import authorize_request
+    company_id, user_id, message_id = auth["company_id"], auth["user_id"], uuid.uuid4()
     source = "ai_up_" + "a" * 32
     record = {"id": "prop_123", "file_id": source}
     result = {"data": {"id": "doc:bill-1"}, "ok": True}
-    calls = []
-    already = False
 
     def load(file_id, company, actor):
         assert (file_id, company, actor) == (source, company_id, user_id)
-        calls.append("load")
         return b"receipt-image", {"filename": "receipt.png", "content_type": "image/png"}
 
-    async def replay(session, company, key):
-        assert company == company_id and key.startswith("ai:receipt:")
-        return SimpleNamespace(event_type="doc.file_attached", entity_id="doc:bill-1") if already else None
-
-    class Session:
-        async def get(self, model, pk):
-            assert pk == (company_id, "doc:bill-1")
-            return SimpleNamespace(entity_type="doc", state={"doc_type": "bill"})
-
-    class Files:
-        async def file(self, content, filename, mime, *, att_id):
-            assert (content, filename, mime) == (b"receipt-image", "receipt.png", "image/png")
-            assert uuid.UUID(att_id)
-            calls.append(("store", att_id))
-            return {"id": att_id, "filename": filename, "mime": mime, "size": len(content)}
-
-    @asynccontextmanager
-    async def storage(session, company):
-        assert company == company_id
-        yield Files()
-
-    async def attach(session, company, entity_type, entity_id, meta, actor, **kwargs):
-        assert (company, entity_type, entity_id, actor) == (company_id, "doc", "doc:bill-1", user_id)
-        assert kwargs["document_tag"] == "receipt"
-        assert kwargs["idempotency_key"].startswith("ai:receipt:")
-        calls.append(("attach", meta["id"]))
-
     monkeypatch.setattr(files, "load_file", load)
-    monkeypatch.setattr(engine, "find_event_by_idempotency", replay)
-    monkeypatch.setattr(attachments, "storing", storage)
-    monkeypatch.setattr(attachments, "attach_file", attach)
-    args = dict(session=Session(), company_id=company_id, user_id=user_id,
+    session.add(Projection(company_id=company_id, entity_id="doc:bill-1", entity_type="doc",
+                           state={"doc_type": "bill", "attachments": []}, version=1,
+                           updated_at=datetime.now(timezone.utc)))
+    await session.commit()
+    args = dict(session=session, company_id=company_id, user_id=user_id,
                 message_id=message_id, record=record, result=result)
-    await routes._attach_confirmed_bill_receipt(**args)
-    assert len(calls) == 3 and calls[0] == "load"
-    assert calls[1][1] == calls[2][1]
-    already = True
-    await routes._attach_confirmed_bill_receipt(**args)
-    assert len(calls) == 3
+    with mutation_observer.serving("POST", "/ai/conversations/{conversation_id}/confirm-all"):
+        authorize_request(session, company_id, user_id, "admin")
+        await routes._attach_confirmed_bill_receipt(**args)
+        await routes._attach_confirmed_bill_receipt(**args)
+    assert [f.kind for f in mutation_observer.CENSUS.findings] == []
+    attached = await session.scalar(select(func.count()).select_from(LedgerEntry).where(
+        LedgerEntry.company_id == company_id, LedgerEntry.event_type == "doc.file_attached",
+        LedgerEntry.entity_id == "doc:bill-1"))
+    assert attached == 1

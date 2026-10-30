@@ -138,7 +138,7 @@ async def test_received_list_shows_the_original_share_link(client):
     with patch("celerp_docs.routes_share.validate_public_base_url", new=AsyncMock(return_value=link)), \
          patch("celerp.services.outbound_url.fetch_public_bytes",
                new=AsyncMock(return_value=MagicMock(status_code=200, content=body, headers={}))):
-        r = await client.get("/docs/import", params={"link": link}, headers=_h(tok), follow_redirects=False)
+        r = await client.post("/docs/import-link", params={"link": link}, headers=_h(tok), follow_redirects=False)
     rid = r.headers["location"].rsplit("/", 1)[-1]
     assert (await _received(client, tok, rid))["source_link"] == link
 
@@ -152,7 +152,7 @@ async def test_same_document_through_a_refreshed_link_keeps_the_new_link(client)
         with patch("celerp_docs.routes_share.validate_public_base_url", new=AsyncMock(return_value=link)), \
              patch("celerp.services.outbound_url.fetch_public_bytes",
                    new=AsyncMock(return_value=MagicMock(status_code=200, content=body, headers={}))):
-            r = await client.get("/docs/import", params={"link": link}, headers=_h(tok), follow_redirects=False)
+            r = await client.post("/docs/import-link", params={"link": link}, headers=_h(tok), follow_redirects=False)
         rids.append(r.headers["location"].rsplit("/", 1)[-1])
     assert rids[0] == rids[1]
     received = await _received(client, tok, rids[0])
@@ -449,39 +449,9 @@ async def test_stale_expected_version_is_rejected(client):
 
 
 @pytest.mark.asyncio
-async def test_local_edit_racing_update_draft_wins(client, monkeypatch):
-    """A local edit that lands after Update draft read the draft, but before it
-    wrote, is kept: the update is rejected and the draft needs reconciling."""
-    from celerp_docs import received as rcv
-
-    tok = await _token(client)
-    rid = await _import(client, tok, _bundle(_doc(price=100.0), revision=1))
-    target = await _book(client, tok, rid)
-    await _import(client, tok, _bundle(_doc(price=150.0), revision=2))
-    real = rcv._fresh
-
-    async def _read_then_edit(session, company_id, entity_id):
-        row = await real(session, company_id, entity_id)
-        edit = await client.patch(f"/docs/{target}", headers=_h(tok), json={
-            "fields_changed": {"notes": {"old": None, "new": "edited here"}},
-        })
-        assert edit.status_code == 200, edit.text
-        return row
-
-    monkeypatch.setattr(rcv, "_fresh", _read_then_edit)
-    r = await _update(client, tok, rid)
-    assert r.status_code == 409
-    monkeypatch.setattr(rcv, "_fresh", real)
-    doc = await _target(client, tok, target)
-    assert doc["notes"] == "edited here"
-    assert doc["total"] == 200.0
-    assert (await _received(client, tok, rid))["revision_state"] == "needs_reconciliation"
-
-
-@pytest.mark.asyncio
 async def test_updating_again_after_a_failed_finish_keeps_the_draft_updatable(client, session, monkeypatch):
-    """The draft was patched but recording the update failed. Updating again
-    records that version, and the draft stays updatable."""
+    """Recording the update failed after the draft was patched: the patch goes with it,
+    so the draft is as it was and still updatable, and updating again applies it."""
     from fastapi import HTTPException
 
     from celerp_docs import received as rcv
@@ -499,11 +469,12 @@ async def test_updating_again_after_a_failed_finish_keeps_the_draft_updatable(cl
     monkeypatch.setattr(rcv, "_emit", _fail_once)
     assert (await _update(client, tok, rid)).status_code == 503
     await session.rollback()
-    assert (await _target(client, tok, target))["total"] == 300.0
-    assert (await _received(client, tok, rid))["revision_state"] == "needs_reconciliation"
+    assert (await _target(client, tok, target))["total"] == 200.0
+    assert (await _received(client, tok, rid))["revision_state"] == "update_available"
 
     r = await _update(client, tok, rid)
     assert r.status_code == 200, r.text
+    assert (await _target(client, tok, target))["total"] == 300.0
     assert (await _received(client, tok, rid))["revision_state"] == "booked"
     await _import(client, tok, _bundle(_doc(price=175.0), revision=3))
     assert (await _received(client, tok, rid))["revision_state"] == "update_available"
@@ -594,8 +565,8 @@ async def test_import_accepts_link_or_legacy_src_and_token_as_one_path(client):
     fetch = _fetch_ok()
     with patch("celerp_docs.routes_share.validate_public_base_url", new=AsyncMock(return_value=page)), \
          patch("celerp.services.outbound_url.fetch_public_bytes", new=fetch):
-        by_link = await client.get("/docs/import", params={"link": page}, headers=_h(tok), follow_redirects=False)
-        by_pair = await client.get("/docs/import", params={"src": "https://shop.example.com/", "token": "abc123"},
+        by_link = await client.post("/docs/import-link", params={"link": page}, headers=_h(tok), follow_redirects=False)
+        by_pair = await client.post("/docs/import-link", params={"src": "https://shop.example.com/", "token": "abc123"},
                                    headers=_h(tok), follow_redirects=False)
     assert by_link.status_code == 302 and by_pair.status_code == 302
     assert [c.args[0] for c in fetch.await_args_list] == [f"{page}/bundle", f"{page}/bundle"]
@@ -615,7 +586,7 @@ async def test_import_rejects_mixed_or_incomplete_input(client, params):
     tok = await _token(client)
     fetch = _fetch_ok()
     with patch("celerp.services.outbound_url.fetch_public_bytes", new=fetch):
-        r = await client.get("/docs/import", params=params, headers=_h(tok), follow_redirects=False)
+        r = await client.post("/docs/import-link", params=params, headers=_h(tok), follow_redirects=False)
     assert r.status_code in (400, 422)
     fetch.assert_not_awaited()
 
@@ -715,6 +686,7 @@ async def test_legacy_untouched_import_moves_to_received_and_survives_rebuild(cl
     from celerp.migrations._data_reconcile import set_meta
     from celerp.models.projections import Projection
     from celerp.projections.engine import ProjectionEngine
+    from celerp.services.company_lock import lock_company
     from celerp_docs.received import received_id
     from celerp_docs.received_legacy import LEGACY_RECEIVED_KEY, move_legacy_imports
 
@@ -740,6 +712,7 @@ async def test_legacy_untouched_import_moves_to_received_and_survives_rebuild(cl
     assert (await move_legacy_imports(session))["changed"] is False
 
     rid = received_id("legacy", "", untouched)
+    await lock_company(session, company_id)
     await ProjectionEngine.rebuild(session, company_id)
     await session.commit()
     rows = {p.entity_id: p for p in (await session.execute(

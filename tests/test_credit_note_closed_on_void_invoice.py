@@ -16,6 +16,7 @@ import uuid
 import pytest
 
 from celerp.projections.engine import ProjectionEngine
+from celerp.services.company_lock import lock_company
 from test_cost_restatement import _state
 from test_credit_note_settlement_owned import _backfill, _cn, _legacy_cn, _post, _svc_invoice
 from test_legacy_credit_note_edges import _refund, _void_on_main
@@ -73,6 +74,7 @@ async def test_a_rebuild_reads_the_closed_credit_note_the_same(client, session, 
     rec = _note(inv, 20.0, 20.0)
     assert (await client.post("/docs/import", headers=auth["headers"], json=rec)).status_code == 200
     before = _shown(await _state(session, auth, rec["entity_id"]))
+    await lock_company(session, auth["company_id"])
     await ProjectionEngine.rebuild(session, auth["company_id"])
     await session.commit()
     session.expire_all()

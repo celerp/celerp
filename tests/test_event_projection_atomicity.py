@@ -24,6 +24,7 @@ from celerp.models.company import Company
 from celerp.models.connector_config import OutboundQueue
 from celerp.models.ledger import LedgerEntry
 from celerp.projections.engine import ProjectionEngine
+from celerp.services.company_lock import lock_company
 from celerp.services.item_erasure import erase_items
 
 pytestmark = pytest.mark.asyncio
@@ -62,6 +63,7 @@ async def _stored(engine, company_id) -> tuple:
 
 async def _rebuild(factory, company_id) -> None:
     async with factory() as s:
+        await lock_company(s, company_id)
         await ProjectionEngine.rebuild(s, company_id)
         await s.commit()
 

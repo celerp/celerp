@@ -277,6 +277,7 @@
   "GET /docs": {
     "query:accounting_sync": "Optional accounting synchronization status used to filter documents.",
     "query:all_issued": "Whether to include all issued documents regardless of other open-state filters.",
+    "query:awaiting_only": "Whether to return only issued documents still awaiting payment, by the statuses of each document type.",
     "query:contact_id": "Identifier of the customer, supplier, or other CRM contact.",
     "query:converted_to_type": "Document type used to filter records that were converted to the specified target type.",
     "query:date_from": "Start date for the requested reporting or search period.",
@@ -292,6 +293,7 @@
     "query:not_stocked": "Whether to return only documents whose expected inventory has not been stocked.",
     "query:offset": "Number of matching records to skip before returning results.",
     "query:overdue_only": "Whether to return only overdue business documents.",
+    "query:paid_only": "Whether to return only documents of a type that awaits payment that are paid in full.",
     "query:q": "Search text used to filter matching records.",
     "query:sort": "Field or supported sort key used to order the result.",
     "query:status": "Record or workflow status used to filter results or select the requested lifecycle state.",
@@ -320,6 +322,7 @@
   "GET /docs/export/csv": {
     "query:accounting_sync": "Optional accounting synchronization status used to filter the CSV export.",
     "query:all_issued": "Whether to include all issued documents regardless of other open-state filters.",
+    "query:awaiting_only": "Whether to return only issued documents still awaiting payment, by the statuses of each document type.",
     "query:cols": "Comma-separated column names to export, in the order they should appear. Omit for the default columns.",
     "query:contact_id": "Identifier of the customer, supplier, or other CRM contact.",
     "query:converted_to_type": "Document type used to filter records that were converted to the specified target type.",
@@ -334,6 +337,7 @@
     "query:not_restocked": "Whether to return only documents whose returned inventory has not been restocked.",
     "query:not_stocked": "Whether to return only documents whose expected inventory has not been stocked.",
     "query:overdue_only": "Whether to return only overdue business documents.",
+    "query:paid_only": "Whether to return only documents of a type that awaits payment that are paid in full.",
     "query:q": "Search text used to filter matching records.",
     "query:sort": "Field or supported sort key used to order the result.",
     "query:status": "Record or workflow status used to filter results or select the requested lifecycle state.",
@@ -350,6 +354,7 @@
   "GET /docs/summary": {
     "query:accounting_sync": "Optional accounting synchronization status used to filter the summarized documents.",
     "query:all_issued": "Whether to include all issued documents regardless of other open-state filters.",
+    "query:awaiting_only": "Whether to return only issued documents still awaiting payment, by the statuses of each document type.",
     "query:contact_id": "Identifier of the customer, supplier, or other CRM contact.",
     "query:converted_to_type": "Document type used to filter records that were converted to the specified target type.",
     "query:date_from": "Start date for the requested reporting or search period.",
@@ -363,6 +368,7 @@
     "query:not_restocked": "Whether to return only documents whose returned inventory has not been restocked.",
     "query:not_stocked": "Whether to return only documents whose expected inventory has not been stocked.",
     "query:overdue_only": "Whether to return only overdue business documents.",
+    "query:paid_only": "Whether to return only documents of a type that awaits payment that are paid in full.",
     "query:q": "Search text used to filter matching records.",
     "query:sort": "Field or supported sort key used to order the result.",
     "query:status": "Record or workflow status used to filter results or select the requested lifecycle state.",
@@ -689,10 +695,6 @@
   },
   "GET /search": {
     "query:q": "Search text used to filter matching records."
-  },
-  "GET /settings/connectors/{platform}/authorize-url": {
-    "path:platform": "External connector platform name.",
-    "query:shop": "Store or shop identifier used by the connector authorization flow."
   },
   "GET /share/{token}": {
     "path:token": "Opaque public token identifying the shared or payment resource."
@@ -1455,6 +1457,10 @@
   },
   "POST /notifications/{notification_id}/read": {
     "path:notification_id": "Identifier of the notification."
+  },
+  "POST /settings/connectors/{platform}/authorize-url": {
+    "path:platform": "External connector platform name.",
+    "query:shop": "Store or shop identifier used by the connector authorization flow."
   },
   "POST /subscriptions/{entity_id}/activate": {
     "path:entity_id": "Identifier of the requested Celerp record."
