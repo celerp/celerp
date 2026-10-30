@@ -30,6 +30,16 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 
 
+@contextlib.contextmanager
+def _under_migration_key(engine):
+    """A connection in a transaction, under the migration key held on an autocommit
+    connection of its own, as every production run holds it (celerp.db.migration_key)."""
+    from celerp.db import migration_key
+    with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as key_conn, migration_key(key_conn), \
+            engine.connect() as conn, conn.begin():
+        yield conn
+
+
 def _run_migration(engine, module_name: str, fn: str) -> None:
     """Run versions/<module_name>.<fn>() against `engine` through an op mock.
 
@@ -38,16 +48,15 @@ def _run_migration(engine, module_name: str, fn: str) -> None:
     connection.
     """
     full = f"celerp.migrations.versions.{module_name}"
-    with engine.connect() as conn:
-        with conn.begin():
-            mock_op = MagicMock()
-            mock_op.get_bind.return_value = conn
-            if full in sys.modules:
-                del sys.modules[full]
-            with patch.dict("sys.modules", {"alembic.op": mock_op}):
-                mig = importlib.import_module(full)
-                with patch.object(mig, "op", mock_op):
-                    getattr(mig, fn)()
+    with _under_migration_key(engine) as conn:
+        mock_op = MagicMock()
+        mock_op.get_bind.return_value = conn
+        if full in sys.modules:
+            del sys.modules[full]
+        with patch.dict("sys.modules", {"alembic.op": mock_op}):
+            mig = importlib.import_module(full)
+            with patch.object(mig, "op", mock_op):
+                getattr(mig, fn)()
 
 
 def run_migration_ops(engine, module_name: str, direction: str = "upgrade") -> None:
@@ -65,14 +74,13 @@ def run_migration_ops(engine, module_name: str, direction: str = "upgrade") -> N
     from alembic.runtime.migration import MigrationContext
 
     full = f"celerp.migrations.versions.{module_name}"
-    with engine.connect() as conn:
-        with conn.begin():
-            ctx = MigrationContext.configure(conn)
-            if full in sys.modules:
-                del sys.modules[full]
-            with Operations.context(ctx):
-                mig = importlib.import_module(full)
-                getattr(mig, direction)()
+    with _under_migration_key(engine) as conn:
+        ctx = MigrationContext.configure(conn)
+        if full in sys.modules:
+            del sys.modules[full]
+        with Operations.context(ctx):
+            mig = importlib.import_module(full)
+            getattr(mig, direction)()
 
 
 class MigDB:
