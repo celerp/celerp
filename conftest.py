@@ -1083,7 +1083,21 @@ async def client(session: AsyncSession):
     # Set a mock relay client (used by relay-dependent code paths in tests).
     # The concurrent login gate is bypassed in tests because the tracker is
     # cleared at setup/teardown, so each test starts with an empty registry.
-    app.dependency_overrides[get_session] = lambda: session
+    async def _request_session():
+        # Production's session closes, rolling back, when the route raises, before an
+        # exception handler runs (one that notifies in a session of its own, as
+        # middleware.notify_refused does). So does the test session's request transaction,
+        # unless a sibling request shares it or something durable was committed inside it,
+        # which a rollback would also undo: the request then ends as _request_scoped judges.
+        try:
+            yield session
+        except Exception:
+            if turn["requests"] == 1 and turn["wrote"] and not turn["durable"]:
+                await session.rollback()
+                turn["wrote"] = False
+            raise
+
+    app.dependency_overrides[get_session] = _request_session
 
     # The middleware and a module's admission open a session of their own per block, and the
     # projection rebuild and the Doctor run on the unbounded lifecycle engine. On a SEPARATE
@@ -1124,9 +1138,12 @@ async def client(session: AsyncSession):
         # sessions and AI jobs committed inside it on this one connection, which
         # production commits on connections of their own. So does a failed request that
         # wrote nothing beside such a commit; one that wrote too cannot be told apart
-        # here, so it fails.
+        # here, so it fails. Requests running at once (a page's parallel reads) share the
+        # one session, so they are one transaction: the first to start commits what the
+        # test wrote, and the last to end ends it, by rollback if any of them answered an
+        # error. Ending it earlier would release the savepoint of a block another one has
+        # open (test_helpers.block_sessions).
         status = 500
-        turn["wrote"] = turn["durable"] = False
 
         async def _send(message):
             nonlocal status
@@ -1134,7 +1151,10 @@ async def client(session: AsyncSession):
                 status = message["status"]
             await send(message)
 
-        await _end_transaction(commit=True)
+        if not turn["requests"]:
+            turn["wrote"] = turn["durable"] = turn["failed"] = False
+            await _end_transaction(commit=True)
+        turn["requests"] += 1
         token = _IN_REQUEST.set(True)
         task_token = _REQUEST_TASK.set(asyncio.current_task())
         try:
@@ -1142,11 +1162,14 @@ async def client(session: AsyncSession):
         finally:
             _REQUEST_TASK.reset(task_token)
             _IN_REQUEST.reset(token)
-            if status >= 400 and turn["wrote"] and turn["durable"]:
-                await _end_transaction(commit=False)
-                raise AssertionError("a request that answered an error wrote through its session while "
-                                     "a job or lifecycle session committed beside it on the test connection")
-            await _end_transaction(commit=status < 400 or turn["durable"])
+            turn["requests"] -= 1
+            turn["failed"] = turn["failed"] or status >= 400
+            if not turn["requests"]:
+                if turn["failed"] and turn["wrote"] and turn["durable"]:
+                    await _end_transaction(commit=False)
+                    raise AssertionError("a request that answered an error wrote through its session while "
+                                         "a job or lifecycle session committed beside it on the test connection")
+                await _end_transaction(commit=not turn["failed"] or turn["durable"])
 
     async def _end_transaction(commit: bool):
         if not session.in_transaction():
@@ -1159,9 +1182,10 @@ async def client(session: AsyncSession):
                 pass
         await session.rollback()
 
-    # What the current request did on this connection: wrote through its own session,
-    # and whether a block session (above) or an AI job committed beside it.
-    turn = {"wrote": False, "durable": False}
+    # What the requests running now did on this connection: how many there are, whether
+    # any answered an error, wrote through its own session, and whether a block session
+    # (above) or an AI job committed beside them.
+    turn = {"requests": 0, "failed": False, "wrote": False, "durable": False}
 
     def _wrote(*_):
         if _IN_REQUEST.get():
@@ -1188,7 +1212,7 @@ async def client(session: AsyncSession):
     lifecycle_factory = async_sessionmaker(
         bind=await session.connection(), class_=AsyncSession, sync_session_class=_DurableSession,
         expire_on_commit=False, join_transaction_mode="create_savepoint")
-    block = block_sessions(lifecycle_factory)
+    block = block_sessions(lifecycle_factory, _shared_session_ctx)
 
     # AI job tasks run beside the requests that start them, on the same connection.
     # Their sessions join the outer transaction without savepoints of their own, so

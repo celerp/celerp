@@ -239,25 +239,44 @@ async def provision_company_books(session, company_id) -> None:
 BLOCK_END = "celerp_test_block_end"
 
 
-def block_sessions(factory):
+def block_sessions(factory, shared):
     """The app's own per-block session factory in a test, from a savepoint-joined ``factory``
     on the test connection. Each block is a session of its own, as production opens one per
     block, recorded as a transaction of its own (lock_rank Recorder.block). A block that raised
     ends by rollback; any other ends by releasing its savepoint, as a rollback to it would also
-    undo what another task wrote on the shared connection meanwhile."""
+    undo what another task wrote on the shared connection meanwhile.
+
+    Savepoints on one connection are one stack, so a block gets one only while every open block
+    on the connection is its own task's (they nest LIFO there). A block opened while another
+    task's is open uses ``shared`` (the test session's context) instead: its savepoint would
+    nest inside the other block's and end with it."""
     import sys
 
     recorder = sys.modules["lock_rank"].RECORDER
+    open_blocks = _OPEN_BLOCKS.setdefault(id(factory.kw["bind"]), [])
 
     @asynccontextmanager
     async def block():
-        with recorder.block():
-            async with factory() as own:
+        task = asyncio.current_task()
+        if any(owner is not task for owner in open_blocks):
+            async with shared() as own:
                 yield own
-                if own.in_transaction():
-                    own.info[BLOCK_END] = True
-                    await own.commit()
+            return
+        open_blocks.append(task)
+        try:
+            with recorder.block():
+                async with factory() as own:
+                    yield own
+                    if own.in_transaction():
+                        own.info[BLOCK_END] = True
+                        await own.commit()
+        finally:
+            open_blocks.remove(task)
     return block
+
+
+# The tasks with a block session open (block_sessions), per test connection.
+_OPEN_BLOCKS: dict[int, list] = {}
 
 
 async def own_sessions_on(session):
@@ -266,8 +285,13 @@ async def own_sessions_on(session):
     and its commits stay inside the rolled-back test transaction."""
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+    @asynccontextmanager
+    async def shared():
+        yield session
+
     return block_sessions(async_sessionmaker(bind=await session.connection(), class_=AsyncSession,
-                                             expire_on_commit=False, join_transaction_mode="create_savepoint"))
+                                             expire_on_commit=False, join_transaction_mode="create_savepoint"),
+                          shared)
 
 
 TZ = "Pacific/Kiritimati"  # the timezone of the company company_auth creates
