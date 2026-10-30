@@ -31,7 +31,7 @@ async def _company(client) -> dict:
 async def _bank(client, h, opening: float) -> dict:
     r = await client.post("/accounting/bank-accounts", headers=h, json={
         "bank_name": "Main", "account_number": "1", "bank_type": "checking",
-        "currency": "THB", "opening_balance": opening,
+        "currency": "USD", "opening_balance": opening,
     })
     assert r.status_code == 200, r.text
     return r.json()

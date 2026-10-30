@@ -36,7 +36,7 @@ from celerp.services.ledger_rows import entry_rows
 from celerp.services.permissions import _authority_for, read_authority, role_has_permission
 from celerp_accounting.models import BankAccount, ReconciliationSession
 from celerp_accounting.routes import _line_amounts, _opening_je_id
-from ui.i18n import t
+from ui.i18n import list_text, t
 
 # {(row id, bank chart code): (day, amount)}
 BankRows = dict[tuple[str, str], tuple[str, Decimal]]
@@ -188,7 +188,7 @@ async def _refusal(session: AsyncSession, company_id: uuid.UUID,
         role, settings = await read_authority(session, company_id, authority.user_id)
         manages = role_has_permission(settings, role, "manage_accounting")
     suffix = "" if manages else "_ask"
-    params = {"account": " and ".join(accounts), "dates": ", ".join(dates)}
+    params = {"account": list_text(accounts), "dates": list_text(dates)}
     if held:
         return t(f"error.recon_entry_held{suffix}", **params)
     return t(f"error.recon_period_changed{suffix}", last_date=max(d for d in dates if iso_day(d)), **params)

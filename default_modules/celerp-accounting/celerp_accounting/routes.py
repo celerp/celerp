@@ -231,12 +231,11 @@ _DEFAULT_BANK_CODE = "1111"
 
 
 async def _seed_default_bank_account(session: AsyncSession, company_id: uuid.UUID) -> None:
-    """Create a default bank account so reconciliation is never empty. Idempotent."""
-    from celerp.models.company import Company
+    """Create a default bank account, kept in the company's base currency, so
+    reconciliation is never empty. Idempotent."""
     from sqlalchemy import select as _select
 
-    company = await session.get(Company, company_id)
-    currency = (company.settings or {}).get("currency", "THB") if company else "THB"
+    currency = await _base_currency(session, company_id)
 
     code = _DEFAULT_BANK_CODE
     existing = (await session.execute(
@@ -2681,7 +2680,7 @@ async def list_bank_reconciliations(
         .where(ReconciliationSession.company_id == company_id, ReconciliationSession.bank_account_id == bank.id)
         .order_by(ReconciliationSession.statement_date.desc(), ReconciliationSession.created_at.desc())
     )).scalars().all()
-    all_entries = await _je_entries_for_account(session, company_id, bank.chart_account_code)
+    all_entries = await _je_entries_for_account(session, company_id, bank)
     items = [{**_recon_to_dict(r), "needs_review": _needs_review(r, bank, all_entries)} for r in rows]
     return {"items": items, "total": len(items)}
 
@@ -2777,7 +2776,7 @@ async def create_bank_account(
 async def _bank_has_history(session: AsyncSession, company_id: uuid.UUID, bank: BankAccount) -> bool:
     """Whether the account's ledger account carries a posted journal line or the account
     has a reconciliation: amounts and statements recorded in its currency."""
-    if await _je_entries_for_account(session, company_id, bank.chart_account_code):
+    if await _je_entries_for_account(session, company_id, bank):
         return True
     return (await session.execute(select(ReconciliationSession.id).where(
         ReconciliationSession.bank_account_id == bank.id).limit(1))).first() is not None
@@ -2985,7 +2984,7 @@ async def _recon_bank_and_entries(
     bank = (await db.execute(select(BankAccount).where(BankAccount.id == recon.bank_account_id))).scalar_one_or_none()
     if not bank:
         raise HTTPException(status_code=404, detail=t("acct.err_bank_account_not_found"))
-    return bank, await _je_entries_for_account(db, company_id, bank.chart_account_code)
+    return bank, await _je_entries_for_account(db, company_id, bank)
 
 
 def _cleared_je_ids(recon: ReconciliationSession, bank: BankAccount) -> set[str]:
@@ -3001,13 +3000,36 @@ def _cleared_je_ids(recon: ReconciliationSession, bank: BankAccount) -> set[str]
     return set(recon.reconciled_je_ids or []) | {_opening_je_id(bank.id)}
 
 
-def _recon_balance(recon: ReconciliationSession, bank: BankAccount, all_entries: list[dict]) -> tuple[Decimal, Decimal]:
-    """(matched balance, remaining difference) for a session, rounded to the account
-    currency's minor unit."""
-    cleared = _cleared_je_ids(recon, bank)
-    matched = sum((to_decimal(e["amount"]) for e in all_entries if e["je_id"] in cleared), Decimal(0))
+def _recon_balance(
+    recon: ReconciliationSession, bank: BankAccount, all_entries: list[dict]
+) -> tuple[Decimal, Decimal] | None:
+    """(matched balance, remaining difference) for a session in the account's currency,
+    rounded to its minor unit. None when an entry the session counts has no amount in
+    that currency: the balance is then unknown, never guessed."""
+    amounts = [e["amount"] for e in all_entries if e["je_id"] in _cleared_je_ids(recon, bank)]
+    if None in amounts:
+        return None
+    matched = sum((to_decimal(a) for a in amounts), Decimal(0))
     return (round_money(matched, bank.currency),
             round_money(to_decimal(recon.statement_balance) - matched, bank.currency))
+
+
+def _settled_difference(
+    recon: ReconciliationSession, bank: BankAccount, all_entries: list[dict]
+) -> Decimal:
+    """The difference left to reconcile, refusing when it cannot be known."""
+    balance = _recon_balance(recon, bank, all_entries)
+    if balance is None:
+        raise HTTPException(status_code=422, detail=t("acct.err_recon_amount_unknown", currency=bank.currency))
+    return balance[1]
+
+
+def _difference_fields(balance: tuple[Decimal, Decimal] | None) -> dict:
+    """The difference as the workspace reads it: rounded at the account currency, None
+    when unknown, and whether the session balances. The screen branches on
+    ``balanced`` alone, so it judges exactly as completion does."""
+    return {"difference": None if balance is None else to_stored_float(balance[1]),
+            "balanced": balance is not None and balance[1] == 0}
 
 
 def _needs_review(recon: ReconciliationSession, bank: BankAccount, all_entries: list[dict]) -> bool:
@@ -3017,7 +3039,8 @@ def _needs_review(recon: ReconciliationSession, bank: BankAccount, all_entries: 
     posted = {e["je_id"] for e in all_entries}
     if set(recon.reconciled_je_ids or []) - posted:
         return True
-    return recon.status == "completed" and _recon_balance(recon, bank, all_entries)[1] != 0
+    balance = _recon_balance(recon, bank, all_entries)
+    return recon.status == "completed" and (balance is None or balance[1] != 0)
 
 
 def _money_text(value: Decimal, currency: str) -> str:
@@ -3088,24 +3111,38 @@ def _rule_to_dict(r: ReconciliationRule) -> dict:
     }
 
 
+def _bank_amounts(line: dict, bank_currency: str, base: str) -> tuple[Decimal, Decimal] | None:
+    """(debit, credit) of a bank account's journal line in the account's own currency:
+    the line's foreign amounts when it was written in that currency, its base amounts
+    when the account is kept in base currency. None otherwise: the line was posted in
+    another currency with no rate to the account's, so no figure is guessed."""
+    if (line.get("fx_currency") or "").upper() == bank_currency and (line.get("fx_debit") or line.get("fx_credit")):
+        return to_decimal(line.get("fx_debit") or 0), to_decimal(line.get("fx_credit") or 0)
+    return _line_amounts(line) if bank_currency == base else None
+
+
 async def _je_entries_for_account(
-    session: AsyncSession, company_id: uuid.UUID, account_code: str
+    session: AsyncSession, company_id: uuid.UUID, bank: BankAccount
 ) -> list[dict]:
-    """Posted JE lines for one account as {je_id, ts, memo, amount, debit, credit}."""
+    """Posted JE lines on a bank account's ledger account as {je_id, ts, memo, amount,
+    debit, credit}, the amounts in the bank account's currency (None when unknown, see
+    ``_bank_amounts``)."""
+    base = await _base_currency(session, company_id)
     result = []
     for je_id, state, _ in await journal_rows(session, company_id):
         for entry in state.get("entries", []):
-            if entry.get("account") == account_code:
-                amounts = _line_amounts(entry)
-                if amounts is None:
+            if entry.get("account") == bank.chart_account_code:
+                if _line_amounts(entry) is None:
                     continue
+                amounts = _bank_amounts(entry, bank.currency, base)
+                debit, credit = (to_stored_float(round_money(a, bank.currency)) for a in amounts) if amounts else (None, None)
                 result.append({
                     "je_id": je_id,
                     "ts": state.get("ts") or state.get("created_at") or "",
                     "memo": state.get("memo", ""),
-                    "debit": float(amounts[0]),
-                    "credit": float(amounts[1]),
-                    "amount": float(amounts[0] - amounts[1]),
+                    "debit": debit,
+                    "credit": credit,
+                    "amount": None if amounts is None else to_stored_float(round_money(amounts[0] - amounts[1], bank.currency)),
                 })
     refs = await _je_doc_refs(session, company_id, sorted({r["je_id"] for r in result}))
     for r in result:
@@ -3124,7 +3161,7 @@ async def _eligible_entries(
     line of this session or by another session of the same statement. Sessions of other
     statement dates and of other accounts may count it too: each statement counts every
     entry cleared up to its date, and a transfer is reconciled on both accounts."""
-    posted = {e["je_id"] for e in await _je_entries_for_account(db, company_id, bank.chart_account_code)}
+    posted = {e["je_id"] for e in await _je_entries_for_account(db, company_id, bank)}
     posted.discard(_opening_je_id(bank.id))
     own = None
     if line_id is not None:
@@ -3216,7 +3253,8 @@ async def get_reconciliation(
     cleared = _cleared_je_ids(recon, bank)
     unreconciled = [e for e in all_entries if e["je_id"] not in cleared]
     reconciled = [e for e in all_entries if e["je_id"] in cleared]
-    matched_balance, difference = _recon_balance(recon, bank, all_entries)
+    balance = _recon_balance(recon, bank, all_entries)
+    book = [e["amount"] for e in all_entries]
 
     d = _recon_to_dict(recon)
     d.update({
@@ -3224,9 +3262,10 @@ async def get_reconciliation(
         "all_entries": all_entries,
         "unreconciled_entries": unreconciled,
         "reconciled_entries": reconciled,
-        "book_balance": sum(e["amount"] for e in all_entries),
-        "matched_balance": to_stored_float(matched_balance),
-        "difference": to_stored_float(difference),
+        "book_balance": None if None in book else to_stored_float(
+            round_money(sum((to_decimal(a) for a in book), Decimal(0)), bank.currency)),
+        "matched_balance": None if balance is None else to_stored_float(balance[0]),
+        **_difference_fields(balance),
         "needs_review": _needs_review(recon, bank, all_entries),
     })
     return d
@@ -3265,7 +3304,7 @@ async def complete_reconciliation(
         return _recon_to_dict(recon)
 
     bank, all_entries = await _recon_bank_and_entries(db, recon, company_id)
-    _, difference = _recon_balance(recon, bank, all_entries)
+    difference = _settled_difference(recon, bank, all_entries)
 
     if difference != 0:
         raise HTTPException(
@@ -3350,7 +3389,7 @@ async def reconciliation_workbench(
         ).order_by(BankStatementLine.line_date, BankStatementLine.created_at)
     )).scalars().all()
     cleared = _cleared_je_ids(recon, bank)
-    _, difference = _recon_balance(recon, bank, all_entries)
+    balance = _recon_balance(recon, bank, all_entries)
 
     open_lines, lines_truncated = _capped([_stmt_line_to_dict(l) for l in lines])
     entries, entries_truncated = _capped([e for e in all_entries if e["je_id"] not in cleared])
@@ -3361,7 +3400,7 @@ async def reconciliation_workbench(
         "statement_lines_truncated": lines_truncated,
         "book_entries": entries,
         "book_entries_truncated": entries_truncated,
-        "difference": to_stored_float(difference),
+        **_difference_fields(balance),
     }
 
 
@@ -3650,10 +3689,12 @@ async def auto_match_recon(
         )
     )).scalars().all()
 
-    book_entries = await _je_entries_for_account(db, company_id, bank.chart_account_code)
+    book_entries = await _je_entries_for_account(db, company_id, bank)
     cleared = _cleared_je_ids(recon, bank)
     reasons = await _eligible_entries(db, company_id, bank, recon, [e["je_id"] for e in book_entries])
-    unmatched_entries = [e for e in book_entries if e["je_id"] not in cleared and reasons[e["je_id"]] is None]
+    # An entry with no amount in the account's currency has nothing to match a statement line on.
+    unmatched_entries = [e for e in book_entries if e["je_id"] not in cleared and reasons[e["je_id"]] is None
+                         and e["amount"] is not None]
 
     stmt_dicts = [_stmt_line_to_dict(l) for l in stmt_lines]
     matches = auto_match(stmt_dicts, unmatched_entries)
@@ -4149,7 +4190,7 @@ async def write_off_difference(
         amount = float(bank_entry.get("debit") or 0) - float(bank_entry.get("credit") or 0)
         return {"je_id": je_id, "amount": amount}
 
-    _, remaining = _recon_balance(recon, bank, all_entries)
+    remaining = _settled_difference(recon, bank, all_entries)
 
     tol = round_money(recon.tolerance if recon.tolerance is not None else 1, bank.currency)
     if abs(remaining) > tol:

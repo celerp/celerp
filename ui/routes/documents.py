@@ -53,6 +53,7 @@ from ui.components.operation_key import (
 from celerp.output.doc_print import (
     INVOICE_LAYOUT_DOC_TYPES as _INVOICE_LAYOUT_DOC_TYPES,
     input_money,
+    money_step as _money_step,
     input_rate,
     render_doc_print_html,
 )
@@ -2300,7 +2301,7 @@ def setup_routes(app):
             )
         currency = next(iter(currencies), str(docs[0].get("currency") or "USD").upper())
         money_dp = currency_dp(currency)
-        money_step = "1" if money_dp == 0 else "0." + ("0" * (money_dp - 1)) + "1"
+        money_step = _money_step(currency)
         payable.sort(key=lambda d: d.get("due_date") or d.get("issue_date") or "")
         skipped = len(docs) - len(payable)
         total_outstanding_d = round_money(
@@ -5814,7 +5815,7 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
     outstanding_d = round_money(outstanding_balance(doc) or 0, currency)
     outstanding = to_stored_float(outstanding_d)
     money_dp = currency_dp(currency)
-    money_step = "1" if money_dp == 0 else "0." + ("0" * (money_dp - 1)) + "1"
+    money_step = _money_step(currency)
     money_value = f"{outstanding_d:.{money_dp}f}"
 
     today = business_today(tz).isoformat()

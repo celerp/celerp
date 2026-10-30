@@ -30,7 +30,7 @@ async def _create_bank(client: AsyncClient, headers: dict) -> dict:
         "bank_name": "Test Bank",
         "account_number": "****9999",
         "bank_type": "checking",
-        "currency": "THB",
+        "currency": "USD",
         "opening_balance": 100000.0,
     }, headers=headers)
     assert r.status_code == 200, r.text

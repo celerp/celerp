@@ -15,6 +15,7 @@ from starlette.responses import RedirectResponse, Response
 
 from celerp.accounting_roles import account_label
 from celerp.importers import tabular
+from celerp.output.doc_print import money_step
 from celerp.services.business_time import business_today
 import ui.api_client as api
 from ui.components.icons import import_icon
@@ -223,7 +224,7 @@ def _create_form(session_id: str, line_id: str, line: dict, chart: list[dict], c
             Div(
                 Label(t("label.amount"), cls="form-label"),
                 Input(type="number", name="amount", value=str(amount),
-                      step="0.01", cls="form-input"),
+                      step=money_step(currency), cls="form-input"),
                 cls="form-field",
             ),
             Div(
@@ -264,7 +265,7 @@ def _split_form(session_id: str, line_id: str, line: dict, chart: list[dict], cu
                         Select(*account_options, _acct_opt, name="account_code_0",
                                cls="form-input cell-input--select w-auto", onchange=_acct_js),
                         Input(type="number", name="amount_0", placeholder=t("label.amount"),
-                              step="0.01", cls="form-input max-w-sm"),
+                              step=money_step(currency), cls="form-input max-w-sm"),
                         searchable_select("contact_0", contact_opts,
                                           placeholder=t("acct.je_line_party"),
                                           cls_extra="form-input", search_url=PARTY_SEARCH_URL),
@@ -333,11 +334,14 @@ def _workspace_view(
     unmatched = total - matched - suggested - skipped
 
     stmt_bal = float(recon.get("statement_balance", 0))
-    difference = recon.get("difference", 0)
+    # The server rounds the difference at the account currency and says whether the
+    # session balances; the screen judges on that flag alone, exactly as completion does.
+    # A difference of None is unknown: an entry has no amount in the account's currency.
+    difference = recon.get("difference")
+    balanced = bool(recon.get("balanced"))
     tol = float(recon.get("tolerance", 1.0))
-    diff_cls = "recon-diff--ok" if abs(float(difference)) < 0.01 else (
-        "recon-diff--warn" if abs(float(difference)) <= tol else "recon-diff--bad"
-    )
+    writable_off = not balanced and difference is not None and abs(float(difference)) <= tol
+    diff_cls = "recon-diff--ok" if balanced else ("recon-diff--warn" if writable_off else "recon-diff--bad")
 
     # Build sets for unmatched book entries
     matched_je_ids = {l["matched_je_id"] for l in lines if l.get("matched_je_id")}
@@ -358,7 +362,7 @@ def _workspace_view(
         ),
         Div(
             Span(t("recon.statement_balance", amount=fmt_money(stmt_bal, currency)), cls="val-chip"),
-            Span(t("recon.difference", amount=fmt_money(float(difference), currency)), cls=f"val-chip {diff_cls}"),
+            Span(t("recon.difference", amount=fmt_money(difference, currency)), cls=f"val-chip {diff_cls}"),
         ),
         cls="recon-header",
     )
@@ -386,14 +390,14 @@ def _workspace_view(
                 hx_swap="outerHTML",
                 cls="btn btn--primary btn--sm",
             )]
-            if abs(float(difference)) < 0.01 else
+            if balanced else
             [Button(t("btn.write_off_diff"),
                 hx_post=f"/accounting/reconcile/{session_id}/write-off",
                 hx_target="#recon-workspace",
                 hx_swap="outerHTML",
                 cls="btn btn--outline btn--sm",
             )]
-            if abs(float(difference)) <= tol else []
+            if writable_off else []
         ),
         cls="recon-toolbar",
     ) if not read_only else None
@@ -622,7 +626,6 @@ def setup_routes(app):
         if not token:
             return RedirectResponse("/login", status_code=302)
         company = await _get_company(token)
-        currency = company.get("currency", "")
         try:
             banks = (await api.get_bank_accounts(token)).get("items", [])
         except APIError as e:
@@ -631,6 +634,10 @@ def setup_routes(app):
             banks = []
 
         chosen = request.query_params.get("bank_id", "")
+        # One minor unit of the finest currency among the accounts offered, so any of
+        # their statement balances can be typed; the server judges at the chosen one.
+        balance_step = min((money_step(b.get("currency")) for b in banks if b.get("is_active", True)),
+                           key=float, default=money_step(company.get("currency")))
         bank_options = [
             Option(f"{b['bank_name']} {b.get('account_number', '')}", value=b["id"], selected=b["id"] == chosen)
             for b in banks if b.get("is_active", True)
@@ -667,9 +674,9 @@ def setup_routes(app):
                 ),
                 Div(
                     Label(t("label.statement_closing_balance"), cls="form-label"),
-                    Input(type="number", name="statement_balance", step="0.01",
+                    Input(type="number", name="statement_balance", step=balance_step,
                           value=request.query_params.get("statement_balance", ""),
-                          placeholder="0.00", cls="form-input", required=True),
+                          placeholder="0", cls="form-input", required=True),
                     cls="form-field",
                 ),
                 Div(
@@ -870,8 +877,7 @@ def setup_routes(app):
         if not token:
             return P(t("error.session_expired"), cls="error-banner")
         try:
-            company = await api.get_company(token)
-            currency = company.get("currency", "")
+            currency = (await api.get_reconciliation(token, session_id))["bank_account"]["currency"]
             lines_data = await api.get_statement_lines(token, session_id)
             line = next((l for l in lines_data.get("items", []) if l["id"] == line_id), None)
             if not line:
@@ -889,8 +895,7 @@ def setup_routes(app):
         if not token:
             return P(t("error.session_expired"), cls="error-banner")
         try:
-            company = await api.get_company(token)
-            currency = company.get("currency", "")
+            currency = (await api.get_reconciliation(token, session_id))["bank_account"]["currency"]
             lines_data = await api.get_statement_lines(token, session_id)
             line = next((l for l in lines_data.get("items", []) if l["id"] == line_id), None)
             if not line:
