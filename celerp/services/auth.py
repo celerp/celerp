@@ -564,17 +564,18 @@ def _usable_links(user_id):
             .where(UserCompany.user_id == user_id, USABLE_LINK))
 
 
-async def first_usable_company_link(session: AsyncSession, user_id) -> UserCompany | None:
+async def first_usable_company_link(session: AsyncSession, user_id, besides=None) -> UserCompany | None:
     """The company a sign-in lands on: the user's first usable company link, or None when
     the login has no company it can work in.
 
     A user in several companies uses /switch-company afterwards. An active company
     comes first, then one still being moved in, and only then a deactivated company
     its owner can reactivate, so a sign-in lands on a working company whenever one
-    exists."""
-    return (await session.execute(
-        _usable_links(user_id).order_by(_LANDING, UserCompany.id).limit(1)
-    )).scalar_one_or_none()
+    exists. A company being reset is passed as *besides*: the login lands elsewhere."""
+    links = _usable_links(user_id)
+    if besides is not None:
+        links = links.where(UserCompany.company_id != besides)
+    return (await session.execute(links.order_by(_LANDING, UserCompany.id).limit(1))).scalar_one_or_none()
 
 
 async def hold_companyless_login(session: AsyncSession, user_id) -> bool:

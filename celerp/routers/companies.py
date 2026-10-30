@@ -2482,25 +2482,25 @@ async def reset_company(
     await locked_authority(session, ctx.company_id, ctx.user.id, ("manage_company_lifecycle",))
     company = await session.get(Company, ctx.company_id)
     closure = task_id = None
+
+    async def next_session() -> dict | None:
+        link = await first_usable_company_link(session, ctx.user.id, ctx.company_id)
+        # The new session continues this one, so it cannot jump a concurrent sign-out.
+        return None if link is None else await issue_token_pair(
+            session, user=ctx.user, company_id=link.company_id,
+            expected_snonce=ctx.snonce, commit=False,
+        )
     try:
         try:
-            done = await company_reset.reset(session, company, payload.company_name)
+            done = await company_reset.reset(session, company, payload.company_name, next_session)
         except company_reset.ResetRefused as exc:
             closure = exc.closure
-            if exc.__cause__ is not None:
+            if exc.__cause__ is not None and not isinstance(exc.__cause__, HTTPException):
                 logger.error("Company reset failed: %s", type(exc.__cause__).__name__)
             raise HTTPException(status_code=exc.status, detail=exc.detail) from exc
         closure, task_id = done.closure, done.task_id
-        link = await first_usable_company_link(session, ctx.user.id)
-        if link is None:
-            await session.commit()
-            result = {"next": "start_company"}
-        else:
-            # The new session continues this one, so it cannot jump a concurrent sign-out.
-            result = await issue_token_pair(
-                session, user=ctx.user, company_id=link.company_id,
-                expected_snonce=ctx.snonce,
-            )
+        await session.commit()
+        result = done.issued or {"next": "start_company"}
     except BaseException:
         await session.rollback()
         # Reopens the company's online payments, or closes them for good if the

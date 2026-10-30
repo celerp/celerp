@@ -14,8 +14,10 @@ anything is written, so a table added later can never be skipped or wiped by mis
 from __future__ import annotations
 
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
+from fastapi import HTTPException
 from sqlalchemy import delete, select, text
 from sqlalchemy.exc import DBAPIError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -32,6 +34,7 @@ from celerp.models.migration import MigrationCleanupTask, MigrationRun
 from celerp.services import payments
 from celerp.services.auth import first_usable_company_link
 from celerp.services.company_lock import lock_company_for_deletion
+from celerp.services.session_tracker import lock_auth_state
 from ui.i18n import t
 
 # Tables that belong to the installation rather than any one company, and why.
@@ -84,6 +87,7 @@ class Reset:
     to run, and the payment closure to settle (``payments.settle_company_closure``)."""
     task_id: uuid.UUID
     closure: uuid.UUID | None
+    issued: dict | None = None
 
 
 def _busy() -> ResetRefused:
@@ -265,7 +269,8 @@ async def _company_schema(session: AsyncSession, cid: str) -> dict:
     return keys
 
 
-async def reset(session: AsyncSession, company: Company, typed_name: str) -> Reset:
+async def reset(session: AsyncSession, company: Company, typed_name: str,
+                next_session: Callable[[], Awaitable[dict | None]] | None = None) -> Reset:
     """Delete *company* and every row it owns in the session's transaction, and record its
     files for deletion after the commit. The caller holds the connector maintenance lock,
     took ``lock_company_for_deletion`` before any other company lock, and ends the
@@ -273,7 +278,9 @@ async def reset(session: AsyncSession, company: Company, typed_name: str) -> Res
     (also when this raises ResetRefused carrying one) and, after a commit, runs the
     cleanup task. Nothing is written unless every check passes, and a company connected
     to Celerp Cloud has its online payments closed there first; a database failure part
-    way leaves the transaction to roll back."""
+    way leaves the transaction to roll back. *next_session* issues the caller's next session
+    without committing, or returns None when the caller has no other company; it runs under
+    the members' session generations, before the deletes."""
     if typed_name != company.name:
         raise ResetRefused(422, refusal(
             "company_reset.name_mismatch",
@@ -324,18 +331,26 @@ async def reset(session: AsyncSession, company: Company, typed_name: str) -> Res
         # Payments recorded on the company's invoices first: every writer of a payment takes
         # the company, then the unmatched payment, then the company's documents.
         await payments.unrecord_company(session, company.id)
-        for statement in _company_deletes(keys):
-            await session.execute(text(statement), {"c": cid})
+        # Every member's session generation before the deletes take their sessions here, and
+        # the caller's next session issued under it before them too: a sign-out takes the
+        # generation and then the sessions, so it waits for the whole reset.
+        for member in sorted(members):
+            await lock_auth_state(session, str(member))
+        issued = await next_session() if next_session is not None else None
         # A login left with no company is signed out everywhere, so it no longer holds
         # the single direct sign-in place.
-        left = [u for u in members if await first_usable_company_link(session, u) is None]
+        left = [u for u in sorted(members) if await first_usable_company_link(session, u, company.id) is None]
         if left:
             await session.execute(delete(SessionRegistry).where(SessionRegistry.user_id.in_(left)))
+        for statement in _company_deletes(keys):
+            await session.execute(text(statement), {"c": cid})
         task = MigrationCleanupTask(company_id=company.id, run_ids=run_ids)
         session.add(task)
         await session.flush()
+    except HTTPException as exc:  # the next session refused: a sign-out came first
+        raise ResetRefused(exc.status_code, exc.detail, closure) from exc
     except SQLAlchemyError as exc:
         if isinstance(exc, DBAPIError) and sqlstate(exc) in _BUSY:
             raise ResetRefused(409, _busy().detail, closure) from exc
         raise ResetRefused(500, t("settings.reset_not_done"), closure) from exc
-    return Reset(task.id, closure)
+    return Reset(task.id, closure, issued)

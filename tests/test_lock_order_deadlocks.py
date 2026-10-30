@@ -275,3 +275,56 @@ async def test_a_companyless_hold_and_a_session_issued_for_the_same_login_wait_f
         await _until_blocked_or_done(committed_engine, second)
         go.set()
         await _both_finish(first, second)
+
+
+async def test_a_sign_out_during_a_company_reset_waits_for_the_reset_and_its_next_session(committed_engine):
+    """A sign-out (the login's session generation, then its sessions) arriving once a reset of
+    one of the login's companies has deleted that company's rows, which hold the login's
+    sessions there: the reset holds the generation of every member and issues the login its
+    session in its other company before its deletes, so the sign-out waits for the reset and
+    then ends every session, the new one too."""
+    from celerp.credentials import issue_token_pair
+    from celerp.models.accounting import UserCompany
+    from celerp.models.auth import SessionRegistry, UserAuthState
+    from celerp.models.company import Company, User
+    from celerp.services import company_reset
+    from celerp.services.company_lock import lock_company_for_deletion
+    from celerp.services.session_tracker import invalidate_sessions
+
+    factory = _factory(committed_engine)
+    company_id, user_id, _entity_id = await _seed_member_with_item(factory)
+    other = uuid.uuid4()
+    nonce = str(uuid.uuid4())
+    async with factory() as s:
+        s.add(Company(id=other, name="OtherCo", slug=f"other-{other.hex[:8]}", settings={}))
+        await s.flush()
+        s.add(UserCompany(user_id=user_id, company_id=other, role="owner", is_active=True))
+        s.add(UserAuthState(user_id=user_id, nonce=nonce))
+        await s.flush()  # the generation before the session, the order issuance keeps
+        s.add(SessionRegistry(jti=f"jti-{uuid.uuid4().hex}", user_id=user_id, company_id=company_id,
+                              expiry=datetime(2099, 1, 1, tzinfo=timezone.utc)))
+        await s.commit()
+
+    async with factory() as resetter, factory() as person:
+        async def next_session():
+            user = await resetter.get(User, user_id)
+            return await issue_token_pair(resetter, user=user, company_id=other, expected_snonce=nonce,
+                                          commit=False)
+
+        await lock_company_for_deletion(resetter, company_id)
+        company = await resetter.get(Company, company_id)
+        done = await company_reset.reset(resetter, company, company.name, next_session)
+        assert done.issued is not None
+
+        async def sign_out():
+            await invalidate_sessions(person, str(user_id))
+            await person.commit()
+
+        second = asyncio.create_task(sign_out())
+        await _until_blocked_or_done(committed_engine, second)
+        assert not second.done(), "the sign-out did not wait for the reset"
+        await _both_finish(asyncio.create_task(resetter.commit()), second)
+    async with factory() as s:
+        assert await s.get(Company, company_id) is None
+        assert (await s.scalars(sa.select(SessionRegistry.jti).where(
+            SessionRegistry.user_id == user_id))).all() == []
