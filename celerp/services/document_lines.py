@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import uuid
 from collections import Counter
+from collections.abc import Mapping
+from dataclasses import dataclass
 
 from fastapi import HTTPException
 from sqlalchemy import select
@@ -36,6 +38,31 @@ from celerp.services.lot_origin import DELETED
 # with it. The same two types are the ones that claim stock, so they are also the ones
 # that may not newly take an item another record has reserved.
 DOCUMENT_ITEM_UNIQUE_DOC_TYPES: frozenset[str] = frozenset({"invoice", "memo"})
+
+
+@dataclass(frozen=True)
+class DrawnLine:
+    """One invoice line a memo draw adds: the memo line it copies and the provenance the service
+    attaches to it (``drawn_from``)."""
+    memo_line: dict
+    drawn_from: dict
+
+
+@dataclass(frozen=True)
+class MemoDraw:
+    """The grant a memo draw writes an invoice with: it may add exactly these lines, by invoice
+    ``line_id``, and never remove or change a drawn line. Built only by the draw service."""
+    memo_id: str
+    draw_id: str
+    lines: Mapping[str, DrawnLine]
+
+
+@dataclass(frozen=True)
+class MemoReturn:
+    """The grant Back to memo writes an invoice with: it may remove exactly the drawn lines
+    ``removed`` names, whose goods the same transaction has put back on their memos, and add
+    or change nothing."""
+    removed: frozenset[str]
 
 
 def _holds_receipt(line: dict, entry: dict, *, in_place: bool = False) -> bool:

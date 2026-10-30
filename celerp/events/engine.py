@@ -14,6 +14,8 @@ from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.projections.engine import ITEM_BIRTHS, ProjectionEngine
 from celerp.services.document_lines import (
+    MemoDraw,
+    MemoReturn,
     assert_document_item_uniqueness,
     assert_line_holds_respected,
     assert_new_references_eligible,
@@ -533,7 +535,8 @@ async def _check_asset_lines(session, kwargs: dict) -> None:
 
 
 async def emit_event(
-    session, *, preserve_external_code_conflicts: bool = False, **kwargs
+    session, *, preserve_external_code_conflicts: bool = False,
+    memo_draw: MemoDraw | MemoReturn | None = None, **kwargs
 ) -> LedgerEntry:
     # A backup represents a clean point in time: while one is building, pause writes
     # (reads, which never emit, are unaffected) so nothing changes mid-backup.

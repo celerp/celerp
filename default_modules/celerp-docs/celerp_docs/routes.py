@@ -55,7 +55,7 @@ from celerp.services.landed_cost import compute_bill_landed_allocation
 from celerp.services.line_measures import (FULL, floor_to_unit, line_label, proposed_sell_qty, splitting_allowed,
                                           splitting_off)
 from celerp.services.document_lines import (
-    assert_line_holds_respected, assert_new_references_eligible,
+    MemoDraw, MemoReturn, assert_line_holds_respected, assert_new_references_eligible,
     line_id_counts, line_item_id, linked_items, memo_out_refusal, out_on_another_memo, received_line_index,
     shipped_elsewhere, strip_line_ids,
 )
@@ -1723,6 +1723,37 @@ async def create_doc(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    result = await write_doc_create(session, company_id, role, settings, user, payload)
+    await session.commit()
+    return result
+
+
+def _grant_references(lines: list, memo_draw: MemoDraw | None) -> dict[int, dict]:
+    """The reference price line, by position, of each line *memo_draw* copies from a memo: the
+    memo line, whose agreed price is not an override."""
+    if memo_draw is None:
+        return {}
+    return {i: memo_draw.lines[li["line_id"]].memo_line for i, li in enumerate(lines)
+            if isinstance(li, dict) and li.get("line_id") in memo_draw.lines}
+
+
+def _attach_drawn_from(lines: list, memo_draw: MemoDraw | None) -> None:
+    """Write each copied line's provenance from *memo_draw* onto *lines*, by line id. A grant line
+    missing from the written set is a programming error, never a user path."""
+    if memo_draw is None:
+        return
+    written = {li.get("line_id"): li for li in lines if isinstance(li, dict)}
+    missing = memo_draw.lines.keys() - written.keys()
+    if missing:
+        raise AssertionError(f"memo draw lines not in the written set: {sorted(missing)}")
+    for line_id, drawn in memo_draw.lines.items():
+        written[line_id]["drawn_from"] = dict(drawn.drawn_from)
+
+
+async def write_doc_create(session: AsyncSession, company_id, role: str, settings: dict, user,
+                           payload: DocCreatePayload, *, memo_draw: MemoDraw | None = None) -> dict:
+    """Create a document without committing, so a memo draw can make it part of a larger unit.
+    Only the draw service passes *memo_draw*, the grant to add the lines it copies."""
     from celerp.services import auto_je
 
     idem_key = payload.idempotency_key or str(uuid.uuid4())
@@ -1764,9 +1795,9 @@ async def create_doc(
         # the caller lacks set_sales_doc_prices. This closes the create path so the
         # gate cannot be bypassed by making a new draft with overridden prices.
         if payload.doc_type in SALES_PRICED_DOC_TYPES:
+            incoming = [li.model_dump() for li in payload.line_items]
             await _assert_sales_line_price_permission(
-                session, company_id, settings, role,
-                [li.model_dump() for li in payload.line_items], None,
+                session, company_id, settings, role, incoming, _grant_references(incoming, memo_draw),
             )
 
     # Re-check under the company lock, which also owns numbering. A concurrent
@@ -1789,7 +1820,11 @@ async def create_doc(
     for line, item in zip(data.get("line_items") or [], payload.line_items):
         if item.taxes is None:
             line["taxes"] = None
+    _attach_drawn_from(data.get("line_items") or [], memo_draw)
     chosen = _chosen_terms(data)
+    if memo_draw is not None:
+        # A memo's goods keep the price agreed on the memo, which the contact's prices do not change.
+        chosen |= {"currency", "price_list"}
     if inv is not None:
         # A credit note refunds its invoice's amounts, which the contact's prices do not change.
         chosen |= {"currency", "price_list"}
@@ -1841,12 +1876,8 @@ async def create_doc(
         source="api",
         idempotency_key=idem_key,
         metadata_={"request": digest},
+        memo_draw=memo_draw,
     )
-
-    if getattr(entry, "was_deduped", False):
-        return {"event_id": entry.id, "id": entry.entity_id}
-
-    await session.commit()
     return {"event_id": entry.id, "id": entry.entity_id}
 
 
@@ -1927,9 +1958,11 @@ def _assert_doc_editable(state: dict) -> None:
 
 
 async def write_doc_patch(session: AsyncSession, company_id, role: str, settings: dict, user, entity_id: str, payload: DocPatch,
-                          *, scan_runs: list[dict] | None = None) -> dict:
+                          *, scan_runs: list[dict] | None = None,
+                          memo_draw: MemoDraw | MemoReturn | None = None) -> dict:
     """Apply a document edit without committing, so an import can make it part of a larger unit.
-    Only the document scan passes `scan_runs`, the scan ledger no caller may patch."""
+    Only the document scan passes `scan_runs`, the scan ledger no caller may patch. Only a memo
+    draw and Back to memo pass `memo_draw`, the grant to add or remove the drawn lines they name."""
     from celerp.services import auto_je
 
     fields_changed = dict(payload.fields_changed)
@@ -1989,7 +2022,11 @@ async def write_doc_patch(session: AsyncSession, company_id, role: str, settings
         _reject_line_attributes(_incoming_lines)
     if isinstance(_incoming_lines, list) and row.state.get("doc_type") in SALES_PRICED_DOC_TYPES:
         _stored_by_idx = {i: li for i, li in enumerate(row.state.get("line_items") or [])}
+        if isinstance(memo_draw, MemoDraw):
+            _stored_by_idx |= _grant_references(_incoming_lines, memo_draw)
         await _assert_sales_line_price_permission(session, company_id, settings, role, _incoming_lines, _stored_by_idx)
+    if isinstance(memo_draw, MemoDraw):
+        _attach_drawn_from(_incoming_lines if isinstance(_incoming_lines, list) else [], memo_draw)
     is_draft = row.state.get("status") == "draft"
     if not is_draft:
         assert_finalized_edit(row.state, fields_changed)
@@ -2081,7 +2118,7 @@ async def write_doc_patch(session: AsyncSession, company_id, role: str, settings
         session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.updated",
         data={"fields_changed": effective, "idempotency_key": idem_key},
         actor_id=user.id, location_id=None, source="api",
-        idempotency_key=idem_key or str(uuid.uuid4()), metadata_={"request": digest},
+        idempotency_key=idem_key or str(uuid.uuid4()), metadata_={"request": digest}, memo_draw=memo_draw,
     )
     if getattr(entry, "was_deduped", False):
         return _patch_replay(entry, "doc.updated", entity_id, digest)
