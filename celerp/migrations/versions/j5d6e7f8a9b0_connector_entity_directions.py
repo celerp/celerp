@@ -19,6 +19,7 @@ import json
 
 import sqlalchemy as sa
 from alembic import op
+from celerp.migrations._locks import lock_tables
 
 revision = "j5d6e7f8a9b0"
 down_revision = "i3b4c5d6e7f8"
@@ -63,6 +64,7 @@ def upgrade() -> None:
     op.add_column("connector_configs", sa.Column("orders_from", sa.DateTime(timezone=True), nullable=True))
     op.add_column("connector_configs", sa.Column("connect_lapsed_at", sa.DateTime(timezone=True), nullable=True))
     bind = op.get_bind()
+    lock_tables(bind, "connector_configs")
     for row_id, connector, direction in bind.execute(sa.text(
             "SELECT id, connector, direction FROM connector_configs")).all():
         bind.execute(sa.text(
@@ -76,6 +78,7 @@ def downgrade() -> None:
     op.add_column("connector_configs", sa.Column(
         "direction", sa.String(16), nullable=False, server_default="both"))
     bind = op.get_bind()
+    lock_tables(bind, "connector_configs")
     for row_id, directions in bind.execute(sa.text(
             "SELECT id, entity_directions FROM connector_configs")).all():
         values = directions if isinstance(directions, dict) else json.loads(directions)

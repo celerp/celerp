@@ -17,6 +17,7 @@ backfills existing ones, which would otherwise be refused at posting time.
 from __future__ import annotations
 
 from alembic import op
+from celerp.migrations._locks import lock_tables
 import sqlalchemy as sa
 
 revision = "f6a7b8c9d0e1"
@@ -38,6 +39,7 @@ def upgrade() -> None:
     table_exists = conn.execute(sa.text("SELECT to_regclass('accounts')")).scalar()
     if not table_exists:
         return  # Nothing to backfill on fresh install
+    lock_tables(conn, "accounts")
 
     companies = conn.execute(
         sa.text("SELECT DISTINCT company_id FROM accounts WHERE code = :parent"),
@@ -62,4 +64,5 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     conn = op.get_bind()
+    lock_tables(conn, "accounts")
     conn.execute(sa.text("DELETE FROM accounts WHERE code = :code"), {"code": _CODE})

@@ -800,6 +800,34 @@ class Recorder:
         }
 
 
+@contextlib.contextmanager
+def ungated_takes(classes=None, *paths: str):
+    """Yields a set that, once the block ends, holds the sites in files whose path contains one
+    of ``paths`` that took a row of ``classes`` (every class when None) inside the block without
+    its company's lock, as the census counts them: empty when every take was company-gated or a
+    leaf (its transaction waited on nothing after it, so it held the row while waiting on
+    nothing). Sites recorded before the block are set aside for it and put back after, so one an
+    earlier test recorded still counts there."""
+    recorder = RECORDER
+    sets = ("ungated_sites", "leaf_sites", "counted_sites")
+    kept = {(c, k): info.pop(k, set()) for c, info in recorder.classes.items()
+            if classes is None or c in classes for k in sets}
+    found: set[str] = set()
+    try:
+        yield found
+    finally:
+        # A take whose transaction is still open when the block ends is not yet a leaf.
+        open_sites = {s for leaves in recorder.leaves.values() for _, _, sites in leaves for s in sites}
+        for c, info in recorder.classes.items():
+            if classes is not None and c not in classes:
+                continue
+            leaves = set(info.get("leaf_sites", ())) - set(info.get("counted_sites", ())) - open_sites
+            found.update(s for s in info.get("ungated_sites", ()) if s not in leaves
+                         and any(path in s.split(":", 1)[0] for path in paths))
+        for (c, k), sites in kept.items():
+            recorder.classes[c].setdefault(k, set()).update(sites)
+
+
 def _ungated(info: dict, take: str) -> None:
     """R4: count a take of a company's row outside its company's lock that its transaction
     may hold while it waits."""

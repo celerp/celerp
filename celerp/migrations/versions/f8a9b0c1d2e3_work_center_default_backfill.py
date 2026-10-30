@@ -27,6 +27,7 @@ import sqlalchemy as sa
 from alembic import op
 
 from celerp.migrations._json_compat import update_company_settings
+from celerp.migrations._locks import lock_tables
 
 revision = "f8a9b0c1d2e3"
 down_revision = "e7c9a1b3d5f2"
@@ -52,6 +53,8 @@ def _legacy_hours_per_day(value) -> float:
 
 def upgrade() -> None:
     conn = op.get_bind()
+    notices = conn.execute(sa.text("SELECT to_regclass('notifications')")).scalar() is not None
+    lock_tables(conn, "work_centers", *(["notifications"] if notices else []))
 
     # Never ask PostgreSQL to interpret companies.settings here. SQL_ASCII
     # databases can contain valid JSON with escaped Unicode that server-side
@@ -86,7 +89,7 @@ def upgrade() -> None:
             {"cid": row["id"], "hours": _legacy_hours_per_day(old_hours)},
         )
 
-    if conn.execute(sa.text("SELECT to_regclass('notifications')")).scalar() is not None:
+    if notices:
         # The shared read flag exists until w1n2o3p4q5r6 moves read state to per-user
         # receipts; the reconcile replays this after it, when the column is gone.
         flag = conn.execute(sa.text(
@@ -116,4 +119,5 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     conn = op.get_bind()
+    lock_tables(conn, "work_centers")
     conn.execute(sa.text("DELETE FROM work_centers WHERE is_default AND name = 'Default'"))

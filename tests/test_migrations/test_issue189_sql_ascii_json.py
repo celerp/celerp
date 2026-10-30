@@ -139,6 +139,7 @@ def test_projection_backfill_runs_and_preserves_accents(sql_ascii_db):
             INSERT INTO projections (entity_id, company_id, entity_type, state)
             VALUES ('item:1', CAST(:cid AS uuid), 'item', CAST(:s AS json))
         """), {"cid": cid, "s": state})
+    with sql_ascii_db.begin() as conn:
         # the failing migration from the report
         _run_upgrade(conn, "v7w8x9y0z1a2_backfill_purchase_unit_defaults")
 
@@ -158,6 +159,7 @@ def test_ledger_backfill_runs_and_preserves_accents(sql_ascii_db):
             INSERT INTO ledger (company_id, entity_id, event_type, data)
             VALUES (CAST(:cid AS uuid), 'doc:1', 'doc.payment.received', CAST(:d AS json))
         """), {"cid": cid, "d": data})
+    with sql_ascii_db.begin() as conn:
         _run_upgrade(conn, "n8o9p0q1r2s3_backfill_payment_date")
 
     with sql_ascii_db.connect() as conn:

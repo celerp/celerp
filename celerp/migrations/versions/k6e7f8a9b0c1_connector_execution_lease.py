@@ -13,6 +13,7 @@ Revises: j5d6e7f8a9b0
 """
 import sqlalchemy as sa
 from alembic import op
+from celerp.migrations._locks import lock_tables
 
 revision = "k6e7f8a9b0c1"
 down_revision = "j5d6e7f8a9b0"
@@ -83,6 +84,7 @@ def upgrade() -> None:
     # first run after its last reset (runs before that belong to an earlier connection):
     # that run is its completed first sync. Connectors without a reviewed first sync have
     # nothing to review.
+    lock_tables(bind, "connector_first_syncs")
     bind.execute(sa.text("""
         INSERT INTO connector_first_syncs (company_id, connector, state, started_at)
         SELECT c.company_id, c.connector,

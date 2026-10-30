@@ -15,32 +15,10 @@ import pytest
 from test_helpers import provision_company_books
 
 
-@contextlib.contextmanager
 def ungated_connector_takes(*paths: str):
-    """Yields a set that, once the block ends, holds the sites in files whose path contains one
-    of ``paths`` that took a connection row or a first-sync record inside the block without its
-    company's lock, as the lock checker's census counts them: empty when every take was
-    company-gated or a leaf (its transaction waited on nothing after it, so it held the row
-    while waiting on nothing). Sites recorded before the block are set aside for it and put
-    back after, so one an earlier test recorded still counts here."""
-    recorder = sys.modules["lock_rank"].RECORDER
-    classes = recorder.classes
-    rows = ("row:connector_configs", "row:connector_first_syncs")
-    sets = ("ungated_sites", "leaf_sites", "counted_sites")
-    kept = {(c, k): classes[c].pop(k, set()) for c in rows if c in classes for k in sets}
-    found: set[str] = set()
-    try:
-        yield found
-    finally:
-        # A take whose transaction is still open when the block ends is not yet a leaf.
-        open_sites = {s for leaves in recorder.leaves.values() for _, _, sites in leaves for s in sites}
-        for c in rows:
-            info = classes.get(c, {})
-            leaves = set(info.get("leaf_sites", ())) - set(info.get("counted_sites", ())) - open_sites
-            found.update(s for s in info.get("ungated_sites", ()) if s not in leaves
-                         and any(path in s.split(":", 1)[0] for path in paths))
-        for (c, k), sites in kept.items():
-            classes[c].setdefault(k, set()).update(sites)
+    """The lock checker's ungated takes of a connection row or a first-sync record inside the
+    block (``lock_rank.ungated_takes``)."""
+    return sys.modules["lock_rank"].ungated_takes(("row:connector_configs", "row:connector_first_syncs"), *paths)
 
 
 async def seed_company(session, name: str = "Store") -> uuid.UUID:

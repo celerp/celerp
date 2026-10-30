@@ -6,6 +6,7 @@ Revision ID: f0y1z2a3b4c5
 Revises: e9x0y1z2a3b4
 """
 from alembic import op
+from celerp.migrations._locks import lock_tables
 import sqlalchemy as sa
 
 revision = "f0y1z2a3b4c5"
@@ -18,6 +19,7 @@ def upgrade() -> None:
     # A key issued before this revision keeps the name its client was shown until now: the
     # company the firm's copy was opened from, else the copy's own name.
     op.add_column("company_peer_grants", sa.Column("firm", sa.String(160), nullable=True))
+    lock_tables(op.get_bind(), "company_peer_grants")
     op.execute(
         "UPDATE company_peer_grants g SET firm = LEFT(COALESCE(NULLIF(TRIM("
         "CAST(c.settings AS jsonb) -> 'restored_backup' ->> 'opened_from'), ''), c.name), 160) "

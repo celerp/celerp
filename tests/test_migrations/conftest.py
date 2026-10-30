@@ -30,6 +30,17 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 
 
+@pytest.fixture(autouse=True)
+def _no_revision_takes_a_row_outside_its_table_lock():
+    """Every migration test is a census of the revisions it runs: a data step that takes a
+    company's row the lock checker counts (outside the company's lock, its table not locked
+    EXCLUSIVE, and not a leaf) fails the test. A revision can run inside a serving process
+    (System Recovery), so such a take can meet a request holding that company's lock."""
+    with sys.modules["lock_rank"].ungated_takes(None, "celerp/migrations/") as found:
+        yield
+    assert sorted(found) == [], "revision row takes outside lock_tables:\n" + "\n".join(sorted(found))
+
+
 @contextlib.contextmanager
 def _under_migration_key(engine):
     """A connection in a transaction, under the migration key held on an autocommit

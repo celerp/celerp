@@ -20,6 +20,7 @@ overrule it.
 from __future__ import annotations
 
 from alembic import op
+from celerp.migrations._locks import lock_tables
 import sqlalchemy as sa
 
 revision = "d5e6f7a8b9c0"
@@ -38,6 +39,7 @@ def _rename(old: str, new: str) -> None:
     # assuming public, so the guard is correct for any schema this runs in.
     if not conn.execute(sa.text("SELECT to_regclass('accounts')")).scalar():
         return  # Nothing to rename on a fresh install
+    lock_tables(conn, "accounts")
     conn.execute(
         sa.text("UPDATE accounts SET name = :new WHERE code = :code AND name = :old"),
         {"new": new, "old": old, "code": _CODE},

@@ -14,6 +14,7 @@ Revises: g1z2a3b4c5d6
 """
 import sqlalchemy as sa
 from alembic import op
+from celerp.migrations._locks import lock_tables
 from sqlalchemy import inspect
 
 revision = "h2a3b4c5d6e7"
@@ -36,6 +37,7 @@ def upgrade() -> None:
     )
     op.create_index("ix_ai_usage_company_id", "ai_usage", ["company_id"])
     inspector = inspect(op.get_bind())
+    lock_tables(op.get_bind(), "ai_usage")
     if inspector.has_table("ai_messages") and inspector.has_table("ai_conversations"):
         op.execute(
             "INSERT INTO ai_usage (id, company_id, user_id, operation_id, credits, pending, created_at) "

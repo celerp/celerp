@@ -11,13 +11,12 @@ can hold one the data step then waits for.
 from __future__ import annotations
 
 import sqlalchemy as sa
-from alembic import op
 
 
-def lock_tables(*tables: str) -> None:
-    """Lock ``tables`` EXCLUSIVE for the rest of the revision's transaction, named in sorted
-    order, before the data step's first read of them. A no-op off PostgreSQL."""
-    bind = op.get_bind()
+def lock_tables(bind, *tables: str) -> None:
+    """Lock ``tables`` EXCLUSIVE on the revision's connection ``bind`` for the rest of its
+    transaction, named in sorted order, before the data step's first read of them. A no-op
+    off PostgreSQL."""
     if bind.dialect.name != "postgresql":
         return
     names = ", ".join(bind.dialect.identifier_preparer.quote(t) for t in sorted(set(tables)))
