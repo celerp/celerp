@@ -18,6 +18,7 @@ from celerp.services.document_lines import (
     MemoReturn,
     assert_document_item_uniqueness,
     assert_drawn_lines_authorized,
+    assert_memo_draws_kept,
     assert_line_holds_respected,
     assert_new_references_eligible,
     assert_protected_lines_kept,
@@ -650,6 +651,10 @@ async def emit_event(
             await assert_drawn_lines_authorized(
                 session, kwargs.get("company_id"), kwargs.get("entity_id"), stored, sets, memo_draw=memo_draw,
             )
+            # A memo line whose goods are on an invoice keeps what was invoiced of it, and the
+            # memo its customer, until they come back. Before the held-line rule below, so a
+            # partly drawn line is refused with the step that works.
+            await assert_memo_draws_kept(session, kwargs.get("company_id"), stored, sets)
         if line_set is not None:
             # A line that holds, shipped or received stock keeps its id, its item and (once
             # shipped or received) its position.

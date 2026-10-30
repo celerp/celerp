@@ -59,7 +59,8 @@ from celerp.services.line_measures import (FULL, floor_to_unit, line_label, prop
 from celerp.services.document_lines import (
     DrawnLine, MemoDraw, MemoReturn, assert_line_holds_respected, assert_new_references_eligible,
     line_id_counts, line_item_id, linked_items, memo_out_refusal, out_on_another_memo, received_line_index,
-    converted_from_memo, memo_of_line, new_line_id, refuse_drawn_line_action, shipped_elsewhere, strip_line_ids,
+    converted_from_memo, memo_of_line, new_line_id, refuse_drawn_line_action, refuse_drawn_memo_line_action,
+    shipped_elsewhere, strip_line_ids,
 )
 from celerp.services.attachments import attach_file, storing
 from celerp.services.csv_export import csv_stream, resolve_export_cols
@@ -1582,6 +1583,99 @@ async def _line_holds(session: AsyncSession, company_id, owner_id: str) -> dict[
     return holds
 
 
+async def _current_doc_numbers(session: AsyncSession, company_id, ids) -> dict[str, tuple[str, str | None]]:
+    """The number and status each document in *ids* has now, by id. A number recorded when a
+    memo was drawn goes stale on renumber and finalize, so readers show this one."""
+    ids = {i for i in ids if i}
+    if not ids:
+        return {}
+    rows = (await session.execute(select(Projection.entity_id, Projection.state).where(
+        Projection.company_id == company_id, Projection.entity_id.in_(ids)))).all()
+    return {eid: (str(st.get("ref_id") or st.get("doc_number") or eid), st.get("status")) for eid, st in rows}
+
+
+async def _numbers_or_recorded(session: AsyncSession, company_id, ids) -> dict[str, tuple[str, str | None]]:
+    """_current_doc_numbers, or nothing when it cannot be read, so each reader shows the number
+    it recorded and no status."""
+    try:
+        return await _current_doc_numbers(session, company_id, ids)
+    except Exception:
+        return {}
+
+
+async def _drawn_on(session: AsyncSession, company_id, state: dict) -> list[tuple[str, str | None]]:
+    """The invoices holding goods drawn from a memo *state* that have not come back (a take
+    with unreturned lines, memo_draws), in draw order, by current number and status; empty
+    for any other document. Whether a take counts is the memo's own record; the status only
+    names a blocking draft."""
+    if state.get("doc_type") != "memo":
+        return []
+    takes = [t for t in memo_draws(state) if t["lines"]]
+    current = await _current_doc_numbers(session, company_id, {t["invoice_id"] for t in takes})
+    return [current.get(t["invoice_id"], (t.get("doc_number") or t["invoice_id"], None)) for t in takes]
+
+
+def _take_label(number: str, status: str | None) -> str:
+    if status == "draft":
+        return f"Invoiced (draft) {number}"
+    return f"Sold {number}" if status else number
+
+
+async def _attach_memo_takes(session: AsyncSession, company_id, doc: dict, state: dict) -> None:
+    """Add to a memo response what its draws left: ``memo_fixed_amounts``, and on each memo line
+    the invoices holding its drawn units (``invoiced_on``: id, current number and status,
+    quantity), named in its ``shipped_label`` beside On Memo for the units still out."""
+    takes = memo_draws(state)
+    current = await _numbers_or_recorded(session, company_id, {t["invoice_id"] for t in takes})
+
+    def number(take: dict) -> str:
+        return current.get(take["invoice_id"], (take.get("doc_number") or take["invoice_id"], None))[0]
+
+    lines = list(doc.get("line_items") or [])
+    out = {li.get("line_id"): float(li.get("out_quantity") or 0) for li in lines if isinstance(li, dict)}
+    fixed = memo_fixed_amounts(state, out)
+    by_id = {t["invoice_id"]: t for t in takes}
+    doc["memo_fixed_amounts"] = {**fixed, "takes": [{**t, "doc_number": number(by_id[t["invoice_id"]])}
+                                                    for t in fixed["takes"]]}
+    for i, line in enumerate(lines):
+        if not isinstance(line, dict):
+            continue
+        held = [{"invoice_id": t["invoice_id"], "doc_number": number(t),
+                 "status": current.get(t["invoice_id"], (None, None))[1], "quantity": ln["quantity"]}
+                for t in takes for ln in t["lines"] if ln["memo_line_id"] == line.get("line_id")]
+        if not held:
+            continue
+        labels = (["On Memo"] if out.get(line.get("line_id")) else []) + [
+            _take_label(h["doc_number"], h["status"]) for h in held]
+        lines[i] = {**line, "invoiced_on": held, "shipped_label": ", ".join(labels)}
+    doc["line_items"] = lines
+
+
+async def _memo_fixed_taken(session: AsyncSession, company_id, entity_id: str, state: dict) -> list[dict]:
+    """The fixed amounts an invoice took from each memo its lines bill (memo_of_line), one entry
+    per unreleased take onto it: ``{memo_id, memo_number, shipping, discount, tax}``."""
+    legacy = await converted_from_memo(session, company_id, entity_id, state)
+    recorded = {(li.get("drawn_from") or {}).get("memo_id"): (li.get("drawn_from") or {}).get("memo_number")
+                for li in state.get("line_items") or [] if isinstance(li, dict)}
+    memo_ids = {memo_of_line(li, legacy) for li in state.get("line_items") or [] if isinstance(li, dict)}
+    memo_ids.discard(None)
+    if legacy:
+        memo_ids.add(legacy)
+    if not memo_ids:
+        return []
+    memos = (await session.execute(select(Projection).where(
+        Projection.company_id == company_id, Projection.entity_id.in_(memo_ids)))).scalars().all()
+    current = await _numbers_or_recorded(session, company_id, memo_ids)
+
+    def number(m: Projection) -> str:
+        return current.get(m.entity_id, (recorded.get(m.entity_id) or _ref(m), None))[0]
+
+    return [{"memo_id": m.entity_id, "memo_number": number(m),
+             "shipping": t["shipping"], "discount": t["discount"], "tax": t["tax"]}
+            for m in sorted(memos, key=lambda m: m.entity_id) for t in memo_draws(m.state)
+            if t["invoice_id"] == entity_id]
+
+
 @router.get("/{entity_id}", dependencies=[require_permission("view_documents")], openapi_extra={"x-celerp-agent": True})
 async def get_doc(entity_id: str, company_id: str = Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
     row = await _get_doc(session, company_id, entity_id)
@@ -1618,6 +1712,14 @@ async def get_doc(entity_id: str, company_id: str = Depends(get_current_company_
             if i < len(lines):
                 lines[i] = {**lines[i], "out_quantity": qty}
         doc["line_items"] = lines
+        await _attach_memo_takes(session, company_id, doc, row.state)
+    elif doc.get("doc_type") == "invoice":
+        try:
+            if taken := await _memo_fixed_taken(session, company_id, entity_id, row.state):
+                doc["memo_fixed_taken"] = taken
+        except Exception:
+            # The note degrades to nothing, as the memo labels do; the stored totals stand.
+            doc.pop("memo_fixed_taken", None)
     doc["line_holds"] = await _line_holds(session, company_id, entity_id)
     returnable = doc.get("status") in SUPPLIER_RETURN_STATUSES.get(doc.get("doc_type"), ())
     if doc.get("doc_type") in ("bill", "consignment_in", "purchase_order") and (
@@ -2678,6 +2780,13 @@ async def void_document(entity_id: str, payload: DocVoidBody, company_id: str, u
             "docs.void_already_void",
             "This document is already void. To bring it back, unvoid it."))
     _reject_if_closed(row.state, "void it")
+    if drawn := await _drawn_on(session, company_id, row.state):
+        memo = _ref(row)
+        raise HTTPException(status_code=409, detail=refusal(
+            "docs.memo_void_while_drawn",
+            f"Memo {memo} cannot be voided while its products are on invoice {drawn[0][0]}. Send them back to "
+            "the memo or void that invoice first. To finish a memo whose products sold, close it instead.",
+            memo=memo, invoice=drawn[0][0]))
     if row.state.get("doc_type") == "credit_note":
         await refuse_on_void_invoice(session, company_id, row.state)
     if row.state.get("doc_type") == "debit_note":
@@ -3238,6 +3347,13 @@ async def close_doc(entity_id: str, payload: DocCloseBody, company_id: str = Dep
             "docs.close_goods_out",
             f"This memo cannot be closed while {pending} product(s) are still out or held on it. "
             "Sell or return them first.", count=pending))
+    if draft := next((number for number, status in await _drawn_on(session, company_id, state)
+                      if status == "draft"), None):
+        memo = _ref(row)
+        raise HTTPException(status_code=409, detail=refusal(
+            "docs.close_drawn_draft",
+            f"Memo {memo} can't be closed while draft invoice {draft} holds its products. Finalize that "
+            "invoice or send them back to the memo, then close the memo.", memo=memo, invoice=draft))
     # A fully paid memo has already settled: bulk payment brought it to "paid" and there is
     # nothing left to resolve by closing. Read status from the locked fresh row above, so a
     # payment that committed after any earlier unlocked read is seen here; refuse rather than
@@ -3349,6 +3465,13 @@ async def revert_doc_to_draft(entity_id: str, payload: DocRevertBody, company_id
     # Block revert when any line item has been fulfilled. Fulfilled items are tracked in
     # state["fulfilled_items"]; each entry with a non-null item_id is an inventory item that is
     # now out on memo or sold.
+    if drawn := await _drawn_on(session, company_id, state):
+        memo = _ref(row)
+        raise HTTPException(status_code=409, detail=refusal(
+            "docs.memo_revert_while_drawn",
+            f"Memo {memo} can't go back to Draft while its products are on invoice {drawn[0][0]}. Send them "
+            "back to the memo or void that invoice first. To finish a memo whose products sold, close it instead.",
+            memo=memo, invoice=drawn[0][0]))
     fulfilled_items = [
         fi for fi in (state.get("fulfilled_items") or [])
         if fi.get("item_id") is not None
@@ -3780,6 +3903,13 @@ async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
         replay.was_deduped = True
         return replay, float((replay.data or {}).get("amount") or 0)
     doc_state = dict(row.state)
+    # Before every status check, so a memo in any payable or paid status says why.
+    if drawn := await _drawn_on(session, company_id, doc_state):
+        memo = _ref(row)
+        raise HTTPException(status_code=409, detail=refusal(
+            "docs.memo_payment_while_drawn",
+            f"Memo {memo} can't take a payment while its products are on invoice {drawn[0][0]}. Record the "
+            "payment on that invoice instead.", memo=memo, invoice=drawn[0][0]))
     if doc_state.get("doc_type") in NON_FINANCIAL_DOC_TYPES:
         raise HTTPException(status_code=409, detail=t("documents.err_no_money_doc"))
     if doc_state.get("status") not in PAYABLE_STATUSES:
@@ -4870,6 +5000,8 @@ async def bulk_payment(payload: BulkPaymentBody, company_id: str = Depends(get_c
         applied_d = round_money(applied, currency)
         allocations.append({"doc_id": doc_id, "amount": to_stored_float(applied_d)})
         remaining = round_money(max(Decimal(0), remaining - applied_d), currency)
+    if not allocations:
+        raise HTTPException(status_code=409, detail=skipped[0]["reason"])
 
     result = {
         "allocations": allocations,
@@ -10461,6 +10593,9 @@ async def _line_action(session, company_id, user, owner: Projection, action: str
     removes = action == "back_to_memo"
     if not removes:
         refuse_drawn_line_action(owner.state, indices)
+    if owner.state.get("doc_type") == "memo" and action in ("fulfill", "reserve", "set-available", "revert"):
+        numbers = await _current_doc_numbers(session, company_id, {t["invoice_id"] for t in memo_draws(owner.state)})
+        refuse_drawn_memo_line_action(owner.state, indices, {i: n for i, (n, _) in numbers.items()})
     result = await run(indices)
     # Read after the action, which gives lines from an older version their ids; Back to memo
     # takes its lines off, and only drawn lines, which always have ids, go back.

@@ -195,6 +195,93 @@ def refuse_drawn_line_action(state: dict, indices) -> None:
             raise _drawn_refusal("docs.drawn_line_back_to_memo", lines[i])
 
 
+# What a memo line an invoice holds goods of keeps until they come back: what the take billed.
+_MEMO_DRAWN_MEASURES = ("quantity", "weight", "pieces", "unit_price", "discount_pct", "tax_rate")
+
+
+def _memo_takes_by_line(state: dict) -> dict[str, list[tuple[dict, dict]]]:
+    """The unreturned take lines of a memo *state* (memo_draws), with their take, by memo line id."""
+    if state.get("doc_type") != "memo":
+        return {}
+    from celerp_docs.doc_money import memo_draws
+
+    held: dict[str, list[tuple[dict, dict]]] = {}
+    for take in memo_draws(state):
+        for ln in take["lines"]:
+            held.setdefault(ln["memo_line_id"], []).append((take, ln))
+    return held
+
+
+def _memo_line_drawn(line: dict, takes: list[tuple[dict, dict]], numbers: Mapping[str, str]) -> HTTPException:
+    take, _ = takes[0]
+    invoice = numbers.get(take["invoice_id"]) or str(take.get("doc_number") or take["invoice_id"])
+    quantity = f'{sum(float(ln["quantity"]) for t, ln in takes if t["invoice_id"] == take["invoice_id"]):g}'
+    product = str(line.get("sku") or line.get("name") or line.get("description") or "")
+    return HTTPException(status_code=409, detail=refusal(
+        "docs.memo_line_drawn",
+        f"{quantity} of {product} on this line are on invoice {invoice}, so the line can't be changed or removed. "
+        f"To change it, send them back to the memo from {invoice} with Back to memo. Products already sold stay "
+        "on their invoice.", quantity=quantity, product=product, invoice=invoice))
+
+
+async def _invoice_numbers(session, company_id, takes) -> dict[str, str]:
+    ids = {take["invoice_id"] for take, _ in takes}
+    rows = (await session.execute(select(Projection.entity_id, Projection.state).where(
+        Projection.company_id == company_id, Projection.entity_id.in_(ids)))).all() if ids else []
+    return {eid: str(st.get("ref_id") or st.get("doc_number") or eid) for eid, st in rows}
+
+
+async def assert_memo_draws_kept(session, company_id, stored: dict, incoming: dict) -> None:
+    """Refuse a write over a memo whose goods are partly on invoices (``memo_draws``) that drops,
+    moves or changes what was invoiced of a memo line an unreturned take names (its id, position,
+    measures, price, discount and taxes; its item only to a part split off its own), or changes
+    the customer (409 ``docs.memo_line_drawn`` / ``docs.memo_contact_drawn``). ``incoming`` is as
+    for assert_drawn_lines_authorized. Lines no take names, and the description, stay editable."""
+    held = _memo_takes_by_line(stored)
+    if not held:
+        return
+    takes = [pair for pairs in held.values() for pair in pairs]
+    if "contact_id" in incoming and incoming["contact_id"] != stored.get("contact_id"):
+        numbers = await _invoice_numbers(session, company_id, takes)
+        take = takes[0][0]
+        memo = str(stored.get("ref_id") or stored.get("doc_number") or "")
+        invoice = numbers.get(take["invoice_id"]) or str(take.get("doc_number") or take["invoice_id"])
+        contact = str(stored.get("contact_name") or stored.get("contact_id") or "")
+        raise HTTPException(status_code=409, detail=refusal(
+            "docs.memo_contact_drawn",
+            f"Products from memo {memo} are on invoice {invoice}, made out to {contact}. Send them back to the "
+            "memo before you change the customer.", memo=memo, invoice=invoice, contact=contact))
+    line_set = incoming.get("line_items")
+    if line_set is None:
+        return
+    new = {li.get("line_id"): (n, li) for n, li in enumerate(line_set) if isinstance(li, dict)}
+    for index, old in enumerate(stored.get("line_items") or []):
+        if not isinstance(old, dict) or old.get("line_id") not in held:
+            continue
+        n, line = new.get(old["line_id"], (None, None))
+        kept = (line is not None and n == index and line.get("taxes") == old.get("taxes")
+                and all(_measure(line, k) == _measure(old, k) for k in _MEMO_DRAWN_MEASURES))
+        if kept and line_item_id(line) != line_item_id(old):
+            part = await session.get(Projection, (company_id, line_item_id(line)))
+            kept = part is not None and (part.state or {}).get("split_from") == line_item_id(old)
+        if not kept:
+            raise _memo_line_drawn(old, held[old["line_id"]], await _invoice_numbers(session, company_id, takes))
+
+
+def refuse_drawn_memo_line_action(state: dict, indices, numbers: Mapping[str, str] | None = None) -> None:
+    """Refuse a line action (ship, reserve, set available, take back) on a memo line every unit
+    of which is on invoices: the memo holds none of its goods, and the way to them is Back to
+    memo on the invoice (409 ``docs.memo_line_drawn``). A partly drawn line passes, and the action
+    applies to what the memo still has. *numbers*: current invoice numbers by id."""
+    held = _memo_takes_by_line(state)
+    lines = state.get("line_items") or []
+    for i in indices:
+        line = lines[i] if 0 <= i < len(lines) and isinstance(lines[i], dict) else None
+        takes = held.get(line.get("line_id")) if line else None
+        if takes and sum(float(ln["quantity"]) for _, ln in takes) >= float(line.get("quantity") or 0):
+            raise _memo_line_drawn(line, takes, numbers or {})
+
+
 def _holds_receipt(line: dict, entry: dict, *, in_place: bool = False) -> bool:
     """Whether ``line`` holds the goods a receipt entry names: its item (by whichever key its
     writer used, line_item_id) or SKU. An entry naming
