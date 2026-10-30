@@ -212,6 +212,7 @@
   "acct.err_fx_rate_invalid": "{line}: the exchange rate isn't valid. Enter a number greater than zero, for example 35.5.",
   "acct.err_je_two_lines": "A journal entry needs at least two lines: one debit and one credit. Add another line and post again.",
   "acct.err_je_negative": "Debit and credit amounts can't be negative. Enter the amount as a positive number on the other side instead.",
+  "acct.err_je_bank_currency": "Account {account} is a bank account kept in {currency}. Enter that line in {currency} with its exchange rate, then post the entry.",
   "acct.err_je_both_sides": "Each line can have a debit or a credit, not both. Split it into two lines if you need both.",
   "acct.err_je_no_amount": "One of the lines has no amount. Enter a debit or credit amount, or remove the empty line.",
   "acct.err_je_unbalanced_debit": "This entry doesn't balance in {base}: debits are {debits} and credits are {credits}. Add {gap} to the debit side, or correct the amounts, then post again.",

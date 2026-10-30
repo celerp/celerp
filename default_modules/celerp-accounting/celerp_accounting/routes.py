@@ -1691,6 +1691,15 @@ async def create_manual_journal_entry(
         )
     if total_debit == 0:
         raise HTTPException(status_code=422, detail=t("acct.err_je_zero"))
+    # A line on a bank account kept in another currency than the books' carries its
+    # amount in that currency, so the account's reconciliation can read it.
+    from celerp.services.journal_accounts import bank_currencies
+    kept_in = await bank_currencies(session, company_id)
+    for line in entries:
+        currency = kept_in.get(line["account"])
+        if currency and currency != base and line.get("fx_currency") != currency:
+            raise HTTPException(status_code=422, detail=t(
+                "acct.err_je_bank_currency", account=line["account"], currency=currency))
 
     je_id = f"je:manual:{uuid.uuid4()}"
     created = await emit_event(

@@ -1125,6 +1125,17 @@ def payment_amounts(*, amount: float, base_currency: str, doc_rate: float, settl
     return _piece(doc_rate), _piece(settlement_rate)
 
 
+def bank_fx_fields(bank_fx: tuple[str, float, float] | None, *, outflow: bool) -> dict:
+    """The fx fields of a bank line moving *bank_fx* (currency, amount, rate to the books)
+    in the bank account's own currency, out of the account with *outflow*; none when the
+    account is kept in the books' currency (*bank_fx* None)."""
+    if bank_fx is None:
+        return {}
+    currency, amount, rate = bank_fx
+    return {"fx_currency": currency, "fx_rate": rate,
+            "fx_debit": None if outflow else amount, "fx_credit": amount if outflow else None}
+
+
 def payment_lines(doc_type: str, control, bank: dict, ledger_amount: float, bank_amount: float, *,
                   returning: bool = False, bank_fx: tuple[str, float, float] | None = None) -> list[dict]:
     """The two lines a payment posts, or with *returning* the two that give it back:
@@ -1134,12 +1145,8 @@ def payment_lines(doc_type: str, control, bank: dict, ledger_amount: float, bank
     leaves the bank; any other payment brings it in. Giving back moves it the other way.
     *bank_fx* (currency, amount, rate) is the amount the bank line moves in the bank
     account's own currency, when that is not the books' (``payment_bank_fx``)."""
-    bank_line = {**bank, "debit": 0.0, "credit": 0.0}
     outflow = (doc_type in _PURCHASE_TYPES or doc_type == "credit_note") != returning
-    if bank_fx is not None:
-        currency, amount, rate = bank_fx
-        bank_line.update({"fx_currency": currency, "fx_rate": rate,
-                          "fx_debit": None if outflow else amount, "fx_credit": amount if outflow else None})
+    bank_line = {**bank, "debit": 0.0, "credit": 0.0, **bank_fx_fields(bank_fx, outflow=outflow)}
     if outflow:
         return [control(debit=ledger_amount), {**bank_line, "credit": bank_amount}]
     return [{**bank_line, "debit": bank_amount}, control(credit=ledger_amount)]
@@ -1285,9 +1292,21 @@ async def create_for_online_fees(
         return None
     amount = to_stored_float(abs(converted))
     if converted:
+        # The bank line carries the fees in the account's own currency when that is
+        # not the books': read off the provider's figure when the fees are in it,
+        # else back through the payment's own rate.
+        bank_currency = (await bank_currencies(session, company_id)).get(bank)
+        bank_fx = None
+        if bank_currency == fee_currency != base:
+            bank_fx = (fee_currency, to_stored_float(round_money(abs(running), fee_currency)), float(rate))
+        elif bank_currency == paid_currency != base:
+            paid_rate = checked_exchange_rate(payment["conversion_rate"])
+            bank_fx = (paid_currency, to_stored_float(round_money(abs(converted) / paid_rate, paid_currency)),
+                       float(paid_rate))
         entries.append({"account": bank,
                         "debit": amount if converted < 0 else 0.0,
-                        "credit": amount if converted > 0 else 0.0})
+                        "credit": amount if converted > 0 else 0.0,
+                        **bank_fx_fields(bank_fx, outflow=converted > 0)})
     company = await session.get(Company, company_id)
     original_day = business_date_at(occurred_at, ((company.settings if company else None) or {}).get("timezone"))
     day = await correction_day(session, company_id, original_day) or original_day
