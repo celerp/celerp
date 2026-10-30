@@ -34,8 +34,8 @@ from celerp.models.projections import Projection
 from celerp.inventory_codes import MAX_SCAN_CODE_LEN, PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES
 from celerp_docs.consignment_buy import bought_parcels, bought_receipt_lots, buy_consignment
 from celerp_docs.doc_money import (LIST_TOTAL_FIELDS, document_money, document_terms, drawn_line_money, fixed_discount,
-                                   list_totals_differ, memo_draws, memo_fixed_amounts, money_from_lines,
-                                   refuse_malformed_taxes, refuse_unset_line_tax, released_header_money,
+                                   list_totals_differ, memo_draws, memo_fixed_amounts, memo_tax_rate_money,
+                                   money_from_lines, refuse_malformed_taxes, refuse_unset_line_tax, released_header_money,
                                    unrated_tax)
 from celerp_docs.doc_projections import RESTORE_POINT, UNISSUED_STATUSES, list_lines_and_totals, payment_status
 from celerp_docs.taxes import TaxApplication
@@ -454,6 +454,12 @@ class DocCloseBody(BaseModel):
 class DocReopenBody(BaseModel):
     reason: str | None = None
     idempotency_key: str | None = None
+
+
+class MemoTaxRateBody(BaseModel):
+    tax_rate: FiniteFloat = Field(gt=0, le=100)
+    expected_version: int
+    dry_run: bool = False
 
 
 class DocRevertBody(BaseModel):
@@ -3401,6 +3407,59 @@ async def reopen_doc(entity_id: str, payload: DocReopenBody, company_id: str = D
     )
     await session.commit()
     return {"event_id": entry.id}
+
+
+def _memo_rate_problems(row: Projection) -> list[dict]:
+    """What stops a tax rate being set on an issued memo, in the draw's order (draw_problems):
+    a status goods cannot be invoiced from (alone), a payment, no tax amount without a rate left."""
+    memo, memo_ref = row.state, _ref(row)
+    no_unrated_tax = refusal(
+        "docs.memo_rate_no_unrated_tax",
+        f"Memo {memo_ref} has no tax amount without a rate left to invoice, so its tax rate stays as issued.",
+        memo=memo_ref)
+    if memo.get("doc_type") != "memo" or memo.get("status") not in MEMO_DRAW_STATUSES:
+        return [no_unrated_tax]
+    problems = []
+    if paid := _memo_payment_refusal(row, "docs.memo_rate_paid", "set its tax rate"):
+        problems.append(paid)
+    if not memo_fixed_amounts(memo, {})["tax"]:
+        problems.append(no_unrated_tax)
+    return problems
+
+
+@router.post("/{entity_id}/tax-rate")
+async def set_memo_tax_rate(
+    entity_id: str,
+    body: MemoTaxRateBody,
+    company_id: str = Depends(get_current_company_id),
+    _: None = require_permission("edit_documents"),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Work out the tax of an issued memo, entered as an amount with no rate, at a rate instead
+    (memo_tax_rate_money), so part of the memo can be invoiced. With ``dry_run``, the figures it
+    would store, writing nothing and holding no lock."""
+    if not body.dry_run:
+        # Company, then the memo: the order every writer of these rows takes.
+        await locked_company(session, company_id)
+    row = await _get_doc(session, company_id, entity_id, for_update=not body.dry_run)
+    if row.version != body.expected_version:
+        raise _stale_doc("documents.err_doc_changed")
+    if problems := _memo_rate_problems(row):
+        raise HTTPException(status_code=409, detail={**problems[0], "also": problems[1:]})
+    money = memo_tax_rate_money(row.state, body.tax_rate)
+    figures = {k: money[k] for k in ("tax", "total", "subtotal", "discount_amount")}
+    if body.dry_run:
+        return figures
+    previous = row.state.get("tax")
+    fields = {k: {"old": row.state.get(k), "new": v} for k, v in {"tax_rate": body.tax_rate, **figures}.items()
+              if row.state.get(k) != v}
+    entry = await emit_event(
+        session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.updated",
+        data={"fields_changed": fields}, actor_id=user.id, location_id=None, source="memo_tax_rate",
+        idempotency_key=str(uuid.uuid4()), metadata_={})
+    await session.commit()
+    return {"event_id": entry.id, "version": entry.id, "tax_rate": body.tax_rate, "previous_tax": previous, **figures}
 
 
 @router.post("/{entity_id}/revert-to-draft")
@@ -11135,6 +11194,16 @@ def _memo_payments_text(state: dict) -> str:
                      if p.get("status", "active") == "active" and float(p.get("amount") or 0) > 0)
 
 
+def _memo_payment_refusal(row: Projection, key: str, then: str) -> dict | None:
+    """The refusal of a step that must wait until nothing is paid on the memo; None when nothing is."""
+    memo, memo_ref = row.state, _ref(row)
+    if float(memo.get("amount_paid") or 0) <= 0:
+        return None
+    paid, payments = _money_text(memo.get("amount_paid")), _memo_payments_text(memo)
+    return refusal(key, f"Memo {memo_ref} has {paid} paid on it ({payments}). Refund or void what was paid on the "
+                        f"memo first, then {then}.", memo=memo_ref, amount=paid, payments=payments)
+
+
 def _terms_text(terms: dict) -> str:
     """Document terms (document_terms) as a phrase."""
     parts = []
@@ -11173,13 +11242,8 @@ def draw_problems(snap: _DrawSnapshot, body: InvoiceLinesRequest, *,
     if memo.get("status") not in MEMO_DRAW_STATUSES:
         key = "documents.err_memo_nothing_out" if memo.get("status") == "converted" else "documents.err_memo_issue_first"
         return [*problems, refusal(key, t(key))], []
-    if float(memo.get("amount_paid") or 0) > 0:
-        paid = _money_text(memo.get("amount_paid"))
-        problems.append(refusal(
-            "docs.draw_memo_has_payment",
-            f"Memo {memo_ref} has {paid} paid on it ({_memo_payments_text(memo)}). Refund or void what was paid "
-            "on the memo first, then invoice its products.",
-            memo=memo_ref, amount=paid, payments=_memo_payments_text(memo)))
+    if paid := _memo_payment_refusal(snap.memo, "docs.draw_memo_has_payment", "invoice its products"):
+        problems.append(paid)
 
     lines = memo.get("line_items") or []
     index_of = {li.get("line_id"): i for i, li in enumerate(lines) if li.get("line_id")}
