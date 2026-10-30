@@ -30,6 +30,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import functools
+import itertools
 import json
 import os
 import weakref
@@ -197,6 +198,9 @@ def _copy_state(value):
     return type(value)(value)
 
 
+_FLOW_IDS = itertools.count(1)
+
+
 @dataclass
 class Recorder:
     held: dict[int, list[Lock]] = field(default_factory=lambda: defaultdict(list))
@@ -212,6 +216,11 @@ class Recorder:
     # The connections each task has used, and the task that last used each connection.
     task_conns: weakref.WeakKeyDictionary = field(default_factory=weakref.WeakKeyDictionary)
     conn_task: dict[int, weakref.ref] = field(default_factory=dict)
+    # Connections several flows use at once: the test session's one connection carries the
+    # request, AI job and lifecycle sessions, which production runs on connections of their
+    # own. On one of these each task is its own transaction, keyed (connection, flow).
+    shared: set[int] = field(default_factory=set)
+    flows: weakref.WeakKeyDictionary = field(default_factory=weakref.WeakKeyDictionary)
 
     # Per transaction (connection): what it holds by (class, key) -> strengths, the
     # strengths of its explicit locks per class, and the last explicit key per class.
@@ -239,10 +248,37 @@ class Recorder:
     def _transaction_state(self) -> tuple:
         return self.held, self.taken, self.explicit, self.last_key, self.own, self.company_rows, self.rows
 
+    def flow(self, conn_key: int):
+        """The transaction a statement on ``conn_key`` belongs to: the connection's, or on a
+        shared connection the running task's."""
+        if conn_key not in self.shared:
+            return conn_key
+        try:
+            task = asyncio.current_task()
+        except RuntimeError:
+            task = None
+        if task is None:
+            return conn_key
+        if task not in self.flows:
+            self.flows[task] = next(_FLOW_IDS)
+        return conn_key, self.flows[task]
+
     def end(self, conn_key: int) -> None:
+        """The connection's transaction ended: so did every flow's on it."""
+        states = (*self._transaction_state(), self.savepoints, self.leaves)
+        for key in [k for k in {k for state in states for k in state}
+                    if isinstance(k, tuple) and k[0] == conn_key]:
+            self._end(key)
+        self._end(conn_key)
+
+    def end_flow(self, conn_key: int) -> None:
+        """A session's transaction on ``conn_key`` ended: the running flow's."""
+        self._end(self.flow(conn_key))
+
+    def _end(self, key) -> None:
         for state in (*self._transaction_state(), self.savepoints):
-            state.pop(conn_key, None)
-        for info, _, sites in self.leaves.pop(conn_key, ()):
+            state.pop(key, None)
+        for info, _, sites in self.leaves.pop(key, ()):
             info.setdefault("leaf_sites", set()).update(sites)
 
     def clear_transactions(self) -> None:
@@ -296,6 +332,7 @@ class Recorder:
         if head.startswith(("COMMIT", "ROLLBACK", "END")) and "SAVEPOINT" not in head and "TO " not in head:
             self.end(conn_key)
             return
+        conn_key = self.flow(conn_key)
         if self._savepoint(conn_key, statement.strip()):
             return
         try:
@@ -319,7 +356,7 @@ class Recorder:
         """The ORM is about to write ``table``'s row ``row`` (its primary key), which belongs
         to ``company``: the UPDATE or DELETE that names the row by its key alone is judged
         under that company."""
-        self.rows[conn_key][(table, str(row))] = str(company)
+        self.rows[self.flow(conn_key)][(table, str(row))] = str(company)
 
     def _own(self, conn_key: int, lock: Lock) -> bool:
         """R1: a row of a company this transaction inserted and has not committed. Nobody else
@@ -598,7 +635,7 @@ class Recorder:
         if task is None:
             return
         conns = self.task_conns.setdefault(task, set())
-        for other in sorted(conns - {conn_key}) if waits else ():
+        for other in sorted(conns - {conn_key}, key=str) if waits else ():
             ref = self.conn_task.get(other)
             if ref is None or ref() is not task:
                 continue
@@ -1261,7 +1298,10 @@ def install() -> None:
     def _closed(dbapi_connection, *_):
         # Postgres drops a closed connection's session locks; a later connection may reuse its id.
         RECORDER.end(id(dbapi_connection))
-        RECORDER.session_held.pop(id(dbapi_connection), None)
+        RECORDER.shared.discard(id(dbapi_connection))
+        for key in [k for k in RECORDER.session_held if k == id(dbapi_connection)
+                    or isinstance(k, tuple) and k[0] == id(dbapi_connection)]:
+            del RECORDER.session_held[key]
 
     @event.listens_for(Engine, "commit")
     @event.listens_for(Engine, "rollback")
@@ -1288,7 +1328,7 @@ def install() -> None:
         if transaction.parent is not None or transaction.nested:
             return
         for conn in list(getattr(transaction, "_lock_rank_conns", ())):
-            RECORDER.end(conn)
+            RECORDER.end_flow(conn)
 
     @event.listens_for(Session, "after_begin")
     def _session_begin(session, transaction, connection):

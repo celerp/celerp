@@ -1007,6 +1007,10 @@ async def session(_db_engine) -> AsyncSession:
     transaction is rolled back at teardown."""
     conn = await _db_engine.connect()
     trans = await conn.begin()
+    # The request, AI job and lifecycle sessions all run on this one connection, each its
+    # own transaction in production: the lock recorder judges each task's locks apart.
+    shared = id((await conn.get_raw_connection()).dbapi_connection)
+    _lock_rank.RECORDER.shared.add(shared)
     factory = async_sessionmaker(
         bind=conn, class_=_SharedSession, expire_on_commit=False,
         join_transaction_mode="create_savepoint")
@@ -1018,6 +1022,7 @@ async def session(_db_engine) -> AsyncSession:
         if trans.is_active:
             await trans.rollback()
         await conn.close()
+        _lock_rank.RECORDER.shared.discard(shared)
 
 
 @pytest.fixture(autouse=True)

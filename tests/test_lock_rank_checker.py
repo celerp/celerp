@@ -215,6 +215,76 @@ def test_two_tasks_on_two_connections_are_not_cross_connection():
     assert not {k for k, _ in _kinds(recorder)} & {"cross-connection", "self-deadlock"}
 
 
+_NOTICES = "SELECT notifications.id FROM notifications ORDER BY notifications.company_id FOR UPDATE"
+_COMPANY = "SELECT companies.id FROM companies WHERE companies.id = 'a' FOR UPDATE"
+
+
+def _flows_on_one_connection(first: list[str], then: list[str], *, shared: bool) -> Recorder:
+    """One task runs ``first`` on connection 1 and stays open; a second task then runs
+    ``then`` on the same connection. "end" ends the running flow's session transaction."""
+    recorder = Recorder()
+    if shared:
+        recorder.shared.add(1)
+    opened, done = asyncio.Event(), asyncio.Event()
+
+    def run(statements):
+        for statement in statements:
+            if statement == "end":
+                recorder.end_flow(1)
+            else:
+                recorder.statement(1, statement, None, 0.0)
+
+    async def one():
+        run(first)
+        opened.set()
+        await done.wait()
+
+    async def two():
+        await opened.wait()
+        run(then)
+        done.set()
+
+    async def body():
+        await asyncio.gather(one(), two())
+
+    asyncio.run(body())
+    return recorder
+
+
+def test_a_flow_on_the_shared_test_connection_holds_only_its_own_locks():
+    """The test session's one connection carries the request, AI job and lifecycle sessions,
+    which production runs on connections of their own: a job's notices are not held by a
+    request that runs while the job is open."""
+    recorder = _flows_on_one_connection([_NOTICES], [_COMPANY], shared=True)
+    assert ("order", "row:companies") not in _kinds(recorder)
+
+
+def test_one_flow_on_the_shared_test_connection_still_orders_its_own_locks():
+    recorder = _flows_on_one_connection([], [_NOTICES, _COMPANY], shared=True)
+    assert ("order", "row:companies") in _kinds(recorder)
+
+
+def test_a_flow_that_ended_its_transaction_holds_nothing_after_it():
+    recorder = _flows_on_one_connection([], [_NOTICES, "end", _COMPANY], shared=True)
+    assert ("order", "row:companies") not in _kinds(recorder)
+
+
+def test_one_flow_ending_leaves_another_flows_locks_held():
+    recorder = _flows_on_one_connection([_NOTICES], ["end"], shared=True)
+    assert any(lock.cls == "row:notifications" for held in recorder.held.values() for lock in held)
+
+
+def test_a_connection_not_shared_is_one_transaction_whatever_the_task():
+    recorder = _flows_on_one_connection([_NOTICES], [_COMPANY], shared=False)
+    assert ("order", "row:companies") in _kinds(recorder)
+
+
+def test_the_connection_ending_ends_every_flow_on_it():
+    recorder = _flows_on_one_connection([_NOTICES], [_COMPANY], shared=True)
+    recorder.end(1)
+    assert not any(recorder.held.values())
+
+
 def test_the_outbound_identity_lock_may_be_held_on_its_own_connection():
     recorder = Recorder()
 
