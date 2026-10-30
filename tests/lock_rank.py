@@ -102,6 +102,9 @@ RANKS: dict[str, int] = {
     # Notices, written as their transaction's last statements (celerp/notifications/service.py
     # _defer): after every other lock and parent key, their own key with their row.
     "adv:notices": 95, "row:notifications": 96, "row:notification_reads": 97,
+    # A login is deleted only by a bootstrap discard (celerp/services/migrations.py discard), as
+    # the transaction's last write, after its company's notices.
+    "key:users": 98,
 }
 
 
@@ -123,6 +126,8 @@ KEY_RANK = 95
 def rank(cls: str) -> int | None:
     if cls.startswith("tbl:"):
         return TABLE_LOCK_RANK if rank("row:" + cls[4:]) is not None else None
+    if cls in RANKS:
+        return RANKS[cls]
     if cls.startswith("key:"):
         row = rank("row:" + cls[4:])
         return None if row is None else max(KEY_RANK, row)
@@ -502,13 +507,16 @@ class Recorder:
         w = _strength(lock)
         held = set(self.taken[conn_key].get((lock.cls, lock.key), ()))
         held |= {_strength(h) for h in self.session_held.get(conn_key, ()) if h.cls == lock.cls and h.key == lock.key}
+        if _key_waits_only(lock, held):
+            return True
         if not _explicit(lock.mode):
             held = held | self.explicit[conn_key].get(lock.cls, set())
         if any(_covers(h, w) for h in held):
             return True
         values = _row_values(lock) if _explicit(lock.mode) else ()
         return len(values) > 1 and all(
-            any(_covers(h, w) for h in self.taken[conn_key].get((lock.cls, repr((v,))), ())) for v in values)
+            any(_covers(h, w) or _key_waits_only(lock, {h}) for h in self.taken[conn_key].get((lock.cls, repr((v,))), ()))
+            for v in values)
 
     def _take(self, conn_key: int, lock: Lock) -> None:
         """Note what this transaction now holds. A row named by its primary key is also held by
@@ -820,6 +828,13 @@ def _covers(h: str, w: str) -> bool:
     return False
 
 
+def _key_waits_only(lock: Lock, held) -> bool:
+    """A row taken FOR UPDATE (or deleted) that this transaction holds FOR NO KEY UPDATE:
+    other transactions can hold only its key share, so the take waits only as the row's key
+    does, and the statement takes that key as its own lock."""
+    return lock.cls.startswith("row:") and _strength(lock) == "update" and "nokey" in held
+
+
 def _row_values(lock: Lock) -> tuple:
     """The values a row or key lock's key binds (``_row_key``); () for any other lock."""
     if not lock.cls.startswith(("row:", "key:")) or not lock.key.startswith("("):
@@ -974,6 +989,8 @@ def _row_key(numbers: tuple[int, ...] | None, names: tuple, parameters) -> str:
         values = [_bound(n, names, parameters) for n in numbers]
     else:
         values = list(parameters.values()) if isinstance(parameters, dict) else list(parameters or ())
+    # An array (``= ANY(:ids)``) names its members, as an IN list does.
+    values = [v for value in values for v in (value if isinstance(value, (list, tuple)) else (value,))]
     return repr(tuple(map(str, values)))
 
 

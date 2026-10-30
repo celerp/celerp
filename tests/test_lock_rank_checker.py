@@ -1745,3 +1745,40 @@ def test_a_debt_edge_down_to_what_the_task_holds_leaves_the_ranked_wait_unproven
     monkeypatch.setattr(lock_rank, "DEBT_FILE", debt)
     _guard_then_ranked_wait(recorder)
     assert ("cross-connection", "row:user_auth_state") in _offline_kinds(recorder, tmp_path)
+
+
+_HOLD_LOGIN = "SELECT users.id FROM users WHERE users.id = $1::UUID FOR NO KEY UPDATE"
+_DELETE_LOGINS = "DELETE FROM users AS u WHERE u.id = ANY(:members)"
+
+
+@pytest.mark.parametrize("held, violates", [
+    ("u1", False),  # its row is held FOR NO KEY UPDATE: the delete waits only on key sharers
+    ("u2", True),   # another login is held: the deleted row can wait on any row lock
+    (None, True),
+])
+def test_deleting_a_login_this_transaction_holds_waits_only_on_its_key(recorder, held, violates):
+    """The rows a DELETE ... = ANY(:array) names are the array's members, each as a lock
+    naming it alone. A row held FOR NO KEY UPDATE leaves other transactions only its key
+    share, so deleting it waits only as its key does, which the delete takes as well."""
+    if held:
+        recorder.statement(1, _HOLD_LOGIN, (held,), 0.0)
+    recorder.statement(1, _LOCK_COMPANY, ("c1",), 0.0)
+    recorder.statement(1, _DELETE_LOGINS, {"members": ["u1"]}, 0.0)
+    assert (("order", "row:users") in _kinds(recorder)) is violates
+    assert ("order", "key:users") not in _kinds(recorder)
+
+
+@pytest.mark.parametrize("notice_last, violates", [(False, False), (True, True)])
+def test_a_login_is_deleted_after_its_company_notices_and_nothing_is_written_after(recorder, notice_last,
+                                                                                   violates):
+    """A login's key is the last lock of the one transaction that deletes it (a bootstrap
+    discard, after its company's notices): a notice written after it inverts the order. The
+    notices are another company's, so no company lock gates the edge."""
+    recorder.statement(1, _HOLD_LOGIN, ("u1",), 0.0)
+    recorder.statement(1, _LOCK_COMPANY, ("c1",), 0.0)
+    if not notice_last:
+        recorder.statement(1, "DELETE FROM notifications WHERE company_id = :c", {"c": "c2"}, 0.0)
+    recorder.statement(1, _DELETE_LOGINS, {"members": ["u1"]}, 0.0)
+    if notice_last:
+        recorder.statement(1, "DELETE FROM notifications WHERE company_id = :c", {"c": "c2"}, 0.0)
+    assert bool({k for k in _kinds(recorder) if k[0] == "order"}) is violates

@@ -93,7 +93,7 @@ from celerp.services.company_lock import judge_without_company_lock, lock_compan
 from celerp.services.lot_origin import place_company_stock
 from celerp.services.csv_export import csv_safe
 from celerp.services.permissions import act_for, role_has_permission
-from celerp.services.provisioning import add_missing_required_defaults
+from celerp.services.provisioning import add_missing_required_defaults, hold_owner
 from ui.i18n import current_lang, set_lang, t
 
 logger = logging.getLogger(__name__)
@@ -1180,7 +1180,12 @@ async def discard(session: AsyncSession, run: MigrationRun) -> str:
     The files are deleted after the commit through a cleanup task committed with the
     deletes, so a storage failure never blocks the user and is retried at startup.
     The run is removed, so it is locked FOR UPDATE (its key) up front, never upgraded
-    from the NO KEY UPDATE of _lock_run after the company's other rows are deleted."""
+    from the NO KEY UPDATE of _lock_run after the company's other rows are deleted. A
+    bootstrap discard deletes its owner's login last, so it holds the login before the
+    company (hold_owner): the delete then waits only on the login's key."""
+    bootstrap = bool(run.source_summary.get("bootstrap"))
+    if bootstrap:
+        await hold_owner(session, run.created_by_user_id)
     await lock_company(session, run.company_id)
     (await session.execute(select(MigrationRun)
                            .where(MigrationRun.id == run.id, MigrationRun.company_id == run.company_id)
@@ -1212,7 +1217,6 @@ async def discard(session: AsyncSession, run: MigrationRun) -> str:
     run_ids = list((await session.scalars(
         select(MigrationRun.id).where(MigrationRun.company_id == company.id))).all())
     owner_id = run.created_by_user_id
-    bootstrap = bool(run.source_summary.get("bootstrap"))
     # The company task removes every file of the company, the staged ones included.
     await session.execute(delete(MigrationCleanupTask).where(
         MigrationCleanupTask.company_id == company.id, MigrationCleanupTask.attachment.is_not(None)))
