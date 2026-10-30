@@ -104,11 +104,12 @@ async def guard_journal_change(
     """Refuse with ``ReconciledHistoryChanged`` a journal event that would change what a
     bank reconciliation counts; return for every other event."""
     company_id = uuid.UUID(str(company_id))
-    codes = {
-        code: bank_id for bank_id, code in (await session.execute(
-            select(BankAccount.id, BankAccount.chart_account_code).where(BankAccount.company_id == company_id)
-        )).all()
-    }
+    # Several bank accounts may share one ledger account: each is judged on its own.
+    codes: dict[str, list[uuid.UUID]] = {}
+    for bank_id, code in (await session.execute(
+        select(BankAccount.id, BankAccount.chart_account_code).where(BankAccount.company_id == company_id)
+    )).all():
+        codes.setdefault(code, []).append(bank_id)
     if not codes:
         return
     reversed_id = _reversed_id(event_type, data)
@@ -132,14 +133,14 @@ async def guard_journal_change(
     # holds its bank FOR UPDATE, so a change waits for it (or it for the change) and
     # each judges what the other committed.
     await lock_company(session, company_id)
-    bank_ids = sorted(codes[code] for code in banks)
+    bank_ids = sorted(bank_id for code in banks for bank_id in codes[code])
     accounts = (await session.execute(
         select(BankAccount).where(BankAccount.id.in_(bank_ids)).order_by(BankAccount.id)
         .with_for_update(read=True).execution_options(populate_existing=True)
     )).scalars().all()
     rows_before, rows_after, banks = await touched(True)
-    by_code = {b.chart_account_code: b for b in accounts if b.chart_account_code in banks}
-    sessions: dict[uuid.UUID, list[ReconciliationSession]] = {b.id: [] for b in by_code.values()}
+    judged = [b for b in accounts if b.chart_account_code in banks]
+    sessions: dict[uuid.UUID, list[ReconciliationSession]] = {b.id: [] for b in judged}
     for recon in (await session.execute(
         select(ReconciliationSession).where(
             ReconciliationSession.company_id == company_id,
@@ -158,7 +159,8 @@ async def guard_journal_change(
 
     held: list[tuple[BankAccount, ReconciliationSession]] = []
     period: list[tuple[BankAccount, ReconciliationSession]] = []
-    for code, bank in by_code.items():
+    for bank in judged:
+        code = bank.chart_account_code
         for recon in sessions[bank.id]:
             if any(_holds(recon, bank, row_id) for row_id in held_ids):
                 held.append((bank, recon))

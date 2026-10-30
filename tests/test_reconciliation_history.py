@@ -478,6 +478,17 @@ async def test_currency_change_refused_once_the_account_has_history(client, sess
         assert got["currency"] == "USD"
 
 
+async def test_currency_change_refused_on_a_ledger_account_another_bank_has_used(client, session):
+    from test_recon_guard import second_bank_on
+    _, h = await admin(client)
+    a = await bank(client, h, opening=0.0)
+    await deposit(client, h, a, "2026-09-05", 10.0)
+    b = await second_bank_on(client, h, a)
+    r = await client.patch(f"/accounting/bank-accounts/{b['id']}", json={"currency": "EUR"}, headers=h)
+    assert r.status_code == 409, r.text
+    assert (await client.get(f"/accounting/bank-accounts/{b['id']}", headers=h)).json()["currency"] == "USD"
+
+
 async def test_currency_change_allowed_before_use(client, session):
     _, h = await admin(client)
     b = await bank(client, h, opening=0.0)

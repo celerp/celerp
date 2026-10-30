@@ -155,6 +155,44 @@ async def test_transfer_is_guarded_on_both_accounts(client, session):
     assert "Harbor Bank" in detail and "Coast Bank" in detail
 
 
+# --- Bank accounts sharing one ledger account ------------------------------------------
+
+async def second_bank_on(client, h, b: dict, name="Second Record") -> dict:
+    """Another bank account recorded on ``b``'s ledger account."""
+    r = await client.post("/accounting/bank-accounts", json={
+        "bank_name": name, "account_number": "0002", "bank_type": "checking",
+        "currency": "USD", "opening_balance": 0, "account_code": b["chart_account_code"]}, headers=h)
+    assert r.status_code == 200, r.text
+    assert r.json()["chart_account_code"] == b["chart_account_code"]
+    return r.json()
+
+
+async def test_held_entry_stays_protected_when_another_bank_shares_the_ledger_account(client, session):
+    _, h = await admin(client)
+    a = await bank(client, h)
+    je = await deposit(client, h, a, "2026-09-10", 50.0)
+    await completed(client, h, a, "2026-09-30", OPENING + 50.0, [je])
+    await second_bank_on(client, h, a)
+    r = await void(client, h, je)
+    assert r.status_code == 409, r.text
+    assert "Harbor Bank" in r.json()["detail"]
+
+
+async def test_backdated_posting_is_refused_when_another_bank_shares_the_ledger_account(client, session):
+    _, h = await admin(client)
+    a = await bank(client, h)
+    je = await deposit(client, h, a, "2026-09-10", 50.0)
+    await completed(client, h, a, "2026-09-30", OPENING + 50.0, [je])
+    await second_bank_on(client, h, a)
+    r = await client.post("/accounting/journal-entries", headers=h, json={
+        "ts": "2026-09-15", "memo": "Backdated", "idempotency_token": uuid.uuid4().hex,
+        "entries": [{"account": a["chart_account_code"], "debit": 5.0, "credit": 0},
+                    {"account": "4100", "debit": 0, "credit": 5.0}]})
+    assert r.status_code == 409, r.text
+    detail = r.json()["detail"]
+    assert "Harbor Bank" in detail and "2026-09-30" in detail
+
+
 # --- The period rule ------------------------------------------------------------------
 
 async def test_backdated_bank_posting_into_a_completed_period_is_refused(client, session):
