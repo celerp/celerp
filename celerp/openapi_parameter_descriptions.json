@@ -891,6 +891,9 @@
   "POST /accounting/reconciliation/{session_id}/match": {
     "path:session_id": "Identifier of the bank reconciliation session."
   },
+  "POST /accounting/reconciliation/{session_id}/unmatch": {
+    "path:session_id": "Identifier of the bank reconciliation session."
+  },
   "POST /accounting/reconciliation/{session_id}/reopen": {
     "path:session_id": "Identifier of the reconciliation session."
   },

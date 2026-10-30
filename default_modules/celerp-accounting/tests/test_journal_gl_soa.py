@@ -583,7 +583,7 @@ async def test_journal_source_typing(client):
     from_id = banks[0]["id"]
     r = await client.post("/accounting/bank-accounts", headers=_h(tok), json={
         "bank_name": "SCB", "account_number": "9876543210",
-        "currency": "THB", "bank_type": "savings"})
+        "currency": "USD", "bank_type": "savings"})
     assert r.status_code == 200, r.text
     to_id = r.json()["id"]
     r = await client.post("/accounting/transfers", headers=_h(tok), json={

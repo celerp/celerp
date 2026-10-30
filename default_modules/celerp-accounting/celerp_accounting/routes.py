@@ -3411,7 +3411,6 @@ async def match_reconciliation(
 @router.post(
     "/reconciliation/{session_id}/unmatch",
     summary="Undo matching book entries that no statement line holds",
-    openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True},
 )
 async def unmatch_reconciliation(
     session_id: uuid.UUID,

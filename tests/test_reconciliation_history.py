@@ -485,7 +485,7 @@ async def test_currency_change_refused_once_a_posting_carries_a_foreign_amount(c
         r = await client.patch(f"/accounting/bank-accounts/{b['id']}", json={"currency": target}, headers=h)
         assert r.status_code == 409, r.text
         detail = r.json()["detail"]
-        assert "EUR" in detail and "new bank account" in detail and "transfer" in detail
+        assert "EUR" in detail and "new bank account" in detail and "journal entry" in detail
         assert (await client.get(f"/accounting/bank-accounts/{b['id']}", headers=h)).json()["currency"] == "EUR"
 
 
