@@ -10,8 +10,8 @@ back through here, so history is never revalidated or rewritten.
 
 The chart of accounts belongs to the accounting module. When its API starts it
 registers a ``ChartAccess`` here (``register_chart``): reading and share-locking
-account rows, listing the chart, and adding an account. Core never touches its
-table. Only the bundled accounting module can register; with nothing registered,
+account rows, listing the chart, adding an account, and judging a journal change
+against the completed bank reconciliations. Core never touches its tables. Only the bundled accounting module can register; with nothing registered,
 or the module stopped, accounting is not running and only the role snapshot is
 written.
 
@@ -57,12 +57,24 @@ class ChartAccess:
     the chart's rows, each with its id, code, name, account_type, parent_code,
     cash_flow_category, is_active, has_children and currency (a bank account's, else
     None); add_account(session, company_id, *, code, name, account_type, parent_code=None,
-    cash_flow_category=None) -> the new account's id.
+    cash_flow_category=None) -> the new account's id; guard_journal_change(session,
+    company_id, entity_id, event_type, data) -> None, or ``ReconciledHistoryChanged``
+    when the event would change what a bank reconciliation counts.
     """
 
     lock_accounts: Callable[..., Awaitable[dict[str, dict]]]
     list_accounts: Callable[..., Awaitable[list[dict]]]
     add_account: Callable[..., Awaitable[str]]
+    guard_journal_change: Callable[..., Awaitable[None]]
+
+
+class ReconciledHistoryChanged(HTTPException):
+    """A journal change refused because it would change a bank reconciliation: an entry
+    a reconciliation counts, or a day inside a completed one. Core callers catch it
+    without importing accounting."""
+
+    def __init__(self, detail: str):
+        super().__init__(status_code=409, detail=detail)
 
 
 class UntrustedChartError(ValueError):
@@ -82,7 +94,8 @@ def register_chart(access: ChartAccess) -> None:
     from celerp.modules.loader import first_party_owner
 
     global _chart
-    for fn in (access.lock_accounts, access.list_accounts, access.add_account):
+    for fn in (access.lock_accounts, access.list_accounts, access.add_account,
+               access.guard_journal_change):
         code = getattr(fn, "__code__", None)
         if code is None or first_party_owner(Path(code.co_filename)) != CHART_MODULE:
             raise UntrustedChartError(
