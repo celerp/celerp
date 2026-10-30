@@ -357,6 +357,10 @@ async def test_history_flags_a_reference_outside_the_account_for_review(client, 
         assert "Needs review" in page
         page = (await ui.get(f"/accounting/reconcile/history/{b['id']}")).text
         assert "Needs review" in page
+    # The note has a full-width row of its own; inside the date cell (no wrapping in
+    # data tables) it would stretch the table past the page edge.
+    note = re.search(r'<td[^>]*colspan="(\d+)"[^>]*>\s*<p[^>]*>Needs review', page)
+    assert note and int(note.group(1)) == page.split("<thead>")[1].split("</thead>")[0].count("<th")
 
 
 async def test_history_flags_an_unbalanced_completed_session_for_review(client, session):

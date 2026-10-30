@@ -500,18 +500,24 @@ _SESSION_STATUSES = {"open": "yellow", "completed": "green"}
 
 def _history_table(items: list[dict], currency: str) -> FT:
     """An account's reconciliations, newest statement first (the API's order)."""
-    def _row(i: dict) -> FT:
-        return Tr(
-            Td(A(i["statement_date"], href=f"/accounting/reconcile/{i['id']}"),
-               P(t("recon.needs_review"), cls="flash flash--warning") if i.get("needs_review") else None),
+    headers = (Th(t("label.statement_date")), Th(t("label.statement_closing_balance"), cls="cell--number"),
+               Th(t("th.status")), Th(t("th.completed")))
+
+    def _rows(i: dict) -> tuple[FT, ...]:
+        row = Tr(
+            Td(A(i["statement_date"], href=f"/accounting/reconcile/{i['id']}")),
             Td(fmt_money(i["statement_balance"], currency), cls="cell--number"),
             Td(display_enum(i["status"], "recon_session_status")),
             Td((i.get("completed_at") or "")[:10] or EMPTY),
         )
+        if not i.get("needs_review"):
+            return (row,)
+        # The note spans the row below so it wraps instead of widening a column.
+        return row, Tr(Td(P(t("recon.needs_review"), cls="flash flash--warning"),
+                          colspan=str(len(headers)), cls="cell--note"))
     return Table(
-        Thead(Tr(Th(t("label.statement_date")), Th(t("label.statement_closing_balance"), cls="cell--number"),
-                 Th(t("th.status")), Th(t("th.completed")))),
-        Tbody(*[_row(i) for i in items]),
+        Thead(Tr(*headers)),
+        Tbody(*[r for i in items for r in _rows(i)]),
         cls="data-table",
     )
 
