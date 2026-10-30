@@ -345,6 +345,9 @@ def _workspace_view(
 
     # Build sets for unmatched book entries
     matched_je_ids = {l["matched_je_id"] for l in lines if l.get("matched_je_id")}
+    # Entries the session counts with no statement line holding them (matched through
+    # the API): shown as matched, each with its own Undo.
+    held = set(recon.get("reconciled_je_ids") or []) - matched_je_ids
     unmatched_entries = sorted(
         (e for e in book_entries if e["je_id"] not in matched_je_ids),
         key=lambda e: e.get("ts") or "", reverse=True,
@@ -447,9 +450,14 @@ def _workspace_view(
                         Span(fmt_money(e.get("amount", 0), currency), cls="cell--number"),
                         cls="recon-row-right",
                     ),
-                    cls="recon-row recon-row--unmatched recon-book-entry",
+                    Button(t("btn.undo"),
+                           hx_post=f"/accounting/reconcile/{session_id}/entries/{e['je_id']}/unmatch",
+                           hx_target="#recon-workspace", hx_swap="outerHTML",
+                           cls="btn btn--xs btn--outline") if e["je_id"] in held and not read_only else None,
+                    cls="recon-row recon-row--matched recon-book-entry" if e["je_id"] in held
+                    else "recon-row recon-row--unmatched recon-book-entry",
                     id=f"book-entry-{e['je_id']}",
-                    onclick=None if read_only else "reconMatchEntry(this)",
+                    onclick=None if read_only or e["je_id"] in held else "reconMatchEntry(this)",
                 )
                 for e in unmatched_entries
             ],
@@ -546,6 +554,13 @@ def _history_table(items: list[dict], currency: str) -> FT:
     )
 
 
+def _book_entries(recon: dict) -> list[dict]:
+    """The book entries the workspace lists: those not yet counted, plus those the session
+    counts by their own match (not the opening balance), so each can be undone."""
+    held = set(recon.get("reconciled_je_ids") or [])
+    return recon.get("unreconciled_entries", []) + [e for e in recon.get("reconciled_entries", []) if e["je_id"] in held]
+
+
 async def _fresh_workspace(token: str, session_id: str, notice: str | None = None, **view):
     """Re-render the whole workspace from fresh API state.
 
@@ -561,7 +576,7 @@ async def _fresh_workspace(token: str, session_id: str, notice: str | None = Non
             return Response("", status_code=401, headers={"HX-Redirect": "/login"})
         return P(str(e.detail), cls="error-banner")
     bank = recon["bank_account"]
-    book_entries = recon.get("unreconciled_entries", [])
+    book_entries = _book_entries(recon)
     return _workspace_view(session_id, recon, bank, lines, book_entries, bank["currency"],
                            notice=notice, **view)
 
@@ -822,7 +837,7 @@ def setup_routes(app):
             lines_data = await api.get_statement_lines(token, session_id)
             lines = lines_data.get("items", [])
             bank = recon["bank_account"]
-            book_entries = recon.get("unreconciled_entries", [])
+            book_entries = _book_entries(recon)
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
@@ -1054,6 +1069,19 @@ def setup_routes(app):
             return P(t("error.session_expired"), cls="error-banner")
         try:
             await api.unmatch_recon_line(token, session_id, line_id)
+        except APIError as e:
+            if e.status == 401:
+                return Response("", status_code=401, headers={"HX-Redirect": "/login"})
+            return await _fresh_workspace(token, session_id, notice=str(e.detail))
+        return await _fresh_workspace(token, session_id)
+
+    @app.post("/accounting/reconcile/{session_id}/entries/{je_id}/unmatch")
+    async def unmatch_entry(request: Request, session_id: str, je_id: str):
+        token = _token(request)
+        if not token:
+            return P(t("error.session_expired"), cls="error-banner")
+        try:
+            await api.unmatch_reconciliation(token, session_id, [je_id])
         except APIError as e:
             if e.status == 401:
                 return Response("", status_code=401, headers={"HX-Redirect": "/login"})

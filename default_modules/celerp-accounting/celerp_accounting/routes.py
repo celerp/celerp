@@ -3263,12 +3263,14 @@ async def _eligible_entries(
 ) -> dict[str, str | None]:
     """Whether each book entry may be matched on *recon* (by its statement line *line_id*
     when given): None when it may, otherwise the reason key. An entry must be one of the
-    account's posted entries, never the opening entry, and not counted already by another
-    line of this session or by another session of the same statement. Sessions of other
-    statement dates and of other accounts may count it too: each statement counts every
-    entry cleared up to its date, and a transfer is reconciled on both accounts."""
-    posted = {e["je_id"] for e in await _je_entries_for_account(db, company_id, bank)}
-    posted.discard(_opening_je_id(bank.id))
+    account's posted entries, never the opening entry, carry an amount in the account's
+    currency (nothing else can be matched or balanced), and not be counted already by
+    another line of this session or by another session of the same statement. Sessions
+    of other statement dates and of other accounts may count it too: each statement
+    counts every entry cleared up to its date, and a transfer is reconciled on both
+    accounts."""
+    amounts = {e["je_id"]: e["amount"] for e in await _je_entries_for_account(db, company_id, bank)}
+    amounts.pop(_opening_je_id(bank.id), None)
     own = None
     if line_id is not None:
         line = await db.get(BankStatementLine, line_id)
@@ -3282,13 +3284,15 @@ async def _eligible_entries(
         ReconciliationSession.id != recon.id,
     ))).scalars():
         taken.update(other or [])
-    return {je_id: ("acct.err_recon_book_entry_missing" if je_id not in posted
+    return {je_id: ("acct.err_recon_book_entry_missing" if je_id not in amounts
+                    else "acct.err_recon_book_entry_no_amount" if amounts[je_id] is None
                     else "acct.err_recon_book_entry_matched" if je_id in taken else None)
             for je_id in je_ids}
 
 
 def _refuse_ineligible(reasons: dict[str, str | None]) -> None:
-    """400 for an entry that is not the account's, 409 for one counted elsewhere."""
+    """400 for an entry that is not the account's, 409 for one that cannot be matched
+    here (counted elsewhere, or with no amount in the account's currency)."""
     for reason in reasons.values():
         if reason == "acct.err_recon_book_entry_missing":
             raise HTTPException(status_code=400, detail=t(reason))
@@ -3390,6 +3394,33 @@ async def match_reconciliation(
     existing = list(recon.reconciled_je_ids or [])
     existing.extend(j for j in dict.fromkeys(payload.je_ids) if j not in existing)
     recon.reconciled_je_ids = existing
+    await db.commit()
+    return _recon_to_dict(recon)
+
+
+@router.post(
+    "/reconciliation/{session_id}/unmatch",
+    summary="Undo matching book entries that no statement line holds",
+    openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True},
+)
+async def unmatch_reconciliation(
+    session_id: uuid.UUID,
+    payload: ReconciliationMatch,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    _: None = require_permission("manage_accounting"),
+    db: AsyncSession = Depends(get_session),
+) -> dict:
+    """The undo of ``match_reconciliation``. An entry a statement line holds is let go
+    of by undoing that line, so the line and the session never disagree."""
+    recon, _bank = await _lock_recon(db, session_id, company_id, editable=True)
+    on_lines = set((await db.execute(select(BankStatementLine.matched_je_id).where(
+        BankStatementLine.reconciliation_id == recon.id,
+        BankStatementLine.matched_je_id.in_(payload.je_ids),
+    ))).scalars())
+    if on_lines:
+        raise HTTPException(status_code=409, detail=t("acct.err_recon_book_entry_matched"))
+    drop = set(payload.je_ids)
+    recon.reconciled_je_ids = [j for j in (recon.reconciled_je_ids or []) if j not in drop]
     await db.commit()
     return _recon_to_dict(recon)
 

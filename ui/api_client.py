@@ -1983,6 +1983,11 @@ async def match_recon_line(token: str, session_id: str, line_id: str, je_id: str
         )).json()
 
 
+async def unmatch_reconciliation(token: str, session_id: str, je_ids: list[str]) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/accounting/reconciliation/{session_id}/unmatch", json={"je_ids": je_ids})).json()
+
+
 async def unmatch_recon_line(token: str, session_id: str, line_id: str) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.post(f"/accounting/reconciliation/{session_id}/lines/{line_id}/unmatch")).json()
