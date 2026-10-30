@@ -323,3 +323,31 @@ async def test_a_cost_set_on_the_result_stands_through_a_part_correction(client,
     await _set_cost(client, auth, a, 110.0)
     st = await _state(session, auth, x)
     assert st["cost_total"] == 160.0 and MARK not in st, st
+
+
+# ── P4: lots made from a lot keep whether its cost is known ─────────────────
+
+async def test_a_split_of_an_unknown_cost_keeps_it_unknown(client, session, auth):
+    from test_landed_cost_removals import _split
+    await _seed(session, auth)
+    a = await _item(client, auth, qty=2, cost_total=100.0)
+    b = await _item(client, auth, qty=3)
+    x = await _merge(client, auth, [a, b])
+    [child] = await _split(client, auth, x, 2)
+    for lot in (x, child):
+        st = await _state(session, auth, lot)
+        assert st[MARK] is True and MARK not in (st.get("attributes") or {}), st
+    assert (await _state(session, auth, child))["cost_total"] == 40.0
+
+
+async def test_a_transform_keeping_an_unknown_cost_keeps_it_unknown(client, session, auth):
+    await _seed(session, auth)
+    a = await _item(client, auth, qty=2, cost_total=100.0)
+    b = await _item(client, auth, qty=3)
+    x = await _merge(client, auth, [a, b])
+    r = await client.post(f"/items/{x}/transform", headers=auth["headers"],
+                          json={"child_sku": f"T-{uuid.uuid4().hex[:6]}", "child_quantity": 1,
+                                "child_category": "Beads", "child_sell_by": "piece"})
+    assert r.status_code == 200, r.text
+    st = await _state(session, auth, r.json()["child_id"])
+    assert st[MARK] is True and st["cost_total"] == 100.0, st

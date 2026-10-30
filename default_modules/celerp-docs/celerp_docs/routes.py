@@ -43,7 +43,7 @@ from celerp.accounting_roles import CONSIGNOR_FIELD, CONSIGNOR_PAYABLE_FIELD, LO
 from celerp.services.account_roles import current_settings, is_consigned, lineage, lot_account, new_lot_account, role_map
 from celerp.services.background import spawn_background
 from celerp.services.company_lock import lock_company, lock_projections, locked_company
-from celerp.services.goods_cost import negative_cost_error
+from celerp.services.goods_cost import GOODS_COST_UNKNOWN, negative_cost_error
 from celerp.services.journal_accounts import require_destinations, require_line_destinations, require_settlement_account
 from celerp.services.lot_origin import in_stock, is_stock_type, rerun_after_placing
 from celerp.services.physical_codes import lock_item_code_namespace
@@ -11456,7 +11456,7 @@ async def receive_return(
     # reusing it would collide. Allocate the whole batch under the code-namespace lock
     # after validation and before any item.created event, so concurrent returns mint
     # distinct barcodes; the lock is held until this request commits.
-    from celerp_inventory.services import allocate_internal_codes
+    from celerp_inventory.services import allocate_internal_codes, goods_cost_known
     _return_barcodes = await allocate_internal_codes(session, company_id, len(parts))
 
     # --- Create returned inventory items ---
@@ -11499,6 +11499,8 @@ async def receive_return(
             "quantity": quantity,
             "sell_by": resolved_sell_by,
             "cost_price": _shipped_unit_cost(ref),
+            # Goods come back as costed as they shipped: unknown when the sold lot's was.
+            **({GOODS_COST_UNKNOWN: True} if not goods_cost_known(ref) else {}),
             "unit_price": float(ref.get("unit_price") or ref.get("sell_price") or li_fallback.get("unit_price") or 0),
             "wholesale_price": float(ref.get("wholesale_price") or li_fallback.get("wholesale_price") or 0) or None,
             "retail_price": float(ref.get("retail_price") or li_fallback.get("retail_price") or 0) or None,

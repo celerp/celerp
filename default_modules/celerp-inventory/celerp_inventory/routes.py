@@ -3387,14 +3387,15 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
     from celerp.services.auto_je import company_currency
     from celerp_inventory.services import carve_cost, goods_basis
     currency = await company_currency(session, company_id)
+    unknown = {GOODS_COST_UNKNOWN: True} if parent.state.get(GOODS_COST_UNKNOWN) else {}
     remaining = {"quantity": parent_qty, "cost_base": goods_basis(parent.state),
-                 "landed_costs": dict(parent.state.get("landed_costs") or {})}
+                 "landed_costs": dict(parent.state.get("landed_costs") or {}), **unknown}
     carves = []
     for c in children:
         carve = carve_cost(remaining, c.quantity, currency)
         carves.append(carve)
         remaining = {"quantity": round(parent_qty - sum(x.quantity for x in children[:len(carves)]), 10),
-                     "cost_base": carve.rest_goods, "landed_costs": carve.rest_landed}
+                     "cost_base": carve.rest_goods, "landed_costs": carve.rest_landed, **unknown}
 
     def _child_weight(c) -> float | None:
         if c.weight is not None:
@@ -3522,7 +3523,7 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
                 entity_id=child_eid,
                 entity_type="item",
                 event_type="item.pricing.set",
-                data={"price_type": "cost_total", "new_price": carves[i].part_goods},
+                data=carves[i].part_cost,
                 actor_id=user.id,
                 location_id=None,
                 source="api",
@@ -3873,7 +3874,7 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
                          idempotency_key=str(uuid.uuid4()), metadata_={"reason": "from_split"})
     if carve.part_goods is not None:
         await emit_event(session, company_id=company_id, entity_id=child_eid, entity_type="item",
-                         event_type="item.pricing.set", data={"price_type": "cost_total", "new_price": carve.part_goods},
+                         event_type="item.pricing.set", data=carve.part_cost,
                          actor_id=user_id, location_id=None, source="fulfill_split",
                          idempotency_key=str(uuid.uuid4()), metadata_={"reason": "from_split"})
 
@@ -4104,14 +4105,17 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
     # 2. Sell prices are intentionally NOT copied — the child starts with no sell price (see the
     #    parent_price_keys note above). Only cost carries over.
 
-    # 2b. Set child goods cost via item.pricing.set (consistent with split/post_item flows)
+    # 2b. Set child goods cost via item.pricing.set (consistent with split/post_item flows).
+    #     Kept at the parent's cost, it is as known as the parent's; a restated cost is known.
     await emit_event(
         session,
         company_id=company_id,
         entity_id=child_eid,
         entity_type="item",
         event_type="item.pricing.set",
-        data={"price_type": "cost_total", "new_price": child_goods},
+        data={"price_type": "cost_total", "new_price": child_goods,
+              **({GOODS_COST_UNKNOWN: True} if effective_cost == parent_cost_total
+                 and not goods_cost_known(parent.state) else {})},
         actor_id=user.id,
         location_id=None,
         source="api",

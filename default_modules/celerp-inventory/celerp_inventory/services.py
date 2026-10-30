@@ -104,6 +104,7 @@ _CHILD_RESET_FIELDS: frozenset[str] = frozenset({
     "cost_base",
     "cost_landed",
     "landed_costs",
+    GOODS_COST_UNKNOWN,
     # Status - children start as available regardless of parent's terminal status, so
     # they never carry the parent's document or line pairing either
     "status",
@@ -234,12 +235,20 @@ def topped_up_cost(state: dict, added: float) -> dict:
 @dataclass(frozen=True)
 class CostCarve:
     """A lot's cost divided between a part leaving it and what the lot keeps: goods cost
-    (None when the lot has none) and each landed pool ("<source_bill_id>::<kind>")."""
+    (None when the lot has none), each landed pool ("<source_bill_id>::<kind>"), and
+    whether the goods cost is known (goods_cost_known), which the part keeps."""
 
     part_goods: float | None
     part_landed: dict[str, float]
     rest_goods: float | None
     rest_landed: dict[str, float]
+    known: bool
+
+    @property
+    def part_cost(self) -> dict:
+        """The part's goods cost as the data of its cost item.pricing.set."""
+        return {"price_type": "cost_total", "new_price": self.part_goods,
+                **({} if self.known else {GOODS_COST_UNKNOWN: True})}
 
 
 def carve_cost(state: dict, part_qty: float, currency: str, part_goods: float | None = None,
@@ -270,18 +279,18 @@ def carve_cost(state: dict, part_qty: float, currency: str, part_goods: float | 
     rest_landed = {k: (round_basis(v - min(v, max(float(named[k]), 0.0))) if k in named else kept(v))
                    if k in divided else v for k, v in pools.items()}
     part_landed = {k: round_basis(v - rest_landed[k]) for k, v in pools.items() if k in divided}
-    basis = goods_basis(state)
+    basis, known = goods_basis(state), goods_cost_known(state)
     if basis is None:
-        return CostCarve(None, part_landed, None, rest_landed)
+        return CostCarve(None, part_landed, None, rest_landed, known)
     if part_goods is not None:
         part = round_basis(part_goods)
-        return CostCarve(part, part_landed, round_basis(basis - part), rest_landed)
+        return CostCarve(part, part_landed, round_basis(basis - part), rest_landed, known)
     rest = kept(basis)
     if landed_of is None and not named and basis > 0:
         once = round_basis(kept(basis + sum(pools.values())) - sum(rest_landed.values()))
         if 0 <= once <= basis:
             rest = once
-    return CostCarve(round_basis(basis - rest), part_landed, rest, rest_landed)
+    return CostCarve(round_basis(basis - rest), part_landed, rest, rest_landed, known)
 
 
 def cost_kept(state: dict, new_qty: float, currency: str) -> dict:
