@@ -147,3 +147,32 @@ async def pay(client, h, doc_id: str, amount: float, date: str = "2026-03-02"):
 
 async def lots_out_on(client, h, doc_id: str, lot_ids: list[str]) -> list[str]:
     return [i for i in lot_ids if (await owner(client, h, i))[1] == doc_id]
+
+
+async def legacy_convert(client, session, a: dict, memo: str, lot_ids: list[str]) -> str:
+    """A memo converted the way it was before partial invoicing: replays the old convert's own
+    events (the invoice's ``doc.created``, the memo's ``doc.converted`` and each lot's stamp onto
+    the invoice), so the ledger holds what a memo converted back then holds. Returns the invoice."""
+    from celerp.events.engine import emit_event
+    from celerp_docs.doc_constants import LIFECYCLE_OWNED_FIELDS
+
+    h, cid = a["headers"], a["company_id"]
+    memo_doc = await state(client, h, memo)
+    inv, ref = str(uuid.uuid4()), f"PF-L{uuid.uuid4().hex[:5]}"
+    data = {k: v for k, v in memo_doc.items()
+            if k not in LIFECYCLE_OWNED_FIELDS and k not in ("id", "entity_id", "version", "memo_fixed_amounts")}
+    data.update({"doc_type": "invoice", "ref_id": ref, "source_memo_id": memo, "status": "draft"})
+    common = {"company_id": cid, "actor_id": a["user_id"], "location_id": None, "metadata_": {}}
+    await emit_event(session, entity_id=inv, entity_type="doc", event_type="doc.created", data=data,
+                     source="api", idempotency_key=uuid.uuid4().hex, **common)
+    await emit_event(session, entity_id=memo, entity_type="doc", event_type="doc.converted",
+                     data={"target_doc_id": inv, "target_doc_type": "invoice",
+                           "pre_convert_status": memo_doc.get("status")},
+                     source="api", idempotency_key=uuid.uuid4().hex, **common)
+    for lot_id in lot_ids:
+        await emit_event(session, entity_id=lot_id, entity_type="item", event_type="item.status.set",
+                         data={"new_status": "memo_out", "source_doc_id": inv, "doc_number": ref},
+                         source="memo_convert", idempotency_key=uuid.uuid4().hex,
+                         **{**common, "metadata_": {"doc_id": memo}})
+    await session.commit()
+    return inv

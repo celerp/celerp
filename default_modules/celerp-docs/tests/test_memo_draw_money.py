@@ -11,7 +11,7 @@ import pytest
 
 from celerp_docs.doc_money import document_money
 from memo_draw_support import (
-    auth, back_to_memo, draft, draw, drawn, drawn_lines, key_of, memo_out, ok, service_line, state,
+    auth, back_to_memo, draft, draw, drawn, drawn_lines, key_of, memo_out, ok, pay, service_line, state,
 )
 
 
@@ -464,3 +464,114 @@ async def test_way_back_after_return_draft_with_other_lines(client, session, rat
     else:
         assert key_of(full) == "docs.draw_terms_differ", full.text
         assert key_of(part) == "docs.draw_terms_differ", part.text
+
+
+# ── Takes replayed against a reference model ─────────────────────────────────
+
+ADV_A = {
+    "return_all_twice": [("draw", "AB", "pf"), ("back", "AB", "pf"), ("draw", "AB", "pf"), ("back", "AB", "pf")],
+    "partial_return_redraw": [("draw", "AB", "pf"), ("back", "A", "pf"), ("draw", "A", "pf"), ("back", "AB", "pf")],
+    "delete_renumber_redraw": [("draw", "AB", "i1"), ("delete", "", "i1"), ("draw", "AB", "i1"),
+                               ("back", "AB", "i1")],
+    "void_then_new_invoice": [("draw", "AB", "i1"), ("void", "", "i1"), ("draw", "AB", "i2")],
+}
+UNIT, SHIPPING, DISCOUNT = 25.0, 50.0, 60.0
+
+
+class Model:
+    """What every take reader must show, computed only from the step list: takes with the
+    units of each memo line they still hold, and each invoice's header shipping and discount."""
+
+    def __init__(self):
+        self.takes: list[dict] = []
+        self.header: dict[str, list[float]] = {}
+
+    def live(self, alias: str | None = None) -> list[dict]:
+        return [t for t in self.takes if not t["released"] and alias in (None, t["inv"])]
+
+    def left(self) -> tuple[float, float]:
+        ship = 0.0 if any(t["ship"] for t in self.live()) else SHIPPING
+        return ship, DISCOUNT - sum(t["disc"] for t in self.live())
+
+    def draw(self, lines: str, alias: str) -> None:
+        ship, disc_left = self.left()
+        take = {"inv": alias, "ship": ship, "disc": min(disc_left, UNIT * 2 * len(lines)),
+                "lines": {ln: 2 for ln in lines}, "released": False}
+        self.takes.append(take)
+        hdr = self.header.setdefault(alias, [0.0, 0.0])
+        hdr[0] += take["ship"]
+        hdr[1] += take["disc"]
+
+    def back(self, lines: str, alias: str) -> None:
+        for t in self.live(alias):
+            for ln in lines:
+                t["lines"].pop(ln, None)
+        if not any(t["lines"] for t in self.live(alias)):
+            hdr = self.header[alias]
+            for t in self.live(alias):
+                hdr[0] -= min(t["ship"], hdr[0])
+                hdr[1] -= min(t["disc"], hdr[1])
+                t["released"] = True
+
+    def drop(self, alias: str) -> None:
+        for t in self.live(alias):
+            t["released"] = True
+        self.header.pop(alias)
+
+
+@pytest.mark.parametrize("sequence", list(ADV_A))
+async def test_take_readers_replay_adv_a_sequences(client, session, sequence):
+    from celerp_docs.doc_money import memo_draws
+
+    h = await auth(session)
+    memo, lids, _ = await memo_out(client, h, [(2, UNIT), (2, UNIT)], lots_per_line=2, shipping=SHIPPING,
+                                   discount=DISCOUNT, discount_type="flat")
+    line = dict(zip("AB", lids))
+    ids: dict[str, str] = {"pf": await draft(client, h)}
+    model = Model()
+
+    for step, lines, alias in ADV_A[sequence]:
+        if step == "draw":
+            target = ids.get(alias) if alias == "pf" else None
+            ids[alias] = await drawn(client, h, memo, line_ids=[line[ln] for ln in lines], target=target)
+            model.draw(lines, alias)
+        elif step == "back":
+            doc = await state(client, h, ids[alias])
+            back = [li["line_id"] for li in drawn_lines(doc, memo)
+                    if li["drawn_from"]["memo_line_id"] in {line[ln] for ln in lines}]
+            await ok(await back_to_memo(client, h, ids[alias], back))
+            model.back(lines, alias)
+        elif step == "delete":
+            number = (await state(client, h, ids[alias]))["ref_id"]
+            await ok(await client.delete(f"/docs/{ids[alias]}", headers=h))
+            nxt = int("".join(c for c in number if c.isdigit())[-4:] or 1)
+            await ok(await client.patch("/docs/sequences/proforma", headers=h, json={"next": nxt}))
+            model.drop(alias)
+        else:
+            await ok(await client.post(f"/docs/{ids[alias]}/finalize", headers=h))
+            await ok(await client.post(f"/docs/{ids[alias]}/void", headers=h, json={"reason": "wrong customer"}))
+            model.drop(alias)
+
+        m = await state(client, h, memo)
+        held = sorted((t["invoice_id"], sum(ln["quantity"] for ln in t["lines"]),
+                       sum(ln["memo_amount"] for ln in t["lines"])) for t in memo_draws(m))
+        assert held == sorted((ids[t["inv"]], sum(t["lines"].values()), UNIT * sum(t["lines"].values()))
+                              for t in model.live()), step
+        f = fixed(m)
+        assert (f["shipping"], f["discount"]) == pytest.approx(model.left()), step
+        assert sorted((t["invoice_id"], t["shipping"], t["discount"]) for t in f["takes"]) == sorted(
+            (ids[t["inv"]], t["ship"], t["disc"]) for t in model.live()), step
+        for alias, (ship, disc) in model.header.items():
+            doc = await state(client, h, ids[alias])
+            assert (doc.get("shipping") or 0, doc.get("discount") or 0) == pytest.approx((ship, disc)), (step, alias)
+            assert sorted((t["shipping"], t["discount"]) for t in doc.get("memo_fixed_taken") or []
+                          if t["memo_id"] == memo) == sorted((t["ship"], t["disc"]) for t in model.live(alias))
+        close = await client.post(f"/docs/{memo}/close", headers=h, json={})
+        assert close.status_code == 409, step
+        payment = await pay(client, h, memo, 1.0)
+        if model.live():
+            assert key_of(payment) == "docs.memo_payment_while_drawn", step
+        else:
+            assert key_of(payment) != "docs.memo_payment_while_drawn", step
+            if payment.status_code == 200:
+                await ok(await client.post(f"/docs/{memo}/void-payment", headers=h, json={"payment_index": 0}))

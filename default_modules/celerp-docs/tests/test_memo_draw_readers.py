@@ -5,11 +5,16 @@ currency, unshipped demand, and cost of sales, which is booked only when the inv
 finalized and only once per finalize."""
 from __future__ import annotations
 
+import uuid
+
 import pytest
 
 from celerp.models.projections import Projection
 from celerp.services.fulfill import outstanding_physical_lines
-from memo_draw_support import auth, auth_full, back_to_memo, draft, drawn, drawn_lines, memo_out, ok, service_line, state
+from memo_draw_support import (
+    auth, auth_full, back_to_memo, draft, draw, drawn, drawn_lines, key_of, legacy_convert, lots_out_on, memo_out, ok, service_line,
+    state,
+)
 
 pytestmark = pytest.mark.asyncio
 
@@ -74,3 +79,164 @@ async def test_cogs_only_at_finalize_and_once_per_cycle(client, session):
         once = booked
         await ok(await client.post(f"/docs/{pf}/revert-to-draft", headers=h, json={}))
         assert await _net_for(client, h, pf) == {}
+
+
+# ── Memos converted before partial invoicing ─────────────────────────────────
+
+async def invoice_all(client, h, memo: str, key: str | None = None):
+    return await client.post(f"/docs/{memo}/convert", headers=h, json={"idempotency_key": key or uuid.uuid4().hex})
+
+
+async def test_legacy_converted_invoice_still_returns_on_void(client, session):
+    a = await auth_full(session)
+    h = a["headers"]
+    memo, _, lots = await memo_out(client, h, [(2, 10.0)], lots_per_line=2)
+    inv = await legacy_convert(client, session, a, memo, lots[0])
+
+    await ok(await client.post(f"/docs/{inv}/void", headers=h, json={"reason": "wrong customer"}))
+
+    assert await lots_out_on(client, h, memo, lots[0]) == lots[0]
+    m = await state(client, h, memo)
+    assert m["status"] == "final" and not m.get("converted_to")
+
+
+async def test_legacy_converted_memo_shows_no_fixed_amounts_left(client, session):
+    a = await auth_full(session)
+    h = a["headers"]
+    memo, lids, lots = await memo_out(client, h, [(2, 10.0)], lots_per_line=2, shipping=50.0,
+                                      discount=5.0, discount_type="flat")
+    inv = await legacy_convert(client, session, a, memo, lots[0])
+
+    f = (await state(client, h, memo))["memo_fixed_amounts"]
+    assert (f["shipping"], f["discount"], f["tax"]) == (0, 0, 0)
+    assert [(t["invoice_id"], t["shipping"], t["discount"]) for t in f["takes"]] == [(inv, 50.0, 5.0)]
+    assert not f["still_on_memo"]
+
+    await ok(await client.post(f"/docs/{inv}/void", headers=h, json={"reason": "wrong customer"}))
+    f = (await state(client, h, memo))["memo_fixed_amounts"]
+    assert (f["shipping"], f["discount"], f["takes"]) == (50.0, 5.0, [])
+    assert f["still_on_memo"] == pytest.approx(20.0 + 50.0 - 5.0)
+
+    await ok(await client.post(f"/docs/{memo}/set-available", headers=h, json={"line_ids": lids}))
+    await ok(await client.post(f"/docs/{memo}/close", headers=h, json={}))
+    f = (await state(client, h, memo))["memo_fixed_amounts"]
+    assert f["takes"] == [] and not f["still_on_memo"]
+
+
+async def _legacy_column(client, session, a, column: str):
+    """A memo in one column of the legacy state table: its id, line ids and lots."""
+    h = a["headers"]
+    memo, lids, lots = await memo_out(client, h, [(2, 10.0)], lots_per_line=2, shipping=50.0)
+    if column in ("converted", "reopened"):
+        inv = await legacy_convert(client, session, a, memo, lots[0])
+        if column == "reopened":
+            await ok(await client.post(f"/docs/{inv}/void", headers=h, json={"reason": "wrong customer"}))
+    elif column in ("closed", "voided"):
+        await ok(await client.post(f"/docs/{memo}/set-available", headers=h, json={"line_ids": lids}))
+        await ok(await client.post(f"/docs/{memo}/{'close' if column == 'closed' else 'void'}", headers=h,
+                                   json={} if column == "closed" else {"reason": "not sent"}))
+    return memo, lids, lots
+
+
+@pytest.mark.parametrize("column", ["never_drawn", "converted", "reopened", "closed", "voided"])
+async def test_new_readers_over_legacy_memo_states(client, session, column):
+    a = await auth_full(session)
+    h = a["headers"]
+    memo, lids, _ = await _legacy_column(client, session, a, column)
+    m = await state(client, h, memo)
+    f = m["memo_fixed_amounts"]
+
+    # memo_fixed_amounts and the c5 rows
+    if column in ("never_drawn", "reopened"):
+        assert (f["shipping"], f["takes"]) == (50.0, [])
+        assert f["still_on_memo"] == pytest.approx(70.0)
+    elif column == "converted":
+        assert f["shipping"] == 0 and [t["invoice_id"] for t in f["takes"]] == [m["converted_to"]]
+        assert not f["still_on_memo"]
+    else:
+        assert f["takes"] == [] and not f["still_on_memo"]
+
+    # Draw eligibility, through the preview so nothing is written
+    r = await draw(client, h, memo, line_ids=lids, dry_run=True)
+    expected_key = {"converted": "documents.err_memo_nothing_out", "closed": "documents.err_memo_issue_first",
+                    "voided": "documents.err_memo_issue_first"}.get(column)
+    if expected_key:
+        assert r.status_code == 409, r.text
+        assert key_of(r) == expected_key
+    else:
+        assert r.status_code == 200, r.text
+
+    # Close: refused in every column but closing a memo with nothing out, which none of these is
+    if column != "closed":
+        assert (await client.post(f"/docs/{memo}/close", headers=h, json={})).status_code == 409
+
+    # Invoice all
+    key = uuid.uuid4().hex
+    r = await invoice_all(client, h, memo, key)
+    if expected_key:
+        assert r.status_code == 409, r.text
+        assert key_of(r) == expected_key
+        return
+    inv = (await ok(r))["target_doc_id"]
+    assert (await state(client, h, inv))["shipping"] == 50.0
+    m = await state(client, h, memo)
+    assert m["status"] in ("final", "sent")
+    assert [t["invoice_id"] for t in m["memo_fixed_amounts"]["takes"]] == [inv]
+    assert (await ok(await invoice_all(client, h, memo, key)))["target_doc_id"] == inv
+    assert len((await state(client, h, memo))["memo_fixed_amounts"]["takes"]) == 1
+
+
+# ── Numbers shown by id ───────────────────────────────────────────────────────
+
+async def test_renumbered_documents_named_by_current_number(client, session, monkeypatch):
+    h = await auth(session)
+    memo, lids, _ = await memo_out(client, h, [(2, 10.0), (1, 10.0)], lots_per_line=1, shipping=50.0)
+    pf = await drawn(client, h, memo, line_ids=[lids[0]])
+    old_memo_no, old_pf_no = (await state(client, h, memo))["ref_id"], (await state(client, h, pf))["ref_id"]
+    await ok(await client.post(f"/docs/{memo}/renumber", headers=h, json={"ref_id": "MEMO-RENUMBERED"}))
+    await ok(await client.post(f"/docs/{pf}/renumber", headers=h, json={"ref_id": "PF-RENUMBERED"}))
+
+    m = await state(client, h, memo)
+    assert m["memo_fixed_amounts"]["takes"][0]["doc_number"] == "PF-RENUMBERED"
+    assert "PF-RENUMBERED" in m["line_items"][0]["shipped_label"]
+    inv = await state(client, h, pf)
+    assert [t["memo_number"] for t in inv["memo_fixed_taken"]] == ["MEMO-RENUMBERED"]
+    r = await client.post(f"/docs/{memo}/close", headers=h, json={})
+    assert r.status_code == 409 and "PF-RENUMBERED" in r.json()["detail"]["message"]
+
+    await ok(await client.post(f"/docs/{pf}/finalize", headers=h))
+    final_no = (await state(client, h, pf))["ref_id"]
+    m = await state(client, h, memo)
+    assert m["memo_fixed_amounts"]["takes"][0]["doc_number"] == final_no
+    assert final_no in m["line_items"][0]["shipped_label"]
+
+    from celerp_docs import routes as _routes
+
+    async def _boom(*args, **kwargs):
+        raise RuntimeError("ledger read failed")
+
+    monkeypatch.setattr(_routes, "_current_doc_numbers", _boom)
+    m = await state(client, h, memo)
+    assert m["memo_fixed_amounts"]["takes"][0]["doc_number"] == old_pf_no
+    assert [t["memo_number"] for t in (await state(client, h, pf))["memo_fixed_taken"]] == [old_memo_no]
+
+
+async def test_invoice_note_omitted_when_memo_unreadable(client, session, monkeypatch):
+    h = await auth(session)
+    memo, lids, _ = await memo_out(client, h, [(2, 10.0)], lots_per_line=2, shipping=50.0)
+    pf = await drawn(client, h, memo, {lids[0]: 1})
+    stored = await state(client, h, pf)
+    assert stored["memo_fixed_taken"]
+
+    from celerp_docs import routes as _routes
+
+    async def _boom(*args, **kwargs):
+        raise RuntimeError("ledger read failed")
+
+    monkeypatch.setattr(_routes, "_memo_fixed_taken", _boom)
+    r = await client.get(f"/docs/{pf}", headers=h)
+
+    assert r.status_code == 200, r.text
+    doc = r.json()
+    assert "memo_fixed_taken" not in doc
+    assert (doc["total"], doc["shipping"]) == (stored["total"], stored["shipping"])
