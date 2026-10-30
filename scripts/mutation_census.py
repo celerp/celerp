@@ -26,14 +26,16 @@ process, so the folders of all CI shards together give the whole suite) and writ
   every entry no finding matched or its own reproducing test did not see;
 - the coverage gaps: each mutating route whose source reaches a write that no test made
   write durably, and each write site no request write passed through, against the accepted
-  ones (mutation_coverage_gaps.json), with every entry that no longer matches its gap or
-  that the base branch's list (git ref origin/main by default) does not hold.
+  ones (mutation_coverage_gaps.json), with every entry that no longer matches its gap, that
+  the base branch's list (git ref origin/main by default) does not hold, or that counts more
+  write sites than the base branch's copy of it.
 
 With --enforce the exit status is 1 when a finding matches no baseline entry, an entry
 is stale or not reproduced by its test, a read route no test requested reaches a write, a
-coverage gap has no entry, or a coverage-gap entry no longer matches its gap or is not in the
-base branch's list: the list only shrinks, so a newly untested writer cannot take the place of
-an accepted one."""
+coverage gap has no entry, or a coverage-gap entry no longer matches its gap, is not in the
+base branch's list or counts more write sites than the base branch's copy: the list and each
+site entry's count only shrink, so a newly untested writer cannot take the place of an accepted
+one or join one."""
 
 from __future__ import annotations
 
@@ -356,6 +358,8 @@ def report(folders, out, coverage_path=None, baseline=mutation_baseline.PATH, ga
             status = "stale: no such gap"
         if base_entries is not None and k not in base_entries:
             status = f"not in the list at {base}"
+        elif base_entries is not None and k[0] == "site" and entry["count"] > base_entries[k]["count"]:
+            status = f"{entry['count']} site(s), the list at {base} holds {base_entries[k]['count']}"
         gap_failing += status != "matched"
         lines.append(f"| {k[0]} | {k[1]} | {entry['class']} | {status} |")
     lines.append("")

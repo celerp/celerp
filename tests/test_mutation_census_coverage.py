@@ -5,7 +5,8 @@
 and that no test made write durably, and a write site no observed request write passed
 through, unless the coverage-gap baseline (mutation_coverage_gaps.json) names it. The
 baseline does not grow, holds no entry that no longer matches a gap, and holds no entry the
-base branch's copy does not: a change may drop entries, never add or swap one in."""
+base branch's copy does not, nor a site entry counting more sites than its copy there: a change
+may drop entries or lower a count, never add, swap in or raise one."""
 
 from __future__ import annotations
 
@@ -196,6 +197,15 @@ def test_a_newly_untested_route_swapped_in_for_an_accepted_one_fails(tmp_path, m
                            base_gaps=[_route_gap(OTHER), _site_gap()])
     assert status == 1
     assert "| route | api POST /new | never requested | not in the list at HEAD |" in text
+
+
+def test_a_site_entry_counting_more_sites_than_the_base_branch_holds_fails(tmp_path, monkeypatch):
+    """A new untested write site in a function with an accepted site gap, with the entry's count raised."""
+    source = SOURCE.replace("    session.add(row)\n", "    session.add(row)\n    session.add(row)\n", 1)
+    status, text = _census(tmp_path, monkeypatch, routes=WROTE, gaps=[_site_gap(count=2)],
+                           base_gaps=[_site_gap(count=1)], source=source)
+    assert status == 1
+    assert "| site | celerp/routers/x.py create add | reached from a route | 2 site(s), the list at HEAD holds 1 |" in text
 
 
 def test_dropping_an_entry_the_base_branch_holds_passes(tmp_path, monkeypatch):

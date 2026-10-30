@@ -68,8 +68,9 @@ ROUTE_CLASSES = ("never requested", "requested, no durable write")
 SITE_CLASSES = ("not reached from a route", "reached from a route")  # by the static call graph
 # The checked-in entries at most: closing a gap lowers it in the same change, and nothing raises it.
 GAPS_CEILING = 300
-# The branch whose list of gaps a change may only shrink: an entry it does not hold is a newly
-# untested writer, even when the change drops another entry to keep the count.
+# The branch whose list of gaps a change may only shrink: an entry it does not hold, or a site
+# entry counting more sites than its copy there, is a newly untested writer, even when the
+# change drops another entry to keep the count.
 GAPS_BASE = "origin/main"
 
 
