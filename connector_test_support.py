@@ -15,11 +15,24 @@ import pytest
 from test_helpers import provision_company_books
 
 
-def ungated_first_sync_takes() -> set[str]:
-    """The sites in the sync runner that took a first-sync record without its company's lock,
-    as the lock checker's census records them: empty when every take is company-gated."""
-    return sys.modules["lock_rank"].RECORDER.ungated_sites(("row:connector_first_syncs",),
-                                                            "celerp/connectors/sync_runner.py")
+@contextlib.contextmanager
+def ungated_connector_takes(*paths: str):
+    """Yields a set that, once the block ends, holds the sites in files whose path contains one
+    of ``paths`` that took a connection row or a first-sync record inside the block without its
+    company's lock, as the lock checker's census records them: empty when every take was
+    company-gated. Sites recorded before the block are set aside for it and put back after, so
+    one an earlier test recorded still counts here."""
+    classes = sys.modules["lock_rank"].RECORDER.classes
+    rows = ("row:connector_configs", "row:connector_first_syncs")
+    kept = {c: classes[c].pop("ungated_sites", set()) for c in rows if c in classes}
+    found: set[str] = set()
+    try:
+        yield found
+    finally:
+        found.update(s for c in rows if c in classes for s in classes[c].get("ungated_sites", ())
+                     if any(path in s.split(":", 1)[0] for path in paths))
+        for c, sites in kept.items():
+            classes[c].setdefault("ungated_sites", set()).update(sites)
 
 
 async def seed_company(session, name: str = "Store") -> uuid.UUID:

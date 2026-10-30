@@ -13,7 +13,7 @@ import pytest
 from fasthtml.common import to_xml
 
 from celerp.models.company import Company
-from connector_test_support import stand_in_connector
+from connector_test_support import stand_in_connector, ungated_connector_takes
 
 from test_helpers import as_another_client, remove_company
 from ui.routes.settings_connectors import (
@@ -103,7 +103,9 @@ async def test_release_connector_ownership_clears_work_and_resets_cursor(_db_eng
         ))
         await session.commit()
     try:
-        await _release_and_check(get_session_ctx, cid, connector)
+        with ungated_connector_takes("celerp/connectors/") as ungated:
+            await _release_and_check(get_session_ctx, cid, connector)
+        assert ungated == set()
     finally:
         await remove_company(get_session_ctx, company_uuid)
 
@@ -210,10 +212,13 @@ async def test_get_connector_config_adopts_legacy_instance_row(_db_engine):
             await session.commit()
         with patch("celerp.config.ensure_instance_id", return_value=legacy_id), \
              patch("celerp.connectors.ownership.ensure_instance_id", return_value=legacy_id):
-            cfg = await _get_connector_config(company_id, "woocommerce")
-            assert cfg is not None
-            assert cfg.company_id == company_id
-            assert await _get_connector_config(company_id, "woocommerce") is not None
+            with ungated_connector_takes("celerp/connectors/") as ungated:
+                cfg = await _get_connector_config(company_id, "woocommerce")
+                assert cfg is not None
+                assert cfg.company_id == company_id
+                assert await _get_connector_config(company_id, "woocommerce") is not None
+            # The company's row is taken under its lock; the legacy row is no company's.
+            assert ungated == set()
     finally:
         async with get_session_ctx() as session:
             await session.execute(

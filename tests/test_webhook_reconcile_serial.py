@@ -191,16 +191,21 @@ async def test_a_reconcile_from_a_stale_read_never_removes_a_hook_a_newer_direct
 
 async def test_a_direction_change_is_reconciled_within_one_sweeper_tick(store):
     """No execution holds the webhooks when a person turns orders on: the dirty mark the
-    change committed is the request, and the next sweeper tick adds the order hooks."""
+    change committed is the request, and the next sweeper tick adds the order hooks. The
+    change and the reconcile each write the connection row under its company's lock."""
+    from connector_test_support import ungated_connector_takes
     from celerp.connectors.execution import sweep_reruns
 
-    fake, factory = store
-    company_id = await _connected(factory, fake, _NO_ORDERS)
-    await _set_orders_inbound(factory, company_id)
+    writers = ("celerp/connectors/webhook_reconcile.py", "celerp_connectors/routes.py")
+    with ungated_connector_takes(*writers) as ungated:
+        fake, factory = store
+        company_id = await _connected(factory, fake, _NO_ORDERS)
+        await _set_orders_inbound(factory, company_id)
 
-    await asyncio.wait_for(sweep_reruns(), timeout=10)
-    assert _ORDER_TOPICS <= set(fake.topics()), f"order hooks missing after the sweep: {fake.topics()}"
-    assert await _webhooks_dirty(factory, company_id) is False
+        await asyncio.wait_for(sweep_reruns(), timeout=10)
+        assert _ORDER_TOPICS <= set(fake.topics()), f"order hooks missing after the sweep: {fake.topics()}"
+        assert await _webhooks_dirty(factory, company_id) is False
+    assert ungated == set()
 
 
 async def test_two_reconcilers_over_duplicates_leave_exactly_the_lowest_hook_per_topic(store):

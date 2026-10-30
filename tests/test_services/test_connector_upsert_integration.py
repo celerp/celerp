@@ -2137,49 +2137,49 @@ async def _first_sync_then_undo(session, monkeypatch) -> None:
     from celerp_connectors.routes import undo_first_sync_links
     from celerp_inventory.routes import undo_import_batch
     from celerp.connectors.product_links import external_link_for_state
-    from connector_test_support import connect, item_state, ungated_first_sync_takes
+    from connector_test_support import connect, item_state, ungated_connector_takes
 
-    before = ungated_first_sync_takes()
-    monkeypatch.setattr("celerp.connectors.woocommerce.validate_public_base_url",
-                        AsyncMock(side_effect=lambda value, **_kw: value.rstrip("/")))
-    cid = await _seed_company(session, "FirstUndo")
-    user_id = await session.scalar(select(UserCompany.user_id).where(UserCompany.company_id == cid))
-    await add_item(session, cid, "item:match", "MATCH-1", name="Celerp name", sale_price=10.0)
-    config = await connect(session, cid, "woocommerce",
-                           {"products": "inbound", "stock": "off", "orders": "off", "customers": "off"},
-                           first_sync="starting")
-    batch = ImportBatch(id=uuid.uuid4(), company_id=cid, entity_type="item", filename="WooCommerce first sync",
-                        row_count=0, entity_ids=[], idempotency_keys=[], reversible=True)
-    config.first_sync.directions = dict(config.entity_directions)
-    config.first_sync.batch_id, config.first_sync.match = str(batch.id), "take"
-    config.first_sync.undo = {"links": []}
-    await session.flush()
-    session.add(batch)  # after the first-sync record is locked, as starting a first sync does
-    await session.commit()
-    ctx = ConnectorContext(company_id=str(cid), access_token="ck:cs", store_handle="https://store.example.com")
-    monkeypatch.setattr("celerp.connectors.relay_token.fetch_context", AsyncMock(return_value=ctx))
+    with ungated_connector_takes("celerp/connectors/sync_runner.py") as ungated:
+        monkeypatch.setattr("celerp.connectors.woocommerce.validate_public_base_url",
+                            AsyncMock(side_effect=lambda value, **_kw: value.rstrip("/")))
+        cid = await _seed_company(session, "FirstUndo")
+        user_id = await session.scalar(select(UserCompany.user_id).where(UserCompany.company_id == cid))
+        await add_item(session, cid, "item:match", "MATCH-1", name="Celerp name", sale_price=10.0)
+        config = await connect(session, cid, "woocommerce",
+                               {"products": "inbound", "stock": "off", "orders": "off", "customers": "off"},
+                               first_sync="starting")
+        batch = ImportBatch(id=uuid.uuid4(), company_id=cid, entity_type="item", filename="WooCommerce first sync",
+                            row_count=0, entity_ids=[], idempotency_keys=[], reversible=True)
+        config.first_sync.directions = dict(config.entity_directions)
+        config.first_sync.batch_id, config.first_sync.match = str(batch.id), "take"
+        config.first_sync.undo = {"links": []}
+        await session.flush()
+        session.add(batch)  # after the first-sync record is locked, as starting a first sync does
+        await session.commit()
+        ctx = ConnectorContext(company_id=str(cid), access_token="ck:cs", store_handle="https://store.example.com")
+        monkeypatch.setattr("celerp.connectors.relay_token.fetch_context", AsyncMock(return_value=ctx))
 
-    with respx.mock:
-        respx.get("https://store.example.com/wp-json/wc/v3/products").mock(return_value=httpx.Response(
-            200, json=[
-                {"id": 1, "sku": "MATCH-1", "name": "Store name", "regular_price": "99.00"},
-                {"id": 2, "sku": "NEW-1", "name": "New in store", "regular_price": "5.00",
-                 "manage_stock": True, "stock_quantity": 3,
-                 "images": [{"id": 31, "src": "https://cdn.example.com/new.jpg", "name": "new"}]},
-            ]))
-        respx.get("https://cdn.example.com/new.jpg").mock(return_value=httpx.Response(
-            200, content=b"img", headers={"content-type": "image/jpeg"}))
-        monkeypatch.setattr("celerp.services.outbound_url.validate_public_base_url",
-                            AsyncMock(side_effect=lambda value, **_kw: value))
-        monkeypatch.setattr("celerp.services.attachments.store_upload", AsyncMock(return_value={
-            "id": "pulled1", "filename": "new", "mime": "image/jpeg", "size": 3,
-            "url": f"/static/attachments/{cid}/pulled1.jpg"}))
-        async with connector_execution(cid, "woocommerce", "first_sync", plan_resources(
-                WooCommerceConnector(), config.entity_directions)) as ex:
-            results = await run_first_sync(WooCommerceConnector(), ex.ctx)
+        with respx.mock:
+            respx.get("https://store.example.com/wp-json/wc/v3/products").mock(return_value=httpx.Response(
+                200, json=[
+                    {"id": 1, "sku": "MATCH-1", "name": "Store name", "regular_price": "99.00"},
+                    {"id": 2, "sku": "NEW-1", "name": "New in store", "regular_price": "5.00",
+                     "manage_stock": True, "stock_quantity": 3,
+                     "images": [{"id": 31, "src": "https://cdn.example.com/new.jpg", "name": "new"}]},
+                ]))
+            respx.get("https://cdn.example.com/new.jpg").mock(return_value=httpx.Response(
+                200, content=b"img", headers={"content-type": "image/jpeg"}))
+            monkeypatch.setattr("celerp.services.outbound_url.validate_public_base_url",
+                                AsyncMock(side_effect=lambda value, **_kw: value))
+            monkeypatch.setattr("celerp.services.attachments.store_upload", AsyncMock(return_value={
+                "id": "pulled1", "filename": "new", "mime": "image/jpeg", "size": 3,
+                "url": f"/static/attachments/{cid}/pulled1.jpg"}))
+            async with connector_execution(cid, "woocommerce", "first_sync", plan_resources(
+                    WooCommerceConnector(), config.entity_directions)) as ex:
+                results = await run_first_sync(WooCommerceConnector(), ex.ctx)
 
-    assert [r.entity for r in results] and all(r.ok for r in results), results
-    assert ungated_first_sync_takes() - before == set()
+        assert [r.entity for r in results] and all(r.ok for r in results), results
+    assert ungated == set()
     await session.refresh(batch)
     created = [e for e in batch.entity_ids]
     assert len(created) == 1 and (await item_state(session, cid, created[0]))["sku"] == "NEW-1"

@@ -590,22 +590,22 @@ async def test_connect_makes_no_store_write():
 async def test_a_key_the_store_will_not_let_write_stops_the_first_sync_with_its_reason(connector_session):
     from celerp.connectors.sync_runner import fail_first_sync
     from celerp.models.connector_first_sync import ConnectorFirstSync
-    from connector_test_support import connect, seed_company, ungated_first_sync_takes
+    from connector_test_support import connect, seed_company, ungated_connector_takes
 
     session = connector_session
-    before = ungated_first_sync_takes()
-    cid = await seed_company(session, "ReadOnlyKey")
-    await connect(session, cid, "woocommerce", dict(WOO_DEFAULTS), first_sync="running")
-    refused = httpx.Response(401, json={"code": "woocommerce_rest_cannot_create"},
-                             request=httpx.Request("POST", f"{STORE}/wp-json/wc/v3/webhooks"))
-    await fail_first_sync(cid, "woocommerce", httpx.HTTPStatusError(
-        "HTTP 401", request=refused.request, response=refused))
+    with ungated_connector_takes("celerp/connectors/sync_runner.py") as ungated:
+        cid = await seed_company(session, "ReadOnlyKey")
+        await connect(session, cid, "woocommerce", dict(WOO_DEFAULTS), first_sync="running")
+        refused = httpx.Response(401, json={"code": "woocommerce_rest_cannot_create"},
+                                 request=httpx.Request("POST", f"{STORE}/wp-json/wc/v3/webhooks"))
+        await fail_first_sync(cid, "woocommerce", httpx.HTTPStatusError(
+            "HTTP 401", request=refused.request, response=refused))
 
-    row = await session.get(ConnectorFirstSync, (str(cid), "woocommerce"), populate_existing=True)
-    assert row.state == "failed"
-    assert row.error == {"key": "connectors.err_read_only_key"}
-    assert "Read/Write" in t(row.error["key"])
-    assert ungated_first_sync_takes() - before == set()
+        row = await session.get(ConnectorFirstSync, (str(cid), "woocommerce"), populate_existing=True)
+        assert row.state == "failed"
+        assert row.error == {"key": "connectors.err_read_only_key"}
+        assert "Read/Write" in t(row.error["key"])
+    assert ungated == set()
 
 
 def _ui_connect_patches(start):
