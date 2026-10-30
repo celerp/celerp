@@ -686,26 +686,66 @@ async def _again(request: Request, mode: WizardMode, upload_token: str, *, value
     return page
 
 
-async def _staged(request: Request, mode: WizardMode):
-    """The staged upload's preview, after its modules were prepared or Celerp restarted."""
+async def _staged_preview(request: Request, mode: WizardMode):
+    """The staged upload's preview, or the page that says why there is none."""
     if (denied := await gate(request, mode)) is not None:
-        return denied
+        return None, denied
     upload_token = request.cookies.get(UPLOAD_COOKIE)
     if not upload_token:
-        return _upload_again(request, mode, t("company_backup.upload_expired"))
+        return None, _upload_again(request, mode, t("company_backup.upload_expired"))
     try:
-        preview = _preview_of(await api.company_backup_staged(api_token(request, mode), upload_token,
-                                                              _mode_key(mode)))
+        return _preview_of(await api.company_backup_staged(api_token(request, mode), upload_token,
+                                                           _mode_key(mode))), None
     except APIError as e:
         if e.status >= 500:
-            return await _restarting_page(request, mode, _message(e), status_code=_status(e))
-        return _upload_again(request, mode, _message(e))
-    if preview.get("open_now") is not None and not mode.bootstrap:
-        return await _open_now(request, mode, upload_token, preview)
-    error = t("company_backup.open_held") if preview.get("open_held") else None
-    page = _html(await _preview_page(request, mode, preview, error=error))
+            return None, await _restarting_page(request, mode, _message(e), status_code=_status(e))
+        return None, _upload_again(request, mode, _message(e))
+
+
+def _opens_now(mode: WizardMode, preview: dict) -> bool:
+    return preview.get("open_now") is not None and not mode.bootstrap
+
+
+async def _staged_page(request: Request, mode: WizardMode, preview: dict):
+    if _opens_now(mode, preview):
+        page = _html(_opening_chosen_page(request, mode, preview))
+    else:
+        error = t("company_backup.open_held") if preview.get("open_held") else None
+        page = _html(await _preview_page(request, mode, preview, error=error))
     page.headers["X-Celerp-Staged"] = "1"
     return page
+
+
+async def _staged(request: Request, mode: WizardMode):
+    """The staged upload's preview, after its modules were prepared or Celerp restarted.
+    It only reads: a copy the owner chose Enable and open for is opened by the POST its page sends."""
+    preview, page = await _staged_preview(request, mode)
+    return page if page is not None else await _staged_page(request, mode, preview)
+
+
+async def _open_staged(request: Request, mode: WizardMode):
+    """Open the copy the owner chose Enable and open for; anything else shows its preview."""
+    preview, page = await _staged_preview(request, mode)
+    if page is not None:
+        return page
+    if not _opens_now(mode, preview):
+        return await _staged_page(request, mode, preview)
+    return await _open_now(request, mode, request.cookies[UPLOAD_COOKIE], preview)
+
+
+def _opening_chosen_page(request: Request, mode: WizardMode, preview: dict):
+    """The modules are on: the page opens the copy the owner chose Enable and open for,
+    and says so; the button sends the same request when scripts are off."""
+    return wizard_page(
+        request,
+        auth_header(t(_TITLE)),
+        P(t("company_backup.opening_chosen", name=preview["open_now"].get("company_name") or ""), cls="form-hint"),
+        Form(Button(t("company_backup.open_chosen"), type="submit", cls="btn btn--primary btn--full"),
+             method="post", action=f"{mode.base}/staged", id="open-chosen", cls="auth-form"),
+        Script("document.getElementById('open-chosen').submit();"),
+        _cancel(mode),
+        title=_TITLE,
+    )
 
 
 async def _open_now(request: Request, mode: WizardMode, upload_token: str, preview: dict):
@@ -1459,7 +1499,8 @@ def company_backup_routes(app) -> None:
                                         ("post", "/restore", _restore), ("get", "/done", _done)):
             getattr(app, method)(f"{mode.base}{suffix}")(bind(handler, mode, "company_backup"))
     for mode in (SETTINGS, NEW_COMPANY, BOOTSTRAP):
-        for method, suffix, handler in (("get", "/staged", _staged), ("post", "/prepare", _prepare),
+        for method, suffix, handler in (("get", "/staged", _staged), ("post", "/staged", _open_staged),
+                                        ("post", "/prepare", _prepare),
                                         ("get", "/restarting", _restarting), ("post", "/import-module", _import_module),
                                         ("post", "/discard", _discard), ("post", "/decline", _decline)):
             getattr(app, method)(f"{mode.base}{suffix}")(bind(handler, mode, "company_backup"))

@@ -728,7 +728,8 @@ async def test_staff_reset_refusals(client, session):
 async def test_staff_reset_locks_target(client, session):
     """The staff member's login row is locked before their memberships and roles are
     read, the order a role change keeps, so a promotion to owner made at the same
-    moment either waits for the reset or is seen by it."""
+    moment either waits for the reset or is seen by it. FOR NO KEY UPDATE, so a sign-in
+    of theirs holding their session state can still record its session."""
     owner = (await _register(client))["access_token"]
     await _staff(client, session, owner)
     target = str((await _user(session, STAFF)).id)
@@ -746,7 +747,7 @@ async def test_staff_reset_locks_target(client, session):
         event.remove(sync_conn, "before_cursor_execute", _record)
     assert r.status_code == 200, r.text
     first = statements[0]
-    assert "FROM users" in first and "FOR UPDATE" in first, statements
+    assert "FROM users" in first and "FOR NO KEY UPDATE" in first, statements
 
 
 # --- The reset link is gone ------------------------------------------------------------

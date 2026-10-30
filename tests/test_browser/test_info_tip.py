@@ -15,7 +15,8 @@ _BUBBLE = "[role=tooltip]"
 def _open_settled(page, url: str) -> None:
     """Open the page and let its system-health check answer before pointing at anything. On a
     busy machine that reply adds a banner above the page; arriving mid-hover, it moves the icon
-    out from under the pointer, which correctly closes the tip."""
+    out from under the pointer, which correctly closes the tip, and arriving mid-tap, it moves
+    the icon away from the point being tapped. Every test here opens its page this way."""
     with page.expect_response("**/health/system") as health:
         page.goto(url, wait_until="load")
     health.value.finished()
@@ -70,7 +71,7 @@ def test_manufacturing_settings_uses_the_same_tip(page, ui_server, api):
 
 
 def test_keyboard_focus_opens_and_escape_closes(page, ui_server, api):
-    page.goto(f"{ui_server}/finance/company-details", wait_until="load")
+    _open_settled(page, f"{ui_server}/finance/company-details")
     tip = page.locator(".info-tip").first
     tip.focus()
     _bubble_box(page)
@@ -81,7 +82,7 @@ def test_keyboard_focus_opens_and_escape_closes(page, ui_server, api):
 
 def test_narrow_viewport_clamps_and_flips_below(page, ui_server, api):
     page.set_viewport_size({"width": 360, "height": 740})
-    page.goto(f"{ui_server}/finance/company-details", wait_until="load")
+    _open_settled(page, f"{ui_server}/finance/company-details")
     tip = page.locator(".info-tip").first
     # Put the icon hard against the top of the viewport: no room above, so it opens below.
     tip.evaluate("el => window.scrollBy(0, el.getBoundingClientRect().top - 2)")
@@ -110,7 +111,7 @@ def _near_icon(tip_box: dict, bubble_box: dict) -> bool:
 def test_tab_to_an_icon_below_the_fold_shows_its_tip(page, ui_server, api):
     """Focusing an icon below the fold scrolls it into view; the tip opens next to it."""
     page.set_viewport_size({"width": 1280, "height": 240})
-    page.goto(f"{ui_server}/settings/manufacturing", wait_until="load")
+    _open_settled(page, f"{ui_server}/settings/manufacturing")
     last = page.locator(".info-tip").count() - 1
     tip = page.locator(".info-tip").nth(last)
     assert tip.evaluate("el => el.getBoundingClientRect().top > window.innerHeight"), "icon must start below the fold"
@@ -123,7 +124,7 @@ def test_tab_to_an_icon_below_the_fold_shows_its_tip(page, ui_server, api):
 
 def test_tip_follows_its_icon_on_scroll_and_closes_when_the_icon_leaves(page, ui_server, api):
     page.set_viewport_size({"width": 1280, "height": 600})
-    page.goto(f"{ui_server}/settings/manufacturing", wait_until="load")
+    _open_settled(page, f"{ui_server}/settings/manufacturing")
     page.evaluate("() => { document.body.style.paddingBottom = '1500px'; }")
     tip = page.locator(".info-tip").nth(1)
     tip.evaluate("el => window.scrollBy(0, el.getBoundingClientRect().top - 350)")
@@ -139,7 +140,7 @@ def test_tip_follows_its_icon_on_scroll_and_closes_when_the_icon_leaves(page, ui
 
 
 def test_opening_a_second_tip_releases_the_first(page, ui_server, api):
-    page.goto(f"{ui_server}/settings/manufacturing", wait_until="load")
+    _open_settled(page, f"{ui_server}/settings/manufacturing")
     first, second = page.locator(".info-tip").nth(0), page.locator(".info-tip").nth(1)
     first.hover()
     _bubble_box(page)
@@ -151,7 +152,7 @@ def test_opening_a_second_tip_releases_the_first(page, ui_server, api):
 
 
 def test_tip_reopens_after_its_bubble_is_removed_from_the_page(page, ui_server, api):
-    page.goto(f"{ui_server}/settings/manufacturing", wait_until="load")
+    _open_settled(page, f"{ui_server}/settings/manufacturing")
     tip = page.locator(".info-tip").first
     tip.focus()
     _bubble_box(page)
@@ -174,7 +175,7 @@ def touch_page(browser_context):
 
 def test_tap_toggles_the_tip_and_a_tap_elsewhere_closes_it(touch_page, ui_server, api):
     page = touch_page
-    page.goto(f"{ui_server}/settings/manufacturing", wait_until="load")
+    _open_settled(page, f"{ui_server}/settings/manufacturing")
     tip = page.locator(".info-tip").first
     # Only the checkbox this icon's label wraps: other page checkboxes fill in from background fetches.
     checked = lambda: tip.evaluate("t => t.closest('label').querySelector('input[type=checkbox]').checked")

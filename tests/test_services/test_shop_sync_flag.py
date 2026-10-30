@@ -10,11 +10,10 @@ column by the engine) while preserving the rest of the item state.
 from __future__ import annotations
 
 import uuid
-from unittest.mock import AsyncMock
-
 import pytest
 from sqlalchemy import select
 
+from celerp.connectors.ownership import lock_connector_key
 from celerp.events.engine import emit_event
 from celerp.models.company import Company
 from celerp.models.projections import Projection
@@ -33,7 +32,10 @@ def test_handler_toggles_flag_and_preserves_state():
         apply_shop_sync_event(base, "shop.sync.bogus", {})
 
 
-async def _emit(session, cid, eid, event_type, data):
+async def _emit(session, cid, eid, event_type, data, *, fence=True):
+    if fence and event_type.startswith("shop.sync."):
+        # As the bulk opt-in route does: the Shopify fence first.
+        await lock_connector_key(session, "shopify")
     await emit_event(
         session, company_id=cid, entity_id=eid, entity_type="item",
         event_type=event_type, data=data, actor_id=None, location_id=None,
@@ -72,27 +74,18 @@ async def test_shop_sync_disabled_clears_flag(session):
 
 
 @pytest.mark.asyncio
-async def test_shop_sync_event_acquires_connector_fence(session, monkeypatch):
+async def test_shop_sync_event_needs_the_shopify_fence_held(session):
+    """The opt-in races a Shopify connect or disconnect unless the fence is held, and the
+    fence ranks before the company lock, so emit_event checks it and never takes it."""
     cid = uuid.uuid4()
     session.add(Company(id=cid, name="FenceCo", slug=f"fenceco-{cid.hex[:8]}"))
     await session.flush()
     eid = "item:fence-1"
-    await _emit(
-        session,
-        cid,
-        eid,
-        "item.created",
-        {"sku": "F", "name": "Fence", "quantity": 1},
-    )
+    await _emit(session, cid, eid, "item.created", {"sku": "F", "name": "Fence", "quantity": 1})
 
-    lock = AsyncMock(return_value=None)
-    monkeypatch.setattr(
-        "celerp.connectors.ownership.lock_connector_key",
-        lock,
-    )
+    with pytest.raises(RuntimeError, match="Shopify connector fence"):
+        await _emit(session, cid, eid, "shop.sync.disabled", {}, fence=False)
     await _emit(session, cid, eid, "shop.sync.disabled", {})
-
-    lock.assert_awaited_once_with(session, "shopify")
 
 
 @pytest.mark.asyncio

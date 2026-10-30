@@ -204,13 +204,6 @@ def _owner_note(lang: str) -> FT:
 def _local_panel(modules: list[dict], lang: str = "en",
                  flash_text: str | None = None, flash_error: bool = False,
                  owner: bool = False) -> FT:
-    required_by: dict[str, list[str]] = {}
-    for m in modules:
-        if not m.get("enabled"):
-            continue
-        for dep in (m.get("depends_on") or []):
-            required_by.setdefault(dep, []).append(m.get("label") or m["name"])
-
     # Order: imported modules on top, newest install first; bundled defaults
     # below, live ones before off ones. Built with three stable passes, least
     # significant first (Python's sort is stable, so each pass preserves the
@@ -285,7 +278,7 @@ def _local_panel(modules: list[dict], lang: str = "en",
                 title=t("modules.not_verified_tip", lang),
             ))
 
-        dependents = required_by.get(name, [])
+        dependents = [name_to_label.get(n, n) for n in (m.get("needed_by") or [])]
         if enabled:
             if dependents:
                 toggle_btn = Button(t("btn.disable", lang),

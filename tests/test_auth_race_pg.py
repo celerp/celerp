@@ -406,3 +406,128 @@ async def test_23_stale_identity_map_cannot_revoke_newer_generation(engine, seed
         await stale.close()
 
     assert await _current_nonce(sessionmaker, user_id) == n1
+
+
+# ---------------------------------------------------------------------------
+# Tests 24-25: a role change and a sign-in of the same user at once
+# ---------------------------------------------------------------------------
+
+
+async def _waiting_on_a_lock(engine) -> bool:
+    from sqlalchemy import text
+
+    async with engine.connect() as conn:
+        return bool(await conn.scalar(text(
+            "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() "
+            "AND wait_event_type = 'Lock'")))
+
+
+async def _until_waiting(engine) -> None:
+    for _ in range(500):
+        if await _waiting_on_a_lock(engine):
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError("the second transaction never waited on a lock")
+
+
+async def _change_role(engine, seeded, role: str) -> None:
+    """The company owner changes the user's role in company A (patch_user)."""
+    from celerp.routers.companies import UserPatch, patch_user
+
+    s = await _fresh_session(engine)
+    try:
+        await patch_user(user_id=seeded["user_id"], payload=UserPatch(role=role),
+                         company_id=seeded["company_a_id"], caller_role="owner", _=None, session=s)
+    finally:
+        await s.close()
+
+
+async def _sign_in(engine, seeded) -> dict:
+    """A fresh password sign-in of the user into company A."""
+    s = await _fresh_session(engine)
+    try:
+        user = await s.get(User, seeded["user_id"])
+        return await credentials.issue_token_pair(
+            s, user=user, company_id=seeded["company_a_id"], expected_snonce=None)
+    finally:
+        await s.close()
+
+
+async def _role_in_a(sessionmaker, seeded) -> str:
+    async with sessionmaker() as s:
+        return (await s.execute(select(UserCompany.role).where(
+            UserCompany.user_id == seeded["user_id"],
+            UserCompany.company_id == seeded["company_a_id"]))).scalar_one()
+
+
+@pytest_asyncio.fixture
+async def admin_in_a(seeded, sessionmaker):
+    """The user is an admin in company A, so the role change is not the last owner's."""
+    async with sessionmaker() as s:
+        link = (await s.execute(select(UserCompany).where(
+            UserCompany.user_id == seeded["user_id"],
+            UserCompany.company_id == seeded["company_a_id"]))).scalar_one()
+        link.role = "admin"
+        await s.commit()
+    return seeded
+
+
+async def test_24_role_change_waits_for_a_sign_in_holding_the_users_session_state(
+        engine, admin_in_a, sessionmaker, monkeypatch):
+    """The sign-in holds the user's session state when the role change arrives. The role
+    change waits for it instead of locking the login so the sign-in's session record can
+    never be written: both finish, and the role change then ends the session just issued."""
+    seeded = admin_in_a
+    held, release = asyncio.Event(), asyncio.Event()
+    real = session_tracker.lock_auth_state
+
+    async def paused(session, user_id):
+        row = await real(session, user_id)
+        held.set()
+        await release.wait()
+        return row
+
+    monkeypatch.setattr(session_tracker, "lock_auth_state", paused)
+    sign_in = asyncio.create_task(_sign_in(engine, seeded))
+    await held.wait()
+    change = asyncio.create_task(_change_role(engine, seeded, "manager"))
+    await _until_waiting(engine)
+    release.set()
+    tokens, _ = await asyncio.wait_for(asyncio.gather(sign_in, change), timeout=30)
+
+    assert await _role_in_a(sessionmaker, seeded) == "manager"
+    assert not await _token_is_usable(sessionmaker, tokens["access_token"])
+
+
+async def test_25_sign_in_waits_for_a_role_change_and_lands_on_its_generation(
+        engine, admin_in_a, sessionmaker, monkeypatch):
+    """The role change holds the user's session state when the sign-in arrives. The
+    sign-in waits for it to commit and issues a session the change did not end."""
+    seeded = admin_in_a
+    held, release = asyncio.Event(), asyncio.Event()
+    real = session_tracker.invalidate_sessions
+
+    async def paused(session, user_id, **kw):
+        commit = session.commit
+
+        async def held_commit():
+            held.set()
+            await release.wait()
+            await commit()
+
+        session.commit = held_commit
+        try:
+            await real(session, user_id, **kw)
+        finally:
+            session.commit = commit
+
+    monkeypatch.setattr(session_tracker, "invalidate_sessions", paused)
+    change = asyncio.create_task(_change_role(engine, seeded, "manager"))
+    await held.wait()
+    sign_in = asyncio.create_task(_sign_in(engine, seeded))
+    await _until_waiting(engine)
+    release.set()
+    _, tokens = await asyncio.wait_for(asyncio.gather(change, sign_in), timeout=30)
+
+    assert await _role_in_a(sessionmaker, seeded) == "manager"
+    assert await _token_is_usable(sessionmaker, tokens["access_token"])

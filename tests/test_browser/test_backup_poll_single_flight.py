@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import pytest
 
+from .conftest import release_held_routes
+
 pytestmark = pytest.mark.browser
 
 
@@ -40,12 +42,7 @@ def test_poll_single_flight_backup_banner(page, ui_server):
 
     issued = len(requests)
     # Release the held routes so teardown does not block on outstanding requests.
-    page.unroute("**/backup/active")
-    for route in held:
-        try:
-            route.abort()
-        except Exception:
-            pass
+    release_held_routes(page, "**/backup/active", held)
 
     assert issued == 1, (
         "the backup poll must be single-flight: exactly one request may be in flight "

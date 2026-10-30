@@ -196,6 +196,7 @@ async def delete_conversation(
     """Delete a conversation and its messages, and end its open jobs as stopped in the
     same transaction, so none outlives it open. Returns True if found. Raises
     ``ConversationBusy``, and deletes nothing, while a job runs in it."""
+    await jobs.lock_for_ai(session, company_id)
     conv = await get_conversation(session, conversation_id, company_id, user_id)
     if conv is None:
         return False

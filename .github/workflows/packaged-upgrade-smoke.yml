@@ -49,8 +49,10 @@ on:
         type: string
         required: true
 
+# contents: write only to read the draft that holds the previous installers
+# (scripts/ci_installers.py); nothing here writes to the repository.
 permissions:
-  contents: read
+  contents: write
   actions: read
 
 env:
@@ -100,14 +102,20 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # The previous release's installer is the copy on the CI mirror draft, never the
+      # public download (scripts/ci_installers.py).
       - name: Download the previous release and the candidate
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/previous" "$RUNNER_TEMP/candidate"
-          gh release download "$PREVIOUS" --repo "$GITHUB_REPOSITORY" --pattern "${{ matrix.asset }}" --dir "$RUNNER_TEMP/previous"
+          ${{ runner.os == 'Windows' && 'python' || 'python3' }} scripts/ci_installers.py fetch "$PREVIOUS" "${{ matrix.asset }}" "$RUNNER_TEMP/previous"
           gh run download "$CANDIDATE_RUN" --repo "$GITHUB_REPOSITORY" --name "${{ matrix.artifact }}" --dir "$RUNNER_TEMP/candidate"
           [ -s "$RUNNER_TEMP/candidate/${{ matrix.asset }}" ] || { echo "::error::build run $CANDIDATE_RUN's ${{ matrix.artifact }} holds no ${{ matrix.asset }}"; exit 1; }
+
+      - name: Keep the apps under test off the public release
+        shell: bash
+        run: ${{ runner.os == 'Windows' && 'python' || 'python3' }} scripts/ci_installers.py hide-releases
 
       # Data: each copy opens the same data directory in turn.
       - name: Previous, candidate, downgrade, reopen (Linux, data)

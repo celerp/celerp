@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.config import ensure_instance_id
 from celerp.models.company import Company
 from celerp.models.connector_config import ConnectorConfig
-from celerp.services.company_lock import lock_company
+from celerp.services.company_lock import lock_company, note, noted
 from ui.i18n import t
 
 
@@ -34,12 +34,15 @@ class ConnectorStoreChangedError(ConnectorOwnershipError):
     """The store differs from the one this company's imported records came from."""
 
 
+# Connectors that publish catalog products, and so carry an item's external links.
+PRODUCT_CHANNEL_PLATFORMS = ("shopify", "woocommerce")
+# Connecting one of them, or choosing which items sync with it, writes links on
+# Inventory's items (boundary.needs_modules_for).
+PRODUCT_CHANNEL_MODULES = {platform: ("celerp-inventory",) for platform in PRODUCT_CHANNEL_PLATFORMS}
+
 # Bounded wait for the exclusive ownership fence. Syncs and webhooks hold the
 # fence shared for as long as their remote calls take; an ownership change
 # waits this long behind them, then reports busy instead of stalling a request.
-# Connectors that publish catalog products, and so carry an item's external links.
-PRODUCT_CHANNEL_PLATFORMS = ("shopify", "woocommerce")
-
 OWNER_LOCK_TIMEOUT_MS = 5000
 _LOCK_NOT_AVAILABLE = "55P03"
 
@@ -74,24 +77,37 @@ def _resolve_connector_owner(
     return None
 
 
+# Proofs of the fences a transaction holds (company_lock.note), so work that relies on
+# one can check it is held instead of taking it out of order.
+_FENCE = "connector-fence"
+_MAINTENANCE = "connector-maintenance"
+
+
+def holds_connector_fence(session: AsyncSession, connector: str) -> bool:
+    """Whether this transaction holds the connector's ownership fence, or excludes all
+    connector work (lock_connector_maintenance)."""
+    fences = noted(session, _FENCE)
+    return _MAINTENANCE in fences or f"connector-owner:{connector}" in fences
+
+
 async def lock_connector_runtime(session: AsyncSession) -> None:
     """Join the shared connector-runtime fence for this transaction."""
-    if session.get_bind().dialect.name == "sqlite":
-        return
-    await session.execute(
-        sa.text("SELECT pg_advisory_xact_lock_shared(hashtextextended(:k, 0))"),
-        {"k": "connector-runtime"},
-    )
+    if session.get_bind().dialect.name != "sqlite":
+        await session.execute(
+            sa.text("SELECT pg_advisory_xact_lock_shared(hashtextextended(:k, 0))"),
+            {"k": "connector-runtime"},
+        )
+    note(session, _FENCE, "connector-runtime")
 
 
 async def lock_connector_maintenance(session: AsyncSession) -> None:
     """Wait for connector work to finish and exclude new work."""
-    if session.get_bind().dialect.name == "sqlite":
-        return
-    await session.execute(
-        sa.text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"),
-        {"k": "connector-runtime"},
-    )
+    if session.get_bind().dialect.name != "sqlite":
+        await session.execute(
+            sa.text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"),
+            {"k": "connector-runtime"},
+        )
+    note(session, _FENCE, _MAINTENANCE)
 
 
 @asynccontextmanager
@@ -155,8 +171,12 @@ async def lock_connector_key(
     Connecting and disconnecting hold it EXCLUSIVE behind a bounded wait
     and raise ConnectorBusyError when work is still running."""
     await lock_connector_runtime(session)
-    if session.get_bind().dialect.name == "sqlite":
-        return
+    if session.get_bind().dialect.name != "sqlite":
+        await _take_connector_key(session, connector, exclusive)
+    note(session, _FENCE, f"connector-owner:{connector}")
+
+
+async def _take_connector_key(session: AsyncSession, connector: str, exclusive: bool) -> None:
     key = {"k": f"connector-owner:{connector}"}
     if not exclusive:
         await session.execute(
@@ -452,6 +472,7 @@ async def release_connector_ownership(
     company_id = str(company_id)
     legacy_id = ensure_instance_id()
     await lock_connector_key(session, connector, exclusive=True)
+    await lock_company(session, uuid.UUID(company_id))
     mine = await connector_release_scope(session, company_id, connector)
 
     for queue_owner in {company_id, legacy_id}:
@@ -483,11 +504,12 @@ async def release_unassigned_connector(
     from celerp.connectors.outbound_queue import release_connector_queue
 
     legacy_id = ensure_instance_id()
-    rows = await lock_unassigned_connector(session, connector)
+    await lock_unassigned_connector(session, connector)
     await release_connector_queue(session, legacy_id, connector)
     record_connector_reset(session, legacy_id, connector, status=status)
-    for row in rows:
-        await session.delete(row)
+    await session.execute(sa.delete(ConnectorConfig).where(
+        ConnectorConfig.company_id == legacy_id, ConnectorConfig.connector == connector,
+    ).execution_options(synchronize_session="fetch"))
     await session.flush()
 
 
@@ -531,13 +553,13 @@ async def bind_connector_store(session: AsyncSession, company_id, connector, ctx
         )).all())
 
     # Orders and invoices prove the store best, then customers, then products.
-    prefix = f"{connector.name}:%"
+    prefix = f"{connector.name}:"
     samples = (
-        await sample(Projection.entity_id.like(f"doc:{prefix}"))
-        or await sample(Projection.entity_id.like(f"contact:{prefix}"))
+        await sample(Projection.entity_id.startswith(f"doc:{prefix}", autoescape=True))
+        or await sample(Projection.entity_id.startswith(f"contact:{prefix}", autoescape=True))
         or await sample(
             Projection.entity_type == "item",
-            Projection.state["idempotency_key"].as_string().like(prefix),
+            Projection.state["idempotency_key"].as_string().startswith(prefix, autoescape=True),
         )
     )
     if samples:

@@ -95,6 +95,85 @@ def test_print_shows_the_stored_figures_with_shipping():
     assert "-$10.00" in totals and "$9.00" in totals and "Shipping" in totals and "$104.00" in totals
 
 
+def _print_totals(doc: dict) -> dict[str, str]:
+    """The print view's totals rows, label to amount."""
+    from celerp.output.doc_print import render_doc_print_html
+    html = render_doc_print_html(doc)
+    block = html[html.index("dp-totals"):]
+    block = block[:block.index("</table>")]
+    return dict(re.findall(r'<td class="label">([^<]+)</td>\s*<td class="amount">([^<]+)</td>', block))
+
+
+def test_print_reads_the_total_and_tax_the_detail_page_and_pdf_read():
+    base = {"doc_type": "invoice", "currency": "USD", "subtotal": 100.0, "line_items": []}
+    # The current keys win over an older one.
+    rows = _print_totals(base | {"total": 107.0, "total_amount": 500.0, "tax_amount": 7.0, "tax": 3.0})
+    assert rows["Total"] == "$107.00" and rows["Tax"] == "$7.00", rows
+    # An imported document carries its total under the older key only.
+    rows = _print_totals(base | {"total_amount": 110.0, "tax": 10.0})
+    assert rows["Total"] == "$110.00" and rows["Tax"] == "$10.00", rows
+
+
+def test_a_document_s_tax_is_its_stored_amount_a_zero_included_never_a_rate():
+    from celerp.services.doc_balance import doc_tax
+    # A list stores its tax amount, and its header tax as a rate: a list with a 7% rate on
+    # lines that bear no tax has no tax, not 7.
+    assert doc_tax({"doc_type": "list", "entity_type": "list", "tax": 7.0, "tax_amount": 0.0}) == 0
+    assert doc_tax({"doc_type": "list", "entity_type": "list", "tax": 7.0, "tax_amount": 14.0}) == 14.0
+    # A list that has no stored amount shows no tax rather than its rate as money.
+    assert doc_tax({"doc_type": "list", "tax": 7.0}) == 0
+    # Every other document stores its tax amount as tax, a zero included.
+    assert doc_tax({"doc_type": "invoice", "tax": 0.0}) == 0
+    assert doc_tax({"doc_type": "invoice", "tax": 9.0}) == 9.0
+    assert doc_tax({"doc_type": "invoice"}) == 0
+
+
+def test_print_and_pdf_show_a_list_s_tax_amount_not_its_rate():
+    from celerp.output import pdf as pdf_mod
+    base = {"doc_type": "list", "entity_type": "list", "currency": "USD", "subtotal": 100.0, "line_items": []}
+    # A 7% rate on a list whose amount came to zero: no tax row, a total without tax.
+    rows = _print_totals(base | {"tax": 7.0, "tax_amount": 0.0, "total": 100.0})
+    assert "Tax" not in rows and rows["Total"] == "$100.00", rows
+    # The same rate on taxed lines: the amount, never the 7.
+    rows = _print_totals(base | {"tax": 7.0, "tax_amount": 7.0, "total": 107.0})
+    assert rows["Tax"] == "$7.00", rows
+    rows = _print_totals(base | {"tax": 10.0, "tax_amount": 7.0, "total": 107.0})
+    assert rows["Tax"] == "$7.00", rows
+
+    seen: list[str] = []
+    real = pdf_mod.Paragraph
+
+    def _spy(text, *a, **k):
+        seen.append(str(text))
+        return real(text, *a, **k)
+
+    with patch.object(pdf_mod, "Paragraph", side_effect=_spy):
+        pdf_mod.generate_document_pdf(base | {"tax": 7.0, "tax_amount": 0.0, "total": 100.0}, {"name": "Co"})
+    assert pdf_mod._fmt_money(7, "USD") not in seen, seen
+
+
+def test_print_shows_an_imported_document_s_tax_and_a_zero_tax():
+    base = {"doc_type": "invoice", "currency": "USD", "subtotal": 100.0, "line_items": []}
+    # An imported invoice stores its tax amount as tax, its total under the older key.
+    rows = _print_totals(base | {"total_amount": 107.0, "tax": 7.0})
+    assert rows["Tax"] == "$7.00" and rows["Total"] == "$107.00", rows
+    # An invoice with no tax.
+    rows = _print_totals(base | {"total": 100.0, "tax": 0.0})
+    assert "Tax" not in rows and rows["Total"] == "$100.00", rows
+
+
+@pytest.mark.asyncio
+async def test_detail_page_shows_a_list_s_tax_amount_not_its_rate(ui_client):
+    doc = {"entity_id": "l:rate", "entity_type": "list", "doc_type": "list", "list_type": "quotation",
+           "status": "draft", "currency": "USD", "contact_name": "Acme", "issue_date": "2026-01-01",
+           "line_items": [{"description": "Widget", "quantity": 1, "unit_price": 100.0, "line_total": 100.0}],
+           "subtotal": 100.0, "discount": 0, "discount_type": "flat", "discount_amount": 0.0,
+           "tax": 7.0, "tax_amount": 0.0, "total": 100.0}
+    html = await _render(ui_client, doc)
+    assert _total(html) == "$100.00"
+    assert "$7.00" not in _tax_rows(html), _tax_rows(html)
+
+
 def test_pdf_shows_the_discount_and_shipping_rows():
     from celerp.output import pdf as pdf_mod
     rows: list[str] = []

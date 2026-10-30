@@ -11,7 +11,10 @@ Covers:
 from __future__ import annotations
 
 import pathlib
+import re
+
 import pytest
+from playwright.sync_api import expect
 
 from .inline_edit import set_cell
 
@@ -582,15 +585,10 @@ def test_split_esc_exits_input(page, ui_server, api):
 
     mother = form.locator(".mother-qty-input").first
     mother.focus()
-    assert page.evaluate(
-        "() => document.activeElement && document.activeElement.classList.contains('mother-qty-input')"
-    ), "mother qty input should hold focus after .focus()"
+    expect(mother, "mother qty input should hold focus after .focus()").to_be_focused()
 
     page.keyboard.press("Escape")
-    page.wait_for_timeout(100)
-    assert not page.evaluate(
-        "() => document.activeElement && document.activeElement.classList.contains('mother-qty-input')"
-    ), "Escape must blur the split-table input (GDR 2j)"
+    expect(mother, "Escape must blur the split-table input (GDR 2j)").not_to_be_focused()
 
     _save_screenshot(page, "split-esc-exits-input")
 
@@ -609,23 +607,14 @@ def test_split_numeric_headers_right_aligned(page, ui_server, api):
 
     _open_item_detail_split(page, ui_server, item["id"])
 
-    aligns = page.evaluate("""() => {
-        const table = document.querySelector('.action-card .split-preview-table');
-        const out = {num: [], text: []};
-        table.querySelectorAll('thead th').forEach(th => {
-            const a = window.getComputedStyle(th).textAlign;
-            if (th.classList.contains('sp-th--num')) out.num.push(a);
-            else if (th.textContent.trim() === 'SKU') out.text.push(a);
-        });
-        return out;
-    }""")
-    assert aligns["num"], "no numeric split-table headers found"
-    assert all(a == "right" for a in aligns["num"]), (
-        f"numeric headers must be right-aligned, got {aligns['num']}"
-    )
-    assert all(a == "center" for a in aligns["text"]), (
-        f"the SKU header must be centered, got {aligns['text']}"
-    )
+    heads = page.locator(".action-card .split-preview-table").first.locator("thead th")
+    numeric = heads.and_(page.locator(".sp-th--num"))
+    expect(numeric.first, "no numeric split-table headers found").to_be_attached()
+    for i in range(numeric.count()):
+        expect(numeric.nth(i), "numeric headers must be right-aligned").to_have_css("text-align", "right")
+    sku = heads.and_(page.locator(":not(.sp-th--num)")).filter(has_text=re.compile(r"^\s*SKU\s*$"))
+    for i in range(sku.count()):
+        expect(sku.nth(i), "the SKU header must be centered").to_have_css("text-align", "center")
 
     _save_screenshot(page, "split-numeric-headers-right-aligned")
 

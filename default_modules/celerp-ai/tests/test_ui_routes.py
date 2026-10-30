@@ -740,7 +740,7 @@ async def test_chat_with_receipts_renders_progress_bubble(ui_client):
     assert r.status_code == 200
     assert 'data-job-id="job-1"' in r.text
     assert "Reading files: 0 of 3 finished." in r.text
-    assert "/ai/proposals-ui?conversation=conv-1&amp;job=job-1" in r.text
+    assert 'hx-post="/ai/proposals-ui?conversation=conv-1&amp;job=job-1"' in r.text
     assert "You can keep working." in r.text
 
 
@@ -751,7 +751,7 @@ async def test_proposals_ui_keeps_polling_while_running(ui_client):
     ui_client.cookies.update(_authed())
     with patch("celerp_ai.ui_routes.api.ai_batch_status", AsyncMock(return_value=job)), \
          patch("celerp_ai.ui_routes.api.ai_job_proposals", AsyncMock()) as proposals:
-        r = await ui_client.get("/ai/proposals-ui?conversation=conv-1&job=job-1")
+        r = await ui_client.post("/ai/proposals-ui?conversation=conv-1&job=job-1")
     proposals.assert_not_awaited()
     assert "Reading files: 2 of 4 finished." in r.text
     assert "load delay:5s" in r.text
@@ -772,7 +772,7 @@ async def test_proposals_ui_renders_summary_and_cards_when_done(ui_client):
     ui_client.cookies.update(_authed())
     with patch("celerp_ai.ui_routes.api.ai_batch_status", AsyncMock(return_value=job)), \
          patch("celerp_ai.ui_routes.api.ai_job_proposals", AsyncMock(return_value=proposals)):
-        r = await ui_client.get("/ai/proposals-ui?conversation=conv-1&job=job-1")
+        r = await ui_client.post("/ai/proposals-ui?conversation=conv-1&job=job-1")
     assert r.status_code == 200
     assert "2 of 2 files were read." in r.text
     assert "Two bills are ready to confirm." in r.text
@@ -788,11 +788,11 @@ async def test_proposals_ui_failed_job_is_an_error_bubble(ui_client):
            "failed_files": 2, "error": "Every file failed to read."}
     ui_client.cookies.update(_authed())
     with patch("celerp_ai.ui_routes.api.ai_batch_status", AsyncMock(return_value=job)):
-        r = await ui_client.get("/ai/proposals-ui?conversation=conv-1&job=job-1")
+        r = await ui_client.post("/ai/proposals-ui?conversation=conv-1&job=job-1")
     assert "ai-msg--error" in r.text
     assert "Every file failed to read." in r.text
     assert "Attach files and try again" in r.text
-    assert "hx-get" not in r.text
+    assert "hx-post" not in r.text
 
 
 @pytest.mark.asyncio
@@ -803,7 +803,7 @@ async def test_proposals_ui_api_error_shows_message(ui_client):
     ui_client.cookies.update(_authed())
     with patch("celerp_ai.ui_routes.api.ai_batch_status", AsyncMock(return_value=job)), \
          patch("celerp_ai.ui_routes.api.ai_job_proposals", AsyncMock(side_effect=err)):
-        r = await ui_client.get("/ai/proposals-ui?conversation=conv-1&job=job-1")
+        r = await ui_client.post("/ai/proposals-ui?conversation=conv-1&job=job-1")
     assert "1 of 1 files were read." in r.text
     assert ">The bill capability is not available.<" in r.text
 

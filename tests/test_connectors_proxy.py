@@ -5,6 +5,7 @@ session (the gateway WebSocket client lives in the API process), so every relay
 credential/token operation must go through the API process proxy endpoints."""
 from __future__ import annotations
 
+import uuid
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -301,7 +302,9 @@ async def test_direction_set_on_the_detail_page_returns_its_toggle(monkeypatch):
     monkeypatch.setattr(ownership, "lock_connector_operation", lock)
     monkeypatch.setattr(routes, "_token", lambda request: "jwt")
     monkeypatch.setattr(routes, "_check_permission", allowed)
-    monkeypatch.setattr(routes, "_request_company_id", lambda request: "company-1")
+    monkeypatch.setattr(routes, "_request_company_id", lambda request: str(uuid.UUID(int=1)))
+    monkeypatch.setattr(routes, "authorize_in_process", lambda session, request, key: None)
+    monkeypatch.setattr("celerp.services.company_lock.lock_company", AsyncMock())
     app = FastAPI()
     routes.setup_routes(app)
     endpoint = next(r.endpoint for r in app.routes

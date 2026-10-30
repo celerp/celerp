@@ -10,8 +10,9 @@ import uuid
 
 import httpx
 import pytest
+from playwright.sync_api import expect
 
-from .conftest import clear_session_registry
+from .conftest import clear_session_registry, css_class
 
 pytestmark = pytest.mark.browser
 
@@ -93,13 +94,13 @@ def test_draft_amounts_editable_for_restricted_role(page, ui_server, api, api_se
         qty = page.locator(f'tr:has-text("{draft_sku}") td[data-col="quantity"] .paired-primary').first
         qty.wait_for(timeout=8000)
         assert qty.get_attribute("title") == "Double-click to edit"
-        assert "paired-primary--readonly" not in (qty.get_attribute("class") or "")
+        expect(qty).not_to_have_class(css_class("paired-primary--readonly"))
 
         page.goto(f"{ui_server}/inventory?q={avail_sku}", wait_until="domcontentloaded")
         page.wait_for_selector(".badge--available", timeout=8000)
         qty2 = page.locator(f'tr:has-text("{avail_sku}") td[data-col="quantity"] .paired-primary').first
         qty2.wait_for(timeout=8000)
-        assert "paired-primary--readonly" in (qty2.get_attribute("class") or "")
+        expect(qty2).to_have_class(css_class("paired-primary--readonly"))
         assert qty2.get_attribute("title") is None
     finally:
         _set_cookie(browser_context, seeded_user["access_token"])
@@ -145,14 +146,14 @@ def test_draft_pieces_editable_on_list_for_restricted_role(page, ui_server, api,
         pcs = page.locator(f'tr:has-text("{draft_sku}") td[data-col="pieces"]').first
         pcs.wait_for(timeout=8000)
         assert pcs.get_attribute("title") == "Double-click to edit"
-        assert "cell--clickable" in (pcs.get_attribute("class") or "")
+        expect(pcs).to_have_class(css_class("cell--clickable"))
 
         page.goto(f"{ui_server}/inventory?q={avail_sku}", wait_until="domcontentloaded")
         page.wait_for_selector(".badge--available", timeout=8000)
         pcs2 = page.locator(f'tr:has-text("{avail_sku}") td[data-col="pieces"]').first
         pcs2.wait_for(timeout=8000)
         assert pcs2.get_attribute("title") is None
-        assert "cell--clickable" not in (pcs2.get_attribute("class") or "")
+        expect(pcs2).not_to_have_class(css_class("cell--clickable"))
     finally:
         _set_cookie(browser_context, seeded_user["access_token"])
         api.patch("/companies/me/role-permissions",
@@ -194,12 +195,12 @@ def test_draft_amounts_editable_on_detail_page_for_restricted_role(page, ui_serv
         qty = page.locator('tr:has-text("Qty") .paired-primary').first
         qty.wait_for(timeout=8000)
         assert qty.get_attribute("title") == "Double-click to edit"
-        assert "paired-primary--readonly" not in (qty.get_attribute("class") or "")
+        expect(qty).not_to_have_class(css_class("paired-primary--readonly"))
 
         page.goto(f"{ui_server}/inventory/{item_ids[avail_sku]}", wait_until="domcontentloaded")
         qty2 = page.locator('tr:has-text("Qty") .paired-primary').first
         qty2.wait_for(timeout=8000)
-        assert "paired-primary--readonly" in (qty2.get_attribute("class") or "")
+        expect(qty2).to_have_class(css_class("paired-primary--readonly"))
         assert qty2.get_attribute("title") is None
     finally:
         _set_cookie(browser_context, seeded_user["access_token"])

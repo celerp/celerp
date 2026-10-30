@@ -555,7 +555,8 @@ def setup_routes(app):
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
             # A document a quotation cannot total as sent is entered as a new quotation by hand.
-            link = (A(t("page.new_quotation"), href="/lists/new", cls="table-link")
+            link = (Button(t("page.new_quotation"), hx_post="/lists/create-blank", hx_swap="none",
+                           cls="btn btn--secondary btn--sm")
                     if isinstance(e.data, dict) and e.data.get("code") == "received_list_total" else None)
             return await _received_page(request, token, rid, error=str(e.detail), error_link=link)
         return RedirectResponse(_booked_href(result.get("kind"), result["id"]), status_code=303)

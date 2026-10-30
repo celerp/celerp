@@ -14,7 +14,9 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp import __version__
+from celerp.connectors.ownership import PRODUCT_CHANNEL_MODULES
 from celerp.db import get_session
+from celerp.modules.boundary import needs_modules_for
 from celerp.modules.outcome import BOOT_TOKEN
 from celerp.services.auth import (
     ROLE_LEVELS,
@@ -1302,7 +1304,8 @@ async def _relay_reports_connected(api_key: str, platform: str) -> bool | None:
     return False
 
 
-@settings_router.get("/connectors/{platform}/authorize-url", dependencies=[require_permission("manage_integrations")])
+@settings_router.post("/connectors/{platform}/authorize-url", dependencies=[require_permission("manage_integrations")])
+@needs_modules_for("platform", PRODUCT_CHANNEL_MODULES)
 async def connector_authorize_url(
     platform: str,
     shop: str = "",
@@ -1372,8 +1375,8 @@ async def connector_authorize_url(
         # Old product links become history in the same commit that makes the
         # company the connector's owner.
         if platform in PRODUCT_CHANNEL_PLATFORMS:
-            from celerp_inventory.services import detach_external_links_for_platform
-            await detach_external_links_for_platform(session, company_id, platform)
+            from celerp.connectors.product_links import detach_product_links
+            await detach_product_links(session, company_id, platform)
         await session.commit()
         await lock_connector_operation(
             session, company_id, platform, require_owner=True, exclusive=True

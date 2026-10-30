@@ -63,6 +63,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from celerp.modules.importer import (
     _RESERVED_IMPORT_PREFIX, _RESERVED_PREFIX, PREMIUM_MARKER, ModuleImportError, _bound_names, _check_min_version,
@@ -80,6 +81,9 @@ from celerp.modules.slots import (
 )
 from celerp.services.app_paths import is_app_local_path
 from celerp.services.permissions import is_permission_key
+
+if TYPE_CHECKING:
+    from sqlalchemy import Table
 
 log = logging.getLogger(__name__)
 
@@ -1435,6 +1439,7 @@ def _table_shape(table) -> tuple:
 def _restore_table(metadata, shape: tuple) -> bool:
     """Put a table back on *metadata* exactly as :func:`_table_shape` saw it.
     True when anything had changed."""
+    table: Table
     table, identity, columns, states, constraints, indexes = shape
     changed = (table.name, table.schema, table.fullname) != identity
     table.name, table.schema, table.fullname = identity

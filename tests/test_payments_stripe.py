@@ -19,7 +19,6 @@ from celerp.services.company_lock import locked_company
 from ui.i18n import t
 
 
-pytestmark = pytest.mark.usefixtures("docs_running")
 
 # When Stripe reported a payment paid, and the books its page opened with.
 PAID = datetime.datetime(2026, 7, 13, 9, 0, tzinfo=datetime.timezone.utc)

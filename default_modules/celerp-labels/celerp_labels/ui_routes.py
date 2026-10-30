@@ -125,7 +125,6 @@ _FIELD_TYPE_MAP = {k: t for k, _label, t in _COMMON_FIELDS}
 # Default templates live in presets.py (shared with the API, which seeds them on first read).
 from .service import BARCODE_HEIGHT_DEFAULT
 from .service import display_label as _svc_display_label
-from .presets import PRESET_TEMPLATES as _PRESET_TEMPLATES
 
 # The human-readable barcode number is a fallback for keying the code by hand, so it
 # defaults small and leaves the label's vertical space for actual content. A size set
@@ -1247,26 +1246,6 @@ def setup_ui_routes(app) -> None:
             log.warning("Could not fetch label templates: %s", exc)
         return []
 
-    async def _seed_presets_if_empty(request: Request) -> list[dict]:
-        """Fetch templates; if empty, seed presets via API and return them."""
-        templates = await _fetch_templates(request)
-        if templates:
-            return templates
-        token = _token(request)
-        if not token:
-            return []
-        try:
-            async with httpx.AsyncClient(timeout=10) as c:
-                for preset in _PRESET_TEMPLATES:
-                    await c.post(
-                        f"{_api_base(request)}/api/labels/templates",
-                        json=preset,
-                        headers={"Authorization": f"Bearer {token}"},
-                    )
-        except Exception as exc:
-            log.warning("Could not seed preset label templates: %s", exc)
-        return await _fetch_templates(request)
-
     async def _fetch_extra_fields(request: Request) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
         """Fetch ALL available item fields for the label field picker.
 
@@ -1388,7 +1367,7 @@ def setup_ui_routes(app) -> None:
     async def label_settings(request: Request):
         if not _token(request):
             return RedirectResponse("/login", status_code=302)
-        templates = await _seed_presets_if_empty(request)
+        templates = await _fetch_templates(request)
         # Auto-redirect to first template if any exist
         if templates:
             return RedirectResponse(f"/settings/labels/{templates[0]['id']}", status_code=302)
@@ -1403,7 +1382,7 @@ def setup_ui_routes(app) -> None:
     async def label_settings_edit(request: Request, tmpl_id: str):
         if not _token(request):
             return RedirectResponse("/login", status_code=302)
-        templates = await _seed_presets_if_empty(request)
+        templates = await _fetch_templates(request)
         tpl = next((x for x in templates if x["id"] == tmpl_id), None)
         if not tpl:
             return await base_shell(
@@ -1546,7 +1525,7 @@ def setup_ui_routes(app) -> None:
             templates = await _fetch_templates(request)
             template = next((tpl for tpl in templates if tpl["id"] == template_id), None)
         if not template:
-            templates = await _seed_presets_if_empty(request)
+            templates = await _fetch_templates(request)
             template = templates[0] if templates else None
         unit_map = await _fetch_unit_map(_api_base(request), token)
         return _printable_label_sheet([item_data] if item_data else [], template, unit_map)
@@ -1599,7 +1578,7 @@ def setup_ui_routes(app) -> None:
             templates = await _fetch_templates(request)
             template = next((tpl for tpl in templates if tpl["id"] == template_id), None)
         if not template:
-            templates = await _seed_presets_if_empty(request)
+            templates = await _fetch_templates(request)
             template = templates[0] if templates else None
         unit_map = await _fetch_unit_map(api_base, token)
         return _printable_label_sheet(items_data, template, unit_map)
@@ -1670,7 +1649,7 @@ def setup_ui_routes(app) -> None:
 
         if not entity_ids:
             return RedirectResponse("/inventory", status_code=302)
-        templates = await _seed_presets_if_empty(request)
+        templates = await _fetch_templates(request)
         return await _bulk_print_preview_page(entity_ids, templates, _api_base(request), token, request=request)
 
     @app.get("/labels/print-list")
@@ -1707,7 +1686,7 @@ def setup_ui_routes(app) -> None:
             pass
         if not entity_ids:
             return RedirectResponse("/inventory", status_code=302)
-        templates = await _seed_presets_if_empty(request)
+        templates = await _fetch_templates(request)
         return await _bulk_print_preview_page(entity_ids, templates, _api_base(request), token, request=request)
 
     @app.post("/labels/print-bulk/generate")
@@ -1739,7 +1718,7 @@ def setup_ui_routes(app) -> None:
             templates = await _fetch_templates(request)
             template = next((tpl for tpl in templates if tpl["id"] == template_id), None)
         if not template:
-            templates = await _seed_presets_if_empty(request)
+            templates = await _fetch_templates(request)
             template = templates[0] if templates else None
         unit_map = await _fetch_unit_map(_api_base(request), token)
         return _printable_label_sheet(items_data, template, unit_map)

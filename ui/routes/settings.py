@@ -75,6 +75,24 @@ async def _check_permission(
     return None
 
 
+def authorize_in_process(session, request: Request, key: str) -> None:
+    """Register on an in-process database session the authority _check_permission
+    verified through the API (company, role, the permission ``key``), so the company lock
+    judges it again before the write: access revoked meanwhile is refused (403). The user
+    is the subject of the token the API just accepted."""
+    import uuid
+
+    from celerp.modules.loader import route_module
+    from celerp.services.permissions import authorize_request
+    from ui.config import get_claims
+
+    company = request.state.auth_company
+    authority = authorize_request(session, uuid.UUID(str(company["id"])),
+                                  uuid.UUID(str(get_claims(request)["sub"])),
+                                  api.role_from_company(company), route_module(request.scope))
+    authority.keys.add(key)
+
+
 async def _category_name(token: str, key: str) -> str:
     """The name a category shows the user, from the company's stored names."""
     try:

@@ -7,7 +7,27 @@ import asyncio
 import atexit
 import os
 import shutil
+import sys
+import tempfile
 from pathlib import Path
+
+# Bytecode goes to a cache outside the source tree. Every xdist worker shares the module
+# folders, and loading a module removes the bytecode in its folder and then checks none is
+# left: a worker that imported module code and wrote bytecode there at that moment made
+# another worker's load fail. The processes the tests start use the same cache.
+os.environ.setdefault("PYTHONPYCACHEPREFIX", os.path.join(tempfile.gettempdir(), "celerp-test-pycache"))
+sys.pycache_prefix = sys.pycache_prefix or os.environ["PYTHONPYCACHEPREFIX"]
+
+# The tests and every process they start import this checkout's code. An environment
+# shared between checkouts can carry an editable install of another one, which a script
+# run as `python scripts/x.py` (its own folder first on the path, not the checkout) would
+# import instead.
+_CHECKOUT = os.path.dirname(os.path.abspath(__file__))
+os.environ["PYTHONPATH"] = os.pathsep.join(filter(None, (_CHECKOUT, os.environ.get("PYTHONPATH"))))
+import celerp  # noqa: E402
+
+assert os.path.dirname(os.path.dirname(os.path.abspath(celerp.__file__))) == _CHECKOUT, (
+    f"the tests import celerp from {celerp.__file__}, not from this checkout ({_CHECKOUT})")
 
 from conftest_support import (
     is_own_test_config, provision_worker_db, resolve_worker_config, resolve_worker_data_dir, skip_relay_check_in,
@@ -148,11 +168,34 @@ def pytest_unconfigure(config):
 
 from celerp.db import get_session
 from celerp.main import app
+import mutation_baseline  # noqa: E402
+import mutation_observer  # noqa: E402 - installs the write observer's listeners
+
 # The `client` fixture patches celerp.gateway.state.get_session_token. The session
 # gate keeps its own reference from import time, so it is imported here, before any
 # patch is active, and checks the session a test actually seats.
 import celerp.session_gate  # noqa: E402,F401
 from ui.app import app as _ui_app
+
+# Every request the apps serve, through any test's transport, is request scope for the
+# write observer (mutation_observer.py): the outermost layer of each app's own stack.
+for _label, _observed_app in (("api", app), ("ui", _ui_app)):
+    _observed_app.build_middleware_stack = (
+        lambda built=_observed_app.build_middleware_stack, label=_label: mutation_observer.observed(built(), label))
+    _observed_app.middleware_stack = None
+
+# A request the apps make over HTTP (the UI's to the API in the browser suite's servers)
+# names the request it is made for, so a write made for a page load is judged as the page load's.
+import httpx as _httpx  # noqa: E402
+_httpx_send = _httpx.AsyncClient.send
+
+
+async def _observed_send(self, request, **kwargs):
+    request.headers.update(mutation_observer.outgoing_headers())
+    return await _httpx_send(self, request, **kwargs)
+
+
+_httpx.AsyncClient.send = _observed_send
 
 import sys as _sys, os as _os
 from pathlib import Path
@@ -460,6 +503,46 @@ def _ensure_slots() -> None:
 
         if _key(contrib) not in {_key(c) for c in registered}:
             register(slot, contrib)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _one_current_event_loop():
+    """The test thread's current event loop, held for the whole run and closed at its end.
+    pytest-asyncio restores the current loop after each async test, making one the first
+    time it finds none; a plain test that calls asyncio.run() then replaces it, and the
+    dropped loop warns as unclosed in whichever test is running when it is collected."""
+    import asyncio
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    yield
+    loop.close()
+
+
+_CENSUS = mutation_observer.Totals()
+
+
+@pytest.fixture(autouse=True)
+def _mutation_census(request):
+    """One write-observer record per test, kept for the census file
+    (CELERP_MUTATION_CENSUS names its folder). A write the observer judges unprotected,
+    out of order, for another company or that it cannot classify fails the test that made
+    it, unless it is exactly one the baseline accepts (mutation_baseline.py)."""
+    mutation_observer.reset(request.node.nodeid)
+    yield
+    seen = mutation_observer.reset()
+    if request.node.get_closest_marker("observer_control"):
+        return  # the observer's own controls make their findings on purpose
+    _CENSUS.add(seen)
+    refused = [f for f in seen.findings if not mutation_baseline.accepted(f)]
+    if refused:
+        pytest.fail(mutation_observer.explain(refused), pytrace=False)
+
+
+def pytest_sessionfinish(session, exitstatus):
+    path = mutation_observer.census_path()
+    if path:
+        _CENSUS.write(f"{path}.json")
+        mutation_observer.write_routes(f"{path}.routes.json", [app, _ui_app])
 
 
 @pytest.fixture(autouse=True)
@@ -930,6 +1013,8 @@ async def client(session: AsyncSession):
     # holding uncommitted - and hangs until the per-test timeout. Route middleware
     # to the same shared session (the patch point middleware.py imports for this
     # purpose) so it joins the one transaction instead of deadlocking against it.
+    # The module boundary reads a company's settings the same way, so it sees the
+    # companies a test registered.
     from contextlib import asynccontextmanager
 
     @asynccontextmanager
@@ -963,6 +1048,7 @@ async def client(session: AsyncSession):
          patch("celerp.gateway.client._client", MagicMock()), \
          patch("celerp.gateway.state.get_session_token", return_value="test-session-token"), \
          patch("celerp.middleware.get_session_ctx", _shared_session_ctx), \
+         patch("celerp.modules.boundary.get_session_ctx", _shared_session_ctx), \
          patch("celerp.db.LifecycleSessionLocal", lifecycle_factory), \
          patch("celerp.ai.jobs.SessionLocal", job_factory):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
@@ -1035,12 +1121,26 @@ def files_unchecked(monkeypatch):
     monkeypatch.setattr(loader, "check_unchanged", lambda module: None)
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def docs_running(monkeypatch):
-    """Record Documents as loaded, as it is in an installation that takes online payments.
-    The harness mounts its routes directly, so the loader would otherwise not list it."""
+    """Record Documents as loaded: the harness mounts its routes, as a running installation does.
+    A test of a process where it has not started asks for ``docs_not_started``."""
+    from test_helpers import mark_running
+    mark_running(monkeypatch, "celerp-docs")
+
+
+@pytest.fixture
+def docs_not_started(monkeypatch, docs_running):
+    """This process has not started Documents: the loader lists it as not running."""
     from celerp.modules import loader
-    monkeypatch.setattr(loader, "_loaded", [*loader._loaded, {"name": "celerp-docs", "version": "1.0.0"}])
+    monkeypatch.setattr(loader, "_loaded", [m for m in loader._loaded if m["name"] != "celerp-docs"])
+
+
+@pytest.fixture
+def connector_modules_running(monkeypatch):
+    """Record the modules connectors write into as loaded: Inventory, Documents and Contacts."""
+    from test_helpers import mark_running
+    mark_running(monkeypatch, "celerp-inventory", "celerp-docs", "celerp-contacts")
 
 
 @pytest.fixture(autouse=True)

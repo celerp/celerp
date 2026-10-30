@@ -22,7 +22,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import func, select, text
+from sqlalchemy import String, cast, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from celerp.db import get_session
@@ -101,12 +101,18 @@ async def _app_client(factory):
         app.dependency_overrides.pop(get_session, None)
 
 
-async def _seed(factory, *, grants: dict | None = None) -> dict:
+async def _seed(factory, *, grants: dict | None = None, modules: list[str] | None = None) -> dict:
+    """A company with an owner, a manager and an operator; with ``modules``, it uses
+    those modules and the ones they need, and no other."""
+    from celerp.modules.registry import dependency_closure
+
     company_id = uuid.uuid4()
     ids = {role: uuid.uuid4() for role in ("owner", "manager", "operator")}
+    settings = {"role_grants": grants or {}}
+    if modules is not None:
+        settings["enabled_modules"] = dependency_closure(modules)
     async with factory() as s:
-        s.add(Company(id=company_id, name="Access", slug=f"acc-{company_id.hex[:8]}",
-                      settings={"role_grants": grants or {}}))
+        s.add(Company(id=company_id, name="Access", slug=f"acc-{company_id.hex[:8]}", settings=settings))
         for role, uid in ids.items():
             s.add(User(id=uid, email=f"{role}-{uid.hex[:8]}@example.test", name=role.title(),
                        auth_hash="x", is_active=True))
@@ -293,6 +299,125 @@ async def test_document_price_override_commits_when_it_holds_the_lock_first(comm
     assert await _doc_count(factory, c["company_id"]) == 1
 
 
+_INVOICE = {"doc_type": "invoice", "line_items": [
+    {"item_id": _ITEM, "sku": _ITEM, "name": _ITEM, "quantity": 1, "unit_price": 2, "sell_by": "piece"}]}
+
+
+@pytest.fixture
+def module_routes(monkeypatch):
+    """Registers a bundled module's routes with the loader as that module's own, as at
+    startup, so a request to one is judged by whether the company uses the module."""
+    import importlib
+    from pathlib import Path
+
+    import default_modules
+    from fastapi import FastAPI
+    from celerp.modules import loader
+
+    def own(name: str) -> None:
+        manifest = loader.read_manifest(Path(default_modules.__file__).parent / name)
+        routes = FastAPI()
+        importlib.import_module(manifest["api_routes"]).setup_api_routes(routes)
+        monkeypatch.setitem(loader._module_routes, name, list(routes.routes))
+    return own
+
+
+@pytest.fixture
+def docs_routes(module_routes):
+    module_routes("celerp-docs")
+
+
+def _turn_off(company_id, module):
+    async def _go(s):
+        return await companies.disable_module(module, company_id=company_id, session=s)
+    return _go
+
+
+async def _company_state(factory, company_id) -> tuple[int, dict]:
+    async with factory() as s:
+        events = (await s.execute(select(func.count()).select_from(LedgerEntry).where(
+            LedgerEntry.company_id == company_id))).scalar_one()
+        rows = (await s.execute(select(Projection.entity_id, Projection.state).where(
+            Projection.company_id == company_id))).all()
+    return events, {entity_id: state for entity_id, state in rows}
+
+
+async def _documents_writes(client, headers) -> dict:
+    """Each write a Documents route makes, as (method, path, body), with the document, list
+    and notes it acts on already in place."""
+    async def made(path, body):
+        r = await client.post(path, json=body, headers=headers)
+        assert r.status_code == 200, r.text
+        return r.json()["id"]
+
+    doc = await made("/docs", _INVOICE)
+    lst = await made("/lists", {"list_type": "shipping_doc", "contact_name": "Buyer",
+                                "line_items": [{"item_id": _ITEM, "sku": _ITEM, "name": _ITEM, "quantity": 1}]})
+    doc_note = await made(f"/docs/{doc}/notes", {"note": "First"})
+    list_note = await made(f"/lists/{lst}/notes", {"note": "First"})
+    return {
+        "create_document": ("post", "/docs", _INVOICE),
+        "add_document_note": ("post", f"/docs/{doc}/notes", {"note": "Added"}),
+        "edit_document_note": ("patch", f"/docs/{doc}/notes/{doc_note}", {"note": "Edited"}),
+        "delete_document_note": ("delete", f"/docs/{doc}/notes/{doc_note}", None),
+        "add_list_note": ("post", f"/lists/{lst}/notes", {"note": "Added"}),
+        "edit_list_note": ("patch", f"/lists/{lst}/notes/{list_note}", {"note": "Edited"}),
+        "delete_list_note": ("delete", f"/lists/{lst}/notes/{list_note}", None),
+    }
+
+
+_DOCUMENTS_WRITES = ("create_document", "add_document_note", "edit_document_note", "delete_document_note",
+                     "add_list_note", "edit_list_note", "delete_list_note")
+
+
+def _send(client, headers, write):
+    method, path, body = write
+    if body is None:
+        return lambda: getattr(client, method)(path, headers=headers)
+    return lambda: getattr(client, method)(path, json=body, headers=headers)
+
+
+@pytest.mark.parametrize("write", _DOCUMENTS_WRITES)
+async def test_a_documents_write_waiting_while_documents_is_turned_off_is_refused(committed_engine, docs_routes, write):
+    """A Documents write authorized while the company uses Documents, that reaches the company
+    lock after Documents is turned off for it, is refused and writes nothing. Another company
+    using Documents is unaffected."""
+    factory = async_sessionmaker(bind=committed_engine, class_=AsyncSession, expire_on_commit=False)
+    c, other = await _seed(factory), await _seed(factory)
+    async with _app_client(factory) as (client, pending):
+        writes = await _documents_writes(client, c["h"]["owner"])
+        other_writes = await _documents_writes(client, other["h"]["owner"])
+        before = await _company_state(factory, c["company_id"])
+        changed, wrote = await _race(
+            committed_engine,
+            lambda held: _direct(factory, held, _turn_off(c["company_id"], "celerp-docs")),
+            lambda held: _http(pending, held, _send(client, c["h"]["owner"], writes[write])),
+        )
+        _ok(changed)
+        _refused(wrote, 403)
+        assert wrote.json()["detail"]["message_key"] == "modules.off_for_company"
+        assert await _company_state(factory, c["company_id"]) == before
+        _ok(await _send(client, other["h"]["owner"], other_writes[write])())
+
+
+@pytest.mark.parametrize("write", _DOCUMENTS_WRITES)
+async def test_a_documents_write_holding_the_lock_first_commits_before_documents_is_turned_off(
+        committed_engine, docs_routes, write):
+    factory = async_sessionmaker(bind=committed_engine, class_=AsyncSession, expire_on_commit=False)
+    c = await _seed(factory)
+    async with _app_client(factory) as (client, pending):
+        writes = await _documents_writes(client, c["h"]["owner"])
+        before = await _company_state(factory, c["company_id"])
+        wrote, changed = await _race(
+            committed_engine,
+            lambda held: _http(pending, held, _send(client, c["h"]["owner"], writes[write])),
+            lambda held: _direct(factory, held, _turn_off(c["company_id"], "celerp-docs")),
+        )
+    _ok(wrote)
+    _ok(changed)
+    assert (await _company_state(factory, c["company_id"]))[0] > before[0]
+
+
 async def test_draft_cost_refused_once_a_concurrent_make_available_lands_first(committed_engine):
     """A draft's author may set its cost without set_inventory_prices; once Make Available
     commits first, the waiting cost edit is judged against the live item and refused."""
@@ -360,6 +485,203 @@ async def test_a_caught_refusal_still_cannot_commit(committed_engine):
         end_request(s, authority)
     state, events = await _item(factory, c["company_id"], _ITEM)
     assert state["status"] == "available" and events == 1
+
+
+# Writes of the modules whose routes take the company lock themselves, each as (module,
+# permission, setup). ``setup`` puts in place what the write acts on, as the owner, and
+# returns the write as (method, path, body).
+async def _owner_post(client, c, path, body) -> dict:
+    r = await client.post(path, json=body, headers=c["h"]["owner"])
+    assert r.status_code == 200, (path, r.text)
+    return r.json()
+
+
+def _journal(debit: str, credit: str) -> dict:
+    return {"ts": "2026-03-05", "memo": "Race", "idempotency_token": uuid.uuid4().hex, "entries": [
+        {"account": debit, "debit": 5, "credit": 0}, {"account": credit, "debit": 0, "credit": 5}]}
+
+
+async def _books(factory, c) -> None:
+    from test_helpers import provision_company_books
+
+    async with factory() as s:
+        await provision_company_books(s, c["company_id"])
+        await s.commit()
+
+
+async def _manual_journal(factory, client, c):
+    await _books(factory, c)
+    return "post", "/accounting/journal-entries", _journal("6200", "4100")
+
+
+async def _reconciliation_match(factory, client, c):
+    await _books(factory, c)
+    bank = await _owner_post(client, c, "/accounting/bank-accounts", {
+        "bank_name": "Main", "account_number": "1", "bank_type": "checking", "currency": "THB",
+        "opening_balance": 100.0})
+    je = (await _owner_post(client, c, "/accounting/journal-entries",
+                            _journal(bank["chart_account_code"], "4100")))["je_id"]
+    recon = await _owner_post(client, c, "/accounting/reconciliation/start", {
+        "bank_account_id": bank["id"], "statement_date": "2026-03-31", "statement_balance": 105.0})
+    return "post", f"/accounting/reconciliation/{recon['id']}/match", {"je_ids": [je]}
+
+
+async def _contact_create(factory, client, c):
+    return "post", "/crm/contacts", {"name": "Buyer"}
+
+
+async def _contact_note(factory, client, c):
+    contact = (await _owner_post(client, c, "/crm/contacts", {"name": "Buyer"}))["id"]
+    return "post", f"/crm/contacts/{contact}/notes", {"note": "Called"}
+
+
+async def _work_center_create(factory, client, c):
+    return "post", "/manufacturing/work-centers", {"name": "Bench"}
+
+
+async def _work_center_patch(factory, client, c):
+    wc = (await _owner_post(client, c, "/manufacturing/work-centers", {"name": "Bench"}))["id"]
+    return "patch", f"/manufacturing/work-centers/{wc}", {"name": "Bench 2", "labor_rate": 12}
+
+
+_BOUNDARY_WRITES = {
+    "manual_journal": ("celerp-accounting", "manage_accounting", _manual_journal),
+    "reconciliation_match": ("celerp-accounting", "manage_accounting", _reconciliation_match),
+    "contact_create": ("celerp-contacts", "edit_contacts", _contact_create),
+    "contact_note": ("celerp-contacts", "edit_contacts", _contact_note),
+    "work_center_create": ("celerp-manufacturing", "manage_manufacturing", _work_center_create),
+    "work_center_patch": ("celerp-manufacturing", "manage_manufacturing", _work_center_patch),
+}
+_ALL_ROLES = ["operator", "manager", "admin", "owner"]
+
+
+async def _company_rows(factory, company_id) -> dict:
+    """Every row each company-owned table holds for the company, so a refused write is
+    seen to leave nothing behind in any table, not only the ledger."""
+    from celerp.models.base import Base
+
+    rows = {}
+    async with factory() as s:
+        for table in Base.metadata.sorted_tables:
+            if "company_id" in table.c:
+                found = (await s.execute(select(table).where(
+                    cast(table.c.company_id, String) == str(company_id)))).all()
+                rows[table.name] = sorted(map(repr, found))
+    return rows
+
+
+async def _boundary_setup(factory, client, module_routes, name, modules=None):
+    module, perm, setup = _BOUNDARY_WRITES[name]
+    module_routes(module)
+    c = await _seed(factory, grants={perm: _ALL_ROLES}, modules=modules)
+    return c, perm, await setup(factory, client, c)
+
+
+@pytest.mark.parametrize("name", sorted(_BOUNDARY_WRITES))
+async def test_a_module_write_waiting_while_its_permission_is_revoked_is_refused(
+        committed_engine, module_routes, name):
+    """The write was authorized when it was sent; the permission is revoked while it waits
+    for the company lock. Once it has the lock it is judged again, refused, and every table
+    is as it was."""
+    factory = async_sessionmaker(bind=committed_engine, class_=AsyncSession, expire_on_commit=False)
+    async with _app_client(factory) as (client, pending):
+        c, perm, write = await _boundary_setup(factory, client, module_routes, name)
+        before = await _company_rows(factory, c["company_id"])
+        changed, wrote = await _race(
+            committed_engine,
+            lambda held: _direct(factory, held, _revoke(c["company_id"], perm, "operator")),
+            lambda held: _http(pending, held, _send(client, c["h"]["operator"], write)),
+        )
+    _ok(changed)
+    _refused(wrote, 403)
+    assert await _company_rows(factory, c["company_id"]) == before
+
+
+@pytest.mark.parametrize("name", sorted(_BOUNDARY_WRITES))
+async def test_a_module_write_holding_the_lock_first_commits_and_the_revocation_waits(
+        committed_engine, module_routes, name):
+    factory = async_sessionmaker(bind=committed_engine, class_=AsyncSession, expire_on_commit=False)
+    async with _app_client(factory) as (client, pending):
+        c, perm, write = await _boundary_setup(factory, client, module_routes, name)
+        before = await _company_rows(factory, c["company_id"])
+        wrote, changed = await _race(
+            committed_engine,
+            lambda held: _http(pending, held, _send(client, c["h"]["operator"], write)),
+            lambda held: _direct(factory, held, _revoke(c["company_id"], perm, "operator")),
+        )
+        _ok(wrote)
+        _ok(changed)
+        assert await _company_rows(factory, c["company_id"]) != before
+        _refused(await _send(client, c["h"]["operator"], write)(), 403)
+
+
+@pytest.mark.parametrize("name", sorted(_BOUNDARY_WRITES))
+async def test_a_module_write_waiting_while_its_module_is_turned_off_is_refused(
+        committed_engine, module_routes, name):
+    """The company uses only the write's module and the ones it needs, so the module can be
+    turned off; that lands while the write waits, and the write is refused and leaves every
+    table as it was. A company that keeps the module is unaffected."""
+    module = _BOUNDARY_WRITES[name][0]
+    factory = async_sessionmaker(bind=committed_engine, class_=AsyncSession, expire_on_commit=False)
+    async with _app_client(factory) as (client, pending):
+        c, _, write = await _boundary_setup(factory, client, module_routes, name, modules=[module])
+        other, _, other_write = await _boundary_setup(factory, client, module_routes, name, modules=[module])
+        before = await _company_rows(factory, c["company_id"])
+        changed, wrote = await _race(
+            committed_engine,
+            lambda held: _direct(factory, held, _turn_off(c["company_id"], module)),
+            lambda held: _http(pending, held, _send(client, c["h"]["owner"], write)),
+        )
+        _ok(changed)
+        _refused(wrote, 403)
+        assert wrote.json()["detail"]["message_key"] == "modules.off_for_company"
+        assert await _company_rows(factory, c["company_id"]) == before
+        _ok(await _send(client, other["h"]["owner"], other_write)())
+
+
+@pytest.mark.parametrize("name", sorted(_BOUNDARY_WRITES))
+async def test_a_module_write_holding_the_lock_first_commits_before_its_module_is_turned_off(
+        committed_engine, module_routes, name):
+    module = _BOUNDARY_WRITES[name][0]
+    factory = async_sessionmaker(bind=committed_engine, class_=AsyncSession, expire_on_commit=False)
+    async with _app_client(factory) as (client, pending):
+        c, _, write = await _boundary_setup(factory, client, module_routes, name, modules=[module])
+        before = await _company_rows(factory, c["company_id"])
+        wrote, changed = await _race(
+            committed_engine,
+            lambda held: _http(pending, held, _send(client, c["h"]["owner"], write)),
+            lambda held: _direct(factory, held, _turn_off(c["company_id"], module)),
+        )
+        _ok(wrote)
+        _ok(changed)
+        assert await _company_rows(factory, c["company_id"]) != before
+
+
+async def test_concurrent_writes_to_one_company_all_land(committed_engine, module_routes):
+    """Writes of three modules sent to one company at once queue on its lock: every one
+    commits, none deadlocks, and each leaves its own row."""
+    for module in ("celerp-accounting", "celerp-contacts", "celerp-manufacturing"):
+        module_routes(module)
+    factory = async_sessionmaker(bind=committed_engine, class_=AsyncSession, expire_on_commit=False)
+    c = await _seed(factory, grants={perm: _ALL_ROLES for _, perm, _ in _BOUNDARY_WRITES.values()})
+    await _books(factory, c)
+    h = c["h"]["operator"]
+    async with _app_client(factory) as (client, _):
+        sends = [client.post("/accounting/journal-entries", json=_journal("6200", "4100"), headers=h)
+                 for _ in range(6)]
+        sends += [client.post("/crm/contacts", json={"name": f"Buyer {n}"}, headers=h) for n in range(6)]
+        sends += [client.post("/manufacturing/work-centers", json={"name": f"Bench {n}"}, headers=h)
+                  for n in range(6)]
+        outcomes = await asyncio.wait_for(asyncio.gather(*sends, return_exceptions=True), 60)
+    for outcome in outcomes:
+        _ok(outcome)
+    async with factory() as s:
+        kinds = dict((await s.execute(
+            select(Projection.entity_type, func.count()).where(Projection.company_id == c["company_id"])
+            .group_by(Projection.entity_type))).all())
+    assert len({o.json()["id"] for o in outcomes[12:]}) == 6
+    assert kinds.get("contact") == 6, kinds
+    assert len({o.json()["je_id"] for o in outcomes[:6]}) == 6
 
 
 def test_handed_settings_copy_as_plain_dicts():

@@ -6,6 +6,8 @@ external ids are not live channel links, and reconnecting keeps the same-store c
 
 from __future__ import annotations
 
+import asyncio
+import contextvars
 import json
 import uuid
 from types import SimpleNamespace
@@ -88,10 +90,13 @@ async def _doc(engine, cid, entity_id: str, **markers) -> None:
 
 
 @pytest_asyncio.fixture
-async def restored(real_engine, real_client, tmp_path, monkeypatch):
+async def restored(real_engine, real_client, tmp_path, monkeypatch, connector_modules_running):
     """A source company with channel-linked, Shopify-opted-in items and imported or pushed
     invoices, restored as a new company. Yields a namespace of both companies."""
     _local(monkeypatch, tmp_path)
+    # The installation loads and runs the modules these records live in, so the copy has them on.
+    monkeypatch.setenv("CELERP_CONFIG", str(tmp_path / "config.toml"))
+    monkeypatch.setenv("ENABLED_MODULES", "celerp-contacts,celerp-docs,celerp-inventory")
     user = await owner(real_engine)
     source = await company(real_engine, user, "Source Trading", "source-marker")
     tok = await token(real_engine, user, source)
@@ -143,11 +148,13 @@ async def _patch_qty(client, tok: str, eid: str, old: float, new: float) -> None
 
 async def test_restored_shopify_opt_ins_off_after_restore_and_rebuild(restored, real_engine):
     from celerp.projections.engine import ProjectionEngine
+    from celerp.services.company_lock import lock_company
     state, column = await _projection(real_engine, restored.cid, restored.a)
     assert state.get("is_sync_to_shopify") is False and column is False
     assert await count(real_engine, "ledger", "company_id = :c AND entity_id = :e AND event_type = 'shop.sync.disabled'",
                        c=uuid.UUID(restored.cid), e=restored.a) == 1
     async with maker(real_engine)() as s:
+        await lock_company(s, uuid.UUID(restored.cid))
         await ProjectionEngine.rebuild(s, uuid.UUID(restored.cid))
         await s.commit()
     state, column = await _projection(real_engine, restored.cid, restored.a)
@@ -264,6 +271,41 @@ async def test_outbound_enable_requires_owner_and_is_per_connector(restored, rea
     assert await _queued(real_engine, restored.cid) == 0
 
 
+@pytest.mark.parametrize("path,form,column,before", [
+    ("direction", {"direction": "both"}, "direction", "inbound"),
+    ("frequency", {"sync_frequency": "daily"}, "sync_frequency", "manual"),
+])
+async def test_a_connector_change_after_access_was_revoked_is_refused(
+        restored, real_engine, ui, monkeypatch, path, form, column, before):
+    """The UI checks the permission through the API, then writes in its own session: the
+    company lock judges the caller again, so access revoked in between stops the write."""
+    import ui.routes.settings_connectors as settings_connectors
+    assert await _claim(real_engine, restored.cid, "woocommerce") == "inbound"
+    await _sql(real_engine, f"UPDATE connector_configs SET {column} = :v WHERE company_id = :c",
+               v=before, c=restored.cid)
+    checked = settings_connectors._check_permission
+
+    async def check_then_revoke(request, key, **kw):
+        denied = await checked(request, key, **kw)
+        # Another client's change, outside this request.
+        await asyncio.get_running_loop().create_task(_sql(
+            real_engine, "UPDATE user_companies SET role = 'viewer' WHERE company_id = :c", c=restored.cid,
+        ), context=contextvars.Context())
+        return denied
+
+    monkeypatch.setattr(settings_connectors, "_check_permission", check_then_revoke)
+    ui.cookies.set("celerp_token", restored.tok)
+    r = await ui.post(f"/settings/connectors/woocommerce/{path}", data=form)
+
+    assert r.status_code == 200, r.text
+    assert t("error.access_changed") in (r.text + r.headers.get("HX-Trigger", "")), (r.text, r.headers)
+    async with real_engine.connect() as conn:
+        stored = (await conn.execute(text(
+            f"SELECT {column} FROM connector_configs WHERE company_id = :c AND connector = 'woocommerce'"),
+            {"c": restored.cid})).scalar_one()
+    assert stored == before
+
+
 async def test_restore_notice_says_integrations_disconnected(real_engine, real_client, ui, tmp_path, monkeypatch):
     """The page after restoring a company says its integrations are disconnected, links to
     Web Access to connect them again, and outbound sync is off."""
@@ -332,7 +374,7 @@ class _Connect:
 async def _observe(engine, cid, eid: str) -> dict:
     """What another request sees right now: ownership and the item's link."""
     from celerp.connectors.ownership import connector_ownership_state
-    from celerp_inventory.services import external_link_for_state
+    from celerp.connectors.product_links import external_link_for_state
     async with maker(engine)() as s:
         state = await connector_ownership_state(s, cid, "woocommerce")
         item = (await s.execute(text("SELECT state FROM projections WHERE company_id = :c AND entity_id = :e"),

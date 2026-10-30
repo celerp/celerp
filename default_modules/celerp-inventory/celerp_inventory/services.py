@@ -782,34 +782,9 @@ async def cost_correction_notice(session: AsyncSession, company_id, entry: Ledge
 _CHANNEL_KEY_PREFIXES = tuple(f"{p}:" for p in PRODUCT_CHANNEL_PLATFORMS)
 
 
-def _legacy_external_link(platform: str, idem_key: str) -> dict:
-    """Decode connector identity stored by releases before external_links existed."""
-    parts = (idem_key or "").split(":")
-    if parts[0] != platform:
-        return {}
-    if platform == "shopify" and len(parts) >= 3:
-        return {"product_id": parts[1], "variant_id": parts[2], "sync_enabled": True}
-    if platform == "woocommerce" and len(parts) >= 2:
-        link = {"product_id": parts[1], "sync_enabled": True}
-        if len(parts) >= 3 and parts[2]:
-            link["variation_id"] = parts[2]
-        return link
-    return {}
-
-
-def external_link_for_state(state: dict, platform: str) -> dict:
-    """Return one normalized external product link without mutating item state."""
-    links = state.get("external_links") or {}
-    raw = links.get(platform) if isinstance(links, dict) else None
-    if isinstance(raw, dict) and raw.get("detached") is True:
-        return {}
-    if isinstance(raw, dict) and raw.get("product_id") not in (None, ""):
-        return dict(raw)
-    return _legacy_external_link(platform, str(state.get("idempotency_key") or ""))
-
-
 def _external_ids(platform: str, state: dict) -> dict:
     """Flatten one normalized link into connector adapter field names."""
+    from celerp.connectors.product_links import external_link_for_state
     link = external_link_for_state(state, platform)
     if not link:
         return {}
@@ -846,10 +821,6 @@ async def _lock_external_identity_namespace(
     )
 
 
-def _like_escape(value: str) -> str:
-    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-
-
 def _external_identity_candidates(cid: uuid.UUID, platform: str, product_id: str):
     """Rows that may carry one external product identity: an explicit link or
     a legacy connector idempotency key. Callers decide with the exact Python
@@ -863,7 +834,7 @@ def _external_identity_candidates(cid: uuid.UUID, platform: str, product_id: str
             Projection.state.op("->")("external_links").op("->")(platform)
             .op("->>")("product_id") == product_id,
             idem == prefix,
-            idem.like(_like_escape(prefix) + ":%", escape="\\"),
+            idem.startswith(f"{prefix}:", autoescape=True),
         ),
     )
 
@@ -876,6 +847,7 @@ async def _assert_external_identity_available(
     *,
     exclude_entity_id: str | None = None,
 ) -> None:
+    from celerp.connectors.product_links import external_link_for_state
     product_id = str(link.get("product_id") or "")
     if not product_id:
         raise ExternalLinkConflictError(t("inventory.err_store_product_unknown"))
@@ -951,6 +923,7 @@ def _same_external_identity(
 
 def _select_external_anchor(rows: list[Projection], platform: str, product_id: str,
                             variation_id: str | None) -> Projection | None:
+    from celerp.connectors.product_links import external_link_for_state
     matches = [
         r for r in rows
         if _same_external_identity(
@@ -991,6 +964,7 @@ async def resolve_external_product(
     sku: str | None = None,
 ) -> Projection | None:
     """Resolve external identity first, then one unambiguous catalog SKU."""
+    from celerp.connectors.product_links import external_link_for_state
     cid = uuid.UUID(str(company_id))
     product_id = str(product_id)
     linked_rows = (await session.execute(
@@ -1078,6 +1052,7 @@ async def upsert_external_product(
     sell_by: str | None = None,
 ) -> tuple[str, str]:
     """Create or link one external product without making the connector an inventory engine."""
+    from celerp.connectors.product_links import external_link_for_state
     from celerp.db import SessionLocal as AsyncSessionLocal
 
     cid = uuid.UUID(str(company_id))
@@ -1280,6 +1255,7 @@ async def set_external_link_state(
     actor_id=None, source: str = "connector",
 ) -> dict:
     """Patch one external link while preserving every other channel identity."""
+    from celerp.connectors.product_links import external_link_for_state
     cid = uuid.UUID(str(company_id))
     await _lock_external_identity_namespace(session, cid, platform)
     row = await session.get(
@@ -1314,6 +1290,7 @@ async def set_external_link(
     actor_id=None, source: str = "connector",
 ) -> dict:
     """Create or replace one channel link without touching any other channel."""
+    from celerp.connectors.product_links import external_link_for_state
     cid = uuid.UUID(str(company_id))
     await _lock_external_identity_namespace(session, cid, platform)
     row = await session.get(
@@ -1369,6 +1346,7 @@ async def detach_external_link(
     actor_id=None, source: str = "connector_ui",
 ) -> bool:
     """Detach one platform identity while preserving local item and other channels."""
+    from celerp.connectors.product_links import external_link_for_state
     cid = uuid.UUID(str(company_id))
     await _lock_external_identity_namespace(session, cid, platform)
     row = await session.get(
@@ -1584,9 +1562,8 @@ def _sku_narrowing(keys: set[str]) -> list | None:
     aliases_text = Projection.state.op("->>")("_catalog_sku_aliases")
     clauses = [sku_text.op("!~")(_ASCII_ONLY), aliases_text.op("!~")(_ASCII_ONLY)]
     for key in sorted(keys):
-        pattern = f"%{_like_escape(key)}%"
-        clauses.append(func.lower(sku_text).like(pattern, escape="\\"))
-        clauses.append(func.lower(aliases_text).like(pattern, escape="\\"))
+        clauses.append(func.lower(sku_text).contains(key, autoescape=True))
+        clauses.append(func.lower(aliases_text).contains(key, autoescape=True))
     return clauses
 
 
@@ -1731,6 +1708,7 @@ def build_channel_states(
 
     A link to a store this company is not connected to is history only: it is
     shown as historical and never as linked."""
+    from celerp.connectors.product_links import external_link_for_state
     keys = _family_keys(rows)
     by_family: dict[tuple[str, str], list[Projection]] = {}
     for row in rows:
@@ -1835,6 +1813,7 @@ def _outbound_link(
     row: Projection, platform: str, *, require_sync_flag: bool, inventory_only: bool
 ) -> dict | None:
     """The row's external link when the row takes part in outbound sync."""
+    from celerp.connectors.product_links import external_link_for_state
     link = external_link_for_state(row.state or {}, platform)
     if not link or link.get("product_id") in (None, "") or link.get("remote_deleted") is True:
         return None
@@ -1851,6 +1830,7 @@ def _outbound_link(
 def _outbound_row(
     anchor: Projection, platform: str, quantity: float, sku_anchor_count: int
 ) -> dict:
+    from celerp.connectors.product_links import external_link_for_state
     st = anchor.state or {}
     if normalize_sku(st.get("sku")) and sku_anchor_count > 1:
         raise ValueError(
@@ -1947,6 +1927,7 @@ async def list_item_for_external_identity(
 ) -> list[dict]:
     """The inventory outbound row for one external product identity, loading
     only the rows that carry the identity and the anchor's catalog family."""
+    from celerp.connectors.product_links import external_link_for_state
     from celerp.db import SessionLocal as AsyncSessionLocal
 
     cid = uuid.UUID(str(company_id))

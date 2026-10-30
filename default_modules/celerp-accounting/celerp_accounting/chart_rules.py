@@ -25,7 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.accounting_roles import CONTINUED_ROLES, POSTABLE_ROLES, ROLE_LABELS, AccountRole, allowed_types, refusal
 from celerp.models.projections import Projection
 from celerp.services.account_roles import current_settings, role_map, scope_codes
-from celerp.services.company_lock import lock_chart
+from celerp.services.company_lock import lock_chart, lock_company
 from celerp.services.lot_origin import account_balances
 from celerp_accounting.ledger_accounts import check_account_change
 from celerp_accounting.models import Account, BankAccount
@@ -268,6 +268,8 @@ async def change_account(
     moving = parent_code is not ...
     if moving or account_type is not None or is_active is not None:
         await lock_chart(session, company_id)
+    else:
+        await lock_company(session, company_id)
     acc = await _account(session, company_id, code, lock=True)
     if acc is None:
         raise HTTPException(status_code=404, detail=refusal(
