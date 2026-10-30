@@ -369,12 +369,17 @@ def css_class(name: str) -> re.Pattern:
     return re.compile(rf"(^|\s){re.escape(name)}(\s|$)")
 
 
-def settle_layout(page) -> None:
-    """Waits until web fonts have loaded and the layout has had two frames to settle. The
-    load event can fire before a font swap reflows the page, so a box measured at load can
-    belong to a layout the person never sees, most often on a busy machine."""
-    page.evaluate("async () => { await document.fonts.ready;"
-                  " await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))); }")
+def settled_boxes(page, *selectors: str) -> list[dict]:
+    """The box of the first element matching each selector, all read in one pass once web
+    fonts have loaded and the layout has had two frames to settle. Boxes read one call at a
+    time can straddle a reflow (a font swap, a header part that loads after the page), so two
+    of them would describe layouts the person never sees together."""
+    return page.evaluate("""async (selectors) => {
+      await document.fonts.ready;
+      await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+      return selectors.map(s => { const r = document.querySelector(s).getBoundingClientRect();
+        return {x: r.x, y: r.y, width: r.width, height: r.height}; });
+    }""", list(selectors))
 
 
 def release_held_routes(page, glob: str, held: list) -> None:
