@@ -225,6 +225,33 @@ def goods_cost_empty(state: dict) -> bool:
     return round_basis(float(recorded_value(state)) - landed) == 0
 
 
+class CostTotalBelowLanded(ValueError):
+    """A cost total entered below the landed cost the lot carries; ``detail`` is the refusal."""
+
+    def __init__(self, landed: float):
+        self.detail = refusal(
+            "inventory.cost_total_below_landed",
+            f"The cost total can't be less than the landed cost of {landed:.2f} this item carries.",
+            landed=f"{landed:.2f}")
+        super().__init__(self.detail["message"])
+
+
+def goods_cost_from_total(state: dict, total: float, *, confirm: bool = False) -> float | None:
+    """The goods cost a cost total written back by the user means, the lot's whole value as
+    shown and exported: the total less the landed cost the lot carries. None when the total
+    is what the lot carries already, so an unchanged save is no change; with ``confirm`` a
+    lot whose goods cost is not known takes it as a deliberate set (its edit cell opens
+    empty, so what the user typed is what they know).
+    Raises CostTotalBelowLanded when the total is below the landed cost."""
+    total = round_basis(float(total))
+    if total == round_basis(float(recorded_value(state))) and not (confirm and not goods_cost_known(state)):
+        return None
+    landed = round_basis(sum(float(v or 0) for v in (state.get("landed_costs") or {}).values()))
+    if total < landed:
+        raise CostTotalBelowLanded(landed)
+    return round_basis(total - landed)
+
+
 def topped_up_cost(state: dict, added: float) -> dict:
     """The cost data of an item.quantity.adjusted adding goods worth ``added`` to a lot: its
     goods basis grows by ``added``, and its goods cost turns unknown when it held goods of
@@ -3332,17 +3359,22 @@ def _permission_errors(
     ]
 
 
-def _pop_cost_change(data: dict) -> dict | None:
+def _pop_cost_change(data: dict, state: dict) -> dict | None:
     """Take the goods cost out of patch data as the item page's cost edit.
 
-    Returns ``fields_changed`` for an item.updated restatement, or None when the
-    row sets no cost. Raises TypeError or ValueError for a cost that is not a number.
+    A cost total is the lot's whole value as the export writes it, so it is read through
+    goods_cost_from_total: a total equal to what the lot carries is no change. Returns
+    ``fields_changed`` for an item.updated restatement, or None when the row changes no
+    cost. Raises TypeError or ValueError for a cost that is not a number, and
+    CostTotalBelowLanded for a total below the lot's landed cost.
     """
     cost_total, cost_price = data.pop("cost_total", None), data.pop("cost_price", None)
-    field, value = ("cost_total", cost_total) if cost_total not in (None, "") else ("cost_price", cost_price)
-    if value in (None, ""):
+    if cost_total not in (None, ""):
+        goods = goods_cost_from_total(state, float(cost_total))
+        return None if goods is None else {"cost_total": {"new": goods}}
+    if cost_price in (None, ""):
         return None
-    return {field: {"new": float(value)}}
+    return {"cost_price": {"new": float(cost_price)}}
 
 
 async def _cost_restatement_error(session: AsyncSession, company_id, record: dict, row: dict) -> dict | None:
@@ -3357,17 +3389,19 @@ async def _cost_restatement_error(session: AsyncSession, company_id, record: dic
     from celerp_inventory.projections import apply_item_event
 
     data = dict(record["data"])
-    try:
-        cost_change = _pop_cost_change(data)
-    except (TypeError, ValueError):
-        return None  # the cell checks report a cost that is not a number
-    if cost_change is None:
-        return None
     entity_id = record["entity_id"]
     stored = (await session.execute(
         select(Projection).where(Projection.company_id == company_id, Projection.entity_id == entity_id)
     )).scalars().first()
     if stored is None:
+        return None
+    try:
+        cost_change = _pop_cost_change(data, stored.state or {})
+    except CostTotalBelowLanded as exc:
+        return {"field": _source_field(row, "cost_total"), "code": "cost_below_landed", "message": str(exc)}
+    except (TypeError, ValueError):
+        return None  # the cell checks report a cost that is not a number
+    if cost_change is None:
         return None
     patched = SimpleNamespace(entity_type=stored.entity_type,
                               state=apply_item_event(stored.state or {}, "item.patched", data))
@@ -4081,7 +4115,10 @@ async def write_import_batch(
         cost_change = None
         if event_type == "item.patched" and stored_proj is not None and COST_ITEM_KEYS & set(data):
             try:
-                cost_change = _pop_cost_change(data)
+                cost_change = _pop_cost_change(data, stored_proj.state or {})
+            except CostTotalBelowLanded as exc:
+                outcome.add(entity_id, "rejected", _row_refused(named, exc.detail))
+                continue
             except (TypeError, ValueError):
                 outcome.add(entity_id, "rejected", _row_refused(named, refusal("import.row.cost_not_number", "cost must be a number")))
                 continue

@@ -252,7 +252,8 @@ async def test_preview_shows_the_merged_prices_value_and_unknown_cost(client, se
     a = await _item(client, auth, qty=2, cost_total=100.0, retail_price=10.0)
     b = await _item(client, auth, qty=3, retail_price=20.0)
     shown = await _preview(client, auth["headers"], [a, b], resulting_quantity=6)
-    assert shown == {"retail_price": 16.0, "cost_total": 100.0, "cost_price": None,
+    # Every stored list is named, None where the merged item will have no price.
+    assert shown == {"retail_price": 16.0, "wholesale_price": None, "cost_total": 100.0, "cost_price": None,
                      "goods_cost_known": False}, shown
     flat = await _read(client, auth, await _merge(client, auth, [a, b], resulting_quantity=6))
     assert flat["retail_price"] == 16.0 and flat["cost_total"] == 100.0 and flat.get("cost_price") is None
@@ -270,7 +271,7 @@ async def test_preview_hides_cost_from_a_role_that_cannot_see_it(client, session
     a = await _item(client, auth, qty=2, cost_total=100.0, retail_price=10.0)
     b = await _item(client, auth, qty=3, cost_total=50.0, retail_price=10.0)
     operator = await _user_with_role(client, session, auth["headers"], "operator")
-    assert await _preview(client, operator, [a, b]) == {"retail_price": 10.0}
+    assert await _preview(client, operator, [a, b]) == {"retail_price": 10.0, "wholesale_price": None}
 
 
 # ── P3: correcting a part's cost through a merge ────────────────────────────

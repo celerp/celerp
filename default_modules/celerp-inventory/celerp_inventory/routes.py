@@ -91,6 +91,7 @@ from celerp.services.pricing import (
     get_price_config,
     inject_derived_prices,
     is_cost_list_name,
+    is_derived,
     is_price_item_key,
     price_key,
     price_keys_in,
@@ -2553,6 +2554,10 @@ def is_cost_price_type(price_type: str) -> bool:
     "x-celerp-agent": True, "x-celerp-agent-idempotent": True,
     "x-celerp-agent-result-permissions": ["edit_inventory_amounts", "revert_items_to_draft", "set_inventory_prices"]})
 async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
+    """Change item fields (``fields_changed``: ``{field: {"old": ..., "new": ...}}``). A
+    ``cost_total`` here is the item's goods cost, without the landed cost (freight, duty)
+    it carries; the list's Cost Total column and the CSV export show goods plus landed
+    cost. A new value of null clears the goods cost."""
     if payload.idempotency_key:
         replay = await find_event_by_idempotency(session, company_id, payload.idempotency_key)
         if replay is not None:
@@ -4693,14 +4698,18 @@ async def preview_merge(payload: MergeBody, company_id=Depends(get_current_compa
 
 async def _merge_result_preview(session: AsyncSession, company_id, plan: MergePlan, role: str,
                                 settings: dict) -> dict:
-    """The merged item's unit prices, and for a role that may see cost its value, unit cost
-    and whether its goods cost is known, read as an item read would show the result: the
-    same projection, flatten and field visibility."""
+    """The merged item's unit prices on every stored price list (None where it has none),
+    and for a role that may see cost its value, unit cost and whether its goods cost is
+    known, read as an item read would show the result: the same projection, flatten and
+    field visibility."""
     from celerp.services.field_schema import get_effective_field_schema
 
     state = apply_item_event({}, "item.created", {**plan.create_data, **plan.price_fields})
     flat = flatten_item(state, "")
-    shown = {key: flat.get(key) for key in (*plan.price_fields, "cost_total", "cost_price")}
+    price_lists = (await get_price_config(session, company_id))[0]
+    listed = [price_key(pl["name"]) for pl in price_lists
+              if pl.get("name") and not is_derived(pl) and not is_cost_list_name(pl["name"])]
+    shown = {key: flat.get(key) for key in dict.fromkeys((*listed, *plan.price_fields, "cost_total", "cost_price"))}
     can_see_costs = role_has_permission(settings, role, "view_inventory_costs")
     field_schema = await get_effective_field_schema(session, company_id, category=flat.get("category"))
     out = apply_item_visibility([shown], role, field_schema, can_see_costs,
