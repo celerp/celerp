@@ -352,18 +352,16 @@ async def seed_chart_of_accounts_hook(*, session: AsyncSession, company_id: uuid
 
 
 async def default_bank_follows_books_hook(*, session: AsyncSession, company_id: uuid.UUID) -> None:
-    """The on_books_currency_set slot: the default bank account, seeded before the company
-    chose its currency, is kept in the books' currency while no posting on it carries an
-    amount in another. Every entry on it is then a books-currency amount, so it moves with
-    them and nothing is revalued."""
+    """The on_books_currency_set slot, which runs under the company lock: the default bank
+    account, seeded before the company chose its currency, is kept in the books' currency
+    whenever ``set_bank_currency`` allows it. Every entry on it is then a books-currency
+    amount, so it moves with them and nothing is revalued."""
     bank = (await session.execute(select(BankAccount).where(
         BankAccount.company_id == company_id, BankAccount.chart_account_code == _DEFAULT_BANK_CODE,
-    ))).scalar_one_or_none()
+    ).with_for_update().execution_options(populate_existing=True))).scalar_one_or_none()
     if bank is None:
         return
-    base = await _base_currency(session, company_id)
-    if bank.currency != base and not await _bank_has_foreign_amounts(session, company_id, bank):
-        bank.currency = base
+    await set_bank_currency(session, company_id, bank, await _base_currency(session, company_id))
 
 
 async def backfill_chart_of_accounts_hook(*, session: AsyncSession) -> None:
@@ -2641,20 +2639,14 @@ async def _bank_dicts(
     out = []
     for b in banks:
         net: Decimal | None = Decimal(0)
-        foreign = False
-        for je_id, state, _ts in rows:
-            for entry in state.get("entries", []):
-                if entry.get("account") == b.chart_account_code and _line_amounts(entry) is not None:
-                    amounts = _bank_line_amounts(b, base, je_id, entry)
-                    net = None if net is None or amounts is None else net + amounts[0] - amounts[1]
-                    foreign = foreign or _carries_foreign_amount(entry)
+        lines = _bank_lines(rows, b)
+        for je_id, entry in lines:
+            amounts = _bank_line_amounts(b, base, je_id, entry)
+            net = None if net is None or amounts is None else net + amounts[0] - amounts[1]
         d = _bank_to_dict(b)
         d["balance"] = None if net is None else to_stored_float(round_money(net, b.currency))
         d["opening_unbacked"] = bool(b.opening_balance) and _opening_je_id(b.id) not in posted_ids
-        # The currency the account can be corrected to: one labelled in another currency
-        # than the books', whose postings carry books-currency amounts only, reads none of
-        # them, and setting it to the books' currency makes every one readable.
-        d["relabel_to"] = base if b.currency != base and not foreign else None
+        d["relabel_to"] = _relabel_to(b, base, lines)
         d["books_currency"] = base
         out.append(d)
     return out
@@ -2814,16 +2806,48 @@ def _carries_foreign_amount(entry: dict) -> bool:
     return bool(entry.get("fx_currency") and (entry.get("fx_debit") or entry.get("fx_credit")))
 
 
-async def _bank_has_foreign_amounts(session: AsyncSession, company_id: uuid.UUID, bank: BankAccount) -> bool:
-    """Whether a posted line on the account's ledger account carries an amount in a
-    currency other than the books'. Lines holding books-currency amounts only read the
-    same whatever the account is labelled, so relabelling such an account (for example
-    to the books' currency, which makes its figures readable) loses nothing and can be
-    changed back; a foreign amount is readable only in its own currency, so it fixes
-    the label."""
-    return any(entry.get("account") == bank.chart_account_code and _line_amounts(entry) is not None
-               and _carries_foreign_amount(entry)
-               for _, state, _ in await journal_rows(session, company_id) for entry in state.get("entries", []))
+def _bank_lines(rows: list, bank: BankAccount) -> list[tuple[str, dict]]:
+    """(entry id, line) of every posted line on the account's ledger account."""
+    return [(je_id, entry) for je_id, state, _ts in rows for entry in state.get("entries", [])
+            if entry.get("account") == bank.chart_account_code and _line_amounts(entry) is not None]
+
+
+def _relabel_to(bank: BankAccount, base: str, lines: list[tuple[str, dict]]) -> str | None:
+    """The currency the account can be corrected to: one labelled in another currency
+    than the books', whose postings carry books-currency amounts only, reads none of
+    them, and setting it to the books' currency makes every one readable."""
+    return base if bank.currency != base and not any(_carries_foreign_amount(e) for _, e in lines) else None
+
+
+async def set_bank_currency(session: AsyncSession, company_id: uuid.UUID, bank: BankAccount, target: str) -> str | None:
+    """Keep *bank* in *target*, or say why it can't be (the refusal, nothing written).
+
+    Every writer of an existing account's currency comes here, under the company lock and
+    the account's row lock. Before the account has any history (a posted line or a
+    reconciliation session) any currency goes. After, the label is what its entries and
+    statements are read in, so the only changes are the correction ``_relabel_to`` names
+    and its undo (back to the label it corrected, while the entries still carry
+    books-currency amounts only), and neither while a completed reconciliation of the
+    account would be read again in another currency."""
+    if target == bank.currency:
+        return None
+    lines = _bank_lines(await journal_rows(session, company_id), bank)
+    statuses = set((await session.execute(select(ReconciliationSession.status).where(
+        ReconciliationSession.company_id == company_id, ReconciliationSession.bank_account_id == bank.id,
+    ))).scalars())
+    relabelled_from = None
+    if lines or statuses:
+        base = await _base_currency(session, company_id)
+        correction = target == _relabel_to(bank, base, lines)
+        undo = (bank.currency == base and target == bank.relabelled_from
+                and not any(_carries_foreign_amount(e) for _, e in lines))
+        if not (correction or undo):
+            return t("acct.err_bank_currency_has_history", currency=bank.currency)
+        if "completed" in statuses:
+            return t("acct.err_bank_currency_reconciled", currency=bank.currency)
+        relabelled_from = bank.currency if correction else None
+    bank.currency, bank.relabelled_from = target, relabelled_from
+    return None
 
 
 @router.patch("/bank-accounts/{bank_id}")
@@ -2852,9 +2876,9 @@ async def patch_bank_account(
         # An account kept in a currency ISO 4217 has since withdrawn keeps it; none is moved to one.
         if normed not in CURRENCY_CODES and normed != b.currency:
             raise HTTPException(status_code=422, detail=t("acct.err_currency_unknown", currency=payload.currency))
-        if normed != b.currency and await _bank_has_foreign_amounts(session, company_id, b):
-            raise HTTPException(status_code=409, detail=t("acct.err_bank_currency_in_use", currency=b.currency))
-        b.currency = normed
+        refused = await set_bank_currency(session, company_id, b, normed)
+        if refused:
+            raise HTTPException(status_code=409, detail=refused)
     if payload.is_active and not b.is_active:
         await require_money_account(session, company_id, b.chart_account_code)
     if payload.is_active is not None:

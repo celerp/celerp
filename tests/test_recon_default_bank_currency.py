@@ -74,7 +74,9 @@ async def test_mislabelled_bank_is_corrected_from_the_notice_and_its_reconciliat
     """An existing install whose default bank was seeded in another currency than the books:
     every posting on it carries a books-currency amount only. Nothing changes it on its own;
     the workspace and the history page say why its figures read "--" and offer the one
-    correction, which changes no amount and can be changed back."""
+    correction. A completed reconciliation of the account would be read again by it, so the
+    correction asks for that reconciliation to be reopened first; then it goes through,
+    changes no amount, and can be changed back until a reconciliation is completed again."""
     from test_reconciliation_history import bank, legacy_session
     from test_reconciliation_reopen import _ui_as
     tok, h = await admin(client)
@@ -88,10 +90,15 @@ async def test_mislabelled_bank_is_corrected_from_the_notice_and_its_reconciliat
     assert recon["difference"] is None and recon["bank_account"]["relabel_to"] == "USD"
     assert (await client.post(f"/accounting/reconciliation/{sid}/complete", headers=h)).status_code == 422
     action = f'action="/accounting/reconcile/relabel/{b["id"]}"'
+    back = {"next": f"/accounting/reconcile/{sid}"}
     async with _ui_as(tok) as ui:
         for page in (f"/accounting/reconcile/{sid}", f"/accounting/reconcile/history/{b['id']}"):
             assert action in (await ui.get(page)).text, page
-        r = await ui.post(f"/accounting/reconcile/relabel/{b['id']}", data={"next": f"/accounting/reconcile/{sid}"})
+        r = await ui.post(f"/accounting/reconcile/relabel/{b['id']}", data=back)
+        assert r.status_code == 303 and "?msg=" in r.headers["location"], r.headers
+        assert t("acct.err_bank_currency_reconciled", currency="THB") in (await ui.get(r.headers["location"])).text
+        assert (await client.post(f"/accounting/reconciliation/{done}/reopen", headers=h)).status_code == 200
+        r = await ui.post(f"/accounting/reconcile/relabel/{b['id']}", data=back)
         assert r.status_code == 303 and r.headers["location"].startswith(f"/accounting/reconcile/{sid}?done="), r.headers
         page = (await ui.get(r.headers["location"])).text
         assert action not in page
@@ -99,14 +106,17 @@ async def test_mislabelled_bank_is_corrected_from_the_notice_and_its_reconciliat
         assert "flash flash--success" in page and t("recon.relabel_done", currency="THB", base="USD") in page
 
     assert (await client.get(f"/accounting/bank-accounts/{b['id']}", headers=h)).json()["currency"] == "USD"
-    items = {i["id"]: i for i in (await client.get(
-        f"/accounting/bank-accounts/{b['id']}/reconciliations", headers=h)).json()["items"]}
-    assert items[done]["needs_review"] is False
-    r = await client.post(f"/accounting/reconciliation/{sid}/complete", headers=h)
-    assert r.status_code == 200, r.text
-    # The correction changes no amount, so it can be changed back while that holds.
+    # The correction changes no amount, so it can be changed back while no reconciliation is completed.
+    for target in ("THB", "USD"):
+        r = await client.patch(f"/accounting/bank-accounts/{b['id']}", json={"currency": target}, headers=h)
+        assert r.status_code == 200 and r.json()["currency"] == target, r.text
+    for s_id in (done, sid):
+        r = await client.post(f"/accounting/reconciliation/{s_id}/complete", headers=h)
+        assert r.status_code == 200, r.text
+    items = (await client.get(f"/accounting/bank-accounts/{b['id']}/reconciliations", headers=h)).json()["items"]
+    assert not any(i["needs_review"] for i in items), items
     r = await client.patch(f"/accounting/bank-accounts/{b['id']}", json={"currency": "THB"}, headers=h)
-    assert r.status_code == 200 and r.json()["currency"] == "THB", r.text
+    assert r.status_code == 409 and r.json()["detail"] == t("acct.err_bank_currency_reconciled", currency="USD"), r.text
 
 
 async def test_relabel_returns_only_to_a_reconciliation_page(client, session):

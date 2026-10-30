@@ -41,7 +41,7 @@ async def _currency_in_use(client, h, session, tok):
     b = await bank(client, h, currency="EUR", opening=0.0)
     await fx_deposit(client, h, b, 100, 1.08, 108)
     r = await client.patch(f"/accounting/bank-accounts/{b['id']}", json={"currency": "USD"}, headers=h)
-    assert r.status_code == 409 and r.json()["detail"] == t("acct.err_bank_currency_in_use", currency="EUR"), r.text
+    assert r.status_code == 409 and r.json()["detail"] == t("acct.err_bank_currency_has_history", currency="EUR"), r.text
     usd = await bank(client, h, currency="USD", opening=0.0, name="Home Bank", number="0002")
     async with _ui_as(tok) as ui:
         form = (await ui.get("/accounting/journal/new")).text
@@ -54,6 +54,19 @@ async def _currency_in_use(client, h, session, tok):
     sid = (await start(client, h, b["id"], "2026-09-30", 0.0)).json()["id"]
     ids = [e["je_id"] for e in (await client.get(f"/accounting/reconciliation/{sid}", headers=h)).json()["unreconciled_entries"]]
     assert (await match(client, h, sid, ids)).status_code == 200
+    assert (await _complete(client, h, sid)).status_code == 200
+
+
+async def _currency_reconciled(client, h, session, tok):
+    """Way out: reopen the completed reconciliation, then the correction goes through."""
+    b = await bank(client, h, currency="THB", opening=0.0)
+    je = await legacy_deposit(client, h, session, b, "2026-09-10", 50.0)
+    sid = await legacy_session(session, b, "2026-09-30", balance=50.0, je_ids=[je])
+    r = await client.patch(f"/accounting/bank-accounts/{b['id']}", json={"currency": "USD"}, headers=h)
+    assert r.status_code == 409 and r.json()["detail"] == t("acct.err_bank_currency_reconciled", currency="THB"), r.text
+    assert (await client.post(f"/accounting/reconciliation/{sid}/reopen", headers=h)).status_code == 200
+    assert (await client.patch(f"/accounting/bank-accounts/{b['id']}", json={"currency": "USD"},
+                               headers=h)).status_code == 200
     assert (await _complete(client, h, sid)).status_code == 200
 
 
@@ -179,7 +192,8 @@ async def _payment_bank_currency(client, h, session, tok):
 
 
 WAYS_OUT = {
-    "acct.err_bank_currency_in_use": _currency_in_use,
+    "acct.err_bank_currency_has_history": _currency_in_use,
+    "acct.err_bank_currency_reconciled": _currency_reconciled,
     "acct.err_bank_rate_required": _rate_required,
     "acct.err_je_bank_currency": _je_bank_currency,
     "acct.err_recon_amount_unknown": _amount_unknown,

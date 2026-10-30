@@ -54,6 +54,9 @@ class BankAccount(Base):
     account_number: Mapped[str] = mapped_column(String(64), nullable=False)  # stored masked
     bank_type: Mapped[str] = mapped_column(String(32), nullable=False)  # checking|savings|credit_card
     currency: Mapped[str] = mapped_column(String(8), nullable=False)
+    # The label the books-currency correction replaced, so the correction can be undone
+    # (set_bank_currency); None when the last change was not that correction.
+    relabelled_from: Mapped[str | None] = mapped_column(String(8), nullable=True)
     opening_balance: Mapped[float] = mapped_column(Numeric(20, 4), default=0.0, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)

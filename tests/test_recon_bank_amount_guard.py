@@ -102,7 +102,8 @@ BOOKS_CURRENCY_READERS = {
     ("routes.py", "opening_tie_out"): "opening balances against the books, books currency",
     ("routes.py", "statement_of_account"): "a contact's statement, books currency",
     ("routes.py", "_carries_foreign_amount"): "whether a line carries a foreign amount, not how much",
-    ("routes.py", "_bank_has_foreign_amounts"): "whether any line on the account carries a foreign amount, not how much",
+    ("routes.py", "_bank_lines"): "which lines sit on the account, not how much they move",
+    ("routes.py", "set_bank_currency"): "whether the account has lines and whether any carries a foreign amount",
     ("routes.py", "create_transfer"): "a writer reading back the line it just built",
     ("routes.py", "cash_flow"): "the cash flow statement, books currency over every cash account",
     ("routes.py", "matches"): "journal search matching a typed figure against books-currency amounts",
@@ -115,7 +116,7 @@ _BANK_READING = {"_bank_amounts", "_bank_line_amounts"}
 
 def _reads_line_amounts(fn: ast.AST) -> bool:
     for n in ast.walk(fn):
-        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "_line_amounts":
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id in ("_line_amounts", "_bank_lines"):
             return True
         if (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == "get"
                 and n.args and isinstance(n.args[0], ast.Constant) and n.args[0].value in _AMOUNTS):

@@ -23,6 +23,7 @@ from migration_support import auth, maker, real_client, real_engine  # noqa: F40
 from test_company_reset_payments import _harbor, _waiting_on_a_lock
 from test_helpers import invite_user, register_admin
 from test_reconciliation_reopen import _ui_as
+from ui.i18n import t
 
 pytestmark = pytest.mark.asyncio
 
@@ -500,17 +501,52 @@ async def test_currency_change_refused_on_a_ledger_account_another_bank_has_used
     assert (await client.get(f"/accounting/bank-accounts/{b['id']}", headers=h)).json()["currency"] == "USD"
 
 
-async def test_base_only_account_relabels_to_the_books_currency_and_back(client, session):
-    """Postings carrying books-currency amounts only read the same whatever the account is
-    labelled: relabelling such an account changes no amount, so it is allowed and undoable."""
+async def test_currency_change_refused_once_the_account_has_history(client, session):
+    """A posted line or any reconciliation session fixes the label its amounts and
+    statements are read in: a change other than the books-currency correction is refused
+    with the way out, and nothing is written."""
     _, h = await admin(client)
-    b = await bank(client, h, opening=0.0)
-    je = await deposit(client, h, b, "2026-09-05", 10.0)
-    await completed(client, h, b, "2026-09-30", 10.0, [je])
-    for target in ("THB", "USD", "THB", "USD"):
-        r = await client.patch(f"/accounting/bank-accounts/{b['id']}", json={"currency": target}, headers=h)
-        assert r.status_code == 200 and r.json()["currency"] == target, r.text
-    assert (await history(client, h, b["id"])).json()["items"][0]["needs_review"] is False
+    posted = await bank(client, h, opening=0.0)
+    await deposit(client, h, posted, "2026-09-05", 10.0)
+    reconciled_only = await bank(client, h, opening=0.0, name="Second Bank", number="0002")
+    assert (await start(client, h, reconciled_only["id"], "2026-09-30", 0.0)).status_code == 200
+    for b in (posted, reconciled_only):
+        r = await client.patch(f"/accounting/bank-accounts/{b['id']}", json={"currency": "THB"}, headers=h)
+        assert r.status_code == 409 and r.json()["detail"] == t(
+            "acct.err_bank_currency_has_history", currency="USD"), r.text
+        assert (await client.get(f"/accounting/bank-accounts/{b['id']}", headers=h)).json()["currency"] == "USD"
+
+
+async def test_books_currency_correction_and_its_undo(client, session):
+    """An account labelled THB whose entries carry USD amounts only is corrected to the
+    books' USD and set back to THB again; no other label is ever accepted."""
+    _, h = await admin(client)
+    b = await bank(client, h, currency="THB", opening=0.0)
+    await legacy_deposit(client, h, session, b, "2026-09-10", 200.0)
+
+    async def to(currency):
+        return await client.patch(f"/accounting/bank-accounts/{b['id']}", json={"currency": currency}, headers=h)
+    assert (await to("GBP")).status_code == 409
+    for target, balance in (("USD", 200.0), ("THB", None), ("USD", 200.0)):
+        assert (await to("GBP")).status_code == 409
+        r = await to(target)
+        assert r.status_code == 200 and r.json()["currency"] == target and r.json()["balance"] == balance, r.text
+
+
+async def test_currency_change_after_a_completed_reconciliation_leaves_it_as_completed(client, session):
+    """A books-currency bank with a completed reconciliation is relabelled EUR: the
+    completed statement must not be re-read in another currency (refuse, or keep it)."""
+    _, h = await admin(client)
+    b = await bank(client, h, opening=0)
+    je = await deposit(client, h, b, "2026-09-10", 100)
+    sid = (await start(client, h, b["id"], "2026-09-30", 100)).json()["id"]
+    assert (await match(client, h, sid, [je])).status_code == 200
+    await complete(client, h, sid)
+    r = await client.patch(f"/accounting/bank-accounts/{b['id']}", headers=h, json={"currency": "EUR"})
+    after = (await client.get(f"/accounting/reconciliation/{sid}", headers=h)).json()
+    item = next(i for i in (await history(client, h, b["id"])).json()["items"] if i["id"] == sid)
+    assert r.status_code == 409 or (after["book_balance"] == 100.0 and not item["needs_review"]), (
+        r.status_code, after["book_balance"], item["needs_review"])
 
 
 async def test_currency_change_allowed_before_use(client, session):
