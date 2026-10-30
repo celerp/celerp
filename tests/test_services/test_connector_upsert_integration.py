@@ -14,7 +14,6 @@ teardown) and seed a real company so the ledger FK is satisfied.
 """
 from __future__ import annotations
 
-import contextlib
 import json
 import uuid
 
@@ -62,11 +61,6 @@ async def _seed_companies(session, *names: str) -> list[uuid.UUID]:
 
 async def _seed_company(session, name: str) -> uuid.UUID:
     return (await _seed_companies(session, name))[0]
-
-
-@contextlib.asynccontextmanager
-async def _same(session):
-    yield session
 
 
 @pytest_asyncio.fixture
@@ -283,16 +277,12 @@ async def test_contact_dedup_is_per_company(use_test_session):
 async def test_watermark_only_advances_on_full_success(session, monkeypatch):
     """A partial run must NOT advance the incremental cursor (its errored records
     would be skipped forever); only a fully successful run does."""
-    import contextlib
     from datetime import datetime, timezone
 
     from celerp.connectors import sync_runner
     from celerp.models.sync_run import SyncRun
 
-    @contextlib.asynccontextmanager
-    async def _ctx():
-        yield session
-    monkeypatch.setattr("celerp.db.get_session_ctx", _ctx)
+    monkeypatch.setattr("celerp.db.get_session_ctx", await own_sessions_on(session))
 
     co = "wm-co-1"
     t_partial = datetime(2026, 6, 2, tzinfo=timezone.utc)
@@ -330,7 +320,6 @@ async def test_watermark_only_advances_on_full_success(session, monkeypatch):
 @pytest.mark.asyncio
 async def test_woocommerce_pull_product_files(use_test_session, monkeypatch):
     """_pull_product_files emits each image + cert onto the resolved item."""
-    import contextlib
     import json
     from unittest.mock import AsyncMock
 
@@ -347,10 +336,7 @@ async def test_woocommerce_pull_product_files(use_test_session, monkeypatch):
     entity_id = (await session.execute(select(Projection.entity_id).where(
         Projection.company_id == cid, Projection.entity_type == "item"))).scalar_one()
 
-    @contextlib.asynccontextmanager
-    async def _ctx():
-        yield session
-    monkeypatch.setattr("celerp.db.get_session_ctx", _ctx)
+    monkeypatch.setattr("celerp.db.get_session_ctx", await own_sessions_on(session))
     emit = AsyncMock(return_value=True)
     monkeypatch.setattr("celerp.connectors.images.download_and_emit_file", emit)
 
@@ -1277,7 +1263,7 @@ async def test_woocommerce_payment_books_to_the_chosen_deposit_account(use_test_
         await _bank_on(session, cid, code)
     company = await locked_company(session, cid)
     company.settings = {**(company.settings or {}), **settings}
-    await session.flush()
+    await session.commit()  # set by its own request, committed before an import reads it
     order = {**_WOO_PLAIN_ORDER, "id": 2002, "date_paid": "2024-06-02T10:00:00"}
     assert await u.upsert_order_from_woocommerce(str(cid), order) == "created"
     st = await _state(session, cid, "woocommerce:order:2002")
@@ -2093,7 +2079,7 @@ async def test_conflict_choice_settles_the_field(use_test_session, monkeypatch, 
     from connector_test_support import item_state
 
     session = use_test_session
-    monkeypatch.setattr("celerp.db.get_session_ctx", lambda: _same(session))
+    monkeypatch.setattr("celerp.db.get_session_ctx", await own_sessions_on(session))
     cid = await _seed_company(session, f"Settle{keep}")
 
     async def pull(name):
@@ -2229,10 +2215,7 @@ async def test_syncing_an_item_with_woocommerce_needs_only_inventory_and_keeps_a
 
     session = use_test_session
 
-    @contextlib.asynccontextmanager
-    async def _admission_session():
-        yield session
-    monkeypatch.setattr("celerp.modules.boundary.get_session_ctx", _admission_session)
+    monkeypatch.setattr("celerp.modules.boundary.get_session_ctx", await own_sessions_on(session))
 
     cid = await _seed_company(session, "WooDocsOff")
     root_id = await _woo_stocked_product(session, cid, 791, "DOCSOFF-SKU")

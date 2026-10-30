@@ -56,8 +56,9 @@ async def test_current_connector_state_is_revoked_before_restore(
     session, monkeypatch, tmp_path, _isolate_database_side_effects
 ):
     import uuid
-    from contextlib import asynccontextmanager
     from unittest.mock import AsyncMock
+
+    from test_helpers import own_sessions_on
 
     from celerp.config import settings
     from celerp.models.company import Company
@@ -78,10 +79,6 @@ async def test_current_connector_state_is_revoked_before_restore(
     ))
     await session.flush()
 
-    @asynccontextmanager
-    async def _shared_session_ctx():
-        yield session
-
     revoke = AsyncMock()
     monkeypatch.setattr(
         "celerp.connectors.remote_state.revoke_connector_remote_state",
@@ -93,7 +90,7 @@ async def test_current_connector_state_is_revoked_before_restore(
     )
     monkeypatch.setattr(
         "celerp.db.get_session_ctx",
-        _shared_session_ctx,
+        await own_sessions_on(session),
     )
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     connectors = await _isolate_database_side_effects["_current_connectors"]()

@@ -684,9 +684,7 @@ class TestRefreshJtiExpiry:
         from jose import jwt as _jwt
         from celerp.config import settings
         from celerp.models.auth import SessionRegistry
-        from contextlib import asynccontextmanager
         import time as _time
-        from unittest.mock import patch
 
         reg = await client.post("/auth/register", json={
             "company_name": "RefreshDbCo", "email": "refreshdb@test.com",
@@ -702,11 +700,6 @@ class TestRefreshJtiExpiry:
         assert row is not None
         expiry_before = row.expiry
 
-        # Patch get_session_ctx to yield the test session
-        @asynccontextmanager
-        async def _test_session_ctx():
-            yield session
-
         now = _time.time()
         total_ttl = int(settings.access_token_expire_minutes) * 60
         # A genuinely valid, past-half-life v2 token: keep the full claim set
@@ -715,8 +708,7 @@ class TestRefreshJtiExpiry:
         stale_payload["exp"] = int(now + total_ttl * 0.49)
         stale_token = _jwt.encode(stale_payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
 
-        with patch("celerp.middleware.get_session_ctx", return_value=_test_session_ctx()):
-            r = await client.get("/items", headers={"Authorization": f"Bearer {stale_token}"})
+        r = await client.get("/items", headers={"Authorization": f"Bearer {stale_token}"})
 
         assert r.status_code == 200
         assert "X-Refreshed-Token" in r.headers
