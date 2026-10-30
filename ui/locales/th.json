@@ -4601,7 +4601,6 @@
   "documents.err_quote_expired": "ใบเสนอราคานี้หมดอายุแล้ว จึงแปลงไม่ได้ เปลี่ยนวันหมดอายุ แล้วจึงแปลง",
   "documents.err_memo_issue_first": "ออกใบฝากขายก่อนแปลงเป็นใบแจ้งหนี้",
   "documents.err_memo_nothing_out": "ยังไม่มีสินค้าออกไปตามใบฝากขายนี้ จึงไม่มีอะไรให้ออกใบแจ้งหนี้ ส่งมอบสินค้าอย่างน้อยหนึ่งรายการก่อน",
-  "documents.err_convert_line_unmatched": "เกิดข้อผิดพลาดขณะแปลงเอกสารนี้: จับคู่สินค้า {sku} กับบรรทัดใดไม่ได้ หากยังเกิดขึ้นอีก ให้สอบถามใน GitHub Issues หรือ Discussions",
   "documents.err_consignment_issue_first": "ออกเอกสารรับฝากขายก่อนแปลงเป็นบิล",
   "documents.err_convert_unsupported": "แปลงเอกสารนี้เป็นประเภทนั้นไม่ได้",
   "documents.err_note_empty": "พิมพ์บันทึกก่อนบันทึก",

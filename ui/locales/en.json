@@ -4606,7 +4606,6 @@
   "documents.err_quote_expired": "This quotation has expired, so it can't be converted. Change its expiry date, then convert it.",
   "documents.err_memo_issue_first": "Issue the memo before turning it into an invoice.",
   "documents.err_memo_nothing_out": "No items are out on this memo yet, so there is nothing to invoice. Deliver at least one item first.",
-  "documents.err_convert_line_unmatched": "Something went wrong converting this document: item {sku} could not be matched to a line. If it keeps happening, ask on GitHub Issues or Discussions.",
   "documents.err_consignment_issue_first": "Issue the consignment-in document before turning it into a bill.",
   "documents.err_convert_unsupported": "This document can't be converted into that type.",
   "documents.err_note_empty": "Type a note before saving.",

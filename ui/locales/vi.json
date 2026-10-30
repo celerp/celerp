@@ -4601,7 +4601,6 @@
   "documents.err_quote_expired": "Báo giá này đã hết hạn nên không thể chuyển đổi. Hãy đổi ngày hết hạn rồi chuyển đổi.",
   "documents.err_memo_issue_first": "Hãy phát hành phiếu ký gửi trước khi chuyển thành hóa đơn.",
   "documents.err_memo_nothing_out": "Chưa có mặt hàng nào được xuất theo phiếu ký gửi này nên chưa có gì để lập hóa đơn. Hãy giao ít nhất một mặt hàng trước.",
-  "documents.err_convert_line_unmatched": "Đã xảy ra lỗi khi chuyển đổi chứng từ này: không khớp được mặt hàng {sku} với dòng nào. Nếu lỗi tiếp tục xảy ra, hãy hỏi trên GitHub Issues hoặc Discussions.",
   "documents.err_consignment_issue_first": "Hãy phát hành chứng từ nhận ký gửi trước khi chuyển thành hóa đơn mua.",
   "documents.err_convert_unsupported": "Không thể chuyển chứng từ này sang loại đó.",
   "documents.err_note_empty": "Hãy nhập ghi chú trước khi lưu.",

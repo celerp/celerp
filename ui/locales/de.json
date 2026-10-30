@@ -4601,7 +4601,6 @@
   "documents.err_quote_expired": "Dieses Angebot ist abgelaufen und kann nicht umgewandelt werden. Ändern Sie das Ablaufdatum und wandeln Sie es dann um.",
   "documents.err_memo_issue_first": "Stellen Sie den Kommissionsschein aus, bevor Sie ihn in eine Rechnung umwandeln.",
   "documents.err_memo_nothing_out": "Auf diesem Kommissionsschein ist noch kein Artikel unterwegs, es gibt also nichts zu berechnen. Liefern Sie zuerst mindestens einen Artikel aus.",
-  "documents.err_convert_line_unmatched": "Beim Umwandeln dieses Dokuments ist etwas schiefgelaufen: Der Artikel {sku} konnte keiner Zeile zugeordnet werden. Wenn das weiterhin passiert, fragen Sie in GitHub Issues oder Discussions.",
   "documents.err_consignment_issue_first": "Stellen Sie den Kommissionseingang aus, bevor Sie ihn in eine Eingangsrechnung umwandeln.",
   "documents.err_convert_unsupported": "Dieses Dokument kann nicht in diesen Typ umgewandelt werden.",
   "documents.err_note_empty": "Geben Sie eine Notiz ein, bevor Sie speichern.",

@@ -4601,7 +4601,6 @@
   "documents.err_quote_expired": "Esta cotización ha vencido, así que no se puede convertir. Cambie su fecha de vencimiento y luego conviértala.",
   "documents.err_memo_issue_first": "Emita el memorándum antes de convertirlo en factura.",
   "documents.err_memo_nothing_out": "Aún no hay artículos fuera con este memorándum, así que no hay nada que facturar. Entregue primero al menos un artículo.",
-  "documents.err_convert_line_unmatched": "Algo salió mal al convertir este documento: el artículo {sku} no se pudo emparejar con ninguna línea. Si sigue pasando, pregunte en GitHub Issues o Discussions.",
   "documents.err_consignment_issue_first": "Emita el documento de consignación entrante antes de convertirlo en factura de proveedor.",
   "documents.err_convert_unsupported": "Este documento no se puede convertir a ese tipo.",
   "documents.err_note_empty": "Escriba una nota antes de guardar.",

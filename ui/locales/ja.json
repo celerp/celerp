@@ -4601,7 +4601,6 @@
   "documents.err_quote_expired": "この見積は期限切れのため変換できません。有効期限を変更してから変換してください。",
   "documents.err_memo_issue_first": "請求書にする前に、メモを発行してください。",
   "documents.err_memo_nothing_out": "このメモで出ている品目がまだないため、請求するものがありません。先に少なくとも 1 品目を納品してください。",
-  "documents.err_convert_line_unmatched": "この書類の変換中に問題が発生しました: 品目 {sku} をどの行にも対応付けられませんでした。繰り返し起きる場合は、GitHub Issues または Discussions で質問してください。",
   "documents.err_consignment_issue_first": "仕入請求書にする前に、受託品の書類を発行してください。",
   "documents.err_convert_unsupported": "この書類はその種類に変換できません。",
   "documents.err_note_empty": "保存する前にメモを入力してください。",

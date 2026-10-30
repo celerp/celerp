@@ -4601,7 +4601,6 @@
   "documents.err_quote_expired": "ይህ የዋጋ ቅናሽ ጊዜው አልፏል፣ ስለዚህ ሊቀየር አይችልም። የማብቂያ ቀኑን ይቀይሩና ከዚያ ይቀይሩት።",
   "documents.err_memo_issue_first": "ሜሞውን ወደ ደረሰኝ ከመቀየርዎ በፊት ያውጡት።",
   "documents.err_memo_nothing_out": "በዚህ ሜሞ ላይ ገና የወጣ ዕቃ የለም፣ ስለዚህ የሚከፈል ነገር የለም። መጀመሪያ ቢያንስ አንድ ዕቃ ያስረክቡ።",
-  "documents.err_convert_line_unmatched": "ይህን ሰነድ ሲቀየር ችግር ተፈጥሯል፦ ዕቃ {sku} ከማንኛውም መስመር ጋር ሊዛመድ አልቻለም። መከሰቱን ከቀጠለ በGitHub Issues ወይም Discussions ይጠይቁ።",
   "documents.err_consignment_issue_first": "የገቢ ኮንሳይንመንት ሰነዱን ወደ ሂሳብ ደረሰኝ ከመቀየርዎ በፊት ያውጡት።",
   "documents.err_convert_unsupported": "ይህ ሰነድ ወደዚያ ዓይነት ሊቀየር አይችልም።",
   "documents.err_note_empty": "ከማስቀመጥዎ በፊት ማስታወሻ ይጻፉ።",

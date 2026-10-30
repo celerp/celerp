@@ -4601,7 +4601,6 @@
   "documents.err_quote_expired": "انتهت صلاحية عرض السعر هذا، لذا لا يمكن تحويله. غيّر تاريخ انتهائه ثم حوّله.",
   "documents.err_memo_issue_first": "أصدر المذكرة قبل تحويلها إلى فاتورة.",
   "documents.err_memo_nothing_out": "لا توجد أصناف خارجة بهذه المذكرة بعد، لذا لا يوجد ما يُفوتر. سلّم صنفًا واحدًا على الأقل أولًا.",
-  "documents.err_convert_line_unmatched": "حدث خطأ أثناء تحويل هذا المستند: تعذّرت مطابقة الصنف {sku} مع أي سطر. إذا تكرر ذلك، فاسأل على GitHub Issues أو Discussions.",
   "documents.err_consignment_issue_first": "أصدر مستند الأمانة الواردة قبل تحويله إلى فاتورة مورد.",
   "documents.err_convert_unsupported": "لا يمكن تحويل هذا المستند إلى ذلك النوع.",
   "documents.err_note_empty": "اكتب ملاحظة قبل الحفظ.",

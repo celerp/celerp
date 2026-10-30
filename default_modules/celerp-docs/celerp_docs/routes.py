@@ -7395,7 +7395,13 @@ class DocConvertBody(BaseModel):
 
 
 @router.post("/{entity_id}/convert")
-async def convert_doc(entity_id: str, payload: DocConvertBody | None = None, company_id: str = Depends(get_current_company_id), _: None = require_permission("edit_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def convert_doc(entity_id: str, payload: DocConvertBody | None = None, company_id: str = Depends(get_current_company_id), _: None = require_permission("edit_documents"), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    if (await _get_doc(session, company_id, entity_id)).state.get("doc_type") == "memo":
+        # Invoice all: one draw of every line at all it has out, under this call's own key.
+        assert_role_permission(settings, role, "fulfill_documents")
+        key, digest = _operation("convert", entity_id, payload or DocConvertBody())
+        return await _draw_from_memo(session, company_id, role, settings, user, entity_id,
+                                     InvoiceLinesRequest(idempotency_key=key), operation=(key, digest))
     named = await _lock_copied_contacts(session, company_id, [entity_id])
     # Company before the doc row: a conversion draws the next document number.
     company = await locked_company(session, company_id)
@@ -7427,154 +7433,6 @@ async def convert_doc(entity_id: str, payload: DocConvertBody | None = None, com
             data={"target_doc_id": new_doc_id, "target_doc_type": "invoice"}, actor_id=user.id, location_id=None,
             source="api", idempotency_key=key, metadata_={"request": digest, "result": {"target_doc_id": new_doc_id}},
         )
-        await session.commit()
-        return {"event_id": entry.id, "target_doc_id": new_doc_id}
-
-    if state.get("doc_type") == "memo":
-        # An already-converted memo falls through to the allocation-set guard below,
-        # which refuses with the clearer "nothing On Memo" 422: convert hands every
-        # backing lot to the invoice, so a converted memo has an empty allocation set and
-        # can never re-bill. Only a genuinely-not-issued memo (draft/void) is rejected here.
-        if state.get("status") not in CONVERTIBLE_STATUSES["memo"]:
-            raise HTTPException(status_code=409, detail=t("documents.err_memo_issue_first"))
-        ref = next_draft_ref(company, "invoice")
-        new_doc_id = f"doc:{ref}"
-
-        # The memo's settlement unit is its allocation set (every lot stamped
-        # status_doc_id==this memo), not line_items: a memo line whose quantity exceeds
-        # its bound lot draws cross-lot siblings from other lots of the same SKU, and each
-        # sibling carries the memo stamp but never appears in line_items. Bill each line
-        # for the full still-out quantity of its SKU summed across the allocation set, at
-        # the line's own unit_price (revenue is per-SKU and identical across lots; the cost
-        # of each lot is booked when the invoice is finalized).
-        allocation_items = await _memo_allocation_items(session, company_id, entity_id)
-        memo_out_backing: list[Projection] = [
-            item_proj for item_proj in allocation_items
-            if item_proj.state.get("status") == "memo_out"
-        ]
-
-        if not memo_out_backing:
-            raise HTTPException(
-                status_code=422,
-                detail=t("documents.err_memo_nothing_out"),
-            )
-
-        # Bill each still-out lot against the original memo line it is bound to, at THAT
-        # line's own price/discount/tax. A memo line binds to exactly one lot by its item
-        # key (the LineItem validator folds a frontend entity_id into item_id and clears
-        # entity_id), the same key fulfill_lines uses; a lot's only line pointer is the
-        # identity item_proj.entity_id == that key. A cross-lot sibling (drawn from another
-        # same-SKU lot to cover a line whose quantity exceeded its bound lot) carries the
-        # memo stamp but has no bound line, so it is billed once onto the first same-SKU
-        # original line at that line's unit_price - the sibling's revenue is per-SKU.
-        _currency = state.get("currency")
-        original_line_items = state.get("line_items", [])
-        line_by_bound_eid: dict[str, dict] = {}
-        for li in original_line_items:
-            _key = li.get("entity_id") or li.get("item_id")
-            if _key:
-                line_by_bound_eid[_key] = li
-
-        billed_by_bound_eid: dict[str, dict] = {}
-        unbound_qty_by_sku: dict[str, float] = {}
-        for item_proj in memo_out_backing:
-            _lot_eid = item_proj.entity_id
-            _still_out = float(item_proj.state.get("quantity") or 0)
-            if _still_out <= 1e-9:
-                continue
-            _line = line_by_bound_eid.get(_lot_eid)
-            if _line is None:
-                # Genuinely unbound cross-lot sibling: fold its still-out quantity into the
-                # first same-SKU original line below, priced at that line's unit_price.
-                _sku = item_proj.state.get("sku")
-                unbound_qty_by_sku[_sku] = unbound_qty_by_sku.get(_sku, 0.0) + _still_out
-                continue
-            # Bill the bound lot's own still-out quantity to its own line. Scale line_total
-            # and each tax amount by the kept fraction so an explicit per-line discount
-            # (a line_total below quantity*unit_price) and per-line tax both survive at the
-            # billed quantity; taxes are linear in the base, so one fraction is exact.
-            _line_qty = float(_line.get("quantity") or 0)
-            billed = {**_line, "quantity": _still_out}
-            if _line_qty and abs(_still_out - _line_qty) > 1e-9:
-                _kept = to_decimal(_still_out) / to_decimal(_line_qty)
-                if _line.get("line_total") is not None:
-                    billed["line_total"] = to_stored_float(round_money(
-                        to_decimal(_line["line_total"]) * _kept, _currency))
-                # An entry that is not a tax stays as it is, so the money below refuses it.
-                if isinstance(_line.get("taxes"), list):
-                    billed["taxes"] = [
-                        ({**tx, "amount": to_stored_float(round_money(
-                            to_decimal(tx.get("amount") or 0) * _kept, _currency))}
-                         if tx.get("amount") is not None else {**tx})
-                        if isinstance(tx, dict) else tx
-                        for tx in _line["taxes"]
-                    ]
-            billed_by_bound_eid[_lot_eid] = billed
-
-        # Fold each unbound sibling's quantity onto the first same-SKU original line, priced
-        # fresh at that line's unit_price so the added units never disturb the bound
-        # portion's discount or tax. Fail loud if a sibling SKU has no original line at all
-        # (structurally unreachable: span draws are always same-SKU) rather than invent a
-        # price and fabricate a billed amount.
-        for _sku, _sib_qty in unbound_qty_by_sku.items():
-            if _sib_qty <= 1e-9:
-                continue
-            _target_eid = next(
-                (li.get("entity_id") or li.get("item_id")
-                 for li in original_line_items if li.get("sku") == _sku),
-                None,
-            )
-            if _target_eid is None or _target_eid not in billed_by_bound_eid:
-                raise HTTPException(
-                    status_code=500,
-                    detail=t("documents.err_convert_line_unmatched", sku=_sku),
-                )
-            billed = billed_by_bound_eid[_target_eid]
-            _unit = to_decimal(billed.get("unit_price") or 0)
-            billed["quantity"] = float(billed.get("quantity") or 0) + _sib_qty
-            if billed.get("line_total") is not None:
-                billed["line_total"] = to_stored_float(round_money(
-                    to_decimal(billed["line_total"]) + _unit * to_decimal(_sib_qty), _currency))
-
-        # Preserve original line order among the lines actually billed.
-        qualifying_line_items = [
-            billed_by_bound_eid[li.get("entity_id") or li.get("item_id")]
-            for li in original_line_items
-            if (li.get("entity_id") or li.get("item_id")) in billed_by_bound_eid
-        ]
-
-        filtered_state = {**state, "line_items": qualifying_line_items}
-        # The invoice may bill fewer goods than the memo held, so the memo's totals are stale:
-        # the invoice's money is computed from the lines it bills. It is a new draft, so none
-        # of the memo's own lifecycle (finalized, sent, fulfilled) carries over: finalizing the
-        # invoice is what books its revenue and the cost of the goods sold.
-        _MEMO_TOTAL_FIELDS = frozenset({"total", "outstanding", "tax_total", "discount_total", "subtotal", "amount_due"})
-        new_data = {k: v for k, v in filtered_state.items() if k not in LIFECYCLE_OWNED_FIELDS | _MEMO_TOTAL_FIELDS}
-        new_data.update(document_money(new_data, qualifying_line_items, _currency, keep_unrated_tax=True, stored=state))
-        new_data.update({"doc_type": "invoice", "ref_id": ref, "source_memo_id": entity_id, "status": "draft"})
-        await emit_event(
-            session, company_id=company_id, entity_id=new_doc_id, entity_type="doc", event_type="doc.created", data=new_data,
-            actor_id=user.id, location_id=None, source="api", idempotency_key=str(uuid.uuid4()), metadata_={},
-        )
-        entry = await emit_event(
-            session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.converted",
-            data={"target_doc_id": new_doc_id, "target_doc_type": "invoice", "pre_convert_status": state.get("status")},
-            actor_id=user.id, location_id=None, source="api",
-            idempotency_key=key, metadata_={"request": digest, "result": {"target_doc_id": new_doc_id}},
-        )
-        # The invoice owns every backing lot from here, cross-lot siblings included. The
-        # goods are still out with the customer and the draft cannot ship, so each stays
-        # memo_out, now under the invoice: finalizing it sells them, taking them back on it
-        # returns them to stock, and voiding or deleting the draft gives them back to this
-        # memo (_return_to_source_memo).
-        for item_proj in memo_out_backing:
-            await emit_event(
-                session, company_id=company_id, entity_id=item_proj.entity_id, entity_type="item",
-                event_type="item.status.set",
-                data={"new_status": "memo_out", "source_doc_id": new_doc_id, "doc_number": ref},
-                actor_id=user.id, location_id=None, source="memo_convert",
-                idempotency_key=_step_key(key, item_proj.entity_id), metadata_={"doc_id": entity_id},
-            )
         await session.commit()
         return {"event_id": entry.id, "target_doc_id": new_doc_id}
 
@@ -10518,12 +10376,14 @@ async def _fulfill_lines_impl(
 
 
 async def _line_action(session, company_id, user, owner: Projection, action: str,
-                       body: FulfillLinesRequest, run, select_lines=None) -> dict:
+                       body: FulfillLinesRequest, run, select_lines=None,
+                       operation: tuple[str, str] | None = None) -> dict:
     """Run one line action on ``owner`` once per key: resolve the chosen lines (with
     ``select_lines``, by default _selected_line_indices), call ``run(indices)`` and record
     the request and its result, even when it changed nothing, so the same key replays that
-    result and a different request under it is refused."""
-    key, digest = _operation(f"{action}-lines", owner.entity_id, body)
+    result and a different request under it is refused. ``operation``: the key and digest
+    of the caller's own request, when it is not ``body``."""
+    key, digest = operation or _operation(f"{action}-lines", owner.entity_id, body)
     record_id = f"line_action:{_step_id(key)}"
     if (done := await _earlier_run(session, company_id, key, event_type="line_action.recorded",
                                    entity_id=record_id, digest=digest)) is not None:
@@ -11073,10 +10933,12 @@ def _terms_text(terms: dict) -> str:
     return ", ".join(parts) or "no discount or tax"
 
 
-def draw_problems(snap: _DrawSnapshot, body: InvoiceLinesRequest) -> tuple[list[dict], list[tuple[int, float]]]:
+def draw_problems(snap: _DrawSnapshot, body: InvoiceLinesRequest, *,
+                  everything: bool = False) -> tuple[list[dict], list[tuple[int, float]]]:
     """Everything that stops this draw, in the one order the preview and the write report it,
     and the chosen (memo line index, units) picks. A memo in a status goods cannot be invoiced
-    from stops the check there: nothing else about it means anything."""
+    from stops the check there: nothing else about it means anything. ``everything``: the draw
+    is Invoice all, so no line chosen means nothing is out."""
     memo, target = snap.memo.state, snap.target
     memo_ref = _ref(snap.memo)
     problems: list[dict] = []
@@ -11108,7 +10970,8 @@ def draw_problems(snap: _DrawSnapshot, body: InvoiceLinesRequest) -> tuple[list[
     quantities = body.quantities or {}
     picks: list[tuple[int, float]] = []
     if not body.line_ids:
-        problems.append(refusal("lines.none_selected", "Choose at least one line."))
+        key = "documents.err_memo_nothing_out" if everything else "lines.none_selected"
+        problems.append(refusal(key, t(key) if everything else "Choose at least one line."))
     for lid in body.line_ids:
         if lid not in index_of:
             problems.append(refusal("lines.not_on_document",
@@ -11133,7 +10996,7 @@ def draw_problems(snap: _DrawSnapshot, body: InvoiceLinesRequest) -> tuple[list[
     chosen_items = {str(line_item_id(li) or "") for li in chosen} - {""}
     for lot in snap.loose:
         sku = str(lot.state.get("sku") or "")
-        if lot.entity_id in chosen_items or sku.strip() in chosen_skus:
+        if everything or lot.entity_id in chosen_items or sku.strip() in chosen_skus:
             problems.append(refusal(
                 "docs.draw_lot_unattributed",
                 f"{sku} is out on memo {memo_ref}, but nothing records which line it went out on.",
@@ -11205,6 +11068,9 @@ def _draw_bill(snap: _DrawSnapshot, picks: list[tuple[int, float]], draw_id: str
     the memo (memo_fixed_amounts): shipping and a tax with no rate whole, a fixed discount up to
     what this draw adds. A new invoice takes the memo's header; an existing draft adds them."""
     memo = snap.memo.state
+    # A tax it cannot read is refused by name, never carried onto the invoice or dropped.
+    refuse_malformed_taxes({"doc_taxes": memo.get("doc_taxes"),
+                            "line_items": [memo["line_items"][i] for i, _ in picks]}, memo)
     currency = memo.get("currency")
     takes = memo_draws(memo)
     lines, take_lines = [], []
@@ -11372,6 +11238,13 @@ async def invoice_lines(
     if body.dry_run:
         return await _draw_preview(session, company_id, entity_id, body)
     body = body.model_copy(update={"idempotency_key": body.idempotency_key or str(uuid.uuid4())})
+    return await _draw_from_memo(session, company_id, role, settings, user, entity_id, body)
+
+
+async def _draw_from_memo(session, company_id, role: str, settings: dict, user, entity_id: str,
+                          body: InvoiceLinesRequest, *, operation: tuple[str, str] | None = None) -> dict:
+    """Run one draw from the memo and commit it. With ``operation`` (Invoice all: the convert
+    call's own key and digest) the draw takes every line at all it has out."""
     # Company, contact, invoice, memo, lots: the order every writer of these rows takes.
     company = await locked_company(session, company_id)
     memo_row = await _get_doc(session, company_id, entity_id)
@@ -11380,23 +11253,30 @@ async def invoice_lines(
     target_id = body.target_doc_id
     target = (await lock_projections(session, company_id, [target_id])).get(target_id) if target_id else None
     memo_row = await _get_doc(session, company_id, entity_id, for_update=True)
-    key, _digest = _operation("invoice-lines", entity_id, body)
+    key = operation[0] if operation else _operation("invoice-lines", entity_id, body)[0]
 
     async def run(_indices: list[int]) -> dict:
         # After the replay check, so a replay after the target was deleted returns its result.
         if target_id and (target is None or target.entity_type != "doc"):
             raise HTTPException(status_code=404, detail="Document not found")
+        request = body
+        if operation:
+            await _give_lines_ids(session, company_id=company_id, uid=user.id, owner=memo_row, source="memo_draw")
         snap = await _draw_snapshot(session, company_id, memo_row, target, lock=True)
-        problems, picks = draw_problems(snap, body)
+        if operation:
+            lines = memo_row.state.get("line_items") or []
+            request = body.model_copy(update={"line_ids": [lines[i]["line_id"] for i in sorted(snap.lots)]})
+        problems, picks = draw_problems(snap, request, everything=bool(operation))
         if problems:
             raise HTTPException(status_code=409, detail={**problems[0], "also": problems[1:]})
-        return await _write_draw(session, company_id, role, settings, user, company, key, snap, picks, body)
+        return await _write_draw(session, company_id, role, settings, user, company, key, snap, picks, request)
 
     def chosen(line_items: list[dict], request: FulfillLinesRequest) -> list[int]:
         # Unknown lines are reported with every other problem of the draw (draw_problems).
-        return [i for i, li in enumerate(line_items) if li.get("line_id") in set(request.line_ids)]
+        return [i for i, li in enumerate(line_items) if operation or li.get("line_id") in set(request.line_ids)]
 
-    return await _line_action(session, company_id, user, memo_row, "invoice", body, run, select_lines=chosen)
+    return await _line_action(session, company_id, user, memo_row, "convert" if operation else "invoice", body, run,
+                              select_lines=chosen, operation=operation)
 
 
 async def _reserve_lines_impl(

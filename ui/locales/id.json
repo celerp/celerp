@@ -4601,7 +4601,6 @@
   "documents.err_quote_expired": "Penawaran ini sudah kedaluwarsa, jadi tidak bisa dikonversi. Ubah tanggal kedaluwarsanya, lalu konversi.",
   "documents.err_memo_issue_first": "Terbitkan memo sebelum mengubahnya menjadi faktur.",
   "documents.err_memo_nothing_out": "Belum ada barang yang keluar dengan memo ini, jadi tidak ada yang bisa ditagihkan. Kirim setidaknya satu barang dulu.",
-  "documents.err_convert_line_unmatched": "Terjadi kesalahan saat mengonversi dokumen ini: barang {sku} tidak cocok dengan baris mana pun. Jika terus terjadi, tanyakan di GitHub Issues atau Discussions.",
   "documents.err_consignment_issue_first": "Terbitkan dokumen konsinyasi masuk sebelum mengubahnya menjadi tagihan.",
   "documents.err_convert_unsupported": "Dokumen ini tidak bisa dikonversi ke jenis itu.",
   "documents.err_note_empty": "Ketik catatan sebelum menyimpan.",

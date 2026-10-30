@@ -4601,7 +4601,6 @@
   "documents.err_quote_expired": "Questo preventivo è scaduto, quindi non può essere convertito. Modifica la data di scadenza, poi convertilo.",
   "documents.err_memo_issue_first": "Emetti il conto visione prima di trasformarlo in fattura.",
   "documents.err_memo_nothing_out": "Nessun articolo è ancora uscito con questo conto visione, quindi non c'è nulla da fatturare. Consegna prima almeno un articolo.",
-  "documents.err_convert_line_unmatched": "Qualcosa è andato storto nella conversione di questo documento: l'articolo {sku} non corrisponde a nessuna riga. Se continua a succedere, chiedi su GitHub Issues o Discussions.",
   "documents.err_consignment_issue_first": "Emetti il documento di conto deposito in entrata prima di trasformarlo in fattura passiva.",
   "documents.err_convert_unsupported": "Questo documento non può essere convertito in quel tipo.",
   "documents.err_note_empty": "Scrivi una nota prima di salvare.",

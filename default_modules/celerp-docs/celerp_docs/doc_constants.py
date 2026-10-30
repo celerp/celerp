@@ -71,9 +71,8 @@ SUPPLIER_RETURN_STATUSES: dict[str, frozenset[str]] = {
 }
 
 # Per-doc-type statuses POST /docs/{id}/convert takes a document in. A quotation converts in
-# every status but QUOTATION_SPENT_STATUSES.
+# every status but QUOTATION_SPENT_STATUSES; a memo's Invoice all is a draw (MEMO_DRAW_STATUSES).
 CONVERTIBLE_STATUSES: dict[str, frozenset[str]] = {
-    "memo": frozenset({"final", "sent", "received", "partially_received", "converted"}),
     "consignment_in": frozenset({"final", "sent", "received", "partially_received", "partial_returned", "returned"}),
 }
 QUOTATION_SPENT_STATUSES = frozenset({"void", "converted"})

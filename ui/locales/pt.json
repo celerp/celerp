@@ -4601,7 +4601,6 @@
   "documents.err_quote_expired": "Este orçamento expirou, então não pode ser convertido. Altere a data de validade e depois converta.",
   "documents.err_memo_issue_first": "Emita o memorando antes de transformá-lo em fatura.",
   "documents.err_memo_nothing_out": "Ainda não há itens fora com este memorando, então não há nada para faturar. Entregue pelo menos um item primeiro.",
-  "documents.err_convert_line_unmatched": "Algo deu errado ao converter este documento: o item {sku} não corresponde a nenhuma linha. Se continuar acontecendo, pergunte no GitHub Issues ou Discussions.",
   "documents.err_consignment_issue_first": "Emita o documento de consignação recebida antes de transformá-lo em conta a pagar.",
   "documents.err_convert_unsupported": "Este documento não pode ser convertido nesse tipo.",
   "documents.err_note_empty": "Digite uma nota antes de salvar.",
