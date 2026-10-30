@@ -14,11 +14,13 @@ same states. Its backup restores as a new company with the same states."""
 from __future__ import annotations
 
 import json
+from decimal import Decimal
 
 import pytest
 from sqlalchemy import select
 
 from celerp.models.projections import Projection
+from celerp.services.account_roles import AccountRole, resolve
 from company_backup_support import download
 from migration_support import maker, real_client, real_engine  # noqa: F401
 from stock_books import assert_settled
@@ -35,10 +37,12 @@ pytestmark = pytest.mark.asyncio
 
 
 class _Lot:
-    """The lot of unknown goods cost, its merged parts and the bill or order that brought goods into it."""
+    """The lot of unknown goods cost, its merged parts, the bill or order that brought goods into it
+    and the value its lot accounts carry for goods billed and not received."""
 
     def __init__(self, lot: str, parts: tuple[str, str] | None = None, doc: str | None = None):
         self.lot, self.parts, self.doc = lot, parts, doc
+        self.in_transit: dict[str, Decimal] = {}
 
 
 async def _merged(c, s, auth) -> _Lot:
@@ -55,12 +59,9 @@ async def _cleared(c, s, auth) -> _Lot:
 
 
 async def _topped(c, s, auth) -> _Lot:
-    """3 units without cost and 2 received at 10.00 on an order not yet billed."""
+    """3 units without cost and 2 received at 10.00 on an order, then billed."""
     lot = await _item(c, auth, qty=3)
-    doc = await _doc(c, auth, "purchase_order", [{"item_id": lot, "name": "Lot", "quantity": 2, "unit_price": 10.0}])
-    r = await _receive(c, auth, doc, {"po_line_index": 0, "item_id": lot, "name": "Lot", "quantity_received": 2})
-    assert r.status_code == 200, r.text
-    return _Lot(lot, doc=doc)
+    return _Lot(lot, doc=await _po_into(c, auth, lot, 2, 10.0))
 
 
 _ORIGINS = {"merged": _merged, "cleared": _cleared, "topped": _topped}
@@ -155,8 +156,11 @@ async def _undo_merge(c, s, auth, x: _Lot):
 async def _undo_receipt(c, s, auth, x: _Lot):
     r = await c.delete(f"/docs/{x.doc}/receive", headers=auth["headers"])
     assert r.status_code == 200, r.text
+    # The bill still books its 2 at 10.00, now as goods billed and not received.
+    x.in_transit = {await resolve(s, auth["company_id"], AccountRole.INVENTORY_PURCHASED): Decimal("20.00")}
     st = await _state(s, auth, x.lot)
-    assert MARK not in st and "cost_total" not in st, st  # back to stock without cost
+    # The undo keeps the mark the receipt left: the lot's goods cost stays unknown, its value 0.
+    assert st[MARK] is True and not st.get("cost_total"), st
     return {x.lot: False}
 
 
@@ -251,7 +255,7 @@ async def test_unknown_cost_through_each_operation(real_engine, real_client, tmp
             if known is not None:
                 assert (MARK not in st and st.get("cost_total") is not None) is known, (lot, st)
             assert MARK not in (st.get("attributes") or {}), st
-        await assert_settled(c, s, auth)
+        await assert_settled(c, s, auth, in_transit=x.in_transit)
         await _replays(s, cid)
         held = _normalized((await _states(s, cid)).values())
 
