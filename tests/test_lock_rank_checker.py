@@ -34,6 +34,12 @@ def _kinds(recorder: Recorder) -> set[tuple[str, str]]:
     return {(v["kind"], v["cls"]) for v in recorder.violations}
 
 
+def _offline_kinds(recorder: Recorder, tmp_path) -> set[tuple[str, str]]:
+    """(kind, taken class) of every key the offline check of the recorded graph lists."""
+    (tmp_path / "lock-graph-gw0.json").write_text(json.dumps(recorder.dump()))
+    return {(line.split()[0], line.split()[3]) for line in lock_rank.debt_listing(tmp_path).splitlines()}
+
+
 def test_a_write_on_an_unranked_table_is_an_unknown_lock():
     recorder = Recorder()
     recorder.acquire(1, _lock("row:zz_unranked", "write"), 0.0)
@@ -152,7 +158,7 @@ def test_returning_to_a_held_class_after_a_higher_rank_is_an_order_violation():
     assert ("row:projections", "row:companies") in recorder.edges
 
 
-def test_one_task_waiting_on_a_second_connection_while_holding_a_lock_on_the_first_fails():
+def test_one_task_waiting_on_a_second_connection_while_holding_a_lock_on_the_first_fails(tmp_path):
     recorder = Recorder()
 
     async def body():
@@ -160,7 +166,7 @@ def test_one_task_waiting_on_a_second_connection_while_holding_a_lock_on_the_fir
         recorder.acquire(2, _lock("row:connector_configs", "update wait"), 0.0)
 
     asyncio.run(body())
-    assert ("cross-connection", "row:connector_configs") in _kinds(recorder)
+    assert ("cross-connection", "row:connector_configs") in _offline_kinds(recorder, tmp_path)
 
 
 def test_one_task_waiting_on_the_same_key_on_two_connections_is_a_self_deadlock():
@@ -317,11 +323,11 @@ def _block_in_one_task(before: list[str], block: list[str], after: list[str]) ->
     return recorder
 
 
-def test_a_block_that_waits_while_its_task_holds_locks_waits_across_connections():
+def test_a_block_that_waits_while_its_task_holds_locks_waits_across_connections(tmp_path):
     """Production opens the block's session on a connection of its own: its task waits there
     while its own transaction holds what it took before."""
     recorder = _block_in_one_task([_NOTICE_ROWS], [_COMPANY_ROW], [])
-    assert ("cross-connection", "row:companies") in _kinds(recorder)
+    assert ("cross-connection", "row:companies") in _offline_kinds(recorder, tmp_path)
 
 
 def test_a_block_ending_leaves_its_task_holding_what_it_took_before():
@@ -1291,13 +1297,72 @@ def test_one_take_of_the_class_outside_the_key_fails_the_cross_connection_wait(r
     assert f"- {_CROSS_STAMP}" in report and lock_rank.check_failed(report)
 
 
-def test_a_cross_connection_wait_without_a_serializing_key_stays_a_live_violation(recorder):
+def _closure_across_connections(recorder: Recorder, holder_waits: bool) -> None:
+    """A maintenance flow holds the connector guard on one connection and writes a payment
+    closure on its own connection; another transaction writes a closure too and, when
+    *holder_waits*, then waits on a company row while it still holds the closure."""
+    async def body():
+        recorder.acquire(9, _lock("adv:connector-runtime", "xact exclusive wait"), 0.0)
+        recorder.acquire(2, _lock("row:payment_closures", "write"), 0.0)
+        recorder.end(2)
+        recorder.end(9)
+
+    asyncio.run(body())
+    recorder.acquire(3, _lock("row:payment_closures", "write", key="2"), 0.0)
+    if holder_waits:
+        recorder.acquire(3, _lock("row:companies", "update wait"), 0.0)
+    recorder.end(3)
+
+
+_CROSS_CLOSURE = "cross-connection adv:connector-runtime -> row:payment_closures celerp/x.py f"
+
+
+def test_a_cross_connection_wait_on_a_class_whose_holders_never_wait_is_proven_offline(recorder, tmp_path):
+    """Whatever the waiting flow holds, a row no transaction ever waits while holding is
+    released by its holder's commit: the wait always ends."""
+    _closure_across_connections(recorder, holder_waits=False)
+    assert not recorder.violations
+    (tmp_path / "lock-graph-gw0.json").write_text(json.dumps(recorder.dump()))
+    assert _CROSS_CLOSURE not in lock_rank.debt_listing(tmp_path)
+    assert not lock_rank.check_failed(lock_rank.check(tmp_path))
+
+
+def test_one_holder_of_the_class_that_waits_fails_the_cross_connection_wait(recorder, tmp_path):
+    _closure_across_connections(recorder, holder_waits=True)
+    (tmp_path / "lock-graph-gw0.json").write_text(json.dumps(recorder.dump()))
+    assert _CROSS_CLOSURE in lock_rank.debt_listing(tmp_path)
+    report = lock_rank.check(tmp_path)
+    assert f"- {_CROSS_CLOSURE}" in report and lock_rank.check_failed(report)
+
+
+@pytest.mark.parametrize("waiter, proven", [("write", True), ("insert", False)])
+def test_a_holder_that_waits_holding_only_rows_it_inserted_blocks_only_an_inserting_wait(
+        recorder, tmp_path, waiter, proven):
+    """A row another transaction inserted is invisible until it commits: an update or a locking
+    read never waits on it, but an insert of the same key does."""
+    recorder.acquire(3, _lock("row:payment_recoveries", "insert", key="2"), 0.0)
+    recorder.acquire(3, _lock("row:companies", "update wait"), 0.0)
+    recorder.end(3)
+
+    async def body():
+        recorder.acquire(9, _lock("adv:connector-runtime", "xact exclusive wait"), 0.0)
+        recorder.acquire(2, _lock("row:payment_recoveries", waiter), 0.0)
+        recorder.end(2)
+        recorder.end(9)
+
+    asyncio.run(body())
+    listed = ("cross-connection", "row:payment_recoveries") in _offline_kinds(recorder, tmp_path)
+    assert listed is not proven
+
+
+def test_a_cross_connection_wait_whose_holder_is_still_open_fails_offline(recorder, tmp_path):
+    """A transaction still open when the graph is read may yet wait holding the row."""
     async def body():
         recorder.acquire(9, _lock("adv:external-product", "session exclusive wait", key="p"), 0.0)
         recorder.acquire(2, _lock("row:alembic_version", "write"), 0.0)
 
     asyncio.run(body())
-    assert ("cross-connection", "row:alembic_version") in _kinds(recorder)
+    assert ("cross-connection", "row:alembic_version") in _offline_kinds(recorder, tmp_path)
 
 
 _SHARE_COMPANIES = ("SELECT companies.id FROM companies WHERE companies.id IN ($1::UUID, $2::UUID) "
