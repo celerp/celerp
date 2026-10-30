@@ -5611,10 +5611,10 @@ async def _capitalise_landed_received(session: AsyncSession, company_id, user_id
     """Landed cost a bill charged for goods that came in before it was finalized (a purchase
     order received, then made into the bill), through the entry goods received after the bill
     take it by (auto_je.create_for_landed_capitalisation). It is spread as it would have been
-    had the bill been finalized at the receipt, by replaying what the lot it brought goods into
-    and the lots split off it since did with them (_freight_since_receipt). A lot already
-    carrying this bill's landed cost is left as it is, so a bill finalized again takes nothing
-    twice."""
+    had the bill been finalized at the receipt, by replaying what the lots holding those goods
+    did with them (_freight_since_receipt over _receipt_family). A lot whose lineage already
+    carries this bill's landed cost is left as it is, so a bill finalized again takes nothing
+    twice, wherever its lots were merged since."""
     from celerp.services import auto_je
 
     received = state.get("received_items") or []
@@ -5627,36 +5627,51 @@ async def _capitalise_landed_received(session: AsyncSession, company_id, user_id
     currency = await auto_je.company_currency(session, company_id)
     freight_of = await _bill_freight(session, company_id, doc_id, state, currency, allocation)
     made = await _parcels_made(session, company_id, state)
+    lots = await _bill_lineage(session, company_id, state)
+    carried = {pool for row, _, _ in lots for pool, amount in (row.state.get("landed_costs") or {}).items()
+               if amount and pool.partition("::")[0] == doc_id}
     by_kind: dict[str, float] = {}
     by_account: dict[str, float] = {}
     expensed: dict[AccountRole, float] = {}
+    # A lot merged from more than one receipt lot holds a part of each lot's freight.
+    kept: dict[str, tuple[Projection, dict[str, Decimal]]] = {}
+    sent: dict[str, tuple[Projection, dict[str, Decimal]]] = {}
     for lot_id, freight in freight_of.items():
-        if freight.came <= 0 or any(f"{doc_id}::{k}" in (freight.row.state.get("landed_costs") or {})
-                                    for k in freight.charged):
+        if freight.came <= 0 or any(f"{doc_id}::{k}" in carried for k in freight.charged):
             continue
+        family = await _receipt_family(session, company_id, lot_id, first or 0, lots)
         spread = await _freight_since_receipt(session, company_id, doc_id, state, lot_id, freight, first,
-                                              made, currency)
+                                              made, currency, family)
         for role, amounts in ((AccountRole.STOCK_SHRINKAGE, spread.back), (AccountRole.COGS, spread.sold)):
             for part in amounts.values():
                 if part:
                     expensed[role] = expensed.get(role, 0.0) + to_stored_float(part)
         # The units kept carry the rest; the units sent back carry what they took, so taking the
         # bill back to draft finds it on them.
-        for member, kinds in [*spread.kept.items(), *spread.sent.items()]:
-            for kind, part in kinds.items():
-                await emit_event(
-                    session, company_id=company_id, entity_id=member.entity_id, entity_type="item",
-                    event_type="item.landed_cost.allocated",
-                    data={"source_bill_id": doc_id, "kind": kind, "amount": to_stored_float(part)},
-                    actor_id=user_id, location_id=None, source="api",
-                    idempotency_key=f"{doc_id}:landed:{suffix}:{member.entity_id}:{kind}",
-                    metadata_={"source_doc": doc_id},
-                )
-                if member in spread.kept:
-                    code = lot_account(member.state)
-                    by_account[code] = by_account.get(code, 0.0) + to_stored_float(part)
+        for into, got in ((kept, spread.kept), (sent, spread.sent)):
+            for member, kinds in got.items():
+                held = into.setdefault(member.entity_id, (member, {}))[1]
+                for kind, part in kinds.items():
+                    held[kind] = held.get(kind, Decimal(0)) + part
         for kind, amount in freight.charged.items():
             by_kind[kind] = by_kind.get(kind, 0.0) + amount
+    # A lot still in stock holds what it kept; only a lot gone back holds what it took.
+    for member, kinds, in_hand in [*((m, k, True) for m, k in kept.values()),
+                                   *((m, {kind: part for kind, part in k.items()
+                                          if kind not in kept.get(m.entity_id, (m, {}))[1]}, False)
+                                     for m, k in sent.values())]:
+        for kind, part in kinds.items():
+            await emit_event(
+                session, company_id=company_id, entity_id=member.entity_id, entity_type="item",
+                event_type="item.landed_cost.allocated",
+                data={"source_bill_id": doc_id, "kind": kind, "amount": to_stored_float(part)},
+                actor_id=user_id, location_id=None, source="api",
+                idempotency_key=f"{doc_id}:landed:{suffix}:{member.entity_id}:{kind}",
+                metadata_={"source_doc": doc_id},
+            )
+            if in_hand:
+                code = lot_account(member.state)
+                by_account[code] = by_account.get(code, 0.0) + to_stored_float(part)
     if by_kind:
         await auto_je.create_for_landed_capitalisation(
             session, company_id=company_id, user_id=user_id, doc_id=doc_id, landed_by_kind=by_kind,
@@ -5671,13 +5686,73 @@ class _FreightSpread(NamedTuple):
     sent: dict[Projection, dict[str, Decimal]]     # lot sent back -> kind -> what it took
 
 
+class _Holder(NamedTuple):
+    row: Projection
+    per_unit: float          # units of the receipt lot one unit of this lot stands for
+    moved_in: bool           # its units came from the family as a whole (a merge or a kept transform)
+
+
+async def _receipt_family(session: AsyncSession, company_id, lot_id: str, first: int,
+                          lots: list[tuple[Projection, str | None, str | None]]) -> dict[str, _Holder]:
+    """The lots holding the goods a receipt brought into ``lot_id``, from the bill's lineage
+    (``lots``, _bill_lineage): the lot, the lots split off it since the receipt (_split_since),
+    and on from those the lots they were merged into and the products a transform made of them
+    at their cost, with whatever was split off or merged from those in turn. A product counts in
+    units of the lot it was made from (that lot's units before the transform over the product's),
+    so it stands in for the whole lot. A customer return and a product made at a restated cost
+    are not in it: those units left (the return comes back as goods, the restated cost is the
+    user's own)."""
+    from celerp.models.ledger import LedgerEntry
+
+    by_id = {row.entity_id: row for row, _, _ in lots}
+    if lot_id not in by_id:
+        return {}
+    since = {r.entity_id for r in (await _split_since(session, company_id, [lot_id], first))[lot_id]}
+    kids: dict[str, list[tuple[str, str]]] = {}
+    for row, parent, link in lots:
+        if parent is not None:
+            kids.setdefault(parent, []).append((row.entity_id, link))
+        # A lot merged from lots of more than one receipt lot is in the family of each.
+        into = str((row.state or {}).get("merged_into") or "")
+        if into in by_id and (into, "merged_into") not in kids.get(row.entity_id, []):
+            kids.setdefault(row.entity_id, []).append((into, "merged_into"))
+    transforms = (await session.execute(select(LedgerEntry.event_type, LedgerEntry.entity_id, LedgerEntry.data).where(
+        LedgerEntry.company_id == company_id, LedgerEntry.entity_id.in_(list(by_id)),
+        LedgerEntry.event_type.in_(("item.transform", "item.transformed_from"))))).all()
+    born = {lot: float(data.get("qty") or 0) for kind, lot, data in transforms if kind == "item.transformed_from"}
+    kept = {str(data["child_id"]): float(data.get("qty_before") or 0) for kind, _lot, data in transforms
+            if kind == "item.transform" and data.get("child_id")
+            and float(data.get("child_cost_total") or 0) == float(data.get("parent_cost_total") or 0)}
+    out = {lot_id: _Holder(by_id[lot_id], 1.0, False)}
+    frontier = [lot_id]
+    while frontier:
+        parent = frontier.pop(0)
+        for lot, link in kids.get(parent, []):
+            if lot in out:
+                continue
+            per_unit = out[parent].per_unit
+            if link == "split_from" and (parent == lot_id or parent in since) and lot not in since:
+                continue  # split off before the receipt: none of its goods
+            if link == "transformed_from":
+                if lot not in kept or born.get(lot, 0) <= 0:
+                    continue
+                per_unit *= kept[lot] / born[lot]
+            elif link not in ("split_from", "merged_into"):
+                continue
+            out[lot] = _Holder(by_id[lot], per_unit, link != "split_from")
+            frontier.append(lot)
+    return out
+
+
 async def _freight_since_receipt(session: AsyncSession, company_id, doc_id: str, state: dict, lot_id: str,
                                  freight: _LotFreight, first: int | None, made: dict,
-                                 currency: str) -> _FreightSpread:
+                                 currency: str, family_of: dict[str, _Holder]) -> _FreightSpread:
     """Where a bill's landed cost on the goods it brought into one lot (``freight``) would be
-    had the bill been finalized at the receipt: the lot and the lots split off it since are
-    replayed from the receipt (_family_entries). The family then held what it held right after
-    the receipt, carrying all of it. Units that left (sold, written off, used, merged, counted
+    had the bill been finalized at the receipt: the lots holding its goods (``family_of``,
+    _receipt_family) are replayed from the receipt (_family_entries). The family then held what
+    it held right after the receipt, carrying all of it. A merge into a lot of the family and a
+    transform into a product of it at its cost move units within the family; a product's units
+    count in units of the lot it was made from. Units that left (sold, written off, used, merged, counted
     away; a removal and its own reversal cancel, _reversal_key) take their share of what the
     family carried by the units it held, to the cent, as a sale takes the lot's average; units
     the bill sent back take what it charged per unit of its own goods (_LotFreight.sent_back);
@@ -5685,12 +5760,28 @@ async def _freight_since_receipt(session: AsyncSession, company_id, doc_id: str,
     the lots split off it have not left. Whatever is left is spread over the lots of the family
     in stock by the units each holds (allocate_pro_rata), and with none in stock it left with
     the goods."""
+    def moved_of(e: _FamilyEntry) -> float:
+        holder = family_of.get(e.lot)
+        return (_held(e.after) - _held(e.before)) * (holder.per_unit if holder else 1.0)
+
+    def moves_within(e: _FamilyEntry) -> bool:
+        """Units passing to a lot of the family that holds them as a whole: a merge result or
+        a kept transform's product being made, or a lot going into one."""
+        if e.before is None:
+            return e.lot in family_of and family_of[e.lot].moved_in
+        if e.event_type == "item.source_deactivated":
+            return str(e.data.get("merged_into") or "") in family_of
+        return (e.event_type == "item.status.set" and (e.meta or {}).get("reason") == "consumed_by_transform"
+                and any(h.moved_in and str((h.row.state or {}).get("transformed_from") or "") == e.lot
+                        for h in family_of.values()))
+
     kinds = list(freight.charged)
     pool = {k: to_decimal(freight.charged[k]) for k in kinds}
     sold = dict.fromkeys(kinds, Decimal(0))
     back = dict.fromkeys(kinds, Decimal(0))
     sent: dict[str, dict[str, Decimal]] = {}
-    entries = await _family_entries(session, company_id, [lot_id], first) if first is not None else []
+    entries = (await _family_entries(session, company_id, [lot_id], first, [x for x in family_of if x != lot_id])
+               if first is not None else [])
     # The bill's own units in each lot sent back, and the line they went back on.
     own_of = {x.get("returned_lot_id") or x["item_id"]: (_own_units(x, made), x.get("source_line_index"))
               for x in state.get("returned_items") or [] if _received_lot_of(x) == lot_id}
@@ -5703,7 +5794,7 @@ async def _freight_since_receipt(session: AsyncSession, company_id, doc_id: str,
     for e in entries:
         if e.entry_id > first and e.source not in ("migration", "receive_undo") and (
                 key := _reversal_key(e.event_type, e.data, e.meta)) is not None:
-            netted[key] = netted.get(key, 0.0) + _held(e.after) - _held(e.before)
+            netted[key] = netted.get(key, 0.0) + moved_of(e)
     seen: set[tuple[str, str]] = set()
     pending = 0.0  # units split off into a lot of the family and not yet off the lot they left
     own_done = 0.0
@@ -5711,8 +5802,11 @@ async def _freight_since_receipt(session: AsyncSession, company_id, doc_id: str,
     for e in entries:
         if e.entry_id <= first or e.source == "migration":
             continue
-        moved = _held(e.after) - _held(e.before)
+        moved = moved_of(e)
         key = _reversal_key(e.event_type, e.data, e.meta)
+        if moves_within(e):
+            family += moved
+            continue
         if e.source == "receive_undo":
             family += moved  # another document's goods leave at its own price
             continue
@@ -5757,11 +5851,12 @@ async def _freight_since_receipt(session: AsyncSession, company_id, doc_id: str,
                 sold[k] += pool[k] - stays
                 pool[k] = stays
         family -= left
-    since = (await _split_since(session, company_id, [lot_id], first or 0))[lot_id]
-    rows = [freight.row, *since]
+    rows = [h.row for h in family_of.values()] or [freight.row]
     for r in rows:
         await session.refresh(r)
-    holding = [(r, float(r.state.get("quantity") or 0)) for r in rows if in_stock(r.state)]
+    holding = [(r, float(r.state.get("quantity") or 0) * (family_of[r.entity_id].per_unit
+                                                          if r.entity_id in family_of else 1.0))
+               for r in rows if in_stock(r.state)]
     holding = [(r, qty) for r, qty in holding if qty > 0]
     kept: dict[Projection, dict[str, Decimal]] = {r: {} for r, _ in holding}
     for k in kinds:
@@ -11820,15 +11915,19 @@ def _held(state: dict | None) -> float:
     return float(state.get("quantity") or 0) if state and in_stock(state) else 0.0
 
 
-async def _family_entries(session: AsyncSession, company_id, lots: list[str], first: int) -> list[_FamilyEntry]:
+async def _family_entries(session: AsyncSession, company_id, lots: list[str], first: int,
+                         more: list[str] = ()) -> list[_FamilyEntry]:
     """Every entry on ``lots`` and the lots split off them since entry ``first`` (_split_since),
-    in ledger order, each with the lot's state before and after it, replayed from its events."""
+    and on the lots in ``more`` (the freight spread's lineage members, counted with the first
+    lot), in ledger order, each with the lot's state before and after it, replayed from its
+    events."""
     from celerp.models.ledger import LedgerEntry
     from celerp.projections.engine import ProjectionEngine
 
     root_of = {lot: lot for lot in lots}
     for root, rows in (await _split_since(session, company_id, lots, first)).items():
         root_of.update({r.entity_id: root for r in rows})
+    root_of.update({lot: root_of.get(lot, lots[0]) for lot in more})
     rows = (await session.execute(
         select(LedgerEntry.id, LedgerEntry.entity_id, LedgerEntry.event_type, LedgerEntry.data,
                LedgerEntry.source, LedgerEntry.metadata_)
