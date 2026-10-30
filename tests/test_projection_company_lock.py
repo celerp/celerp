@@ -65,6 +65,7 @@ async def test_a_rebuild_is_refused_without_the_lock_of_every_company_it_replays
 
 
 async def test_the_upgrade_guard_locks_every_company_before_its_replay(real_engine, monkeypatch):
+    from celerp.migrations._data_reconcile import PROJECTION_VERSION_KEY, set_meta
     from celerp.projections.engine import ProjectionEngine
     from celerp.services import dev_release_guard
 
@@ -81,6 +82,10 @@ async def test_the_upgrade_guard_locks_every_company_before_its_replay(real_engi
     monkeypatch.setattr(ProjectionEngine, "rebuild", staticmethod(rebuild))
     monkeypatch.setattr(dev_release_guard, "_should_rebuild", lambda marker, semantics: True)
     async with maker(real_engine)() as s:
+        # instance_meta outlives real_engine's truncate, so a marker an earlier start left current
+        # would end the guard before its rebuild; this start comes from an older release.
+        conn = await s.connection()
+        await conn.run_sync(lambda c: set_meta(c, PROJECTION_VERSION_KEY, "0.0.0"))
         await dev_release_guard.run_upgrade_guard(s)
         await s.rollback()
     assert seen == [(True, True)]
