@@ -33,21 +33,16 @@ async def _note_connect(company_id: str, connector_name: str, *, lapsed: bool) -
     import uuid
     from datetime import datetime, timezone
 
-    import sqlalchemy as sa
-
+    from celerp.connectors.ownership import lock_connection_row
     from celerp.connectors.registry import service_name
     from celerp.db import get_session_ctx
-    from celerp.models.connector_config import ConnectorConfig
     from celerp.notifications import service as notifications
     from ui.i18n import t
 
     service = service_name(connector_name)
     title_key = "connectors.connect_lapsed_title"
     async with get_session_ctx() as session:
-        config = await session.scalar(sa.select(ConnectorConfig).where(
-            ConnectorConfig.company_id == str(company_id),
-            ConnectorConfig.connector == connector_name,
-        ).with_for_update())
+        config = await lock_connection_row(session, company_id, connector_name)
         if config is None or (config.connect_lapsed_at is not None) == lapsed:
             return
         cid = uuid.UUID(str(company_id))

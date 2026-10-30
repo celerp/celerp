@@ -139,7 +139,8 @@ async def test_scheduler_reconciles_realtime_config():
     lock = AsyncMock(return_value=config)
     with patch("celerp.db.get_session_ctx", return_value=cm), \
          patch("celerp.connectors.sync_runner.run_connector_sync", new=run_sync_mock), \
-         patch("celerp.connectors.ownership.lock_connector_operation", new=lock):
+         patch("celerp.connectors.ownership.lock_connector_operation", new=lock), \
+         patch("celerp.connectors.ownership.lock_connection_row", new=AsyncMock(return_value=config)):
         synced = await check_and_run_daily_syncs("co-1")
 
     assert "shopify" in synced                # realtime connector was reconciled
@@ -169,7 +170,8 @@ async def test_scheduler_does_not_stamp_reconnected_generation():
          patch(
              "celerp.connectors.ownership.lock_connector_operation",
              new=AsyncMock(return_value=replacement),
-         ):
+         ), \
+         patch("celerp.connectors.ownership.lock_connection_row", new=AsyncMock(return_value=replacement)):
         synced = await check_and_run_daily_syncs("co-1")
 
     assert synced == []
@@ -221,7 +223,8 @@ async def test_scheduler_catches_up_a_missed_daily_hour():
     run = AsyncMock(return_value=[result])
     with patch("celerp.db.get_session_ctx", return_value=cm), \
          patch("celerp.connectors.sync_runner.run_connector_sync", new=run), \
-         patch("celerp.connectors.ownership.lock_connector_operation", new=AsyncMock(return_value=config)):
+         patch("celerp.connectors.ownership.lock_connector_operation", new=AsyncMock(return_value=config)), \
+         patch("celerp.connectors.ownership.lock_connection_row", new=AsyncMock(return_value=config)):
         synced = await check_and_run_daily_syncs("co")
     assert run.await_count == 1
     assert synced == ["shopify"]
@@ -369,7 +372,8 @@ async def test_scheduler_runs_the_reconciliation_pass():
          patch(
              "celerp.connectors.ownership.lock_connector_operation",
              new=AsyncMock(return_value=config),
-         ):
+         ), \
+         patch("celerp.connectors.ownership.lock_connection_row", new=AsyncMock(return_value=config)):
         await check_and_run_daily_syncs("co")
 
     assert run.await_args.kwargs["reconcile"] is True

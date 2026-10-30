@@ -1835,3 +1835,20 @@ def test_a_take_a_test_sends_outside_the_company_lock_proves_nothing_against_pro
         rec.statement(1, _FLUSH_UPDATE, ("done", "r1"), 0.0)
         rec.statement(1, _LOCK_COMPANY, ("c2",), 0.0)
         assert rec.dump()["classes"]["row:outbound_queue"].get("ungated_takes", []) == counted
+
+
+_LEGACY_ROW = "SELECT connector_configs.id FROM connector_configs WHERE connector_configs.company_id = $1::VARCHAR AND connector_configs.connector = $2::VARCHAR FOR UPDATE"
+
+
+@pytest.mark.parametrize("company, counted", [
+    ("legacy-iid", None),       # the install's own id: no company's row, nothing to gate
+    ("c1", "none"),             # any company's id is still counted
+])
+def test_a_take_naming_the_instance_id_alone_is_no_companys_take(recorder, monkeypatch, company, counted):
+    """A legacy connection row names the install's instance id, which no companies row ever
+    holds: a take naming that id alone meets no take of a company's row, so the census does not
+    count it, while a take naming any other company stays counted."""
+    monkeypatch.setattr("celerp.connectors.ownership.ensure_instance_id", lambda: "legacy-iid")
+    recorder.statement(1, _LEGACY_ROW, (company, "woocommerce"), 0.0)
+    info = recorder.dump()["classes"].get("row:connector_configs", {})
+    assert info.get("ungated_takes", []) == ([f"update|{counted}"] if counted else [])

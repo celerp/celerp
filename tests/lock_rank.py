@@ -488,6 +488,9 @@ class Recorder:
         if lock.company and self._company_held(conn_key, lock) or not _production_site(lock.site):
             # A take the test itself sends is no production transaction: it proves nothing.
             return
+        if lock.company and lock.company == _instance_id():
+            # R4c: a legacy row names the install's instance id, which no companies row holds.
+            return
         held = self.company_rows[conn_key].get(lock.company, ()) if lock.company else ("unknown",)
         company = max(held, key=_STRENGTH_ORDER.index) if held and lock.company else (held or ("none",))[0]
         take, site = f"{_strength(lock)}|{company}", f"{lock.site} [{_strength(lock)}|{company}]"
@@ -1563,6 +1566,18 @@ def _get_strength(value) -> str:
 
 
 _PRODUCTION_PATH = re.compile(r"(celerp|default_modules/[^/]+/celerp_[^/]*)/")
+
+
+def _instance_id() -> str:
+    """The install's instance id as the connector code reads it (tests patch that name), or ""
+    before any connector code has minted it. Never mints one itself."""
+    ownership = sys.modules.get("celerp.connectors.ownership")
+    if ownership is None:
+        return ""
+    from celerp import config
+
+    read = ownership.ensure_instance_id
+    return read() if read is not config.ensure_instance_id else (config.settings.gateway_instance_id or "")
 
 
 def _production_site(site: str) -> bool:

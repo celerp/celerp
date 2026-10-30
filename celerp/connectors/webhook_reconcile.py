@@ -80,8 +80,8 @@ async def _read(ex: Execution):
 
 async def reconcile_webhooks(ex: Execution) -> None:
     """Inside an execution holding the webhooks resource."""
+    from celerp.connectors.ownership import lock_connection_row
     from celerp.db import SessionLocal
-    from celerp.models.connector_config import ConnectorConfig
 
     ex.require(WEBHOOKS)
     read = await _read(ex)
@@ -93,9 +93,10 @@ async def reconcile_webhooks(ex: Execution) -> None:
         kept = await _reconcile_store(ex, secret, desired)
     ids = [str(kept[topic]["id"]) for topic in desired if topic in kept]
     async with SessionLocal() as s:
-        await s.execute(sa.update(ConnectorConfig).where(
-            ConnectorConfig.id == config_id, ConnectorConfig.webhooks_version == version,
-        ).values(webhooks_dirty=False, webhook_ids_json=json.dumps(ids) if ids else None))
+        config = await lock_connection_row(s, ex.company_id, ex.connector)
+        if config is not None and config.id == config_id and config.webhooks_version == version:
+            config.webhooks_dirty = False
+            config.webhook_ids_json = json.dumps(ids) if ids else None
         await s.commit()
 
 

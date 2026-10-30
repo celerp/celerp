@@ -119,12 +119,13 @@ async def check_and_run_daily_syncs(company_id: str) -> list[str]:
 
         from celerp.connectors.ownership import (
             ConnectorOwnershipError,
+            lock_connection_row,
             lock_connector_operation,
         )
 
         async with get_session_ctx() as session:
             try:
-                current = await lock_connector_operation(
+                await lock_connector_operation(
                     session,
                     company_id,
                     config.connector,
@@ -133,7 +134,8 @@ async def check_and_run_daily_syncs(company_id: str) -> list[str]:
             except ConnectorOwnershipError:
                 await session.rollback()
                 continue
-            if current.id != config.id:
+            current = await lock_connection_row(session, company_id, config.connector)
+            if current is None or current.id != config.id:
                 await session.rollback()
                 continue
             current.last_daily_sync_at = now

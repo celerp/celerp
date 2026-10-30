@@ -743,10 +743,12 @@ async def forget_first_sync(session, company_ids, connector: str) -> None:
     """With a connection's config: its first-sync record. Its lease and heartbeat rows
     stay: the caller refused while one was live, a lease row is changed only by an
     acquire, takeover or release (1.4), so no fence ever meets a delete, and a later
-    connection's execution takes them over."""
-    await session.execute(sa.text(
-        "DELETE FROM connector_first_syncs WHERE connector = :k AND company_id IN :c"
-    ).bindparams(sa.bindparam("c", expanding=True)), {"k": connector, "c": sorted(map(str, company_ids))})
+    connection's execution takes them over. One statement per owner, in id order, so each
+    names one company (a legacy record names the instance id alone)."""
+    for company_id in sorted(set(map(str, company_ids))):
+        await session.execute(sa.text(
+            "DELETE FROM connector_first_syncs WHERE connector = :k AND company_id = :c"
+        ), {"k": connector, "c": company_id})
 
 
 async def _credentials(ex: Execution):

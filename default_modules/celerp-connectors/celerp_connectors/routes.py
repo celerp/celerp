@@ -278,20 +278,21 @@ async def set_connector_direction(
     from celerp import connectors
     from celerp.connectors.base import DirectionError, validate_directions
     from celerp.connectors.execution import first_sync_state
-    from celerp.connectors.ownership import ConnectorOwnershipError, lock_connector_operation
+    from celerp.connectors.ownership import (
+        ConnectorOwnershipError, lock_connection_row, lock_connector_operation,
+    )
+    from celerp.connectors.registry import service_name
     from celerp.connectors.webhook_reconcile import mark_webhooks_dirty
-    from celerp.models.connector_config import ConnectorConfig
-    from celerp.services.company_lock import lock_company
 
     try:
         connector = connectors.get(connector_name)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=t("connectors.unknown_connector", platform=connector_name)) from exc
     try:
-        config = await lock_connector_operation(session, company_id, connector_name, require_owner=True)
-        await lock_company(session, uuid.UUID(str(company_id)))
-        config = await session.scalar(sa.select(ConnectorConfig).where(
-            ConnectorConfig.id == config.id).with_for_update().execution_options(populate_existing=True))
+        await lock_connector_operation(session, company_id, connector_name, require_owner=True)
+        config = await lock_connection_row(session, company_id, connector_name)
+        if config is None:
+            raise ConnectorOwnershipError(t("error.connector_not_here", service=service_name(connector_name)))
     except ConnectorOwnershipError as exc:
         await session.rollback()
         raise HTTPException(status_code=409, detail=str(exc)) from exc
