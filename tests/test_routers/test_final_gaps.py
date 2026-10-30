@@ -21,6 +21,17 @@ from test_helpers import default_location_id
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _mock_session() -> AsyncMock:
+    """A mocked AsyncSession shaped like a real one where emit_event reads it synchronously:
+    its own info map, and a plain (not awaitable) sync_session with no transaction begun."""
+    session = AsyncMock()
+    session.info = {}
+    session.sync_session = MagicMock()
+    session.sync_session.get_nested_transaction.return_value = None
+    session.sync_session.get_transaction.return_value = None
+    return session
+
+
 async def _reg(client, name="GapCo") -> str:
     r = await client.post(
         "/auth/register",
@@ -253,11 +264,10 @@ async def test_events_engine_integrity_error_reraise():
     mock_result = MagicMock()
     mock_result.first.return_value = None
 
-    mock_session = AsyncMock()
+    mock_session = _mock_session()
     mock_session.flush = AsyncMock(side_effect=IntegrityError("dup", {}, Exception()))
     mock_session.execute = AsyncMock(return_value=mock_result)
     mock_session.add = MagicMock()
-    mock_session.info = {}
     # No stored rows: the company and entity lookups find nothing.
     mock_session.get = AsyncMock(return_value=None)
     # emit_event awaits session.begin_nested() for one savepoint around the insert
@@ -412,13 +422,12 @@ async def test_events_engine_pg_notify_exception_swallowed():
     from celerp.events.engine import emit_event
     from celerp.projections.engine import ProjectionEngine, Transition
 
-    mock_session = AsyncMock()
+    mock_session = _mock_session()
     mock_session.flush = AsyncMock()
     # Simulate postgresql dialect on session.bind
     mock_bind = MagicMock()
     mock_bind.dialect.name = "postgresql"
     mock_session.bind = mock_bind
-    mock_session.info = {}
     # pg_notify raises an exception; the other statements (the company lock) find nothing.
     async def execute(statement, *args, **kwargs):
         if "pg_notify" in str(statement):
