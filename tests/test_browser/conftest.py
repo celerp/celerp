@@ -369,6 +369,14 @@ def css_class(name: str) -> re.Pattern:
     return re.compile(rf"(^|\s){re.escape(name)}(\s|$)")
 
 
+def settle_layout(page) -> None:
+    """Waits until web fonts have loaded and the layout has had two frames to settle. The
+    load event can fire before a font swap reflows the page, so a box measured at load can
+    belong to a layout the person never sees, most often on a busy machine."""
+    page.evaluate("async () => { await document.fonts.ready;"
+                  " await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))); }")
+
+
 def release_held_routes(page, glob: str, held: list) -> None:
     """Aborts the requests a test held with page.route(glob, held.append), then removes
     the route. Unrouting first would send every held request on to the server."""
