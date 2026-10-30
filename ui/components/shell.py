@@ -211,15 +211,17 @@ function celerpToast(message, type, persist, action) {
   body.textContent = message;
   celerpTryAgain(body);
   toast.appendChild(body);
-  // Optional action link (e.g. "Reconnect in Settings" pointing at /settings/cloud):
-  // keeps a persistent error toast actionable instead of dead-ending the user.
-  if (action && action.href && action.label) {
+  // Optional action links, one {href, label} or a list of them (e.g. "Reconnect in
+  // Settings" pointing at /settings/cloud): keep a persistent error toast actionable
+  // instead of dead-ending the user.
+  [].concat(action || []).forEach(function(a) {
+    if (!a || !a.href || !a.label) return;
     var link = document.createElement('a');
     link.className = 'toast__action';
-    link.href = action.href;
-    link.textContent = action.label;
+    link.href = a.href;
+    link.textContent = a.label;
     toast.appendChild(link);
-  }
+  });
   var close = document.createElement('button');
   close.className = 'toast__close';
   close.textContent = '×';
@@ -3050,9 +3052,9 @@ def secret_input(name: str, value: str = "", lang: str = "en", cls: str = "form-
 
 
 def toast_header(message: str, kind: str = "success", *, persist: bool = False,
-                 action: dict | None = None, **extra_triggers) -> dict:
-    """HX-Trigger header for the shell's celerpToast listener. ``action`` ({href, label})
-    adds a link to the toast. Extra keyword arguments become sibling client events fired
+                 action: dict | list[dict] | None = None, **extra_triggers) -> dict:
+    """HX-Trigger header for the shell's celerpToast listener. ``action`` ({href, label},
+    or a list of them) adds a link to the toast for each. Extra keyword arguments become sibling client events fired
     from the same header."""
     toast: dict = {"message": message, "type": kind}
     if persist:

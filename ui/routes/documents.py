@@ -1095,15 +1095,17 @@ def _line_number_field(unit_label: str, **attrs) -> FT:
     )
 
 
-def _action_error(msg: str, **triggers):
+def _action_error(msg: str, *, persist: bool = False, action: dict | list[dict] | None = None, **triggers):
     """Fire a toast popup for action errors and restore any open editable cell to display mode.
-    ``triggers`` are further client events fired with it."""
+    ``persist`` and ``action`` are toast_header's; ``triggers`` are further client events fired
+    with it."""
     from starlette.responses import HTMLResponse as _HR
     return _HR(
         "",
         status_code=200,
         headers={"HX-Reswap": "none",
-                 **toast_header(msg, "error", celerpRestoreCell=True, **triggers)},
+                 **toast_header(msg, "error", persist=persist, action=action, celerpRestoreCell=True,
+                                **triggers)},
     )
 
 
@@ -3388,6 +3390,12 @@ celerpUpdateBulkAlloc();
         except APIError as e:
             if e.status == 401:
                 raise
+            refused = e.data if isinstance(e.data, dict) else {}
+            if refused.get("message_key") == "docs.revert_lineage_folded":
+                # The items it names link to their pages, where a merge or transform is undone.
+                return _action_error(error_message(e), persist=True, action=[
+                    {"href": f"/inventory/{x['params']['id']}", "label": x["params"]["sku"]}
+                    for x in refused["params"]["lots"]])
             # Return error inline
             return _action_error(error_message(e))
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
