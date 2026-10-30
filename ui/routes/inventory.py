@@ -2852,14 +2852,19 @@ function celerpPrintLabel(entityId, templateId) {
                 # promoted to top level, so old_item.get(field) is always authoritative.
                 old_item = await api.get_item(token, entity_id)
                 if field == "cost_price":
-                    # cost_total is the canonical primitive in state. Editing unit cost must
-                    # derive and overwrite cost_total (unit × qty) so flatten_item's back-
-                    # calculation doesn't silently revert the edit on next read.
+                    # The unit cost shown is the lot's value per unit, landed cost included: the
+                    # entered unit cost times the quantity is a cost total, read like the total cell's.
+                    # A lot without stock keeps it as the cost its next units wait at.
                     qty = float(old_item.get("quantity") or 0)
-                    new_unit = float(value)
-                    new_total = round(new_unit * qty, 2)
-                    old_total = old_item.get("cost_total")
-                    corrections.append(await api.patch_item(token, entity_id, {"cost_total": {"old": old_total, "new": new_total}}))
+                    if not qty:
+                        corrections.append(await api.patch_item(token, entity_id, {"cost_price": {"old": old_item.get("cost_price"), "new": float(value)}}))
+                    else:
+                        try:
+                            goods = goods_cost_from_total(old_item, float(value) * qty, confirm=True)
+                        except CostTotalBelowLanded as exc:
+                            return await _refused_cell(request, entity_id, field, refusal_text(exc.detail), str(form.get("value", "")))
+                        if goods is not None:
+                            corrections.append(await api.patch_item(token, entity_id, {"cost_total": {"old": old_item.get("cost_total"), "new": goods}}))
                 else:
                     old_val = old_item.get(field)
                     await api.patch_item(token, entity_id, {field: {"old": old_val, "new": value}})

@@ -458,3 +458,170 @@ async def test_a_sales_list_still_prices_an_unpriced_item_at_zero(client, sessio
     await _seed(session, auth)
     _result, line = await _repriced(client, auth, "invoice", await _item(client, auth, qty=2), "Retail")
     assert line["unit_price"] == 0.0
+
+
+# ── F4, F8, F13 (D9): cost cells in the app ───────────────────────────────────
+
+from celerp.models.ledger import LedgerEntry  # noqa: E402
+from celerp.models.projections import Projection  # noqa: E402
+from sqlalchemy import func, select  # noqa: E402
+from ui.i18n import t  # noqa: E402
+
+from test_list_old_rule_total_ui import _browser, _token  # noqa: E402
+
+
+async def _counts(session, auth, lot: str) -> tuple[int, int]:
+    """The lot's ledger events and the company's journal entries."""
+    session.expire_all()
+    cid = auth["company_id"]
+    events = await session.scalar(select(func.count()).select_from(LedgerEntry).where(
+        LedgerEntry.company_id == cid, LedgerEntry.entity_id == lot))
+    jes = await session.scalar(select(func.count()).select_from(Projection).where(
+        Projection.company_id == cid, Projection.entity_type == "journal_entry"))
+    return events, jes
+
+
+async def _cost_column(session, auth) -> None:
+    """The company keeps the system's price lists, Cost included, so its list shows the cost columns."""
+    from celerp.services.pricing import PRICE_LISTS_FALLBACK
+    from test_import_invariants import _set_company_settings
+    await _set_company_settings(session, auth["company_id"], price_lists=PRICE_LISTS_FALLBACK)
+
+
+async def _marked(client, auth) -> str:
+    a = await _item(client, auth, qty=2, cost_total=100.0)
+    b = await _item(client, auth, qty=3)
+    return await _merge(client, auth, [a, b])
+
+
+async def _with_freight(client, session, auth) -> str:
+    """A lot of goods cost 100 carrying freight 30."""
+    await _seed(session, auth)
+    lot = await _item(client, auth, qty=1, cost_total=10.0)
+    await _po_into(client, auth, lot, 9, 10.0, shipping=30.0)
+    st = await _state(session, auth, lot)
+    assert st["cost_base"] == 100.0 and sum(st["landed_costs"].values()) == 30.0, st
+    return lot
+
+
+def _cell(lot: str) -> str:
+    return f"/api/items/{lot}/field/cost_price_total"
+
+
+async def test_the_cost_total_cell_shows_value_known_zero_and_no_cost(client, session, auth):
+    await _cost_column(session, auth)
+    marked = await _marked(client, auth)
+    zero = await _item(client, auth, qty=2, cost_total=0.0)
+    none = await _item(client, auth, qty=2)
+    async with _browser(_token(auth)) as ui:
+        shown = {lot: (await ui.get(f"{_cell(lot)}/display")).text for lot in (marked, zero, none)}
+    assert "100.00" in shown[marked] and t("inventory.goods_cost_unknown") in shown[marked]
+    assert "0.00" in shown[zero] and t("inventory.goods_cost_unknown") not in shown[zero]
+    assert "<span>--</span>" in shown[none] and t("inventory.goods_cost_unknown") not in shown[none]
+
+
+async def test_an_unknown_cost_cell_opens_empty_and_clears_only_on_purpose(client, session, auth):
+    await _cost_column(session, auth)
+    lot = await _marked(client, auth)
+    before = await _counts(session, auth, lot)
+    async with _browser(_token(auth)) as ui:
+        editor = (await ui.get(f"{_cell(lot)}/edit")).text
+        assert 'value=""' in editor and t("inventory.clear_cost") in editor, editor
+        assert (await ui.patch(_cell(lot), data={"value": ""})).status_code == 200
+        assert await _counts(session, auth, lot) == before
+        assert (await ui.patch(_cell(lot), data={"value": "", "clear": "1"})).status_code == 200
+    st = await _state(session, auth, lot)
+    assert st.get("cost_total") is None and MARK not in st, st
+
+
+async def test_a_written_back_total_keeps_freight_separate(client, session, auth):
+    lot = await _with_freight(client, session, auth)
+    async with _browser(_token(auth)) as ui:
+        before = await _counts(session, auth, lot)
+        await ui.patch(_cell(lot), data={"value": "130"})
+        assert await _counts(session, auth, lot) == before
+        await ui.patch(_cell(lot), data={"value": "160"})
+        st = await _state(session, auth, lot)
+        assert st["cost_base"] == 130.0 and st["cost_total"] == 160.0, st
+        refused = (await ui.patch(_cell(lot), data={"value": "20"})).text
+    assert "30.00" in refused, refused
+    assert (await _state(session, auth, lot))["cost_base"] == 130.0
+
+
+async def test_confirming_the_carried_value_of_an_unknown_cost_books_nothing(client, session, auth):
+    await _seed(session, auth)
+    lot = await _marked(client, auth)
+    events, jes = await _counts(session, auth, lot)
+    async with _browser(_token(auth)) as ui:
+        await ui.patch(_cell(lot), data={"value": "100"})
+    st = await _state(session, auth, lot)
+    assert MARK not in st and st["cost_total"] == 100.0, st
+    assert await _counts(session, auth, lot) == (events + 1, jes)
+
+
+@pytest.mark.parametrize("cost_list", [True, False])
+async def test_an_exported_file_imported_again_keeps_cost_and_its_known_ness(client, session, auth, cost_list):
+    """With the Cost list the file carries the lot's cost total, without it the unit cost:
+    either one brought back unchanged changes no cost."""
+    import csv
+    import io
+    if cost_list:
+        await _cost_column(session, auth)
+    marked = await _marked(client, auth)
+    freight = await _with_freight(client, session, auth)
+    h = auth["headers"]
+    skus = {(await _read(client, auth, x))["sku"]: x for x in (marked, freight)}
+    r = await client.get("/items/export/csv", headers=h)
+    assert r.status_code == 200, r.text
+    # The columns the app keeps for itself are left out of a file brought back in.
+    own = {"id", "status", "created_at", "updated_at"}
+    rows = [{k: v for k, v in row.items() if k not in own and v not in ("", None)}
+            for row in csv.DictReader(io.StringIO(r.text)) if row.get("sku") in skus]
+    assert len(rows) == 2, rows
+    for row in rows:
+        row["name"] = "Renamed"
+    r = await client.post("/items/import/rows", headers=h, json={
+        "rows": rows,
+        "upsert": True, "idempotency_key": f"rt-{uuid.uuid4().hex[:6]}"})
+    assert r.status_code == 200 and not r.json().get("errors"), r.text
+    m, f = await _state(session, auth, marked), await _state(session, auth, freight)
+    assert m["name"] == "Renamed" and m[MARK] is True and m["cost_total"] == 100.0, m
+    assert f["name"] == "Renamed" and f["cost_total"] == 130.0 and f["cost_base"] == 100.0, f
+    below = next(row for row in rows if skus[row["sku"]] == freight)
+    below = {k: v for k, v in below.items() if not k.startswith("cost_price")}
+    below.update({"cost_price_total": "20"} if cost_list else {"cost_price": "2"})
+    r = await client.post("/items/import/rows", headers=h, json={
+        "rows": [below],
+        "upsert": True, "idempotency_key": f"rt-{uuid.uuid4().hex[:6]}"})
+    assert "30.00" in r.text, r.text
+    assert (await _state(session, auth, freight))["cost_total"] == 130.0
+
+
+async def test_the_transform_page_offers_no_number_for_an_unknown_cost(client, session, auth):
+    lot = await _marked(client, auth)
+    async with _browser(_token(auth)) as ui:
+        page = (await ui.get("/api/items/bulk/transform-preview", params={"entity_id": lot})).text
+    import re
+    [field] = re.findall(r'<input[^>]*name="child_cost_total"[^>]*>', page)
+    assert 'value=""' in field or "value=" not in field, field
+
+
+async def test_the_merge_note_states_prices_value_and_unknown_cost(client, session, auth):
+    a = await _item(client, auth, qty=2, cost_total=100.0, retail_price=10.0)
+    b = await _item(client, auth, qty=3, retail_price=20.0)
+    async with _browser(_token(auth)) as ui:
+        r = await ui.post("/api/items/merge/preview", data={"selected": [a, b], "target_sku_from": a})
+    message = r.json()["message"]
+    assert "16.00" in message and "100.00" in message and t("inventory.goods_cost_unknown") in message, message
+
+
+async def test_the_unit_cost_cell_saved_as_shown_keeps_freight_separate(client, session, auth):
+    await _cost_column(session, auth)
+    lot = await _with_freight(client, session, auth)
+    before = await _counts(session, auth, lot)
+    async with _browser(_token(auth)) as ui:
+        await ui.patch(f"/api/items/{lot}/field/cost_price", data={"value": "13"})
+        assert await _counts(session, auth, lot) == before
+        await ui.patch(f"/api/items/{lot}/field/cost_price", data={"value": "16"})
+    st = await _state(session, auth, lot)
+    assert st["cost_base"] == 130.0 and st["cost_total"] == 160.0, st

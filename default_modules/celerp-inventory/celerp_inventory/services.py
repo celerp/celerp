@@ -3362,8 +3362,10 @@ def _permission_errors(
 def _pop_cost_change(data: dict, state: dict) -> dict | None:
     """Take the goods cost out of patch data as the item page's cost edit.
 
-    A cost total is the lot's whole value as the export writes it, so it is read through
-    goods_cost_from_total: a total equal to what the lot carries is no change. Returns
+    A cost total is the lot's whole value as the export writes it, and a unit cost of a lot
+    holding stock is that value per unit, so both are read through goods_cost_from_total: a
+    value equal to what the lot carries is no change. A unit cost of a lot without stock is
+    the cost its next units wait at. Returns
     ``fields_changed`` for an item.updated restatement, or None when the row changes no
     cost. Raises TypeError or ValueError for a cost that is not a number, and
     CostTotalBelowLanded for a total below the lot's landed cost.
@@ -3374,7 +3376,11 @@ def _pop_cost_change(data: dict, state: dict) -> dict | None:
         return None if goods is None else {"cost_total": {"new": goods}}
     if cost_price in (None, ""):
         return None
-    return {"cost_price": {"new": float(cost_price)}}
+    qty = float(state.get("quantity") or 0)
+    if not qty:
+        return {"cost_price": {"new": float(cost_price)}}
+    goods = goods_cost_from_total(state, float(cost_price) * qty)
+    return None if goods is None else {"cost_total": {"new": goods}}
 
 
 async def _cost_restatement_error(session: AsyncSession, company_id, record: dict, row: dict) -> dict | None:
@@ -3409,7 +3415,8 @@ async def _cost_restatement_error(session: AsyncSession, company_id, record: dic
         await _restatement(session, company_id, entity_id, "item.updated",
                            {"fields_changed": cost_change}, {entity_id: patched})
     except CostRestatementConflict as exc:
-        return {"field": _source_field(row, next(iter(cost_change))), "code": "cost_not_carried", "message": str(exc)}
+        given = next(k for k in ("cost_total", "cost_price") if record["data"].get(k) not in (None, ""))
+        return {"field": _source_field(row, given), "code": "cost_not_carried", "message": str(exc)}
     return None
 
 
