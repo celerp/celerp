@@ -1107,7 +1107,7 @@ def test_a_take_its_transaction_holds_while_waiting_on_nothing_is_proof_neutral(
     assert not _leaf_listed(recorder, tmp_path)
     info = recorder.dump()["classes"]["row:projections"]
     assert set(info["leaf_sites"]) <= set(info["ungated_sites"]) and info["leaf_sites"]
-    assert not info["ungated_takes"]
+    assert not info["ungated_takes"] and not info["counted_sites"]
 
 
 @pytest.mark.parametrize("case", ["held weaker before", "waits after", "another connection waits", "still open"])
@@ -1852,3 +1852,4 @@ def test_a_take_naming_the_instance_id_alone_is_no_companys_take(recorder, monke
     recorder.statement(1, _LEGACY_ROW, (company, "woocommerce"), 0.0)
     info = recorder.dump()["classes"].get("row:connector_configs", {})
     assert info.get("ungated_takes", []) == ([f"update|{counted}"] if counted else [])
+    assert bool(info.get("counted_sites")) is bool(counted)

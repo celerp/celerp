@@ -340,8 +340,9 @@ class Recorder:
     def _spoil_leaves(self) -> None:
         """A lock that can wait was taken (or the transactions are no longer followed): every
         pending leaf take's transaction may wait holding its row, so each counts as ungated."""
-        for info, take, _ in (leaf for leaves in self.leaves.values() for leaf in leaves):
+        for info, take, sites in (leaf for leaves in self.leaves.values() for leaf in leaves):
             _ungated(info, take)
+            info.setdefault("counted_sites", set()).update(sites)
         self.leaves.clear()
 
     def _savepoint(self, conn_key: int, statement: str) -> bool:
@@ -1729,7 +1730,7 @@ def _unexercised(g: dict) -> dict[str, list[str]]:
 _COUNTS = ("ungated", "gated_unsorted", "ungated_multi", "company_ungated", "holder_waits",
            "insert_holder_waits")
 # The strengths of those R3 and R4 takes, where each was taken, and the R4 leaf takes' sites.
-_SETS = ("unsorted_strengths", "multi_strengths", "multi_sites", "ungated_takes", "ungated_sites", "leaf_sites")
+_SETS = ("unsorted_strengths", "multi_strengths", "multi_sites", "ungated_takes", "ungated_sites", "leaf_sites", "counted_sites")
 
 
 def _merge(directory: Path) -> dict:
