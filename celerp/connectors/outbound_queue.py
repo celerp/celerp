@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
@@ -16,6 +17,7 @@ from celerp.db import get_session_ctx
 from celerp.models.company import Company
 from celerp.models.connector_config import ConnectorConfig, OutboundQueue
 from celerp.models.projections import Projection
+from celerp.services.company_lock import lock_company
 
 
 log = logging.getLogger(__name__)
@@ -253,6 +255,13 @@ _DISCONNECTED = (
 )
 
 
+async def _hold_company(session, company_id) -> bool:
+    """The company's lock, taken first by every session here that writes the company's queue
+    rows, so none of them holds a row while it waits on the next (False: the company is gone,
+    and nothing is written for it)."""
+    return await lock_company(session, uuid.UUID(str(company_id)))
+
+
 async def _release_rows(session, *where, message: str = _DISCONNECTED) -> None:
     """Drop queued work, except a Xero invoice create that may have reached Xero:
     that row is its only record, so it is kept and parked until a manual sync
@@ -387,6 +396,8 @@ async def process_outbound_identity(
 
     async def defer(delay: timedelta, message: str | None = None) -> None:
         async with get_session_ctx() as session:
+            if not await _hold_company(session, company_id):
+                return
             await session.execute(sa.update(OutboundQueue).where(
                 *identity_rows, OutboundQueue.status == "pending",
             ).values(next_retry_at=datetime.now(timezone.utc) + delay,
@@ -405,27 +416,30 @@ async def process_outbound_identity(
         return OutboundOutcome(error=str(exc))
     except ConnectorOwnershipError as exc:
         async with get_session_ctx() as session:
-            await _release_rows(session, *identity_rows, OutboundQueue.status == "pending")
-            await session.commit()
+            if await _hold_company(session, company_id):
+                await _release_rows(session, *identity_rows, OutboundQueue.status == "pending")
+                await session.commit()
         return OutboundOutcome(error=str(exc))
     except ExecutionRefused as exc:
         if exc.reason != "direction_off":
             await defer(timedelta(minutes=5))
             return OutboundOutcome()
         async with get_session_ctx() as session:
-            await _release_rows(
-                session, *identity_rows, OutboundQueue.status == "pending",
-                message="Sending invoices to Xero was turned off while invoice creation was unresolved.",
-            )
-            await session.commit()
+            if await _hold_company(session, company_id):
+                await _release_rows(
+                    session, *identity_rows, OutboundQueue.status == "pending",
+                    message="Sending invoices to Xero was turned off while invoice creation was unresolved.",
+                )
+                await session.commit()
         return OutboundOutcome(error=exc.reason)
     except Exception as exc:  # credentials: the rows retry with backoff
         retry_at = datetime.now(timezone.utc) + timedelta(minutes=1)
         async with get_session_ctx() as session:
-            await session.execute(sa.update(OutboundQueue).where(
-                *identity_rows, OutboundQueue.status == "pending",
-            ).values(next_retry_at=retry_at, error_message=str(exc)[:2000]))
-            await session.commit()
+            if await _hold_company(session, company_id):
+                await session.execute(sa.update(OutboundQueue).where(
+                    *identity_rows, OutboundQueue.status == "pending",
+                ).values(next_retry_at=retry_at, error_message=str(exc)[:2000]))
+                await session.commit()
         return OutboundOutcome(error=str(exc))
 
 
@@ -442,6 +456,8 @@ async def _deliver(company_id, connector_name, entity_type, identity, identity_r
     statuses = ("pending", "blocked") if parked else ("pending",)
     async with identity_lock(f"outbound:{company_id}:{connector_name}:{entity_type}:{identity}"):
         async with get_session_ctx() as session:
+            if not await _hold_company(session, company_id):
+                return OutboundOutcome()
             # Every row visible once the identity is ours. A future retry on any
             # generation defers newer rows too.
             locked_rows = (await session.execute(
@@ -470,14 +486,18 @@ async def _deliver(company_id, connector_name, entity_type, identity, identity_r
 
         async def retain(**changes) -> None:
             async with get_session_ctx() as session:
+                if not await _hold_company(session, company_id):
+                    return
                 if stale_ids:
-                    await session.execute(sa.delete(OutboundQueue).where(OutboundQueue.id.in_(stale_ids)))
-                await session.execute(sa.update(OutboundQueue).where(OutboundQueue.id == keeper.id).values(**changes))
+                    await session.execute(sa.delete(OutboundQueue).where(*identity_rows, OutboundQueue.id.in_(stale_ids)))
+                await session.execute(sa.update(OutboundQueue).where(*identity_rows, OutboundQueue.id == keeper.id).values(**changes))
                 await session.commit()
 
         async def clear() -> None:
             async with get_session_ctx() as session:
-                await session.execute(sa.delete(OutboundQueue).where(OutboundQueue.id.in_(ids)))
+                if not await _hold_company(session, company_id):
+                    return
+                await session.execute(sa.delete(OutboundQueue).where(*identity_rows, OutboundQueue.id.in_(ids)))
                 await session.commit()
 
         if not parked:

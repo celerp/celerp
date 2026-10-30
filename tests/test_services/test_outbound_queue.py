@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: BUSL-1.1
 from __future__ import annotations
 
+import sys
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -16,6 +17,15 @@ from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from connector_test_support import connect, stand_in_connector
 from test_helpers import remove_company
+
+
+@pytest.fixture(autouse=True)
+def _queue_rows_are_taken_under_their_company_lock():
+    """Every queue test is a census of the queue rows it takes: one taken outside its company's
+    lock and held while its transaction waits on more (not a leaf) fails the test."""
+    with sys.modules["lock_rank"].ungated_takes(("row:outbound_queue",), "celerp/connectors/") as found:
+        yield
+    assert sorted(found) == [], "queue row takes outside the company lock:\n" + "\n".join(sorted(found))
 
 
 async def _purge_committed(*companies: uuid.UUID, legacy_key: str | None = None) -> None:
