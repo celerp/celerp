@@ -58,9 +58,11 @@ def factory(committed_engine, monkeypatch):
 async def _company(factory) -> tuple[uuid.UUID, uuid.UUID]:
     cid, uid = uuid.uuid4(), uuid.uuid4()
     async with factory() as s:
+        # The user first, then the company, in the order provisioning writes them.
+        s.add(User(id=uid, email=f"sp-{uid.hex[:8]}@test.co", name="Member", auth_hash="x", is_active=True))
+        await s.flush()
         s.add(Company(id=cid, name="Savepoint Co", slug=f"sp-{cid.hex[:8]}",
                       settings=set_enabled({}, {DOCS})))
-        s.add(User(id=uid, email=f"sp-{uid.hex[:8]}@test.co", name="Member", auth_hash="x", is_active=True))
         await s.flush()
         s.add(UserCompany(id=uuid.uuid4(), user_id=uid, company_id=cid, role=ROLE, is_active=True))
         await s.commit()

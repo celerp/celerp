@@ -110,7 +110,9 @@ async def _seed_historical_doc(session, cid, doc_id, data):
     guard, then rebuild so the projection exists. This is how a source doc that
     carries a duplicate non-splittable item is constructed for paths whose own
     source-creation would otherwise trip the guard (conversions, subscriptions).
+    The company lock comes first, before the ledger row, as every writer takes them.
     """
+    await lock_every_company(session)
     entry = LedgerEntry(
         company_id=cid,
         entity_id=doc_id,
@@ -125,7 +127,6 @@ async def _seed_historical_doc(session, cid, doc_id, data):
     )
     session.add(entry)
     await session.flush()
-    await lock_every_company(session)
     await ProjectionEngine.rebuild(session)
 
 
