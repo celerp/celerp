@@ -47,13 +47,16 @@ EXECUTES = frozenset({"execute", "exec_driver_sql", "scalar", "scalars", "stream
 ROW_WRITES = frozenset({"add", "add_all", "delete", "merge"})
 SESSION_CALLS = EXECUTES | ROW_WRITES
 # Every other method or attribute of a session or connection, engine or session factory the
-# source may use, with why it writes no data. Any name not listed fails the guard.
+# source may use, with why it is not a write site of its own. Any name not listed fails the guard.
 DATABASE_READS = {
     "database session": {
         "get": "loads one row by its key",
         "refresh": "reloads a row's attributes from the database",
-        "flush": "sends the rows already added, deleted or merged, whose own calls are the write sites",
-        "commit": "ends the transaction; it is counted as a commit, not a write site",
+        "flush": "sends pending row changes; an added, deleted or merged row has its own write site, but a "
+                 "change made by setting a loaded row's attribute has none, so it is covered at route level "
+                 "(a route that writes needs a test that makes it write), not per site",
+        "commit": "ends the transaction and sends pending row changes; it is counted as a commit, not a write "
+                  "site, so a change made by setting a loaded row's attribute is covered at route level, not per site",
         "rollback": "discards the transaction",
         "begin": "opens a transaction", "begin_nested": "opens a savepoint",
         "in_transaction": "reports transaction state", "in_nested_transaction": "reports transaction state",
@@ -68,8 +71,9 @@ DATABASE_READS = {
         "info": "a dictionary the application keeps on the session",
         "get_transaction": "the open transaction, to tell it apart", "get_nested_transaction": "the open savepoint",
         "dirty": "the rows changed since the last flush", "dialect": "the database dialect",
-        "run_sync": "hands the function it is given a synchronous connection; what that function runs "
-                    "is classified where the function is written",
+        "run_sync": "hands the function it is given a synchronous connection; a call that function makes on a "
+                    "receiver the scan knows as a session is classified where it is written, and one it cannot "
+                    "place (an unannotated parameter) is covered at route level, not per site",
     },
     "database engine": {
         "connect": "opens a connection, itself checked as a session",
