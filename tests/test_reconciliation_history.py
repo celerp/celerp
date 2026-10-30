@@ -10,6 +10,7 @@ holds is flagged for review, never corrected."""
 from __future__ import annotations
 
 import asyncio
+import re
 import uuid
 from datetime import datetime, timezone
 
@@ -417,6 +418,19 @@ async def test_start_refusal_is_shown_on_the_start_page(client, session):
         assert loc.startswith("/accounting/reconcile/start") and "msg=" in loc
         page = (await ui.get(loc)).text
     assert "already" in page.lower()
+
+
+async def test_start_refusal_keeps_what_the_user_entered(client, session):
+    tok, h = await admin(client)
+    b = await bank(client, h)
+    await bank(client, h, name="Second Bank", number="0003")
+    await start(client, h, b["id"], "2026-09-30")
+    async with _ui_as(tok) as ui:
+        r = await ui.post("/accounting/reconcile/start", data={
+            "bank_account_id": b["id"], "statement_date": "2026-09-30", "statement_balance": "1234.00"})
+        page = (await ui.get(r.headers["location"])).text
+    assert re.search(rf'<option[^>]*value="{b["id"]}"[^>]*selected|<option[^>]*selected[^>]*value="{b["id"]}"', page)
+    assert 'value="2026-09-30"' in page and 'value="1234.00"' in page
 
 
 async def test_statement_date_must_be_a_real_date(client, session):

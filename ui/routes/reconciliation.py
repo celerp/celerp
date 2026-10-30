@@ -7,7 +7,7 @@ from __future__ import annotations
 import base64
 import binascii
 import json
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 from fasthtml.common import *
 from starlette.requests import Request
@@ -654,13 +654,15 @@ def setup_routes(app):
                 Div(
                     Label(t("label.statement_date"), cls="form-label"),
                     Input(type="date", name="statement_date",
-                          value=business_today(company.get("timezone")).isoformat(),
+                          value=(request.query_params.get("statement_date")
+                                 or business_today(company.get("timezone")).isoformat()),
                           cls="form-input", required=True),
                     cls="form-field",
                 ),
                 Div(
                     Label(t("label.statement_closing_balance"), cls="form-label"),
                     Input(type="number", name="statement_balance", step="0.01",
+                          value=request.query_params.get("statement_balance", ""),
                           placeholder="0.00", cls="form-input", required=True),
                     cls="form-field",
                 ),
@@ -708,8 +710,9 @@ def setup_routes(app):
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
+            entered = {"bank_id": bank_id, "statement_date": stmt_date, "statement_balance": stmt_bal_raw}
             return RedirectResponse(
-                "/accounting/reconcile/start?msg=" + quote(str(e.detail), safe=""), status_code=302)
+                "/accounting/reconcile/start?" + urlencode({"msg": str(e.detail), **entered}), status_code=302)
 
     @app.get("/accounting/reconcile/history/{bank_id}")
     async def reconcile_history(request: Request, bank_id: str):
