@@ -237,3 +237,37 @@ async def test_no_edit_sets_whether_the_cost_is_known(client, session, auth):
     a = await _item(client, auth, qty=1, cost_total=10.0)
     r = await client.patch(f"/items/{a}", headers=auth["headers"], json={"fields_changed": {MARK: {"new": True}}})
     assert r.status_code == 422, r.text
+
+
+# ── P2: the preview shows what the merge writes ─────────────────────────────
+
+async def _preview(client, headers, ids: list[str], **extra) -> dict:
+    r = await client.post("/items/merge/preview", headers=headers,
+                          json={"source_entity_ids": ids, "target_sku_from": ids[0], **extra})
+    assert r.status_code == 200, r.text
+    return r.json()["result"]
+
+
+async def test_preview_shows_the_merged_prices_value_and_unknown_cost(client, session, auth):
+    a = await _item(client, auth, qty=2, cost_total=100.0, retail_price=10.0)
+    b = await _item(client, auth, qty=3, retail_price=20.0)
+    shown = await _preview(client, auth["headers"], [a, b], resulting_quantity=6)
+    assert shown == {"retail_price": 16.0, "cost_total": 100.0, "cost_price": None,
+                     "goods_cost_known": False}, shown
+    flat = await _read(client, auth, await _merge(client, auth, [a, b], resulting_quantity=6))
+    assert flat["retail_price"] == 16.0 and flat["cost_total"] == 100.0 and flat.get("cost_price") is None
+
+
+async def test_preview_shows_a_known_unit_cost(client, session, auth):
+    a = await _item(client, auth, qty=2, cost_total=100.0)
+    b = await _item(client, auth, qty=3, cost_total=50.0)
+    shown = await _preview(client, auth["headers"], [a, b], resulting_quantity=6)
+    assert shown["cost_total"] == 150.0 and shown["cost_price"] == 25.0 and shown["goods_cost_known"] is True
+
+
+async def test_preview_hides_cost_from_a_role_that_cannot_see_it(client, session, auth):
+    from test_company_settings_owners import _user_with_role
+    a = await _item(client, auth, qty=2, cost_total=100.0, retail_price=10.0)
+    b = await _item(client, auth, qty=3, cost_total=50.0, retail_price=10.0)
+    operator = await _user_with_role(client, session, auth["headers"], "operator")
+    assert await _preview(client, operator, [a, b]) == {"retail_price": 10.0}

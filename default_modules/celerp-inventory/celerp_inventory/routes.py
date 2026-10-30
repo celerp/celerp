@@ -103,7 +103,8 @@ from celerp.services.vertical_presets import category_item_defaults
 from celerp.services.line_measures import check_sell_qty_fits_unit, sell_qty_misfit, splitting_allowed, validate_default_sell_qty
 from celerp.services.money import round_basis, round_money, round_rate, to_decimal, to_stored_float
 from celerp.schemas.numbers import FiniteFloat
-from celerp_inventory.projections import _is_image_mime, is_core_item_key, is_item_available, thumbnail_file_id
+from celerp_inventory.projections import (_is_image_mime, apply_item_event, is_core_item_key, is_item_available,
+                                          thumbnail_file_id)
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -4682,7 +4683,27 @@ async def preview_merge(payload: MergeBody, company_id=Depends(get_current_compa
         Projection.company_id == company_id, Projection.entity_type == "item",
         Projection.entity_id.in_(payload.source_entity_ids)))).scalars()}
     plan = await _plan_merge(session, company_id, payload, settings, role, rows)
-    return {"inventory_reclassification": plan.disclosure, "plan_fingerprint": plan.fingerprint}
+    return {"inventory_reclassification": plan.disclosure, "plan_fingerprint": plan.fingerprint,
+            "result": await _merge_result_preview(session, company_id, plan, role, settings)}
+
+
+async def _merge_result_preview(session: AsyncSession, company_id, plan: MergePlan, role: str,
+                                settings: dict) -> dict:
+    """The merged item's unit prices, and for a role that may see cost its value, unit cost
+    and whether its goods cost is known, read as an item read would show the result: the
+    same projection, flatten and field visibility."""
+    from celerp.services.field_schema import get_effective_field_schema
+
+    state = apply_item_event({}, "item.created", {**plan.create_data, **plan.price_fields})
+    flat = flatten_item(state, "")
+    shown = {key: flat.get(key) for key in (*plan.price_fields, "cost_total", "cost_price")}
+    can_see_costs = role_has_permission(settings, role, "view_inventory_costs")
+    field_schema = await get_effective_field_schema(session, company_id, category=flat.get("category"))
+    out = apply_item_visibility([shown], role, field_schema, can_see_costs,
+                                can_author_drafts=role_has_permission(settings, role, "edit_inventory"))[0]
+    if can_see_costs:
+        out["goods_cost_known"] = goods_cost_known(state)
+    return out
 
 
 @router.post("/merge")
