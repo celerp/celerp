@@ -74,6 +74,16 @@ def writes_goods_cost(event_type: str, data: dict) -> bool:
     return event_type in _COST_SETTING_EVENTS and any(key in data for key in GOODS_COST_KEYS)
 
 
+def clears_goods_cost(event_type: str, data: dict) -> bool:
+    """Whether an item event removes the lot's goods cost (sets a goods-cost key empty)."""
+    if event_type == "item.updated":
+        changes = data.get("fields_changed") or {}
+        return any((changes[key] or {}).get("new") in (None, "") for key in GOODS_COST_KEYS if key in changes)
+    if event_type == "item.pricing.set":
+        return data.get("price_type") in GOODS_COST_KEYS and data.get("new_price") in (None, "")
+    return False
+
+
 def unknown_flag_error(event_type: str, data: dict) -> str | None:
     """The refusal for an item event carrying the unknown-cost flag it may not carry, or
     a goods cost in a patch (a patch never restates cost), else None."""

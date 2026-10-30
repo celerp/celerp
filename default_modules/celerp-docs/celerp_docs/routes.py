@@ -5183,6 +5183,7 @@ async def record_receipt(session: AsyncSession, company_id, row: Projection, pay
         allocate_internal_codes,
         goods_basis,
         resolve_catalog_anchor_for_item,
+        topped_up_cost,
     )
 
     def _creates_parcel(it) -> bool:
@@ -5256,10 +5257,10 @@ async def record_receipt(session: AsyncSession, company_id, row: Projection, pay
             measures = _receipt_measures(it, lot_before, unit_map, stock_qty_received)
             new_qty = float(item.state.get("quantity", 0) or 0) + stock_qty_received
             # The receipt adds what these goods cost to the lot's basis, so a delivery at a new
-            # price moves the lot's unit cost to the weighted average of old and new stock. The
-            # landed cost the lot carries stays as it is: the goods joining it bring none of it.
-            adjustment: dict = {"new_qty": new_qty,
-                                "cost_base": round_basis((goods_basis(item.state) or 0.0) + received_cost)}
+            # price moves the lot's unit cost to the weighted average of old and new stock, or
+            # leaves it unknown when the stock on hand has no known cost. The landed cost the
+            # lot carries stays as it is: the goods joining it bring none of it.
+            adjustment: dict = {"new_qty": new_qty, **topped_up_cost(item.state, received_cost)}
             await emit_event(
                 session, company_id=company_id, entity_id=it.item_id, entity_type="item", event_type="item.quantity.adjusted",
                 data=adjustment,

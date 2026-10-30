@@ -55,6 +55,7 @@ from celerp.services.account_roles import (
 )
 from celerp.services.company_lock import lock_company, lock_projections
 from celerp.services.document_lines import listing_record
+from celerp.services.goods_cost import GOODS_COST_UNKNOWN
 from celerp.services.line_measures import splitting_allowed
 from celerp.services.lot_origin import (
     DELETED,
@@ -479,6 +480,7 @@ async def _return(op: _Op, run: Projection, wanted: list[dict], rk: str, request
                                    else op.round(recorded * _money(line["quantity"]) / _money(have)))
 
     from celerp_inventory.projections import is_item_available
+    from celerp_inventory.services import topped_up_cost
 
     rows = await lock_projections(op.session, op.company_id, list(values))
     # Value each lot holds on the books before the return; None for one an older release let
@@ -520,7 +522,11 @@ async def _return(op: _Op, run: Projection, wanted: list[dict], rk: str, request
             continue
         landed = sum(float(v or 0) for v in (s.get("landed_costs") or {}).values())
         target = befores[item_id] + value
-        await op.emit(item_id, "item", "item.quantity.adjusted", {**adjusted, "cost_base": float(target) - landed},
+        # The lot takes back exactly the value issued; whether its goods cost is known
+        # follows the one top-up rule (topped_up_cost).
+        known = {k: v for k, v in topped_up_cost(s, float(value)).items() if k == GOODS_COST_UNKNOWN}
+        await op.emit(item_id, "item", "item.quantity.adjusted",
+                      {**adjusted, "cost_base": float(target) - landed, **known},
                       f"mfg:{op.order_id}:return:{rk}:{item_id}", metadata={_ORDER_MARK: op.order_id})
         after = await op.session.get(Projection, {"company_id": op.company_id, "entity_id": item_id},
                                      populate_existing=True)

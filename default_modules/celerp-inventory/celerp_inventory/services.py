@@ -39,7 +39,8 @@ from celerp.models.projections import Projection
 from celerp.services.account_roles import current_settings, is_consigned, lot_account, sold_lot_account, sold_lot_key
 from celerp.services.business_time import business_date_at
 from celerp.services.demo import delete_untouched_demo_items
-from celerp.services.goods_cost import GOODS_COST_UNKNOWN, event_goods_costs, lot_label, negative_cost_error
+from celerp.services.goods_cost import (GOODS_COST_UNKNOWN, clears_goods_cost, event_goods_costs, lot_label,
+                                       negative_cost_error)
 from celerp.services.cost_visibility import COST_ITEM_KEYS
 from celerp.services.money import allocate_pro_rata, round_basis, to_decimal
 from celerp.services.company_lock import holds_company_lock, lock_company, lock_projections, locked_company
@@ -709,6 +710,10 @@ async def restate_item_cost(
         raise CostRestatementConflict(
             f"{plan.label} changed while the correction was being applied; try again")
     successors, repriced, label = plan.successors, plan.repriced, plan.label
+    # Clearing the goods cost of a lot that keeps freight leaves value the books carry:
+    # its goods part is unknown, not a known 0.
+    if clears_goods_cost(event_type, data) and (lots[entity_id].state or {}).get("landed_costs"):
+        data = {**data, GOODS_COST_UNKNOWN: True}
 
     def _metadata(lot_id: str, base: dict) -> dict:
         return {**base, "cogs_repriced": repriced[lot_id]} if lot_id in repriced else base

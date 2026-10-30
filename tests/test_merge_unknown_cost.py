@@ -20,6 +20,7 @@ from __future__ import annotations
 import uuid
 
 import pytest
+from celerp_inventory.services import goods_cost_empty
 
 from test_cost_restatement import _state
 from test_helpers import merge_items
@@ -183,7 +184,7 @@ async def test_clearing_goods_cost_with_freight_leaves_it_unknown(client, sessio
     await _seed(session, auth)
     lot = await _item(client, auth, qty=1, cost_total=10.0)
     await _po_into(client, auth, lot, 9, 10.0, shipping=30.0)
-    r = await client.patch(f"/items/{lot}", headers=auth["headers"], json={"cost_total": None})
+    r = await client.patch(f"/items/{lot}", headers=auth["headers"], json={"fields_changed": {"cost_total": {"new": None}}})
     assert r.status_code == 200, r.text
     st = await _state(session, auth, lot)
     assert st[MARK] is True and st["cost_total"] == sum(st["landed_costs"].values()), st
@@ -214,8 +215,9 @@ async def test_priced_goods_into_a_sold_out_marked_lot_make_it_known(client, ses
     c = await _item(client, auth, qty=3)
     m = await _merge(client, auth, [a, c])
     assert (await _state(session, auth, m))[MARK] is True
-    r = await client.patch(f"/items/{m}", headers=auth["headers"], json={"quantity": 0})
+    r = await client.post(f"/items/{m}/adjust", headers=auth["headers"], json={"new_qty": 0})
     assert r.status_code == 200, r.text
+    assert goods_cost_empty(await _state(session, auth, m))
     await _po_into(client, auth, m, 2, 10.0)
     st = await _state(session, auth, m)
     assert st["cost_total"] == 20.0 and MARK not in st, st
@@ -233,5 +235,5 @@ async def test_no_create_sets_whether_the_cost_is_known(client, session, auth, w
 
 async def test_no_edit_sets_whether_the_cost_is_known(client, session, auth):
     a = await _item(client, auth, qty=1, cost_total=10.0)
-    r = await client.patch(f"/items/{a}", headers=auth["headers"], json={MARK: True})
+    r = await client.patch(f"/items/{a}", headers=auth["headers"], json={"fields_changed": {MARK: {"new": True}}})
     assert r.status_code == 422, r.text
