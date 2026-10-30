@@ -24,7 +24,7 @@ from celerp_inventory.services import goods_cost_empty
 
 from test_cost_restatement import _state
 from test_helpers import merge_items
-from test_landed_cost_pools import _po_into
+from test_landed_cost_pools import _po_into, _receive
 from test_landed_cost_removals import _seed
 
 MARK = "goods_cost_unknown"
@@ -417,8 +417,8 @@ async def _doc(client, auth, doc_type: str, lines: list[dict] | None = None) -> 
     return r.json()["id"]
 
 
-async def _scanned(client, auth, doc_type: str, item_id: str, price_list: str) -> dict:
-    doc = await _doc(client, auth, doc_type)
+async def _scanned(client, auth, doc_type: str, item_id: str, price_list: str, doc: str | None = None) -> dict:
+    doc = doc or await _doc(client, auth, doc_type)
     sku = (await _read(client, auth, item_id))["sku"]
     r = await client.post(f"/docs/{doc}/scan", headers=auth["headers"],
                           json={"barcode": sku, "price_list": price_list, "run_key": uuid.uuid4().hex[:8]})
@@ -449,7 +449,10 @@ async def test_a_cost_list_leaves_an_unknown_cost_unpriced(client, session, auth
     await _seed(session, auth)
     x = await _merge(client, auth, [await _item(client, auth, qty=2, cost_total=100.0),
                                     await _item(client, auth, qty=3)])
-    assert "unit_price" not in await _scanned(client, auth, "purchase_order", x, "Cost")
+    po = await _doc(client, auth, "purchase_order")
+    assert "unit_price" not in await _scanned(client, auth, "purchase_order", x, "Cost", po)
+    r = await _receive(client, auth, po, {"po_line_index": 0, "item_id": x, "name": "Beads", "quantity_received": 1})
+    assert r.status_code == 422 and r.json()["detail"]["message_key"] == "docs.unpriced_receipt", r.text
     result, line = await _repriced(client, auth, "purchase_order", x, "Cost")
     assert {"item_id": x, "reason": "unpriced"} in result["skipped"] and line["unit_price"] == 7.0, result
 
