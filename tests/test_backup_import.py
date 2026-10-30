@@ -133,9 +133,14 @@ async def test_connector_maintenance_guard_uses_session_advisory_lock(monkeypatc
 
 @pytest.mark.asyncio
 async def test_restored_connector_cleanup_fences_stale_context(
-    session, _isolate_database_side_effects
+    session, _isolate_database_side_effects, monkeypatch
 ):
+    """The restored connections, queued pushes and legacy rows are all cleared: each
+    company's under its company's lock, the install's legacy rows by its instance id, and a
+    legacy row of the install the backup came from by a last statement nothing follows."""
     import uuid
+
+    from connector_test_support import ungated_connector_takes
 
     from sqlalchemy import select
 
@@ -161,14 +166,17 @@ async def test_restored_connector_cleanup_fences_stale_context(
         entity_type="item",
         entity_id="item:restore",
     ))
+    monkeypatch.setattr("celerp.connectors.ownership.ensure_instance_id", lambda: "this-install")
+    for owner in ("this-install", "the-backed-up-install"):
+        session.add(ConnectorConfig(company_id=owner, connector="shopify"))
     await session.commit()  # the restored database is committed before the cleanup runs
 
-    await _isolate_database_side_effects["_clear_restored_connector_state"](session)
-    await session.flush()
+    with ungated_connector_takes("celerp/services/backup_import.py") as ungated:
+        await _isolate_database_side_effects["_clear_restored_connector_state"](session)
+        await session.flush()
 
-    assert await session.scalar(select(ConnectorConfig).where(
-        ConnectorConfig.company_id == str(company_id)
-    )) is None
+    assert ungated == set()
+    assert (await session.scalars(select(ConnectorConfig))).all() == []
     assert await session.scalar(select(OutboundQueue).where(
         OutboundQueue.company_id == str(company_id)
     )) is None
