@@ -235,15 +235,39 @@ async def provision_company_books(session, company_id) -> None:
     await session.flush()
 
 
+# Set on a block session's own closing release (block_sessions), which is no commit of the code's.
+BLOCK_END = "celerp_test_block_end"
+
+
+def block_sessions(factory):
+    """The app's own per-block session factory in a test, from a savepoint-joined ``factory``
+    on the test connection. Each block is a session of its own, as production opens one per
+    block, recorded as a transaction of its own (lock_rank Recorder.block). A block that raised
+    ends by rollback; any other ends by releasing its savepoint, as a rollback to it would also
+    undo what another task wrote on the shared connection meanwhile."""
+    import sys
+
+    recorder = sys.modules["lock_rank"].RECORDER
+
+    @asynccontextmanager
+    async def block():
+        with recorder.block():
+            async with factory() as own:
+                yield own
+                if own.in_transaction():
+                    own.info[BLOCK_END] = True
+                    await own.commit()
+    return block
+
+
 async def own_sessions_on(session):
-    """A session factory for the app's own SessionLocal in a test: each session it makes
-    is a session of its own on the test session's connection, joined by savepoint, as
-    production opens one per block. It sees what the test flushed; what a block leaves
-    uncommitted ends with it, and its commits stay inside the rolled-back test transaction."""
+    """The app's own SessionLocal in a test (block_sessions): each session is a session of its
+    own on the test session's connection, joined by savepoint. It sees what the test flushed,
+    and its commits stay inside the rolled-back test transaction."""
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-    return async_sessionmaker(bind=await session.connection(), class_=AsyncSession,
-                              expire_on_commit=False, join_transaction_mode="create_savepoint")
+    return block_sessions(async_sessionmaker(bind=await session.connection(), class_=AsyncSession,
+                                             expire_on_commit=False, join_transaction_mode="create_savepoint"))
 
 
 TZ = "Pacific/Kiritimati"  # the timezone of the company company_auth creates

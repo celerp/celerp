@@ -29,6 +29,8 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import contextlib
+import contextvars
 import functools
 import itertools
 import json
@@ -199,6 +201,9 @@ def _copy_state(value):
 
 
 _FLOW_IDS = itertools.count(1)
+# The block sessions the running task has open on a shared connection, outermost first
+# (Recorder.block).
+_BLOCKS: contextvars.ContextVar[tuple[int, ...]] = contextvars.ContextVar("lock_rank_blocks", default=())
 
 
 @dataclass
@@ -261,7 +266,19 @@ class Recorder:
             return conn_key
         if task not in self.flows:
             self.flows[task] = next(_FLOW_IDS)
-        return conn_key, self.flows[task]
+        return (conn_key, self.flows[task], *_BLOCKS.get())
+
+    @contextlib.contextmanager
+    def block(self):
+        """A block session on a shared connection: a session the code opens for one block,
+        on a connection of its own in production. While it is open the task's statements on
+        a shared connection are its transaction, which ends alone; what the task took before
+        stays held on the task's own, as on a second connection (_other_connections)."""
+        token = _BLOCKS.set((*_BLOCKS.get(), next(_FLOW_IDS)))
+        try:
+            yield
+        finally:
+            _BLOCKS.reset(token)
 
     def end(self, conn_key: int) -> None:
         """The connection's transaction ended: so did every flow's on it."""

@@ -285,6 +285,49 @@ def test_the_connection_ending_ends_every_flow_on_it():
     assert not any(recorder.held.values())
 
 
+_NOTICE_ROWS = "SELECT notifications.id FROM notifications ORDER BY notifications.company_id FOR UPDATE"
+_COMPANY_ROW = "SELECT companies.id FROM companies WHERE companies.id = 'a' FOR UPDATE"
+
+
+def _block_in_one_task(before: list[str], block: list[str], after: list[str]) -> Recorder:
+    """One task on the shared connection 1 runs ``before``, then ``block`` in a block session
+    (a session of its own in production, Recorder.block), whose transaction ends with the block,
+    then ``after``."""
+    recorder = Recorder()
+    recorder.shared.add(1)
+
+    async def body():
+        for statement in before:
+            recorder.statement(1, statement, None, 0.0)
+        with recorder.block():
+            for statement in block:
+                recorder.statement(1, statement, None, 0.0)
+            recorder.end_flow(1)
+        for statement in after:
+            recorder.statement(1, statement, None, 0.0)
+
+    asyncio.run(body())
+    return recorder
+
+
+def test_a_block_that_waits_while_its_task_holds_locks_waits_across_connections():
+    """Production opens the block's session on a connection of its own: its task waits there
+    while its own transaction holds what it took before."""
+    recorder = _block_in_one_task([_NOTICE_ROWS], [_COMPANY_ROW], [])
+    assert ("cross-connection", "row:companies") in _kinds(recorder)
+
+
+def test_a_block_ending_leaves_its_task_holding_what_it_took_before():
+    recorder = _block_in_one_task([_NOTICE_ROWS], [], [_COMPANY_ROW])
+    assert ("order", "row:companies") in _kinds(recorder)
+
+
+def test_what_a_block_took_ends_with_it():
+    recorder = _block_in_one_task([], [_NOTICE_ROWS], [_COMPANY_ROW])
+    assert not _kinds(recorder)
+    assert not any(lock.cls == "row:notifications" for held in recorder.held.values() for lock in held)
+
+
 def test_the_outbound_identity_lock_may_be_held_on_its_own_connection():
     recorder = Recorder()
 

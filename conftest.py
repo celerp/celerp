@@ -202,7 +202,7 @@ _httpx.AsyncClient.send = _observed_send
 import sys as _sys, os as _os
 from pathlib import Path
 
-from test_helpers import REPO_ROOT, DATABASE_URL, make_test_token, authed_cookies, _crm_available, company_auth, settle_background  # noqa: F401
+from test_helpers import REPO_ROOT, DATABASE_URL, make_test_token, authed_cookies, _crm_available, company_auth, settle_background, BLOCK_END, block_sessions  # noqa: F401
 
 # Register inventory module routes onto the test app.
 _inv_src = _os.path.join(_os.path.dirname(__file__), "default_modules", "celerp-inventory")
@@ -1049,6 +1049,8 @@ async def auth(session, ids):
 
 # Set while a request of the `client` fixture runs (its per-request transaction).
 _IN_REQUEST = contextvars.ContextVar("celerp_test_in_request", default=False)
+# The task running that request: tasks it starts (AI jobs) inherit the context but run beside it.
+_REQUEST_TASK = contextvars.ContextVar("celerp_test_request_task", default=None)
 # The statements that write rows, when a request sends them as text.
 _WRITE_VERBS = ("insert", "update", "delete", "merge", "truncate", "copy")
 
@@ -1083,32 +1085,25 @@ async def client(session: AsyncSession):
     # cleared at setup/teardown, so each test starts with an empty registry.
     app.dependency_overrides[get_session] = lambda: session
 
-    # Middleware (DrainMiddleware, SlidingTokenRefreshMiddleware) opens its own
-    # session via get_session_ctx() rather than the injected request session. Each
-    # test runs inside one uncommitted outer transaction on a single connection
-    # (the `session` fixture), so a middleware session on a *separate* connection
-    # blocks on that transaction's row locks - e.g. DrainMiddleware's _get_or_create
-    # INSERT of the SystemRuntimeState singleton the request session is already
-    # holding uncommitted - and hangs until the per-test timeout. Route middleware
-    # to the same shared session (the patch point middleware.py imports for this
-    # purpose) so it joins the one transaction instead of deadlocking against it.
-    # The module boundary reads a company's settings the same way, so it sees the
-    # companies a test registered.
+    # The middleware and a module's admission open a session of their own per block, and the
+    # projection rebuild and the Doctor run on the unbounded lifecycle engine. On a SEPARATE
+    # connection such a session would see none of this transaction's seed data and wait on its
+    # locks, so each is a block session on the one shared connection (test_helpers.block_sessions):
+    # it sees the seeded data and its commits stay inside the rolled-back outer transaction.
+    # Savepoints on one connection nest as a stack, so a task running beside the request (an AI
+    # job) cannot open one inside the request's: its middleware and admission blocks use the test
+    # session itself, which takes turns between tasks.
     from contextlib import asynccontextmanager
 
     @asynccontextmanager
     async def _shared_session_ctx():
         yield session
 
-    # get_lifecycle_session_ctx() runs maintenance work (the projection rebuild,
-    # the Doctor) on the unbounded lifecycle_engine in production, because a full
-    # rebuild can exceed the request statement_timeout. In tests that would open a
-    # SEPARATE connection that cannot see this transaction's uncommitted seed data,
-    # so fix-mode counts come back empty. LifecycleSessionLocal is resolved from
-    # celerp.db at call time, so binding a savepoint-joined sessionmaker to the one
-    # shared connection routes every lifecycle session (each a fresh session that
-    # closes on exit) into this transaction: it sees the seeded data and its commits
-    # stay inside the rolled-back outer transaction.
+    def _block_session():
+        if _REQUEST_TASK.get() is asyncio.current_task():
+            return block()
+        return _shared_session_ctx()
+
     # Installed as the API app's middleware stack while the fixture runs, so every
     # in-process client of the app (this one, the UI's bridge into it, a test's own) gets
     # a transaction per request. A request the app makes into itself joins the outer one.
@@ -1141,9 +1136,11 @@ async def client(session: AsyncSession):
 
         await _end_transaction(commit=True)
         token = _IN_REQUEST.set(True)
+        task_token = _REQUEST_TASK.set(asyncio.current_task())
         try:
             await stack(scope, receive, _send)
         finally:
+            _REQUEST_TASK.reset(task_token)
             _IN_REQUEST.reset(token)
             if status >= 400 and turn["wrote"] and turn["durable"]:
                 await _end_transaction(commit=False)
@@ -1163,7 +1160,7 @@ async def client(session: AsyncSession):
         await session.rollback()
 
     # What the current request did on this connection: wrote through its own session,
-    # and whether a lifecycle session or an AI job committed beside it.
+    # and whether a block session (above) or an AI job committed beside it.
     turn = {"wrote": False, "durable": False}
 
     def _wrote(*_):
@@ -1175,8 +1172,8 @@ async def client(session: AsyncSession):
                 or str(state.statement).lstrip("( \n").lower().startswith(_WRITE_VERBS)):
             _wrote()
 
-    def _durable(_session):
-        if _IN_REQUEST.get():
+    def _durable(committed):
+        if _IN_REQUEST.get() and not committed.info.get(BLOCK_END):
             turn["durable"] = True
 
     sync_session = session.sync_session
@@ -1191,6 +1188,7 @@ async def client(session: AsyncSession):
     lifecycle_factory = async_sessionmaker(
         bind=await session.connection(), class_=AsyncSession, sync_session_class=_DurableSession,
         expire_on_commit=False, join_transaction_mode="create_savepoint")
+    block = block_sessions(lifecycle_factory)
 
     # AI job tasks run beside the requests that start them, on the same connection.
     # Their sessions join the outer transaction without savepoints of their own, so
@@ -1205,9 +1203,9 @@ async def client(session: AsyncSession):
     with patch("celerp.ai.jobs.gate", jobs.ModelGate(jobs.gate.size)), \
          patch("celerp.gateway.client._client", MagicMock()), \
          patch("celerp.gateway.state.get_session_token", return_value="test-session-token"), \
-         patch("celerp.middleware.get_session_ctx", _shared_session_ctx), \
-         patch("celerp.modules.boundary.get_session_ctx", _shared_session_ctx), \
-         patch("celerp.db.LifecycleSessionLocal", lifecycle_factory), \
+         patch("celerp.middleware.get_session_ctx", _block_session), \
+         patch("celerp.modules.boundary.get_session_ctx", _block_session), \
+         patch("celerp.db.LifecycleSessionLocal", block), \
          patch("celerp.ai.jobs.SessionLocal", job_factory), \
          patch.object(app, "middleware_stack", _request_scoped):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
