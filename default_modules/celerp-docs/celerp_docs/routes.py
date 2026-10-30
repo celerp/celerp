@@ -11568,7 +11568,7 @@ async def _draw_from_memo(session, company_id, role: str, settings: dict, user, 
     async def run(_indices: list[int]) -> dict:
         # After the replay check, so a replay after the target was deleted returns its result.
         if target_id and (target is None or target.entity_type != "doc"):
-            raise HTTPException(status_code=404, detail="Document not found")
+            raise HTTPException(status_code=404, detail=t("documents.document_not_found"))
         request = body
         if operation:
             await _give_lines_ids(session, company_id=company_id, uid=user.id, owner=memo_row, source="memo_draw")
