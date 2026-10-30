@@ -21,7 +21,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "scripts"))
 
-import mutation_baseline  # noqa: E402
+import mutation_coverage_gaps  # noqa: E402
 import mutation_census  # noqa: E402
 
 SOURCE = '''\
@@ -65,9 +65,7 @@ def _census(tmp_path, monkeypatch, routes=None, sites=None, gaps=(), base_gaps=N
                  {"app": "FastAPI", "methods": ["POST"], "path": "/preview", "source": "celerp/routers/x.py:7"}]
     (folder / "census-1-gw0.routes.json").write_text(json.dumps(inventory))
     (folder / "census-1-gw0.json").write_text(json.dumps({"routes": routes or {}, "sites": sites or {}, "findings": []}))
-    (tmp_path / "baseline.json").write_text("[]")
     status = mutation_census.main([str(folder), "--out", str(tmp_path / "census.md"), "--enforce",
-                                   "--baseline", str(tmp_path / "baseline.json"),
                                    "--gaps", committed_gaps(tmp_path / "gaps.json", gaps, base_gaps), "--base", "HEAD"])
     return status, (tmp_path / "census.md").read_text()
 
@@ -138,7 +136,7 @@ def test_a_gap_entry_without_its_classification_is_refused(tmp_path, change, err
     path = tmp_path / "gaps.json"
     path.write_text(json.dumps([{k: v for k, v in {**_route_gap(), **change}.items() if v is not None}]))
     with pytest.raises(ValueError, match=error):
-        mutation_baseline.load_gaps(str(path))
+        mutation_coverage_gaps.load_gaps(str(path))
 
 
 # A route whose only write is setting a loaded row's attribute has no write site: it reaches a
@@ -221,12 +219,30 @@ def test_a_base_without_the_gaps_file_compares_nothing(tmp_path, monkeypatch):
     subprocess.run([*git, "init", "-q"], check=True)
     subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "base"], check=True)
     (tmp_path / "gaps.json").write_text(json.dumps([_route_gap()]))
-    assert mutation_baseline.gaps_at("HEAD", str(tmp_path / "gaps.json")) is None
+    assert mutation_coverage_gaps.gaps_at("HEAD", str(tmp_path / "gaps.json")) is None
     with pytest.raises(subprocess.CalledProcessError):
-        mutation_baseline.gaps_at("no-such-ref", str(tmp_path / "gaps.json"))
+        mutation_coverage_gaps.gaps_at("no-such-ref", str(tmp_path / "gaps.json"))
 
 
 def test_the_checked_in_coverage_gaps_load_and_do_not_grow():
     """The count only goes down: a gap closed by a test leaves the baseline in the same change.
     Raising it accepts a new untested writer, which is what the census exists to refuse."""
-    assert len(mutation_baseline.load_gaps()) <= mutation_baseline.GAPS_CEILING
+    assert len(mutation_coverage_gaps.load_gaps()) <= mutation_coverage_gaps.GAPS_CEILING
+
+
+def _finding(route: str = "api POST /observed") -> dict:
+    return {"kind": "unprotected", "route": route, "table": "locations", "fingerprint": "f1",
+            "where": ["celerp/a.py:10 write"], "count": 1, "tests": ["tests/t.py::t"], "key": route,
+            "detail": "", "earlier_locks": [], "company_from": "statement", "sql": "UPDATE locations"}
+
+
+@pytest.mark.parametrize("findings, status", [([], 0), ([_finding()], 1)], ids=["none", "one"])
+def test_the_census_fails_on_any_finding(tmp_path, findings, status):
+    """No finding is accepted: one write the observer refused fails the census."""
+    folder = tmp_path / "census"
+    folder.mkdir()
+    (folder / "census-1-gw0.json").write_text(json.dumps({"routes": {}, "sites": {}, "findings": findings}))
+    with pytest.MonkeyPatch.context() as patch:  # findings alone: no source, so no coverage gap
+        patch.setattr(mutation_census, "static_inventory", lambda graph: ([], []))
+        assert mutation_census.main([str(folder), "--out", str(tmp_path / "census.md"), "--enforce",
+                                     "--gaps", committed_gaps(tmp_path / "gaps.json"), "--base", "HEAD"]) == status

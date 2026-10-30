@@ -121,8 +121,7 @@ jobs:
       # The route inventory, the writes made without the company lock and the write sites
       # the suite passed through, from every unit, process and browser shard together
       # (scripts/mutation_census.py).
-      # Fails on a write no baseline entry accepts, on an entry no finding matched or its own
-      # test did not reproduce, and on a writer no test covers that mutation_coverage_gaps.json
+      # Fails on any write the observer refused, and on a writer no test covers that mutation_coverage_gaps.json
       # does not name, or an entry there that no longer matches its gap, that main's copy
       # does not hold, or that counts more write sites than main's copy of it.
       - name: Report

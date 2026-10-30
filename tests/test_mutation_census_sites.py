@@ -149,9 +149,7 @@ def _route(tmp_path, monkeypatch, branch: str):
     (folder / "census-1-gw0.json").write_text(json.dumps({
         "routes": {"api POST /new": {"requests": 1, "protected": 1}},
         "sites": {f"celerp/routers/x.py:{ADDED} create@{FIRST}": 1}, "findings": []}))
-    (tmp_path / "b.json").write_text("[]")
-    status = mutation_census.main([str(folder), "--out", str(tmp_path / "c.md"), "--enforce", "--baseline",
-                                   str(tmp_path / "b.json"), "--gaps", committed_gaps(tmp_path / "g.json"), "--base", "HEAD"])
+    status = mutation_census.main([str(folder), "--out", str(tmp_path / "c.md"), "--enforce", "--gaps", committed_gaps(tmp_path / "g.json"), "--base", "HEAD"])
     return status, (tmp_path / "c.md").read_text()
 
 

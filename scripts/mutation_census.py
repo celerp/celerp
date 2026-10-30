@@ -3,7 +3,7 @@
 
 """Report what the write observer (mutation_observer.py) saw across a test run.
 
-    python scripts/mutation_census.py <census folder>... [--out census.md] [--coverage coverage.json] [--baseline file]
+    python scripts/mutation_census.py <census folder>... [--out census.md] [--coverage coverage.json]
         [--gaps file] [--base ref] [--enforce]
 
 Reads every census-*.json and census-*.routes.json under the folders (one pair per test
@@ -22,16 +22,13 @@ process, so the folders of all CI shards together give the whole suite) and writ
   it ran from, an added, deleted or merged row for the line that called the session, both
   recorded when they happen.
 
-- the baseline: each accepted finding (mutation_baseline.json) with its tracking issue, and
-  every entry no finding matched or its own reproducing test did not see;
 - the coverage gaps: each mutating route whose source reaches a write that no test made
   write durably, and each write site no request write passed through, against the accepted
   ones (mutation_coverage_gaps.json), with every entry that no longer matches its gap, that
   the base branch's list (git ref origin/main by default) does not hold, or that counts more
   write sites than the base branch's copy of it.
 
-With --enforce the exit status is 1 when a finding matches no baseline entry, an entry
-is stale or not reproduced by its test, a read route no test requested reaches a write, a
+With --enforce the exit status is 1 when the observer made any finding, a read route no test requested reaches a write, a
 coverage gap has no entry, or a coverage-gap entry no longer matches its gap, is not in the
 base branch's list or counts more write sites than the base branch's copy: the list and each
 site entry's count only shrink, so a newly untested writer cannot take the place of an accepted
@@ -51,7 +48,7 @@ from collections import defaultdict
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "scripts"))
-import mutation_baseline  # noqa: E402
+import mutation_coverage_gaps  # noqa: E402
 import mutation_read_notes  # noqa: E402
 import static_calls  # noqa: E402
 from static_calls import _called, _receiver  # noqa: E402
@@ -174,8 +171,8 @@ def _passed_through(site, sent) -> bool:
                for line, name, begins in sent)
 
 
-def report(folders, out, coverage_path=None, baseline=mutation_baseline.PATH, gaps=mutation_baseline.GAPS_PATH,
-           base=mutation_baseline.GAPS_BASE):
+def report(folders, out, coverage_path=None, gaps=mutation_coverage_gaps.GAPS_PATH,
+           base=mutation_coverage_gaps.GAPS_BASE):
     files, routes, sites, findings, inventory = load(folders)
     coverage = _coverage(coverage_path)
     graph = static_calls.Graph()
@@ -221,7 +218,7 @@ def report(folders, out, coverage_path=None, baseline=mutation_baseline.PATH, ga
     def _requested(app, path):
         return any(routes.get(f"{_APP_LABEL.get(app, app)} {m} {path}", {}).get("requests") for m in READING)
     unrequested = {(app, "GET", path): row for (app, path), row in reading.items() if not _requested(app, path)}
-    untested = {(app, method, path): row for cls in mutation_baseline.ROUTE_CLASSES
+    untested = {(app, method, path): row for cls in mutation_coverage_gaps.ROUTE_CLASSES
                 for app, method, path, _, _ in classes.get(cls, []) for row in [mutating[(app, method, path)]]}
     reaching = routes_that_write({**unrequested, **untested}, graph)
     writing = {k: v for k, v in reaching.items() if k in unrequested}
@@ -238,15 +235,10 @@ def report(folders, out, coverage_path=None, baseline=mutation_baseline.PATH, ga
     lines.append("")
 
     # -- findings --------------------------------------------------------------
-    entries = mutation_baseline.load(baseline)
-    by_kind, by_entry = defaultdict(list), defaultdict(list)
+    by_kind = defaultdict(list)
     for f in findings.values():
-        key = mutation_baseline.key(f)
-        if key in entries:
-            by_entry[key].append(f)
-        else:
-            by_kind[f["kind"]].append(f)
-    lines += ["## Findings", "", "Writes no baseline entry accepts.", "",
+        by_kind[f["kind"]].append(f)
+    lines += ["## Findings", "", "Writes the observer refused.", "",
               "| Kind | Distinct | Seen |", "|---|---|---|"]
     lines += [f"| {k} | {len(v)} | {sum(f['count'] for f in v)} |" for k, v in sorted(by_kind.items())] + [""]
     for kind, items in sorted(by_kind.items()):
@@ -262,20 +254,6 @@ def report(folders, out, coverage_path=None, baseline=mutation_baseline.PATH, ga
             lines.append(f"  - where: {' <- '.join(reversed(first['where']))}")
             lines.append(f"  - sql: `{first['sql'][:160]}`")
         lines.append("")
-
-    # -- baseline --------------------------------------------------------------
-    failing = 0
-    lines += ["## Baseline", "", f"Accepted findings (mutation_baseline.json): {len(entries)} entries.", "",
-              "| Route | Table | Seen | Status | Issue |", "|---|---|---|---|---|"]
-    for key, entry in entries.items():
-        seen = by_entry.get(key, [])
-        tests = {mutation_baseline.test_function(t) for f in seen for t in f["tests"]}
-        status = "stale: no finding matched" if not seen else \
-            "not reproduced by its test" if entry["test"] not in tests else "matched"
-        failing += status != "matched"
-        lines.append(f"| `{entry['route']}` | {entry['table']} | {sum(f['count'] for f in seen)} | {status} | "
-                     f"{entry['issue']} |")
-    lines.append("")
 
     # -- mutation sites --------------------------------------------------------
     sent = defaultdict(set)  # file -> (line, function, the line its function starts on or None)
@@ -320,16 +298,16 @@ def report(folders, out, coverage_path=None, baseline=mutation_baseline.PATH, ga
     # A writer no test covers: a mutating route reaching a write that no test made write
     # durably, and the write sites of one function and call no request write passed through.
     route_gaps = {("route", f"{_APP_LABEL.get(a, a)} {m} {p}"): (cls, f"| {_APP_LABEL.get(a, a)} | {m} {p} | {src} | {cls} |")
-                  for cls in mutation_baseline.ROUTE_CLASSES for a, m, p, src, _ in classes.get(cls, [])
+                  for cls in mutation_coverage_gaps.ROUTE_CLASSES for a, m, p, src, _ in classes.get(cls, [])
                   if (a, m, p) in reaching}
     site_gaps = defaultdict(list)
     for rel, start, _, fn, name, _ in missed:
         site_gaps[("site", f"{rel} {fn} {name}")].append(start)
     known_sites = {("site", f"{rel} {fn} {name}") for rel, _, _, fn, name, _ in static_sites}
     served = {("route", f"{_APP_LABEL.get(a, a)} {m} {p}") for a, m, p in mutating}
-    gap_entries = mutation_baseline.load_gaps(gaps)
+    gap_entries = mutation_coverage_gaps.load_gaps(gaps)
     try:
-        base_entries = mutation_baseline.gaps_at(base, gaps)
+        base_entries = mutation_coverage_gaps.gaps_at(base, gaps)
     except subprocess.CalledProcessError as exc:
         raise SystemExit(f"cannot read the coverage gaps at {base} ({exc.stderr.strip()}); "
                          f"fetch it first: git fetch origin main") from exc
@@ -370,7 +348,7 @@ def report(folders, out, coverage_path=None, baseline=mutation_baseline.PATH, ga
             fh.write(text)
     else:
         sys.stdout.write(text)
-    return sum(len(v) for v in by_kind.values()) + failing + len(writing) + gap_failing
+    return sum(len(v) for v in by_kind.values()) + len(writing) + gap_failing
 
 
 def main(argv=None) -> int:
@@ -379,12 +357,11 @@ def main(argv=None) -> int:
     parser.add_argument("--out")
     parser.add_argument("--enforce", action="store_true")
     parser.add_argument("--coverage", help="a coverage.py JSON report of the same run, with branches")
-    parser.add_argument("--baseline", default=mutation_baseline.PATH, help="the accepted findings")
-    parser.add_argument("--gaps", default=mutation_baseline.GAPS_PATH, help="the accepted coverage gaps")
-    parser.add_argument("--base", default=mutation_baseline.GAPS_BASE,
+    parser.add_argument("--gaps", default=mutation_coverage_gaps.GAPS_PATH, help="the accepted coverage gaps")
+    parser.add_argument("--base", default=mutation_coverage_gaps.GAPS_BASE,
                         help="the git ref whose coverage gaps the accepted ones may only shrink")
     args = parser.parse_args(argv)
-    count = report(args.folders, args.out, args.coverage, args.baseline, args.gaps, args.base)
+    count = report(args.folders, args.out, args.coverage, args.gaps, args.base)
     return 1 if args.enforce and count else 0
 
 
