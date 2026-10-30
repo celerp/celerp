@@ -256,16 +256,24 @@ def _authority_for(session: AsyncSession, company_id) -> RequestAuthority | None
 
 
 async def read_authority(session: AsyncSession, company_id, user_id) -> tuple[str, dict]:
-    """The caller's role and the company settings as committed, for a caller holding the
-    company lock. The membership row is held until the transaction ends, so the role
-    cannot change before the write commits; a membership that is gone or inactive reads
-    as no role. Settings are read as a column, leaving any loaded Company untouched."""
-    link = (await session.execute(
-        select(UserCompany).where(
-            UserCompany.user_id == user_id, UserCompany.company_id == company_id,
-            UserCompany.is_active == True,  # noqa: E712
-        ).with_for_update(read=True).execution_options(populate_existing=True)
-    )).scalar_one_or_none()
+    """The caller's role and the company settings as committed; a membership that is gone
+    or inactive reads as no role. Settings are read as a column, leaving any loaded Company
+    untouched.
+
+    Under the company's lock (company_lock.holds_company) the membership row is held until
+    the transaction ends, so the role cannot change before the write commits. Without it
+    the row is read and not held: a company writer (a role change, a reset, a discard)
+    takes the company row before the membership row, so a membership held without the
+    company row could be waited on by a writer its holder then waits for. Such a reader
+    writes nothing on the company's behalf without its lock, which judges it again."""
+    from celerp.services.company_lock import holds_company
+    membership = select(UserCompany).where(
+        UserCompany.user_id == user_id, UserCompany.company_id == company_id,
+        UserCompany.is_active == True,  # noqa: E712
+    ).execution_options(populate_existing=True)
+    if holds_company(session, company_id):
+        membership = membership.with_for_update(read=True)
+    link = (await session.execute(membership)).scalar_one_or_none()
     settings = (await session.execute(select(Company.settings).where(Company.id == company_id))).scalar_one_or_none()
     return (normalize_role(link.role) if link is not None else ""), dict(settings or {})
 

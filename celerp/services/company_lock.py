@@ -82,11 +82,17 @@ async def lock_company(session: AsyncSession, *company_ids) -> bool:
             select(Company.id).where(Company.id == company_id).with_for_update(key_share=True)
         )).first() is not None:
             found.append(company_id)
-    for company_id in ids:
-        await _judge_authority_again(session, company_id)
     for company_id in found:
         note(session, "locked", company_id)
+    for company_id in ids:
+        await _judge_authority_again(session, company_id)
     return len(found) == len(ids)
+
+
+def holds_company(session, company_id) -> bool:
+    """Whether this transaction holds the company's row exclusively: its lock or its
+    deletion lock, which every company writer waits for."""
+    return any(str(key) == str(company_id) for kind in ("locked", "deleting") for key in noted(session, kind))
 
 async def judge_module_writes(session: AsyncSession, company_id) -> None:
     """Work inside a module was admitted before it ran (modules.boundary.module_use), and
@@ -123,8 +129,9 @@ async def judge_module_writes(session: AsyncSession, company_id) -> None:
 async def judge_without_company_lock(session: AsyncSession, company_id) -> None:
     """Judge the request again, as the company lock does, for the one write that must not
     wait for that lock: a migration cancel (migrations.request_cancel), saved while the
-    runner holds the lock through a batch. The caller's membership is read under its row
-    lock, so a role change in flight is waited for and a committed one is seen."""
+    runner holds the lock through a batch. Without the company lock the membership is
+    read as committed and not held (permissions.read_authority): a role change committed
+    first refuses the cancel, and one still in flight is ordered after it."""
     await _judge_authority_again(session, company_id)
 
 
