@@ -24,8 +24,8 @@ def de():
 
 @pytest.mark.parametrize("doc_type", _DOC_TYPES)
 def test_doc_void_tile_is_a_status_not_a_verb(de, doc_type):
-    html = str(_doc_status_cards([], "", {"count_by_status": {"void": 2}}, "USD",
-                                 doc_type=doc_type, lang="de"))
+    html = str(_doc_status_cards({"count_by_status": {"void": 2}}, doc_type,
+                                 currency="USD", lang="de"))
     assert "Storniert" in html
     assert "Stornieren" not in html
 

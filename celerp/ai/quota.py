@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 
 from celerp.config import settings
-from celerp.gateway.state import get_session_token, relay_http_url
+from celerp.gateway.state import PAID_TIERS, get_session_token, relay_http_url
 
 # Alias so tests / internal callers import this from here rather than reaching
 # into celerp.gateway.state directly.
@@ -28,6 +28,7 @@ async def get_quota_status() -> dict | None:
     ambiguity are returned as distinct sentinels so UI never turns transport
     state into a purchase decision.
     """
+    from celerp.ai import deadlines
     from celerp.services.cloud_entitlement import authenticated_request, stored_api_key, sync_existing_entitlement
     if settings.cloud_disconnected:
         return {"disconnected": True}
@@ -36,7 +37,7 @@ async def get_quota_status() -> dict | None:
     if not await stored_api_key():
         return None
     try:
-        response = await authenticated_request("GET", "/quota/ai/status", total_s=5.0)
+        response = await authenticated_request("GET", "/quota/ai/status", total_s=deadlines.QUOTA_READ_S)
     except Exception as exc:
         log.warning("Failed to fetch quota status: %s", exc)
         return {"unknown": True}
@@ -49,7 +50,7 @@ async def get_quota_status() -> dict | None:
     if not isinstance(data, dict):
         return {"unknown": True}
     tier = str(data.get("tier") or "free")
-    if tier in ("cloud", "ai", "team") and not get_session_token():
+    if tier in PAID_TIERS and not get_session_token():
         try:
             await sync_existing_entitlement(require_persisted_key=True)
         except Exception as exc:

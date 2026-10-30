@@ -11,32 +11,19 @@ from typing import Annotated
 
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, StrictInt
-from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import Session
 
+from celerp.db import one_unit
 from celerp.importers.results import failure_reason
 from celerp.services import peer_access, peer_attention
 from celerp.services.company_lock import lock_company
 
 log = logging.getLogger(__name__)
 
-# Set while a record's receiver runs: the record commits whole, after it, or not at all.
-_ONE_RECORD = "celerp_peer_record"
-
-
-@event.listens_for(Session, "before_commit")
-def _record_commits_whole(session: Session) -> None:
-    # Savepoint releases fire this too; only the outer commit makes anything durable.
-    if session.info.get(_ONE_RECORD) and not session.in_nested_transaction():
-        raise RuntimeError("A connected company's record commits once, when it is whole")
-
 PEER_ONLY = "Only a connected company's integration key may send a source revision."
 UNEXPECTED = "The receiving company could not apply this record. Its owner can see why in the server log."
 # The field every import record model carries for a connected company's records.
 SourceRevision = Annotated[int | None, Field(ge=1, le=2**63 - 1)]
-
-
 class ContactData(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     company_name: str | None = Field(default=None, max_length=255)
@@ -180,13 +167,10 @@ async def receive_records(session: AsyncSession, peer: peer_access.PeerCaller, r
             grant = await _grant(session, peer)
             # The company first, then the record's identity and attention rows, in every receiver.
             await lock_company(session, grant.company_id)
-            session.info[_ONE_RECORD] = True
-            try:
+            with one_unit(session):  # a record applies whole or not at all
                 status = await receive(session, grant=grant, source_entity_id=record.entity_id,
                                        source_revision=record.source_revision, data=record.data)
                 await peer_attention.clear(session, **where, source_entity_id=record.entity_id)
-            finally:
-                session.info.pop(_ONE_RECORD, None)
             await session.commit()
         except Exception as exc:
             await session.rollback()
@@ -198,6 +182,9 @@ async def receive_records(session: AsyncSession, peer: peer_access.PeerCaller, r
                 log.exception("connected company record %s failed", record.entity_id)
                 reason = UNEXPECTED
             errors.append(f"{record.entity_id}: {reason}")
+            # The rollback released the company lock: the key is judged again under it
+            # before the note is written, and a key that stopped working stops the batch.
+            await _grant(session, peer)
             await peer_attention.record(session, **where, source_entity_id=record.entity_id,
                                         label=_label(record), reason=reason,
                                         fix=getattr(exc, "fix", None))

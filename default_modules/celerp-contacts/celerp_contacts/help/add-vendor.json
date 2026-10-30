@@ -1,0 +1,24 @@
+{
+  "id": "contacts.add-vendor",
+  "title": "Add a vendor",
+  "summary": "Create a vendor record to buy from.",
+  "keywords": ["vendor", "supplier", "contact", "add", "create"],
+  "routes": ["/contacts/vendors", "/contacts/{contact_id}"],
+  "permission": "view_contacts",
+  "order": 2,
+  "steps": [
+    {
+      "text": "Open {vend} from the sidebar to see the vendor list.",
+      "labels": {"vend": "nav.vendors"},
+      "image": null,
+      "capture": {"route": "/contacts/vendors", "selector": "main", "actions": []}
+    },
+    {
+      "text": "Click {new} to create a blank vendor, the same way as a customer.",
+      "labels": {"new": "contacts.new_vendor"},
+      "image": null,
+      "capture": {"route": "/contacts/vendors", "selector": "main", "actions": []}
+    }
+  ],
+  "related": ["contacts.add-customer", "contacts.settings"]
+}

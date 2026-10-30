@@ -264,7 +264,9 @@ async def test_chat_renders_action_card(ui_client):
 
 @pytest.mark.asyncio
 async def test_chat_quota_exceeded_renders_upgrade_card(ui_client):
-    err = APIError(402, {"base_limit": 200, "tier": "ai"})
+    from ui.api_client import _api_error
+    err = _api_error(402, {"detail": {"code": "quota_exceeded", "message": "AI credit limit reached.",
+                                      "tier": "ai", "base_limit": 200}}, "")
     ui_client.cookies.update(_authed())
     with patch("celerp_ai.ui_routes.api.ai_conversation_query", AsyncMock(side_effect=err)):
         r = await ui_client.post("/ai/chat",
@@ -733,12 +735,12 @@ async def test_chat_with_receipts_renders_progress_bubble(ui_client):
     with patch("celerp_ai.ui_routes.api.ai_conversation_query",
                AsyncMock(return_value={"job_id": "job-1", "message_id": "m1"})):
         r = await ui_client.post("/ai/chat", data={
-            "query": "", "conversation_id": "conv-1", "file_ids": "f1,f2,f3",
+            "query": "", "conversation_id": "conv-1", "file_ids": "f1,f2,f3", "document_mode": "receipts",
         })
     assert r.status_code == 200
     assert 'data-job-id="job-1"' in r.text
     assert "Reading files: 0 of 3 finished." in r.text
-    assert "/ai/proposals-ui?conversation=conv-1&amp;job=job-1" in r.text
+    assert 'hx-post="/ai/proposals-ui?conversation=conv-1&amp;job=job-1"' in r.text
     assert "You can keep working." in r.text
 
 
@@ -749,7 +751,7 @@ async def test_proposals_ui_keeps_polling_while_running(ui_client):
     ui_client.cookies.update(_authed())
     with patch("celerp_ai.ui_routes.api.ai_batch_status", AsyncMock(return_value=job)), \
          patch("celerp_ai.ui_routes.api.ai_job_proposals", AsyncMock()) as proposals:
-        r = await ui_client.get("/ai/proposals-ui?conversation=conv-1&job=job-1")
+        r = await ui_client.post("/ai/proposals-ui?conversation=conv-1&job=job-1")
     proposals.assert_not_awaited()
     assert "Reading files: 2 of 4 finished." in r.text
     assert "load delay:5s" in r.text
@@ -770,7 +772,7 @@ async def test_proposals_ui_renders_summary_and_cards_when_done(ui_client):
     ui_client.cookies.update(_authed())
     with patch("celerp_ai.ui_routes.api.ai_batch_status", AsyncMock(return_value=job)), \
          patch("celerp_ai.ui_routes.api.ai_job_proposals", AsyncMock(return_value=proposals)):
-        r = await ui_client.get("/ai/proposals-ui?conversation=conv-1&job=job-1")
+        r = await ui_client.post("/ai/proposals-ui?conversation=conv-1&job=job-1")
     assert r.status_code == 200
     assert "2 of 2 files were read." in r.text
     assert "Two bills are ready to confirm." in r.text
@@ -786,11 +788,11 @@ async def test_proposals_ui_failed_job_is_an_error_bubble(ui_client):
            "failed_files": 2, "error": "Every file failed to read."}
     ui_client.cookies.update(_authed())
     with patch("celerp_ai.ui_routes.api.ai_batch_status", AsyncMock(return_value=job)):
-        r = await ui_client.get("/ai/proposals-ui?conversation=conv-1&job=job-1")
+        r = await ui_client.post("/ai/proposals-ui?conversation=conv-1&job=job-1")
     assert "ai-msg--error" in r.text
     assert "Every file failed to read." in r.text
     assert "Attach files and try again" in r.text
-    assert "hx-get" not in r.text
+    assert "hx-post" not in r.text
 
 
 @pytest.mark.asyncio
@@ -801,7 +803,7 @@ async def test_proposals_ui_api_error_shows_message(ui_client):
     ui_client.cookies.update(_authed())
     with patch("celerp_ai.ui_routes.api.ai_batch_status", AsyncMock(return_value=job)), \
          patch("celerp_ai.ui_routes.api.ai_job_proposals", AsyncMock(side_effect=err)):
-        r = await ui_client.get("/ai/proposals-ui?conversation=conv-1&job=job-1")
+        r = await ui_client.post("/ai/proposals-ui?conversation=conv-1&job=job-1")
     assert "1 of 1 files were read." in r.text
     assert ">The bill capability is not available.<" in r.text
 
@@ -841,3 +843,197 @@ def test_chat_view_has_no_gif_and_an_upload_error_slot():
     assert "image/gif" not in html
     assert 'id="ai-upload-error"' in html
     assert t("ai.upload_failed", "en") in html
+
+
+# ── AI settings: per-user usage ─────────────────────────────────────────────
+
+_USAGE = {
+    "period": {"kind": "month", "start": "2026-10-01"},
+    "users": [
+        {"user_id": "u2", "user_name": "Staff", "query_count": 1, "credits_used": 2,
+         "last_query_at": "2026-10-20T09:00:00+00:00"},
+        {"user_id": "u1", "user_name": "Owner", "query_count": 3, "credits_used": 4, "last_query_at": None},
+    ],
+}
+
+
+async def _settings_content(ui_client, *, role="owner", status=None, usage=None, company=None):
+    status_mock = (status if isinstance(status, AsyncMock)
+                   else AsyncMock(return_value=_CLOUD_STATUS if status is None else status))
+    usage_mock = usage if isinstance(usage, AsyncMock) else AsyncMock(return_value=usage or _USAGE)
+    patches = _patch_page(
+        ai_quota_status=status_mock, ai_usage_stats=usage_mock,
+        get_company=AsyncMock(return_value=company or {"settings": {}}),
+    )
+    _apply(patches)
+    ui_client.cookies.update(_authed(role))
+    try:
+        r = await ui_client.get("/ai/settings-content")
+    finally:
+        _stop(patches)
+    return r, status_mock, usage_mock
+
+
+@pytest.mark.asyncio
+async def test_usage_table_states_period_and_right_aligns_numbers(ui_client):
+    r, status_mock, usage_mock = await _settings_content(ui_client)
+    assert r.status_code == 200
+    html = r.text
+    assert usage_mock.await_args.kwargs.get("period") == "month"
+    assert status_mock.await_count == 1
+    assert t("page.this_months_usage", "en") in html
+    assert t("ai.usage_period_month", "en", date="2026-10-01") in html
+    assert t("ai.usage_scope_note", "en") in html
+    assert 'class="data-table' in html
+    for cls in ("td-right", "td-left", "th-center"):
+        assert cls not in html
+    assert html.count("cell--number") == 9  # three headers, three figures per row
+    assert ">--<" in html  # missing last question
+    assert html.index("Staff") < html.index("Owner")
+
+
+@pytest.mark.asyncio
+async def test_usage_table_marks_questions_not_yet_confirmed(ui_client):
+    """Questions whose charge is not confirmed are shown beside confirmed usage,
+    never folded into it; those the service can no longer confirm are named."""
+    users = [{**_USAGE["users"][0], "pending_count": 2, "unresolved_count": 1},
+             {**_USAGE["users"][1], "pending_count": 0, "unresolved_count": 0}]
+    r, _, _ = await _settings_content(ui_client, usage={**_USAGE, "users": users})
+    html = r.text
+    assert t("th.unconfirmed", "en") in html
+    assert ">3<" in html  # 2 awaiting + 1 unresolved, its own column
+    assert t("ai.usage_unconfirmed_note", "en") in html
+    assert t("ai.usage_unresolved_note", "en", count=1) in html
+
+
+@pytest.mark.asyncio
+async def test_usage_table_without_unconfirmed_questions_adds_no_note(ui_client):
+    r, _, _ = await _settings_content(ui_client)
+    assert t("ai.usage_unconfirmed_note", "en") not in r.text
+    assert t("ai.usage_unresolved_note", "en", count=1).removeprefix("1") not in r.text
+
+
+@pytest.mark.asyncio
+async def test_usage_table_free_all_time(ui_client):
+    usage = {"period": {"kind": "all", "start": None}, "users": _USAGE["users"]}
+    r, _, usage_mock = await _settings_content(
+        ui_client, status={**_CLOUD_STATUS, "tier": "free", "base_limit": 30}, usage=usage)
+    assert usage_mock.await_args.kwargs.get("period") == "all"
+    assert t("ai.usage_all_time", "en") in r.text
+    assert t("ai.usage_period_all", "en") in r.text
+    assert t("ai.usage_scope_note", "en") in r.text
+    assert t("page.this_months_usage", "en") not in r.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [
+    AsyncMock(side_effect=APIError(502, "down")),
+    AsyncMock(return_value={"unknown": True}),
+    AsyncMock(return_value={"disconnected": True}),
+])
+async def test_usage_period_falls_back_to_month_when_status_unknown(ui_client, status):
+    r, _, usage_mock = await _settings_content(ui_client, status=status)
+    assert r.status_code == 200
+    assert usage_mock.await_args.kwargs.get("period") == "month"
+    assert t("page.this_months_usage", "en") in r.text
+
+
+@pytest.mark.asyncio
+async def test_usage_table_load_error_shows_message(ui_client):
+    r, _, _ = await _settings_content(ui_client, usage=AsyncMock(side_effect=APIError(500, "boom")))
+    assert r.status_code == 200
+    assert t("msg.could_not_load_usage_data", "en") in r.text
+    assert t("page.quota", "en") in r.text
+
+
+@pytest.mark.asyncio
+async def test_usage_table_hidden_without_manage_users(ui_client):
+    r, _, usage_mock = await _settings_content(ui_client, role="viewer")
+    assert r.status_code == 200
+    assert usage_mock.await_count == 0
+    assert t("page.this_months_usage", "en") not in r.text
+
+
+@pytest.mark.asyncio
+async def test_a_started_question_shows_a_pending_bubble_that_polls_its_state(ui_client):
+    ui_client.cookies.update(_authed())
+    with patch("celerp_ai.ui_routes.api.ai_conversation_query",
+               AsyncMock(return_value={"job_id": "q-1", "message_id": "q-1"})):
+        r = await ui_client.post("/ai/chat", data={"query": "How do I add a supplier?", "conversation_id": "conv-1"})
+    assert r.status_code == 200
+    assert "ai-msg--pending" in r.text
+    assert "/ai/question-ui?conversation=conv-1&amp;question=q-1" in r.text
+    assert r.headers.get("X-AI-Clear-Composer") == "1"
+
+
+def _state(**kw) -> dict:
+    return {"state": "running", "promoted": False, "waiting": None, "notice": None, "message": None,
+            "asked": {"id": "q-1", "content": "How many open invoices?", "file_ids": None}, **kw}
+
+
+async def _poll(ui_client, state=None, error=None):
+    ui_client.cookies.update(_authed())
+    mock = AsyncMock(side_effect=error) if error else AsyncMock(return_value=state)
+    with patch("celerp_ai.ui_routes.api.ai_question_state", mock), \
+            patch("celerp_ai.ui_routes._plan_counts", AsyncMock(return_value={})):
+        return await ui_client.get("/ai/question-ui?conversation=conv-1&question=q-1")
+
+
+@pytest.mark.asyncio
+async def test_a_running_question_keeps_polling_and_shows_stop_once_promoted(ui_client):
+    r = await _poll(ui_client, _state())
+    assert "ai-msg--pending" in r.text and "load delay:2s" in r.text
+    assert t("ai.stop", "en") not in r.text
+    r = await _poll(ui_client, _state(promoted=True, notice="Keeps working"))
+    assert "Keeps working" in r.text
+    assert "/ai/jobs-ui/q-1/cancel" in r.text
+
+
+@pytest.mark.asyncio
+async def test_an_interrupted_question_offers_ask_again_with_its_own_text(ui_client):
+    r = await _poll(ui_client, _state(state="interrupted"))
+    assert t("ai.question_interrupted", "en") in r.text
+    assert "ai-msg__again" in r.text and "How many open invoices?" in r.text and "q-1" in r.text
+
+
+@pytest.mark.asyncio
+async def test_an_ended_question_is_swapped_for_its_reply(ui_client):
+    message = {"id": "a-1", "role": "assistant", "content": "You have 3.", "error": False,
+               "pending_actions": [], "help_pages": None}
+    r = await _poll(ui_client, _state(state="answered", message=message))
+    assert "You have 3." in r.text and "ai-msg--pending" not in r.text
+    failed = {**message, "content": "You stopped this question.", "error": True, "retryable": True}
+    r = await _poll(ui_client, _state(state="failed", message=failed))
+    assert "ai-msg--error" in r.text and "ai-msg__again" in r.text
+
+
+@pytest.mark.asyncio
+async def test_a_question_refused_in_its_job_is_shown_as_a_refused_send_is(ui_client):
+    message = {"id": "a-1", "role": "assistant", "content": "", "error": True,
+               "refusal": {"code": "quota_exceeded", "tier": "ai", "base_limit": 200}, "refusal_status": 402}
+    r = await _poll(ui_client, _state(state="failed", message=message))
+    assert "ai-upgrade-cta" in r.text
+    busy = {**message, "refusal": {"message": "rate limited"}, "refusal_status": 429}
+    r = await _poll(ui_client, _state(state="failed", message=busy))
+    assert t("ai.busy", "en") in r.text
+
+
+@pytest.mark.asyncio
+async def test_a_failed_state_read_keeps_the_bubble_polling_and_says_why(ui_client):
+    r = await _poll(ui_client, error=APIError(502, "The AI service is down"))
+    assert "ai-msg--pending" in r.text and "The AI service is down" in r.text
+    r = await _poll(ui_client, error=APIError(404, "gone"))
+    assert r.text == ""
+
+
+@pytest.mark.asyncio
+async def test_a_reading_job_has_stop_while_it_runs_and_continue_once_stopped(ui_client):
+    from fasthtml.common import to_xml
+
+    from celerp_ai.ui_routes import _job_bubble
+    running = {"id": "j-1", "status": "running", "total_files": 5, "completed_files": 1, "failed_files": 0}
+    html = to_xml(_job_bubble(running, "conv-1"))
+    assert "/ai/jobs-ui/j-1/cancel" in html and "/ai/jobs-ui/j-1/resume" not in html
+    html = to_xml(_job_bubble({**running, "status": "cancelled"}, "conv-1"))
+    assert "/ai/jobs-ui/j-1/resume" in html and "hx-get" not in html
+    assert t("ai.job_stopped", "en", done=1, total=5) in html

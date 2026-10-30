@@ -127,3 +127,12 @@ async def test_quota_status_network_error(monkeypatch):
         new=AsyncMock(side_effect=httpx.ConnectError("refused")),
     ):
         assert await get_quota_status() == {"unknown": True}
+
+
+@pytest.mark.parametrize("sentinel", [{"disconnected": True}, {"unknown": True}])
+@pytest.mark.asyncio
+async def test_quota_status_passes_sentinels_through(sentinel):
+    """The AI page needs the signed-out and offline states, not a zeroed quota."""
+    from celerp_ai.routes import quota_status
+    with patch("celerp.ai.quota.get_quota_status", new=AsyncMock(return_value=dict(sentinel))):
+        assert await quota_status() == sentinel

@@ -8,7 +8,6 @@ import pytest
 
 from test_payments_stripe import _register, _payable_invoice, _h
 
-pytestmark = pytest.mark.usefixtures("docs_running")
 
 
 @pytest.mark.asyncio

@@ -17,7 +17,7 @@ from functools import partial
 from typing import Any, Callable
 
 import sqlalchemy as sa
-from sqlalchemy import delete, event, exists, func, literal, select, update
+from sqlalchemy import delete, event, exists, func, literal, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -100,7 +100,12 @@ def _write_pending(sync: Session) -> None:
     which PostgreSQL breaks by aborting one of the two. A company the reset removed has no
     notices left to write. Then every notice of those companies is locked in one order,
     (company, id), so two commits that update or remove the same notices in different
-    orders wait for each other instead of each holding one the other needs."""
+    orders wait for each other instead of each holding one the other needs.
+
+    Between the two, each named company's notice key (``notices:<id>``), in id order:
+    a dedupe is a read-check-write, and two commits that both find no notice yet lock no
+    row, so the key makes the second wait for the first to commit and then find its
+    notice."""
     from celerp.models.company import Company
 
     if sync.in_nested_transaction():
@@ -116,6 +121,10 @@ def _write_pending(sync: Session) -> None:
         writes = [w for w in writes if w[1] is None or str(w[1]) in present]
         if not writes:
             return
+        if sync.get_bind().dialect.name == "postgresql":
+            for cid in sorted(present):
+                sync.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"),
+                             {"k": f"notices:{cid}"})
     companies = {company_id for _, company_id, _ in writes}
     notices = select(Notification.id).order_by(Notification.company_id, Notification.id).with_for_update()
     if None not in companies:

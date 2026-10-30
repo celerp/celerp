@@ -172,7 +172,7 @@ async def test_outbound_never_sends_relative_image_src(connector_session, monkey
     from celerp.connectors.base import ConnectorContext
     from celerp.connectors.woocommerce import WooCommerceConnector
     from celerp.services.field_fingerprints import fingerprint
-    from celerp_inventory.services import external_link_for_state
+    from celerp.connectors.product_links import external_link_for_state
     from connector_test_support import connect
 
     session = connector_session

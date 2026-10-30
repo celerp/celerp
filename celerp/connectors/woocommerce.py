@@ -40,6 +40,7 @@ from celerp.connectors.base import (
 )
 from ui.i18n import t
 import celerp.connectors.upsert as _upsert
+from celerp.modules.boundary import needs_modules
 
 log = logging.getLogger(__name__)
 
@@ -307,6 +308,7 @@ class WooCommerceConnector(ConnectorBase):
             return f"/products/{product_id}/variations/{variation_id}"
         return f"/products/{product_id}"
 
+    @needs_modules("celerp-inventory")
     async def sync_products(
         self,
         ctx: ConnectorContext,
@@ -454,6 +456,7 @@ class WooCommerceConnector(ConnectorBase):
             raise ValueError("; ".join(errors))
         return products
 
+    @needs_modules("celerp-docs")
     async def preview_orders(self, ctx: ConnectorContext, orders_from: datetime) -> list[RemoteOrder]:
         from celerp_docs.doc_service import WOOCOMMERCE_ISSUED_STATUSES
 
@@ -468,6 +471,7 @@ class WooCommerceConnector(ConnectorBase):
             posts=str(o.get("status") or "") in WOOCOMMERCE_ISSUED_STATUSES,
         ) for o in orders]
 
+    @needs_modules("celerp-inventory")
     async def _reconcile_missing_product_links(
         self,
         ctx: ConnectorContext,
@@ -477,10 +481,8 @@ class WooCommerceConnector(ConnectorBase):
         from sqlalchemy import select
         from celerp.db import SessionLocal as AsyncSessionLocal
         from celerp.models.projections import Projection
-        from celerp_inventory.services import (
-            external_link_for_state,
-            set_external_link_state,
-        )
+        from celerp.connectors.product_links import external_link_for_state
+        from celerp_inventory.services import set_external_link_state
 
         changed = 0
         async with AsyncSessionLocal() as session:
@@ -574,6 +576,7 @@ class WooCommerceConnector(ConnectorBase):
             await session.commit()
 
 
+    @needs_modules("celerp-inventory")
     async def ensure_product_link(
         self, ctx: ConnectorContext, entity_id: str, actor_id=None, *, confirm_link: bool = False,
     ) -> str:
@@ -590,9 +593,12 @@ class WooCommerceConnector(ConnectorBase):
         from celerp.db import SessionLocal as AsyncSessionLocal
         from celerp.models.connector_config import ConnectorConfig
         from sqlalchemy import select
+        from celerp.connectors.product_links import external_link_for_state
         from celerp_inventory.services import (
-            aggregate_sellable_quantity_for_anchor, external_link_for_state,
-            resolve_catalog_anchor_for_item, set_external_link, set_external_link_state,
+            aggregate_sellable_quantity_for_anchor,
+            resolve_catalog_anchor_for_item,
+            set_external_link,
+            set_external_link_state,
         )
         async with AsyncSessionLocal() as session:
             anchor = await resolve_catalog_anchor_for_item(session, ctx.company_id, entity_id)
@@ -712,7 +718,7 @@ class WooCommerceConnector(ConnectorBase):
     async def _save_link(self, ctx, anchor_id, sku, link, rediscover, new_link, actor_id, *,
                          set_external_link, set_external_link_state) -> None:
         from celerp.db import SessionLocal as AsyncSessionLocal
-        from celerp_docs.doc_service import woocommerce_products_awaiting_reconciliation
+        from celerp.connectors.product_links import woocommerce_products_awaiting_reconciliation
 
         async with AsyncSessionLocal() as session:
             new_link["inventory_sync_paused"] = anchor_id in (
@@ -753,6 +759,7 @@ class WooCommerceConnector(ConnectorBase):
                 )
             await session.commit()
 
+    @needs_modules("celerp-inventory")
     async def set_product_status(
         self, ctx: ConnectorContext, entity_id: str, status: str, actor_id=None
     ) -> None:
@@ -760,8 +767,10 @@ class WooCommerceConnector(ConnectorBase):
         stays, so Publish puts it back; the product is never deleted."""
         from celerp.db import SessionLocal as AsyncSessionLocal
         from celerp_inventory.services import (
-            external_link_for_state, resolve_catalog_anchor_for_item, set_external_link_state,
+            resolve_catalog_anchor_for_item,
+            set_external_link_state,
         )
+        from celerp.connectors.product_links import external_link_for_state
 
         async with AsyncSessionLocal() as session:
             anchor = await resolve_catalog_anchor_for_item(session, ctx.company_id, entity_id)
@@ -784,6 +793,7 @@ class WooCommerceConnector(ConnectorBase):
 
     # -- Orders ----------------------------------------------------------------
 
+    @needs_modules("celerp-docs")
     async def sync_orders(
         self,
         ctx: ConnectorContext,
@@ -909,6 +919,7 @@ class WooCommerceConnector(ConnectorBase):
         )
         return result
 
+    @needs_modules("celerp-inventory")
     async def sync_products_out(self, ctx: ConnectorContext) -> SyncResult:
         """Send linked Celerp products to WooCommerce.
 
@@ -1013,6 +1024,7 @@ class WooCommerceConnector(ConnectorBase):
         result.attention = attention
         return result
 
+    @needs_modules("celerp-inventory")
     async def _save_push(self, ctx: ConnectorContext, item: dict, link: dict, updates: dict) -> None:
         """Record on the link what the store now holds, so the next run sends only changes."""
         from celerp.db import SessionLocal as AsyncSessionLocal
@@ -1084,6 +1096,7 @@ class WooCommerceConnector(ConnectorBase):
         result.errors = errors or None
         return result
 
+    @needs_modules("celerp-inventory")
     async def sync_inventory_out(self, ctx: ConnectorContext) -> SyncResult:
         """Push aggregate Celerp sellable stock to every enabled WooCommerce link."""
         try:
@@ -1098,6 +1111,7 @@ class WooCommerceConnector(ConnectorBase):
             return result
         return await self._sync_inventory_items_out(ctx, items)
 
+    @needs_modules("celerp-inventory")
     async def sync_inventory_identity_out(
         self, ctx: ConnectorContext, identity: str
     ) -> SyncResult:
@@ -1137,16 +1151,15 @@ class WooCommerceConnector(ConnectorBase):
             topics.append("product.deleted")
         return topics
 
+    @needs_modules("celerp-inventory")
     async def handle_product_deleted(self, ctx: ConnectorContext, payload: dict) -> None:
         """Mark an exact deleted variation or every linked variation under a deleted parent."""
         from sqlalchemy import select
 
         from celerp.db import SessionLocal as AsyncSessionLocal
         from celerp.models.projections import Projection
-        from celerp_inventory.services import (
-            external_link_for_state,
-            set_external_link_state,
-        )
+        from celerp.connectors.product_links import external_link_for_state
+        from celerp_inventory.services import set_external_link_state
 
         remote_id = payload.get("id")
         parent_id = payload.get("parent_id")

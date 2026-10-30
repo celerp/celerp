@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -63,12 +63,14 @@ async def test_rate_limit_handler_returns_429():
 
 # ── Lifespan: gateway startup/teardown ────────────────────────────────────────
 #
-# All three tests mock `engine.begin()` so they don't touch the real DB.
-# The lifespan only needs: (a) DB tables created and (b) gateway task logic.
-# Mocking the engine makes these pure unit tests, immune to DB state / pool teardown.
+# Every lifespan test mocks `engine.begin()` so it doesn't touch the real DB, and
+# stubs the relay entitlement probes the lifespan starts in the background, so no
+# test opens a connection to the live relay (a probe cancelled mid-connect at
+# shutdown leaks its socket and fails the test on the unraisable ResourceWarning).
 
-def _mock_db():
-    """Return a patch context that makes engine.begin() a no-op."""
+@contextmanager
+def _offline_lifespan():
+    """Patch the lifespan's DB engine to a no-op and its relay probes to stubs."""
     mock_conn = AsyncMock()
     mock_conn.run_sync = AsyncMock()
     mock_begin = MagicMock()
@@ -76,7 +78,10 @@ def _mock_db():
     mock_begin.__aexit__ = AsyncMock(return_value=False)
     mock_engine = MagicMock()
     mock_engine.begin = MagicMock(return_value=mock_begin)
-    return patch("celerp.main.engine", mock_engine)
+    with patch("celerp.main.engine", mock_engine), \
+            patch("celerp.main._try_sync_existing_entitlement", AsyncMock()), \
+            patch("celerp.main._try_auto_activate", AsyncMock()):
+        yield
 
 
 @pytest.mark.asyncio
@@ -95,7 +100,7 @@ async def test_lifespan_starts_gateway_for_paid_instance():
     async def fake_run(self):
         fake_run_called.append(True)
 
-    with _mock_db(), patch.object(gw_module.GatewayClient, "run", fake_run):
+    with _offline_lifespan(), patch.object(gw_module.GatewayClient, "run", fake_run):
         settings.gateway_token = "test-gw-token"
         settings.gateway_instance_id = "test-inst-id"
         settings.celerp_public_url = "https://acme.celerp.com"
@@ -140,7 +145,7 @@ async def test_startup_connects_free_only_with_active_share():
     from celerp.main import lifespan
 
     # No live share -> the free instance must not open the tunnel at boot.
-    with _mock_db(), patch.object(gw_module.GatewayClient, "run", fake_run), \
+    with _offline_lifespan(), patch.object(gw_module.GatewayClient, "run", fake_run), \
             patch.object(gateway, "has_active_share", _no_share):
         settings.gateway_token = "test-gw-token"
         settings.gateway_instance_id = "test-inst-id"
@@ -152,7 +157,7 @@ async def test_startup_connects_free_only_with_active_share():
             gw_module.set_client(None)
 
     # A live share -> the tunnel comes up on demand at boot.
-    with _mock_db(), patch.object(gw_module.GatewayClient, "run", fake_run), \
+    with _offline_lifespan(), patch.object(gw_module.GatewayClient, "run", fake_run), \
             patch.object(gateway, "has_active_share", _has_share):
         settings.gateway_token = "test-gw-token"
         settings.gateway_instance_id = "test-inst-id"
@@ -177,7 +182,7 @@ async def test_lifespan_no_gateway_when_token_empty():
     original_token = settings.gateway_token
     settings.gateway_token = ""
 
-    with _mock_db():
+    with _offline_lifespan():
         from celerp.main import lifespan
 
         mock_app = MagicMock()
@@ -205,7 +210,7 @@ async def test_lifespan_gateway_teardown():
         except asyncio.CancelledError:
             pass
 
-    with _mock_db(), patch.object(gw_module.GatewayClient, "run", fake_run):
+    with _offline_lifespan(), patch.object(gw_module.GatewayClient, "run", fake_run):
         settings.gateway_token = "test-gw-token"
         settings.celerp_public_url = "https://acme.celerp.com"
 

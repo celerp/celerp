@@ -3,7 +3,7 @@
 
 from celerp.models.accounting import UserCompany  # noqa: F401 - ensure tables registered
 from celerp.models.auth import SessionRegistry, SystemRuntimeState, UserAuthState  # noqa: F401 - ensure tables registered
-from celerp.models.ai import AIBatchJob, AIConversation, AIMessage  # noqa: F401
+from celerp.models.ai import AIBatchJob, AIConversation, AIMessage, AIUsage  # noqa: F401
 from celerp.models.company_peer import CompanyPeerAttention, CompanyPeerGrant, CompanyPeerIdentity  # noqa: F401
 from celerp.models.connector_config import ConnectorConfig  # noqa: F401 - ensure connector_configs table registered
 from celerp.models.connector_execution import ConnectorExecutionHeartbeat, ConnectorExecutionLease  # noqa: F401

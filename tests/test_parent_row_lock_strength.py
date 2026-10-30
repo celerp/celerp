@@ -18,8 +18,6 @@ KEY_LOCKS = {
         "removes the location, after an import placing items there commits",
     "celerp/services/auth.py hold_companyless_login users":
         "no other transaction may add a membership for the login until this one ends",
-    "celerp/services/company_lifecycle.py reactivate_company companies":
-        "gives the company its web address back, a unique key",
     "celerp/services/migrations.py discard migration_runs":
         "removes the staged company's runs, this one included",
     "celerp/services/company_lock.py lock_company_for_deletion companies":

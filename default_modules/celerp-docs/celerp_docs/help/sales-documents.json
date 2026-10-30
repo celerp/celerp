@@ -1,0 +1,18 @@
+{
+  "id": "docs.sales-documents",
+  "title": "Sales documents",
+  "summary": "Invoices, credit notes and consignment-out documents.",
+  "keywords": ["invoice", "credit note", "consignment", "sales", "document"],
+  "routes": ["/docs"],
+  "permission": "view_documents",
+  "order": 1,
+  "steps": [
+    {
+      "text": "The sidebar groups sales documents into {inv}, {cn} and {co}. Each opens the same document list filtered to that type.",
+      "labels": {"inv": "nav.invoices", "cn": "nav.credit_notes", "co": "nav.consignment_out"},
+      "image": null,
+      "capture": {"route": "/docs", "selector": "main", "actions": []}
+    }
+  ],
+  "related": ["docs.purchasing-documents", "docs.lists-quotations", "docs.settings"]
+}

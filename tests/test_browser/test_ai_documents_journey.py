@@ -8,18 +8,22 @@ the finished job offers one card per proposed vendor and bill; Confirm all
 writes them. Statements: a CSV runs the agent inline, and each step of the
 reconciliation (start, import, auto-match, post a missing entry, complete) is
 a card the user confirms. The model is scripted the same way as
-`test_ai_chat_journey.py`; only the reading job's `call_llm` is faked here,
+`test_ai_chat_journey.py`; only the reading job's model call is faked here,
 every write still lands through the real routes.
 """
 from __future__ import annotations
 
+import contextvars
 import json
 import re
+from contextlib import contextmanager
 from unittest.mock import patch
 
 import pytest
 from playwright.sync_api import Page, expect
 
+from celerp.ai import batch
+from celerp.ai.files import load_file_for_llm
 from celerp.ai.llm import ModelResult
 from ui.i18n import t
 
@@ -67,13 +71,32 @@ _BULK_RECEIPTS = {
 }
 
 
-async def _fake_read(model, system, prompt, *, files=None, **_kw) -> ModelResult:
-    """The reading model: answers with the receipt JSON for the attached file."""
-    extraction = {**_RECEIPTS, **_BULK_RECEIPTS}[files[0]["filename"]]
+_reading: contextvars.ContextVar[str] = contextvars.ContextVar("reading")
+
+
+async def _fake_complete(messages, *, before_send=None, **_kw) -> ModelResult:
+    """The reading model: answers with the receipt JSON for the file being read."""
+    await before_send(len(json.dumps(messages)))
+    extraction = {**_RECEIPTS, **_BULK_RECEIPTS}[_reading.get()]
     return ModelResult(
         message={"role": "assistant", "content": f"```json\n{json.dumps(extraction)}\n```"},
         model_used="fake-reader", usage={"credits": 1}, reservation_id=None, remaining=None,
     )
+
+
+_real_read_file = batch.read_file
+
+
+async def _read_file(run, file_id, operation_id, **kw):
+    """Each file's step runs in a task of its own: the model call reads its name here."""
+    _reading.set(load_file_for_llm(file_id, run.company_id, run.user_id)["filename"])
+    return await _real_read_file(run, file_id, operation_id, **kw)
+
+
+@contextmanager
+def _fake_read():
+    with patch.object(batch, "read_file", _read_file), patch("celerp.ai.llm.complete", _fake_complete):
+        yield
 
 
 def _attach(page: Page, files: list[dict]) -> list[str]:
@@ -120,7 +143,7 @@ def _call(cap: dict, path: dict | None = None, body: dict | None = None, content
 # ── Receipts to bills ─────────────────────────────────────────────────────────
 
 def test_receipts_to_bills_journey(page: Page, ui_server, api):
-    with patch("celerp.ai.batch.call_llm", _fake_read):
+    with _fake_read():
         _open_chat(page, ui_server)
         _attach(page, [
             {"name": name, "mimeType": "image/png", "buffer": _PNG} for name in _RECEIPTS
@@ -162,7 +185,7 @@ def test_receipts_bulk_table_journey(page: Page, ui_server, api):
     """Past five proposals the thread shows the review table: the flagged bill
     starts unticked, Confirm selected from the bulk toolbar applies the rest,
     and the tally links to exactly the drafts this batch created."""
-    with patch("celerp.ai.batch.call_llm", _fake_read):
+    with _fake_read():
         _open_chat(page, ui_server)
         _attach(page, [
             {"name": name, "mimeType": "image/png", "buffer": _PNG} for name in _BULK_RECEIPTS

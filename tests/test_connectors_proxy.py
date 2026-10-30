@@ -5,6 +5,7 @@ session (the gateway WebSocket client lives in the API process), so every relay
 credential/token operation must go through the API process proxy endpoints."""
 from __future__ import annotations
 
+import uuid
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 

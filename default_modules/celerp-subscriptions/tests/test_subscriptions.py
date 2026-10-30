@@ -138,6 +138,21 @@ async def test_subscriptions_q_filters(client):
     assert "Beta Cleaning Service" not in names
 
 
+@pytest.mark.asyncio
+async def test_subscriptions_q_matches_a_wildcard_character_as_itself(client):
+    """A % or _ in the search is that character, never a wildcard matching every template."""
+    tok = await _register(client)
+    h = _h(tok)
+    await _create_sub_template(client, h, name="Alpha Retainer Plan")
+    await _create_sub_template(client, h, name="Gamma 50%_off Plan")
+    for q in ("%", "_", "50%_off"):
+        r = await client.get("/subscriptions", params={"q": q}, headers=h)
+        assert r.status_code == 200, r.text
+        assert [i.get("name") for i in r.json()["items"]] == ["Gamma 50%_off Plan"], q
+    r = await client.get("/subscriptions", params={"q": "50%off"}, headers=h)
+    assert r.json()["items"] == []
+
+
 # ---------------------------------------------------------------------------
 # 5. Status filter
 # ---------------------------------------------------------------------------

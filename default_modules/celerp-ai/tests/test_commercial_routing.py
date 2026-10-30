@@ -50,7 +50,7 @@ def test_ai_topup_card_routes_through_policy():
     from celerp_ai.ui_routes import _quota_exceeded_card
     _set_partner()
     detail = {"instance_id": "inst-1", "limit": 100, "tier": "ai"}
-    html = to_xml(_quota_exceeded_card(detail, user_bubble="", lang="en"))
+    html = to_xml(_quota_exceeded_card(detail, lang="en"))
     assert "/subscribe/topup" not in html
     assert "/subscribe" not in html
 
@@ -61,7 +61,7 @@ def test_ai_topup_card_direct_unchanged():
     (positive control)."""
     from celerp_ai.ui_routes import _quota_exceeded_card
     detail = {"instance_id": "inst-1", "limit": 100, "tier": "ai"}
-    html = to_xml(_quota_exceeded_card(detail, user_bubble="", lang="en"))
+    html = to_xml(_quota_exceeded_card(detail, lang="en"))
     assert "/commercial/checkout?intent=topup" in html
 
 
@@ -72,7 +72,7 @@ def test_ai_upgrade_url_not_preferred():
     _set_partner()
     detail = {"instance_id": "inst-1", "limit": 100, "tier": "cloud",
               "upgrade_url": "https://celerp.com/subscribe?plan=ai"}
-    html = to_xml(_quota_exceeded_card(detail, user_bubble="", lang="en"))
+    html = to_xml(_quota_exceeded_card(detail, lang="en"))
     assert "celerp.com/subscribe" not in html
 
 
@@ -81,7 +81,7 @@ def test_ai_quota_upgrade_label_not_price_in_partner():
     from celerp_ai.ui_routes import _quota_exceeded_card
     _set_partner()
     detail = {"instance_id": "inst-1", "limit": 100, "tier": "cloud"}
-    html = to_xml(_quota_exceeded_card(detail, user_bubble="", lang="en"))
+    html = to_xml(_quota_exceeded_card(detail, lang="en"))
     assert "$49" not in html
 
 

@@ -6,6 +6,9 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from playwright.sync_api import expect
+
+from .conftest import css_class
 
 pytestmark = pytest.mark.browser
 
@@ -141,7 +144,7 @@ def test_wc_table_shows_hours_and_default_columns(page, ui_server, fresh_company
 
     # Numeric headers sit right-aligned over their figures (HTML/CSS 4a).
     hours_header = page.locator("#wc-table thead th", has_text="Hours/day").first
-    assert "cell--right" in (hours_header.get_attribute("class") or "")
+    expect(hours_header).to_have_class(css_class("cell--right"))
 
     # The Hours/day value renders in a right-aligned click-to-edit cell.
     row_a = page.locator("#wc-table tbody tr", has_text="Bench A").first

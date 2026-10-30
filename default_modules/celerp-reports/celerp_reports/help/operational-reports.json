@@ -1,0 +1,36 @@
+{
+  "id": "reports.operational-reports",
+  "title": "Aging, sales, purchases and expiring stock reports",
+  "summary": "Find overdue invoices and bills, and see sales, purchases and expiring items.",
+  "keywords": ["aging", "overdue", "sales report", "purchases report", "expiring", "stock report"],
+  "routes": ["/reports", "/reports/ar-aging", "/reports/ap-aging", "/reports/sales", "/reports/purchases", "/reports/expiring"],
+  "permission": "view_financial_reports",
+  "order": 1,
+  "steps": [
+    {
+      "text": "Open {rep} from the sidebar; the operational reports sit alongside the financial statements.",
+      "labels": {"rep": "nav.reports"},
+      "image": null,
+      "capture": {"route": "/reports", "selector": "main", "actions": []}
+    },
+    {
+      "text": "Click {ar} to see which customer invoices are overdue, grouped into aging buckets.",
+      "labels": {"ar": "page.ar_aging"},
+      "image": null,
+      "capture": {"route": "/reports/ar-aging", "selector": "main", "actions": []}
+    },
+    {
+      "text": "Click {ap} for the same view of vendor bills.",
+      "labels": {"ap": "page.ap_aging"},
+      "image": null,
+      "capture": {"route": "/reports/ap-aging", "selector": "main", "actions": []}
+    },
+    {
+      "text": "Click {sales} for sales by customer. Purchases and expiring stock have their own reports in the same list.",
+      "labels": {"sales": "page.sales_report"},
+      "image": null,
+      "capture": {"route": "/reports/sales", "selector": "main", "actions": []}
+    }
+  ],
+  "related": ["accounting.financial-reports", "reports.filtering-and-export"]
+}

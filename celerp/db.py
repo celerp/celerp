@@ -6,8 +6,10 @@ import re
 from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 
+from sqlalchemy import event
 from sqlalchemy import text as _sql_text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.orm import Session
 from sqlalchemy.pool import NullPool
 
 from celerp.capacity import REQUEST_DB_MAX_OVERFLOW, REQUEST_DB_POOL_SIZE
@@ -55,6 +57,32 @@ async def migration_key_async(conn):
     finally:
         _MIGRATION_KEY_HELD.reset(token)
         await conn.execute(_sql_text("SELECT pg_advisory_unlock(:k)"), {"k": _MIGRATION_LOCK_KEY})
+
+# Set on the session while a change that must commit whole runs (one_unit).
+_ONE_UNIT = "one_unit_open"
+
+
+@contextmanager
+def one_unit(session):
+    """Run a change that commits whole or not at all: while it runs, a commit of the
+    outer transaction (a step committing part of the change, and releasing the locks
+    the rest relies on) is refused. Savepoints still release. The caller commits after."""
+    open_units = session.info.get(_ONE_UNIT, 0)
+    session.info[_ONE_UNIT] = open_units + 1
+    try:
+        yield
+    finally:
+        if open_units:
+            session.info[_ONE_UNIT] = open_units
+        else:
+            session.info.pop(_ONE_UNIT, None)
+
+
+@event.listens_for(Session, "before_commit")
+def _a_unit_commits_whole(session: Session) -> None:
+    if session.info.get(_ONE_UNIT) and not session.in_nested_transaction():
+        raise RuntimeError("A step committed part of a change that commits whole or not at all")
+
 
 # Redacts the password in any Postgres URL: "://user:secret@host" -> "://user:***@host".
 # One authoritative masker for logs and surfaced errors so a connection string

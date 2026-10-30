@@ -8,8 +8,8 @@ adapter cursor, so raw ``conn.connection.cursor()`` calls are seen too; other dr
 through ``before_cursor_execute``). Each lock is reduced to a CLASS:
 
 - an advisory lock: ``adv:<prefix>`` for a text key (the part before the first ``:``),
-  ``adv:<name>`` for a numeric key named in ``NUMERIC_KEYS``, or the name ``CALLSITE_KEYS``
-  gives the function that computed the key;
+  ``adv:<name>`` for a numeric key named in ``NUMERIC_KEYS`` (any other numeric key is
+  ``adv:?<function that took it>``, which no rank names);
 - a row lock: ``row:<table>`` for ``SELECT ... FOR UPDATE / NO KEY UPDATE / SHARE / KEY
   SHARE`` and for the implicit row lock of ``UPDATE``, ``DELETE`` and ``ON CONFLICT DO
   UPDATE`` on the target table.
@@ -46,14 +46,16 @@ from pathlib import Path
 RANKS: dict[str, int] = {
     # Instance-wide: schema, version, a backup's restore claim (company_backup._claim: the
     # first lock a restore takes, before a bootstrap restore waits on bootstrap), bootstrap.
-    "adv:migration": 0, "adv:version-admit": 1, "adv:version-fence": 2, "adv:backup": 3,
+    "adv:migration": 0, "adv:version-admit": 1, "adv:version-fence": 2, "adv:restore-claim": 3,
     "adv:bootstrap": 4, "adv:migration-scan": 5, "adv:jti-cleanup": 6, "adv:migration-run": 9,
     "row:alembic_version": 7, "row:system_runtime_state": 8,
     # A restore's new company's attachment files (only ever tried).
-    "adv:backup-landing": 12,
+    "adv:restore-landing": 12,
+    # A company's gate for one module (registry.hold_module_gate: before the module state).
+    "adv:module-gate": 13,
     # Module state, one restore per owner, then sign-in (auth.py hold_companyless_login:
     # before any company row).
-    "adv:module-state": 14, "adv:backup-names": 15, "adv:direct-sign-in": 16, "row:users": 17,
+    "adv:module-state": 14, "adv:restore-names": 15, "adv:direct-sign-in": 16, "row:users": 17,
     "row:password_resets": 18, "row:password_reset_notices": 19,
     # Connector guard (R0, R1), the run lock and the outbound identity lock (taken with no
     # transaction open in the task, on its own connection).
@@ -61,6 +63,9 @@ RANKS: dict[str, int] = {
     # Execution lease (fence, KEY SHARE) and its heartbeat. Every FOR UPDATE on either table runs
     # in a transaction that holds nothing else, and acquire/takeover use NOWAIT.
     "row:connector_execution_leases": 25, "row:connector_execution_heartbeats": 26,
+    # A company's module settings (registry.share_company_modules): judged before a write's
+    # company row, after the fence; a turn-off takes it after the module state.
+    "adv:module-use": 27,
     # The company (R3) and what is read under it.
     "row:companies": 30, "row:user_auth_state": 31, "row:user_companies": 32,
     "row:company_peer_identities": 33, "row:locations": 34, "row:sync_runs": 35,
@@ -91,7 +96,7 @@ RANKS: dict[str, int] = {
     "row:ai_job_steps": 91,
     # Notices, written as their transaction's last statements (celerp/notifications/service.py
     # _defer): after every other lock and parent key, their own key with their row.
-    "row:notifications": 96, "row:notification_reads": 97,
+    "adv:notices": 95, "row:notifications": 96, "row:notification_reads": 97,
 }
 
 
@@ -133,18 +138,8 @@ NUMERIC_KEYS: dict[int, str] = {
 # taker out of (the version fence's class is a namespace of one key per version).
 _SERIAL_KEYS = frozenset(NUMERIC_KEYS.values()) - {"adv:version-fence"}
 
-# Numeric advisory keys computed per call (a hash) -> class, by the function that takes them.
-CALLSITE_KEYS: dict[str, str] = {
-    "celerp.services.company_backup._land": "adv:backup-landing",
-    "celerp.services.company_backup.reconcile_landings": "adv:backup-landing",
-    "celerp.services.company_backup.<lambda>": "adv:backup",
-    "celerp.services.company_backup._wait_for": "adv:backup",
-    "celerp.services.company_backup._claim": "adv:backup",
-    "celerp.services.company_backup.restore_company": "adv:backup-names",
-}
-
 # The classes of keys that are not text: a text key's class must never be one of them.
-_FIXED_CLASSES = frozenset(NUMERIC_KEYS.values()) | frozenset(CALLSITE_KEYS.values())
+_FIXED_CLASSES = frozenset(NUMERIC_KEYS.values())
 
 _ADVISORY = re.compile(
     r"pg_(try_)?advisory_(xact_)?(lock|unlock)(_shared)?\s*\(([^()]*(?:\([^()]*\)[^()]*)*)\)", re.I)
@@ -189,7 +184,7 @@ def _own_connection(lock: Lock) -> bool:
 
 # Keys every taker only tries (pg_try_advisory_lock): no one waits on them, so holding one
 # closes no cycle, on its own connection or another. A waiting take of one fails ("try-only").
-_TRY_ONLY = ("adv:migration-run", "adv:xero-attachments-round", "adv:backup-landing")
+_TRY_ONLY = ("adv:migration-run", "adv:xero-attachments-round", "adv:restore-landing")
 
 
 def _copy_state(value):
@@ -839,8 +834,7 @@ def _advisory_class(args: str, parameters) -> str:
     first = int(parts[0], 0) if _INT.match(parts[0]) else None
     if first is not None and first in NUMERIC_KEYS:
         return NUMERIC_KEYS[first]
-    caller = _callsite_function()
-    return CALLSITE_KEYS.get(caller, f"adv:?{caller}")
+    return f"adv:?{_callsite_function()}"
 
 
 def _advisory_key(statement: str, parameters) -> str:

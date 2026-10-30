@@ -1,0 +1,28 @@
+{
+  "id": "inventory.unknown-permission",
+  "title": "Add an item",
+  "summary": "Create a stock item.",
+  "keywords": [
+    "item"
+  ],
+  "routes": [
+    "/inventory"
+  ],
+  "permission": "no_such_permission",
+  "order": 1,
+  "steps": [
+    {
+      "text": "Open {inv} from the sidebar.",
+      "labels": {
+        "inv": "nav.inventory"
+      },
+      "image": null,
+      "capture": {
+        "route": "/inventory",
+        "selector": "main",
+        "actions": []
+      }
+    }
+  ],
+  "related": []
+}

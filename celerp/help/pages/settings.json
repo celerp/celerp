@@ -1,0 +1,18 @@
+{
+  "id": "core.settings",
+  "title": "Global Config: your account settings",
+  "summary": "Change your password from Global Config; admins find Company, Users and Backup here too.",
+  "keywords": ["settings", "global config", "password", "change password", "account"],
+  "routes": ["/settings/general?tab=password"],
+  "permission": null,
+  "order": 1,
+  "steps": [
+    {
+      "text": "Open {settings} from the sidebar footer. Every signed-in role can use this page's Password tab to set a new one, entering it twice as {confirm}; admins also see Company, Users and Backup tabs here.",
+      "labels": {"settings": "nav.settings", "confirm": "settings.confirm_password"},
+      "image": null,
+      "capture": {"route": "/settings/general?tab=password", "selector": "main", "actions": []}
+    }
+  ],
+  "related": ["core.companies", "core.users"]
+}

@@ -46,15 +46,41 @@ async def test_an_emit_of_a_document_holds_its_companys_lock(real_engine):
         await s.rollback()
 
 
-@pytest.mark.parametrize("one_company", [True, False])
-async def test_a_rebuild_holds_the_lock_of_every_company_it_replays(real_engine, one_company):
+async def test_a_rebuild_is_refused_without_the_lock_of_every_company_it_replays(real_engine):
     from celerp.projections.engine import ProjectionEngine
+    from celerp.services.company_lock import lock_company
+
+    user = await owner(real_engine)
+    first = await company(real_engine, user, "Lock One", "one")
+    await company(real_engine, user, "Lock Two", "two")
+    async with maker(real_engine)() as s:
+        await lock_company(s, first)
+        with pytest.raises(RuntimeError, match="only under its company lock"):
+            await ProjectionEngine.rebuild(s, None)  # the second company is not locked
+        await s.rollback()
+    async with maker(real_engine)() as s:
+        with pytest.raises(RuntimeError, match="only under its company lock"):
+            await ProjectionEngine.rebuild(s, first)
+        await s.rollback()
+
+
+async def test_the_upgrade_guard_locks_every_company_before_its_replay(real_engine, monkeypatch):
+    from celerp.projections.engine import ProjectionEngine
+    from celerp.services import dev_release_guard
 
     user = await owner(real_engine)
     first = await company(real_engine, user, "Lock One", "one")
     second = await company(real_engine, user, "Lock Two", "two")
+    seen = []
+    real_rebuild = ProjectionEngine.rebuild
+
+    async def rebuild(session, company_id=None):
+        seen.append((await _company_locked(real_engine, first), await _company_locked(real_engine, second)))
+        await real_rebuild(session, company_id)
+
+    monkeypatch.setattr(ProjectionEngine, "rebuild", staticmethod(rebuild))
+    monkeypatch.setattr(dev_release_guard, "_should_rebuild", lambda marker, semantics: True)
     async with maker(real_engine)() as s:
-        await ProjectionEngine.rebuild(s, first if one_company else None)
-        assert await _company_locked(real_engine, first)
-        assert await _company_locked(real_engine, second) is not one_company
+        await dev_release_guard.run_upgrade_guard(s)
         await s.rollback()
+    assert seen == [(True, True)]

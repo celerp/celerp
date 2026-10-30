@@ -80,4 +80,5 @@ PLUGIN_MANIFEST = {
              "permission": "view_inventory", "requires_connector": "shopify"},
         ],
     },
+    "help": {"dir": "celerp_connectors/help"},
 }

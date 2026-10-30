@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from celerp.connectors.base import ConnectorBase, ConnectorContext, SyncDirection, entity_allowed
+from celerp.modules.boundary import needs_modules
 from celerp.services.field_fingerprints import PRODUCT_FIELDS, fingerprint
 from ui.i18n import t
 
@@ -54,53 +55,9 @@ async def build_preview(
 ) -> FirstSyncPreview:
     """What a first sync in ``directions``, importing orders from ``orders_from``, would
     do. Reads only: nothing is written to Celerp or to the platform."""
-    import uuid
-
-    from celerp.db import get_session_ctx
-    from celerp_inventory.services import (
-        catalog_product_rows, external_link_for_state, normalize_sku, resolve_external_product,
-    )
-
     preview = FirstSyncPreview(directions=directions, orders_from=orders_from)
-    products_on = directions.get("products", SyncDirection.OFF.value) != SyncDirection.OFF.value
-    if products_on:
-        remote_products = await connector.preview_products(ctx)
-        cid = uuid.UUID(str(ctx.company_id))
-        store_skus = set()
-        async with get_session_ctx() as session:
-            for remote in remote_products:
-                row = {"key": remote.key, "sku": remote.sku or None, "name": remote.name or None,
-                       "modified": remote.modified, "price": remote.price}
-                if not remote.sku:
-                    preview.no_sku.append(row)
-                    continue
-                store_skus.add(normalize_sku(remote.sku))
-                try:
-                    found = await resolve_external_product(
-                        session, cid, connector.name, remote.product_id, remote.variation_id, sku=remote.sku)
-                except ValueError as exc:
-                    preview.problems.append({**row, "reason": str(exc)})
-                    continue
-                if found is None:
-                    preview.new.append(row)
-                    continue
-                state = found.state or {}
-                preview.matches.append({**row, "entity_id": found.entity_id,
-                                        "celerp_name": state.get("name"),
-                                        "differences": _differences(state, remote)})
-            if entity_allowed(connector, "products_out", directions):
-                for item in await catalog_product_rows(session, cid):
-                    state = item.state or {}
-                    if (not state.get("sku") or normalize_sku(state["sku"]) in store_skus
-                            or external_link_for_state(state, connector.name)):
-                        continue
-                    preview.to_publish.append({"entity_id": item.entity_id, "sku": state["sku"],
-                                               "name": state.get("name"), "modified": item.updated_at})
-        preview.matches = _newest_first(preview.matches)
-        preview.new = _newest_first(preview.new)
-        preview.no_sku = _newest_first(preview.no_sku)
-        preview.problems = _newest_first(preview.problems)
-        preview.to_publish = _newest_first(preview.to_publish)
+    if directions.get("products", SyncDirection.OFF.value) != SyncDirection.OFF.value:
+        await _preview_products(connector, ctx, directions, preview)
 
     if entity_allowed(connector, "orders", directions):
         orders = await connector.preview_orders(ctx, orders_from)
@@ -116,3 +73,58 @@ async def build_preview(
             t("connectors.preview_orders_record", n=len(orders), service=connector.display_name)
         )
     return preview
+
+
+@needs_modules("celerp-inventory")
+async def _preview_products(
+    connector: ConnectorBase, ctx: ConnectorContext, directions: dict, preview: FirstSyncPreview
+) -> None:
+    """The products part of ``preview``: the store's products against Celerp's items,
+    and the items that would go out."""
+    import uuid
+
+    from celerp.db import get_session_ctx
+    from celerp_inventory.services import (
+        catalog_product_rows,
+        normalize_sku,
+        resolve_external_product,
+    )
+    from celerp.connectors.product_links import external_link_for_state
+
+    remote_products = await connector.preview_products(ctx)
+    cid = uuid.UUID(str(ctx.company_id))
+    store_skus = set()
+    async with get_session_ctx() as session:
+        for remote in remote_products:
+            row = {"key": remote.key, "sku": remote.sku or None, "name": remote.name or None,
+                   "modified": remote.modified, "price": remote.price}
+            if not remote.sku:
+                preview.no_sku.append(row)
+                continue
+            store_skus.add(normalize_sku(remote.sku))
+            try:
+                found = await resolve_external_product(
+                    session, cid, connector.name, remote.product_id, remote.variation_id, sku=remote.sku)
+            except ValueError as exc:
+                preview.problems.append({**row, "reason": str(exc)})
+                continue
+            if found is None:
+                preview.new.append(row)
+                continue
+            state = found.state or {}
+            preview.matches.append({**row, "entity_id": found.entity_id,
+                                    "celerp_name": state.get("name"),
+                                    "differences": _differences(state, remote)})
+        if entity_allowed(connector, "products_out", directions):
+            for item in await catalog_product_rows(session, cid):
+                state = item.state or {}
+                if (not state.get("sku") or normalize_sku(state["sku"]) in store_skus
+                        or external_link_for_state(state, connector.name)):
+                    continue
+                preview.to_publish.append({"entity_id": item.entity_id, "sku": state["sku"],
+                                           "name": state.get("name"), "modified": item.updated_at})
+    preview.matches = _newest_first(preview.matches)
+    preview.new = _newest_first(preview.new)
+    preview.no_sku = _newest_first(preview.no_sku)
+    preview.problems = _newest_first(preview.problems)
+    preview.to_publish = _newest_first(preview.to_publish)

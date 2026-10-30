@@ -12,6 +12,7 @@ from celerp.models.company import Company
 from celerp.models.projections import Projection
 from celerp.projections.engine import ProjectionEngine
 from test_helpers import remove_company
+from celerp.services.company_lock import lock_company
 
 
 @pytest.mark.asyncio
@@ -60,6 +61,7 @@ async def test_projection_apply_and_rebuild(session):
     assert proj2.state["name"] == "B"
 
     # rebuild is deterministic
+    await lock_company(session, company_id)
     await ProjectionEngine.rebuild(session, company_id=company_id)
     await session.commit()
     proj3 = await session.get(Projection, {"company_id": company_id, "entity_id": "item:1"})

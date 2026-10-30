@@ -15,6 +15,7 @@ from starlette.requests import Request
 from starlette.responses import RedirectResponse, Response
 
 from celerp.config_store import merge_packaged_config
+from celerp.gateway.state import PAID_TIERS
 from ui.components.shell import base_shell, flash, page_header, page_title
 from ui.i18n import t, get_lang
 from ui.config import get_role as _get_role
@@ -25,7 +26,6 @@ from ui.routes.settings import (
     _token,
     _cloud_relay_tab,
     claim_notice_text,
-    PAID_TIERS,
 )
 from ui.routes.settings_general import _section_breadcrumb
 
@@ -220,7 +220,7 @@ def _partner_offer(iid: str, lang: str = "en") -> FT:
         children.append(Div(partner_name, cls="cloud-partner-offer__partner"))
 
     cards = []
-    target_offers = [(tier, get_offer(tier)) for tier in ("cloud", "ai", "team")]
+    target_offers = [(tier, get_offer(tier)) for tier in PAID_TIERS]
     # Rolling-deploy compatibility: an older relay exposes only the legacy
     # current-tier offer. Use it only when no target-tier map arrived.
     if not any(offer for _, offer in target_offers):

@@ -30,6 +30,8 @@ from connector_test_support import add_item
 from test_helpers import provision_company_books
 from migration_support import real_engine  # noqa: F401 - fixture
 
+pytestmark = pytest.mark.usefixtures("connector_modules_running")
+
 
 async def _seed_companies(session, *names: str) -> list[uuid.UUID]:
     """One owned company per name; every owner is inserted before any company, as
@@ -564,11 +566,8 @@ async def test_disabled_remote_relink_repairs_identity_without_overwriting_produ
     use_test_session,
 ):
     from celerp.models.projections import Projection
-    from celerp_inventory.services import (
-        external_link_for_state,
-        set_external_link_state,
-        upsert_external_product,
-    )
+    from celerp.connectors.product_links import external_link_for_state
+    from celerp_inventory.services import set_external_link_state, upsert_external_product
 
     session = use_test_session
     cid = await _seed_company(session, "WooDisabledRelink")
@@ -806,7 +805,8 @@ async def test_woocommerce_pending_defers_stock_binding_until_processing(use_tes
 async def test_woocommerce_refund_does_not_guess_restock_and_pauses_outbound_stock(use_test_session):
     from datetime import datetime, timezone
     from celerp.models.projections import Projection
-    from celerp_inventory.services import external_link_for_state, upsert_external_product
+    from celerp.connectors.product_links import external_link_for_state
+    from celerp_inventory.services import upsert_external_product
     session = use_test_session
     cid = await _seed_company(session, "WooRefund")
     _, root_id = await upsert_external_product(
@@ -872,7 +872,8 @@ async def test_woocommerce_stock_stays_paused_while_any_refund_on_the_product_is
     from datetime import datetime, timezone
     from celerp.models.projections import Projection
     from celerp_connectors.routes import _set_order_reconciled
-    from celerp_inventory.services import external_link_for_state, upsert_external_product
+    from celerp.connectors.product_links import external_link_for_state
+    from celerp_inventory.services import upsert_external_product
 
     session = use_test_session
     cid = await _seed_company(session, "WooSharedRefund")
@@ -1169,7 +1170,8 @@ async def test_woocommerce_balance_put_right_in_celerp_releases_the_order(use_te
     from celerp.models.projections import Projection
     from celerp_docs.doc_service import WooCommerceReconciliationRequired
     from celerp_docs.routes import VoidPaymentBody, apply_doc_payment, void_payment
-    from celerp_inventory.services import external_link_for_state, upsert_external_product
+    from celerp.connectors.product_links import external_link_for_state
+    from celerp_inventory.services import upsert_external_product
 
     session = use_test_session
     cid = await _seed_company(session, "WooBalanceFixed")
@@ -1705,7 +1707,7 @@ def _woo_stocked_order(order_id, product_id, sku, **fields):
 
 async def _woo_stock_paused(session, cid, root_id):
     from celerp.models.projections import Projection
-    from celerp_inventory.services import external_link_for_state
+    from celerp.connectors.product_links import external_link_for_state
 
     session.expire_all()
     root = await session.get(
@@ -1825,9 +1827,9 @@ async def test_shopify_import_relinks_a_product_after_disconnect(use_test_sessio
     from celerp.connectors.base import ConnectorContext
     from celerp.connectors.shopify import ShopifyConnector
     from celerp.models.projections import Projection
+    from celerp.connectors.product_links import external_link_for_state
     from celerp_inventory.services import (
         detach_external_links_for_platform,
-        external_link_for_state,
         upsert_external_product,
     )
 
@@ -1987,7 +1989,8 @@ async def test_mark_and_undo_reconciled_through_the_routes(client, use_test_sess
 
 @pytest.mark.asyncio
 async def test_sku_match_link_only_keeps_celerp_fields(use_test_session):
-    from celerp_inventory.services import external_link_for_state, upsert_external_product
+    from celerp_inventory.services import upsert_external_product
+    from celerp.connectors.product_links import external_link_for_state
     from connector_test_support import item_state
 
     session = use_test_session
@@ -2041,7 +2044,8 @@ async def _edit(session, cid, entity_id: str, **changes) -> None:
 
 @pytest.mark.asyncio
 async def test_reconcile_does_not_revert_unpushed_celerp_edit(use_test_session):
-    from celerp_inventory.services import ExternalImportRecord, upsert_external_product
+    from celerp.connectors.base import ExternalImportRecord
+    from celerp_inventory.services import upsert_external_product
     from connector_test_support import item_state
 
     session = use_test_session
@@ -2085,7 +2089,8 @@ async def test_conflict_choice_settles_the_field(use_test_session, monkeypatch, 
 
     from celerp.models.sync_run import SyncRun
     from celerp_connectors.routes import ConflictChoice, resolve_product_conflict
-    from celerp_inventory.services import ExternalImportRecord, upsert_external_product
+    from celerp.connectors.base import ExternalImportRecord
+    from celerp_inventory.services import upsert_external_product
     from connector_test_support import item_state
 
     session = use_test_session
@@ -2146,7 +2151,7 @@ async def _first_sync_then_undo(session, monkeypatch) -> None:
     from celerp.models.import_batch import ImportBatch
     from celerp_connectors.routes import undo_first_sync_links
     from celerp_inventory.routes import undo_import_batch
-    from celerp_inventory.services import external_link_for_state
+    from celerp.connectors.product_links import external_link_for_state
     from connector_test_support import connect, item_state
 
     monkeypatch.setattr("celerp.connectors.woocommerce.validate_public_base_url",
@@ -2207,3 +2212,58 @@ async def _first_sync_then_undo(session, monkeypatch) -> None:
     state = await item_state(session, cid, "item:match")
     assert not external_link_for_state(state, "woocommerce")
     assert (state["name"], state["sale_price"]) == ("Celerp name", 10.0)
+
+
+@pytest.mark.asyncio
+async def test_syncing_an_item_with_woocommerce_needs_only_inventory_and_keeps_a_held_refund_paused(
+        use_test_session, monkeypatch):
+    """A refund on the product waits for a person, then the company turns Documents
+    off. Turning WooCommerce sync on for the item needs Inventory only: it still links
+    the product, and outbound stock stays paused while the refund waits."""
+    from sqlalchemy import update
+
+    from celerp.connectors.base import ConnectorContext
+    from celerp.connectors.woocommerce import WooCommerceConnector
+    from celerp.modules.registry import set_enabled, uses_module
+    from celerp_docs.doc_service import WooCommerceReconciliationRequired
+    from celerp_inventory.services import set_external_link_state
+
+    session = use_test_session
+
+    @contextlib.asynccontextmanager
+    async def _admission_session():
+        yield session
+    monkeypatch.setattr("celerp.modules.boundary.get_session_ctx", _admission_session)
+
+    cid = await _seed_company(session, "WooDocsOff")
+    root_id = await _woo_stocked_product(session, cid, 791, "DOCSOFF-SKU")
+    order = _woo_stocked_order(792, 791, "DOCSOFF-SKU")
+    assert await u.upsert_order_from_woocommerce(str(cid), order) == "created"
+    with pytest.raises(WooCommerceReconciliationRequired):
+        await u.upsert_order_from_woocommerce(str(cid), {**order, "status": "refunded"})
+    # A link that lost its pause, so only the refund still waiting can set it again.
+    await set_external_link_state(session, cid, root_id, "woocommerce",
+                                  link_updates={"inventory_sync_paused": False}, source="connector")
+    settings = await session.scalar(select(Company.settings).where(Company.id == cid))
+    await session.execute(update(Company).where(Company.id == cid)
+                          .values(settings=set_enabled(dict(settings or {}), {"celerp-inventory"})))
+    await session.commit()
+    assert not uses_module(await session.scalar(select(Company.settings).where(Company.id == cid)),
+                           "celerp-docs")
+
+    class _Store:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def get(self, url, **kwargs):
+            import httpx
+            return httpx.Response(200, json={"id": 791, "type": "simple", "sku": "DOCSOFF-SKU", "manage_stock": True},
+                                  request=httpx.Request("GET", url))
+    monkeypatch.setattr("celerp.connectors.woocommerce._http_client", lambda **_: _Store())
+
+    ctx = ConnectorContext(company_id=str(cid), access_token="ck_x:cs_x", store_handle="https://shop.test")
+    assert await WooCommerceConnector().ensure_product_link(ctx, root_id) == root_id
+    assert await _woo_stock_paused(session, cid, root_id) is True

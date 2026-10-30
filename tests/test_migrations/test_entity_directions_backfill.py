@@ -20,8 +20,8 @@ from sqlalchemy import create_engine, text
 
 from .conftest import run_migration_ops
 
-MODULE = "h2a3b4c5d6e7_connector_entity_directions"
-FIRST_SYNC_MODULE = "i3b4c5d6e7f8_connector_execution_lease"
+MODULE = "j5d6e7f8a9b0_connector_entity_directions"
+FIRST_SYNC_MODULE = "k6e7f8a9b0c1_connector_execution_lease"
 
 # What each connector ran before, per old direction: inbound pulls, then outbound pushes.
 OLD_PLANS = {

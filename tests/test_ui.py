@@ -38,7 +38,7 @@ from ui.routes.csv_import import MAPPING_ATTRIBUTE, MAPPING_SKIP
 from ui.routes.inventory import _IMPORT_SPEC
 from ui.i18n import t
 from celerp.services.permissions import missing_permission_text
-from test_helpers import assert_not_permitted_redirect, make_test_token, authed_cookies
+from test_helpers import assert_not_permitted_redirect, make_test_token, authed_cookies, settle_background
 from ui.config import API_BASE as _API_BASE
 
 
@@ -1276,7 +1276,7 @@ class TestActivityFeed:
             "entity_id": "item:92f778e9-0000-0000-0000-000000000000",
             "name": "Burmese Ruby 2.5ct",
             "ts": "2026-03-20T10:00:00Z",
-        }], {}))
+        }], {}, False))
         assert "Burmese Ruby 2.5ct" in html
         # Hash must only appear inside an href, not as visible text
         import re
@@ -1293,7 +1293,7 @@ class TestActivityFeed:
             "entity_id": eid,
             "name": "Emerald",
             "ts": "2026-03-20T10:00:00Z",
-        }], {}))
+        }], {}, False))
         assert f"/inventory/{eid}" in html
 
     def test_activity_feed_no_actor_hash(self):
@@ -1306,7 +1306,7 @@ class TestActivityFeed:
             "name": "Test",
             "ts": "2026-03-20T10:00:00Z",
             "actor_name": "Noah Severs",
-        }], {}))
+        }], {}, False))
         assert "f9a514bf" not in html
         assert "Noah Severs" in html
 
@@ -1643,7 +1643,7 @@ class TestCRMPage:
         """When the holdings figure cannot be fetched the page still renders, and the
         Consignment card falls back to the document-derived total."""
         contact = {**_CONTACTS[0], "contact_type": "vendor"}
-        docs = [{"doc_type": "consignment_in", "status": "received", "total_amount": 900.0}]
+        docs = [{"doc_type": "consignment_in", "status": "received", "total": 900.0}]
         ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_contact", new=AsyncMock(return_value=contact)),
@@ -4538,14 +4538,29 @@ class TestListsCreateBlank:
         assert "/lists/list:VIEW-001" in r.headers.get("HX-Redirect", "")
 
     @pytest.mark.asyncio
-    async def test_lists_new_get_redirects_without_interim_page(self, ui_client):
-        """/lists/new GET no longer shows a form - creates immediately and redirects."""
+    async def test_lists_new_get_opens_the_lists_without_creating_one(self, ui_client):
+        """A GET never creates: /lists/new opens the lists, whose New List button posts."""
         ui_client.cookies.update(_authed())
-        with patch("ui.api_client.create_list",
-                   new=AsyncMock(return_value={"id": "list:VIEW-002"})):
+        create = AsyncMock(return_value={"id": "list:VIEW-002"})
+        with patch("ui.api_client.create_list", new=create):
             r = await ui_client.get("/lists/new", follow_redirects=False)
         assert r.status_code == 302
-        assert "/lists/list:VIEW-002" in r.headers.get("location", "")
+        assert r.headers.get("location") == "/lists"
+        create.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_inventory_new_get_creates_nothing_and_create_blank_makes_a_component(self, ui_client):
+        """The picker's "+ Add new component" posts to create-blank; GET /inventory/new only opens the list."""
+        ui_client.cookies.update(_authed())
+        create = AsyncMock(return_value={"id": "item:C-1"})
+        with patch("ui.api_client.create_item", new=create):
+            r = await ui_client.get("/inventory/new?type=component", follow_redirects=False)
+            assert r.status_code == 302 and r.headers.get("location") == "/inventory"
+            create.assert_not_awaited()
+            r = await ui_client.post("/inventory/create-blank?type=component")
+        assert r.status_code == 204
+        assert r.headers.get("HX-Redirect") == "/inventory/item:C-1"
+        assert create.await_args.args[1]["inventory_type"] == "component"
 
     @pytest.mark.asyncio
     async def test_lists_page_no_href_new(self, ui_client):
@@ -6514,6 +6529,7 @@ class TestFilesSectionErrorReplies:
         assert r.status_code == 400 and "files-section-" not in r.text
 
 
+@pytest.mark.usefixtures("connector_modules_running")
 class TestCompanyFilesAggregation:
     """The company-wide Files section reads the self-contact, items and documents; a failed read is
     an error reply, never an empty or partial list that would replace the real one."""
@@ -10215,7 +10231,7 @@ class TestModulesUI:
         interpolation path)."""
         deps = [
             {"name": "base-mod", "label": "Base", "version": "1.0", "author": "Celerp",
-             "enabled": True, "running": True},
+             "enabled": True, "running": True, "needed_by": ["child-mod"]},
             {"name": "child-mod", "label": "Child", "version": "1.0", "author": "Celerp",
              "enabled": True, "running": True, "depends_on": ["base-mod"]},
         ]
@@ -10229,6 +10245,9 @@ class TestModulesUI:
             r = await ui_client.get("/modules")
         assert r.status_code == 200
         assert b"Other modules need this one" in r.content and b"Child" in r.content  # tooltip rendered
+        # The API's needed_by decides, so a module it does not list keeps its Turn off.
+        assert r.content.count(b"Other modules need this one") == 1
+        assert b'hx-post="/modules/child-mod/disable"' in r.content
 
     @pytest.mark.asyncio
     async def test_paid_module_license_failure_shows_connect_upsell(self, ui_client):
@@ -11714,6 +11733,7 @@ class TestAuditColumnAlignment:
         assert 'onclick="celerpAddLine()"' not in counting.text
 
 
+@pytest.mark.usefixtures("connector_modules_running")
 class TestCompanyDetailsPage:
     """The Finance > Company Details page is organized like a customer/vendor page: a Contact Info card
     (the company's identity, incl. its email) + a Settings card (currency/timezone/fiscal), the
@@ -12156,6 +12176,7 @@ class TestPaymentsSettingsPage:
         assert "/settings/payments/disconnect" in r.text
 
 
+@pytest.mark.usefixtures("connector_modules_running")
 class TestCompanyAllFilesView:
     """The unified Finance > All Files view aggregates company documents, item images and doc
     attachments into one read-only table, each row linking back to its owning entity."""
@@ -14531,8 +14552,8 @@ class TestCsvImportSellByValidation:
         assert "setupBlockDrag" in html
 
     @pytest.mark.asyncio
-    async def test_preset_seeding_when_empty(self, label_client):
-        """When no templates exist, presets are seeded via API."""
+    async def test_empty_list_page_posts_no_presets(self, label_client):
+        """The templates read seeds presets itself, so a page load never POSTs them."""
         call_log = []
 
         class MockResponse:
@@ -14543,24 +14564,12 @@ class TestCsvImportSellByValidation:
                 return {"items": self._items}
 
         class MockClient:
-            def __init__(self):
-                self._call_count = 0
-
             async def __aenter__(self):
                 return self
             async def __aexit__(self, *a):
                 pass
             async def get(self, url, **kw):
-                self._call_count += 1
-                if self._call_count == 1:
-                    # First fetch: empty
-                    return MockResponse(items=[])
-                # After seeding: return preset templates
-                return MockResponse(items=[
-                    {"id": "p1", "name": "Barcode Sticker (24x24)", "format": "24x24mm", "copies": 1},
-                    {"id": "p2", "name": "Shelf Label (100x50)", "format": "100x50mm", "copies": 1},
-                    {"id": "p3", "name": "QR Label (62x29)", "format": "62x29mm", "copies": 1},
-                ])
+                return MockResponse(items=[])
             async def post(self, url, **kw):
                 call_log.append(url)
                 return MockResponse(status=201)
@@ -14568,12 +14577,8 @@ class TestCsvImportSellByValidation:
         label_client.cookies.update(_authed())
         with patch("httpx.AsyncClient", return_value=MockClient()):
             r = await label_client.get("/settings/labels")
-        # After seeding, redirects to first template
-        assert r.status_code == 302
-        assert "/settings/labels/p1" in r.headers["location"]
-        # 6 presets were POSTed (3 square sticker + 3 original)
-        assert len(call_log) == 6
-        assert all("/api/labels/templates" in u for u in call_log)
+        assert r.status_code == 200
+        assert call_log == []
 
     @pytest.mark.asyncio
     async def test_editor_drag_js_uses_global_function(self, label_client):
@@ -15040,29 +15045,13 @@ class TestDocumentsOverhaul:
 
     # ── Send-by-email offer when no relay is connected ───────────────────────
 
-    @staticmethod
-    def _reset_send_quota_cache():
-        from ui.routes import documents
-        documents._free_send_quota_cache.update(
-            {"value": 0, "fetched_at": None, "pending": False, "task": None})
-
-    @staticmethod
-    async def _settle_quota_refresh():
-        # The priming GET starts the refresh as a background task; await it
-        # directly so the second GET reads the fetched value regardless of
-        # event-loop scheduling.
-        from ui.routes import documents
-        task = documents._free_send_quota_cache.get("task")
-        if task is not None:
-            await task
-
     @pytest.mark.asyncio
     async def test_send_offer_button_shows_on_first_open_before_quota_fetched(self, ui_client):
         """Disconnected relay + sendable doc, cache never fetched: the offer
         shows on the FIRST document opened, not only after a reload primes the
         quota cache. A never-fetched cache is unknown, not an advertised zero,
         so hiding it would be the "reload to appear" bug."""
-        self._reset_send_quota_cache()
+        _reset_free_send_quota_cache_full()
         ui_client.cookies.update(_authed())
         try:
             doc = dict(_BLANK_DOC, contact_email="c@acme.example", status="sent")
@@ -15080,12 +15069,12 @@ class TestDocumentsOverhaul:
             assert 'hx-target="#account-gate-host"' in content
             assert "next=doc-send" in content
         finally:
-            self._reset_send_quota_cache()
+            _reset_free_send_quota_cache_full()
 
     @pytest.mark.asyncio
     async def test_send_offer_absent_when_quota_zero(self, ui_client):
         """No free quota advertised → the offer never renders (no dead end)."""
-        self._reset_send_quota_cache()
+        _reset_free_send_quota_cache_full()
         ui_client.cookies.update(_authed())
         try:
             doc = dict(_BLANK_DOC, contact_email="c@acme.example", status="sent")
@@ -15095,13 +15084,13 @@ class TestDocumentsOverhaul:
                  patch("ui.api_client.get_relay_status", new=_no_relay), \
                  patch("ui.api_client.account_methods", new=_methods):
                 await ui_client.get("/docs/doc:INV-2026-0001")
-                await self._settle_quota_refresh()
+                await settle_background()
                 r = await ui_client.get("/docs/doc:INV-2026-0001")
             content = r.content.decode()
             assert "Send by email" not in content
             assert "next=doc-send" not in content
         finally:
-            self._reset_send_quota_cache()
+            _reset_free_send_quota_cache_full()
 
     @pytest.mark.asyncio
     async def test_send_offer_admin_click_opens_signup_panel_with_doc_send_next(self, ui_client):
@@ -15247,7 +15236,7 @@ class TestProFormaLabel:
         """
         from ui.routes.documents import _doc_status_cards
         from fasthtml.common import to_xml
-        html = to_xml(_doc_status_cards([], "", doc_type="invoice"))
+        html = to_xml(_doc_status_cards(None, "invoice"))
         assert "Pro Forma" in html  # draft count visible in card bar
         assert "All Issued" in html
         assert "Awaiting Payment" in html
@@ -20362,18 +20351,7 @@ class TestToastHeader:
 def _reset_free_send_quota_cache_full():
     from ui.routes import documents
     documents._free_send_quota_cache.clear()
-    documents._free_send_quota_cache.update(
-        {"value": 0, "fetched_at": None, "pending": False, "task": None})
-
-
-async def _drain_quota_task():
-    import asyncio
-    from ui.routes import documents
-    task = documents._free_send_quota_cache.get("task")
-    if task is not None:
-        await task
-    else:
-        await asyncio.sleep(0.05)
+    documents._free_send_quota_cache.update({"value": 0, "fetched_at": None, "pending": False})
 
 
 @pytest.mark.asyncio
@@ -20397,11 +20375,11 @@ async def test_free_send_quota_refetches_after_ttl(monkeypatch):
     monkeypatch.setattr("ui.api_client.account_methods", _methods)
     try:
         documents._free_send_quota("tok")
-        await _drain_quota_task()
+        await settle_background()
         assert documents._free_send_quota_cache["value"] == 7
         now["t"] += getattr(documents, "_FREE_SEND_QUOTA_TTL", 300.0) + 1.0
         documents._free_send_quota("tok")
-        await _drain_quota_task()
+        await settle_background()
         assert len(calls) == 2
         assert documents._free_send_quota_cache["value"] == 7
     finally:
@@ -20431,11 +20409,11 @@ async def test_free_send_quota_retries_after_failed_fetch(monkeypatch):
     monkeypatch.setattr("ui.api_client.account_methods", _methods)
     try:
         assert documents._free_send_quota("tok") == 0
-        await _drain_quota_task()
+        await settle_background()
         assert documents._free_send_quota_cache["value"] == 0
         now["t"] += getattr(documents, "_FREE_SEND_QUOTA_TTL", 300.0) + 1.0
         documents._free_send_quota("tok")
-        await _drain_quota_task()
+        await settle_background()
         assert calls["n"] == 2
         assert documents._free_send_quota_cache["value"] == 9
     finally:
@@ -20463,7 +20441,7 @@ async def test_free_send_quota_fetches_on_fresh_boot(monkeypatch):
     monkeypatch.setattr("ui.api_client.account_methods", _methods)
     try:
         documents._free_send_quota("tok")
-        await _drain_quota_task()
+        await settle_background()
         assert len(calls) == 1
         assert documents._free_send_quota_cache["value"] == 5
     finally:
@@ -20487,7 +20465,7 @@ async def test_free_send_offer_shows_on_unknown_hides_on_known_zero(monkeypatch)
     try:
         # Never fetched yet: unknown -> show.
         assert documents._free_send_offer("tok") is True
-        await _drain_quota_task()
+        await settle_background()
         # Fetch landed with a real zero: advertised zero -> hide.
         assert documents._free_send_quota_cache["fetched_at"] is not None
         assert documents._free_send_offer("tok") is False
@@ -21446,10 +21424,10 @@ class TestCommercialPartnerManagedInvariant:
         from fasthtml.common import to_xml
         from celerp_ai.ui_routes import _quota_exceeded_card
         detail = {"instance_id": "inst-1", "limit": 100, "tier": "ai"}
-        html = to_xml(_quota_exceeded_card(detail, user_bubble="", lang="en"))
+        html = to_xml(_quota_exceeded_card(detail, lang="en"))
         self._assert_clean(html, "AI quota card (ai tier)")
         detail_cloud = {"instance_id": "inst-1", "limit": 100, "tier": "cloud"}
-        html2 = to_xml(_quota_exceeded_card(detail_cloud, user_bubble="", lang="en"))
+        html2 = to_xml(_quota_exceeded_card(detail_cloud, lang="en"))
         self._assert_clean(html2, "AI quota card (cloud tier)")
 
     def test_ai_quota_card_prefers_relay_url_never(self):
@@ -21459,7 +21437,7 @@ class TestCommercialPartnerManagedInvariant:
         from celerp_ai.ui_routes import _quota_exceeded_card
         detail = {"instance_id": "inst-1", "limit": 100, "tier": "ai",
                   "upgrade_url": "https://celerp.com/subscribe?plan=ai"}
-        html = to_xml(_quota_exceeded_card(detail, user_bubble="", lang="en"))
+        html = to_xml(_quota_exceeded_card(detail, lang="en"))
         self._assert_clean(html, "AI quota card with relay upgrade_url")
 
     def test_session_gate_401_partner_clean(self):
@@ -21492,7 +21470,7 @@ class TestCommercialPartnerManagedInvariant:
         from fasthtml.common import to_xml
         from celerp_ai.ui_routes import _quota_exceeded_card
         detail = {"instance_id": "inst-1", "limit": 100, "tier": "ai"}
-        html = to_xml(_quota_exceeded_card(detail, user_bubble="", lang="en"))
+        html = to_xml(_quota_exceeded_card(detail, lang="en"))
         assert "/subscribe/topup" not in html
 
 

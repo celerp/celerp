@@ -15,9 +15,11 @@ import fastapi.routing
 import httpx
 from fastapi.routing import APIRoute
 
+from celerp.ai import deadlines
 from celerp.modules.loader import loaded_modules
 from celerp.modules.registry import uses_module
-from celerp.services.permissions import role_has_permission
+from celerp.services.permissions import PERMISSIONS, is_permission_key, role_has_permission
+from ui.i18n import current_lang
 
 
 # ---------------------------------------------------------------------------
@@ -27,9 +29,6 @@ from celerp.services.permissions import role_has_permission
 _AGENT_METHODS = frozenset({"GET", "POST", "PUT", "PATCH"})
 _AGENT_MUTATIONS = frozenset({"POST", "PUT", "PATCH"})
 AGENT_RESULT_MAX_BYTES = 64 * 1024
-# The in-process ASGI transport ignores httpx timeouts, so the executor bounds
-# each capability call itself.
-CAPABILITY_TIMEOUT_S = 30.0
 _LOCAL_REF_PREFIX = "#/components/schemas/"
 
 
@@ -99,6 +98,18 @@ def _route_permissions(route: APIRoute) -> tuple[str, ...]:
     return tuple(sorted(found))
 
 
+def _result_permissions(operation: dict[str, Any], route_permissions: tuple[str, ...]) -> tuple[str, ...]:
+    """Every permission the route's result depends on: its dependencies' and those its
+    handler consults on what it returns (``x-celerp-agent-result-permissions``: a list
+    of keys, or ``"*"`` when a registry names them, which is every key)."""
+    declared = operation.get("x-celerp-agent-result-permissions") or []
+    if declared == "*":
+        return tuple(sorted(p.key for p in PERMISSIONS))
+    if not isinstance(declared, list) or not all(is_permission_key(key) for key in declared):
+        raise ValueError(f"x-celerp-agent-result-permissions must list permission keys: {declared!r}")
+    return tuple(sorted({*route_permissions, *declared}))
+
+
 def _agent_route_owner(endpoint: Any, company_settings: dict[str, Any]) -> str | None:
     """Return core/module owner when direct agent invocation is allowed, else None."""
     endpoint_module = str(getattr(endpoint, "__module__", "") or "")
@@ -155,6 +166,10 @@ def compile_agent_capabilities(
     When ``role`` is supplied, tools whose existing FastAPI permission
     dependencies deny that role are omitted before the model sees them. The
     route still re-checks authorization on execution.
+
+    ``result_permissions`` and ``field_visibility`` say what of its asker's authority
+    a capability's result depends on, so a kept read is replayed only while that
+    still holds (``celerp.ai.service``).
     """
     settings = company_settings or {}
     openapi = app.openapi()
@@ -302,6 +317,8 @@ def compile_agent_capabilities(
                 "inject_idempotency": inject_idempotency,
                 "requires_confirmation": requires_confirmation,
                 "required_permissions": required_permissions,
+                "result_permissions": _result_permissions(operation, required_permissions),
+                "field_visibility": operation.get("x-celerp-agent-field-visibility") is True,
                 "tool": {
                     "type": "function",
                     "function": {
@@ -394,15 +411,15 @@ async def execute_agent_capability(
                     url_path,
                     params=params,
                     json=body,
-                    headers={"Authorization": authorization},
+                    headers={"Authorization": authorization, "Accept-Language": current_lang()},
                     follow_redirects=False,
                 ),
-                timeout=CAPABILITY_TIMEOUT_S,
+                timeout=deadlines.TOOL_STEP_S,
             )
         except asyncio.TimeoutError:
             return _agent_error(
                 "capability_timeout",
-                f"The operation did not finish within {int(CAPABILITY_TIMEOUT_S)} seconds.",
+                f"The operation did not finish within {int(deadlines.TOOL_STEP_S)} seconds.",
             )
 
     try:

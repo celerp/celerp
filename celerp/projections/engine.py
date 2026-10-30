@@ -18,13 +18,11 @@ from celerp.inventory_codes import (
     is_barcode_unique_violation,
     is_rfid_epc_unique_violation,
 )
-from celerp.models.company import Company
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from ui.i18n import t
 from celerp.projections.handlers.system import apply_system_event
 from celerp.projections.retired import RETIRED
-from celerp.services.company_lock import lock_company
 
 log = logging.getLogger(__name__)
 
@@ -283,17 +281,18 @@ class ProjectionEngine:
     async def rebuild(session, company_id=None) -> None:
         """Replace the projections with a replay of the ledger. Refused, before anything is
         deleted, when the ledger holds events of a module that is not enabled: replaying
-        without its handler would rebuild those records wrong (UnhandledEventsError)."""
+        without its handler would rebuild those records wrong (UnhandledEventsError).
+        A replay runs under the lock of every company it replays, which the owning operation
+        takes first, so no write lands mid-replay and is lost."""
+        from celerp.models.company import Company
+        from celerp.services.company_lock import holds_company_lock
+        companies = [company_id] if company_id is not None else \
+            (await session.execute(select(Company.id))).scalars().all()
+        if not all(holds_company_lock(session, c) for c in companies):
+            raise RuntimeError("a company's projections are rebuilt only under its company lock")
         unknown = await ProjectionEngine.unreplayable(session, company_id)
         if unknown:
             raise UnhandledEventsError(unknown)
-        # Each company's lock before its first record: the replay takes the records one by
-        # one, in ledger order, which only the company lock keeps from meeting a writer's
-        # records in the other order.
-        if company_id is None:
-            await lock_company(session, *(await session.execute(select(Company.id))).scalars().all())
-        else:
-            await lock_company(session, company_id)
         await session.execute(delete(Projection) if company_id is None else delete(Projection).where(Projection.company_id == company_id))
         query = select(LedgerEntry).order_by(LedgerEntry.id.asc())
         if company_id:

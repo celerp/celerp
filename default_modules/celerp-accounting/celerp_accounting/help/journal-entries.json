@@ -1,0 +1,24 @@
+{
+  "id": "accounting.journal-entries",
+  "title": "Record a journal entry",
+  "summary": "Post a manual entry straight into the ledger.",
+  "keywords": ["journal", "journal entry", "post", "debit", "credit", "manual entry"],
+  "routes": ["/accounting", "/accounting/journal/new"],
+  "permission": "manage_accounting",
+  "order": 1,
+  "steps": [
+    {
+      "text": "Open {acct} from the sidebar to see every posted entry for the period.",
+      "labels": {"acct": "nav.accounting"},
+      "image": null,
+      "capture": {"route": "/accounting", "selector": "main", "actions": []}
+    },
+    {
+      "text": "Click {new} to post a manual entry: pick an account for each line, enter a debit or credit, and save.",
+      "labels": {"new": "btn.new_entry"},
+      "image": null,
+      "capture": {"route": "/accounting", "selector": "main", "actions": []}
+    }
+  ],
+  "related": ["accounting.financial-reports", "accounting.reconcile", "accounting.settings"]
+}

@@ -96,8 +96,10 @@ dev = [
     "pytest-playwright>=0.5",
     "pytest-timeout>=2.3",
     "pytest-xdist>=3.5",
-    # tests/lock_rank.py parses every lock statement with PostgreSQL's own grammar.
-    "pglast>=7.0",
+    # tests/lock_rank.py parses every lock statement and the test-only write observer
+    # (mutation_observer.py) classifies SQL, both with PostgreSQL's own grammar. Pinned: a
+    # parser release can change how a statement is classified.
+    "pglast==8.7",
     "testcontainers[postgres]>=4.15",
 ]
 prod = [
@@ -106,6 +108,8 @@ prod = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# Explicit: pytest-asyncio warns when it is unset, and a warning is a failure here. An async
+# fixture runs on its test's loop unless it names a wider loop_scope itself.
 asyncio_default_fixture_loop_scope = "function"
 # --timeout guards against a hung test wedging the run. 30s was under the real
 # cost of a page-rendering test on a slow filesystem: fixture setup alone measures
@@ -125,6 +129,7 @@ markers = [
     "browser: Playwright browser UI tests (requires running servers + Chromium). Run separately with: pytest tests/test_browser/ -m browser",
     "embedded_pg: bundled-PostgreSQL integration tests (boot a real pgserver cluster; ~slow). Run separately with: pytest -m embedded_pg",
     "process: spawns OS processes or races separate database connections (slow). CI runs these in their own job.",
+    "observer_control: the write observer's own controls, which make the findings they check on purpose.",
     "integration: several installations, each its own server process and database, and a stand-in relay (slow). CI runs these in their own job.",
 ]
 
@@ -151,6 +156,7 @@ include = ["celerp", "celerp.*", "ui", "ui.*", "default_modules"]
     "openapi_parameter_descriptions.json",
     "importers/sample/*.manager",
     "output/fonts/*",
+    "help/**/*",
 ]
 "ui" = [
     "static/**/*",
@@ -166,7 +172,7 @@ include = ["celerp", "celerp.*", "ui", "ui.*", "default_modules"]
     "celerp-contacts/**/*",
     "celerp-dashboard/**/*",
     "celerp-docs/**/*",
-    "celerp-fulfillment/**/*",
+    "celerp-fixed-assets/**/*",
     "celerp-inventory/**/*",
     "celerp-labels/**/*",
     "celerp-manufacturing/**/*",

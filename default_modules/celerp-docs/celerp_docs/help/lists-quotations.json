@@ -1,0 +1,18 @@
+{
+  "id": "docs.lists-quotations",
+  "title": "Lists and quotations",
+  "summary": "Draft a list or quotation and convert it to an invoice once it is accepted.",
+  "keywords": ["list", "quotation", "quote", "draft", "convert"],
+  "routes": ["/lists"],
+  "permission": "view_documents",
+  "order": 3,
+  "steps": [
+    {
+      "text": "Open {lists} from the sidebar, then click {new} to start a draft.",
+      "labels": {"lists": "nav.lists_quotations", "new": "page.new_list"},
+      "image": null,
+      "capture": {"route": "/lists", "selector": "main", "actions": []}
+    }
+  ],
+  "related": ["docs.sales-documents"]
+}

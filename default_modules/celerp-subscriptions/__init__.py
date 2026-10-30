@@ -23,4 +23,5 @@ PLUGIN_MANIFEST = {
         },
     },
     "migrations": None,
+    "help": {"dir": "celerp_subscriptions/help"},
 }

@@ -10,11 +10,38 @@ import functools
 import inspect
 import os
 import shutil
+import sys
+import tempfile
 from pathlib import Path
+
+# Bytecode goes to a cache outside the source tree. Every xdist worker shares the module
+# folders, and loading a module removes the bytecode in its folder and then checks none is
+# left: a worker that imported module code and wrote bytecode there at that moment made
+# another worker's load fail. The processes the tests start use the same cache.
+os.environ.setdefault("PYTHONPYCACHEPREFIX", os.path.join(tempfile.gettempdir(), "celerp-test-pycache"))
+sys.pycache_prefix = sys.pycache_prefix or os.environ["PYTHONPYCACHEPREFIX"]
+
+# The tests and every process they start import this checkout's code. An environment
+# shared between checkouts can carry an editable install of another one, which a script
+# run as `python scripts/x.py` (its own folder first on the path, not the checkout) would
+# import instead.
+_CHECKOUT = os.path.dirname(os.path.abspath(__file__))
+os.environ["PYTHONPATH"] = os.pathsep.join(filter(None, (_CHECKOUT, os.environ.get("PYTHONPATH"))))
+import celerp  # noqa: E402
+
+assert os.path.dirname(os.path.dirname(os.path.abspath(celerp.__file__))) == _CHECKOUT, (
+    f"the tests import celerp from {celerp.__file__}, not from this checkout ({_CHECKOUT})")
 
 from conftest_support import (
     is_own_test_config, provision_worker_db, resolve_worker_config, resolve_worker_data_dir, skip_relay_check_in,
     worker_label)
+
+# No event loop is current until a test makes one. Otherwise the first async test's
+# runner asks for the current loop and asyncio makes one on the spot; the runner puts
+# it back as current afterwards, and the next sync test that calls asyncio.run()
+# replaces it without closing it, so its sockets are reported as unclosed in whichever
+# later test the garbage collector happens to run in.
+asyncio.set_event_loop(None)
 
 # Must be set before celerp.config is imported (JWT guard fires at module load).
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
@@ -128,9 +155,9 @@ import uuid
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import text
+from sqlalchemy import event as sa_event, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import Session, sessionmaker
 
 
 def pytest_unconfigure(config):
@@ -144,16 +171,39 @@ def pytest_unconfigure(config):
 
 from celerp.db import get_session
 from celerp.main import app
+import mutation_baseline  # noqa: E402
+import mutation_observer  # noqa: E402 - installs the write observer's listeners
+
 # The `client` fixture patches celerp.gateway.state.get_session_token. The session
 # gate keeps its own reference from import time, so it is imported here, before any
 # patch is active, and checks the session a test actually seats.
 import celerp.session_gate  # noqa: E402,F401
 from ui.app import app as _ui_app
 
+# Every request the apps serve, through any test's transport, is request scope for the
+# write observer (mutation_observer.py): the outermost layer of each app's own stack.
+for _label, _observed_app in (("api", app), ("ui", _ui_app)):
+    _observed_app.build_middleware_stack = (
+        lambda built=_observed_app.build_middleware_stack, label=_label: mutation_observer.observed(built(), label))
+    _observed_app.middleware_stack = None
+
+# A request the apps make over HTTP (the UI's to the API in the browser suite's servers)
+# names the request it is made for, so a write made for a page load is judged as the page load's.
+import httpx as _httpx  # noqa: E402
+_httpx_send = _httpx.AsyncClient.send
+
+
+async def _observed_send(self, request, **kwargs):
+    request.headers.update(mutation_observer.outgoing_headers())
+    return await _httpx_send(self, request, **kwargs)
+
+
+_httpx.AsyncClient.send = _observed_send
+
 import sys as _sys, os as _os
 from pathlib import Path
 
-from test_helpers import REPO_ROOT, DATABASE_URL, make_test_token, authed_cookies, _crm_available, company_auth  # noqa: F401
+from test_helpers import REPO_ROOT, DATABASE_URL, make_test_token, authed_cookies, _crm_available, company_auth, settle_background  # noqa: F401
 
 # Register inventory module routes onto the test app.
 _inv_src = _os.path.join(_os.path.dirname(__file__), "default_modules", "celerp-inventory")
@@ -450,18 +500,64 @@ def _ensure_slots() -> None:
             register(slot, contrib)
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _one_current_event_loop():
+    """The test thread's current event loop, held for the whole run and closed at its end.
+    pytest-asyncio restores the current loop after each async test, making one the first
+    time it finds none; a plain test that calls asyncio.run() then replaces it, and the
+    dropped loop warns as unclosed in whichever test is running when it is collected."""
+    import asyncio
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    yield
+    loop.close()
+
+
+_CENSUS = mutation_observer.Totals()
+
+
+@pytest.fixture(autouse=True)
+def _mutation_census(request):
+    """One write-observer record per test, kept for the census file
+    (CELERP_MUTATION_CENSUS names its folder). A write the observer judges unprotected,
+    out of order, for another company or that it cannot classify fails the test that made
+    it, unless it is exactly one the baseline accepts (mutation_baseline.py)."""
+    mutation_observer.reset(request.node.nodeid)
+    yield
+    seen = mutation_observer.reset()
+    if request.node.get_closest_marker("observer_control"):
+        return  # the observer's own controls make their findings on purpose
+    _CENSUS.add(seen)
+    refused = [f for f in seen.findings if not mutation_baseline.accepted(f)]
+    if refused:
+        pytest.fail(mutation_observer.explain(refused), pytrace=False)
+
+
+def pytest_sessionfinish(session, exitstatus):
+    path = mutation_observer.census_path()
+    if path:
+        _CENSUS.write(f"{path}.json")
+        mutation_observer.write_routes(f"{path}.routes.json", [app, _ui_app])
+
+
 @pytest.fixture(autouse=True)
 def _reset_hot_path_caches():
-    """Bust the in-process drain cache before each test.
+    """Bust the in-process drain cache and relay methods cache before each test.
 
-    The module-level cache is correct at runtime (single process, explicit bust
-    on mutation).  In tests, each test rolls back its database changes, so the
-    cache must be cleared to avoid leaking state between tests.
+    The module-level caches are correct at runtime (single process, explicit
+    bust on mutation, or a time-limited relay answer). In tests, each test rolls
+    back its database changes and mocks its own relay, so the caches must be
+    cleared to avoid leaking state between tests.
     """
+    import asyncio
+    from celerp.routers import health
     from celerp.services.runtime_state import _drain_cache_bust
     _drain_cache_bust()
+    health._relay_methods.clear()
+    health._relay_methods_lock = asyncio.Lock()
     yield
     _drain_cache_bust()
+    health._relay_methods.clear()
 
 
 @pytest.fixture(autouse=True)
@@ -637,6 +733,21 @@ def _ui_api_not_running(request, monkeypatch):
         raise httpx.ConnectError("The API is not running in unit tests.", request=api_request)
 
     monkeypatch.setattr(api_client._SharedTransport, "handle_async_request", _refused)
+
+
+@pytest.fixture(autouse=True)
+def _held_ai_limits():
+    """Test relays model a current AI service: the app holds its published limits, so
+    a model call does not first fetch them (tests/test_ai_deadlines.py forgets them
+    to test the fetch itself). Set and restored without monkeypatch: an autouse
+    fixture that requests it sets it up ahead of the fixtures that restore shared
+    state, which would then tear down while a test's patches are still in place
+    (tests/test_conftest_fixture_order.py)."""
+    from celerp.ai import deadlines
+    before = deadlines._held
+    deadlines._held = deadlines.CURRENT_RELAY_DEFAULTS
+    yield
+    deadlines._held = before
 
 
 @pytest.fixture(autouse=True)
@@ -875,6 +986,22 @@ for _name, _method in inspect.getmembers(AsyncSession, inspect.iscoroutinefuncti
 
 
 @pytest_asyncio.fixture
+async def _background_work_finishes():
+    """Background work a test's requests started finishes on the test's own event
+    loop. Left running, it would be cut off when the loop closes, and a database
+    connection it held would only be reported unclosed in some later test."""
+    yield
+    await settle_background()
+
+
+def pytest_collection_modifyitems(items):
+    # Every async test, and only those: a sync test has no loop of its own to settle.
+    for item in items:
+        if pytest_asyncio.is_async_test(item) and "_background_work_finishes" not in item.fixturenames:
+            item.fixturenames.append("_background_work_finishes")
+
+
+@pytest_asyncio.fixture
 async def session(_db_engine) -> AsyncSession:
     """Per-test isolation by transaction rollback — nothing commits to disk. The
     test runs inside an outer transaction; the app's session.commit() calls become
@@ -919,6 +1046,17 @@ async def auth(session, ids):
 
 # Set while a request of the `client` fixture runs (its per-request transaction).
 _IN_REQUEST = contextvars.ContextVar("celerp_test_in_request", default=False)
+# The statements that write rows, when a request sends them as text.
+_WRITE_VERBS = ("insert", "update", "delete", "merge", "truncate", "copy")
+
+
+@pytest_asyncio.fixture
+async def drained_jobs():
+    """Drains the AI jobs a test started (``test_helpers.drain_jobs``); request it
+    after ``client`` and ``session`` so it is torn down before them."""
+    from test_helpers import drain_jobs
+    yield
+    await drain_jobs()
 
 
 @pytest_asyncio.fixture
@@ -951,6 +1089,8 @@ async def client(session: AsyncSession):
     # holding uncommitted - and hangs until the per-test timeout. Route middleware
     # to the same shared session (the patch point middleware.py imports for this
     # purpose) so it joins the one transaction instead of deadlocking against it.
+    # The module boundary reads a company's settings the same way, so it sees the
+    # companies a test registered.
     from contextlib import asynccontextmanager
 
     @asynccontextmanager
@@ -980,12 +1120,15 @@ async def client(session: AsyncSession):
         # commit. Requests here share the test's session, so each one gets a transaction
         # of its own: what the test wrote first is committed, as a production client's
         # data would be, and the request's transaction ends with it. A request that
-        # raised or answered an error ends by rollback, so its uncommitted writes are
-        # gone as in production. Any other ends by commit (a savepoint release in the
-        # test's outer transaction): a rollback would also undo the work of lifecycle
-        # sessions nested inside it on this one connection, which production commits
-        # on connections of their own.
+        # raised or answered an error ends by rollback, so its uncommitted writes and its
+        # locks are gone as in production. Any other ends by commit (a savepoint release
+        # in the test's outer transaction): a rollback would also undo what lifecycle
+        # sessions and AI jobs committed inside it on this one connection, which
+        # production commits on connections of their own. So does a failed request that
+        # wrote nothing beside such a commit; one that wrote too cannot be told apart
+        # here, so it fails.
         status = 500
+        turn["wrote"] = turn["durable"] = False
 
         async def _send(message):
             nonlocal status
@@ -999,7 +1142,11 @@ async def client(session: AsyncSession):
             await stack(scope, receive, _send)
         finally:
             _IN_REQUEST.reset(token)
-            await _end_transaction(commit=status < 400)
+            if status >= 400 and turn["wrote"] and turn["durable"]:
+                await _end_transaction(commit=False)
+                raise AssertionError("a request that answered an error wrote through its session while "
+                                     "a job or lifecycle session committed beside it on the test connection")
+            await _end_transaction(commit=status < 400 or turn["durable"])
 
     async def _end_transaction(commit: bool):
         if not session.in_transaction():
@@ -1012,20 +1159,61 @@ async def client(session: AsyncSession):
                 pass
         await session.rollback()
 
+    # What the current request did on this connection: wrote through its own session,
+    # and whether a lifecycle session or an AI job committed beside it.
+    turn = {"wrote": False, "durable": False}
+
+    def _wrote(*_):
+        if _IN_REQUEST.get():
+            turn["wrote"] = True
+
+    def _executed(state):
+        if (state.is_insert or state.is_update or state.is_delete
+                or str(state.statement).lstrip("( \n").lower().startswith(_WRITE_VERBS)):
+            _wrote()
+
+    def _durable(_session):
+        if _IN_REQUEST.get():
+            turn["durable"] = True
+
+    sync_session = session.sync_session
+    sa_event.listen(sync_session, "after_flush", _wrote)
+    sa_event.listen(sync_session, "do_orm_execute", _executed)
+
+    class _DurableSession(Session):
+        pass
+
+    sa_event.listen(_DurableSession, "after_commit", _durable)
+
     lifecycle_factory = async_sessionmaker(
-        bind=await session.connection(), class_=AsyncSession,
+        bind=await session.connection(), class_=AsyncSession, sync_session_class=_DurableSession,
         expire_on_commit=False, join_transaction_mode="create_savepoint")
 
-    with patch("celerp.gateway.client._client", MagicMock()), \
+    # AI job tasks run beside the requests that start them, on the same connection.
+    # Their sessions join the outer transaction without savepoints of their own, so
+    # a job's commit can never release a savepoint a request session still holds.
+    job_factory = async_sessionmaker(
+        bind=await session.connection(), class_=AsyncSession, sync_session_class=_DurableSession,
+        expire_on_commit=False, join_transaction_mode="rollback_only")
+    # The model gate's condition binds to the event loop that first waits on it, and
+    # every test runs on its own loop: each test gets a gate of its own.
+    from celerp.ai import jobs
+
+    with patch("celerp.ai.jobs.gate", jobs.ModelGate(jobs.gate.size)), \
+         patch("celerp.gateway.client._client", MagicMock()), \
          patch("celerp.gateway.state.get_session_token", return_value="test-session-token"), \
          patch("celerp.middleware.get_session_ctx", _shared_session_ctx), \
+         patch("celerp.modules.boundary.get_session_ctx", _shared_session_ctx), \
          patch("celerp.db.LifecycleSessionLocal", lifecycle_factory), \
+         patch("celerp.ai.jobs.SessionLocal", job_factory), \
          patch.object(app, "middleware_stack", _request_scoped):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             yield c
         # Work a request left running (an email send and its receipt) finishes on this
         # test's loop: cut off by the loop closing, it would leave its connection open.
         await asyncio.gather(*list(background._BG_TASKS), return_exceptions=True)
+    sa_event.remove(sync_session, "after_flush", _wrote)
+    sa_event.remove(sync_session, "do_orm_execute", _executed)
     app.dependency_overrides.clear()
     # A test that started on held-back records leaves neither the flag nor its cause behind.
     app.state.data_current, app.state.held_back = True, None
@@ -1091,12 +1279,26 @@ def files_unchecked(monkeypatch):
     monkeypatch.setattr(loader, "check_unchanged", lambda module: None)
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def docs_running(monkeypatch):
-    """Record Documents as loaded, as it is in an installation that takes online payments.
-    The harness mounts its routes directly, so the loader would otherwise not list it."""
+    """Record Documents as loaded: the harness mounts its routes, as a running installation does.
+    A test of a process where it has not started asks for ``docs_not_started``."""
+    from test_helpers import mark_running
+    mark_running(monkeypatch, "celerp-docs")
+
+
+@pytest.fixture
+def docs_not_started(monkeypatch, docs_running):
+    """This process has not started Documents: the loader lists it as not running."""
     from celerp.modules import loader
-    monkeypatch.setattr(loader, "_loaded", [*loader._loaded, {"name": "celerp-docs", "version": "1.0.0"}])
+    monkeypatch.setattr(loader, "_loaded", [m for m in loader._loaded if m["name"] != "celerp-docs"])
+
+
+@pytest.fixture
+def connector_modules_running(monkeypatch):
+    """Record the modules connectors write into as loaded: Inventory, Documents and Contacts."""
+    from test_helpers import mark_running
+    mark_running(monkeypatch, "celerp-inventory", "celerp-docs", "celerp-contacts")
 
 
 @pytest.fixture(autouse=True)
@@ -1141,16 +1343,21 @@ def no_connection_off_this_machine(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def account_methods_offline(monkeypatch):
-    """Answer the screens' account-methods request as the API does when the relay is
-    unreachable. Opening a document refreshes the free-send quota from it in a task that
-    outlives the test. A test about the answer patches it again itself."""
+def relay_backed_reads_offline(monkeypatch):
+    """Answer the screens' requests whose API answer comes from the relay (account
+    methods, the AI offer) as the API does when the relay is unreachable. Opening a
+    document refreshes the free-send quota in a task that outlives the test, and the
+    dashboard reads the AI offer. A test about an answer patches it again itself."""
     import ui.api_client as api
 
-    async def _offline(token):
+    async def _methods_offline(token):
         return {"google": False, "free_email_quota": 0, "google_start_url": ""}
 
-    monkeypatch.setattr(api, "account_methods", _offline)
+    async def _offer_offline(token):
+        return {"paid_ai": False, "free_ai_questions": None, "plan_ai_questions": None}
+
+    monkeypatch.setattr(api, "account_methods", _methods_offline)
+    monkeypatch.setattr(api, "ai_offer", _offer_offline)
 
 
 @pytest.fixture
@@ -1158,6 +1365,15 @@ def relay_not_called_at_boot(no_connection_off_this_machine, monkeypatch):
     """Boot without checking in with the relay (skip_relay_check_in). A test that wants the
     check-in patches it again itself."""
     skip_relay_check_in(monkeypatch.setattr)
+
+
+@pytest.fixture
+def events_without_the_company_lock(monkeypatch):
+    """emit_event takes the company lock itself; the write observer's controls lift it to
+    make the unprotected event writes they check."""
+    async def no_lock(session, company_id):
+        return None
+    monkeypatch.setattr("celerp.services.company_lock.lock_company", no_lock)
 
 
 # ── Lock rank recorder (tests/lock_rank.py) ────────────────────────────────────
@@ -1180,6 +1396,17 @@ def pytest_runtest_setup(item):
 
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_call(item):
+    if item.get_closest_marker("observer_control"):
+        # These tests take locks out of order on purpose to check the write observer: their
+        # body records into a throwaway recorder, so it neither fails nor enters the graph.
+        real, _lock_rank.RECORDER = _lock_rank.RECORDER, _lock_rank.Recorder()
+        _lock_rank.RECORDER.test = item.nodeid
+        try:
+            yield
+        finally:
+            _lock_rank.RECORDER = real
+            real.clear_transactions()
+        return
     # Fixture setup runs in the test's one outer transaction; production commits
     # between setup-like work and a request, so the body starts holding nothing.
     _lock_rank.RECORDER.take_violations()

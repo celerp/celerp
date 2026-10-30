@@ -12,16 +12,16 @@ run, so its scheduled syncs carry on.
 The record kinds are written out here as they stood when this revision was made,
 so the upgrade does not change if a connector later carries more.
 
-Revision ID: h2a3b4c5d6e7
-Revises: g1z2a3b4c5d6
+Revision ID: j5d6e7f8a9b0
+Revises: i3b4c5d6e7f8
 """
 import json
 
 import sqlalchemy as sa
 from alembic import op
 
-revision = "h2a3b4c5d6e7"
-down_revision = "g1z2a3b4c5d6"
+revision = "j5d6e7f8a9b0"
+down_revision = "i3b4c5d6e7f8"
 branch_labels = None
 depends_on = None
 

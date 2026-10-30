@@ -1,0 +1,18 @@
+{
+  "id": "docs.payments",
+  "title": "Tracking payments",
+  "summary": "See every payment recorded against your documents.",
+  "keywords": ["payment", "record payment", "receipt"],
+  "routes": ["/payments", "/docs/{entity_id}"],
+  "permission": "view_payments",
+  "order": 5,
+  "steps": [
+    {
+      "text": "Open {pay} from the sidebar to see every payment across your documents.",
+      "labels": {"pay": "nav.payments"},
+      "image": null,
+      "capture": {"route": "/payments", "selector": "main", "actions": []}
+    }
+  ],
+  "related": ["docs.sales-documents", "docs.purchasing-documents"]
+}

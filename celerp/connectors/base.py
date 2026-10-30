@@ -203,6 +203,22 @@ class RemoteOrder:
 
 
 @dataclass
+class ExternalImportRecord:
+    """What a connector's product import did, for its attention list and its undo.
+
+    ``created``: (entity id, ledger key of its creation) for each item it created.
+    ``linked``: {"entity_id", "restore"} for each existing item it newly linked by SKU;
+    ``restore`` holds the item's values before the store's replaced them, or None when
+    the item kept its own. ``conflicts``: {"entity_id", "fields"} for each linked item
+    whose field changed in both systems, each field with both values."""
+    created: list[tuple[str, str]] = field(default_factory=list)
+    linked: list[dict] = field(default_factory=list)
+    conflicts: list[dict] = field(default_factory=list)
+    # Ledger keys of the files pulled onto the items it created.
+    files: list[str] = field(default_factory=list)
+
+
+@dataclass
 class FirstSync:
     """A first sync's choices for its product pass, and what that pass did.
 
@@ -210,11 +226,11 @@ class FirstSync:
     "take" replaces them with the platform's. ``create``: whether products new to
     Celerp are created (only when products come in). ``batch_id``: the import batch
     the items it creates join, so its undo removes them with their opening stock.
-    ``record``: the celerp_inventory ExternalImportRecord the pass fills in."""
+    ``record``: the ExternalImportRecord the pass fills in."""
     match: str
     create: bool
     batch_id: str | None
-    record: Any
+    record: ExternalImportRecord
 
 
 @dataclass
@@ -231,6 +247,9 @@ class SyncResult:
     # that tracks attention always returns a list (empty when nothing waits);
     # None means the run produced no list and the previous one stands.
     attention: list[dict] | None = None
+    # The run did not go ahead because modules were being changed (ModuleBusy): the same
+    # run can succeed when tried again.
+    busy: bool = False
 
     @property
     def ok(self) -> bool:

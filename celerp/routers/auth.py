@@ -158,8 +158,9 @@ async def register(payload: RegisterRequest, session: AsyncSession = Depends(get
 
 from slowapi import Limiter
 
-# Module-level limiter for the sign-in, setup and recovery routes, counted per caller.
-# Tests reset this via conftest: celerp.routers.auth.limiter._storage.reset()
+# Celerp's one rate limiter, counted per caller: the sign-in, setup and recovery routes and
+# every module route that limits its callers. Tests reset it via conftest:
+# celerp.routers.auth.limiter._storage.reset()
 limiter = Limiter(key_func=request_caller)
 
 

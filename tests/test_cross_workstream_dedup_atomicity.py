@@ -25,6 +25,7 @@ import uuid as _uuid
 import pytest
 from sqlalchemy import select
 
+from test_helpers import lock_every_company
 from celerp.models.company import Company
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
@@ -124,6 +125,7 @@ async def _seed_historical_doc(session, cid, doc_id, data):
     )
     session.add(entry)
     await session.flush()
+    await lock_every_company(session)
     await ProjectionEngine.rebuild(session)
 
 

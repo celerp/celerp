@@ -237,6 +237,8 @@ class Execution:
 _CURRENT: ContextVar[Execution | None] = ContextVar("connector_execution", default=None)
 # Set while this module runs its own lease transactions, which are never fenced.
 _INTERNAL: ContextVar[bool] = ContextVar("connector_execution_internal", default=False)
+# Set while work inside an execution only reads before any write (unfenced_reads).
+_UNFENCED: ContextVar[bool] = ContextVar("connector_execution_unfenced", default=False)
 _FENCED: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
 _SLOTS: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore]" = weakref.WeakKeyDictionary()
 
@@ -251,6 +253,18 @@ def current() -> Execution | None:
     except RuntimeError:
         task = None
     return ex if ex.task is task else None
+
+
+@contextlib.contextmanager
+def unfenced_reads():
+    """Run the block's transactions without the lease fence, for reads that must take
+    locks ranked before the lease rows (a module admission's instance-wide locks). Its
+    writes still need the fence, so one is refused as unfenced."""
+    token = _UNFENCED.set(True)
+    try:
+        yield
+    finally:
+        _UNFENCED.reset(token)
 
 
 @contextlib.contextmanager
@@ -274,7 +288,7 @@ def _slots() -> asyncio.Semaphore:
 
 def _fence_session(session: Session) -> None:
     ex = current()
-    if ex is None:
+    if ex is None or _UNFENCED.get():
         return
     ex.fence(session.connection())
 
@@ -615,8 +629,12 @@ async def _rerun(connector, ex: Execution, resource: str) -> None:
 
     if resource == WEBHOOKS:
         await reconcile_webhooks(ex)
-    else:
-        await run_connector_sync(connector, ex.company_id, purpose="rerun", reconcile=True, resource=resource)
+        return
+    results = await run_connector_sync(connector, ex.company_id, purpose="rerun", reconcile=True,
+                                       resource=resource)
+    if busy := next((r for r in results if r.busy), None):
+        # Refused while modules change: asked again, never dropped.
+        raise ExecutionBusy(busy.errors[0])
 
 
 async def sweep_reruns() -> None:

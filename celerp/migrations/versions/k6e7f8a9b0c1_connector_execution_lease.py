@@ -8,14 +8,14 @@ started counts it as completed, as do accounting connections, which have no revi
 first sync. The store's webhooks are marked current. Re-running the upgrade changes
 nothing that is already there.
 
-Revision ID: i3b4c5d6e7f8
-Revises: h2a3b4c5d6e7
+Revision ID: k6e7f8a9b0c1
+Revises: j5d6e7f8a9b0
 """
 import sqlalchemy as sa
 from alembic import op
 
-revision = "i3b4c5d6e7f8"
-down_revision = "h2a3b4c5d6e7"
+revision = "k6e7f8a9b0c1"
+down_revision = "j5d6e7f8a9b0"
 branch_labels = None
 depends_on = None
 

@@ -20,7 +20,10 @@ from typing import Literal, Sequence
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.models.ai import AIBatchJob, AIConversation, AIMessage
+from celerp.ai import jobs
+from celerp.models.ai import AIConversation, AIMessage
+from celerp.ai.service import NEW_QUESTION_ERRORS
+from celerp.ai.usage import record_usage
 from ui.i18n import t
 
 log = logging.getLogger(__name__)
@@ -46,12 +49,7 @@ async def _protected_conversation_ids(
     if not ids:
         return set()
 
-    active_ids = set((await session.execute(
-        select(AIBatchJob.conversation_id).where(
-            AIBatchJob.conversation_id.in_(ids),
-            AIBatchJob.status.in_(("pending", "running")),
-        )
-    )).scalars().all())
+    active_ids = {job.conversation_id for job in await jobs.open_jobs(session, ids)}
     action_rows = await session.execute(
         select(AIMessage.conversation_id, AIMessage.tools_called).where(
             AIMessage.conversation_id.in_(ids),
@@ -206,21 +204,27 @@ async def delete_conversation(
     company_id: uuid.UUID,
     user_id: uuid.UUID,
 ) -> bool:
-    """Delete a conversation and its messages. Returns True if found.
+    """Delete a conversation and its messages, and end its open jobs as stopped in the
+    same transaction, so none outlives it open. Returns True if found. Raises
+    ``ConversationBusy``, and deletes nothing, while a job runs in it.
 
-    One DELETE of the conversation's row: the row is locked first and the
-    database's foreign-key cascade then removes the messages, the same order
-    every message writer takes (conversation, then messages)."""
-    deleted = (await session.execute(
-        delete(AIConversation)
-        .where(
-            AIConversation.id == conversation_id,
-            AIConversation.company_id == company_id,
-            AIConversation.user_id == user_id,
-        )
-        .returning(AIConversation.id)
-    )).scalar_one_or_none()
-    return deleted is not None
+    One DELETE of the conversation's row: the row is locked first and the database's
+    foreign-key cascade then removes the messages, the same order every message writer
+    takes (conversation, then messages)."""
+    await jobs.lock_for_ai(session, company_id)
+    conv = await get_conversation(session, conversation_id, company_id, user_id)
+    if conv is None:
+        return False
+    if not await jobs.end_conversation_jobs(session, conversation_id, company_id=company_id, user_id=user_id):
+        raise ConversationBusy
+    await session.execute(delete(AIConversation).where(
+        AIConversation.id == conversation_id, AIConversation.company_id == company_id,
+        AIConversation.user_id == user_id))
+    return True
+
+
+class ConversationBusy(Exception):
+    """A job runs in the conversation: it can be deleted once the job ends or is stopped."""
 
 
 async def rename_conversation(
@@ -249,8 +253,11 @@ async def add_message(
     tools_called: list | None = None,
     file_ids: list[str] | None = None,
     credits_used: int = 0,
+    message_id: uuid.UUID | None = None,
 ) -> AIMessage:
     """Add a message to a conversation. Prunes oldest if limit exceeded.
+
+    ``message_id`` is the question id of a user message, chosen by the caller.
 
     ``tools_called`` is stored verbatim: a mix of executed read operation-id
     strings and pending-action records (dicts). Also sets the conversation title
@@ -258,6 +265,7 @@ async def add_message(
     """
     await _lock_conversation(session, conversation_id)
     msg = AIMessage(
+        **({"id": message_id} if message_id is not None else {}),
         conversation_id=conversation_id,
         role=role,
         content=content,
@@ -293,12 +301,13 @@ async def add_message(
         )).all())
         if old_rows:
             # Unresolved proposals and ambiguous/retryable writes are durable user
-            # decisions, not disposable chat history. Preserve them until they reach
-            # a terminal state, even if that means temporarily exceeding the soft
-            # history cap.
+            # decisions, not disposable chat history, and an open job's question is
+            # what it answers. Preserve them until they reach a terminal state, even
+            # if that means temporarily exceeding the soft history cap.
+            asked = {job.question_id for job in await jobs.open_jobs(session, [conversation_id])}
             prunable = [
                 message_id for message_id, tools_called in old_rows
-                if not pending_actions(tools_called)
+                if message_id not in asked and not pending_actions(tools_called)
             ]
             if prunable:
                 await session.execute(delete(AIMessage).where(AIMessage.id.in_(prunable)))
@@ -336,17 +345,24 @@ async def get_message(
     return msg
 
 
-async def record_credits(session: AsyncSession, message_id: uuid.UUID, credits: int) -> None:
-    """Store the credits a run consumed on the user message that started it."""
-    conversation_id = await session.scalar(
-        select(AIMessage.conversation_id).where(AIMessage.id == message_id)
-    )
-    if conversation_id is None:
-        return
-    await _lock_conversation(session, conversation_id)
-    await session.execute(
-        update(AIMessage).where(AIMessage.id == message_id).values(credits_used=credits)
-    )
+async def record_credits(
+    session: AsyncSession,
+    message: AIMessage,
+    credits: int,
+    *,
+    known: bool,
+    company_id: uuid.UUID,
+    user_id: uuid.UUID,
+) -> None:
+    """Record what a run of the question in ``message`` was charged, on the message and
+    in the usage record under the message's id (celerp.ai.usage.record_usage): the
+    question's whole charge when the service named it (``known``), else the credits
+    this run's replies added."""
+    await _lock_conversation(session, message.conversation_id)
+    total = credits if known else AIMessage.credits_used + credits
+    await session.execute(update(AIMessage).where(AIMessage.id == message.id).values(credits_used=total))
+    await record_usage(session, company_id=company_id, user_id=user_id, operation_id=message.id,
+                       credits=credits, known=known)
 
 
 # -- Tool-call record helpers ------------------------------------------------
@@ -358,19 +374,102 @@ async def record_credits(session: AsyncSession, message_id: uuid.UUID, credits: 
 # with no explicit status is therefore still pending.
 
 
-ERROR_MARKER = {"error": True}
+def failure_record(code: str | None, *, status: int | None = None, refusal: dict | None = None) -> dict:
+    """The record that marks a stored assistant message as a failed run: why it
+    failed and, for a question the AI service refused, the refusal it sent with
+    its status, so a reloaded thread explains it the same way.
+
+    The record has no ``name`` and no ``expires_at``, so ``tool_names`` and
+    ``pending_actions`` both ignore it.
+    """
+    record: dict = {"error": True, "code": code}
+    if refusal is not None:
+        record.update(status=status, refusal=refusal)
+    return record
+
+
+def message_failure(tools_called: list | None) -> dict | None:
+    """The failure record of a stored assistant message; None when the run answered."""
+    for item in tools_called or []:
+        if isinstance(item, dict) and item.get("error") is True and "name" not in item:
+            return item
+    return None
 
 
 def message_error(tools_called: list | None) -> bool:
-    """True when a stored assistant message records a failed agent run.
+    """True when a stored assistant message records a failed agent run."""
+    return message_failure(tools_called) is not None
 
-    The marker has no ``name`` and no ``expires_at``, so ``tool_names`` and
-    ``pending_actions`` both ignore it.
+
+class QuestionIdConflict(Exception):
+    """The question id names a question that can no longer be asked under it."""
+
+
+class QuestionNotFound(Exception):
+    """The question id names a message no job asks, or a job whose question is gone
+    (its job is ended, unless a runner holds it: its run ends it)."""
+
+
+async def find_question(
+    session: AsyncSession,
+    conversation_id: uuid.UUID,
+    question_id: uuid.UUID,
+    request: jobs.JobRequest,
+) -> tuple:
+    """The job ``question_id`` names for ``request`` (``jobs.reused_job``, the one
+    comparison of a send with what the question asked), its user message, and the
+    answer it already has.
+
+    The message is read before the job: both are committed together, so a send that
+    finds the message finds its job. (None, None, None) when nothing holds the id yet:
+    a new question. A message under the id without a job, or a job whose message is
+    gone, is no question to ask: ``QuestionNotFound``. The answer is the first reply after the
+    question, before the next question, that is not a failure; a question with an
+    answer returns it however many questions came after. Without an answer the question
+    is asked again only while it is the conversation's latest and the AI service still
+    takes its id; otherwise ``QuestionIdConflict``.
     """
-    return any(
-        isinstance(item, dict) and item.get("error") is True and "name" not in item
-        for item in (tools_called or [])
-    )
+    asked = await session.get(AIMessage, question_id)
+    job = await jobs.reused_job(session, question_id, request)
+    if job is None:
+        if asked is not None:
+            raise QuestionNotFound
+        return None, None, None
+    if asked is None:
+        await jobs.end_question(session, job.id)
+        raise QuestionNotFound
+    later = (await session.execute(
+        select(AIMessage)
+        .where(AIMessage.conversation_id == conversation_id, AIMessage.created_at > asked.created_at)
+        .order_by(AIMessage.created_at)
+    )).scalars().all()
+    next_question = next((n for n, m in enumerate(later) if m.role == "user"), len(later))
+    replies = later[:next_question]
+    for reply in replies:
+        if not message_error(reply.tools_called):
+            return job, asked, reply
+    if next_question < len(later) or (
+        replies and (message_failure(replies[-1].tools_called) or {}).get("code") in NEW_QUESTION_ERRORS
+    ):
+        raise QuestionIdConflict
+    return job, asked, None
+
+
+def help_record(pages: list[str] | None) -> list[dict]:
+    """The citation record for an answer's help pages; nothing when help was not searched.
+
+    The record has no ``name``, ``expires_at`` or ``error``, so ``tool_names``,
+    ``pending_actions`` and ``message_failure`` all ignore it.
+    """
+    return [] if pages is None else [{"help_pages": list(pages)}]
+
+
+def help_pages(tools_called: list | None) -> list[str] | None:
+    """The help pages a stored answer cites; None when the answer did not search help."""
+    for item in tools_called or []:
+        if isinstance(item, dict) and isinstance(item.get("help_pages"), list):
+            return item["help_pages"]
+    return None
 
 
 def tool_names(tools_called: list | None) -> list[str]:

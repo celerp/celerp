@@ -201,3 +201,57 @@ def test_explicit_disconnect_never_auto_recovers(monkeypatch):
         resp = _client.get("/gated")
     assert resp.status_code == 401
     recover.assert_not_awaited()
+
+
+# -- require_ai_access: the free AI path admits an install with a stored key ----
+
+def _ai_client():
+    from celerp.session_gate import require_ai_access
+    app = FastAPI()
+
+    @app.get("/ai-gated")
+    async def ai_gated(_: None = __import__("fastapi").Depends(require_ai_access)):
+        return {"ok": True}
+
+    return TestClient(app, raise_server_exceptions=False)
+
+
+def _stored_key(monkeypatch, key: str, *, disconnected: bool = False):
+    from celerp.config import settings
+    monkeypatch.setattr(settings, "cloud_disconnected", disconnected)
+    monkeypatch.setattr("celerp.services.cloud_entitlement.stored_api_key",
+                        __import__("unittest.mock", fromlist=["AsyncMock"]).AsyncMock(return_value=key))
+
+
+def test_ai_access_admits_stored_key_without_header(monkeypatch):
+    _stored_key(monkeypatch, "durable-api-key")
+    assert _ai_client().get("/ai-gated").status_code == 200
+
+
+def test_ai_access_refuses_wrong_header_with_key(monkeypatch):
+    _stored_key(monkeypatch, "durable-api-key")
+    gw_state.set_session_token("current-session")
+    resp = _ai_client().get("/ai-gated", headers={"X-Session-Token": "wrong"})
+    assert resp.status_code == 401
+
+
+def test_ai_access_refuses_when_disconnected(monkeypatch):
+    _stored_key(monkeypatch, "durable-api-key", disconnected=True)
+    assert _ai_client().get("/ai-gated").status_code == 401
+
+
+def test_ai_access_refuses_without_key(monkeypatch):
+    _stored_key(monkeypatch, "")
+    resp = _ai_client().get("/ai-gated")
+    assert resp.status_code == 401
+    assert "Web Access" in resp.json()["detail"]
+
+
+def test_ai_access_makes_no_relay_call(monkeypatch):
+    _stored_key(monkeypatch, "durable-api-key")
+    with __import__("unittest.mock", fromlist=["patch"]).patch(
+        "celerp.services.cloud_entitlement.sync_existing_entitlement",
+        new=__import__("unittest.mock", fromlist=["AsyncMock"]).AsyncMock(),
+    ) as sync:
+        assert _ai_client().get("/ai-gated").status_code == 200
+    sync.assert_not_awaited()

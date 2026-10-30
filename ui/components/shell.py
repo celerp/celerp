@@ -13,7 +13,7 @@ from fasthtml.common import *
 
 from celerp.services.update import CARD_REASONS, PIP_BLOCKERS, REASON_CODES, reason_key
 from ui.config import COOKIE_NAME, get_role
-from ui.i18n import t, get_lang, available_langs, try_again_pattern
+from ui.i18n import t, get_lang, available_langs, lang_label, try_again_pattern
 from ui.components.table import searchable_select
 
 # Cache-bust static assets by hashing app.css content
@@ -26,18 +26,6 @@ def _css_version() -> str:
         return "1"
 
 _CSS_VER = _css_version()
-
-# Native display name per language code, for the topbar switcher. Which languages
-# exist is decided by available_langs() (disk catalogs plus any a module contributes);
-# this map only supplies the human-readable label, falling back to the uppercased code
-# for a language with no entry here (e.g. one contributed by a module).
-_LANG_NATIVE_LABELS: dict[str, str] = {
-    "en": "English", "am": "አማርኛ", "th": "ไทย", "zh": "中文", "ja": "日本語",
-    "ko": "한국어", "es": "Español", "fr": "Français", "de": "Deutsch",
-    "pt": "Português", "it": "Italiano", "nl": "Nederlands", "ru": "Русский",
-    "ar": "العربية", "hi": "हिन्दी", "vi": "Tiếng Việt", "id": "Bahasa Indonesia",
-    "ms": "Bahasa Melayu", "tr": "Türkçe", "pl": "Polski", "sv": "Svenska",
-}
 
 # Idle auto-logout: after N minutes with no user interaction, send the browser to /logout. The
 # effective minutes are decided per render by effective_idle_logout_minutes() so the timer is on only
@@ -330,9 +318,9 @@ document.addEventListener('keydown', function(e) {
     }
     document.querySelectorAll('.row-menu-dropdown.open').forEach(function(m) { m.classList.remove('open'); });
     document.querySelectorAll('.combobox-list.open').forEach(function(l) { l.classList.remove('open'); });
-    document.querySelectorAll('.global-search-help-panel.open').forEach(function(p) {
+    document.querySelectorAll('.popover-panel.open').forEach(function(p) {
       p.classList.remove('open');
-      var b = p.parentElement.querySelector('.global-search-help');
+      var b = p.parentElement.querySelector('.popover-toggle');
       if (b) b.setAttribute('aria-expanded', 'false');
     });
   }
@@ -376,21 +364,22 @@ function toggleRowMenu(id) {
   }
 }
 document.addEventListener('click', function(e) {
-  // Global search help (?) toggle: open its panel; a click elsewhere closes any open one.
-  var helpBtn = e.target.closest('.global-search-help');
-  if (helpBtn) {
-    var panel = helpBtn.parentElement.querySelector('.global-search-help-panel');
+  // Popover toggles (search help "?", top bar Help): open the toggle's panel; a click
+  // elsewhere closes any open one.
+  var toggle = e.target.closest('.popover-toggle');
+  if (toggle) {
+    var panel = toggle.parentElement.querySelector('.popover-panel');
     if (panel) {
       var isOpen = panel.classList.toggle('open');
-      helpBtn.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+      toggle.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
     }
-  } else if (!e.target.closest('.global-search-help-panel')) {
-    document.querySelectorAll('.global-search-help-panel.open').forEach(function(p) {
-      p.classList.remove('open');
-      var b = p.parentElement.querySelector('.global-search-help');
-      if (b) b.setAttribute('aria-expanded', 'false');
-    });
   }
+  document.querySelectorAll('.popover-panel.open').forEach(function(p) {
+    if (p.contains(e.target) || (toggle && p.parentElement === toggle.parentElement)) return;
+    p.classList.remove('open');
+    var b = p.parentElement.querySelector('.popover-toggle');
+    if (b) b.setAttribute('aria-expanded', 'false');
+  });
   // data-reveal button: show or mask the secret field it names
   var revealBtn = e.target.closest('[data-reveal]');
   if (revealBtn) {
@@ -436,10 +425,17 @@ document.addEventListener('click', function(e) {
       m.style.cssText = '';
     });
   }
-  if (!e.target.closest('.combobox-wrap')) {
+  // A click that began on a list is a pick, even when the list moved before the button
+  // came up and the click lands on what is around it.
+  if (!e.target.closest('.combobox-wrap') && !pressedInCombobox) {
     document.querySelectorAll('.combobox-list.open').forEach(function(l) { l.classList.remove('open'); });
   }
+  pressedInCombobox = false;
 });
+var pressedInCombobox = false;
+document.addEventListener('mousedown', function(e) {
+  pressedInCombobox = !!e.target.closest('.combobox-wrap');
+}, true);
 
 /* Searchable combobox — works with .combobox-wrap > .combobox-input + .combobox-list */
 function initCombobox(wrap) {
@@ -491,6 +487,14 @@ function initCombobox(wrap) {
 
   // The list is position:fixed, so keep it inside the viewport: open above the input
   // when there is more room there, and never let it run past either side.
+  // While it is open it is placed again every frame, so it stays under its field whatever
+  // moves the page (a scroll, a resize, content loaded or a notice shown above the field).
+  var following = false;
+  function follow() {
+    if (!list.classList.contains('open') || !list.isConnected) { following = false; return; }
+    positionList();
+    requestAnimationFrame(follow);
+  }
   function positionList() {
     var r = input.getBoundingClientRect();
     var gap = 8, vw = document.documentElement.clientWidth, vh = window.innerHeight;
@@ -503,6 +507,7 @@ function initCombobox(wrap) {
     list.style.top = up ? 'auto' : (r.bottom + 2) + 'px';
     list.style.bottom = up ? (vh - r.top + 2) + 'px' : 'auto';
     list.style.left = Math.max(gap, Math.min(r.left, vw - gap - list.offsetWidth)) + 'px';
+    if (!following) { following = true; requestAnimationFrame(follow); }
   }
 
   function showList() {
@@ -594,9 +599,9 @@ function initCombobox(wrap) {
     clearPickNote();
     var val = opt.dataset.value !== undefined ? opt.dataset.value : opt.textContent.trim();
     var label = opt.textContent.trim();
-    // __new__:URL values trigger a redirect instead of a form submission
+    // __new__:URL values create a record by POST to URL, which answers with HX-Redirect
     if (val.indexOf('__new__:') === 0) {
-      window.location = val.slice('__new__:'.length);
+      htmx.ajax('POST', val.slice('__new__:'.length), {swap: 'none'});
       return;
     }
     if (isMulti && bag) {
@@ -2264,7 +2269,7 @@ async def _recovery_outcome_notice(request) -> list:
     return notices
 
 
-def _shell_document(*content, nav: FT, title: str = "Celerp", companies: list[dict] | None = None, extra_head: list | None = None, lang: str = "en", request=None) -> FT:
+def _shell_document(*content, nav: FT, title: str = "Celerp", companies: list[dict] | None = None, extra_head: list | None = None, lang: str = "en", request=None, help_path: str | None = None) -> FT:
     """The outer HTML document shared by every full-chrome page: head assets, the
     supplied nav, top bar, banners, main content, and footer.
 
@@ -2302,7 +2307,7 @@ def _shell_document(*content, nav: FT, title: str = "Celerp", companies: list[di
             Div(
                 nav,
                 Div(
-                    _topbar(companies or [], lang=lang, user_email=user_email, relay_info=relay_info),
+                    _topbar(companies or [], lang=lang, user_email=user_email, relay_info=relay_info, help_path=help_path),
                     _HEALTH_BANNER_HTML,
                     _backup_banner_html(lang),
                     _OPEN_MIGRATIONS_LOADER,
@@ -2341,8 +2346,12 @@ def _minimal_sidebar() -> FT:
     )
 
 
-async def base_shell(*content, title: str = "Celerp", nav_active: str = "", companies: list[dict] | None = None, extra_head: list | None = None, lang: str = "en", request=None, company_settings: dict | None = None) -> FT:
-    """Outer chrome: permission-filtered sidebar nav + top header + content area."""
+async def base_shell(*content, title: str = "Celerp", nav_active: str = "", companies: list[dict] | None = None, extra_head: list | None = None, lang: str = "en", request=None, company_settings: dict | None = None, help_path: str | None = None) -> FT:
+    """Outer chrome: permission-filtered sidebar nav + top header + content area.
+
+    ``help_path`` is the screen the top bar Help panel looks up, for a page whose
+    address does not say which screen it shows (a tab chosen by role); without it
+    the panel uses the browser's address."""
     from ui.config import get_token
     role = get_role(request) if request is not None else "owner"
     if company_settings is None:
@@ -2359,7 +2368,7 @@ async def base_shell(*content, title: str = "Celerp", nav_active: str = "", comp
     sidebar = _sidebar(nav_active, lang=lang, role=role, request=request, settings=company_settings)
     return _shell_document(
         *await _recovery_outcome_notice(request), *content, nav=sidebar, title=title, companies=companies,
-        extra_head=extra_head, lang=lang, request=request,
+        extra_head=extra_head, lang=lang, request=request, help_path=help_path,
     )
 
 
@@ -2427,7 +2436,7 @@ def search_help(lang: str = "en", panel_id: str = "global-search-help-panel") ->
         Button(
             "?",
             type="button",
-            cls="global-search-help",
+            cls="global-search-help popover-toggle",
             aria_label=t("msg.search_help", lang),
             aria_expanded="false",
             aria_controls=panel_id,
@@ -2463,14 +2472,14 @@ def search_help(lang: str = "en", panel_id: str = "global-search-help-panel") ->
                     t("shell.search_help_example_scan_result", lang)),
                 cls="global-search-help-example"),
             id=panel_id,
-            cls="global-search-help-panel",
+            cls="global-search-help-panel popover-panel",
             role="dialog",
         ),
         cls="global-search-help-wrap",
     )
 
 
-def _topbar(companies: list[dict], lang: str = "en", user_email: str | None = None, relay_info: dict | None = None) -> FT:
+def _topbar(companies: list[dict], lang: str = "en", user_email: str | None = None, relay_info: dict | None = None, help_path: str | None = None) -> FT:
     """Top bar with hamburger toggle, global search, and optional company switcher."""
     parts: list[FT] = [
         Button("☰", cls="sidebar-toggle", type="button"),
@@ -2492,6 +2501,17 @@ def _topbar(companies: list[dict], lang: str = "en", user_email: str | None = No
             cls="global-search-wrap",
         ),
     ]
+    # Help for this page: lazy-loaded like the company switcher, for the page it sits on.
+    parts.append(
+        Div(
+            id="topbar-help",
+            hx_get="/help/for-page",
+            hx_vals=json.dumps({"path": help_path}) if help_path else "js:{path: location.pathname + location.search}",
+            hx_trigger="load",
+            hx_swap="outerHTML",
+            data_quiet_error="1",
+        ),
+    )
     # Company switcher — lazy-loaded so it appears on every page without
     # per-route my_companies() calls. Renders nothing when only one company.
     parts.append(
@@ -2509,7 +2529,7 @@ def _topbar(companies: list[dict], lang: str = "en", user_email: str | None = No
             Span("🌐", cls="lang-switcher__globe"),
             searchable_select(
                 "lang",
-                [(code, _LANG_NATIVE_LABELS.get(code, code.upper())) for code in available_langs()],
+                [(code, lang_label(code)) for code in available_langs()],
                 value=lang,
                 aria_label=t("label.language", lang),
             ),
@@ -3061,6 +3081,19 @@ RESTART_POLL_JS = """
 
 def spinner() -> FT:
     return Div(cls="spinner", id="spinner")
+
+
+def load_error(message: str, lang: str = "en", *, href: str | None = None,
+               hx_get: str | None = None, target: str | None = None) -> FT:
+    """Recoverable read failure with its retry. Empty-state copy is reserved for successful reads."""
+    if href:
+        retry: FT = A(t("btn.retry", lang), href=href, cls="btn btn--secondary btn--sm")
+    else:
+        retry = Button(
+            t("btn.retry", lang), type="button", cls="btn btn--secondary btn--sm",
+            hx_get=hx_get, hx_target=target, hx_swap="innerHTML",
+        )
+    return Div(P(message, cls="load-error__text"), retry, cls="load-error")
 
 
 def page_header(title: str, *actions: FT) -> FT:

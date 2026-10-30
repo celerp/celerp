@@ -101,7 +101,7 @@ def test_enter_in_an_inline_editor_sends_only_its_change(page, ui_server, fresh_
     page.wait_for_timeout(800)
 
     assert page.evaluate("window.__invalid") == [], "Enter ran the Add unit form's validation"
-    assert page.evaluate("document.activeElement.name") != "name", "focus jumped to the Add unit name box"
+    expect(page.locator('[name="name"]:focus'), "focus jumped to the Add unit name box").to_have_count(0)
     assert [(m, urlsplit(u).path, unquote_plus(body)) for m, u, body in sent if m != "GET"] == [
         ("PATCH", f"/settings/units/carat/{field}", f"value={value}")]
     assert page.evaluate("window.__sameView === true"), "the page reloaded"

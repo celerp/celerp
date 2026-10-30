@@ -213,3 +213,15 @@ def test_packaged_module_checker_script_exit_codes(packaged_tree):
     bad = subprocess.run(run, capture_output=True, text=True, env=env)
     assert bad.returncode == 1
     assert f"{name}: missing" in bad.stdout
+
+
+def test_pyproject_package_data_covers_every_locked_module():
+    """Every first-party module in the lock ships in the wheel, and no package-data
+    glob names a module that does not exist."""
+    import tomllib
+
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
+    globs = data["tool"]["setuptools"]["package-data"]["default_modules"]
+    named = {g.split("/", 1)[0] for g in globs if g.endswith("/**/*")}
+    locked = set(json.loads(LOCK_PATH.read_text()))
+    assert named == locked

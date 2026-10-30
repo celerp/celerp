@@ -44,6 +44,7 @@ from celerp.notifications import service as notification_service
 from celerp.services import cloud_entitlement
 from celerp.services.attachments import FILE_ATTACHED_EVENTS, attach_file, store_file
 from celerp.services.company_handoff_sender import cloud_json
+from celerp.services.company_lock import lock_company
 from celerp.services.migration_core_sink import stage_file_cleanup
 from celerp.services.money import round_money
 from celerp.services.migrations import _try_xact_lock
@@ -116,9 +117,17 @@ def _require_xero(run: MigrationRun) -> None:
         raise HTTPException(status_code=409, detail=t("migration.xero_att_not_imported"))
 
 
-async def _row(session: AsyncSession, run_id: uuid.UUID, *, lock: bool = False) -> MigrationAttachmentFetch | None:
-    query = select(MigrationAttachmentFetch).where(MigrationAttachmentFetch.migration_run_id == run_id)
-    return await session.scalar(query.with_for_update() if lock else query)
+async def _row(session: AsyncSession, run_id: uuid.UUID) -> MigrationAttachmentFetch | None:
+    return await session.scalar(
+        select(MigrationAttachmentFetch).where(MigrationAttachmentFetch.migration_run_id == run_id))
+
+
+async def _locked_row(session: AsyncSession, run: MigrationRun) -> MigrationAttachmentFetch | None:
+    """The fetch as committed, held under the run company's lock, which judges the request again first."""
+    await lock_company(session, run.company_id)
+    return await session.scalar(
+        select(MigrationAttachmentFetch).where(MigrationAttachmentFetch.migration_run_id == run.id)
+        .with_for_update().execution_options(populate_existing=True))
 
 
 async def view(session: AsyncSession, run: MigrationRun) -> dict:
@@ -144,12 +153,16 @@ async def view(session: AsyncSession, run: MigrationRun) -> dict:
 async def start(session: AsyncSession, run: MigrationRun, user_id: uuid.UUID) -> dict:
     """Start fetching, or return the fetch already under way. Starting while signing in
     returns the same sign-in link; starting after a fetch ended starts a new one. The
-    caller turns cloud refusals into HTTP errors (company_handoff_sender.as_http)."""
+    caller turns cloud refusals into HTTP errors (company_handoff_sender.as_http).
+
+    The relay is asked with no lock held. The fetch is then written under the company lock
+    only if no other start, confirm, stop or fetch round changed it meanwhile; otherwise it
+    is shown as it is now."""
     _require_xero(run)
-    await session.execute(text("SELECT pg_advisory_xact_lock(hashtext(:k))"), {"k": f"xero-attachments:{run.id}"})
-    row = await _row(session, run.id, lock=True)
+    row = await _row(session, run.id)
     if row is not None and row.status in ("fetching", "waiting"):
         return await view(session, run)
+    seen = None if row is None else (row.operation_id, row.status)
     if row is None or row.status != "signing_in":
         operation = _next_operation(run.id, row.operation_id if row else None)
     else:
@@ -157,6 +170,10 @@ async def start(session: AsyncSession, run: MigrationRun, user_id: uuid.UUID) ->
     if row is not None and row.status == "confirming":  # signing in to another organisation
         await close_at_relay(row.cloud_id)
     created = await _cloud("POST", "/xero-attachments", payload={"operation_id": str(operation)}, expected=201)
+    row = await _locked_row(session, run)
+    if (None if row is None else (row.operation_id, row.status)) != seen:
+        await session.commit()  # nothing written: the locks go before the relay is read again
+        return await view(session, run)
     if row is None:
         row = MigrationAttachmentFetch(migration_run_id=run.id, started_by_user_id=user_id)
         session.add(row)
@@ -175,7 +192,7 @@ async def confirm(session: AsyncSession, run: MigrationRun) -> dict:
     """The owner saw the organisation the sign-in chose and starts fetching from it, which
     binds these books to it. Refused when no sign-in is waiting for it."""
     _require_xero(run)
-    row = await _row(session, run.id, lock=True)
+    row = await _locked_row(session, run)
     if row is None or row.status != "confirming" or not row.tenant_id:
         raise HTTPException(status_code=409, detail=t("migration.xero_att_confirm_gone"))
     row.bound_tenant_id, row.bound_organisation = row.tenant_id, row.organisation
@@ -186,7 +203,7 @@ async def confirm(session: AsyncSession, run: MigrationRun) -> dict:
 
 async def stop(session: AsyncSession, run: MigrationRun) -> dict:
     """End a fetch in progress and close its Xero access. Files already attached stay."""
-    row = await _row(session, run.id, lock=True)
+    row = await _locked_row(session, run)
     if row is not None and row.status in OPEN:
         row.status, row.next_attempt_at = "stopped", None
         cloud_id = row.cloud_id
@@ -204,7 +221,7 @@ async def discarded_cloud_id(session: AsyncSession, run_id: uuid.UUID) -> str | 
 async def _attached_any(session: AsyncSession, run_id: uuid.UUID) -> bool:
     """Whether a file fetched for this migration was attached."""
     return await session.scalar(select(LedgerEntry.id).where(
-        LedgerEntry.idempotency_key.like(_idempotency_key(run_id, "%"))).limit(1)) is not None
+        LedgerEntry.idempotency_key.startswith(_idempotency_key(run_id, ""), autoescape=True)).limit(1)) is not None
 
 
 def _xero_date(doc: dict) -> str | None:

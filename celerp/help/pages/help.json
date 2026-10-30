@@ -1,0 +1,30 @@
+{
+  "id": "core.help",
+  "title": "Finding help in Celerp",
+  "summary": "Open the help for the screen you are on, search every help page, or ask Celerp AI in your own language.",
+  "keywords": ["help", "how to", "guide", "manual", "documentation", "support", "instructions"],
+  "routes": ["/help"],
+  "permission": null,
+  "order": 5,
+  "steps": [
+    {
+      "text": "On any screen, click {help} in the top bar. {here} lists the help pages written for that screen.",
+      "labels": {"help": "help.title", "here": "help.for_this_page"},
+      "image": null,
+      "capture": {"route": "/help", "selector": "#topbar-help-panel", "actions": [{"wait": ".topbar-help__btn"}, {"click": ".topbar-help__btn"}]}
+    },
+    {
+      "text": "To look further, open the help pages and type a few words into {search}. With nothing typed, {browse} lists every page, grouped by the module it belongs to.",
+      "labels": {"search": "help.search_placeholder", "browse": "help.browse"},
+      "image": null,
+      "capture": {"route": "/help", "selector": "main", "actions": []}
+    },
+    {
+      "text": "Help pages are written in English, with button and menu names shown in your language. To ask a question in your own words and language, use {ask}. Its answers list the help pages they came from.",
+      "labels": {"ask": "help.ask_ai"},
+      "image": null,
+      "capture": {"route": "/help", "selector": "main", "actions": []}
+    }
+  ],
+  "related": []
+}

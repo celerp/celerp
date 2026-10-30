@@ -1,7 +1,7 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
 
-"""AI router: /ai/* and /settings/ai/*
+"""AI router: /ai/*
 
 AI routes require an authenticated user, an active Connect session, and the
 ``use_ai_assistant`` permission.
@@ -26,7 +26,10 @@ Endpoints:
   POST   /ai/conversations/{id}/confirm-all          Run every proposed change on a message
   POST   /ai/conversations/{id}/jobs/{job}/proposals Turn read receipts into bill proposals
   GET    /ai/batch/{job_id}                          Job status and per-file results
-  GET    /settings/ai/usage-stats                    Per-user usage this month
+  POST   /ai/jobs/{job_id}/cancel                    Stop a job; finished files are kept
+  POST   /ai/jobs/{job_id}/resume                    Send the files a stopped job did not send
+  POST   /ai/jobs/{job_id}/retry-failed              Send again the files that got no answer
+  GET    /ai/usage-stats                             Per-user questions this month or all time
 """
 
 from __future__ import annotations
@@ -34,41 +37,38 @@ from __future__ import annotations
 import copy
 import secrets
 import uuid
-from dataclasses import asdict
 from datetime import date, datetime, timedelta, timezone
 from typing import Literal
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field, model_validator
-from slowapi import Limiter
-from slowapi.util import get_remote_address
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.ai.conversations import ERROR_MARKER
 from celerp.ai.files import AGENT_UPLOAD_TYPES, XLSX_CONTENT_TYPE
 from celerp.ai.service import PROPOSAL_TTL_S
 from celerp.config import settings
 from celerp.db import get_session
-from celerp.models.ai import AIBatchJob
-from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
+from celerp.routers.auth import limiter as _limiter
+from celerp.services.auth import (
+    AuthContext, get_auth_context, get_current_company_id, get_current_role, get_current_user,
+)
 from celerp.services.company_lock import hold_company
 from celerp.services.permissions import get_current_company_settings, require_permission
 from ui.i18n import t
 
-# AI-specific rate limiter: tighter than the global 60/min default.
-# LLM queries are expensive; uploads have file-size costs.
-_limiter = Limiter(key_func=get_remote_address)
+# AI routes count on Celerp's one limiter, per caller: tighter limits than the global
+# 60/min default, as LLM queries are expensive and uploads have file-size costs.
 
 
-async def _require_session(request: Request) -> None:
-    """Refuse AI routes while this installation has no active Connect session."""
-    from celerp.session_gate import require_session_token
-    await require_session_token(request)
+async def _require_ai_access(request: Request) -> None:
+    """Refuse AI routes unless this install has a Connect session or an account key."""
+    from celerp.session_gate import require_ai_access
+    await require_ai_access(request)
 
 
 router = APIRouter(
-    dependencies=[Depends(get_current_user), Depends(_require_session), require_permission("use_ai_assistant")],
+    dependencies=[Depends(get_current_user), Depends(_require_ai_access), require_permission("use_ai_assistant")],
 )
 
 # Settings endpoints are authenticated separately from AI execution routes.
@@ -79,9 +79,17 @@ settings_router = APIRouter(
 
 # ── Request / Response schemas ────────────────────────────────────────────────
 
+_OPERATION_ID_DESCRIPTION = (
+    "The question's id, chosen by the caller (a UUID). Send the same id with the same "
+    "question to ask it again after a failure: a question is charged at most once. The id "
+    "is never replaced; an id already used for another question is refused."
+)
+
+
 class QueryRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=2000, description="Natural language question")
     file_ids: list[str] | None = Field(default=None, description="List of file IDs returned from /ai/upload")
+    operation_id: uuid.UUID | None = Field(default=None, description=_OPERATION_ID_DESCRIPTION)
 
 
 class QueryResponse(BaseModel):
@@ -90,6 +98,12 @@ class QueryResponse(BaseModel):
     tools_called: list[str]
     pending_actions: list[dict] = []
     error: str | None = None
+    error_code: str | None = None
+    retryable: bool = False         # ask again under the same question id
+    new_question: bool = False      # only a new question, under a new id, can follow
+    help_pages: list[str] | None = None
+    message_id: str | None = None   # the question's id in its conversation
+    asked_again: bool = False       # the question was already in the conversation
 
 
 class EstimateRequest(BaseModel):
@@ -155,6 +169,19 @@ def _conflict(code: str, message: str) -> HTTPException:
     return HTTPException(status_code=409, detail={"code": code, "message": message})
 
 
+async def _find_question(session: AsyncSession, conversation_id: uuid.UUID, question_id: uuid.UUID, request):
+    """``find_question`` for this send, its id conflict refused as ``operation_conflict``
+    and an id that names no question as not found."""
+    from celerp.ai.conversations import QuestionIdConflict, QuestionNotFound, find_question
+    try:
+        return await find_question(session, conversation_id, question_id, request)
+    except QuestionIdConflict:
+        raise _conflict("operation_conflict", t("ai.err_operation_conflict")) from None
+    except QuestionNotFound:
+        await session.commit()      # the job a missing question ended
+        raise HTTPException(status_code=404, detail=t("ai.err_question_not_found")) from None
+
+
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 @router.post("/query", response_model=QueryResponse)
@@ -164,32 +191,30 @@ async def ai_query(
     body: QueryRequest,
     company_id=Depends(get_current_company_id),
     user=Depends(get_current_user),
-    role: str = Depends(get_current_role),
-    company_settings: dict = Depends(get_current_company_settings),
-    session: AsyncSession = Depends(get_session),
+    auth: AuthContext = Depends(get_auth_context),
 ) -> QueryResponse:
-    """Run a one-off read-only agent query against live canonical ERP APIs."""
-    from celerp.ai.memory import get_memory
-    from celerp.ai.service import AgentResult, run_agent
-    memory = await get_memory(session, company_id)
-    result: AgentResult = await run_agent(
-        app=request.app,
-        authorization=request.headers.get("authorization", ""),
-        query=body.query,
-        company_id=company_id,
-        company_settings=company_settings,
-        role=role,
-        user_id=user.id,
-        memory=memory,
-        file_ids=body.file_ids,
-        history=[],
-        read_only=True,
-    )
-    if result.error:
-        raise HTTPException(status_code=502, detail=result.error)
+    """Run a one-off read-only agent query against live canonical ERP APIs.
+
+    The question runs as a job: its answer when it ends within the synchronous wait,
+    else 202 ``{"status": "running", "job_id"}`` and it keeps working in the background.
+    The same ``operation_id`` asks it again and returns the answer it already has."""
+    import time
+
+    from celerp.ai import jobs
+    started = time.monotonic()
+    out = await jobs.ask(company_id=company_id, user_id=user.id, query=body.query, file_ids=body.file_ids,
+                         job_id=body.operation_id, auth_nonce=auth.snonce, started=started)
+    if out["status"] in ("running", "interrupted"):
+        return JSONResponse(status_code=202, content={"status": out["status"], "job_id": out["job_id"]})
+    if "refusal" in out:
+        refusal = out["refusal"]
+        raise HTTPException(status_code=refusal["status"], detail=refusal["detail"], headers=refusal["headers"])
+    if out["error"]:
+        raise HTTPException(status_code=502, detail=out["error"])
     return QueryResponse(
-        answer=result.answer, model_used=result.model_used,
-        tools_called=result.tools_called, pending_actions=[],
+        answer=out["answer"], model_used=out["model_used"],
+        tools_called=out["tools_called"], pending_actions=[],
+        help_pages=out["help_pages"],
     )
 
 
@@ -330,13 +355,16 @@ async def set_ai_memory_kv(
 async def quota_status() -> dict:
     """Return current AI quota usage for the UI badge.
 
-    Returns used/limit/topup/remaining/tier. Never raises - returns
-    empty dict if gateway not configured (local install).
+    Returns used/limit/topup/remaining/tier. Never raises: ``{"local": True}``
+    when the install has no account, and the ``disconnected`` / ``unknown``
+    sentinels unchanged so the page can show those states.
     """
     from celerp.ai.quota import get_quota_status
     status = await get_quota_status()
     if not status:
         return {"local": True}
+    if status.get("disconnected") or status.get("unknown"):
+        return status
     used = int(status.get("used", 0) or 0)
     legacy_limit = int(status.get("limit", 0) or 0)
     legacy_topup = int(status.get("topup_credits", 0) or 0)
@@ -375,6 +403,7 @@ class ConversationQueryRequest(BaseModel):
     query: str = Field("", max_length=2000)
     file_ids: list[str] | None = None
     document_mode: Literal["chat", "receipts"] = "chat"
+    operation_id: uuid.UUID | None = Field(default=None, description=_OPERATION_ID_DESCRIPTION)
 
     @model_validator(mode="after")
     def _require_query_or_files(self) -> "ConversationQueryRequest":
@@ -408,6 +437,12 @@ class MessageOut(BaseModel):
     file_ids: list[str] | None = None
     credits_used: int = 0
     error: bool = False
+    error_code: str | None = None
+    retryable: bool = False
+    new_question: bool = False
+    refusal: dict | None = None         # the AI service's refusal, for a refused question
+    refusal_status: int | None = None
+    help_pages: list[str] | None = None
     created_at: str
 
     model_config = {"from_attributes": True}
@@ -421,6 +456,8 @@ class BatchJobOut(BaseModel):
     completed_files: int
     failed_files: int
     credits_consumed: int
+    files: list[dict]
+    retry_failed: dict | None = None
     results: dict | None = None
     error: str | None = None
     proposal_message_id: str | None = None
@@ -445,33 +482,78 @@ class ConversationDetail(ConversationOut):
     jobs: list[BatchJobOut] = []
 
 
+def _failure_next(code: str | None) -> dict:
+    """What can follow a failed question: asking it again under its id, or a new question."""
+    from celerp.ai.service import NEW_QUESTION_ERRORS, RETRYABLE_ERRORS
+    return {"retryable": code in RETRYABLE_ERRORS, "new_question": code in NEW_QUESTION_ERRORS}
+
+
 def _message_out(m) -> MessageOut:
-    from celerp.ai.conversations import message_error, pending_actions, tool_names
+    from celerp.ai.conversations import help_pages, message_failure, pending_actions, tool_names
+    failure = message_failure(m.tools_called) or {}
     return MessageOut(
         id=m.id, role=m.role, content=m.content,
         model_used=m.model_used, tools_called=tool_names(m.tools_called),
         pending_actions=[{**r, "message_id": str(m.id)} for r in pending_actions(m.tools_called)],
         file_ids=m.file_ids, credits_used=m.credits_used,
-        error=message_error(m.tools_called),
+        error=bool(failure), error_code=failure.get("code"), **_failure_next(failure.get("code")),
+        refusal=failure.get("refusal"), refusal_status=failure.get("status"),
+        help_pages=help_pages(m.tools_called),
         created_at=m.created_at.isoformat(),
     )
 
 
-def _job_out(job: AIBatchJob) -> BatchJobOut:
+def _answer_response(msg, *, question_id: uuid.UUID, asked_again: bool) -> QueryResponse:
+    """The response for a stored assistant message: an answer, or the failure it records."""
+    from celerp.ai.conversations import help_pages, message_failure, pending_actions, tool_names
+    failure = message_failure(msg.tools_called)
+    common = dict(
+        model_used=msg.model_used or "", tools_called=tool_names(msg.tools_called),
+        message_id=str(question_id), asked_again=asked_again,
+    )
+    if failure is not None:
+        return QueryResponse(
+            answer="", error=msg.content, error_code=failure.get("code"),
+            **_failure_next(failure.get("code")), **common,
+        )
+    return QueryResponse(
+        answer=msg.content,
+        pending_actions=[{**p, "message_id": str(msg.id)} for p in pending_actions(msg.tools_called)],
+        help_pages=help_pages(msg.tools_called), **common,
+    )
+
+
+# A reading job as its user is told it stands: running while its runner holds it,
+# interrupted once nobody runs it (Continue sends the rest), else how it ended.
+JOB_STATUS = {"running": "running", "unheld": "interrupted"}
+
+
+def _job_out(job, steps: list) -> BatchJobOut:
+    """A reading job as its user sees it; its progress is read from its steps."""
+    from celerp.ai import jobs
+    done = sum(1 for s in steps if jobs.answered(s))
     return BatchJobOut(
         id=job.id,
         conversation_id=job.conversation_id,
-        status=job.status,
-        total_files=job.total_files,
-        completed_files=job.completed_files,
-        failed_files=job.failed_files,
-        credits_consumed=job.credits_consumed,
+        status=JOB_STATUS.get(jobs.liveness(job), job.status),
+        total_files=len(steps),
+        completed_files=done,
+        failed_files=sum(1 for s in steps if s.state in jobs.RETRYABLE_STEPS),
+        credits_consumed=sum(s.credits for s in steps),
+        files=[jobs.file_view(s) for s in steps],
+        retry_failed=jobs.retry_offer(steps),
         results=job.results,
         error=job.error,
         proposal_message_id=(job.results or {}).get("proposal_message_id"),
         created_at=job.created_at.isoformat(),
         completed_at=job.completed_at.isoformat() if job.completed_at else None,
     )
+
+
+async def _jobs_out(session: AsyncSession, rows: list) -> list[BatchJobOut]:
+    from celerp.ai import jobs
+    steps = await jobs.job_steps(session, [job.id for job in rows])
+    return [_job_out(job, steps[job.id]) for job in rows]
 
 
 # ── Conversation endpoints ────────────────────────────────────────────────────
@@ -538,18 +620,19 @@ async def get_conv(
     session: AsyncSession = Depends(get_session),
 ) -> ConversationDetail:
     """Get a conversation with its messages and the reading jobs started from it."""
-    from celerp.ai.batch import list_conversation_jobs
+    from celerp.ai import jobs
     from celerp.ai.conversations import get_conversation, get_messages
     conv = await get_conversation(session, conversation_id, company_id, user.id)
     if conv is None:
         raise HTTPException(status_code=404, detail=t("ai.err_conversation_not_found"))
     msgs = await get_messages(session, conversation_id)
-    jobs = await list_conversation_jobs(session, conversation_id, company_id, user.id)
+    rows = await jobs.conversation_jobs(session, conversation_id, company_id=company_id, user_id=user.id,
+                                        shape="documents")
     return ConversationDetail(
         id=conv.id, title=conv.title,
         created_at=conv.created_at.isoformat(), updated_at=conv.updated_at.isoformat(),
         messages=[_message_out(m) for m in msgs],
-        jobs=[_job_out(j) for j in jobs],
+        jobs=await _jobs_out(session, rows),
     )
 
 
@@ -562,13 +645,13 @@ async def delete_conv(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> None:
-    """Delete a conversation and all its messages."""
-    from celerp.ai.batch import list_conversation_jobs
-    from celerp.ai.conversations import delete_conversation
-    jobs = await list_conversation_jobs(session, conversation_id, company_id, user.id)
-    if any(job.status in ("pending", "running") for job in jobs):
-        raise _conflict("conversation_busy", "This conversation still has files being processed. Wait for the job to finish before deleting it.")
-    found = await delete_conversation(session, conversation_id, company_id, user.id)
+    """Delete a conversation and all its messages; its open jobs end as stopped. Refused
+    while a job runs in it."""
+    from celerp.ai.conversations import ConversationBusy, delete_conversation
+    try:
+        found = await delete_conversation(session, conversation_id, company_id, user.id)
+    except ConversationBusy:
+        raise _conflict("conversation_busy", t("ai.err_conversation_busy")) from None
     if not found:
         raise HTTPException(status_code=404, detail=t("ai.err_conversation_not_found"))
     await session.commit()
@@ -597,142 +680,148 @@ async def rename_conv(
     )
 
 
-def _launch_batch(
-    background_tasks: BackgroundTasks, job: AIBatchJob, company_id, user_id, query: str, file_ids: list[str],
-) -> None:
-    """Run the job after the response is sent; progress rides the notification stream."""
-    from celerp.ai.batch import run_batch
-    from celerp.db import SessionLocal
-    from celerp.notifications.sse import publish as sse_publish
-
-    async def _on_progress(job_id, completed, failed, total, result):
-        await sse_publish(
-            company_id, user_id,
-            {
-                "type": "batch_progress",
-                "job_id": str(job_id),
-                "completed": completed,
-                "failed": failed,
-                "total": total,
-                "file_id": result.get("file_id"),
-                "status": result.get("status"),
-            },
-        )
-
-    async def _run():
-        await run_batch(job.id, company_id, user_id, query, file_ids, SessionLocal, on_progress=_on_progress)
-
-    background_tasks.add_task(_run)
-
-
 @router.post("/conversations/{conversation_id}/query")
 @_limiter.limit("20/minute")
 async def query_in_conversation(
     request: Request,
     conversation_id: uuid.UUID,
     body: ConversationQueryRequest,
-    background_tasks: BackgroundTasks,
     company_id=Depends(get_current_company_id),
     user=Depends(get_current_user),
-    role: str = Depends(get_current_role),
-    company_settings: dict = Depends(get_current_company_settings),
+    auth: AuthContext = Depends(get_auth_context),
     session: AsyncSession = Depends(get_session),
 ):
     """Ask the assistant within a conversation.
 
-    Normal messages, including images and PDFs, run the agent inline. Receipt
-    extraction is an explicit ``document_mode=receipts`` workflow that creates
-    a background reading job. Reads execute against the app the user sees and
-    changes come back as pending actions to confirm. A failed run is stored as
-    an assistant message so the thread keeps its history.
+    Every send that is not answered yet returns 202 ``{job_id, message_id}`` and runs
+    as a job: a question (images and PDFs included) runs the agent, polled at
+    ``GET .../questions/{message_id}``; receipt extraction is an explicit
+    ``document_mode=receipts`` reading job. Reads execute against the app the user
+    sees and changes come back as pending actions to confirm. A failed or refused
+    run is stored as an assistant message so the thread keeps its history.
+
+    ``operation_id`` names the question and becomes the id of its user message; it
+    is never replaced. Sent again with the same text and files it never adds a new
+    question: a question that already has an answer returns it, and the latest one
+    whose run failed or was interrupted runs again from the steps that ended, charged
+    at most once in all. Sent again while its job runs, it is refused as in progress.
+    An id that names another question, or one that can no longer be asked, is refused as
+    ``operation_conflict``: a new question needs a new id.
     """
+    from sqlalchemy.exc import IntegrityError
+
+    from celerp.ai import jobs
     from celerp.ai.batch import create_batch_job
-    from celerp.ai.conversations import (
-        add_message,
-        build_history_context,
-        get_conversation,
-        get_messages,
-        record_credits,
-        tool_names,
-    )
-    from celerp.ai.memory import get_memory
-    from celerp.ai.service import AgentResult, run_agent
+    from celerp.ai.conversations import add_message, get_conversation
+    await jobs.lock_for_ai(session, company_id)
     conv = await get_conversation(session, conversation_id, company_id, user.id)
     if conv is None:
         raise HTTPException(status_code=404, detail=t("ai.err_conversation_not_found"))
 
     kinds = _attachment_kinds(body.file_ids, company_id, user.id)
-    if body.document_mode == "receipts":
-        if not body.file_ids or kinds != {"document"}:
-            raise HTTPException(
-                status_code=400,
-                detail=t("ai.err_receipt_type"),
-            )
-        user_msg = await add_message(
-            session, conversation_id, "user", body.query, file_ids=body.file_ids,
-        )
-        try:
-            job = await create_batch_job(
-                session, company_id, user.id, body.query, body.file_ids or [],
-                conversation_id=conversation_id,
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
-        await session.commit()
-        await session.refresh(job)
-        _launch_batch(background_tasks, job, company_id, user.id, body.query, list(job.file_ids or []))
+    if body.document_mode == "receipts" and (not body.file_ids or kinds != {"document"}):
+        raise HTTPException(status_code=400, detail=t("ai.err_receipt_type"))
+
+    # A caller that sends no id gets a new question; it is not promised a single charge.
+    question_id = body.operation_id or uuid.uuid4()
+    receipts = body.document_mode == "receipts"
+    request = (jobs.JobRequest(company_id=company_id, user_id=user.id, kind="documents",
+                               conversation_id=conversation_id, query=body.query, file_ids=tuple(body.file_ids or ()))
+               if receipts else jobs.JobRequest.question(company_id=company_id, user_id=user.id, query=body.query,
+                                                          file_ids=body.file_ids, conversation_id=conversation_id))
+    job, asked, answered = await _find_question(session, conversation_id, question_id, request)
+
+    if receipts:
+        # A reading job takes its question's id, so sending the question again
+        # returns the job already started for it.
+        if job is None:
+            try:
+                await add_message(session, conversation_id, "user", body.query,
+                                  file_ids=body.file_ids, message_id=question_id)
+                job = await create_batch_job(
+                    session, company_id, user.id, body.query, body.file_ids or [],
+                    conversation_id=conversation_id, job_id=question_id,
+                )
+                await session.commit()
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
+            except IntegrityError:
+                await session.rollback()
+                raise _conflict("question_in_progress", t("ai.err_question_in_progress"))
+            await session.refresh(job)
+            jobs.start_job(job.id)
         return JSONResponse(
             status_code=202,
-            content={"job_id": str(job.id), "message_id": str(user_msg.id)},
+            content={"job_id": str(job.id), "message_id": str(question_id), "asked_again": asked is not None},
         )
 
-    # Assemble the read-only context, then commit so the session is quiescent
-    # for the duration of the agent loop (which reaches the app over its own
-    # request sessions).
-    prior_msgs = await get_messages(session, conversation_id)
-    history = build_history_context(prior_msgs)
-    memory = await get_memory(session, company_id)
-    user_msg = await add_message(session, conversation_id, "user", body.query, file_ids=body.file_ids)
-    await session.commit()
-
-    result: AgentResult = await run_agent(
-        app=request.app,
-        authorization=request.headers.get("authorization", ""),
-        query=body.query,
-        company_id=company_id,
-        company_settings=company_settings,
-        user_id=user.id,
-        role=role,
-        memory=memory,
-        file_ids=body.file_ids,
-        history=history,
-    )
-
-    await record_credits(session, user_msg.id, result.credits)
-    if result.error:
-        msg = await add_message(
-            session, conversation_id, "assistant", result.error,
-            model_used=result.model_used, tools_called=[*result.tools_called, ERROR_MARKER],
-        )
+    if answered is not None:
+        return _answer_response(answered, question_id=question_id, asked_again=True)
+    try:
+        if asked is None:
+            await add_message(session, conversation_id, "user", body.query,
+                              file_ids=body.file_ids, message_id=question_id)
+        reopened = True
+        if job is None:
+            session.add(jobs.question_job(job_id=question_id, request=request, auth_nonce=auth.snonce))
+        else:
+            reopened = await jobs.reopen_question(session, question_id, auth.snonce)
         await session.commit()
-        return QueryResponse(
-            answer="", model_used=result.model_used,
-            tools_called=tool_names(msg.tools_called), error=result.error,
-        )
-
-    msg = await add_message(
-        session, conversation_id, "assistant", result.answer,
-        model_used=result.model_used,
-        tools_called=[*result.tools_called, *[asdict(p) for p in result.pending_actions]],
+    except IntegrityError:
+        await session.rollback()
+        raise _conflict("question_in_progress", t("ai.err_question_in_progress"))
+    if not reopened:
+        # A runner holds it, or answered it after this send read the thread: that
+        # answer, never a second run. Or the conversation was deleted meanwhile.
+        await session.refresh(job)
+        if job.conversation_id is None:
+            raise HTTPException(status_code=404, detail=t("ai.err_conversation_not_found"))
+        if jobs.outcome(job) != "completed":
+            raise _conflict("question_in_progress", t("ai.err_question_in_progress"))
+        answer = await jobs.answer_message(session, job)
+        if answer is None:
+            raise HTTPException(status_code=404, detail=t("ai.err_question_not_found"))
+        return _answer_response(answer, question_id=question_id, asked_again=True)
+    jobs.start_job(question_id)
+    return JSONResponse(
+        status_code=202,
+        content={"job_id": str(question_id), "message_id": str(question_id), "asked_again": asked is not None},
     )
-    await session.commit()
 
-    return QueryResponse(
-        answer=result.answer,
-        model_used=result.model_used,
-        tools_called=tool_names(msg.tools_called),
-        pending_actions=[{**asdict(p), "message_id": str(msg.id)} for p in result.pending_actions],
-    )
+
+@router.get("/conversations/{conversation_id}/questions/{question_id}")
+async def question_state(
+    conversation_id: uuid.UUID,
+    question_id: uuid.UUID,
+    company_id=Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Where a question of the conversation stands: ``running`` (with what it waits
+    for, or that it was moved to the background), ``answered`` or ``failed`` with its
+    assistant message, or ``interrupted`` (a restart ended it; asking again under its
+    id resumes it). ``asked`` is the question's own message, so it can be asked again."""
+    from celerp.ai import jobs
+    from celerp.ai.conversations import get_conversation
+    if await get_conversation(session, conversation_id, company_id, user.id) is None:
+        raise HTTPException(status_code=404, detail=t("ai.err_conversation_not_found"))
+    stored = await jobs.stored_question_state(session, question_id, company_id=company_id, user_id=user.id,
+                                              conversation_id=conversation_id)
+    if stored is None:
+        raise HTTPException(status_code=404, detail=t("ai.err_question_not_found"))
+    held = stored["state"] == "running"
+    waiting = jobs.waiting_for(question_id) if held else None
+    notice = None
+    if waiting:
+        notice = t(f"ai.waiting_{waiting}")
+    elif held and stored["promoted"]:
+        notice = t("ai.question_promoted")
+    message = stored["message"]
+    return {
+        "asked": _message_out(stored["asked"]).model_dump(mode="json"),
+        "state": "running" if held else stored["state"], "promoted": stored["promoted"], "waiting": waiting,
+        "notice": notice, "message": None if held or message is None else _message_out(message).model_dump(mode="json"),
+    }
 
 
 def _resolve_action_arguments(records: list, record: dict) -> tuple[dict | None, str | None]:
@@ -816,8 +905,8 @@ async def _attach_confirmed_bill_receipt(
     """Keep the source receipt on its confirmed bill through ordinary file attachment."""
     from celerp.ai.files import load_file
     from celerp.events.engine import find_event_by_idempotency
-    from celerp.models.projections import Projection
     from celerp.services.attachments import attach_file, storing
+    from celerp.services.company_lock import lock_projections
 
     data = result.get("data")
     doc_id = data.get("id") if isinstance(data, dict) else None
@@ -833,15 +922,17 @@ async def _attach_confirmed_bill_receipt(
         if replay.event_type != "doc.file_attached" or replay.entity_id != doc_id:
             raise ValueError("Receipt identity was already used for another document")
         return
-    original = await session.get(Projection, (company_id, doc_id))
-    if original is None or original.entity_type != "doc" or original.state.get("doc_type") != "bill":
-        raise ValueError("Confirmed bill is no longer available")
     content, source = load_file(source_id, company_id, user_id)
     mime = str(source.get("content_type") or "")
     filename = source.get("filename") or "Receipt"
     stable_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{company_id}:{operation}"))
     async with storing(session, company_id) as files:
         meta = await files.file(content, filename, mime, att_id=stable_id)
+        # Read under the company lock after storing, so a bill deleted meanwhile, or a
+        # user who has lost access, leaves no file behind.
+        original = (await lock_projections(session, company_id, [doc_id])).get(doc_id)
+        if original is None or original.entity_type != "doc" or original.state.get("doc_type") != "bill":
+            raise ValueError("Confirmed bill is no longer available")
         await attach_file(
             session, company_id, "doc", doc_id, meta, user_id,
             source="api", idempotency_key=idem, document_tag="receipt",
@@ -1368,7 +1459,8 @@ def _refresh_expired_proposals(records: list, now: datetime) -> list:
     id_map: dict[str, str] = {}
     refreshed = False
     for item in copied:
-        if not isinstance(item, dict) or item.get("status", "pending") != "pending":
+        # Only proposals carry a tool name; marker and citation records are kept as they are.
+        if not isinstance(item, dict) or not item.get("name") or item.get("status", "pending") != "pending":
             continue
         try:
             is_expired = datetime.fromisoformat(str(item.get("expires_at") or "")) <= now
@@ -1422,19 +1514,20 @@ async def propose_from_job(
     vendor action and resolves its returned id only when confirmation executes. Nothing
     is written until the user confirms a card. Calling again returns the same proposals.
     """
-    from celerp.ai.batch import get_batch_job
+    from celerp.ai import jobs
     from celerp.ai.conversations import add_message, get_conversation, get_message, pending_actions
     from celerp.ai.tools import compile_agent_capabilities
     conv = await get_conversation(session, conversation_id, company_id, user.id)
     if conv is None:
         raise HTTPException(status_code=404, detail=t("ai.err_conversation_not_found"))
-    job = await get_batch_job(session, job_id, company_id, user.id)
-    if job is None or job.conversation_id != conversation_id or job.user_id != user.id:
+    job = await jobs.owned_job(session, job_id, company_id=company_id, user_id=user.id, shape="documents",
+                               conversation_id=conversation_id)
+    if job is None:
         raise HTTPException(status_code=404, detail=t("ai.err_job_not_found"))
-    if job.status in ("pending", "running"):
+    if jobs.liveness(job) != "ended":
         raise _conflict("job_not_finished", "The files are still being read.")
-    result_files = (job.results or {}).get("files") or []
-    if job.status == "failed" and not any(entry.get("status") == "success" for entry in result_files):
+    result_files = [jobs.file_view(step) for step in (await jobs.job_steps(session, [job.id]))[job.id]]
+    if jobs.outcome(job) == "failed" and not any(entry.get("status") == "success" for entry in result_files):
         raise _conflict("job_failed", job.error or "None of the files could be read.")
 
     existing_id = (job.results or {}).get("proposal_message_id")
@@ -1472,7 +1565,7 @@ async def propose_from_job(
     now = datetime.now(timezone.utc)
     records: list[dict] = []
     lines: list[str] = []
-    for entry in (job.results or {}).get("files") or []:
+    for entry in result_files:
         filename = entry.get("filename") or entry.get("file_id")
         extraction = entry.get("extraction")
         if entry.get("status") != "success":
@@ -1498,63 +1591,57 @@ async def propose_from_job(
 
 @settings_router.get("/usage-stats")
 async def usage_stats(
+    period: Literal["month", "all"] = "month",
     company_id=Depends(get_current_company_id),
     _: None = require_permission("manage_users"),
     company_settings: dict = Depends(get_current_company_settings),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Per-user AI usage for the company's current calendar month.
+    """Per-user AI questions in the period: the company's current calendar month, or all time.
 
-    Returns list of {user_id, user_name, query_count, credits_used, last_query_at}.
+    Read from the usage record only, one row per question with what the AI service
+    charged for it; the background reconcile pass settles pending rows. A question
+    counts when its charge is confirmed; ``pending_count`` is the user's questions
+    still awaiting confirmation and ``unresolved_count`` those the service can no
+    longer confirm. Returns ``period`` {kind, start} (start is the ISO month start,
+    null for all time) and ``users``, a list of {user_id, user_name, query_count,
+    credits_used, pending_count, unresolved_count, last_query_at} with the latest
+    question first.
     """
     from datetime import datetime
-    from sqlalchemy import func, select
-    from celerp.models.ai import AIBatchJob, AIConversation, AIMessage
+    from sqlalchemy import func, or_, select
+    from celerp.models.ai import AIUsage
     from celerp.models.company import User
     from celerp.services.business_time import business_timezone, business_today
 
     tz = company_settings.get("timezone")
     today = business_today(tz)
     month_start = datetime(today.year, today.month, 1, tzinfo=business_timezone(tz))
+    since = month_start if period == "month" else None
 
-    message_rows = (await session.execute(
+    rows = (await session.execute(
         select(
-            AIConversation.user_id,
-            func.count(AIMessage.id).label("query_count"),
-            func.sum(AIMessage.credits_used).label("credits_used"),
-            func.max(AIMessage.created_at).label("last_query_at"),
+            AIUsage.user_id,
+            func.count().filter(~AIUsage.pending).label("query_count"),
+            func.sum(AIUsage.credits).filter(~AIUsage.pending).label("credits_used"),
+            func.count().filter(AIUsage.pending, ~AIUsage.unresolved).label("pending_count"),
+            func.count().filter(AIUsage.unresolved).label("unresolved_count"),
+            func.max(AIUsage.created_at).label("last_query_at"),
         )
-        .join(AIConversation, AIMessage.conversation_id == AIConversation.id)
-        .where(
-            AIConversation.company_id == company_id,
-            AIMessage.role == "user",
-            AIMessage.created_at >= month_start,
-        )
-        .group_by(AIConversation.user_id)
+        .where(AIUsage.company_id == company_id, or_(AIUsage.pending, AIUsage.credits > 0),
+               *([AIUsage.created_at >= since] if since else []))
+        .group_by(AIUsage.user_id)
     )).all()
-    batch_rows = (await session.execute(
-        select(
-            AIBatchJob.user_id,
-            func.sum(AIBatchJob.credits_consumed).label("credits_used"),
-            func.max(AIBatchJob.created_at).label("last_query_at"),
-        )
-        .where(AIBatchJob.company_id == company_id, AIBatchJob.created_at >= month_start)
-        .group_by(AIBatchJob.user_id)
-    )).all()
-
     metrics: dict = {
         r.user_id: {
             "query_count": int(r.query_count or 0),
             "credits_used": int(r.credits_used or 0),
+            "pending_count": int(r.pending_count or 0),
+            "unresolved_count": int(r.unresolved_count or 0),
             "last_query_at": r.last_query_at,
         }
-        for r in message_rows
+        for r in rows
     }
-    for r in batch_rows:
-        row = metrics.setdefault(r.user_id, {"query_count": 0, "credits_used": 0, "last_query_at": None})
-        row["credits_used"] += int(r.credits_used or 0)
-        if r.last_query_at and (row["last_query_at"] is None or r.last_query_at > row["last_query_at"]):
-            row["last_query_at"] = r.last_query_at
 
     user_ids = list(metrics)
     users = {}
@@ -1564,14 +1651,19 @@ async def usage_stats(
         )).all()
         users = {u.id: u.name for u in user_rows}
 
-    ordered = sorted(metrics.items(), key=lambda item: (-item[1]["query_count"], str(item[0])))
+    # Newest first: by last question descending, user id ascending as the tie-break.
+    ordered = sorted(metrics.items(), key=lambda item: str(item[0]))
+    ordered.sort(key=lambda item: item[1]["last_query_at"], reverse=True)
     return {
+        "period": {"kind": period, "start": month_start.date().isoformat() if since else None},
         "users": [
             {
                 "user_id": str(user_id),
                 "user_name": users.get(user_id, str(user_id)),
                 "query_count": row["query_count"],
                 "credits_used": row["credits_used"],
+                "pending_count": row["pending_count"],
+                "unresolved_count": row["unresolved_count"],
                 "last_query_at": row["last_query_at"].isoformat() if row["last_query_at"] else None,
             }
             for user_id, row in ordered
@@ -1587,8 +1679,44 @@ async def batch_status(
     session: AsyncSession = Depends(get_session),
 ) -> BatchJobOut:
     """Get batch job status and results."""
-    from celerp.ai.batch import get_batch_job
-    job = await get_batch_job(session, job_id, company_id, user.id)
+    from celerp.ai import jobs
+    job = await jobs.owned_job(session, job_id, company_id=company_id, user_id=user.id, shape="documents")
     if job is None:
         raise HTTPException(status_code=404, detail=t("ai.err_batch_not_found"))
-    return _job_out(job)
+    return (await _jobs_out(session, [job]))[0]
+
+
+async def _job_action(action, job_id: uuid.UUID, company_id, user, session: AsyncSession) -> JSONResponse:
+    from celerp.ai import jobs
+    if await jobs.owned_job(session, job_id, company_id=company_id, user_id=user.id) is None:
+        raise HTTPException(status_code=404, detail=t("ai.err_job_not_found"))
+    if await action(job_id, company_id, user.id) in (None, False):
+        raise _conflict("job_not_open", t("ai.err_job_not_open"))
+    return JSONResponse(status_code=202, content={"job_id": str(job_id)})
+
+
+@router.post("/jobs/{job_id}/cancel")
+async def cancel_job(job_id: uuid.UUID, company_id=Depends(get_current_company_id),
+                     user=Depends(get_current_user),
+                     session: AsyncSession = Depends(get_session)) -> JSONResponse:
+    """Stop a running job: files not yet sent wait for Resume, the files in the model finish."""
+    from celerp.ai import jobs
+    return await _job_action(jobs.cancel, job_id, company_id, user, session)
+
+
+@router.post("/jobs/{job_id}/resume")
+async def resume_job(job_id: uuid.UUID, company_id=Depends(get_current_company_id),
+                     user=Depends(get_current_user),
+                     session: AsyncSession = Depends(get_session)) -> JSONResponse:
+    """Send the files a cancelled job did not send, each under its own id."""
+    from celerp.ai import jobs
+    return await _job_action(jobs.resume, job_id, company_id, user, session)
+
+
+@router.post("/jobs/{job_id}/retry-failed")
+async def retry_failed_job(job_id: uuid.UUID, company_id=Depends(get_current_company_id),
+                           user=Depends(get_current_user),
+                           session: AsyncSession = Depends(get_session)) -> JSONResponse:
+    """Send again, each as a new question, the files that ended without an answer."""
+    from celerp.ai import jobs
+    return await _job_action(jobs.retry_failed, job_id, company_id, user, session)

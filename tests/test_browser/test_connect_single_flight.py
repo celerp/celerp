@@ -6,6 +6,8 @@ from __future__ import annotations
 import pytest
 from fasthtml.common import to_xml
 
+from .conftest import release_held_routes
+
 pytestmark = pytest.mark.browser
 
 
@@ -49,12 +51,7 @@ def test_connect_mutation_button_disables_and_does_not_double_submit(
     page.wait_for_timeout(400)
     assert len(requests) == 1
 
-    page.unroute(glob)
-    for route in held:
-        try:
-            route.abort()
-        except Exception:
-            pass
+    release_held_routes(page, glob, held)
 
 
 def test_connect_panel_sync_drops_competing_mutation(page, ui_server):
@@ -88,9 +85,4 @@ def test_connect_panel_sync_drops_competing_mutation(page, ui_server):
     assert len(connect_requests) == 1
     assert len(link_requests) == 0
 
-    page.unroute("**/settings/cloud-activate")
-    for route in held:
-        try:
-            route.abort()
-        except Exception:
-            pass
+    release_held_routes(page, "**/settings/cloud-activate", held)

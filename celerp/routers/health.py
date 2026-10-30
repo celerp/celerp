@@ -14,7 +14,9 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp import __version__
+from celerp.connectors.ownership import PRODUCT_CHANNEL_MODULES
 from celerp.db import get_session
+from celerp.modules.boundary import needs_modules_for
 from celerp.modules.outcome import BOOT_TOKEN
 from celerp.services.auth import (
     ROLE_LEVELS,
@@ -696,6 +698,68 @@ async def cloud_accept_tos_api() -> dict:
 
 
 RELAY_ACCOUNT_METHODS_TIMEOUT = 6.0
+RELAY_METHODS_TTL = 600.0
+AI_OFFER_TIMEOUT = 2.0
+
+# The relay's /auth/methods answer, shared by account-methods and ai-offer:
+# {"value": dict, "at": monotonic fetch time}. One lock so concurrent misses
+# share one fetch; a failed refetch keeps serving the last good answer.
+_relay_methods: dict = {}
+_relay_methods_lock = asyncio.Lock()
+
+
+async def relay_auth_methods(timeout: float) -> dict | None:
+    """The relay's sign-in methods and included counts, or None with no good answer yet."""
+    def _fresh() -> dict | None:
+        if _relay_methods and time.monotonic() - _relay_methods["at"] < RELAY_METHODS_TTL:
+            return _relay_methods["value"]
+        return None
+
+    if (value := _fresh()) is not None:
+        return value
+    async with _relay_methods_lock:
+        if (value := _fresh()) is not None:
+            return value
+        from celerp.gateway.state import relay_http_url
+        import httpx
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as c:
+                r = await asyncio.wait_for(
+                    c.get(f"{relay_http_url()}/auth/methods"), timeout=timeout)
+            data = r.json() if r.status_code == 200 else None
+        except Exception:
+            data = None
+        if isinstance(data, dict):
+            _relay_methods.update(value=data, at=time.monotonic())
+            return data
+        return _relay_methods.get("value")
+
+
+def _count(value) -> int | None:
+    """A relay count: a non-negative int, else unknown."""
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value
+    return None
+
+
+def _ai_counts(methods: dict | None) -> dict:
+    """free_ai_questions and plan_ai_questions ({tier: count}) from a methods answer."""
+    methods = methods or {}
+    plans = methods.get("plan_ai_questions")
+    plan_counts = {}
+    if isinstance(plans, dict):
+        plan_counts = {str(tier): n for tier, raw in plans.items()
+                       if (n := _count(raw)) is not None}
+    return {"free_ai_questions": _count(methods.get("free_ai_questions")),
+            "plan_ai_questions": plan_counts or None}
+
+
+@settings_router.get("/ai-offer")
+async def ai_offer_api() -> dict:
+    """Whether this install is on a paid AI plan, and the included AI question counts."""
+    from celerp.gateway.state import PAID_TIERS, get_subscription_state
+    return {"paid_ai": get_subscription_state()[0] in PAID_TIERS,
+            **_ai_counts(await relay_auth_methods(AI_OFFER_TIMEOUT))}
 
 
 @settings_router.get("/account-methods")
@@ -718,20 +782,18 @@ async def account_methods_api(
     install_owner = await is_install_owner(session, user.id)
     google = False
     free_email_quota = 0
+    methods = None
     needs_activation_challenge = False
     start_url = f"{relay_base}/auth/google/start?instance_id={iid}"
 
     async def _relay_phase():
-        nonlocal google, free_email_quota
+        nonlocal google, free_email_quota, methods
         nonlocal needs_activation_challenge, start_url
+        methods = await relay_auth_methods(RELAY_ACCOUNT_METHODS_TIMEOUT)
+        if methods is not None:
+            google = bool(methods.get("google"))
+            free_email_quota = int(methods.get("free_email_quota") or 0)
         async with httpx.AsyncClient(timeout=RELAY_ACCOUNT_METHODS_TIMEOUT) as c:
-            r = await c.get(f"{relay_base}/auth/methods")
-            if r.status_code == 200:
-                data = r.json()
-                if isinstance(data, dict):
-                    google = bool(data.get("google"))
-                    free_email_quota = int(data.get("free_email_quota") or 0)
-
             if not install_owner:
                 return
 
@@ -795,6 +857,7 @@ async def account_methods_api(
     return {
         "google": google,
         "free_email_quota": free_email_quota,
+        **_ai_counts(methods),
         "google_start_url": start_url if install_owner else "",
     }
 
@@ -1241,7 +1304,8 @@ async def _relay_reports_connected(api_key: str, platform: str) -> bool | None:
     return False
 
 
-@settings_router.get("/connectors/{platform}/authorize-url", dependencies=[require_permission("manage_integrations")])
+@settings_router.post("/connectors/{platform}/authorize-url", dependencies=[require_permission("manage_integrations")])
+@needs_modules_for("platform", PRODUCT_CHANNEL_MODULES)
 async def connector_authorize_url(
     platform: str,
     shop: str = "",
@@ -1311,8 +1375,8 @@ async def connector_authorize_url(
         # Old product links become history in the same commit that makes the
         # company the connector's owner.
         if platform in PRODUCT_CHANNEL_PLATFORMS:
-            from celerp_inventory.services import detach_external_links_for_platform
-            await detach_external_links_for_platform(session, company_id, platform)
+            from celerp.connectors.product_links import detach_product_links
+            await detach_product_links(session, company_id, platform)
         await session.commit()
         await lock_connector_operation(
             session, company_id, platform, require_owner=True, exclusive=True

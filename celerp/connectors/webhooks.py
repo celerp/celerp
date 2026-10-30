@@ -15,7 +15,8 @@ from typing import Any, Callable
 
 import sqlalchemy as sa
 
-from celerp.connectors.sync_runner import run_sync
+from celerp.connectors.sync_runner import record_refused_run, run_sync
+from celerp.modules.boundary import ModuleBusy, ModuleRefused
 import celerp.connectors as connector_registry
 
 log = logging.getLogger(__name__)
@@ -49,7 +50,7 @@ async def _own_push(company_id: str, payload: dict) -> bool:
 
     from celerp.db import get_session_ctx
     from celerp.models.projections import Projection
-    from celerp_inventory.services import external_link_for_state
+    from celerp.connectors.product_links import external_link_for_state
 
     remote_id, parent_id = payload.get("id"), payload.get("parent_id")
     modified = payload.get("date_modified_gmt")
@@ -89,7 +90,10 @@ async def handle_webhook(
     webhook execution. A delivery that finds the resource busy, or no free
     execution slot, or the first sync still running, records a rerun; a
     delivery before the first sync started, or for a connection that changed
-    since it was verified, is dropped and logged. It never raises to the store."""
+    since it was verified, is dropped and logged. One refused because modules were
+    being changed records a rerun too: a store sends a webhook once, and the rerun
+    sweeper pulls what it named once the change has settled. It never raises to the
+    store."""
     from celerp.connectors.execution import (
         AdmissionBusy,
         ExecutionBusy,
@@ -141,16 +145,27 @@ async def handle_webhook(
             if store_matches is not None and not store_matches(ex.ctx.store_handle):
                 log.info("webhook: %s delivery for another store, dropped", event.platform)
                 return
+            handled = modules_busy = False
             if event.platform == "woocommerce" and normalized_topic == "product.deleted":
-                # A deletion matters to every linked product, whichever way products sync.
-                await connector.handle_product_deleted(ex.ctx, event.payload or {})
-            else:
-                await run_sync(
+                try:
+                    # A deletion matters to every linked product, whichever way products sync.
+                    await connector.handle_product_deleted(ex.ctx, event.payload or {})
+                    handled = True
+                except ModuleRefused as exc:
+                    # Refused before anything changed: recorded on the store's sync history
+                    # in the refusal's words. Once Inventory runs, the daily reconcile pass
+                    # finds the product the store no longer returns.
+                    await record_refused_run(company_id, event.platform, entity, exc)
+                    handled = True
+                    modules_busy = isinstance(exc, ModuleBusy)
+            if not handled:
+                result = await run_sync(
                     connector, company_id, entity, purpose="webhook",
                     # WooCommerce names only the deleted order; the reconciliation pass
                     # finds every imported order the store no longer returns.
                     reconcile=event.platform == "woocommerce" and normalized_topic == "order.deleted",
                 )
+                modules_busy = modules_busy or result.busy
     except (ExecutionBusy, AdmissionBusy):
         await record_rerun(company_id, event.platform, resource)
         log.info("webhook: %s %s busy, rerun recorded", event.platform, resource)
@@ -162,6 +177,12 @@ async def handle_webhook(
         return
     except (ConnectorOwnershipError, ConnectRequired, ConnectorUpgradeRequired) as exc:
         log.info("webhook: %s/%s not synced: %s", event.platform, event.topic, exc)
+        return
+    if modules_busy:
+        # Recorded once the execution has released, so the sweeper runs it after the
+        # change settles rather than the holder at once.
+        await record_rerun(company_id, event.platform, resource)
+        log.info("webhook: %s %s refused while modules change, rerun recorded", event.platform, resource)
         return
     log.info("webhook: processed %s/%s for %s", event.platform, event.topic, company_id)
 

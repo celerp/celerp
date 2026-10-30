@@ -20,8 +20,8 @@ from sqlalchemy import event, select
 from celerp.main import app
 from celerp.models.company import User
 from celerp.services.auth import CALLER_HEADER
-from email_codes_support import CODE, FAILURES, relay, settle, short_floor  # noqa: F401 - fixtures
-from test_helpers import invite_user
+from email_codes_support import CODE, FAILURES, relay, short_floor  # noqa: F401 - fixtures
+from test_helpers import invite_user, settle_background
 from ui.i18n import t
 
 pytestmark = pytest.mark.asyncio
@@ -172,7 +172,7 @@ async def test_recovery_fails_closed(client, session, relay, short_floor, failur
     # Up when the code was sent, failing when it is checked.
     relay.failure = None
     handle = await _start(client, OWNER)
-    await settle()
+    await settle_background()
     relay.failure = failure
     reset = await _reset(client, OWNER, handle)
     assert reset.status_code == 503 and reset.json()["outcome"] == "unavailable", reset.text
@@ -245,14 +245,14 @@ async def test_recovery_matches_users_exactly_as_sign_in(client, session, relay,
         assert (await _login(client, email, "userpw123" if email == STAFF else OLD_PW)).status_code == 401
         relay.calls.clear()
         handle = await _start(client, email)
-        await settle()
+        await settle_background()
         assert relay.sent_to() == [], email
         assert (await _reset(client, email, handle)).status_code == 400, email
         assert "/email-codes/verify" not in relay.paths(), email
 
     relay.calls.clear()
     await _send(client, OWNER)
-    await settle()
+    await settle_background()
     assert relay.sent_to() == [OWNER]
     assert (await _login(client, OWNER, OLD_PW)).status_code == 200
 
@@ -263,7 +263,7 @@ async def test_recovery_reset_resets_only_the_matching_user(client, session, rel
     owner_before = await _hash(session, OWNER)
 
     handle = await _start(client, STAFF)
-    await settle()
+    await settle_background()
     r = await _reset(client, STAFF, handle)
     assert (r.status_code, r.json()) == (200, {"ok": True}), r.text
 
@@ -280,7 +280,7 @@ async def test_recovery_reset_wrong_code_is_generic(client, session, relay, shor
     before = await _hash(session, OWNER)
     generic = t("recovery.code_refused")
     handle = await _start(client, OWNER)
-    await settle()
+    await settle_background()
 
     answers = [await _reset(client, OWNER, handle, code="00000000"),
                await _reset(client, "nobody@example.com", handle),
@@ -321,7 +321,7 @@ async def test_recovery_reset_never_touches_connect_state(client, session, relay
         select(UserCompany).where(UserCompany.user_id == user.id))).scalars()]
 
     handle = await _start(client, OWNER)
-    await settle()
+    await settle_background()
     assert (await _reset(client, OWNER, handle)).status_code == 200
 
     await session.refresh(user)
@@ -606,7 +606,7 @@ async def test_reset_with_a_handle_not_for_this_recovery_never_asks_the_relay(cl
     await _staff(client, session, tokens["access_token"])
     staff = await _start(client, STAFF)
     await _start(client, OWNER)
-    await settle()
+    await settle_background()
     relay.calls.clear()
     generic = (400, t("recovery.code_refused"))
     for handle in (staff, "x" * 32, ""):
@@ -638,10 +638,10 @@ async def test_only_recovery_asks_the_relay_for_codes(client, relay):
     assert (await client.post("/auth/setup-email/send", json={"email": OWNER})).status_code == 404
     assert (await client.post("/auth/setup-email/verify", json={"email": OWNER, "code": CODE})).status_code == 404
     await _register(client)
-    await settle()
+    await settle_background()
     assert relay.calls == []
     assert (await _send(client, OWNER)).json()["outcome"] == "sent"
-    await settle()
+    await settle_background()
     assert [sorted(body) for path, body in relay.calls if path == "/email-codes/send"] == [["attempt", "email", "instance_id"]]
 
 
@@ -728,7 +728,8 @@ async def test_staff_reset_refusals(client, session):
 async def test_staff_reset_locks_target(client, session):
     """The staff member's login row is locked before their memberships and roles are
     read, the order a role change keeps, so a promotion to owner made at the same
-    moment either waits for the reset or is seen by it."""
+    moment either waits for the reset or is seen by it. FOR NO KEY UPDATE, so a sign-in
+    of theirs holding their session state can still record its session."""
     owner = (await _register(client))["access_token"]
     await _staff(client, session, owner)
     target = str((await _user(session, STAFF)).id)
@@ -746,7 +747,7 @@ async def test_staff_reset_locks_target(client, session):
         event.remove(sync_conn, "before_cursor_execute", _record)
     assert r.status_code == 200, r.text
     first = statements[0]
-    assert "FROM users" in first and "FOR UPDATE" in first, statements
+    assert "FROM users" in first and "FOR NO KEY UPDATE" in first, statements
 
 
 # --- The reset link is gone ------------------------------------------------------------

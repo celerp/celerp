@@ -1344,6 +1344,7 @@ def test_every_family_of_tables_read_has_a_shape():
     assert all(SHAPES.values())
 
 
+@pytest.mark.timeout(240)  # three full reads of a 30,000-row book, the last under tracemalloc: about 60s alone under coverage
 @pytest.mark.parametrize("shape", [shape for shapes in SHAPES.values() for shape in shapes])
 def test_a_book_the_budget_just_admits_reads_within_two_and_a_half_times_it(tmp_path, monkeypatch, shape):
     """The budget charges what the read builds (from each row, document, document line, stock

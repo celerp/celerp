@@ -52,7 +52,7 @@ class _Dash:
     """The API as the dashboard sees it for one company."""
 
     def __init__(self, *, settings=None, vertical="retail", items=None, contacts=None, docs=None,
-                 company_id="c1"):
+                 company_id="c1", ai_offer=None):
         self.company = {"id": company_id, "name": "Acme Trading", "vertical": vertical,
                         "currency": "EUR", "settings": dict(settings or {})}
         if vertical:
@@ -61,6 +61,7 @@ class _Dash:
         self.list_contacts = AsyncMock(return_value=contacts or {"items": [_SELF_CONTACT], "total": 1})
         self.list_docs = AsyncMock(return_value=docs or _EMPTY)
         self.patch_company = AsyncMock(return_value={})
+        self.ai_offer = ai_offer if isinstance(ai_offer, AsyncMock) else AsyncMock(return_value=ai_offer or {})
         self._stack = ExitStack()
 
     def __enter__(self):
@@ -77,6 +78,7 @@ class _Dash:
             ("ui.api_client.list_contacts", self.list_contacts),
             ("ui.api_client.list_docs", self.list_docs),
             ("ui.api_client.patch_company", self.patch_company),
+            ("ui.api_client.ai_offer", self.ai_offer),
         ):
             self._stack.enter_context(patch(target, new=mock))
         return self

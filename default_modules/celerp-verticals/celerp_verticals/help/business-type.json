@@ -1,0 +1,24 @@
+{
+  "id": "verticals.business-type",
+  "title": "Choosing your business type",
+  "summary": "Pick an industry preset once at setup so Celerp starts with the right categories and fields.",
+  "keywords": ["vertical", "industry", "business type", "setup", "gems", "jewelry", "preset"],
+  "routes": ["/setup/company"],
+  "permission": null,
+  "order": 1,
+  "steps": [
+    {
+      "text": "Choose {label} on the setup screen; search if your trade is not in the short list.",
+      "labels": {"label": "label.business_type"},
+      "image": null,
+      "capture": {"route": "/setup/company", "selector": ".auth-container", "actions": []}
+    },
+    {
+      "text": "{hint}",
+      "labels": {"hint": "setup.business_type_hint"},
+      "image": null,
+      "capture": {"route": "/setup/company", "selector": ".auth-container", "actions": []}
+    }
+  ],
+  "related": ["verticals.category-library"]
+}

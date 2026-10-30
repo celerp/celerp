@@ -6,6 +6,7 @@ from __future__ import annotations
 import inspect
 import json
 import logging
+import uuid
 from datetime import datetime, timezone
 
 from celerp.connectors.base import (
@@ -13,6 +14,7 @@ from celerp.connectors.base import (
     OUTBOUND_ENTITIES,
     ConnectorBase,
     ConnectorContext,
+    ExternalImportRecord,
     FirstSync,
     SyncDirection,
     SyncEntity,
@@ -21,7 +23,9 @@ from celerp.connectors.base import (
 )
 from celerp.connectors.ownership import ConnectorStoreChangedError
 from celerp.connectors.relay_token import ConnectorUpgradeRequired, ConnectRequired
+from celerp.modules.boundary import ModuleBusy, ModuleRefused
 from celerp.models.sync_run import SyncRun
+from celerp.services.company_lock import lock_company
 
 log = logging.getLogger(__name__)
 
@@ -130,7 +134,6 @@ async def run_first_sync(connector: ConnectorBase, ctx: ConnectorContext) -> lis
     from celerp.db import get_session_ctx
     from celerp.models.connector_first_sync import ConnectorFirstSync
     from celerp.models.import_batch import ImportBatch
-    from celerp_inventory.services import ExternalImportRecord
 
     key = (str(ctx.company_id), connector.name)
     async with get_session_ctx() as session:
@@ -259,7 +262,6 @@ async def _attention_run(
     import sqlalchemy as sa
 
     if for_update:
-        from celerp.services.company_lock import lock_company
         await lock_company(session, company_id)
     query = (
         sa.select(SyncRun)
@@ -343,6 +345,7 @@ async def _begin_run(company_id: str, connector: str, entity: str, direction_str
     from celerp.db import get_session_ctx
 
     async with get_session_ctx() as session:
+        await lock_company(session, uuid.UUID(str(company_id)))
         run = SyncRun(
             company_id=company_id, connector=connector, entity=entity,
             direction=direction_str, started_at=started_at, finished_at=None,
@@ -365,6 +368,7 @@ async def _finish_run(run_id, company_id, connector, entity, result, started_at,
     attention_json = json.dumps(result.attention) if result.attention is not None else None
     try:
         async with get_session_ctx() as session:
+            await lock_company(session, uuid.UUID(str(company_id)))
             await session.execute(
                 sa.update(SyncRun).where(SyncRun.id == run_id).values(
                     direction=direction_str, finished_at=finished_at,
@@ -376,6 +380,17 @@ async def _finish_run(run_id, company_id, connector, entity, result, started_at,
             await session.commit()
     except Exception as exc:
         log.warning("Failed to record SyncRun: %s", exc)
+
+
+async def record_refused_run(company_id, connector_name: str, entity: str, exc: ModuleRefused) -> None:
+    """Record on the store's sync history a run of *entity* that *exc* refused before
+    anything was fetched or changed, in the refusal's own words."""
+    direction = entity_direction(entity)
+    started_at = datetime.now(timezone.utc)
+    run_id = await _begin_run(str(company_id), connector_name, entity, direction.value, started_at)
+    result = SyncResult(entity=entity, direction=direction, errors=[str(exc)], busy=isinstance(exc, ModuleBusy))
+    await _finish_run(run_id, str(company_id), connector_name, entity, result, started_at,
+                      datetime.now(timezone.utc), "failed")
 
 
 async def run_sync(
@@ -451,8 +466,9 @@ async def run_sync(
                     result = await sync_method(ex.ctx, since=since, **options)
         except ExecutionError:
             raise
-        except (ConnectorStoreChangedError, ConnectorUpgradeRequired, ConnectRequired) as exc:
-            result = SyncResult(entity=entity, direction=effective_direction, errors=[str(exc)])
+        except (ConnectorStoreChangedError, ConnectorUpgradeRequired, ConnectRequired, ModuleRefused) as exc:
+            result = SyncResult(entity=entity, direction=effective_direction, errors=[str(exc)],
+                                busy=isinstance(exc, ModuleBusy))
         except NotImplementedError:
             result = SyncResult(
                 entity=entity,

@@ -12,6 +12,11 @@ from unittest.mock import AsyncMock, patch
 from celerp.connectors.base import ConnectorContext
 
 
+@pytest.fixture(autouse=True)
+def _connectors_depend_on_their_modules(connector_modules_running):
+    """Connectors depend on Inventory, Documents and Contacts, so they run here."""
+
+
 @pytest.fixture
 def ctx_shopify():
     return ConnectorContext(

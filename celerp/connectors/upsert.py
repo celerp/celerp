@@ -21,7 +21,8 @@ async def import_store_product(
     by ``key``). A linked product changed in both systems keeps Celerp's values and
     waits on a person with both. ``first_sync`` carries the first sync's choices and
     collects what it did."""
-    from celerp_inventory.services import ExternalImportRecord, upsert_external_product
+    from celerp.connectors.base import ExternalImportRecord
+    from celerp_inventory.services import upsert_external_product
     from ui.i18n import t
 
     sku = fields.pop("sku")

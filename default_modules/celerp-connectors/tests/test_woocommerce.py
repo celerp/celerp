@@ -942,7 +942,7 @@ async def _publishing(session, company: str, sku: str, **item):
 @respx.mock
 async def test_sku_match_needs_confirmation(woo, connector_session):
     from celerp.connectors.woocommerce import LinkNeedsConfirmation
-    from celerp_inventory.services import external_link_for_state
+    from celerp.connectors.product_links import external_link_for_state
     from connector_test_support import item_state
 
     session = connector_session
@@ -967,7 +967,7 @@ async def test_sku_match_needs_confirmation(woo, connector_session):
 async def test_unpublish_sets_draft_keeps_link(woo, connector_session):
     import json as _json
 
-    from celerp_inventory.services import external_link_for_state
+    from celerp.connectors.product_links import external_link_for_state
     from connector_test_support import item_state
 
     session = connector_session

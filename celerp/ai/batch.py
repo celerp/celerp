@@ -3,19 +3,18 @@
 
 """AI batch processing - the extraction stage for attached receipts and invoices.
 
-A batch job reads 1 to MAX_BATCH_FILES files in parallel (at most
-BATCH_CONCURRENCY model calls at once). Each file gets its own model call that
-returns a structured extraction. Nothing is written to the books here: the
-extractions feed the proposal step, and every document is created only after
-the user confirms it.
+A reading job reads 1 to MAX_BATCH_FILES files, each one a step of the job run by
+celerp.ai.jobs inside a ``documents`` slot of the one model gate. Each file gets its
+own model call that returns a structured extraction. Nothing is written to the books
+here: the extractions feed the proposal step, and every document is created only
+after the user confirms it.
 
 Credits are metered per file from the gateway's usage report, so a job that
 fails halfway charges only for the files it actually read.
 
 Usage:
     job = await create_batch_job(session, company_id, user_id, query, file_ids)
-    # run_batch runs in the background, reports per-file progress through
-    # on_progress, and creates a notification when it finishes.
+    jobs.start_job(job.id)   # after the commit; progress rides the notification stream
 """
 
 from __future__ import annotations
@@ -25,28 +24,22 @@ import json
 import logging
 import re
 import uuid
-from datetime import datetime, timezone
+from collections import Counter
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 
+import httpx
 from fastapi import HTTPException
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from celerp.ai import jobs, llm
 from celerp.ai.files import load_file_for_llm
-from celerp.ai.llm import RelayError, call_llm
-from celerp.ai.models import BULK_EXTRACTION
-from celerp.models.ai import AIBatchJob
+from celerp.ai.llm import RelayError
 from ui.i18n import t
 
 log = logging.getLogger(__name__)
 
-# Keep file decoding/base64 residency aligned with the transport's process-wide
-# model-call concurrency. A larger batch semaphore only lets extra 10 MB files sit
-# expanded in memory while call_llm waits on its own three-call gate.
-BATCH_CONCURRENCY = 3
 MAX_BATCH_FILES = 100
-
-def interrupted_error() -> str:
-    return t("ai.job_interrupted")
 
 _BATCH_SYSTEM_PROMPT = """\
 You are reading one business document: a receipt, a supplier invoice, a bank or \
@@ -119,53 +112,78 @@ def _file_error(exc: BaseException) -> str:
     return "This file could not be read. Check that it is a clear image or PDF and resend it."
 
 
-async def _process_single_file(
-    file_id: str,
-    query: str,
-    company_id: uuid.UUID,
-    user_id: uuid.UUID,
-    semaphore: asyncio.Semaphore,
-) -> dict:
-    """Read one file through the model. Never raises; the result dict carries the outcome.
 
-    File loading/base64 encoding happens inside the concurrency bound so a large
-    batch cannot hold every encoded attachment in memory at once.
-    """
-    async with semaphore:
-        try:
-            file = load_file_for_llm(file_id, company_id, user_id)
-        except (FileNotFoundError, PermissionError):
-            return {
-                "file_id": file_id,
-                "filename": file_id,
-                "status": "error",
-                "error": t("error.file_gone"),
-            }
+@dataclass
+class FileRun:
+    """What every file of one reading job is read with."""
+    job_id: uuid.UUID
+    company_id: uuid.UUID
+    user_id: uuid.UUID
+    conversation_id: uuid.UUID | None
+    query: str
+    # The claim the job's runner holds its lease under (celerp.ai.jobs._claim).
+    runner_id: str | None = None
+    # The admission refusal that stopped the job's unsent steps (an i18n key).
+    stop_reason: str | None = None
 
-        filename = file["filename"]
-        files = [file]
-        prompt = f"{query}\n\nRead the attached document." if query else "Read the attached document."
 
-        try:
-            result = await call_llm(BULK_EXTRACTION, _BATCH_SYSTEM_PROMPT, prompt, files=files)
-        except Exception as exc:
-            log.warning("Batch file %s failed: %s", file_id, exc)
-            return {
-                "file_id": file_id,
-                "filename": filename,
-                "status": "error",
-                "error": _file_error(exc),
-            }
+@dataclass
+class FileOutcome:
+    """How one send of a file ended: the step state, what the user is shown, and the
+    charge (``known``: the service named the operation's whole charge). ``sent``: the
+    file left for the service, so it has a usage row to settle."""
+    state: str
+    result: dict
+    credits: int = 0
+    known: bool = False
+    sent: bool = False
 
+
+async def read_file(run: FileRun, file_id: str, operation_id: uuid.UUID, *,
+                    before_send: Callable[[int], Awaitable[None]]) -> FileOutcome:
+    """Read one file under ``operation_id`` (the caller holds its gate slot). It is
+    sent again only under that id: while its first send still runs, and when the
+    service surely did not run it or no reply came back. An outcome the service
+    cannot report, or an id it no longer accepts, ends the file without running it."""
+    try:
+        file = load_file_for_llm(file_id, run.company_id, run.user_id)
+    except (FileNotFoundError, PermissionError):
+        return FileOutcome("failed", {"filename": file_id, "error": t("error.file_gone")})
+    filename = file["filename"]
+    prompt = f"{run.query}\n\nRead the attached document." if run.query else "Read the attached document."
+    messages = [{"role": "system", "content": _BATCH_SYSTEM_PROMPT},
+                {"role": "user", "content": llm._build_user_content(prompt, [file])}]
+    hints = {"query": prompt[:500], "file_count": 1, "is_batch": False}
+    sent = False
+
+    async def _send(nbytes: int) -> None:
+        nonlocal sent
+        await before_send(nbytes)
+        sent = True
+
+    def _ended(state: str, exc: BaseException, credits: int = 0, known: bool = False) -> FileOutcome:
+        return FileOutcome(state, {"filename": filename, "error": _file_error(exc)}, credits, known, sent)
+
+    try:
+        result = await jobs.send_step(
+            lambda: llm.complete(messages, operation_id=operation_id, hints=hints, before_send=_send), resend=True)
+    except RelayError as exc:
+        if exc.code == "outcome_unknown":
+            charge = exc.credits if exc.operation_credits is None else exc.operation_credits
+            return _ended("unknown", exc, charge, True)
+        if exc.code == "operation_expired":
+            return _ended("expired", exc, 0, True)
+        return _ended("failed", exc, exc.credits)
+    except (httpx.TimeoutException, httpx.TransportError) as exc:
+        log.warning("File %s of job %s got no reply: %s", file_id, run.job_id, exc)
+        return _ended("failed", asyncio.TimeoutError())
+    except HTTPException as exc:
+        return _ended("failed", exc)
     answer = result.message.get("content") or ""
-    return {
-        "file_id": file_id,
-        "filename": filename,
-        "status": "success",
-        "answer": answer,
-        "extraction": parse_extraction(answer),
-        "credits": int(result.usage.get("credits") or 0),
-    }
+    known = result.operation_credits is not None
+    credits = result.operation_credits if known else int((result.usage or {}).get("credits") or 0)
+    return FileOutcome("done", {"filename": filename, "answer": answer, "extraction": parse_extraction(answer)},
+                       credits, known, sent)
 
 
 async def create_batch_job(
@@ -175,176 +193,54 @@ async def create_batch_job(
     query: str,
     file_ids: list[str],
     conversation_id: uuid.UUID | None = None,
-) -> AIBatchJob:
-    """Create a pending batch job record. Credits accrue per file as it runs."""
+    job_id: uuid.UUID | None = None,
+):
+    """Create a pending reading job, held by this process, and one step per file; the
+    caller commits and then starts it (celerp.ai.jobs.start_job).
+
+    ``job_id`` is the id of the question that asked for the job, when there is one."""
+    request = jobs.JobRequest(company_id=company_id, user_id=user_id, kind="documents",
+                              conversation_id=conversation_id, query=query, file_ids=tuple(file_ids))
     file_ids = list(dict.fromkeys(file_ids))
     if not file_ids:
         raise ValueError("Attach at least one file")
     if len(file_ids) > MAX_BATCH_FILES:
         raise ValueError(t("error.batch_too_many", max=MAX_BATCH_FILES))
-
-    job = AIBatchJob(
-        company_id=company_id,
-        user_id=user_id,
-        conversation_id=conversation_id,
-        query=query,
-        file_ids=file_ids,
-        total_files=len(file_ids),
-        credits_consumed=0,
-        status="pending",
-    )
+    job, steps = jobs.documents_job(request=request, file_ids=file_ids, job_id=job_id)
     session.add(job)
+    await session.flush()
+    session.add_all(steps)
     await session.flush()
     return job
 
 
-async def run_batch(
-    job_id: uuid.UUID,
-    company_id: uuid.UUID,
-    user_id: uuid.UUID,
-    query: str,
-    file_ids: list[str],
-    db_factory,
-    on_progress=None,
-) -> None:
-    """Execute a batch job: parallel file extraction with per-file progress.
-
-    Args:
-        db_factory: Callable that returns an AsyncSession context manager.
-        on_progress: Optional async callback(job_id, completed, failed, total, result).
-    """
-    semaphore = asyncio.Semaphore(BATCH_CONCURRENCY)
-    results: list[dict] = []
-    conversation_id: uuid.UUID | None = None
-    completed = 0
-    failed = 0
-    credits = 0
-
-    async with db_factory() as session:
-        job = await session.get(AIBatchJob, job_id)
-        if job:
-            conversation_id = job.conversation_id
-            job.status = "running"
-            session.add(job)
-            await session.commit()
-
-    tasks = [
-        _process_single_file(fid, query, company_id, user_id, semaphore)
-        for fid in file_ids
-    ]
-
-    for coro in asyncio.as_completed(tasks):
-        result = await coro
-        results.append(result)
-
-        if result["status"] == "success":
-            completed += 1
-        else:
-            failed += 1
-        credits += result.get("credits", 0)
-
-        async with db_factory() as session:
-            job = await session.get(AIBatchJob, job_id)
-            if job:
-                persisted = list(((job.results or {}).get("files") or []))
-                persisted.append(result)
-                # Preserve the user's attachment order even though extraction finishes
-                # concurrently. File ids are upload identities; repeated ids, if any,
-                # retain their completion order after the first matching position.
-                order = {file_id: index for index, file_id in enumerate(file_ids)}
-                persisted.sort(key=lambda item: order.get(item.get("file_id"), len(order)))
-                job.results = {**(job.results or {}), "files": persisted}
-                job.completed_files = completed
-                job.failed_files = failed
-                job.credits_consumed = credits
-                session.add(job)
-                await session.commit()
-
-        if on_progress:
-            try:
-                await on_progress(job_id, completed, failed, len(file_ids), result)
-            except Exception:
-                log.debug("on_progress callback failed", exc_info=True)
-
-    all_failed = failed == len(file_ids)
-    final_status = "failed" if all_failed else "completed"
-    async with db_factory() as session:
-        job = await session.get(AIBatchJob, job_id)
-        if job:
-            job.status = final_status
-            job.credits_consumed = credits
-            job.completed_at = datetime.now(timezone.utc)
-            if all_failed:
-                job.error = t("ai.job_failed")
-            session.add(job)
-            await session.commit()
-
+async def publish_progress(run: FileRun, file_id: str, state: str) -> None:
+    """Tell the user's open pages that one more file of the job has ended. Best effort:
+    the file's result is already written, so a failure here never sends it again."""
+    from celerp.notifications.sse import publish
     try:
-        from celerp.notifications.service import create as create_notification
-        async with db_factory() as session:
-            if all_failed:
-                title = f"Could not read {failed} file(s)"
-                body = "None of the attached files could be read. Open the conversation for details."
-            else:
-                title = f"{completed} of {len(file_ids)} file(s) read"
-                body = (
-                    f"{completed} read, {failed} could not be read. "
-                    "Open the conversation to review the proposed entries."
-                )
-            await create_notification(
-                session, company_id, "ai", title, body,
-                user_id=user_id,
-                action_url=(
-                    f"/ai?conversation={conversation_id}" if conversation_id else "/ai"
-                ),
-                priority="high",
-            )
-            await session.commit()
+        async with jobs.SessionLocal() as session:
+            steps = (await jobs.job_steps(session, [run.job_id]))[run.job_id]
+        counts = Counter(step.state for step in steps)
+        open_steps = sum(counts.get(s, 0) for s in jobs.OPEN_STEPS)
+        completed = counts.get("done", 0)
+        await publish(run.company_id, run.user_id, {
+            "type": "batch_progress", "job_id": str(run.job_id), "completed": completed,
+            "failed": sum(counts.values()) - completed - open_steps, "total": sum(counts.values()),
+            "file_id": file_id, "status": jobs.FILE_STATUS[state],
+        })
     except Exception:
-        log.warning("Failed to create batch notification", exc_info=True)
+        log.warning("Progress event for job %s not published", run.job_id, exc_info=True)
 
 
-async def fail_interrupted_jobs(session: AsyncSession) -> int:
-    """Mark every pending or running job as failed. Returns how many were marked.
-
-    Runs at process start: a job can only run inside the process that started
-    it, so anything still pending or running at boot was lost to the restart.
-    """
-    rows = (await session.execute(
-        select(AIBatchJob).where(AIBatchJob.status.in_(("pending", "running")))
-    )).scalars().all()
-    now = datetime.now(timezone.utc)
-    for job in rows:
-        job.status = "failed"
-        job.error = interrupted_error()
-        job.completed_at = now
-        session.add(job)
-    return len(rows)
+async def notify_finished(run: FileRun, completed: int, failed: int) -> None:
+    """The notification a finished reading job leaves for its user."""
+    if completed == 0:
+        title = f"Could not read {failed} file(s)"
+        body = "None of the attached files could be read. Open the conversation for details."
+    else:
+        title = f"{completed} of {completed + failed} file(s) read"
+        body = f"{completed} read, {failed} could not be read. Open the conversation to review the proposed entries."
+    await jobs.notify(run.company_id, run.user_id, run.conversation_id, title, body)
 
 
-async def get_batch_job(
-    session: AsyncSession,
-    job_id: uuid.UUID,
-    company_id: uuid.UUID,
-    user_id: uuid.UUID,
-) -> AIBatchJob | None:
-    """Get a batch job by ID, scoped to company and owning user."""
-    job = await session.get(AIBatchJob, job_id)
-    if job is None or job.company_id != company_id or job.user_id != user_id:
-        return None
-    return job
-
-
-async def list_conversation_jobs(
-    session: AsyncSession,
-    conversation_id: uuid.UUID,
-    company_id: uuid.UUID,
-    user_id: uuid.UUID,
-) -> list[AIBatchJob]:
-    """Every job started from a conversation, oldest first."""
-    q = (
-        select(AIBatchJob)
-        .where(AIBatchJob.conversation_id == conversation_id, AIBatchJob.company_id == company_id, AIBatchJob.user_id == user_id)
-        .order_by(AIBatchJob.created_at.asc())
-    )
-    return list((await session.execute(q)).scalars().all())

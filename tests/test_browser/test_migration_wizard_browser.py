@@ -22,6 +22,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 import pytest
+from playwright.sync_api import expect
 
 from boot_support import Supervised, wait_until_started
 
@@ -472,9 +473,9 @@ def test_escape_leaves_wizard_fields(page):
     page.goto("/setup/new-company/migrate")
     field = page.locator("#prepared_by")
     field.click()
-    assert page.evaluate("document.activeElement.id") == "prepared_by"
+    expect(field).to_be_focused()
     page.keyboard.press("Escape")
-    assert page.evaluate("document.activeElement.id") != "prepared_by"
+    expect(field).not_to_be_focused()
 
 
 def test_an_error_box_keeps_a_gap_above_what_follows(page):

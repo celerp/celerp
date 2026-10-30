@@ -63,6 +63,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from celerp.modules.importer import (
     _RESERVED_IMPORT_PREFIX, _RESERVED_PREFIX, PREMIUM_MARKER, ModuleImportError, _bound_names, _check_min_version,
@@ -80,6 +81,9 @@ from celerp.modules.slots import (
 )
 from celerp.services.app_paths import is_app_local_path
 from celerp.services.permissions import is_permission_key
+
+if TYPE_CHECKING:
+    from sqlalchemy import Table
 
 log = logging.getLogger(__name__)
 
@@ -1200,17 +1204,11 @@ def event_owners(event_types: set[str]) -> tuple[list[str], list[str]]:
     """The display names of the installed modules whose projection handlers own these
     event types, enabled or not, and the event types no installed module owns."""
     owners: dict[str, str] = {}
-    for entry in module_search_path().split(","):
-        root = Path(entry)
-        if not root.is_dir():
-            continue
-        for pkg in sorted(root.iterdir()):
-            if not (pkg / "__init__.py").exists():
-                continue
-            manifest = read_manifest(pkg)
-            label = manifest.get("display_name") or manifest.get("name") or pkg.name
-            for contrib in (manifest.get("slots") or {}).get("projection_handler") or []:
-                owners.setdefault(contrib.get("prefix") or "", label)
+    for pkg in _installed_packages():
+        manifest = read_manifest(pkg)
+        label = manifest.get("display_name") or manifest.get("name") or pkg.name
+        for contrib in (manifest.get("slots") or {}).get("projection_handler") or []:
+            owners.setdefault(contrib.get("prefix") or "", label)
     owned: set[str] = set()
     unowned: set[str] = set()
     for t in event_types:
@@ -1220,6 +1218,62 @@ def event_owners(event_types: set[str]) -> tuple[list[str], list[str]]:
         else:
             unowned.add(t)
     return sorted(owned), sorted(unowned)
+
+
+def _installed_packages():
+    """Every installed module folder, enabled or not, in module search path order."""
+    for entry in module_search_path().split(","):
+        root = Path(entry)
+        if not root.is_dir():
+            continue
+        for pkg in sorted(root.iterdir()):
+            if (pkg / "__init__.py").exists():
+                yield pkg
+
+
+@dataclass(frozen=True)
+class HelpSource:
+    """A module's help folder, declared by the ``help`` manifest key."""
+    name: str
+    display_name: str
+    first_party: bool
+    help_dir: Path
+    # The module's own UI catalogs by language, read from disk: a module that is
+    # not running never registers them, yet its help pages still name its labels.
+    catalogs: dict[str, dict]
+
+
+def installed_help_dirs() -> list[HelpSource]:
+    """The help folder of every installed module, enabled or not, read from its
+    manifest without importing it, so a disabled module's help can explain how to
+    turn it on. The first copy of a name on the search path wins. A malformed
+    ``help`` entry, or one pointing outside the module folder, is logged and skipped."""
+    out: list[HelpSource] = []
+    seen: set[str] = set()
+    for pkg in _installed_packages():
+        manifest = read_manifest(pkg)
+        name = manifest.get("name") or pkg.name
+        if name in seen or "help" not in manifest:
+            continue
+        seen.add(name)
+        entry = manifest["help"]
+        if (not isinstance(entry, dict) or not isinstance(entry.get("dir"), str)
+                or not entry["dir"].strip()):
+            log.error("Module %r 'help' skipped: must be a dict with a non-empty string 'dir'",
+                      name)
+            continue
+        help_dir = pkg / entry["dir"]
+        if not _inside(help_dir, pkg) or not help_dir.is_dir():
+            log.error("Module %r help skipped: %s is not a folder inside the module folder",
+                      name, entry["dir"])
+            continue
+        out.append(HelpSource(name=name,
+                              display_name=manifest.get("display_name") or name,
+                              first_party=is_first_party(pkg), help_dir=help_dir,
+                              catalogs={lang.strip().lower(): catalog for lang, catalog, _rtl
+                                        in module_catalogs(name, pkg, manifest)
+                                        if isinstance(catalog, dict)}))
+    return out
 
 
 # Fields to extract from PLUGIN_MANIFEST for display purposes.
@@ -1302,6 +1356,10 @@ def load_all(
     # import keeps ui.i18n the lowest leaf (it must not import this module).
     from ui.i18n import clear_registry
     clear_registry()
+    # The help index is built from installed modules the same way: dropped here,
+    # rebuilt on the next read.
+    from celerp.help import registry as help_registry
+    help_registry.reset()
 
     if admission is None:
         admission = admit_modules(module_dir, enabled)
@@ -1400,6 +1458,7 @@ def _table_shape(table) -> tuple:
 def _restore_table(metadata, shape: tuple) -> bool:
     """Put a table back on *metadata* exactly as :func:`_table_shape` saw it.
     True when anything had changed."""
+    table: Table
     table, identity, columns, states, constraints, indexes = shape
     changed = (table.name, table.schema, table.fullname) != identity
     table.name, table.schema, table.fullname = identity
@@ -1710,14 +1769,19 @@ def _load_one(pkg_path: Path, pkg_name: str, *, trusted: bool, declared: dict) -
 
 
 def _register_locales(pkg_name: str, pkg_path: Path, manifest: dict) -> None:
-    """Register module-contributed UI translation catalogs (the `locales`
-    manifest key, mirroring `slots`). Each entry maps a language code to
-    {"file": <path>, "rtl": <bool>}. Pushed into ui.i18n through a lazy import
-    so the i18n leaf never imports the module subsystem. A malformed or
-    unreadable entry is logged and skipped; the module and its other locales
-    still load."""
+    """Register module-contributed UI translation catalogs into ui.i18n, through a
+    lazy import so the i18n leaf never imports the module subsystem."""
     from ui.i18n import register_catalog
 
+    for lang, catalog, rtl in module_catalogs(pkg_name, pkg_path, manifest):
+        register_catalog(lang, catalog, rtl=rtl)
+
+
+def module_catalogs(pkg_name: str, pkg_path: Path, manifest: dict):
+    """Yield (lang, catalog, rtl) for each UI translation catalog a module declares
+    (the `locales` manifest key, mirroring `slots`). Each entry maps a language code
+    to {"file": <path>, "rtl": <bool>}. A malformed or unreadable entry is logged and
+    skipped; the module's other locales still load."""
     locales = manifest.get("locales") or {}
     if not isinstance(locales, dict):
         log.error(
@@ -1759,7 +1823,7 @@ def _register_locales(pkg_name: str, pkg_path: Path, manifest: dict) -> None:
                 pkg_name, lang, entry["file"], type(exc).__name__, exc,
             )
             continue
-        register_catalog(lang, catalog, rtl=rtl)
+        yield lang, catalog, rtl
 
 
 def _route_failure(manifest: dict, kind: str, exc: Exception) -> None:

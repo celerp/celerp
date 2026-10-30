@@ -26,6 +26,7 @@ import uuid
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.services.company_lock import locked_company
+from celerp.modules.boundary import take_company_locks
 from celerp.modules.loader import module_label
 from celerp.modules.registry import (
     commit_with_load_set, company_modules, enable_for_company, hold_module_state, restart_needed,
@@ -60,7 +61,7 @@ async def set_business_type(
     await hold_module_state(session)
     modules = installed_preset_modules(target)
 
-    company = await locked_company(session, company_id)
+    [company] = await take_company_locks(session, lambda: locked_company(session, company_id))
     before = dict(company.settings or {})
     previous_vertical = before.get("vertical")
     previous_preset = load_preset(previous_vertical, allow_hidden=True) if previous_vertical else None

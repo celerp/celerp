@@ -274,7 +274,7 @@ def _store_put(product_id: str, images_status: int = 200, images_body=None):
 @respx.mock
 async def test_unchanged_product_not_sent(connector_session):
     from celerp.connectors.woocommerce import WooCommerceConnector
-    from celerp_inventory.services import external_link_for_state
+    from celerp.connectors.product_links import external_link_for_state
 
     session = connector_session
     values = {"sku": "U-1", "name": "Mug", "description": "Blue", "sale_price": 10.0}

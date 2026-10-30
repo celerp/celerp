@@ -7,6 +7,7 @@ record of that company goes in one transaction, and logins stay."""
 from __future__ import annotations
 
 import asyncio
+import uuid
 
 import pytest
 
@@ -64,6 +65,20 @@ async def test_a_reset_wipes_the_company_on_a_real_session(real_client, real_eng
     assert await count(real_engine, "companies") == 0
     assert set((await _held(real_engine, cid)).values()) == {0}
     assert await count(real_engine, "users") == 1
+
+
+async def test_a_reset_company_can_no_longer_be_locked(real_client, real_engine):  # noqa: F811
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from celerp.services.company_lock import holds_company_lock, lock_company
+
+    token = await _register(real_client, "Reset Co")
+    cid = await _id(real_client, token)
+    assert (await _reset(real_client, token, "Reset Co")).status_code == 200
+
+    async with AsyncSession(real_engine) as session:
+        assert await lock_company(session, uuid.UUID(cid)) is False
+        assert holds_company_lock(session, cid) is False
 
 
 async def test_resetting_one_company_leaves_the_other_and_its_people(real_client, real_engine):  # noqa: F811
