@@ -11,6 +11,7 @@ events gives the same states."""
 from __future__ import annotations
 
 import json
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -31,9 +32,19 @@ def _normalized(states) -> list[str]:
 async def test_backup_from_before_restores_and_replays_unchanged(real_engine, real_client, tmp_path, monkeypatch):
     from celerp.models.projections import Projection
 
+    from packaging.version import Version
+    from celerp.migrations import compatibility
+
+    # This copy runs as the release after the capture: a checkout without tags (CI's)
+    # reports a version below any release, and would refuse the copy as newer.
+    archive = FIXTURE / "company.celerp-company"
+    with zipfile.ZipFile(archive) as z:
+        captured_by = Version(json.loads(z.read("manifest.json"))["celerp_version"])
+    monkeypatch.setattr(compatibility, "running_version",
+                        lambda: f"{captured_by.major}.{captured_by.minor}.{captured_by.micro + 1}")
     _bk_local(monkeypatch, tmp_path)
     _user, _cid, tok = await _bk_setup(real_engine)
-    cid = await _bk_restore_new(real_client, tok, (FIXTURE / "company.celerp-company").read_bytes())
+    cid = await _bk_restore_new(real_client, tok, archive.read_bytes())
     async with maker(real_engine)() as s:
         items = (await s.execute(select(Projection.state).where(
             Projection.company_id == cid, Projection.entity_type == "item"))).scalars().all()
