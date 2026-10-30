@@ -4,7 +4,6 @@
 are not set to sync by hand, with each kind of record in its own direction."""
 from __future__ import annotations
 
-import uuid
 from unittest.mock import AsyncMock
 
 import pytest
@@ -14,7 +13,7 @@ from celerp.connectors.daily_scheduler import check_and_run_daily_syncs
 from celerp.db import get_session_ctx
 from celerp.models.connector_config import ConnectorConfig
 from celerp.models.connector_first_sync import ConnectorFirstSync
-from connector_test_support import record_first_sync
+from connector_test_support import record_first_sync, seed_company
 from migration_support import real_engine  # noqa: F401
 
 pytestmark = pytest.mark.asyncio
@@ -38,13 +37,13 @@ def run(monkeypatch):
 
 @pytest.fixture
 def _config(real_engine):
-    """Add one company's connection, the only one for its connector while the test runs;
+    """Add a company and its connection, the only one for its connector while the test runs;
     real_engine truncates what the test commits."""
     import sqlalchemy as sa
 
     async def add(connector: str, *, first_sync: str, **fields) -> str:
-        company_id = str(uuid.uuid4())
         async with get_session_ctx() as session:
+            company_id = str(await seed_company(session))
             await session.execute(sa.delete(ConnectorConfig).where(ConnectorConfig.connector == connector))
             await session.execute(sa.delete(ConnectorFirstSync).where(ConnectorFirstSync.connector == connector))
             await session.commit()

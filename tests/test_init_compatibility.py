@@ -26,7 +26,7 @@ from sqlalchemy.pool import NullPool
 
 from celerp.cli import main
 from celerp.db_url import sync_url
-from test_db_compatibility import DATABASE_URL, NEWER, _running, scratch, snapshot  # noqa: F401  (fixtures)
+from test_db_compatibility import DATABASE_URL, NEWER, _drop, _running, scratch, snapshot  # noqa: F401  (fixtures)
 
 pytestmark = pytest.mark.skipif(
     not DATABASE_URL.startswith("postgresql"), reason="needs a live Postgres database"
@@ -231,8 +231,7 @@ def test_init_provisions_a_database_that_does_not_exist(scratch, config_file):
         assert config_file.exists()
     finally:
         admin = sa.create_engine(sync_url(DATABASE_URL), isolation_level="AUTOCOMMIT", poolclass=NullPool)
-        with admin.connect() as conn:
-            conn.execute(sa.text(f'DROP DATABASE IF EXISTS "{name}_new" WITH (FORCE)'))
+        _drop(admin, f"{name}_new")
         admin.dispose()
 
 
