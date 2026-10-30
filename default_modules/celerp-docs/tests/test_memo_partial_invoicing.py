@@ -9,9 +9,8 @@ import uuid
 
 import pytest
 
-from celerp.services.company_lock import locked_company
 from memo_draw_support import (
-    auth, contact, draft, draw, drawn, drawn_lines, item, key_of, memo_out, ok, owner, service_line, state,
+    auth, auth_full, contact, draft, draw, drawn, drawn_lines, item, key_of, memo_out, ok, owner, revoke, service_line, state,
 )
 
 
@@ -118,20 +117,20 @@ async def test_draw_with_no_lines_refused(client, session):
 
 @pytest.mark.parametrize("removed", ["edit_documents", "fulfill_documents"])
 async def test_draw_requires_edit_and_fulfill(client, session, removed):
-    a = await _auth_full(session)
+    a = await auth_full(session)
     h = a["headers"]
     memo, lids, lots = await memo_out(client, h)
-    await _revoke(session, a["company_id"], removed)
+    await revoke(session, a["company_id"], removed)
     r = await draw(client, h, memo, {lids[0]: 1})
     assert r.status_code == 403, r.text
     assert await owner(client, h, lots[0][0]) == ("memo_out", memo)
 
 
 async def test_invoice_all_requires_edit_and_fulfill(client, session):
-    a = await _auth_full(session)
+    a = await auth_full(session)
     h = a["headers"]
     memo, _, _ = await memo_out(client, h)
-    await _revoke(session, a["company_id"], "fulfill_documents")
+    await revoke(session, a["company_id"], "fulfill_documents")
     r = await client.post(f"/docs/{memo}/convert", headers=h)
     assert r.status_code == 403, r.text
     assert (await state(client, h, memo))["status"] == "final"
@@ -195,17 +194,3 @@ async def test_draw_refuses_memo_not_live(client, session, memo_state):
     assert key_of(r) == "documents.err_memo_issue_first"
     assert not r.json()["detail"].get("also")
     assert (await state(client, h, memo))["version"] == v
-
-
-# ── helpers local to this file ────────────────────────────────────────────────
-
-async def _auth_full(session) -> dict:
-    from test_helpers import company_auth
-    return await company_auth(session, uuid.uuid4(), uuid.uuid4())
-
-
-async def _revoke(session, company_id, permission: str) -> None:
-    """Grant ``permission`` to no role, so the company's own admin lacks it."""
-    company = await locked_company(session, company_id)
-    company.settings = {**(company.settings or {}), "role_grants": {permission: []}}
-    await session.commit()

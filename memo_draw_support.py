@@ -6,12 +6,25 @@ from __future__ import annotations
 
 import uuid
 
+from celerp.services.company_lock import locked_company
 from test_helpers import company_auth
 
 
 async def auth(session) -> dict:
     """Request headers for the admin of a fresh company with its books."""
     return (await company_auth(session, uuid.uuid4(), uuid.uuid4()))["headers"]
+
+
+async def auth_full(session) -> dict:
+    """A fresh company's admin: its ids and request headers."""
+    return await company_auth(session, uuid.uuid4(), uuid.uuid4())
+
+
+async def revoke(session, company_id, permission: str) -> None:
+    """Grant ``permission`` to no role, so the company's own admin lacks it."""
+    company = await locked_company(session, company_id)
+    company.settings = {**(company.settings or {}), "role_grants": {permission: []}}
+    await session.commit()
 
 
 async def ok(r) -> dict:
