@@ -465,12 +465,13 @@ async def claim_source(session: AsyncSession, run_id: uuid.UUID, *, token: str |
     Idempotent, so a repeated start and startup recovery both finish a start that died
     part way; only a ``preparing`` run is changed. Returns whether this call started the
     run, so exactly one caller schedules the runner. A source found in neither place
-    fails the run. Locks in canonical order: the run's company, the scan claim, the run row."""
+    fails the run. Locks in canonical order, as a start takes them: the scan claim, the run's
+    company, the run row."""
     run = await session.get(MigrationRun, run_id)
     if run is None:
         return False
-    await lock_company(session, run.company_id)
     await lock_scan_claim(session, run.scan_claim_sha256)
+    await lock_company(session, run.company_id)
     await _lock_run(session, run, company=False)
     if run.status != _S.PREPARING:
         await session.commit()

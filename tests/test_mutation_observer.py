@@ -266,14 +266,18 @@ async def test_the_connector_fences_rank_before_the_company_lock(session, auth, 
     assert _kinds() == []
 
 
-@pytest.mark.parametrize("taken", ["schema", "claim", "names"])
-async def test_the_schema_key_and_a_restores_claim_and_names_rank_before_the_company_lock(session, auth, taken):
+@pytest.mark.parametrize("taken", ["schema", "claim", "names", "scan"])
+async def test_the_schema_key_a_restores_claim_and_names_and_a_scan_claim_rank_before_the_company_lock(
+        session, auth, taken):
     from celerp.db import share_schema
     from celerp.services.company_backup import CLAIM
+    from celerp.services.migrations import lock_scan_claim
     with serving("POST", "/observed"):
         cid = _authorize(session, auth)
         if taken == "schema":
             assert await share_schema(session)
+        elif taken == "scan":
+            await lock_scan_claim(session, uuid.uuid4().hex)
         else:
             await session.execute(text("SELECT pg_try_advisory_xact_lock(hashtextextended(:k, 0))"),
                                   {"k": f"{CLAIM}{uuid.uuid4()}" if taken == "claim" else f"restore-names:{cid}"})

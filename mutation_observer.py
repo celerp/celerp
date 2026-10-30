@@ -101,8 +101,8 @@ _EFFECT = frozenset({"pg_notify"})
 # company lock too: the install-wide runtime fence, then one connector's ownership fence.
 _CONNECTOR_RUNTIME, _CONNECTOR_OWNER = "connector-runtime", "connector-owner:"
 # Advisory lock families taken before the company lock by the canonical order (module
-# admission and the module-state boundary, one restore per owner).
-_BEFORE_COMPANY = ("module-use:", "module-gate:", "restore-names:")
+# admission and the module-state boundary, one restore per owner, one start per scan).
+_BEFORE_COMPANY = ("module-use:", "module-gate:", "restore-names:", "migration-scan:")
 _DDL = ("Create", "Alter", "Drop", "Rename", "Comment", "Grant", "Index", "View")
 _ROW_LOCK = {1: "row share key", 2: "row share", 3: "row update key", 4: "row update"}
 # Tables that hold no company's data, each with the infrastructure that writes it.
