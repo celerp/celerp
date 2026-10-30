@@ -1714,8 +1714,6 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
             checked = await check_backup(session, backup)
             from celerp.connectors.ownership import lock_connector_key, lock_connector_maintenance
             if mode == "bootstrap":
-                # Restored items are opted out of Shopify (_turn_off_shop_sync) under its fence.
-                await lock_connector_key(session, "shopify")
                 plan = plan_bootstrap_restore(backup)
                 found = await _bootstrap_existing(session, backup, owner_account, caller)
                 if found is not None:
@@ -1738,6 +1736,12 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
                     # As a company reset takes them: before any other lock on the company, after
                     # the owner's locks, which another restore by this owner takes before it.
                     await lock_connector_maintenance(session)
+                    # The new company's row before the replaced company's lock, as every create
+                    # takes it (its web address is unique, so its insert can wait). Its name is
+                    # the replaced company's, checked below; its settings come with the plan.
+                    owner = await session.get(User, uuid.UUID(str(user_id)))
+                    company = await provision_restored_company(session, owner=owner, company_name=replacing.typed_name,
+                                                               company_id=new_id, settings={})
                     # Waited on under the module-state boundary, so the wait is bounded.
                     [found] = await take_company_locks(
                         session, lambda: lock_company_for_deletion(session, replacing.company_id))
@@ -1780,6 +1784,9 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
                     raise BackupError(409, t(ALREADY_SET_UP))
                 user = await create_install_owner(session, name=owner_account["name"],
                                                   email=owner_account["email"], password=owner_account["password"])
+                await hold_owner(session, user.id)  # the create's login lock, before the fence
+                # Restored items are opted out of Shopify (_turn_off_shop_sync) under its fence.
+                await lock_connector_key(session, "shopify")
             else:
                 user = await session.get(User, uuid.UUID(str(user_id)))
                 if user is None:
@@ -1814,8 +1821,12 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
                 # The carried team keeps what its roles may do in the current company.
                 if grants:
                     settings["role_grants"] = grants
-                company = await provision_restored_company(session, owner=user, company_name=name,
-                                                           company_id=new_id, settings=settings)
+                if replacing is not None:
+                    company = await locked_company(session, new_id)
+                    company.name, company.settings = name, settings
+                else:
+                    company = await provision_restored_company(session, owner=user, company_name=name,
+                                                               company_id=new_id, settings=settings)
                 # Its rows are written as the new company's, whose owner the caller now is.
                 act_for(session, new_id, user.id, "owner", LIFECYCLE)
                 try:
@@ -2031,6 +2042,8 @@ async def _check_replacing(session: AsyncSession, replacing: _Replacing, user_id
     act_for(session, company.id, user_id, role, LIFECYCLE)
     await lock_company(session, company.id)
     await payments.lock_recorded_unmatched(session, company.id)  # put back by the replace, before its rows
+    from celerp.services.company_reset import hold_member_sessions
+    await hold_member_sessions(session, company.id)  # the replace's reset takes them before its rows
     if replacing.typed_name != company.name:
         raise BackupError(422, t(REPLACE_NAME, company=company.name), "name_mismatch")
     canonical = lambda value: json.dumps(value, sort_keys=True)  # noqa: E731

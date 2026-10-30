@@ -1182,35 +1182,36 @@ def _insert_waits_on_no_key(table: str) -> bool:
 SECRET_KEYED = {"doc_share_tokens": "token", "company_peer_grants": "token_hash"}
 
 
-def _company_param(table: str, where) -> tuple[int, ...] | None:
+def _company_param(table: str, where, qualifier: str | None = None) -> tuple[int, ...] | None:
     """The parameter a WHERE clause binds the table's company column to, when that equality
     is the whole clause or one of its top-level AND terms: every row it selects names that
     company. For a table whose rows are their parent's company, the term is its parent key
     IN (SELECT the parent's key FROM the parent WHERE the parent's company term). None when no
-    such term exists."""
+    such term exists. With ``qualifier`` (a write joined to other tables) a column counts only
+    when it is qualified by it, the written table's alias or name."""
     link = _company_link(table)
     if link is None:
-        return _column_param(_company_column(table), where)
+        return _column_param(_company_column(table), where, qualifier)
     column, parent = link
     if parent == "companies":
-        return _column_param(column, where)
+        return _column_param(column, where, qualifier)
     target = next(fk.column.name for fk in _app_tables()[table].foreign_keys if fk.parent.name == column)
     for term in _and_terms(where):
         body = term.get("SubLink", {})
         select_ = body.get("subselect", {}).get("SelectStmt", {})
         picked = [t["ResTarget"]["val"] for t in select_.get("targetList", ())]
-        if (body.get("subLinkType") == "ANY_SUBLINK" and _column_name(body.get("testexpr")) == column
+        if (body.get("subLinkType") == "ANY_SUBLINK" and _column_name(body.get("testexpr"), qualifier) == column
                 and [_column_name(v) for v in picked] == [target]
                 and [f.get("RangeVar", {}).get("relname") for f in select_.get("fromClause", ())] == [parent]):
             return _company_param(parent, select_.get("whereClause"))
     return None
 
 
-def _parent_param(table: str, where) -> tuple[int, ...] | None:
+def _parent_param(table: str, where, qualifier: str | None = None) -> tuple[int, ...] | None:
     """For a table whose rows are their parent's company, the one parameter a WHERE clause
     binds the parent key to by equality: every row it selects is that parent's. None otherwise."""
     link = _company_link(table)
-    return _column_param(link[0], where) if link and link[1] != "companies" else None
+    return _column_param(link[0], where, qualifier) if link and link[1] != "companies" else None
 
 
 def _and_terms(where) -> list:
@@ -1221,10 +1222,13 @@ def _and_terms(where) -> list:
     return body["args"] if kind == "BoolExpr" and body["boolop"] == "AND_EXPR" else [where]
 
 
-def _column_name(node) -> str | None:
-    """The column a bare column reference names (its last field); None for any other node."""
-    fields = (node or {}).get("ColumnRef", {}).get("fields", [])
-    return fields[-1].get("String", {}).get("sval") if fields else None
+def _column_name(node, qualifier: str | None = None) -> str | None:
+    """The column a column reference names (its last field); None for any other node, and,
+    with ``qualifier``, for a reference not qualified by it."""
+    fields = [f.get("String", {}).get("sval") for f in (node or {}).get("ColumnRef", {}).get("fields", [])]
+    if qualifier is not None and fields[:-1] != [qualifier]:
+        return None
+    return fields[-1] if fields else None
 
 
 @functools.lru_cache(maxsize=None)
@@ -1236,22 +1240,23 @@ def _row_key_column(table: str) -> str:
     return pk[0].name if len(pk) == 1 and _has_company(table) and table != "companies" else ""
 
 
-def _row_param(table: str, where) -> tuple[int, ...] | None:
+def _row_param(table: str, where, qualifier: str | None = None) -> tuple[int, ...] | None:
     """The parameter a WHERE clause binds such a table's primary key to (as
     ``_company_param``): the statement writes at most that one row. None otherwise."""
     column = _row_key_column(table)
-    return _column_param(column, where) if column else None
+    return _column_param(column, where, qualifier) if column else None
 
 
-def _column_param(column: str, where) -> tuple[int, ...] | None:
-    """The one parameter a WHERE clause binds ``column`` to by equality, as the whole clause
-    or one of its top-level AND terms; None when no such term exists."""
+def _column_param(column: str, where, qualifier: str | None = None) -> tuple[int, ...] | None:
+    """The one parameter a WHERE clause binds ``column`` (qualified by ``qualifier``, when
+    given) to by equality, as the whole clause or one of its top-level AND terms; None when no
+    such term exists."""
     for term in _and_terms(where):
         (kind, body), = term.items()
         if kind != "A_Expr" or body.get("kind") != "AEXPR_OP" or body["name"][0]["String"]["sval"] != "=":
             continue
         for col, val in ((body.get("lexpr"), body.get("rexpr")), (body.get("rexpr"), body.get("lexpr"))):
-            if _column_name(col) == column:
+            if _column_name(col, qualifier) == column:
                 numbers = _params(val)
                 if numbers and len(numbers) == 1:
                     return numbers
@@ -1291,7 +1296,7 @@ def _row_locks(statement: str) -> tuple[tuple[tuple[str, str, tuple[int, ...] | 
             out += [(f"tbl:{r['RangeVar']['relname']}", mode, None, None, None, None) for r in body["relations"]]
         elif kind == "UpdateStmt":
             table, where = body["relation"]["relname"], body.get("whereClause")
-            company, row, parent = (None, None, None) if body.get("fromClause") else _one_table(table, where)
+            company, row, parent = _one_table(table, where, _qualifier(body, "fromClause"))
             out.append((f"row:{table}", "write", _params(where), company, row, parent))
             fks = _foreign_keys(table)
             for target in body.get("targetList", ()):
@@ -1301,7 +1306,7 @@ def _row_locks(statement: str) -> tuple[tuple[tuple[str, str, tuple[int, ...] | 
         elif kind == "DeleteStmt":
             table, where = body["relation"]["relname"], body.get("whereClause")
             key = _params(where)
-            company, row, parent = (None, None, None) if body.get("usingClause") else _one_table(table, where)
+            company, row, parent = _one_table(table, where, _qualifier(body, "usingClause"))
             out.append((f"row:{table}", "delete", key, company, row, parent))
             if table in _parents():
                 out.append((f"key:{table}", "delete", key, company, row, parent))
@@ -1338,9 +1343,19 @@ def _row_locks(statement: str) -> tuple[tuple[tuple[str, str, tuple[int, ...] | 
     return tuple(dict.fromkeys(out)), names
 
 
-def _one_table(table: str, where) -> tuple[tuple[int, ...] | None, ...]:
+def _one_table(table: str, where, qualifier: str | None = None) -> tuple[tuple[int, ...] | None, ...]:
     """(company, row, parent) parameters of a statement on one table (see ``_row_locks``)."""
-    return _company_param(table, where), _row_param(table, where), _parent_param(table, where)
+    return (_company_param(table, where, qualifier), _row_param(table, where, qualifier),
+            _parent_param(table, where, qualifier))
+
+
+def _qualifier(body: dict, joined: str) -> str | None:
+    """For an UPDATE or DELETE that reads other tables (its ``joined`` clause), the alias (or
+    name) a column must be qualified by to be the written table's; None when it reads none."""
+    if not body.get(joined):
+        return None
+    relation = body["relation"]
+    return relation.get("alias", {}).get("aliasname") or relation["relname"]
 
 
 def _company(numbers: tuple[int, ...] | None, names: tuple, parameters) -> str:

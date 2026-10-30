@@ -278,6 +278,19 @@ async def _company_schema(session: AsyncSession, cid: str) -> dict:
     return keys
 
 
+async def hold_member_sessions(session: AsyncSession, company_id) -> list[uuid.UUID]:
+    """Lock every member's session generation, in user order, and return the members. Taken
+    under the company's deletion lock, before any of its deletes: a sign-out takes the
+    generation and then the sessions, so it waits for the whole reset. A replace takes them
+    before it share-locks the rows it keeps (company_backup._check_replacing), so the reset
+    it ends with retakes them."""
+    members = sorted(set((await session.scalars(
+        select(UserCompany.user_id).where(UserCompany.company_id == company_id))).all()))
+    for member in members:
+        await lock_auth_state(session, str(member))
+    return members
+
+
 async def reset(session: AsyncSession, company: Company, typed_name: str,
                 next_session: Callable[[], Awaitable[dict | None]] | None = None) -> Reset:
     """Delete *company* and every row it owns in the session's transaction, and record its
@@ -328,8 +341,6 @@ async def reset(session: AsyncSession, company: Company, typed_name: str,
         raise ResetRefused(409, AI_BATCH_ACTIVE)
     run_ids = [str(r) for r in (await session.scalars(
         select(MigrationRun.id).where(MigrationRun.company_id == company.id))).all()]
-    members = set((await session.scalars(
-        select(UserCompany.user_id).where(UserCompany.company_id == company.id))).all())
     # Last, so a refusal above never closes the payments of a company that stays. They
     # are reopened when the deletion below does not commit.
     try:
@@ -340,15 +351,13 @@ async def reset(session: AsyncSession, company: Company, typed_name: str,
         # Payments recorded on the company's invoices first: every writer of a payment takes
         # the company, then the unmatched payment, then the company's documents.
         await payments.unrecord_company(session, company.id)
-        # Every member's session generation before the deletes take their sessions here, and
-        # the caller's next session issued under it before them too: a sign-out takes the
-        # generation and then the sessions, so it waits for the whole reset.
-        for member in sorted(members):
-            await lock_auth_state(session, str(member))
+        # The caller's next session is issued under the members' generations, before the
+        # deletes take their sessions.
+        members = await hold_member_sessions(session, company.id)
         issued = await next_session() if next_session is not None else None
         # A login left with no company is signed out everywhere, so it no longer holds
         # the single direct sign-in place.
-        left = [u for u in sorted(members) if await first_usable_company_link(session, u, company.id) is None]
+        left = [u for u in members if await first_usable_company_link(session, u, company.id) is None]
         if left:
             await session.execute(delete(SessionRegistry).where(SessionRegistry.user_id.in_(left)))
         for statement in _company_deletes(keys):

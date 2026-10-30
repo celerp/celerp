@@ -1580,6 +1580,29 @@ def test_a_child_row_keyed_by_its_parent_is_judged_under_the_parents_company(rec
     assert info.get("ungated_takes", []) == ([f"nokey|{counted}"] if counted else [])
 
 
+# ── A write joined to other tables names its company only through its own table ──
+
+@pytest.mark.parametrize("statement, strength, counted", [
+    # The company term qualified by the written table's alias or name: c1's rows, gated.
+    ("UPDATE ledger l SET actor_id = u.id FROM users u WHERE l.company_id = $1 AND l.actor_id IS NULL",
+     "nokey", None),
+    ("UPDATE ledger SET actor_id = u.id FROM users u WHERE ledger.company_id = $1", "nokey", None),
+    ("DELETE FROM ledger l USING users u WHERE l.company_id = $1 AND l.actor_id = u.id", "update", None),
+    # A joined table's company term, or one that names no table: no company, never assumed gated.
+    ("UPDATE ledger l SET actor_id = p.id FROM projections p WHERE p.company_id = $1", "nokey", "unknown"),
+    ("UPDATE ledger l SET actor_id = u.id FROM users u WHERE company_id = $1", "nokey", "unknown"),
+    ("DELETE FROM ledger l USING projections p WHERE p.company_id = $1", "update", "unknown"),
+])
+def test_a_joined_write_names_the_company_its_own_table_is_bound_to(recorder, statement, strength, counted):
+    """An UPDATE ... FROM or DELETE ... USING reads other tables, so a bare company column may
+    be theirs: only a term qualified by the written table's alias (or name) binds its rows'
+    company, and the take is judged under that company's lock."""
+    recorder.statement(1, _LOCK_COMPANY, ("c1",), 0.0)
+    recorder.statement(1, statement, ("c1",), 0.0)
+    info = recorder.dump()["classes"]["row:ledger"]
+    assert info.get("ungated_takes", []) == ([f"{strength}|{counted}"] if counted else [])
+
+
 _CONVERSATION = ("SELECT ai_conversations.id FROM ai_conversations WHERE ai_conversations.id = $1::UUID "
                  "AND ai_conversations.company_id = $2::UUID FOR KEY SHARE")
 _CREDITS = ("UPDATE ai_messages SET credits_used=$1 WHERE ai_messages.id = $2::UUID "
