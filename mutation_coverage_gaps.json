@@ -10,11 +10,6 @@
   "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches commit."
  },
  {
-  "route": "api POST /backup/import",
-  "class": "requested, no durable write",
-  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api DELETE, api POST, commit, write delete, write session.add, write session.delete."
- },
- {
   "route": "api POST /backup/import-bootstrap",
   "class": "requested, no durable write",
   "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api DELETE, commit, write delete, write session.add, write session.delete."
@@ -381,11 +376,6 @@
  },
  {
   "route": "ui POST /api/items/{entity_id}/unreserve",
-  "class": "requested, no durable write",
-  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
- },
- {
-  "route": "ui POST /backup/import",
   "class": "requested, no durable write",
   "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
  },
@@ -1317,12 +1307,6 @@
   "count": 1,
   "class": "not reached from a route",
   "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
- },
- {
-  "site": "celerp/services/payments.py record_recovery add",
-  "count": 1,
-  "class": "reached from a route",
-  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
  },
  {
   "site": "celerp/services/payments.py return_unmatched execute",
