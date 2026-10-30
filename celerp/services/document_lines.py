@@ -678,7 +678,10 @@ async def _protected_lines(session, company_id, owner_id: str, stored: dict) -> 
             continue
         index = await doc_line_of_lot(session, company_id, owner_id, stored, r.entity_id, st)
         if index is not None:
-            mark(index, "shipped", [r.entity_id])
+            # A drawn line's goods are kept on it by assert_drawn_lines_authorized, by line id,
+            # so it may move when Back to memo takes a line before it off.
+            if not lines[index].get("drawn_from"):
+                mark(index, "shipped", [r.entity_id])
             continue
         # Nothing tells which line shipped it: every line it could belong to stays put.
         sku = str(st.get("sku") or "").strip()

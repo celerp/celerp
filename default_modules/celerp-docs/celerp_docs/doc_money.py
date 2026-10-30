@@ -266,6 +266,25 @@ def memo_fixed_amounts(state: dict, out_by_line: dict[str, float]) -> dict:
             "still_on_memo": still}
 
 
+def released_header_money(state: dict, released: list[dict]) -> dict:
+    """The header fields of an invoice *state* lowered by the memo takes *released* in one return:
+    shipping and a tax amount with no rate each lose ``min(take, current)``, and a fixed discount
+    likewise while the invoice's discount is still a fixed amount (a percentage the user set is
+    left as it is). Only fields that change are returned; nothing goes below 0."""
+    currency = state.get("currency")
+    pct = state.get("discount_type") == "percentage"
+    current = {"shipping": to_decimal(state.get("shipping") or 0), "discount": fixed_discount(state),
+               "tax": unrated_tax(state)}
+    fields = {}
+    for key, now in current.items():
+        if key == "discount" and pct:
+            continue
+        taken = sum((to_decimal(t.get(key) or 0) for t in released), to_decimal(0))
+        if taken and now:
+            fields[key] = to_stored_float(round_money(now - min(taken, now), currency))
+    return fields
+
+
 def document_terms(state: dict, *, own_unrated_tax) -> dict:
     """The terms that apply to every line of a document *state*, which a draw's target must share
     with the memo: a percentage header discount, the document taxes, the header rate, and

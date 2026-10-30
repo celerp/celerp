@@ -86,7 +86,7 @@ async def test_memo_tax_rate_correction(client, session):
     # (6) a stale version
     stale, _, _ = await memo_m(client, h)
     v = (await state(client, h, stale))["version"]
-    await ok(await client.patch(f"/docs/{stale}", headers=h, json={"notes": "Back Friday", "expected_version": v}))
+    await ok(await client.patch(f"/docs/{stale}", headers=h, json={"fields_changed": {"notes": {"new": "Back Friday"}}, "expected_version": v}))
     assert (await rate(client, h, stale, 8, version=v)).status_code == 409
 
 

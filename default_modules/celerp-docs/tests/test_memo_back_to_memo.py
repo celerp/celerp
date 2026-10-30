@@ -41,7 +41,8 @@ async def _two_memos_one_draft(client, h, *, new_invoice: bool):
     if new_invoice:
         doc = await state(client, h, pf)
         await ok(await client.patch(f"/docs/{pf}", headers=h, json={
-            "line_items": [*doc["line_items"], service_line()], "expected_version": doc["version"]}))
+            "fields_changed": {"line_items": {"new": [*doc["line_items"], service_line()]}},
+            "expected_version": doc["version"]}))
     return pf, (m1, l1, lots1[0]), (m2, l2, lots2[0])
 
 

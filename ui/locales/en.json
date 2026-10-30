@@ -2913,7 +2913,7 @@
   "documents.receive_summary_no_stock_two": "{first} and {second} added no stock.",
   "documents.undo_stock_adjustment": "Undo stock adjustment",
   "documents.undo_writeoff": "Undo write-off",
-  "documents.unvoid_conversion_undone": "The goods on this invoice went back to memo {memo} when it was voided. Convert the memo again to bill them.",
+  "documents.unvoid_conversion_undone": "The goods on this invoice went back to memo {memo} when it was voided. Invoice them from the memo again.",
   "documents.view_in_catalog": "View in catalog",
   "documents.view_item_details": "View item details",
   "documents.view_reserving_document": "View reserving document",
