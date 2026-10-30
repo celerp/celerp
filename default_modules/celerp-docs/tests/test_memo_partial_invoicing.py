@@ -88,7 +88,8 @@ async def test_draw_refuses_non_draft_target(client, session):
     await ok(await client.post(f"/docs/{void}/void", headers=h, json={}))
     quote = (await ok(await client.post("/docs", headers=h, json={"doc_type": "quotation", "line_items": []})))["id"]
     stranger = await auth(session)
-    foreign = await draft(client, stranger)
+    # Named apart from this company's own documents, so only the company tells it apart.
+    foreign = await draft(client, stranger, ref_id=f"PF-{uuid.uuid4().hex[:8]}")
     for target in (final, void, quote):
         r = await draw(client, h, memo, {lids[0]: 1}, target=target)
         assert r.status_code == 409 and key_of(r) == "docs.draw_target_not_draft", r.text
@@ -107,7 +108,7 @@ async def test_draw_quantity_more_than_out_refused(client, session):
     assert r.status_code == 409, r.text
     problems = [r.json()["detail"], *r.json()["detail"].get("also", [])]
     assert [p["message_key"] for p in problems] == ["docs.draw_quantity_more_than_out"] * 2
-    assert all(await owner(client, h, ids[0]) == ("memo_out", memo) for ids in lots)
+    assert [await owner(client, h, ids[0]) for ids in lots] == [("memo_out", memo)] * 2
 
 
 async def test_draw_with_no_lines_refused(client, session):

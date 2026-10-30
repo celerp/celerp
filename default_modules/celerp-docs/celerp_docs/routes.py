@@ -33,8 +33,9 @@ from celerp.modules.slots import fire_lifecycle
 from celerp.models.projections import Projection
 from celerp.inventory_codes import MAX_SCAN_CODE_LEN, PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES
 from celerp_docs.consignment_buy import bought_parcels, bought_receipt_lots, buy_consignment
-from celerp_docs.doc_money import (LIST_TOTAL_FIELDS, document_money, list_totals_differ, money_from_lines,
-                                   refuse_malformed_taxes, refuse_unset_line_tax)
+from celerp_docs.doc_money import (LIST_TOTAL_FIELDS, document_money, document_terms, drawn_line_money, fixed_discount,
+                                   list_totals_differ, memo_draws, memo_fixed_amounts, money_from_lines,
+                                   refuse_malformed_taxes, refuse_unset_line_tax, unrated_tax)
 from celerp_docs.doc_projections import RESTORE_POINT, UNISSUED_STATUSES, list_lines_and_totals, payment_status
 from celerp_docs.taxes import TaxApplication
 from celerp.services.field_schema import reject_system_item_fields
@@ -55,16 +56,16 @@ from celerp.services.landed_cost import compute_bill_landed_allocation
 from celerp.services.line_measures import (FULL, floor_to_unit, line_label, proposed_sell_qty, splitting_allowed,
                                           splitting_off)
 from celerp.services.document_lines import (
-    MemoDraw, MemoReturn, assert_line_holds_respected, assert_new_references_eligible,
+    DrawnLine, MemoDraw, MemoReturn, assert_line_holds_respected, assert_new_references_eligible,
     line_id_counts, line_item_id, linked_items, memo_out_refusal, out_on_another_memo, received_line_index,
-    refuse_drawn_line_action, shipped_elsewhere, strip_line_ids,
+    new_line_id, refuse_drawn_line_action, shipped_elsewhere, strip_line_ids,
 )
 from celerp.services.attachments import attach_file, storing
 from celerp.services.csv_export import csv_stream, resolve_export_cols
 from celerp.services.currencies import CURRENCY_CODES, require_currency_code
 from celerp.services.auth import AuthContext, get_auth_context, get_current_company_id, get_current_role, get_current_user
 from celerp.services.permissions import assert_role_permission, get_current_company_settings, locked_authority, reject_price_change, require_permission, role_has_permission
-from celerp_docs.sequences import next_doc_ref, next_draft_ref, require_doc_type, get_all_sequences, update_sequence, list_sequence_key
+from celerp_docs.sequences import next_doc_ref, next_draft_ref, peek_draft_ref, require_doc_type, get_all_sequences, update_sequence, list_sequence_key
 from celerp_docs.search import doc_q_clause
 from celerp.services.units import build_unit_map, default_receive_as, get_company_units, is_non_stock_line, is_pieces_unit, is_weight_unit, line_receive_kind, require_moving_fits_units, validate_line_quantity
 from celerp.services.money import allocate_pro_rata, books_currency, checked_exchange_rate, discount_from_inputs, doc_rate, document_line_amount, document_line_unit, require_doc_rate, received_share, round_basis, round_money, round_rate, to_base, to_decimal, to_stored_float
@@ -74,7 +75,7 @@ from celerp.services.payment_terms import company_payment_terms, due_date_for_te
 from celerp_contacts.references import contact_accepts, contact_snapshot, lock_contacts
 from celerp.output.document_context import prepare_document_output
 from celerp_docs.doc_constants import WRITEOFF_ACCOUNT_TYPES, INBOUND_DOC_TYPES, DRAFT_REVERT_RETURNED, DRAFT_REVERT_STATUSES, INBOUND_DRAFT_REVERT_STATUSES, FULFILLABLE_STATUSES, LEGACY_CONTACT_FIELDS, LIFECYCLE_OWNED_FIELDS, NON_FINANCIAL_DOC_TYPES, RECEIVABLE_STATUSES, RESERVABLE_DOC_STATUSES, REVERTIBLE_STATUSES, SALES_PRICED_DOC_TYPES, SUPPLIER_RETURN_STATUSES, CREDIT_APPLICATION_METHODS, CONVERTIBLE_STATUSES, QUOTATION_SPENT_STATUSES, sent_out_by
-from celerp.services.doc_balance import DOC_FIELD_FALLBACKS, doc_value, is_awaiting_payment, is_overdue_document, is_owed, outstanding_balance
+from celerp.services.doc_balance import DOC_FIELD_FALLBACKS, MEMO_DRAW_STATUSES, doc_value, is_awaiting_payment, is_overdue_document, is_owed, outstanding_balance
 from celerp.services.list_behavior import (
     DRAFT, FINALIZED, CLOSED, VOID, DEFAULT_LIST_TYPE, LIST_TYPES, SCAN_RUNS_FIELD, SUPPLIER_DOC_TYPES, ScanBehavior,
     behavior, scan_behavior, terminal_action, is_money_list,
@@ -10724,6 +10725,23 @@ def _return_order(lots: list[Projection], bound: str | None) -> list[Projection]
     return sorted(lots, key=lambda p: (p.entity_id == bound, p.entity_id))
 
 
+def _carve(lots: list[Projection], bound: str | None, qty: float) -> tuple[list[Projection], Projection | None, float]:
+    """How *qty* of a line comes off the lots it has out, in _return_order: the lots that go
+    whole, and the one lot only part of which goes with that part's quantity (None, 0 when
+    whole lots cover it)."""
+    whole: list[Projection] = []
+    remaining = float(qty)
+    for proj in _return_order(lots, bound):
+        if remaining <= 1e-9:
+            break
+        lot_qty = float(proj.state.get("quantity") or 0)
+        if remaining + 1e-9 < lot_qty:
+            return whole, proj, remaining
+        whole.append(proj)
+        remaining -= lot_qty
+    return whole, None, 0.0
+
+
 async def _lots_out(session, company_id, entity_id: str, state: dict,
                     lots: Iterable[Projection]) -> tuple[dict[str, Projection], dict[str, int | None]]:
     """The lots this document has out (sold or on memo), and the line whose shipment sent
@@ -10862,27 +10880,20 @@ async def _revert_lines_impl(row: Projection, body: RevertLinesRequest, indices:
                                   name=label, qty=f"{back:g}", total=f"{total:g}"))
             continue
         validate_line_quantity(back, lots[0].state.get("sell_by"), unit_map, label=label, require_positive=False)
-        remaining = float(back)
-        for proj in _return_order(lots, bound):
-            qty = float(proj.state.get("quantity") or 0)
-            if remaining <= 1e-9:
-                break
-            if remaining + 1e-9 >= qty:
-                to_revert.append(proj.entity_id)
-                remaining -= qty
-            elif proj.state.get("status") != "memo_out":
-                status = proj.state.get("status") or ""
-                errors.append(refusal(
-                    "lines.revert_part_not_memo",
-                    f"{label}: only goods out on memo can be part-returned, this one is {status.replace('_', ' ')}",
-                    name=label, status=status))
-                break
-            elif not splitting_allowed(proj.state):
-                raise HTTPException(status_code=409, detail=splitting_off(
-                    str(proj.state.get("sku") or ""), "take_back"))
-            else:
-                partial_plan[proj.entity_id] = (remaining, key)
-                remaining = 0.0
+        whole, part, part_qty = _carve(lots, bound, back)
+        to_revert.extend(p.entity_id for p in whole)
+        if part is None:
+            continue
+        if part.state.get("status") != "memo_out":
+            status = part.state.get("status") or ""
+            errors.append(refusal(
+                "lines.revert_part_not_memo",
+                f"{label}: only goods out on memo can be part-returned, this one is {status.replace('_', ' ')}",
+                name=label, status=status))
+        elif not splitting_allowed(part.state):
+            raise HTTPException(status_code=409, detail=splitting_off(str(part.state.get("sku") or ""), "take_back"))
+        else:
+            partial_plan[part.entity_id] = (part_qty, key)
 
     if errors:
         reasons = "; ".join(e["message"] for e in errors)
@@ -10957,6 +10968,435 @@ async def revert_lines(
         session, company_id, user, row, "revert", body,
         lambda indices: _revert_lines_impl(row, body, indices, user, session),
         select_lines=_revert_selection)
+
+
+# ── Invoice part of a memo ────────────────────────────────────────────────────
+# A draw moves chosen units of an issued memo's lines onto a new or a draft invoice of the
+# same customer. The goods stay with the customer: each lot is restamped onto the invoice,
+# the invoice line keeps the memo line's price and records the line it came from, and the
+# memo records what the draw took, so the rest stays on the memo and nothing bills twice.
+
+
+class DrawVersions(BaseModel):
+    """The versions of the memo and the target invoice a preview was worked out on."""
+    memo: int
+    target: int | None = None
+
+
+class InvoiceLinesRequest(RevertLinesRequest):
+    """Invoice goods out on a memo. ``line_ids`` names the memo lines and ``quantities`` the
+    units of each to invoice, by line id (omitted: every unit the line has out).
+    ``target_doc_id`` names a draft invoice of the same customer to add them to; without it
+    a new invoice is made. ``dry_run`` returns what the draw would bill and leave on the memo
+    without writing anything; ``expected_versions``, the versions that preview read, refuses
+    the draw when either record changed since."""
+    target_doc_id: str | None = None
+    dry_run: bool = False
+    expected_versions: DrawVersions | None = None
+
+    @model_validator(mode="after")
+    def _names_lines_by_id(self):
+        if self.line_entity_ids:
+            raise ValueError("Name the memo lines by line id.")
+        unknown = sorted(set(self.quantities or {}) - set(self.line_ids))
+        if unknown:
+            raise ValueError(f"quantities names lines that are not in line_ids: {', '.join(unknown)}")
+        return self
+
+
+@dataclass(frozen=True)
+class _DrawSnapshot:
+    """A memo and the target as a draw reads them: the lots each memo line (by index) has
+    out, and the lots out on the memo that no line records."""
+    memo: Projection
+    target: Projection | None
+    lots: dict[int, list[Projection]]
+    loose: list[Projection]
+
+    def out(self, index: int) -> float:
+        return sum(float(p.state.get("quantity") or 0) for p in self.lots.get(index, []))
+
+    def out_by_line(self) -> dict[str, float]:
+        lines = self.memo.state.get("line_items") or []
+        return {lines[i].get("line_id"): self.out(i) for i in self.lots}
+
+
+# Memo line keys a drawn invoice line copies; its quantity, amount, lot and id are its own.
+_DRAWN_LINE_KEYS = ("sku", "barcode", "name", "description", "unit", "sell_by", "unit_price", "discount_pct",
+                    "tax_rate", "taxes")
+
+
+def _refuse_not_memo(state: dict) -> None:
+    if state.get("doc_type") != "memo":
+        raise HTTPException(status_code=422, detail=refusal(
+            "docs.draw_not_memo", "Only goods out on a memo can be invoiced this way."))
+
+
+async def _draw_snapshot(session, company_id, memo: Projection, target: Projection | None, *,
+                         lock: bool) -> _DrawSnapshot:
+    owned = await _memo_allocation_items(session, company_id, memo.entity_id)
+    lots = (await _lock_item_sku_lots(session, company_id, {p.entity_id for p in owned})).values() if lock else owned
+    out, line_of = await _lots_out(session, company_id, memo.entity_id, memo.state, lots)
+    by_line: dict[int, list[Projection]] = {}
+    loose: list[Projection] = []
+    for eid, index in sorted(line_of.items()):
+        (loose if index is None else by_line.setdefault(index, [])).append(out[eid])
+    return _DrawSnapshot(memo, target, by_line, loose)
+
+
+def _ref(row: Projection) -> str:
+    return str(row.state.get("ref_id") or row.state.get("doc_number") or row.entity_id)
+
+
+def _money_text(amount) -> str:
+    return f"{float(amount):,.2f}"
+
+
+def _memo_payments_text(state: dict) -> str:
+    """The payments standing on a document, as "50.00 on 2026-03-02", joined."""
+    return ", ".join(f"{_money_text(p.get('amount'))} on {p.get('payment_date') or ''}".strip()
+                     for p in state.get("payments") or []
+                     if p.get("status", "active") == "active" and float(p.get("amount") or 0) > 0)
+
+
+def _terms_text(terms: dict) -> str:
+    """Document terms (document_terms) as a phrase."""
+    parts = []
+    if terms["discount_pct"] is not None:
+        parts.append(f"a {terms['discount_pct']:g}% discount")
+    if terms["doc_taxes"]:
+        parts.append("taxes " + ", ".join(f"{code} {rate:g}%" for code, rate, _o, _c in terms["doc_taxes"]))
+    if terms["tax_rate"]:
+        parts.append(f"a tax rate of {terms['tax_rate']:g}%")
+    if terms["unrated_tax"]:
+        parts.append(f"a tax amount of {_money_text(terms['unrated_tax'])} with no rate")
+    return ", ".join(parts) or "no discount or tax"
+
+
+def draw_problems(snap: _DrawSnapshot, body: InvoiceLinesRequest) -> tuple[list[dict], list[tuple[int, float]]]:
+    """Everything that stops this draw, in the one order the preview and the write report it,
+    and the chosen (memo line index, units) picks. A memo in a status goods cannot be invoiced
+    from stops the check there: nothing else about it means anything."""
+    memo, target = snap.memo.state, snap.target
+    memo_ref = _ref(snap.memo)
+    problems: list[dict] = []
+    seen = body.expected_versions
+    if seen is not None:
+        if target is not None and (seen.memo, seen.target) != (snap.memo.version, target.version):
+            problems.append(refusal(
+                "docs.draw_preview_stale",
+                f"Memo {memo_ref} or {_ref(target)} changed after the preview. Check the new preview, then confirm again.",
+                memo=memo_ref, target=_ref(target)))
+        elif target is None and seen.memo != snap.memo.version:
+            problems.append(refusal(
+                "docs.draw_preview_stale_memo",
+                f"Memo {memo_ref} changed after the preview. Check the new preview, then confirm again.",
+                memo=memo_ref))
+    if memo.get("status") not in MEMO_DRAW_STATUSES:
+        key = "documents.err_memo_nothing_out" if memo.get("status") == "converted" else "documents.err_memo_issue_first"
+        return [*problems, refusal(key, t(key))], []
+    if float(memo.get("amount_paid") or 0) > 0:
+        paid = _money_text(memo.get("amount_paid"))
+        problems.append(refusal(
+            "docs.draw_memo_has_payment",
+            f"Memo {memo_ref} has {paid} paid on it ({_memo_payments_text(memo)}). Refund or void what was paid "
+            "on the memo first, then invoice its products.",
+            memo=memo_ref, amount=paid, payments=_memo_payments_text(memo)))
+
+    lines = memo.get("line_items") or []
+    index_of = {li.get("line_id"): i for i, li in enumerate(lines) if li.get("line_id")}
+    quantities = body.quantities or {}
+    picks: list[tuple[int, float]] = []
+    if not body.line_ids:
+        problems.append(refusal("lines.none_selected", "Choose at least one line."))
+    for lid in body.line_ids:
+        if lid not in index_of:
+            problems.append(refusal("lines.not_on_document",
+                                    "A line you chose is no longer on this record. Select Try again, then choose again."))
+            continue
+        i = index_of[lid]
+        name = lines[i].get("sku") or lines[i].get("description") or i + 1
+        out = snap.out(i)
+        qty = float(quantities.get(lid, out))
+        if not out:
+            problems.append(refusal("lines.revert_nothing_out", f"{name}: nothing is out on this line", name=name))
+        elif qty <= 0:
+            problems.append(refusal("docs.draw_quantity_positive",
+                                    f"{name}: the quantity to invoice must be greater than zero.", name=name))
+        elif qty > out + 1e-9:
+            problems.append(refusal("docs.draw_quantity_more_than_out",
+                                    f"{name}: {qty:g} chosen, but {out:g} is out on memo {memo_ref}.",
+                                    name=name, qty=f"{qty:g}", out=f"{out:g}", memo=memo_ref))
+        picks.append((i, qty))
+    chosen = [lines[i] for i, _ in picks]
+    chosen_skus = {str(li.get("sku") or "").strip() for li in chosen} - {""}
+    chosen_items = {str(line_item_id(li) or "") for li in chosen} - {""}
+    for lot in snap.loose:
+        sku = str(lot.state.get("sku") or "")
+        if lot.entity_id in chosen_items or sku.strip() in chosen_skus:
+            problems.append(refusal(
+                "docs.draw_lot_unattributed",
+                f"{sku} is out on memo {memo_ref}, but nothing records which line it went out on.",
+                sku=sku, memo=memo_ref))
+
+    fixed = memo_fixed_amounts(memo, snap.out_by_line())
+    eligible = target is None
+    if target is not None:
+        st = target.state
+        if st.get("doc_type") != "invoice" or st.get("status") != "draft":
+            problems.append(refusal(
+                "docs.draw_target_not_draft",
+                f"{_ref(target)} is not a draft invoice, so products can't be added to it. "
+                "Invoice them onto a new invoice or a draft invoice.", target=_ref(target)))
+        elif (st.get("contact_id") or "", st.get("currency") or "") != (memo.get("contact_id") or "", memo.get("currency") or ""):
+            problems.append(refusal(
+                "docs.draw_target_other_customer",
+                f"{_ref(target)} is for another customer or currency than memo {memo_ref}. Choose a draft "
+                "invoice of the same customer and currency, or a new invoice.", target=_ref(target), memo=memo_ref))
+        else:
+            eligible = True
+    if target is not None and eligible:
+        st = target.state
+        held = sum((to_decimal(take["tax"]) for take in memo_draws(memo) if take["invoice_id"] == target.entity_id),
+                   to_decimal(0))
+        memo_terms = document_terms(memo, own_unrated_tax=0)
+        target_terms = document_terms(st, own_unrated_tax=max(to_decimal(0), unrated_tax(st) - held))
+        percentage = st.get("discount_type") == "percentage" and fixed["discount"] > 0
+        if memo_terms != target_terms or percentage:
+            shown = target_terms if memo_terms != target_terms else {**target_terms, "discount_pct": to_decimal(st.get("discount") or 0)}
+            problems.append(refusal(
+                "docs.draw_terms_differ",
+                f"{_ref(target)} has {_terms_text(shown)}, and memo {memo_ref} has {_terms_text(memo_terms)}. "
+                f"Invoice these products onto a new invoice, which takes the memo's terms. Changing the terms "
+                f"of {_ref(target)} would also change the lines already on it.",
+                target=_ref(target), memo=memo_ref, target_terms=_terms_text(shown), memo_terms=_terms_text(memo_terms)))
+    if fixed["tax"] > 0:
+        taken = dict(picks)
+        full = not snap.loose and all(abs(taken.get(i, 0) - snap.out(i)) <= 1e-9 for i in snap.lots)
+        amount = _money_text(fixed["tax"])
+        if not full:
+            problems.append(refusal(
+                "docs.draw_unrated_tax_partial",
+                f"Memo {memo_ref} has a tax amount of {amount} with no rate, worked out on all its products. "
+                "To invoice part of it, set a tax rate in the memo's totals, or use Invoice all.",
+                memo=memo_ref, amount=amount))
+        elif target is not None and target.state.get("line_items"):
+            problems.append(refusal(
+                "docs.draw_unrated_tax_existing",
+                f"Memo {memo_ref} has a tax amount of {amount} with no rate, so it can't be added to {_ref(target)}, "
+                f"which already has products. Invoice these products onto a new invoice, or set a tax rate in the "
+                f"memo's totals that matches {_ref(target)}.", memo=memo_ref, amount=amount, target=_ref(target)))
+    return problems, picks
+
+
+@dataclass(frozen=True)
+class _DrawBill:
+    """What a draw puts on the invoice and records on the memo: the invoice lines (without
+    their lots), the take, and the invoice's values the draw writes."""
+    lines: list[dict]
+    take: dict
+    values: dict
+
+
+def _draw_bill(snap: _DrawSnapshot, picks: list[tuple[int, float]], draw_id: str, invoice_id: str,
+               doc_number: str) -> _DrawBill:
+    """The figures of a draw, the same for its preview and its write: each line bills its units
+    at the memo line's price (drawn_line_money), and the take carries the fixed amounts left on
+    the memo (memo_fixed_amounts): shipping and a tax with no rate whole, a fixed discount up to
+    what this draw adds. A new invoice takes the memo's header; an existing draft adds them."""
+    memo = snap.memo.state
+    currency = memo.get("currency")
+    takes = memo_draws(memo)
+    lines, take_lines = [], []
+    for i, n in picks:
+        ml = memo["line_items"][i]
+        prior = [ln for take in takes for ln in take["lines"] if ln["memo_line_id"] == ml.get("line_id")]
+        amount = drawn_line_money(ml, n, prior, currency)
+        line = {k: ml[k] for k in _DRAWN_LINE_KEYS if ml.get(k) not in (None, "", [])}
+        line.update(line_id=new_line_id(), quantity=n, line_total=to_stored_float(amount))
+        lines.append(line)
+        take_lines.append({"invoice_line_id": line["line_id"], "memo_line_id": ml.get("line_id"), "lot_ids": [],
+                           "quantity": n, "memo_amount": to_stored_float(amount),
+                           "memo_line_amount": to_stored_float(document_line_amount(ml, currency) or to_decimal(0))})
+    fixed = memo_fixed_amounts(memo, snap.out_by_line())
+    goods = sum((to_decimal(ln["memo_amount"]) for ln in take_lines), to_decimal(0))
+    take = {"draw_id": draw_id, "invoice_id": invoice_id, "doc_number": doc_number, "lines": take_lines,
+            "shipping": fixed["shipping"], "discount": to_stored_float(min(to_decimal(fixed["discount"]), goods)),
+            "tax": fixed["tax"]}
+    target = snap.target
+    if target is None:
+        pct = memo.get("discount_type") == "percentage"
+        values = {k: memo[k] for k in ("contact_id", "currency", "conversion_rate", "price_list", "payment_terms",
+                                       "doc_taxes", "tax_rate") if memo.get(k) not in (None, "", [])}
+        values.update(discount_type="percentage" if pct else "flat",
+                      discount=memo.get("discount") if pct else take["discount"],
+                      shipping=take["shipping"], tax=take["tax"])
+    else:
+        st = target.state
+        values = {"line_items": [*(st.get("line_items") or []), *lines]}
+        if take["shipping"]:
+            values["shipping"] = to_stored_float(to_decimal(st.get("shipping") or 0) + to_decimal(take["shipping"]))
+        if take["discount"]:
+            values.update(discount_type="flat",
+                          discount=to_stored_float(fixed_discount(st) + to_decimal(take["discount"])))
+        if take["tax"]:
+            values["tax"] = to_stored_float(to_decimal(st.get("tax") or 0) + to_decimal(take["tax"]))
+    return _DrawBill(lines, take, values)
+
+
+async def _draw_preview(session, company_id, memo_id: str, body: InvoiceLinesRequest) -> dict:
+    """What the draw would do, read without locks or writes; its figures are the write's own
+    (_draw_bill), and its versions let the confirmed draw refuse a record changed since."""
+    memo = await _get_doc(session, company_id, memo_id)
+    _refuse_not_memo(memo.state)
+    target = await _get_doc(session, company_id, body.target_doc_id) if body.target_doc_id else None
+    snap = await _draw_snapshot(session, company_id, memo, target, lock=False)
+    problems, picks = draw_problems(snap, body)
+    if target is None:
+        company = await session.get(Company, company_id)
+        invoice_id, doc_number = None, peek_draft_ref(company, "invoice")
+    else:
+        invoice_id, doc_number = target.entity_id, _ref(target)
+    preview = {"target": {"id": invoice_id, "ref_id": doc_number}, "memo_version": memo.version,
+               "target_version": target.version if target else None, "problems": problems,
+               "lines": [], "fixed_taken": {}, "tax": None, "totals_after": {}, "left_on_memo": {}}
+    if problems:
+        return preview
+    bill = _draw_bill(snap, picks, "preview", invoice_id or f"doc:{doc_number}", doc_number)
+    currency = memo.state.get("currency")
+    if target is None:
+        money = money_from_lines(DocCreatePayload(doc_type="invoice", **bill.values, line_items=bill.lines)
+                                 .model_dump(exclude_none=True), currency)
+    else:
+        money = document_money({**target.state, **bill.values}, [dict(li) for li in bill.values["line_items"]],
+                               currency, keep_unrated_tax=True, stored=target.state)
+    take = bill.take
+    drawn = {ln["memo_line_id"]: ln["quantity"] for ln in take["lines"]}
+    left = {lid: out - drawn.get(lid, 0) for lid, out in snap.out_by_line().items()}
+    after = {**memo.state, "invoiced_on": [*(memo.state.get("invoiced_on") or []), {
+        **take, "released": False, "lines": [{**ln, "returned": False} for ln in take["lines"]]}]}
+    preview.update(
+        lines=[{"memo_line_id": ln["memo_line_id"], "quantity": ln["quantity"], "line_total": ln["memo_amount"]}
+               for ln in take["lines"]],
+        fixed_taken={k: take[k] for k in ("shipping", "discount", "tax")},
+        tax=money["tax"],
+        totals_after={k: money[k] for k in ("subtotal", "discount_amount", "tax", "total")},
+        left_on_memo={"lines": [{"memo_line_id": lid, "quantity": q} for lid, q in left.items()],
+                      "fixed": memo_fixed_amounts(after, left)})
+    return preview
+
+
+async def _write_draw(session, company_id, role: str, settings: dict, user, company: Company, key: str,
+                      snap: _DrawSnapshot, picks: list[tuple[int, float]], body: InvoiceLinesRequest) -> dict:
+    """Write a checked draw without committing: carve and restamp each lot onto the invoice,
+    write the invoice through the document services under the draw's grant, then record the
+    take on the memo."""
+    from celerp_inventory.routes import split_off_child
+
+    memo_row, target = snap.memo, snap.target
+    memo = memo_row.state
+    draw_id = _step_key(key, "lines_invoiced")
+    if target is None:
+        doc_number = next_draft_ref(company, "invoice")
+        invoice_id = f"doc:{doc_number}"
+    else:
+        invoice_id, doc_number = target.entity_id, _ref(target)
+    bill = _draw_bill(snap, picks, draw_id, invoice_id, doc_number)
+    unit_map = await _get_unit_map(session, company_id)
+    carves = []
+    for (i, n), line in zip(picks, bill.lines):
+        ml = memo["line_items"][i]
+        validate_line_quantity(n, ml.get("sell_by"), unit_map, label=line_label(ml), require_positive=False)
+        whole, part, part_qty = _carve(snap.lots[i], line_item_id(ml), n)
+        if part is not None and not splitting_allowed(part.state):
+            raise HTTPException(status_code=409, detail=splitting_off(str(part.state.get("sku") or ""), "invoice"))
+        carves.append((ml, whole, part, part_qty))
+    cid = uuid.UUID(str(company_id))
+    grant: dict[str, DrawnLine] = {}
+    for (ml, whole, part, part_qty), line, take_line in zip(carves, bill.lines, bill.take["lines"]):
+        lot_ids = [p.entity_id for p in whole]
+        if part is not None:
+            sell_by, lid = part.state.get("sell_by") or "", ml.get("line_id")
+            try:
+                child, _sku = await split_off_child(
+                    session, company_id=cid, user_id=user.id, parent_proj=part, child_qty=part_qty,
+                    child_weight=part_qty if is_weight_unit(sell_by, unit_map) else (body.weights or {}).get(lid),
+                    child_pieces=part_qty if is_pieces_unit(sell_by, unit_map) else (body.pieces or {}).get(lid),
+                    action="invoice")
+            except ValueError as exc:
+                sku = str(part.state.get("sku") or "")
+                raise HTTPException(status_code=409, detail=refusal(
+                    "docs.draw_partial_failed", f"Cannot invoice part of {sku}: {exc}", sku=sku, reason=str(exc)))
+            lot_ids.append(child)
+        line["item_id"] = lot_ids[0]
+        take_line["lot_ids"] = lot_ids
+        for lot in lot_ids:
+            await emit_event(
+                session, company_id=cid, entity_id=lot, entity_type="item", event_type="item.status.set",
+                data={"new_status": "memo_out", "source_doc_id": invoice_id, "doc_number": doc_number},
+                actor_id=user.id, location_id=None, source="memo_draw", idempotency_key=_step_key(key, lot),
+                metadata_={"doc_id": memo_row.entity_id, "source_line_id": ml.get("line_id"),
+                           "invoice_line_id": line["line_id"], "draw_id": draw_id})
+        grant[line["line_id"]] = DrawnLine(ml, {"memo_id": memo_row.entity_id, "memo_number": _ref(memo_row),
+                                                "memo_line_id": ml.get("line_id"), "draw_id": draw_id})
+    memo_draw = MemoDraw(memo_row.entity_id, draw_id, grant)
+    if target is None:
+        payload = DocCreatePayload(doc_type="invoice", ref_id=doc_number, **bill.values, line_items=bill.lines,
+                                   idempotency_key=_step_key(key, "invoice"))
+        await write_doc_create(session, company_id, role, settings, user, payload, memo_draw=memo_draw)
+    else:
+        patch = DocPatch(fields_changed={k: {"new": v} for k, v in bill.values.items()},
+                         expected_version=target.version, idempotency_key=_step_key(key, "invoice"))
+        await write_doc_patch(session, company_id, role, settings, user, invoice_id, patch, memo_draw=memo_draw)
+    entry = await emit_event(
+        session, company_id=cid, entity_id=memo_row.entity_id, entity_type="doc", event_type="doc.lines_invoiced",
+        data={"take": bill.take}, actor_id=user.id, location_id=None, source="memo_draw",
+        idempotency_key=draw_id, metadata_={})
+    return {"target_doc_id": invoice_id, "draw_id": draw_id, "event_id": entry.id}
+
+
+@router.post("/{entity_id}/invoice-lines")
+async def invoice_lines(
+    entity_id: str,
+    body: InvoiceLinesRequest,
+    company_id: str = Depends(get_current_company_id),
+    _edit: None = require_permission("edit_documents"),
+    _fulfill: None = require_permission("fulfill_documents"),
+    role: str = Depends(get_current_role),
+    settings: dict = Depends(get_current_company_settings),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Invoice chosen goods out on a memo onto a new invoice or a draft invoice of the same
+    customer (Invoice selected). With ``dry_run``, what it would do, writing nothing."""
+    if body.dry_run:
+        return await _draw_preview(session, company_id, entity_id, body)
+    body = body.model_copy(update={"idempotency_key": body.idempotency_key or str(uuid.uuid4())})
+    # Company, contact, invoice, memo, lots: the order every writer of these rows takes.
+    company = await locked_company(session, company_id)
+    memo_row = await _get_doc(session, company_id, entity_id)
+    _refuse_not_memo(memo_row.state)
+    await _lock_selected_contact(session, company_id, settings, role, memo_row.state.get("contact_id") or "")
+    target_id = body.target_doc_id
+    target = (await lock_projections(session, company_id, [target_id])).get(target_id) if target_id else None
+    memo_row = await _get_doc(session, company_id, entity_id, for_update=True)
+    key, _digest = _operation("invoice-lines", entity_id, body)
+
+    async def run(_indices: list[int]) -> dict:
+        # After the replay check, so a replay after the target was deleted returns its result.
+        if target_id and (target is None or target.entity_type != "doc"):
+            raise HTTPException(status_code=404, detail="Document not found")
+        snap = await _draw_snapshot(session, company_id, memo_row, target, lock=True)
+        problems, picks = draw_problems(snap, body)
+        if problems:
+            raise HTTPException(status_code=409, detail={**problems[0], "also": problems[1:]})
+        return await _write_draw(session, company_id, role, settings, user, company, key, snap, picks, body)
+
+    def chosen(line_items: list[dict], request: FulfillLinesRequest) -> list[int]:
+        # Unknown lines are reported with every other problem of the draw (draw_problems).
+        return [i for i, li in enumerate(line_items) if li.get("line_id") in set(request.line_ids)]
+
+    return await _line_action(session, company_id, user, memo_row, "invoice", body, run, select_lines=chosen)
 
 
 async def _reserve_lines_impl(

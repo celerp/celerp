@@ -10,7 +10,7 @@ import uuid
 import pytest
 from sqlalchemy import delete, func, select
 
-import celerp.events.engine as engine
+from celerp.projections.engine import ProjectionEngine
 from celerp.models.ledger import LedgerEntry
 from memo_draw_support import (
     also_keys, auth, auth_full, contact, draft, draw, drawn, drawn_lines, item, key_of, lot, memo_out, ok, owner,
@@ -167,7 +167,8 @@ async def test_draw_fidelity_both_services(client, session, target):
     assert (line["unit_price"], line["discount_pct"]) == (25.0, 10)
     assert line["line_total"] == pytest.approx(45.0)
     assert [t["rate"] for t in line["taxes"]] == [7]
-    assert line["taxes"][0]["amount"] == pytest.approx(2.99 if pf is None else 3.15)
+    # The 5% header discount applies to every line of either invoice: 45 x 0.95 x 7%.
+    assert line["taxes"][0]["amount"] == pytest.approx(2.99)
     assert (line["description"], line["sku"], line["sell_by"]) == ("[DEMO] Sample Item", "DEMO-001", "piece")
     assert "entity_id" not in line
     assert await owner(client, h, line["item_id"]) == ("memo_out", doc["id"])
@@ -210,23 +211,25 @@ async def test_draw_failure_midway_changes_nothing(client, session, monkeypatch)
     memo, lids, lots = await memo_out(client, h, [(3, 10.0)], lots_per_line=3)
     before = await versions(client, h, memo, None)
     rows = await ledger_rows(session)
-    real, stamps = engine.apply_event, []
+    real, stamps = ProjectionEngine._apply, []
 
-    def failing(state_, event):
-        data = event.data or {}
-        if event.event_type == "item.status.set" and data.get("source_doc_id") not in (None, memo):
-            stamps.append(event.entity_id)
+    def failing(state_, event_type, data):
+        if event_type == "item.status.set" and (data or {}).get("source_doc_id") not in (None, memo):
+            stamps.append(data)
             if len(stamps) == 2:
                 raise RuntimeError("injected failure after the first stamp")
-        return real(state_, event)
+        return real(state_, event_type, data)
 
-    monkeypatch.setattr(engine, "apply_event", failing)
+    monkeypatch.setattr(ProjectionEngine, "_apply", staticmethod(failing))
     try:
         r = await draw(client, h, memo, line_ids=lids)
         assert r.status_code >= 500, r.text
     except RuntimeError:
         pass
-    monkeypatch.setattr(engine, "apply_event", real)
+    monkeypatch.setattr(ProjectionEngine, "_apply", staticmethod(real))
+    # The app's request session closes on the failure, discarding what it had not committed;
+    # the tests share one session, so it is discarded here.
+    await session.rollback()
 
     assert len(stamps) == 2
     await nothing_written(client, h, memo, lots[0], None, before)
@@ -348,7 +351,7 @@ async def test_draw_preview_stale_refused(client, session, change):
         await drawn(client, h, memo, {lids[0]: 1})
     elif change == "target_edit":
         doc = await state(client, h, pf)
-        await ok(await client.patch(f"/docs/{pf}", headers=h, json={"notes": "changed", "expected_version": doc["version"]}))
+        await ok(await client.patch(f"/docs/{pf}", headers=h, json={"fields_changed": {"notes": {"new": "changed"}}, "expected_version": doc["version"]}))
     else:
         await ok(await client.post(f"/docs/{pf}/finalize", headers=h))
     after = await versions(client, h, memo, pf)

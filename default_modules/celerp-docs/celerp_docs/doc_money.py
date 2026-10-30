@@ -270,8 +270,9 @@ def document_terms(state: dict, *, own_unrated_tax) -> dict:
     """The terms that apply to every line of a document *state*, which a draw's target must share
     with the memo: a percentage header discount, the document taxes, the header rate, and
     *own_unrated_tax*, a tax amount with no rate that is the document's own (0 on a memo; on a
-    draft, what none of this memo's takes put there). A fixed discount is not a term."""
-    pct = state.get("discount_type") == "percentage"
+    draft, what none of this memo's takes put there). A fixed discount is not a term, nor is a
+    percentage of 0, which discounts nothing."""
+    pct = state.get("discount_type") == "percentage" and to_decimal(state.get("discount", 0) or 0)
     taxes = tuple((d.code, to_decimal(d.rate), d.order, d.is_compound)
                   for d in (_definition(e) for e in tax_entries(state.get("doc_taxes"))) if d is not None)
     return {"discount_pct": to_decimal(state.get("discount", 0) or 0) if pct else None,

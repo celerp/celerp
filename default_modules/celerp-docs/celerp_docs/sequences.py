@@ -151,10 +151,23 @@ def next_doc_ref(company: Company, doc_type: str) -> str:
     return ref
 
 
+def _draft_counter(doc_type: str) -> str:
+    """The counter a new draft of ``doc_type`` is numbered from. A draft invoice is numbered
+    from the proforma counter; finalize gives it its invoice number, so no invoice number goes
+    unused."""
+    return "proforma" if doc_type == "invoice" else doc_type
+
+
 def next_draft_ref(company: Company, doc_type: str) -> str:
-    """The reference a new draft of ``doc_type`` takes. A draft invoice is numbered from the
-    proforma counter; finalize gives it its invoice number, so no invoice number goes unused."""
-    return next_doc_ref(company, "proforma" if doc_type == "invoice" else doc_type)
+    """The reference a new draft of ``doc_type`` takes."""
+    return next_doc_ref(company, _draft_counter(doc_type))
+
+
+def peek_draft_ref(company: Company, doc_type: str) -> str:
+    """The reference the next new draft of ``doc_type`` would take, without taking it."""
+    settings = dict(company.settings or {})
+    counter = _draft_counter(doc_type)
+    return _sequence_view(settings, counter, dict((settings.get("sequences") or {}).get(counter) or {}))["preview"]
 
 
 def get_all_sequences(company: Company) -> list[dict]:
