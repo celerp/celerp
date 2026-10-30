@@ -213,16 +213,17 @@ async def test_units_sold_from_the_merged_lot_before_finalizing_expense_their_sh
 
 
 async def test_a_hand_set_merged_quantity_keeps_the_bills_share(client, session, auth):
-    """Measured at 14.9, the merged lot holds the bill's 10 units as 10 x 14.9 / 15 of its own."""
+    """Counted at 14 (pieces are whole), the merged lot holds the bill's 10 units as 10 x 14 / 15 of
+    its own, so the freight stays whole on it and 3 sold take 3/14 of it."""
     await _seed(session, auth)
     doc, lot = await _ordered(client, session, auth)
-    x = await _merge(client, auth, [lot, await _like(client, session, auth, lot, 5, 50.0)], resulting_quantity=14.9)
+    x = await _merge(client, auth, [lot, await _like(client, session, auth, lot, 5, 50.0)], resulting_quantity=14)
     await _sell(client, auth, x, 3)
     before = await _b(session, auth, "5100")
     await _finalize(client, auth, doc)
     held, = await _pools(session, auth, doc, x)
     expensed = round((await _b(session, auth, "5100"))["5100"] - before["5100"], 2)
-    assert (held, expensed) == (round(FREIGHT * (14.9 - 3) / 14.9, 2), round(FREIGHT * 3 / 14.9, 2))
+    assert (held, expensed) == (round(FREIGHT * (14 - 3) / 14, 2), round(FREIGHT * 3 / 14, 2))
     await assert_settled(client, session, auth)
 
 

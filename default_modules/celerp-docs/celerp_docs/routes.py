@@ -5688,8 +5688,8 @@ class _FreightSpread(NamedTuple):
 
 class _Holder(NamedTuple):
     row: Projection
-    per_unit: float          # units of the receipt lot one unit of this lot stands for
-    moved_in: bool           # its units came from the family as a whole (a merge or a kept transform)
+    moved_in: bool           # its units came from a lot of the family as a whole (a merge or a kept transform)
+    with_receipt: bool       # the receipt lot or a lot split off it since, which a return to the supplier draws on
 
 
 async def _receipt_family(session: AsyncSession, company_id, lot_id: str, first: int,
@@ -5697,11 +5697,9 @@ async def _receipt_family(session: AsyncSession, company_id, lot_id: str, first:
     """The lots holding the goods a receipt brought into ``lot_id``, from the bill's lineage
     (``lots``, _bill_lineage): the lot, the lots split off it since the receipt (_split_since),
     and on from those the lots they were merged into and the products a transform made of them
-    at their cost, with whatever was split off or merged from those in turn. A product counts in
-    units of the lot it was made from (that lot's units before the transform over the product's),
-    so it stands in for the whole lot. A customer return and a product made at a restated cost
-    are not in it: those units left (the return comes back as goods, the restated cost is the
-    user's own)."""
+    at their cost, with whatever was split off or merged from those in turn. A customer return
+    and a product made at a restated cost are not in it: those units left (the return comes
+    back as goods, the restated cost is the user's own)."""
     from celerp.models.ledger import LedgerEntry
 
     by_id = {row.entity_id: row for row, _, _ in lots}
@@ -5716,30 +5714,25 @@ async def _receipt_family(session: AsyncSession, company_id, lot_id: str, first:
         into = str((row.state or {}).get("merged_into") or "")
         if into in by_id and (into, "merged_into") not in kids.get(row.entity_id, []):
             kids.setdefault(row.entity_id, []).append((into, "merged_into"))
-    transforms = (await session.execute(select(LedgerEntry.event_type, LedgerEntry.entity_id, LedgerEntry.data).where(
+    kept = {str(data["child_id"]) for (data,) in (await session.execute(select(LedgerEntry.data).where(
         LedgerEntry.company_id == company_id, LedgerEntry.entity_id.in_(list(by_id)),
-        LedgerEntry.event_type.in_(("item.transform", "item.transformed_from"))))).all()
-    born = {lot: float(data.get("qty") or 0) for kind, lot, data in transforms if kind == "item.transformed_from"}
-    kept = {str(data["child_id"]): float(data.get("qty_before") or 0) for kind, _lot, data in transforms
-            if kind == "item.transform" and data.get("child_id")
-            and float(data.get("child_cost_total") or 0) == float(data.get("parent_cost_total") or 0)}
-    out = {lot_id: _Holder(by_id[lot_id], 1.0, False)}
+        LedgerEntry.event_type == "item.transform"))).all()
+        if data.get("child_id") and float(data.get("child_cost_total") or 0) == float(data.get("parent_cost_total") or 0)}
+    out = {lot_id: _Holder(by_id[lot_id], False, True)}
     frontier = [lot_id]
     while frontier:
         parent = frontier.pop(0)
         for lot, link in kids.get(parent, []):
             if lot in out:
                 continue
-            per_unit = out[parent].per_unit
             if link == "split_from" and (parent == lot_id or parent in since) and lot not in since:
                 continue  # split off before the receipt: none of its goods
-            if link == "transformed_from":
-                if lot not in kept or born.get(lot, 0) <= 0:
-                    continue
-                per_unit *= kept[lot] / born[lot]
-            elif link not in ("split_from", "merged_into"):
+            if link == "transformed_from" and lot not in kept:
                 continue
-            out[lot] = _Holder(by_id[lot], per_unit, link != "split_from")
+            if link not in ("split_from", "merged_into", "transformed_from"):
+                continue
+            split = link == "split_from"
+            out[lot] = _Holder(by_id[lot], not split, split and out[parent].with_receipt)
             frontier.append(lot)
     return out
 
@@ -5749,34 +5742,42 @@ async def _freight_since_receipt(session: AsyncSession, company_id, doc_id: str,
                                  currency: str, family_of: dict[str, _Holder]) -> _FreightSpread:
     """Where a bill's landed cost on the goods it brought into one lot (``freight``) would be
     had the bill been finalized at the receipt: the lots holding its goods (``family_of``,
-    _receipt_family) are replayed from the receipt (_family_entries). The family then held what
-    it held right after the receipt, carrying all of it. A merge into a lot of the family and a
-    transform into a product of it at its cost move units within the family; a product's units
-    count in units of the lot it was made from. Units that left (sold, written off, used, merged, counted
-    away; a removal and its own reversal cancel, _reversal_key) take their share of what the
-    family carried by the units it held, to the cent, as a sale takes the lot's average; units
-    the bill sent back take what it charged per unit of its own goods (_LotFreight.sent_back);
-    units another document brought in or sent back take none. Units moving between the lot and
-    the lots split off it have not left. Whatever is left is spread over the lots of the family
-    in stock by the units each holds (allocate_pro_rata), and with none in stock it left with
-    the goods."""
+    _receipt_family) are replayed from the receipt (_family_entries), each lot holding its own
+    part as the lots' pools do. The lot then held all of it. A part split off takes the share
+    of the units it took; a lot merged into a lot of the family, or made at its cost into a
+    product of it, hands it all on. Units that left (sold, written off, used, merged, counted
+    away; a removal and its own reversal cancel, _reversal_key) take their lot's share by the
+    units it held, to the cent, as a sale takes the lot's average; units the bill sent back
+    take what it charged per unit of its own goods (_LotFreight.sent_back), first from the lot
+    they left and then from the lot it came into and the parts split off it, as a return
+    does; units another document brought in or sent back take none. What the lots in stock
+    hold at the end they keep, and what any other lot holds left with the goods."""
     def moved_of(e: _FamilyEntry) -> float:
-        holder = family_of.get(e.lot)
-        return (_held(e.after) - _held(e.before)) * (holder.per_unit if holder else 1.0)
+        return _held(e.after) - _held(e.before)
 
-    def moves_within(e: _FamilyEntry) -> bool:
-        """Units passing to a lot of the family that holds them as a whole: a merge result or
-        a kept transform's product being made, or a lot going into one."""
-        if e.before is None:
-            return e.lot in family_of and family_of[e.lot].moved_in
+    def heir(e: _FamilyEntry) -> str | None:
+        """The lot of the family that takes all ``e.lot`` holds: the merge result it went into,
+        or the product a transform made of it at its cost."""
         if e.event_type == "item.source_deactivated":
-            return str(e.data.get("merged_into") or "") in family_of
-        return (e.event_type == "item.status.set" and (e.meta or {}).get("reason") == "consumed_by_transform"
-                and any(h.moved_in and str((h.row.state or {}).get("transformed_from") or "") == e.lot
-                        for h in family_of.values()))
+            into = str(e.data.get("merged_into") or "")
+            return into if into in family_of else None
+        if e.event_type == "item.status.set" and (e.meta or {}).get("reason") == "consumed_by_transform":
+            return next((lot for lot, h in family_of.items()
+                         if h.moved_in and str((h.row.state or {}).get("transformed_from") or "") == e.lot), None)
+        return None
+
+    def share(lot: str, part: float, held: float) -> dict[str, Decimal]:
+        """``part`` of the ``held`` units of ``lot`` take their share of what it holds, to the cent."""
+        out: dict[str, Decimal] = {}
+        for k, amount in pools.get(lot, {}).items():
+            if amount > 0 and held > 1e-12:
+                stays, out[k] = allocate_pro_rata(amount, [to_decimal(max(0.0, held - part)),
+                                                           to_decimal(min(part, held))], currency)
+                pools[lot][k] = stays
+        return out
 
     kinds = list(freight.charged)
-    pool = {k: to_decimal(freight.charged[k]) for k in kinds}
+    pools: dict[str, dict[str, Decimal]] = {lot_id: {k: to_decimal(freight.charged[k]) for k in kinds}}
     sold = dict.fromkeys(kinds, Decimal(0))
     back = dict.fromkeys(kinds, Decimal(0))
     sent: dict[str, dict[str, Decimal]] = {}
@@ -5785,36 +5786,32 @@ async def _freight_since_receipt(session: AsyncSession, company_id, doc_id: str,
     # The bill's own units in each lot sent back, and the line they went back on.
     own_of = {x.get("returned_lot_id") or x["item_id"]: (_own_units(x, made), x.get("source_line_index"))
               for x in state.get("returned_items") or [] if _received_lot_of(x) == lot_id}
-    family = 0.0
-    for e in entries:
-        if e.entry_id <= first:
-            family = _held(e.after) if e.lot == lot_id else family
     # A removal and its own reversal net, at the first of them.
     netted: dict[tuple[str, str], float] = {}
     for e in entries:
         if e.entry_id > first and e.source not in ("migration", "receive_undo") and (
                 key := _reversal_key(e.event_type, e.data, e.meta)) is not None:
             netted[key] = netted.get(key, 0.0) + moved_of(e)
+    now: dict[str, dict] = {}
     seen: set[tuple[str, str]] = set()
-    pending = 0.0  # units split off into a lot of the family and not yet off the lot they left
+    pending: list[tuple[str, float]] = []  # parts split off and not yet off the lot they left
     own_done = 0.0
     line_done: dict[int | None, float] = {}
     for e in entries:
-        if e.entry_id <= first or e.source == "migration":
-            continue
+        now[e.lot] = e.after
+        if e.entry_id <= first or e.source in ("migration", "receive_undo"):
+            continue  # another document's goods leave at its own price
         moved = moved_of(e)
         key = _reversal_key(e.event_type, e.data, e.meta)
-        if moves_within(e):
-            family += moved
-            continue
-        if e.source == "receive_undo":
-            family += moved  # another document's goods leave at its own price
+        if (to := heir(e)) is not None:
+            for k, amount in pools.pop(e.lot, {}).items():
+                pools.setdefault(to, {})[k] = pools.get(to, {}).get(k, Decimal(0)) + amount
             continue
         if e.before is None and key is None:
-            pending += moved
+            if not (e.lot in family_of and family_of[e.lot].moved_in):
+                pending.append((e.lot, moved))
             continue
         if e.event_type == "item.returned_to_supplier":
-            family -= -moved
             if str(e.data.get("source_doc_id") or "") != doc_id:
                 continue  # another document's goods leave at its own price, with none of this cost
             units, line = own_of.get(e.lot, (0.0, None))
@@ -5822,11 +5819,21 @@ async def _freight_since_receipt(session: AsyncSession, company_id, doc_id: str,
                 continue
             line = line if line in freight.lines else None
             line_before = line_done.get(line, 0.0)
+            others = [x for x, h in family_of.items() if h.with_receipt and x != e.lot and _held(now.get(x)) > 0]
             for k in kinds:
-                take = freight.sent_back(k, pool[k], units, own_done, line, line_before, currency)
-                pool[k] -= take
-                back[k] += take
-                sent.setdefault(e.lot, {})[k] = sent.get(e.lot, {}).get(k, Decimal(0)) + take
+                own = pools.get(e.lot, {}).get(k, Decimal(0))
+                held = {x: pools.get(x, {}).get(k, Decimal(0)) for x in others}
+                take = freight.sent_back(k, own + sum(held.values(), Decimal(0)), units, own_done, line,
+                                         line_before, currency)
+                gives = own if _held(e.after) <= 1e-12 else min(take, own)
+                if gives:
+                    pools[e.lot][k] = own - gives
+                rest = [x for x in others if held[x] > 0]
+                for x, given in zip(rest, allocate_pro_rata(take - gives, [held[x] for x in rest], currency)
+                                    if take > gives and rest else []):
+                    pools[x][k] -= given
+                back[k] += max(take, gives)
+                sent.setdefault(e.lot, {})[k] = sent.get(e.lot, {}).get(k, Decimal(0)) + max(take, gives)
             own_done += units
             line_done[line] = line_before + units
             continue
@@ -5835,41 +5842,36 @@ async def _freight_since_receipt(session: AsyncSession, company_id, doc_id: str,
                 continue
             seen.add(key)
             moved = min(0.0, netted.get(key, 0.0))
-        if moved > 0:
-            family += moved  # units come in: what the family carries is spread over more
-            continue
-        left = -moved
-        within = min(pending, left)
-        pending -= within
-        left -= within
-        if left <= 1e-12:
-            continue
-        for k in kinds:
-            if family > 1e-12 and pool[k] > 0:
-                stays, _part = allocate_pro_rata(pool[k], [to_decimal(max(0.0, family - left)),
-                                                           to_decimal(min(left, family))], currency)
-                sold[k] += pool[k] - stays
-                pool[k] = stays
-        family -= left
-    rows = [h.row for h in family_of.values()] or [freight.row]
-    for r in rows:
-        await session.refresh(r)
-    holding = [(r, float(r.state.get("quantity") or 0) * (family_of[r.entity_id].per_unit
-                                                          if r.entity_id in family_of else 1.0))
-               for r in rows if in_stock(r.state)]
-    holding = [(r, qty) for r, qty in holding if qty > 0]
-    kept: dict[Projection, dict[str, Decimal]] = {r: {} for r, _ in holding}
-    for k in kinds:
-        if not holding:
-            sold[k] += pool[k]
-            continue
-        for (r, _qty), part in zip(holding, allocate_pro_rata(pool[k], [to_decimal(q) for _, q in holding], currency)):
-            kept[r][k] = part
-    by_id = {r.entity_id: r for r in rows}
-    gone_rows = {lot: by_id.get(lot) or await session.get(Projection, {"company_id": company_id, "entity_id": lot})
-                 for lot in sent}
-    return _FreightSpread(sold, back, kept, {gone_rows[lot]: kinds_ for lot, kinds_ in sent.items()
-                                             if gone_rows[lot] is not None})
+        if moved >= 0:
+            continue  # units come in: what the lot holds is spread over more
+        held, left = _held(e.before), -moved
+        within = min(sum(units for _, units in pending), left)
+        if within > 1e-12:
+            parts, pending = pending, []
+            for k, amount in share(e.lot, within, held).items():
+                for (part, _units), given in zip(parts, allocate_pro_rata(amount, [to_decimal(u) for _, u in parts],
+                                                                          currency)):
+                    pools.setdefault(part, {})[k] = pools.get(part, {}).get(k, Decimal(0)) + given
+            held -= within
+            left -= within
+        if left > 1e-12:
+            for k, amount in share(e.lot, left, held).items():
+                sold[k] += amount
+    rows = {lot: h.row for lot, h in family_of.items()} or {lot_id: freight.row}
+    for lot in {*pools, *sent} - rows.keys():
+        rows[lot] = await session.get(Projection, {"company_id": company_id, "entity_id": lot})
+    for r in rows.values():
+        if r is not None:
+            await session.refresh(r)
+    kept: dict[Projection, dict[str, Decimal]] = {}
+    for lot, held in pools.items():
+        r = rows[lot]
+        for k, amount in held.items():
+            if amount and r is not None and in_stock(r.state) and float(r.state.get("quantity") or 0) > 0:
+                kept.setdefault(r, {})[k] = amount
+            elif amount:
+                sold[k] += amount  # with no units in stock it left with the goods
+    return _FreightSpread(sold, back, kept, {rows[lot]: kinds_ for lot, kinds_ in sent.items() if rows[lot] is not None})
 
 
 def _received_lot_of(returned: dict) -> str:
