@@ -492,6 +492,9 @@ class Recorder:
         if lock.company and lock.company == _instance_id():
             # R4c: a legacy row names the install's instance id, which no companies row holds.
             return
+        if self._table_held_exclusively(conn_key, table):
+            # R4t: no other transaction holds or takes a row of the table until this one ends.
+            return
         held = self.company_rows[conn_key].get(lock.company, ()) if lock.company else ("unknown",)
         company = max(held, key=_STRENGTH_ORDER.index) if held and lock.company else (held or ("none",))[0]
         take, site = f"{_strength(lock)}|{company}", f"{lock.site} [{_strength(lock)}|{company}]"
@@ -502,6 +505,16 @@ class Recorder:
         for leaf in self.leaves.get(conn_key, ()):
             if leaf[0] is info:
                 leaf[2].add(site)
+
+    def _table_held_exclusively(self, conn_key: int, table: str) -> bool:
+        """R4t: whether this transaction holds ``table`` EXCLUSIVE or stronger (a migration's
+        ``lock_tables``). That conflicts with the ROW SHARE every row lock takes on its table and
+        the ROW EXCLUSIVE every write takes, so while it is held no other transaction holds a
+        row of the table: a row taken under it never waits on a row, and a gated taker of the
+        table waits on the table lock, ranked as every table lock is, before it holds any row."""
+        exclusive = {f"t{TABLE_MODES.index(m)}" for m in ("exclusive", "access exclusive")}
+        return any(cls == f"tbl:{table}" and strengths & exclusive
+                   for (cls, _), strengths in self.taken[conn_key].items())
 
     def _retake(self, conn_key: int, lock: Lock) -> bool:
         """Whether this connection already holds what ``lock`` asks for: the same key at no

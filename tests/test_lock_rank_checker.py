@@ -1853,3 +1853,30 @@ def test_a_take_naming_the_instance_id_alone_is_no_companys_take(recorder, monke
     info = recorder.dump()["classes"].get("row:connector_configs", {})
     assert info.get("ungated_takes", []) == ([f"update|{counted}"] if counted else [])
     assert bool(info.get("counted_sites")) is bool(counted)
+
+
+_UPDATE_ACCOUNT = "UPDATE accounts SET cash_flow_category = $1 WHERE accounts.code = $2"
+_UPDATE_LOCATION = "UPDATE locations SET name = $1 WHERE locations.name = $2"
+
+
+@pytest.mark.parametrize("mode, counted", [
+    ("EXCLUSIVE", []),                              # no other transaction can hold a row of it
+    ("ACCESS EXCLUSIVE", []),
+    ("SHARE ROW EXCLUSIVE", ["nokey|unknown"]),     # FOR UPDATE still gets past it
+])
+def test_a_take_under_its_tables_exclusive_lock_is_no_companys_take(monkeypatch, mode, counted):
+    """A migration's data step locks the tables it writes, EXCLUSIVE, before its first row: while
+    the lock is held no other transaction holds or takes a row of the table, so a row the step
+    then takes never waits on a row and is not counted, however many follow it. A row of a table
+    it did not lock stays counted."""
+    monkeypatch.setattr(lock_rank, "_production_site", _PRODUCTION_SITE)
+    monkeypatch.setattr(lock_rank, "_site", lambda: "celerp/migrations/versions/x.py:1 upgrade")
+    rec = Recorder()
+    rec.statement(1, f"LOCK TABLE accounts IN {mode} MODE", (), 0.0)
+    rec.statement(1, _UPDATE_ACCOUNT, ("investing", "1200"), 0.0)
+    rec.statement(1, _UPDATE_ACCOUNT, ("financing", "2200"), 0.0)
+    rec.statement(1, _UPDATE_LOCATION, ("Main", "Default"), 0.0)
+    rec.statement(1, _UPDATE_LOCATION, ("Store", "Shop"), 0.0)
+    classes = rec.dump()["classes"]
+    assert classes["row:accounts"].get("ungated_takes", []) == counted
+    assert classes["row:locations"].get("ungated_takes", []) == ["nokey|unknown"]
