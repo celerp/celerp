@@ -76,7 +76,7 @@ async def test_auto_match_then_bulk_confirm_reconcile_both_book_entries(client):
     assert (await _state(client, h, sid))["reconciled_je_ids"] == [deposit]
 
     r = await client.post(f"/accounting/reconciliation/{sid}/bulk-confirm", headers=h)
-    assert r.json() == {"confirmed": 1}
+    assert r.json() == {"confirmed": 1, "skipped": []}
     assert (await _lines(client, h, sid))["Rent"]["status"] == "matched"
     state = await _state(client, h, sid)
     assert sorted(state["reconciled_je_ids"]) == sorted([deposit, rent])
