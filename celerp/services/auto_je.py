@@ -248,14 +248,16 @@ async def _emit_auto_posted_je(
     to the company currency (*currency* when the producer already holds the books it posts
     on), and an entry that does not balance after rounding is refused, so producers build
     their lines to balance once rounded. *extra* adds fields the created event records
-    with the entry (a module journal's source and request hash)."""
+    with the entry (a module journal's source and request hash). A line that is zero on
+    both sides once rounded moves nothing and is not written, so no producer can post one."""
     currency = currency or await company_currency(session, company_id)
-    entries = [
+    rounded = (
         {**e,
          "debit": to_stored_float(round_money(e.get("debit") or 0, currency)),
          "credit": to_stored_float(round_money(e.get("credit") or 0, currency))}
         for e in entries
-    ]
+    )
+    entries = [e for e in rounded if e["debit"] or e["credit"]]
     debits = sum((to_decimal(e["debit"]) for e in entries), _Dec(0))
     credits = sum((to_decimal(e["credit"]) for e in entries), _Dec(0))
     if debits != credits:

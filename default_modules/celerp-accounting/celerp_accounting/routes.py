@@ -1193,16 +1193,19 @@ def _statement_kind(ref: dict) -> str:
 
 
 def _line_amounts(entry: dict) -> tuple[Decimal, Decimal] | None:
-    """(debit, credit) of a JE line as Decimals, or None for a malformed line.
+    """(debit, credit) of a JE line as Decimals, or None for a line that is skipped.
 
-    One rule for every report: a line whose amounts cannot be parsed is skipped
-    the same way everywhere, so the trial balance, journal, ledger, and general
-    ledger always agree on which lines count.
+    One rule for every report: a line whose amounts cannot be parsed, or a line with
+    no debit and no credit, is skipped the same way everywhere, so the trial balance,
+    journal, ledger, and general ledger always agree on which lines count. Entries
+    posted before automatic postings stopped writing lines that move nothing still
+    store such lines; they are read past here and never rewritten.
     """
     try:
-        return (Decimal(str(entry.get("debit") or 0)), Decimal(str(entry.get("credit") or 0)))
+        amounts = (Decimal(str(entry.get("debit") or 0)), Decimal(str(entry.get("credit") or 0)))
     except Exception:
         return None
+    return amounts if any(amounts) else None
 
 
 def _build_balances(posted: list[tuple[str, dict, str]], date_from: str | None, date_to: str | None) -> dict[str, Decimal]:
