@@ -129,6 +129,12 @@ async def draw(client, h, memo: str, quantities: dict[str, float] | None = None,
     return await client.post(f"/docs/{memo}/invoice-lines", headers=h, json=body)
 
 
+def preview_versions(preview: dict) -> dict:
+    """The versions a draw preview read, bound to the invoice it read them for, as the
+    confirmed draw sends them back."""
+    return {"memo": preview["memo_version"], "target": preview["target_version"], "target_id": preview["target"]["id"]}
+
+
 async def drawn(client, h, memo: str, quantities: dict[str, float] | None = None, **kw) -> str:
     """A draw that must succeed; returns the invoice id."""
     return (await ok(await draw(client, h, memo, quantities, **kw)))["target_doc_id"]

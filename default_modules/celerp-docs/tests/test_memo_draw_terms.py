@@ -14,7 +14,7 @@ from celerp.projections.engine import ProjectionEngine
 from celerp.models.ledger import LedgerEntry
 from memo_draw_support import (
     also_keys, auth, auth_full, contact, draft, draw, drawn, drawn_lines, item, key_of, lot, memo_out, ok, owner,
-    pay, revoke, service_line, state,
+    pay, preview_versions, revoke, service_line, state,
 )
 
 
@@ -325,8 +325,7 @@ async def test_draw_preview_matches_stored(client, session, target):
     await nothing_written(client, h, memo, lots[0] + lots[1], pf, before)
     assert await ledger_rows(session) == rows
     assert preview["problems"] == []
-    inv = await drawn(client, h, memo, pick, target=pf,
-                      expected_versions={"memo": preview["memo_version"], "target": preview["target_version"]})
+    inv = await drawn(client, h, memo, pick, target=pf, expected_versions=preview_versions(preview))
     doc, m = await state(client, h, inv), await state(client, h, memo)
     stored = drawn_lines(doc, memo)
     assert [(p["memo_line_id"], p["quantity"], p["line_total"]) for p in preview["lines"]] == \
@@ -345,7 +344,7 @@ async def test_draw_preview_stale_refused(client, session, change):
     memo, lids, lots = await memo_out(client, h, [(4, 10.0)], lots_per_line=4)
     pf = await draft(client, h, lines=[service_line()])
     preview = await ok(await draw(client, h, memo, {lids[0]: 1}, target=pf, dry_run=True))
-    seen = {"memo": preview["memo_version"], "target": preview["target_version"]}
+    seen = preview_versions(preview)
 
     if change == "other_draw":
         await drawn(client, h, memo, {lids[0]: 1})
@@ -368,5 +367,51 @@ async def test_draw_preview_stale_refused(client, session, change):
         return
     assert (m["version"], t["version"]) == (after["memo"], after["target"])
     fresh = await ok(await draw(client, h, memo, {lids[0]: 1}, target=pf, dry_run=True))
-    await drawn(client, h, memo, {lids[0]: 1}, target=pf,
-                expected_versions={"memo": fresh["memo_version"], "target": fresh["target_version"]})
+    await drawn(client, h, memo, {lids[0]: 1}, target=pf, expected_versions=preview_versions(fresh))
+
+
+async def _bump(client, h, doc_id: str) -> None:
+    doc = await state(client, h, doc_id)
+    await ok(await client.patch(f"/docs/{doc_id}", headers=h, json={
+        "fields_changed": {"notes": {"new": uuid.uuid4().hex}}, "expected_version": doc["version"]}))
+
+
+@pytest.mark.parametrize(("read_for", "sent_to"), [("new", "a"), ("a", "b"), ("a", "new")])
+async def test_draw_versions_count_only_for_the_invoice_they_were_read_for(client, session, read_for, sent_to):
+    """Choosing another invoice after a preview never makes the draw stale: the versions the
+    preview read for one invoice are never compared with another document's."""
+    h = await auth(session)
+    memo, lids, _lots = await memo_out(client, h, [(4, 10.0)], lots_per_line=4)
+    drafts = {"new": None, "a": await draft(client, h, lines=[service_line()]),
+              "b": await draft(client, h, lines=[service_line()])}
+    await _bump(client, h, drafts["b"])
+    preview = await ok(await draw(client, h, memo, {lids[0]: 1}, target=drafts[read_for], dry_run=True))
+
+    inv = await drawn(client, h, memo, {lids[0]: 1}, target=drafts[sent_to], expected_versions=preview_versions(preview))
+
+    assert inv == drafts[sent_to] if sent_to != "new" else inv not in drafts.values()
+
+
+async def test_draw_read_for_another_invoice_still_refuses_a_changed_memo(client, session):
+    h = await auth(session)
+    memo, lids, _lots = await memo_out(client, h, [(4, 10.0)], lots_per_line=4)
+    a, b = await draft(client, h, lines=[service_line()]), await draft(client, h, lines=[service_line()])
+    preview = await ok(await draw(client, h, memo, {lids[0]: 1}, target=a, dry_run=True))
+    await drawn(client, h, memo, {lids[0]: 1})
+
+    r = await draw(client, h, memo, {lids[0]: 1}, target=b, expected_versions=preview_versions(preview))
+
+    assert r.status_code == 409, r.text
+    assert key_of(r) == "docs.draw_preview_stale_memo"
+
+
+async def test_a_target_version_names_the_invoice_it_was_read_for(client, session):
+    h = await auth(session)
+    memo, lids, _lots = await memo_out(client, h, [(4, 10.0)], lots_per_line=4)
+    pf = await draft(client, h, lines=[service_line()])
+    preview = await ok(await draw(client, h, memo, {lids[0]: 1}, target=pf, dry_run=True))
+
+    r = await draw(client, h, memo, {lids[0]: 1}, target=pf,
+                   expected_versions={"memo": preview["memo_version"], "target": preview["target_version"]})
+
+    assert r.status_code == 422, r.text
