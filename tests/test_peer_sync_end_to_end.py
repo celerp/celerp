@@ -96,8 +96,10 @@ async def _paired(real_client, real_engine, before_copy=None):
 
 
 def _route_to_app(monkeypatch, sent: list):
-    """The connector's HTTP client, reaching the accountant's installation in-process."""
+    """The connector's HTTP client, reaching the accountant's installation in-process,
+    in every module that names it (each binds the class when first imported)."""
     from celerp.connectors import celerp as peer
+    from celerp.connectors import celerp_key
     from celerp.main import app
 
     class FirmClient(httpx.AsyncClient):
@@ -112,6 +114,7 @@ def _route_to_app(monkeypatch, sent: list):
             return await super().request(method, url, **kwargs)
 
     monkeypatch.setattr(peer, "RateLimitedClient", FirmClient)
+    monkeypatch.setattr(celerp_key, "RateLimitedClient", FirmClient)
     monkeypatch.setattr("celerp.connectors.http.RateLimitedClient", FirmClient)
 
 
@@ -199,6 +202,22 @@ async def test_peer_connector_uses_existing_apis(real_client, real_engine, monke
     assert [(r.entity.value, r.created, r.updated, r.errors) for r in again
             if r.created or r.updated or r.errors] == []
     assert await _books(real_client, firm_tok) == await _books(real_client, tok)
+
+
+async def test_the_key_check_reaches_the_accountants_installation(real_client, real_engine, monkeypatch):
+    """Before sending, the run checks its key with the accountant's installation, whichever
+    peer module was imported first."""
+    from celerp.connectors.base import ConnectorContext
+    from celerp.connectors.celerp import CelerpConnector
+
+    _tok, _firm_tok, client_company, credential, _contacts = await _paired(real_client, real_engine)
+    sent: list = []
+    _route_to_app(monkeypatch, sent)
+
+    await CelerpConnector().before_outbound(
+        ConnectorContext(company_id=client_company, store_handle=FIRM, access_token=credential))
+
+    assert ("GET", "/company-peers/verify") in sent
 
 
 async def test_peer_pushes_stock_moving_documents(real_client, real_engine, monkeypatch):
