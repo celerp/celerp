@@ -1649,6 +1649,23 @@ def test_an_insert_of_a_child_row_is_judged_under_its_parents_company(recorder, 
     assert (("order", "row:ai_messages") not in _kinds(recorder)) is gated
 
 
+@pytest.mark.parametrize("named, counted", [
+    ("c1", None),          # the conversation was locked naming c1: the share is of c1's row, gated
+    ("c2", "none"),        # the lock named another company
+    (None, "unknown"),     # nothing names the conversation: unknown, never assumed gated
+])
+def test_a_foreign_key_share_of_one_parent_is_judged_under_the_parents_company(recorder, named, counted):
+    """The key share an insert takes on the one parent row it references is a lock of that
+    row's company: once the transaction named the row's company, the share is judged under it."""
+    recorder.statement(1, _LOCK_COMPANY, ("c1",), 0.0)
+    if named:
+        recorder.statement(1, _CONVERSATION, ("v1", named), 0.0)
+    recorder.statement(1, _MESSAGE, ("m1", "v1", "user", "q"), 0.0)
+    recorder.statement(1, _JOB, ("c1",), 0.0)  # a lock that can wait follows: no leaf
+    info = recorder.dump()["classes"]["key:ai_conversations"]
+    assert info.get("ungated_takes", []) == ([f"keyshare|{counted}"] if counted else [])
+
+
 def test_every_table_belongs_to_a_company_or_is_declared_an_installation_table():
     """The census measures a table only when it can name the company of its rows. A table
     with neither a company column nor one foreign key to a company's table would be left out

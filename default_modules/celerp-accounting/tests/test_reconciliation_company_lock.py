@@ -60,4 +60,6 @@ async def test_every_reconciliation_writer_takes_the_company_lock_first(client):
     assert r.status_code in (200, 422), r.text
     r = await client.post(f"/accounting/reconciliation/{sid}/complete", headers=h)
     assert r.status_code in (200, 409, 422), r.text
+    r = await client.post(f"/accounting/reconciliation/{sid}/reopen", headers=h)
+    assert r.status_code in (200, 409), r.text
     assert _ungated() - before == set()

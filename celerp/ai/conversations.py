@@ -107,7 +107,8 @@ async def create_conversation(
             protected_ids = await _protected_conversation_ids(session, old_ids)
             prunable = [cid for cid in old_ids if cid not in protected_ids]
             if prunable:
-                await session.execute(delete(AIConversation).where(AIConversation.id.in_(prunable)))
+                await session.execute(delete(AIConversation).where(
+                    AIConversation.company_id == company_id, AIConversation.id.in_(prunable)))
 
     return conv
 

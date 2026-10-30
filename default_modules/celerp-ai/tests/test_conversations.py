@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -122,12 +123,17 @@ async def test_create_conversation_sets_title_from_query(session, company, user)
 
 @pytest.mark.asyncio
 async def test_conversation_limit_per_user(session, company, user):
+    """Pruning deletes the user's oldest conversations as rows of the company whose lock it
+    holds: the lock checker's census finds no conversation taken outside that lock."""
+    recorder = sys.modules["lock_rank"].RECORDER
+    before = recorder.ungated_sites(("row:ai_conversations",), "celerp/ai/conversations.py")
     for i in range(MAX_CONVERSATIONS_PER_USER + 5):
         await create_conversation(session, company.id, user.id, title=f"Conv {i}")
         await session.commit()
 
     convs = await list_conversations(session, company.id, user.id, limit=200)
     assert len(convs) <= MAX_CONVERSATIONS_PER_USER
+    assert recorder.ungated_sites(("row:ai_conversations",), "celerp/ai/conversations.py") - before == set()
 
 
 @pytest.mark.asyncio
