@@ -11496,7 +11496,7 @@ def _returned_lot_origin(ref: dict, quantity: float) -> dict:
     came_from = {"returned_from": ref["id"]} if ref.get("id") else {}
     if not is_consigned(ref):
         return {**came_from, **({LOT_ACCOUNT_FIELD: lot_account(ref)}
-                                if float(ref.get("cost_price") or 0) * quantity > 0 else {})}
+                                if _shipped_unit_cost(ref) * quantity > 0 else {})}
     return {**came_from, "consignment_flag": "in", CONSIGNOR_PAYABLE_FIELD: ref.get(CONSIGNOR_PAYABLE_FIELD),
             **({CONSIGNOR_FIELD: ref[CONSIGNOR_FIELD]} if ref.get(CONSIGNOR_FIELD) else {})}
 
