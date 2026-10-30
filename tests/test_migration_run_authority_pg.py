@@ -44,8 +44,10 @@ def factory(committed_engine):
 async def _run(factory, status: MigrationStatus) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:
     cid, uid, rid = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
     async with factory() as s:
-        s.add(Company(id=cid, name="Staged Co", slug=f"mg-{cid.hex[:8]}", settings={}, is_migration_staged=True))
+        # The login before the company, as every create takes them.
         s.add(User(id=uid, email=f"mg-{uid.hex[:8]}@test.co", name="Owner", auth_hash="x", is_active=True))
+        await s.flush()
+        s.add(Company(id=cid, name="Staged Co", slug=f"mg-{cid.hex[:8]}", settings={}, is_migration_staged=True))
         await s.flush()
         s.add(UserCompany(id=uuid.uuid4(), user_id=uid, company_id=cid, role="owner", is_active=True))
         await s.flush()
