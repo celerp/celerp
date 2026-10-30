@@ -1068,7 +1068,7 @@ async def drained_jobs():
 async def client(session: AsyncSession):
     from httpx import ASGITransport, AsyncClient
     from celerp.services import background
-    from celerp.services.session_tracker import clear as _clear_tracker
+    from test_helpers import clear_sessions as _clear_tracker
     from celerp.gateway.state import set_session_token as _set_session_token
     from unittest.mock import patch, MagicMock
 

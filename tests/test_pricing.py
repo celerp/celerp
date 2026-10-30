@@ -336,7 +336,7 @@ async def test_get_price_lists_strips_factors_below_manager(client, session):
     h = _auth(await _register(client))
     assert (await _set_config(client, h)).status_code == 200
 
-    from celerp.services.session_tracker import clear as _clear_tracker
+    from test_helpers import clear_sessions as _clear_tracker
     email = f"op-{uuid.uuid4().hex[:8]}@example.com"
     r = await client.post(
         "/companies/me/users",

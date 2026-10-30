@@ -155,7 +155,7 @@ async def test_admin_can_still_change_membership_role_and_active(client, session
 async def test_membership_change_invalidates_prior_sessions(client, session):
     """26: changing the A membership (role/active) invalidates the target's prior
     sessions - their old access token is rejected on next use."""
-    from celerp.services.session_tracker import clear as _clear_tracker
+    from test_helpers import clear_sessions as _clear_tracker
 
     admin_a = await _register_owner(client, "Company A", "admin-a4@example.com")
     target_email = "member4@example.com"

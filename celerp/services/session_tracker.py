@@ -250,12 +250,6 @@ async def pop_evicted_by_ip(session: AsyncSession, user_id: str) -> str | None:
     return ip
 
 
-async def clear(session: AsyncSession) -> None:
-    """Wipe all session_registry rows.  Test helper only - does NOT rotate nonces."""
-    await session.execute(delete(SessionRegistry))
-    await session.commit()
-
-
 async def run_jti_cleanup_loop() -> None:
     """Background task: delete expired JTI rows hourly.
 

@@ -40,7 +40,7 @@ async def _user_with_role(client, session, admin_token: str, role: str) -> str:
     r = await client.post("/companies/me/users", headers=_h(admin_token),
                           json={"name": role.title(), "email": addr, "password": "testpass123", "role": role})
     assert r.status_code == 200, r.text
-    from celerp.services.session_tracker import clear as _clear_tracker
+    from test_helpers import clear_sessions as _clear_tracker
     await _clear_tracker(session)
     r = await client.post("/auth/login", json={"email": addr, "password": "testpass123"})
     assert r.status_code == 200, r.text

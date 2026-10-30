@@ -275,7 +275,8 @@ async def test_cloud_disconnect_clears_session_token(client, session):
     disconnect even though the relay connection is gone.
     """
     import celerp.gateway.state as gw_state
-    from celerp.services.session_tracker import clear as _clear_tracker, register_token as _register_token
+    from test_helpers import clear_sessions as _clear_tracker
+    from celerp.services.session_tracker import register_token as _register_token
     import uuid as _uuid
 
     token = await _register(client, "disc-session")

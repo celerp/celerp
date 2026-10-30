@@ -495,6 +495,9 @@ class Recorder:
         if self._table_held_exclusively(conn_key, table):
             # R4t: no other transaction holds or takes a row of the table until this one ends.
             return
+        if self._gate_held(conn_key, table):
+            # R4g: the table's own gate, which every taker of its rows waits on first.
+            return
         held = self.company_rows[conn_key].get(lock.company, ()) if lock.company else ("unknown",)
         company = max(held, key=_STRENGTH_ORDER.index) if held and lock.company else (held or ("none",))[0]
         take, site = f"{_strength(lock)}|{company}", f"{lock.site} [{_strength(lock)}|{company}]"
@@ -515,6 +518,14 @@ class Recorder:
         exclusive = {f"t{TABLE_MODES.index(m)}" for m in ("exclusive", "access exclusive")}
         return any(cls == f"tbl:{table}" and strengths & exclusive
                    for (cls, _), strengths in self.taken[conn_key].items())
+
+    def _gate_held(self, conn_key: int, table: str) -> bool:
+        """R4g: whether this transaction holds a row of the table's own gate (ROW_GATES) FOR
+        UPDATE. Every writer of the table takes it first, so a taker of the same rows waits on
+        the gate before it holds one, as it would on the company's lock."""
+        gate = ROW_GATES.get(table)
+        return gate is not None and any(cls == gate and "update" in strengths
+                                        for (cls, _), strengths in self.taken[conn_key].items())
 
     def _retake(self, conn_key: int, lock: Lock) -> bool:
         """Whether this connection already holds what ``lock`` asks for: the same key at no
@@ -1233,6 +1244,14 @@ FRESH_KEYED = frozenset({"migration_cleanup_tasks", "notifications", "password_r
 # no other insert carries the key and the insert waits on no row of its table.
 # tests/test_lock_rank_checker.py proves each table's writers do.
 FRESH_PARENTED = {"password_reset_notices": ("reset_id", "password_resets")}
+
+
+# Company tables whose rows have a gate of their own in place of the company's lock: a login's
+# sessions are taken only under the login's session generation (its user_auth_state row FOR
+# UPDATE): issuance (credentials.issue_token_pair), sign-out (session_tracker.invalidate_sessions),
+# the global sign-outs (_rotate_every_nonce) and the company reset (hold_member_sessions).
+# tests/test_lock_rank_checker.py proves the rule.
+ROW_GATES = {"session_registry": "row:user_auth_state"}
 
 
 def _insert_waits_on_no_key(table: str) -> bool:

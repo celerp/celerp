@@ -512,16 +512,25 @@ async def register_admin(client) -> str:
     return r.json()["access_token"]
 
 
+async def clear_sessions(session) -> None:
+    """Wipe every session_registry row, as a fresh install has none. Nonces are not rotated."""
+    from sqlalchemy import delete
+
+    from celerp.models.auth import SessionRegistry
+
+    await session.execute(delete(SessionRegistry))
+    await session.commit()
+
+
 async def invite_user(client, session, admin_headers: dict, email: str, role: str) -> str:
     """Create a user with the given role and return their access token."""
-    from celerp.services.session_tracker import clear as _clear_tracker
     r = await client.post(
         "/companies/me/users",
         json={"email": email, "name": role.title(), "role": role, "password": "userpw123"},
         headers=admin_headers,
     )
     assert r.status_code == 200, r.text
-    await _clear_tracker(session)  # clear so the new user can log in
+    await clear_sessions(session)  # clear so the new user can log in
     r2 = await client.post("/auth/login", json={"email": email, "password": "userpw123"})
     assert r2.status_code == 200, r2.text
     return r2.json()["access_token"]

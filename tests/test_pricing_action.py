@@ -312,7 +312,7 @@ async def test_hidden_action_route_still_refuses_the_role(client, session):
     from fastapi import APIRouter
     from celerp.main import app
     from celerp.services.permissions import require_permission
-    from celerp.services.session_tracker import clear as clear_sessions
+    from test_helpers import clear_sessions as clear_sessions
 
     router = APIRouter()
 

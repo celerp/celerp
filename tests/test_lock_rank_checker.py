@@ -1880,3 +1880,31 @@ def test_a_take_under_its_tables_exclusive_lock_is_no_companys_take(monkeypatch,
     classes = rec.dump()["classes"]
     assert classes["row:accounts"].get("ungated_takes", []) == counted
     assert classes["row:locations"].get("ungated_takes", []) == ["nokey|unknown"]
+
+
+_LOCK_GENERATION = "SELECT user_auth_state.user_id FROM user_auth_state WHERE user_auth_state.user_id = $1::UUID FOR UPDATE"
+_INSERT_SESSION = ("INSERT INTO session_registry (jti, user_id, company_id, expiry) "
+                   "VALUES ($1::VARCHAR, $2::UUID, $3::UUID, $4::TIMESTAMP WITH TIME ZONE)")
+_DELETE_SESSIONS = "DELETE FROM session_registry WHERE session_registry.user_id = $1::UUID"
+
+
+@pytest.mark.parametrize("generation, counted", [
+    (True, []),                                     # every writer of a login's sessions waits here first
+    (False, ["insert|none", "update|unknown"]),
+])
+def test_a_session_row_taken_under_its_logins_generation_is_no_companys_take(monkeypatch, generation, counted):
+    """A login's sessions are gated by its session generation, not by a company: issuance,
+    sign-out, the company reset and the global sign-outs each take the login's generation FOR
+    UPDATE before a session row, so two takers of one login's sessions meet there first. A
+    session row taken under a generation is not counted; one taken without it is."""
+    monkeypatch.setattr(lock_rank, "_production_site", _PRODUCTION_SITE)
+    monkeypatch.setattr(lock_rank, "_site", lambda: "celerp/services/session_tracker.py:1 register_token")
+    rec = Recorder()
+    if generation:
+        rec.statement(1, _LOCK_GENERATION, ("00000000-0000-0000-0000-000000000001",), 0.0)
+    rec.statement(1, _INSERT_SESSION, ("jti", "00000000-0000-0000-0000-000000000001",
+                                       "00000000-0000-0000-0000-000000000002", "2026-01-01"), 0.0)
+    rec.statement(1, _DELETE_SESSIONS, ("00000000-0000-0000-0000-000000000001",), 0.0)
+    rec.statement(1, _UPDATE_LOCATION, ("Main", "Default"), 0.0)
+    classes = rec.dump()["classes"]
+    assert sorted(classes["row:session_registry"].get("ungated_takes", [])) == counted

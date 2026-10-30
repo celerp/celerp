@@ -33,7 +33,7 @@ import httpx
 from ai_fake_cloud import answer, cloud, tool_turn, until  # noqa: F401
 from celerp.ai import jobs, service, tools
 from celerp.services.company_lock import locked_company
-from celerp.services.session_tracker import clear as clear_tracker
+from test_helpers import clear_sessions as clear_tracker
 from test_ai_job_run_context import SEARCH, _restarted_between_the_tool_call_and_its_read
 from test_ai_usage import _conversation, _settled, owner  # noqa: F401
 

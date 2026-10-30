@@ -219,7 +219,7 @@ def clock(monkeypatch):
 
 
 async def _two_logins(client, session) -> None:
-    from celerp.services.session_tracker import clear
+    from test_helpers import clear_sessions as clear
 
     r = await client.post("/auth/register", json={"company_name": "RL Co", "email": "v@test.example", "name": "V",
                                                   "password": "pwvalid1"})
@@ -236,7 +236,7 @@ async def test_an_account_slows_down_after_five_failures_from_every_address_toge
     typed; then the account waits a second before the next try, answered at once with 429,
     Retry-After and when to try again. The right password waits too, and signs in once the
     wait is over; every other account signs in as before."""
-    from celerp.services.session_tracker import clear
+    from test_helpers import clear_sessions as clear
 
     await _two_logins(client, session)
     names = ["v@test.example", " V@Test.Example ", "V@TEST.EXAMPLE", "v@test.example ", "v@test.example"]
@@ -345,7 +345,7 @@ async def test_a_shared_local_address_never_holds_up_another_accounts_sign_in(cl
     """The desktop user and any proxy on this machine reach the UI from a loopback
     address, so it names no one visitor: failures from it never hold up an account
     with no failures of its own, while each account still slows after its own five."""
-    from celerp.services.session_tracker import clear
+    from test_helpers import clear_sessions as clear
 
     await _two_logins(client, session)
     tries = [(await _ask(client, "/auth/login", f"a{i}@test.example", "wrong-pw", shared)).status_code
