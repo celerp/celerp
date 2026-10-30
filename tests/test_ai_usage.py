@@ -41,7 +41,9 @@ def _claims(token: str) -> tuple[uuid.UUID, uuid.UUID]:
 
 
 async def _question(session, company_id, user_id, *, credits: int, when: datetime | None = None) -> AIMessage:
-    """A conversation question charged ``credits``, stored as the app stores it."""
+    """A conversation question charged ``credits``, stored as the app stores it: under the
+    company's lock, taken before any of its AI rows."""
+    await jobs.lock_for_ai(session, company_id)
     conversation = AIConversation(company_id=company_id, user_id=user_id)
     session.add(conversation)
     await session.flush()

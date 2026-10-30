@@ -185,7 +185,7 @@ async def _lock_conversation(session: AsyncSession, conversation_id: uuid.UUID) 
         await jobs.lock_for_ai(session, company_id)
     await session.execute(
         select(AIConversation.id)
-        .where(AIConversation.id == conversation_id)
+        .where(AIConversation.id == conversation_id, AIConversation.company_id == company_id)
         .with_for_update(key_share=True)
     )
 
@@ -318,7 +318,8 @@ async def add_message(
                 if message_id not in asked and not pending_actions(tools_called)
             ]
             if prunable:
-                await session.execute(delete(AIMessage).where(AIMessage.id.in_(prunable)))
+                await session.execute(delete(AIMessage).where(AIMessage.conversation_id == conversation_id,
+                                                              AIMessage.id.in_(prunable)))
 
     return msg
 
@@ -368,7 +369,9 @@ async def record_credits(
     this run's replies added."""
     await _lock_conversation(session, message.conversation_id)
     total = credits if known else AIMessage.credits_used + credits
-    await session.execute(update(AIMessage).where(AIMessage.id == message.id).values(credits_used=total))
+    await session.execute(update(AIMessage).where(AIMessage.id == message.id,
+                                                  AIMessage.conversation_id == message.conversation_id)
+                          .values(credits_used=total))
     await record_usage(session, company_id=company_id, user_id=user_id, operation_id=message.id,
                        credits=credits, known=known)
 

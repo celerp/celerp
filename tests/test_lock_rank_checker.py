@@ -1531,6 +1531,42 @@ def test_a_child_row_keyed_by_its_parent_is_judged_under_the_parents_company(rec
     assert info.get("ungated_takes", []) == ([f"nokey|{counted}"] if counted else [])
 
 
+_CONVERSATION = ("SELECT ai_conversations.id FROM ai_conversations WHERE ai_conversations.id = $1::UUID "
+                 "AND ai_conversations.company_id = $2::UUID FOR KEY SHARE")
+_CREDITS = ("UPDATE ai_messages SET credits_used=$1 WHERE ai_messages.id = $2::UUID "
+            "AND ai_messages.conversation_id = $3::UUID")
+_MESSAGE = "INSERT INTO ai_messages (id, conversation_id, role, content) VALUES ($1::UUID, $2::UUID, $3, $4)"
+_JOB = "SELECT ai_batch_jobs.id FROM ai_batch_jobs WHERE ai_batch_jobs.company_id = $1::UUID FOR NO KEY UPDATE"
+
+
+@pytest.mark.parametrize("named, counted", [
+    ("c1", None),          # the conversation was locked naming c1: its messages are c1's, gated
+    ("c2", "none"),        # the lock named another company
+    (None, "unknown"),     # nothing names the conversation: unknown, never assumed gated
+])
+def test_a_parent_locked_by_its_key_and_company_names_its_childrens_company(recorder, named, counted):
+    """A lock statement that binds both a row's key and its company names that row's company,
+    as an ORM write does (name_row): a child row keyed by it is judged under that company."""
+    recorder.statement(1, _LOCK_COMPANY, ("c1",), 0.0)
+    if named:
+        recorder.statement(1, _CONVERSATION, ("v1", named), 0.0)
+    recorder.statement(1, _CREDITS, (5, "m1", "v1"), 0.0)
+    info = recorder.dump()["classes"]["row:ai_messages"]
+    assert info.get("ungated_takes", []) == ([f"nokey|{counted}"] if counted else [])
+
+
+@pytest.mark.parametrize("named, gated", [("c1", True), ("c2", False), (None, False)])
+def test_an_insert_of_a_child_row_is_judged_under_its_parents_company(recorder, named, gated):
+    """An insert into a table whose rows are their parent's company names the parent by its
+    link column; under that company's lock it is gated (R2) like an insert naming the company."""
+    recorder.statement(1, _LOCK_COMPANY, ("c1",), 0.0)
+    if named:
+        recorder.statement(1, _CONVERSATION, ("v1", named), 0.0)
+    recorder.statement(1, _JOB, ("c1",), 0.0)
+    recorder.statement(1, _MESSAGE, ("m1", "v1", "user", "q"), 0.0)
+    assert (("order", "row:ai_messages") not in _kinds(recorder)) is gated
+
+
 def test_every_table_belongs_to_a_company_or_is_declared_an_installation_table():
     """The census measures a table only when it can name the company of its rows. A table
     with neither a company column nor one foreign key to a company's table would be left out

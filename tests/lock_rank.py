@@ -389,7 +389,11 @@ class Recorder:
             if cls == "-unlock":
                 self.release_session(conn_key, mode)
                 continue
-            if row and not company:
+            if row and company:
+                # A statement binding both a row's key and its company names that row's company,
+                # as an ORM write does (name_row): its children are judged under that company.
+                self.rows[conn_key][(cls.split(":", 1)[1], row)] = company
+            elif row:
                 company = self.rows[conn_key].get((cls.split(":", 1)[1], row), "")
             if parent and not company:
                 company = self.rows[conn_key].get((_company_link(cls.split(":", 1)[1])[1], parent), "")
@@ -1299,8 +1303,13 @@ def _row_locks(statement: str) -> tuple[tuple[tuple[str, str, tuple[int, ...] | 
                 numbers = [_params(v) for v in values]
                 if numbers and all(n and len(n) == 1 for n in numbers):
                     company = tuple(n[0] for n in numbers)
+            # A one-row insert into a table whose rows are their parent's company names the parent
+            # by its link column (as _parent_param does for a WHERE clause).
+            link = _company_link(table)
+            parent = _params(rows[0]["List"]["items"][cols.index(link[0])]) \
+                if link and link[1] != "companies" and len(rows) == 1 and link[0] in cols else None
             if not _insert_waits_on_no_key(table) and (_serial_keyed(table) is None or _serial_keyed(table) in cols):
-                out.append((f"row:{table}", "insert", None, company, None, None))
+                out.append((f"row:{table}", "insert", None, company, None, parent))
             for col, ref in fks.items():
                 if cols and col not in cols:
                     continue
