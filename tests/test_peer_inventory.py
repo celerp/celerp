@@ -364,6 +364,7 @@ async def test_stock_exclusion_guard_checks_full_document_page(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_distinct_source_locations_cannot_share_one_receiving_location(client, session):
+    from celerp.services.company_lock import lock_company
     from celerp.services.peer_identity import resolve_peer_location
 
     token = await _register(client)
@@ -373,12 +374,14 @@ async def test_distinct_source_locations_cannot_share_one_receiving_location(cli
     assert created.status_code == 200, created.text
     grant = SimpleNamespace(company_id=company, source_company_id=uuid.uuid4())
     first_id, second_id = str(uuid.uuid4()), str(uuid.uuid4())
+    await lock_company(session, company)     # as receive_records holds it for every record
     first_target = await resolve_peer_location(
         session, grant=grant, source_id=first_id,
         name="Paired Site", location_type="warehouse")
     assert first_target == created.json()["id"]
     await session.commit()
 
+    await lock_company(session, company)
     assert await resolve_peer_location(
         session, grant=grant, source_id=first_id,
         name="Paired Site", location_type="warehouse") == first_target

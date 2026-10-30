@@ -339,6 +339,7 @@ async def test_history_excludes_file_content(session, company, user):
 @pytest.mark.asyncio
 async def test_isolation_between_companies(session, company, company_b, user, user_b_co):
     c1 = await create_conversation(session, company.id, user.id, title="CoA")
+    await session.commit()      # each company's conversation is its own request
     c2 = await create_conversation(session, company_b.id, user_b_co.id, title="CoB")
     await session.commit()
 

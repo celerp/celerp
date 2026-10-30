@@ -17,6 +17,7 @@ from sqlalchemy import select
 from celerp.projections.engine import ProjectionEngine
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
+from celerp.services.company_lock import lock_company
 from test_cost_restatement import _item, _state
 from mfg_runs import product
 from ui.i18n import refusal_text, set_lang
@@ -107,6 +108,7 @@ async def test_an_older_invalid_recipe_still_rebuilds_and_never_blocks_a_price_e
     entry = LedgerEntry(company_id=auth["company_id"], entity_id=made, entity_type="item",
                         event_type="item.recipe.set", data={"recipe": legacy}, actor_id=auth["user_id"],
                         location_id=None, source="api", idempotency_key=str(uuid.uuid4()), metadata_={})
+    await lock_company(session, auth["company_id"])     # as emit_event writes a ledger row
     session.add(entry)
     await session.flush()
     await ProjectionEngine.apply_event(session, entry)
@@ -139,6 +141,7 @@ async def test_an_older_zero_component_is_refused_by_its_sku(client, session, au
     entry = LedgerEntry(company_id=auth["company_id"], entity_id=made, entity_type="item",
                         event_type="item.recipe.set", data={"recipe": legacy}, actor_id=auth["user_id"],
                         location_id=None, source="api", idempotency_key=str(uuid.uuid4()), metadata_={})
+    await lock_company(session, auth["company_id"])     # as emit_event writes a ledger row
     session.add(entry)
     await session.flush()
     await ProjectionEngine.apply_event(session, entry)
