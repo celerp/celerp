@@ -180,6 +180,7 @@ async def test_backdated_payment_from_another_module_is_refused(client, session)
         "payment_date": "2026-09-15", "amount": 100.0, "bank_account": b["chart_account_code"]})
     assert r.status_code == 409, r.text
     assert "Harbor Bank" in r.json()["detail"]
+    await session.rollback()  # production never commits a refused request; the test client shares the session
     doc = (await client.get(f"/docs/{inv}", headers=h)).json()
     assert not [p for p in doc.get("payments", []) if p.get("status") != "deleted"]
 

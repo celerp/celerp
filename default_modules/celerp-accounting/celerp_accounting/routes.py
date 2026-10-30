@@ -56,7 +56,7 @@ from celerp.services.attachments import (
 from celerp.services import peer_access
 from celerp.services.auth import AuthContext, get_auth_context, get_current_company_id, get_current_user
 from celerp.services.peer_import import SourceRevision, peer_batch
-from celerp.services.company_lock import lock_chart, locked_company
+from celerp.services.company_lock import lock_chart, lock_company, locked_company
 from celerp.services.doc_balance import canonical_doc_type
 from celerp.services.je_keys import je_void_data
 from celerp.services.journal_accounts import require_destinations
@@ -2741,6 +2741,15 @@ async def create_bank_account(
     return (await _bank_dicts(session, company_id, [bank]))[0]
 
 
+async def _bank_has_history(session: AsyncSession, company_id: uuid.UUID, bank: BankAccount) -> bool:
+    """Whether the account's ledger account carries a posted journal line or the account
+    has a reconciliation: amounts and statements recorded in its currency."""
+    if await _je_entries_for_account(session, company_id, bank.chart_account_code):
+        return True
+    return (await session.execute(select(ReconciliationSession.id).where(
+        ReconciliationSession.bank_account_id == bank.id).limit(1))).first() is not None
+
+
 @router.patch("/bank-accounts/{bank_id}")
 async def patch_bank_account(
     bank_id: uuid.UUID,
@@ -2749,9 +2758,13 @@ async def patch_bank_account(
     _: None = require_permission("manage_accounting"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    # Under the company lock and the account row lock, so a first posting on the
+    # account commits before its history is counted below.
+    await lock_company(session, company_id)
     b = (
         await session.execute(
             select(BankAccount).where(BankAccount.id == bank_id, BankAccount.company_id == company_id)
+            .with_for_update().execution_options(populate_existing=True)
         )
     ).scalar_one_or_none()
     if not b:
@@ -2770,6 +2783,8 @@ async def patch_bank_account(
         # An account kept in a currency ISO 4217 has since withdrawn keeps it; none is moved to one.
         if normed not in CURRENCY_CODES and normed != b.currency:
             raise HTTPException(status_code=422, detail=t("acct.err_currency_unknown", currency=payload.currency))
+        if normed != b.currency and await _bank_has_history(session, company_id, b):
+            raise HTTPException(status_code=409, detail=t("acct.err_bank_currency_in_use", currency=b.currency))
         b.currency = normed
     if payload.is_active and not b.is_active:
         await require_money_account(session, company_id, b.chart_account_code)
@@ -2891,7 +2906,7 @@ async def create_transfer(
 
 class ReconciliationStart(BaseModel):
     bank_account_id: uuid.UUID
-    statement_date: str  # "YYYY-MM-DD"
+    statement_date: date
     statement_balance: FiniteFloat
 
 
@@ -2911,11 +2926,31 @@ async def _get_recon(
         ReconciliationSession.company_id == company_id,
     )
     if for_update:
-        query = query.with_for_update()
+        query = query.with_for_update().execution_options(populate_existing=True)
     recon = (await db.execute(query)).scalar_one_or_none()
     if not recon:
         raise HTTPException(status_code=404, detail=t("acct.err_recon_not_found"))
     return recon
+
+
+async def _lock_recon(
+    db: AsyncSession, session_id: uuid.UUID, company_id: uuid.UUID, *, editable: bool,
+) -> tuple[ReconciliationSession, BankAccount]:
+    """The one way a reconciliation writer takes its locks, in the one order every path
+    uses: the company, then the session's bank account row, then the session itself,
+    read again as committed. An *editable* writer is refused on a completed session."""
+    await lock_company(db, company_id)
+    recon = await _get_recon(db, session_id, company_id)
+    bank = (await db.execute(
+        select(BankAccount).where(BankAccount.id == recon.bank_account_id)
+        .with_for_update().execution_options(populate_existing=True)
+    )).scalar_one_or_none()
+    if not bank:
+        raise HTTPException(status_code=404, detail=t("acct.err_bank_account_not_found"))
+    recon = await _get_recon(db, session_id, company_id, for_update=True)
+    if editable and recon.status == "completed":
+        raise HTTPException(status_code=409, detail=t("error.recon_completed"))
+    return recon, bank
 
 
 async def _recon_bank_and_entries(
@@ -2940,11 +2975,18 @@ def _cleared_je_ids(recon: ReconciliationSession, bank: BankAccount) -> set[str]
     return set(recon.reconciled_je_ids or []) | {_opening_je_id(bank.id)}
 
 
-def _recon_balance(recon: ReconciliationSession, bank: BankAccount, all_entries: list[dict]) -> tuple[float, float]:
-    """(matched balance, remaining difference) for a session."""
+def _recon_balance(recon: ReconciliationSession, bank: BankAccount, all_entries: list[dict]) -> tuple[Decimal, Decimal]:
+    """(matched balance, remaining difference) for a session, rounded to the account
+    currency's minor unit."""
     cleared = _cleared_je_ids(recon, bank)
-    matched_balance = sum(e["amount"] for e in all_entries if e["je_id"] in cleared)
-    return matched_balance, float(recon.statement_balance) - matched_balance
+    matched = sum((to_decimal(e["amount"]) for e in all_entries if e["je_id"] in cleared), Decimal(0))
+    return (round_money(matched, bank.currency),
+            round_money(to_decimal(recon.statement_balance) - matched, bank.currency))
+
+
+def _money_text(value: Decimal, currency: str) -> str:
+    """An amount written with the currency's own decimals."""
+    return f"{value:.{currency_dp(currency)}f}"
 
 
 def _recon_to_dict(r: ReconciliationSession) -> dict:
@@ -3036,6 +3078,46 @@ async def _je_entries_for_account(
     return result
 
 
+async def _eligible_entries(
+    db: AsyncSession, company_id: uuid.UUID, bank: BankAccount, recon: ReconciliationSession,
+    je_ids: list[str], *, line_id: uuid.UUID | None = None,
+) -> dict[str, str | None]:
+    """Whether each book entry may be matched on *recon* (by its statement line *line_id*
+    when given): None when it may, otherwise the reason key. An entry must be one of the
+    account's posted entries, never the opening entry, and not counted already by another
+    line of this session or by another session of the same statement. Sessions of other
+    statement dates and of other accounts may count it too: each statement counts every
+    entry cleared up to its date, and a transfer is reconciled on both accounts."""
+    posted = {e["je_id"] for e in await _je_entries_for_account(db, company_id, bank.chart_account_code)}
+    posted.discard(_opening_je_id(bank.id))
+    own = None
+    if line_id is not None:
+        line = await db.get(BankStatementLine, line_id)
+        if line is not None and line.status in ("matched", "created"):
+            own = line.matched_je_id
+    taken = set(recon.reconciled_je_ids or []) - {own} if line_id is not None else set()
+    for other in (await db.execute(select(ReconciliationSession.reconciled_je_ids).where(
+        ReconciliationSession.company_id == company_id,
+        ReconciliationSession.bank_account_id == bank.id,
+        ReconciliationSession.statement_date == recon.statement_date,
+        ReconciliationSession.id != recon.id,
+    ))).scalars():
+        taken.update(other or [])
+    return {je_id: ("acct.err_recon_book_entry_missing" if je_id not in posted
+                    else "acct.err_recon_book_entry_matched" if je_id in taken else None)
+            for je_id in je_ids}
+
+
+def _refuse_ineligible(reasons: dict[str, str | None]) -> None:
+    """400 for an entry that is not the account's, 409 for one counted elsewhere."""
+    for reason in reasons.values():
+        if reason == "acct.err_recon_book_entry_missing":
+            raise HTTPException(status_code=400, detail=t(reason))
+    for reason in reasons.values():
+        if reason:
+            raise HTTPException(status_code=409, detail=t(reason))
+
+
 @router.post(
     "/reconciliation/start",
     summary="Start reconciling a bank or card statement",
@@ -3047,40 +3129,44 @@ async def start_reconciliation(
     _: None = require_permission("manage_accounting"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    await lock_company(session, company_id)
     bank = (
         await session.execute(
             select(BankAccount).where(
                 BankAccount.id == payload.bank_account_id,
                 BankAccount.company_id == company_id,
-            ).with_for_update()
+            ).with_for_update().execution_options(populate_existing=True)
         )
     ).scalar_one_or_none()
     if not bank:
         raise HTTPException(status_code=404, detail=t("acct.err_bank_account_not_found"))
 
-    # One open session per statement: starting the same statement again
-    # continues it instead of opening a duplicate.
+    # One session per statement: starting a statement again continues the one in
+    # progress, or returns the completed one to read. Rows from before this rule may
+    # hold a statement twice: work in progress first, then the latest completion.
+    statement_date = payload.statement_date.isoformat()
     existing = (await session.execute(
         select(ReconciliationSession).where(
             ReconciliationSession.company_id == company_id,
             ReconciliationSession.bank_account_id == bank.id,
-            ReconciliationSession.statement_date == payload.statement_date,
-            ReconciliationSession.status == "open",
-        ).order_by(ReconciliationSession.created_at)
-    )).scalars().first()
+            ReconciliationSession.statement_date == statement_date,
+        ).execution_options(populate_existing=True)
+    )).scalars().all()
     if existing:
-        if abs(float(existing.statement_balance) - float(payload.statement_balance)) >= 0.005:
+        current = max(existing, key=lambda r: (r.status == "open", r.completed_at or datetime.min.replace(tzinfo=timezone.utc), str(r.id)))
+        if current.status == "open" and (round_money(current.statement_balance, bank.currency)
+                                         != round_money(payload.statement_balance, bank.currency)):
             raise HTTPException(
                 status_code=409,
                 detail=t("acct.err_recon_open_exists"),
             )
-        return _recon_to_dict(existing)
+        return _recon_to_dict(current)
 
     recon = ReconciliationSession(
         id=uuid.uuid4(),
         company_id=company_id,
         bank_account_id=bank.id,
-        statement_date=payload.statement_date,
+        statement_date=statement_date,
         statement_balance=payload.statement_balance,
         status="open",
         reconciled_je_ids=[],
@@ -3112,8 +3198,8 @@ async def get_reconciliation(
         "unreconciled_entries": unreconciled,
         "reconciled_entries": reconciled,
         "book_balance": sum(e["amount"] for e in all_entries),
-        "matched_balance": matched_balance,
-        "difference": difference,
+        "matched_balance": to_stored_float(matched_balance),
+        "difference": to_stored_float(difference),
     })
     return d
 
@@ -3126,13 +3212,11 @@ async def match_reconciliation(
     _: None = require_permission("manage_accounting"),
     db: AsyncSession = Depends(get_session),
 ) -> dict:
-    recon = await _get_recon(db, session_id, company_id, for_update=True)
-    if recon.status == "completed":
-        raise HTTPException(status_code=409, detail=t("error.recon_completed"))
-
-    existing = set(recon.reconciled_je_ids or [])
-    existing.update(payload.je_ids)
-    recon.reconciled_je_ids = list(existing)
+    recon, bank = await _lock_recon(db, session_id, company_id, editable=True)
+    _refuse_ineligible(await _eligible_entries(db, company_id, bank, recon, payload.je_ids))
+    existing = list(recon.reconciled_je_ids or [])
+    existing.extend(j for j in dict.fromkeys(payload.je_ids) if j not in existing)
+    recon.reconciled_je_ids = existing
     await db.commit()
     return _recon_to_dict(recon)
 
@@ -3148,17 +3232,17 @@ async def complete_reconciliation(
     _: None = require_permission("manage_accounting"),
     db: AsyncSession = Depends(get_session),
 ) -> dict:
-    recon = await _get_recon(db, session_id, company_id, for_update=True)
+    recon, _bank = await _lock_recon(db, session_id, company_id, editable=False)
     if recon.status == "completed":
         return _recon_to_dict(recon)
 
     bank, all_entries = await _recon_bank_and_entries(db, recon, company_id)
     _, difference = _recon_balance(recon, bank, all_entries)
 
-    if abs(difference) >= 0.01:
+    if difference != 0:
         raise HTTPException(
             status_code=422,
-            detail=t("acct.err_recon_unbalanced", difference=f"{difference:.2f}"),
+            detail=t("acct.err_recon_unbalanced", difference=_money_text(difference, bank.currency)),
         )
 
     recon.status = "completed"
@@ -3182,14 +3266,10 @@ async def reopen_reconciliation(
     """Reopen a completed reconciliation so its matches can be changed. Its matches stay
     as they are and no journal entry is written; the reopening is recorded as an event.
     Reopening one that is already in progress changes nothing."""
-    recon = await _get_recon(db, session_id, company_id)
-    # One open reconciliation per statement: lock the bank account first, as
-    # start_reconciliation does, so a start or another reopen of the same statement
-    # waits for this one. Then lock this reconciliation and read its status as committed
-    # by whoever held it (a completion in flight), not as first read.
-    await db.execute(select(BankAccount.id).where(BankAccount.id == recon.bank_account_id).with_for_update())
-    recon = await _get_recon(db, session_id, company_id, for_update=True)
-    await db.refresh(recon)
+    # One open reconciliation per statement: the bank account is locked before the
+    # session, as start_reconciliation locks it, so a start or another reopen of the
+    # same statement waits for this one, and the status is read as committed.
+    recon, _bank = await _lock_recon(db, session_id, company_id, editable=False)
     if recon.status != "completed":
         return _recon_to_dict(recon)
     other = (await db.execute(select(ReconciliationSession.id).where(
@@ -3253,7 +3333,7 @@ async def reconciliation_workbench(
         "statement_lines_truncated": lines_truncated,
         "book_entries": entries,
         "book_entries_truncated": entries_truncated,
-        "difference": difference,
+        "difference": to_stored_float(difference),
     }
 
 
@@ -3344,8 +3424,6 @@ async def _import_statement_lines(
     """
     from celerp_accounting.csv_parser import parse_bank_csv
 
-    if recon.status == "completed":
-        raise HTTPException(status_code=409, detail=t("error.recon_completed"))
     try:
         parsed = parse_bank_csv(content, col_map)
     except TabularError as e:
@@ -3470,7 +3548,7 @@ async def import_recon_csv(
     """Upload and parse a bank statement CSV, store lines."""
     import json as _json
 
-    recon = await _get_recon(db, session_id, company_id, for_update=True)
+    recon, _bank = await _lock_recon(db, session_id, company_id, editable=True)
     try:
         content = await read_upload_bytes(file)
     except TabularError as e:
@@ -3493,7 +3571,7 @@ async def import_recon_file(
     db: AsyncSession = Depends(get_session),
 ) -> dict:
     from celerp.ai.files import load_file
-    recon = await _get_recon(db, session_id, company_id, for_update=True)
+    recon, _bank = await _lock_recon(db, session_id, company_id, editable=True)
     try:
         content, meta = load_file(payload.file_id, company_id, user.id)
     except (FileNotFoundError, PermissionError):
@@ -3535,13 +3613,7 @@ async def auto_match_recon(
     """Run the auto-matching algorithm against all unmatched statement lines."""
     from celerp_accounting.matcher import auto_match
 
-    recon = await _get_recon(db, session_id, company_id, for_update=True)
-    if recon.status == "completed":
-        raise HTTPException(status_code=409, detail=t("error.recon_completed"))
-
-    bank = (await db.execute(select(BankAccount).where(BankAccount.id == recon.bank_account_id))).scalar_one_or_none()
-    if not bank:
-        raise HTTPException(status_code=404, detail=t("acct.err_bank_account_not_found"))
+    recon, bank = await _lock_recon(db, session_id, company_id, editable=True)
 
     stmt_lines = (await db.execute(
         select(BankStatementLine).where(
@@ -3552,7 +3624,8 @@ async def auto_match_recon(
 
     book_entries = await _je_entries_for_account(db, company_id, bank.chart_account_code)
     cleared = _cleared_je_ids(recon, bank)
-    unmatched_entries = [e for e in book_entries if e["je_id"] not in cleared]
+    reasons = await _eligible_entries(db, company_id, bank, recon, [e["je_id"] for e in book_entries])
+    unmatched_entries = [e for e in book_entries if e["je_id"] not in cleared and reasons[e["je_id"]] is None]
 
     stmt_dicts = [_stmt_line_to_dict(l) for l in stmt_lines]
     matches = auto_match(stmt_dicts, unmatched_entries)
@@ -3663,19 +3736,9 @@ async def match_stmt_line(
             status_code=409,
             detail="This line already created a journal entry. Unmatch it first so that entry is reversed.",
         )
-    bank = (
-        await db.execute(select(BankAccount).where(BankAccount.id == recon.bank_account_id))
-    ).scalar_one_or_none()
-    if not bank:
-        raise HTTPException(status_code=404, detail=t("acct.err_bank_account_not_found"))
-    valid_ids = {e["je_id"] for e in await _je_entries_for_account(db, company_id, bank.chart_account_code)}
-    if payload.je_id not in valid_ids:
-        raise HTTPException(status_code=400, detail=t("acct.err_recon_book_entry_missing"))
-    already = set(recon.reconciled_je_ids or [])
-    own = sl.matched_je_id if sl.status in ("matched", "created") else None
-    if payload.je_id in already and payload.je_id != own:
-        raise HTTPException(status_code=400, detail=t("acct.err_recon_book_entry_matched"))
-    old_je_id = own
+    bank = await db.get(BankAccount, recon.bank_account_id)
+    _refuse_ineligible(await _eligible_entries(db, company_id, bank, recon, [payload.je_id], line_id=sl.id))
+    old_je_id = sl.matched_je_id if sl.status in ("matched", "created") else None
     was_resolved = sl.status in ("matched", "created")
     sl.status = "matched"
     sl.matched_je_id = payload.je_id
@@ -3706,15 +3769,18 @@ async def unmatch_stmt_line(
 ) -> dict:
     recon, sl = await _get_recon_and_line(db, session_id, line_id, company_id)
     old_je_id = sl.matched_je_id
-    if sl.status == "created":
+    created = sl.status == "created"
+    # The session lets go of the entry before the entry it created is voided, so the
+    # completed-history check sees no session of this line holding it.
+    if old_je_id:
+        recon.reconciled_je_ids = [j for j in (recon.reconciled_je_ids or []) if j != old_je_id]
+        await db.flush()
+    if created:
         await _void_reconciliation_created_je(
             db, company_id=company_id, actor_id=user.id, line=sl,
         )
     sl.status = "unmatched"
     sl.matched_je_id = None
-    if old_je_id:
-        existing = [j for j in (recon.reconciled_je_ids or []) if j != old_je_id]
-        recon.reconciled_je_ids = existing
     await db.commit()
     return _stmt_line_to_dict(sl)
 
@@ -3991,30 +4057,36 @@ async def bulk_confirm_recon(
     _: None = require_permission("manage_accounting"),
     db: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Confirm all 'suggested' matches (make them fully matched)."""
-    recon = await _get_recon(db, session_id, company_id, for_update=True)
-    if recon.status == "completed":
-        raise HTTPException(status_code=409, detail=t("error.recon_completed"))
+    """Confirm every suggested match that is still valid. A suggestion whose entry is
+    gone from the account or counted elsewhere meanwhile is left unmatched, its
+    suggestion cleared, and reported with its reason."""
+    recon, bank = await _lock_recon(db, session_id, company_id, editable=True)
 
     lines = (await db.execute(
         select(BankStatementLine).where(
             BankStatementLine.reconciliation_id == session_id,
             BankStatementLine.status == "suggested",
-        )
+        ).order_by(BankStatementLine.line_date, BankStatementLine.created_at).with_for_update()
     )).scalars().all()
+    reasons = await _eligible_entries(db, company_id, bank, recon, [sl.matched_je_id for sl in lines if sl.matched_je_id])
 
-    confirmed = 0
+    confirmed, skipped = 0, []
     existing = list(recon.reconciled_je_ids or [])
     for sl in lines:
+        reason = (reasons[sl.matched_je_id] if sl.matched_je_id else "acct.err_recon_book_entry_missing") \
+            or ("acct.err_recon_book_entry_matched" if sl.matched_je_id in existing else None)
+        if reason:
+            sl.status, sl.matched_je_id = "unmatched", None
+            skipped.append({"line_id": str(sl.id), "reason": reason})
+            continue
         sl.status = "matched"
-        if sl.matched_je_id and sl.matched_je_id not in existing:
-            existing.append(sl.matched_je_id)
+        existing.append(sl.matched_je_id)
         confirmed += 1
 
     recon.reconciled_je_ids = existing
     recon.manual_matched_count = (recon.manual_matched_count or 0) + confirmed
     await db.commit()
-    return {"confirmed": confirmed}
+    return {"confirmed": confirmed, "skipped": skipped}
 
 
 @router.post(
@@ -4033,9 +4105,7 @@ async def write_off_difference(
     """Create a small adjustment JE to zero out the remaining difference."""
     from celerp.services.je_keys import je_idempotency_key
 
-    recon = await _get_recon(db, session_id, company_id, for_update=True)
-    if recon.status == "completed":
-        raise HTTPException(status_code=409, detail=t("error.recon_completed"))
+    recon, _bank = await _lock_recon(db, session_id, company_id, editable=True)
 
     bank, all_entries = await _recon_bank_and_entries(db, recon, company_id)
     je_id = f"je:recon:writeoff:{session_id}"
@@ -4051,16 +4121,18 @@ async def write_off_difference(
         amount = float(bank_entry.get("debit") or 0) - float(bank_entry.get("credit") or 0)
         return {"je_id": je_id, "amount": amount}
 
-    _, difference = _recon_balance(recon, bank, all_entries)
+    _, remaining = _recon_balance(recon, bank, all_entries)
 
-    tol = float(recon.tolerance) if recon.tolerance is not None else 1.0
-    if abs(difference) > tol:
+    tol = round_money(recon.tolerance if recon.tolerance is not None else 1, bank.currency)
+    if abs(remaining) > tol:
         raise HTTPException(
             status_code=422,
-            detail=t("acct.err_writeoff_too_large", difference=f"{difference:.2f}", tolerance=f"{tol:.2f}"),
+            detail=t("acct.err_writeoff_too_large", difference=_money_text(remaining, bank.currency),
+                     tolerance=_money_text(tol, bank.currency)),
         )
-    if abs(difference) < 0.005:
+    if remaining == 0:
         raise HTTPException(status_code=422, detail=t("acct.err_writeoff_nothing"))
+    difference = to_stored_float(remaining)
     if payload.account_code:
         account_code = payload.account_code
         await require_destinations(db, company_id, {account_code})
@@ -4200,9 +4272,7 @@ async def _get_recon_and_line(
     line_id: uuid.UUID,
     company_id: uuid.UUID,
 ) -> tuple[ReconciliationSession, BankStatementLine]:
-    recon = await _get_recon(db, session_id, company_id, for_update=True)
-    if recon.status == "completed":
-        raise HTTPException(status_code=409, detail=t("error.recon_completed"))
+    recon, _bank = await _lock_recon(db, session_id, company_id, editable=True)
     sl = (await db.execute(
         select(BankStatementLine).where(
             BankStatementLine.id == line_id,

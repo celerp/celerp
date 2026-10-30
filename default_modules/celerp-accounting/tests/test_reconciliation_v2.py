@@ -324,12 +324,12 @@ async def test_match_and_unmatch_line(client):
     lines_r = await client.get(f"/accounting/reconciliation/{recon['id']}/statement-lines", headers=h)
     line_id = lines_r.json()["items"][0]["id"]
 
-    recon_data = (await client.get(f"/accounting/reconciliation/{recon['id']}", headers=h)).json()
-    entries = recon_data.get("all_entries", [])
-    if not entries:
-        pytest.skip("No book entries to match against")
-
-    je_id = entries[0]["je_id"]
+    r = await client.post("/accounting/journal-entries", headers=h, json={
+        "ts": "2026-03-01", "memo": "Match test", "idempotency_token": _uuid.uuid4().hex,
+        "entries": [{"account": "5100", "debit": 500.0, "credit": 0.0},
+                    {"account": bank["chart_account_code"], "debit": 0.0, "credit": 500.0}]})
+    assert r.status_code == 200, r.text
+    je_id = r.json()["je_id"]
 
     # Match
     r = await client.post(

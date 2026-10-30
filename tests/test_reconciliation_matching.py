@@ -206,8 +206,9 @@ async def test_bulk_confirm_retry_is_deterministic(client, session):
     first = (await client.post(f"/accounting/reconciliation/{sid}/bulk-confirm", headers=h)).json()
     held = await _held(client, h, sid)
     second = (await client.post(f"/accounting/reconciliation/{sid}/bulk-confirm", headers=h)).json()
-    assert "skipped" in first and second["confirmed"] == 0
-    assert second["skipped"] == first["skipped"]
+    assert first["skipped"] and second == {"confirmed": 0, "skipped": []}
+    lines = {l["id"]: l for l in await _read_lines(client, h, sid)}
+    assert all(lines[s["line_id"]]["status"] == "unmatched" for s in first["skipped"])
     assert await _held(client, h, sid) == held
 
 
