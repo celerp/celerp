@@ -48,6 +48,7 @@ from celerp.models.projections import Projection
 from celerp.accounting_roles import AccountRole, refusal
 from celerp.services.account_roles import current_settings, line_roles, merge_survivors, resolve, resolve_many, role_map
 from celerp.services.ledger_rows import REVERSAL_SUFFIX, journal_rows
+from celerp.services.ledger_display import readable_memo
 from celerp.services.lot_origin import rerun_after_placing
 from celerp.services import peer_accounts, peer_journals
 from celerp.services.attachments import (
@@ -1035,7 +1036,9 @@ def _id_chunks(ids: list[str], size: int = 10_000):
 
 def _je_memo(memo: str, ref: dict | None) -> str:
     """A journal memo as people read it: a system memo names its document by Celerp's
-    internal id, which is shown as the document's number. The stored memo is unchanged."""
+    internal id, which is shown as the document's number, and a production run by its
+    reference. The stored memo is unchanged."""
+    memo = readable_memo(memo)
     for entity_id, number in ((ref or {}).get("numbers") or {}).items():
         memo = memo.replace(entity_id, number)
     return memo

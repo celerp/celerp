@@ -31,6 +31,7 @@ from ui.components.shell import base_shell, minimal_shell, module_active, page_h
 from ui.components.table import fmt_money, data_table, search_bar, pagination, EMPTY, empty_mark, breadcrumbs, status_cards, empty_state_cta, add_new_option, searchable_select, currency_symbol, SERVER_FILTER_JS, filter_th, sortable_th, table_pager, COLUMN_FILTER_JS, ENHANCED_TABLE_JS, date_range_filter, display_enum, display_unit, doc_href
 from ui.config import get_token as _token, get_role as _get_role
 from celerp.services import import_stage
+from celerp.services.ledger_display import run_reference
 from ui.security import not_permitted_redirect
 from celerp.services.permissions import missing_permission_text, role_has_permission
 from ui.module_slots import (
@@ -7338,7 +7339,7 @@ def _production_block(entity_id: str, item: dict, hub: dict, cur: str,
         rid, status = run.get("id"), run.get("status", "planned")
         qty = float((run.get("expected_outputs") or [{}])[0].get("quantity", 0))
         return Tr(
-            Td("WO-" + str(rid).split(":")[-1][:8], cls="wo-ref"),
+            Td(run_reference(rid), cls="wo-ref"),
             Td(_wo_source_cell(run)),
             Td(run.get("source_contact_name") or EMPTY),
             Td(f"{qty:g}", cls="cell--number"),

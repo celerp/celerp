@@ -26,6 +26,7 @@ from ui.config import get_token as _token
 from ui.i18n import reconcile_reason, refusal_text, t
 from ui.routes.reports import _company_today, _get_company
 from celerp.services.business_time import business_today
+from celerp.services.ledger_display import run_reference
 
 logger = logging.getLogger(__name__)
 
@@ -836,7 +837,7 @@ def setup_routes(app):
         crumbs = [(t("manufacturing.work_in_progress"), "/manufacturing/production")]
         if run.get("output_item_id"):
             crumbs.append((product, f"/inventory/{run['output_item_id']}?tab=manufacturing"))
-        crumbs.append(("WO-" + run_id.split(":")[-1][:8], None))
+        crumbs.append((run_reference(run_id), None))
         return await base_shell(
             breadcrumbs(crumbs),
             page_header(t("manufacturing.reconcile_title")),

@@ -58,6 +58,8 @@ async def refused_unchanged(session, auth, act, *watch: str) -> None:
     # without committing, which the test session shared with the app stands in for here.
     await session.rollback()
     assert "still open" in detail["message"], detail
+    # The run is named by its reference, as the app shows it, never by its internal id.
+    assert "production run WO-" in detail["message"] and "mfg:" not in detail["message"], detail
     assert await snapshot(session, auth, *watch) == before
 
 

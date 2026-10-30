@@ -55,6 +55,7 @@ from celerp.services.account_roles import (
 )
 from celerp.services.company_lock import lock_company, lock_projections
 from celerp.services.document_lines import listing_record
+from celerp.services.ledger_display import run_reference
 from celerp.services.line_measures import splitting_allowed
 from celerp.services.lot_origin import (
     DELETED,
@@ -197,6 +198,11 @@ class _Op:
     day: str
     books: bool
     currency: str
+
+    @property
+    def ref(self) -> str:
+        """The run as people see it, for the memos of the entries it posts."""
+        return run_reference(self.order_id)
 
     def round(self, value) -> Decimal:
         return round_money(value, self.currency)
@@ -440,7 +446,7 @@ async def _issue(op: _Op, run: Projection, wanted: list[dict], rk: str, request:
         total += moved
         # Each component's own value, so a return gives back exactly what it took.
         issued.append({**line, "value": str(moved)})
-    await op.post(f"issue:{rk}", f"Components issued to production run {op.order_id}", wip_code, total, credits)
+    await op.post(f"issue:{rk}", f"Components issued to production run {op.ref}", wip_code, total, credits)
     data = {"items": issued, "issued_by": str(op.user_id), "value": str(total), "request": request}
     if wip_code and total:
         data["wip_account_code"] = wip_code
@@ -566,7 +572,7 @@ async def _return(op: _Op, run: Projection, wanted: list[dict], rk: str, request
             code = lot_account(after.state or {})
             debits[code] = debits.get(code, _ZERO) + value
         returned.append({**line, "value": str(value)})
-    await op.post(f"return:{rk}", f"Components returned from production run {op.order_id}", wip_code, -total,
+    await op.post(f"return:{rk}", f"Components returned from production run {op.ref}", wip_code, -total,
                   debits)
     await op.emit_run("mfg.order.returned", {
         "items": returned, "returned_by": str(op.user_id), "value": str(total), "request": request},
@@ -646,7 +652,7 @@ async def _receive(op: _Op, run: Projection, qty: float, rk: str, request: str) 
     }, f"mfg:{op.order_id}:receive:{rk}:created", location_id=loc, metadata=mark)
     await op.emit(lot_id, "item", "item.produced", {"quantity_produced": qty},
                   f"mfg:{op.order_id}:receive:{rk}:produced", location_id=loc, metadata=mark)
-    await op.post(f"receive:{rk}", f"Output received from production run {op.order_id}", wip_code, -amount,
+    await op.post(f"receive:{rk}", f"Output received from production run {op.ref}", wip_code, -amount,
                   {code: amount} if code else {})
     await op.emit_run("mfg.order.received", {
         "quantity": qty, "lot_item_id": lot_id, "received_by": str(op.user_id), "value": str(amount),
@@ -834,7 +840,7 @@ async def _close(op: _Op, run: Projection, payload: dict, request: str, ck: str,
     wip_code = state.get("wip_account_code")
     if op.books and held:
         wip_code = await continue_role(op.session, op.company_id, AccountRole.WORK_IN_PROGRESS, wip_code)
-    await op.post(f"complete:{ck}", f"Production run {op.order_id} completed", wip_code, -held, debits, waste)
+    await op.post(f"complete:{ck}", f"Production run {op.ref} completed", wip_code, -held, debits, waste)
 
     expected = (state.get("expected_outputs") or [{}])[0]
     actual_outputs = [{**expected, "quantity": float(state.get("received_qty") or 0)}] if expected else []
@@ -958,7 +964,7 @@ async def guard_output_lineage(*, session: AsyncSession, entry: LedgerEntry, tra
         source = (entry.metadata_ or {}).get(VALUED_FROM_KEY)
         order = (await _pending_output(session, entry.company_id)).get(source) if source else None
         if order is not None:
-            sku = after.get("sku") or source
+            sku, order = after.get("sku") or source, run_reference(order)
             raise refuse(409, "output_cost_pending",
                          f"{sku} comes back at the cost of stock from production run {order}, which is still open, "
                          "so that cost is not final yet. Complete the run before receiving this return.",
@@ -972,7 +978,7 @@ async def guard_output_lineage(*, session: AsyncSession, entry: LedgerEntry, tra
     row = await session.get(Projection, {"company_id": entry.company_id, "entity_id": entry.entity_id})
     if await _keeps_cost(session, row):
         return
-    sku = after.get("sku") or entry.entity_id
+    sku, order = after.get("sku") or entry.entity_id, run_reference(order)
     if (str(before.get("status") or ""), str(after.get("status") or "")) == ("memo_out", "sold"):
         # Billed from out on memo by an invoice whose sale no later cost can adjust.
         raise refuse(409, "output_memo_conversion",
@@ -1046,7 +1052,7 @@ async def undo_receipt(session: AsyncSession, company_id, user_id, order_id: str
                   f"mfg:{order_id}:unreceive:{rk}:emptied", location_id=loc, metadata=mark)
     await op.emit(lot_id, "item", "item.status.set", {"new_status": "archived", "reason": "production_receipt_undone"},
                   f"mfg:{order_id}:unreceive:{rk}:archived", location_id=loc, metadata=mark)
-    await op.post(f"unreceive:{rk}", f"Output receipt undone on production run {order_id}", wip_code, value,
+    await op.post(f"unreceive:{rk}", f"Output receipt undone on production run {op.ref}", wip_code, value,
                   {code: -value} if code else {})
     data = {"lot_item_id": lot_id, "quantity": qty, "value": str(value)}
     await op.emit_run("mfg.order.receipt_undone", {**data, "undone_by": str(op.user_id), "request": request},
@@ -1095,7 +1101,7 @@ async def reopen(session: AsyncSession, company_id, user_id, order_id: str, key:
     wip_code = state.get("wip_account_code")
     if op.books and held:
         wip_code = await continue_role(op.session, op.company_id, AccountRole.WORK_IN_PROGRESS, wip_code)
-    await op.post(f"reopen:{rk}", f"Production run {order_id} reopened", wip_code, held, credits, -waste)
+    await op.post(f"reopen:{rk}", f"Production run {op.ref} reopened", wip_code, held, credits, -waste)
     await op.emit_run("mfg.order.reopened", {"reopened_by": str(op.user_id), "request": request},
                       f"mfg:{order_id}:reopen:{rk}")
     return {"status": "reopened"}
@@ -1296,10 +1302,10 @@ async def _settle(session: AsyncSession, company_id) -> None:
         op = dataclasses.replace(base, order_id=order)
         total = sum(per.values(), _ZERO)
         if source == "lots":
-            await op.post("wip-opened", f"Materials already in production run {order} when Celerp began tracking "
+            await op.post("wip-opened", f"Materials already in production run {op.ref} when Celerp began tracking "
                           "their value", wip_code, total, {code: -v for code, v in per.items() if code})
         else:
-            await op.post("wip-opened", f"Materials in production run {order} when Accounting was turned on",
+            await op.post("wip-opened", f"Materials in production run {op.ref} when Accounting was turned on",
                           wip_code, total, {}, equity=-total)
         await op.emit_run("mfg.order.wip_opened", {
             "issued": str(total), "transferred": "0", "receipts": [],
@@ -1309,7 +1315,7 @@ async def _settle(session: AsyncSession, company_id) -> None:
         state = rows[run.entity_id].state
         op = dataclasses.replace(base, order_id=run.entity_id)
         held = _wip(state)
-        await op.post("wip-booked", f"Materials in production run {run.entity_id} when Accounting was turned on",
+        await op.post("wip-booked", f"Materials in production run {op.ref} when Accounting was turned on",
                       wip_code, held, {}, equity=-held)
         await op.emit_run("mfg.order.wip_opened", {
             "issued": str(_money(state.get("wip_issued"))), "transferred": str(_money(state.get("wip_transferred"))),
@@ -1640,7 +1646,7 @@ async def reconcile(session: AsyncSession, company_id, user_id, order_id: str, c
                                   f"mfg:{order_id}:reconcile:{rk}:recost:{r['lot_item_id']}", "reconciled")
             if code:
                 lots[code] = lots.get(code, _ZERO) + delta
-    await op.post(f"reconcile:{rk}", f"Materials in production run {order_id} reconciled", wip_code,
+    await op.post(f"reconcile:{rk}", f"Materials in production run {op.ref} reconciled", wip_code,
                   total - transferred, lots, equity=equity)
     recorded = _held_lines({i: (needed[i][0], v) for i, v in values.items()})
     data = {"issued": str(total), "transferred": str(transferred), "receipts": receipts, "components": recorded,
