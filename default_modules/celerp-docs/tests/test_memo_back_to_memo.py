@@ -23,7 +23,7 @@ async def back_all(client, h, invoice: str, memo: str | None = None):
 
 
 async def sku_units(client, h, sku: str) -> list[dict]:
-    rows = await ok(await client.get("/items", headers=h, params={"q": sku, "limit": 200}))
+    rows = await ok(await client.get("/items", headers=h, params={"q": sku, "status": "all", "limit": 200}))
     return [i for i in (rows.get("items", rows) if isinstance(rows, dict) else rows) if i.get("sku") == sku]
 
 
@@ -298,7 +298,10 @@ async def test_credit_note_against_drawn_invoice_works(client, session):
 
     note = await state(client, h, cn["id"])
     assert not drawn_lines(note)
-    assert (await item(client, h, lot_id))["status"] == "available"
+    back = await ok(await client.post(f"/docs/{cn['id']}/receive-return", headers=h, json={
+        "items": [{"sku": sku, "item_id": lot_id, "quantity": 1}], "idempotency_key": uuid.uuid4().hex}))
+    returned = await item(client, h, back["received_items"][0]["item_id"])
+    assert (returned["status"], returned["returned_from"]) == ("available", lot_id)
 
 
 # ── The grant Back to memo writes with ────────────────────────────────────────

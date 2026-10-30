@@ -10495,8 +10495,11 @@ async def fulfill_lines(
 
 async def _expand_invoice_line_allocations(
     session, company_id, doc_id: str, doc_state: dict,
-    item_ids: list[str], fetched: dict[str, Projection],
+    item_ids: list[str], fetched: dict[str, Projection], *, whole_lines: bool = True,
 ) -> set[int]:
+    """The invoice lines the given lots were shipped on. With ``whole_lines`` each of those
+    lines gives back every lot it shipped, so a lot named alone takes its whole line with it;
+    without, the lots are exactly what the user chose (a line returned in part)."""
     from celerp.services import auto_je
 
     requested_indices: set[int] = set()
@@ -10505,6 +10508,8 @@ async def _expand_invoice_line_allocations(
         if idx is None:
             raise HTTPException(status_code=409, detail=t("documents.err_legacy_delivery"))
         requested_indices.add(idx)
+    if not whole_lines:
+        return requested_indices
     requested_skus = {
         str((doc_state.get("line_items") or [])[idx].get("sku") or "").strip()
         for idx in requested_indices if 0 <= idx < len(doc_state.get("line_items") or [])
@@ -10532,6 +10537,7 @@ async def _reverse_whole_lines(
     to_revert: list[str],
     fetched: dict[str, Projection],
     returned_brief: list[dict] | None = None,
+    whole_lines: bool = True,
 ) -> tuple[str, Callable[[], Awaitable[None]]]:
     """Reverse whole-line fulfillment: restore each lot to stock, recompute the doc's
     fulfillment status and log the doc-level revert. Emits events only - the caller owns
@@ -10541,13 +10547,14 @@ async def _reverse_whole_lines(
 
     Shared by revert-lines (Set as available on sold/memo lines) and reserve-lines
     (Set as reserved on a line this doc already shipped: reverse, then reserve).
+    ``whole_lines`` is passed on to _expand_invoice_line_allocations.
     """
     from celerp.services import auto_je
 
     reversed_line_indices: set[int] = set()
     if doc_type == "invoice" and to_revert:
         reversed_line_indices = await _expand_invoice_line_allocations(
-            session, company_id, entity_id, state, to_revert, fetched
+            session, company_id, entity_id, state, to_revert, fetched, whole_lines=whole_lines,
         )
     now_dt = datetime.now(timezone.utc)
     company = await session.get(Company, company_id)
@@ -10590,13 +10597,14 @@ async def _reverse_whole_lines(
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=getattr(exc, "detail", str(exc))) from exc
 
-    # Optimistically compute doc fulfillment_status
+    # Optimistically compute doc fulfillment_status. A line drawn from a memo went out on
+    # the memo, not by this document's delivery, so its lots never count as delivered here.
     newly_available = set(to_revert)
     line_items = state.get("line_items", [])
     all_statuses: list[str] = []
     for li in line_items:
         li_eid = li.get("entity_id") or li.get("item_id") or ""
-        if not li_eid:
+        if not li_eid or li.get("drawn_from"):
             continue
         if li_eid in newly_available:
             all_statuses.append("available")
@@ -10872,6 +10880,7 @@ async def _revert_lines_impl(row: Projection, body: RevertLinesRequest, indices:
     doc_fulfillment_status, reconcile = await _reverse_whole_lines(
         session, company_id=company_id, cid=cid, uid=uid, entity_id=entity_id, state=state,
         doc_type=doc_type, to_revert=to_revert, fetched=fetched, returned_brief=returned_brief,
+        whole_lines=not indices,
     )
     await reconcile()
     return {

@@ -124,7 +124,9 @@ async def test_drawn_line_operations_boundary(client, session):
     assert exc.value.detail["message_key"] == "docs.drawn_line_back_to_memo"
     refuse_drawn_line_action(doc, [i for i, li in enumerate(doc["line_items"]) if not li.get("drawn_from")])
     for route in ("reserve-lines", "set-available", "fulfill-lines"):
-        r = await client.post(f"/docs/{pf}/{route}", headers=h, json={"line_ids": [doc["line_items"][index]["line_id"]]})
+        body = {"line_ids": [doc["line_items"][index]["line_id"]]}
+        r = await client.post(f"/docs/{pf}/{route}", headers=h,
+                              json={**body, "new_status": "reserved"} if route == "reserve-lines" else body)
         assert key_of(r) == "docs.drawn_line_back_to_memo", (route, r.text)
 
 
