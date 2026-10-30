@@ -200,6 +200,23 @@ async def test_bulk_confirm_skips_stale_lines_and_reports_each(client, session):
     assert lines[l2["id"]]["status"] == "unmatched" and lines[l4["id"]]["status"] == "unmatched"
 
 
+@pytest.mark.parametrize("stale, toast", [
+    (2, "2 lines weren't confirmed. Each one shows why."),
+    (1, "1 line wasn't confirmed. It shows why."),
+])
+async def test_bulk_confirm_toast_counts_the_skipped_lines(client, session, stale, toast):
+    from test_reconciliation_reopen import _ui_as
+    tok, h = await admin(client)
+    sid, *_, l4 = await _bulk_setup(client, session, h)
+    if stale == 1:
+        await session.execute(text(
+            "UPDATE bank_statement_lines SET status = 'unmatched', matched_je_id = NULL WHERE id = :l"), {"l": l4["id"]})
+        await session.commit()
+    async with _ui_as(tok) as ui:
+        page = (await ui.post(f"/accounting/reconcile/{sid}/bulk-confirm")).text
+    assert toast.replace("'", "&#x27;") in page or toast in page
+
+
 async def test_bulk_confirm_retry_is_deterministic(client, session):
     _, h = await admin(client)
     sid, *_ = await _bulk_setup(client, session, h)

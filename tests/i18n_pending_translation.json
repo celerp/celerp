@@ -759,6 +759,10 @@
         "count"
       ]
     },
+    "recon.bulk_confirm_skipped_one": {
+      "en": "1 line wasn't confirmed. It shows why. Match it by hand.",
+      "params": []
+    },
     "recon.needs_review": {
       "en": "Needs review: this reconciliation counts an entry that's no longer in this account's books, or it no longer balances with its statement. Open it to check.",
       "params": []

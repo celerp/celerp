@@ -1028,7 +1028,8 @@ def setup_routes(app):
         skipped = {s["line_id"]: s["reason"] for s in result.get("skipped", [])}
         if not skipped:
             return await _fresh_workspace(token, session_id)
-        return await _fresh_workspace(token, session_id, notice=t("recon.bulk_confirm_skipped", count=len(skipped)),
+        key = "recon.bulk_confirm_skipped_one" if len(skipped) == 1 else "recon.bulk_confirm_skipped"
+        return await _fresh_workspace(token, session_id, notice=t(key, count=len(skipped)),
                                       notice_kind="warning", skipped_reasons=skipped)
 
     @app.post("/accounting/reconcile/{session_id}/complete")

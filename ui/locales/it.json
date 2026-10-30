@@ -3606,6 +3606,7 @@
   "recon.history_empty": "This account has no reconciliations yet. Start one with Reconcile.",
   "recon.reopen_confirm": "Reopen this reconciliation? Its matches stay as they are and your books don't change. Complete it again when you're done.",
   "recon.bulk_confirm_skipped": "{count} lines weren't confirmed. Each one shows why. Match them by hand.",
+  "recon.bulk_confirm_skipped_one": "1 line wasn't confirmed. It shows why. Match it by hand.",
   "recon.needs_review": "Needs review: this reconciliation counts an entry that's no longer in this account's books, or it no longer balances with its statement. Open it to check.",
   "recon.view_completed": "Visualizza riconciliazione",
   "page.no_inventory_sub": "Gli articoli che aggiungi verranno raggruppati per categoria qui.",
