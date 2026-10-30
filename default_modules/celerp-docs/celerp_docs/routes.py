@@ -11206,9 +11206,18 @@ async def revert_lines(
 
 
 class DrawVersions(BaseModel):
-    """The versions of the memo and the target invoice a preview was worked out on."""
+    """The versions of the memo and the target invoice a preview was worked out on.
+    ``target_id`` names the draft invoice ``target`` was read for (None: a new invoice), so a
+    version read for one invoice is never compared with another's."""
     memo: int
     target: int | None = None
+    target_id: str | None = None
+
+    @model_validator(mode="after")
+    def _target_names_its_invoice(self):
+        if (self.target is None) != (self.target_id is None):
+            raise ValueError("A target version needs the target_id of the invoice it was read for.")
+        return self
 
 
 class InvoiceLinesRequest(RevertLinesRequest):
@@ -11217,7 +11226,7 @@ class InvoiceLinesRequest(RevertLinesRequest):
     ``target_doc_id`` names a draft invoice of the same customer to add them to; without it
     a new invoice is made. ``dry_run`` returns what the draw would bill and leave on the memo
     without writing anything; ``expected_versions``, the versions that preview read, refuses
-    the draw when either record changed since."""
+    the draw when the memo changed since, or the target when the preview was read for it."""
     target_doc_id: str | None = None
     dry_run: bool = False
     expected_versions: DrawVersions | None = None
@@ -11322,12 +11331,13 @@ def draw_problems(snap: _DrawSnapshot, body: InvoiceLinesRequest, *,
     problems: list[dict] = []
     seen = body.expected_versions
     if seen is not None:
-        if target is not None and (seen.memo, seen.target) != (snap.memo.version, target.version):
+        same_target = target is not None and seen.target_id == body.target_doc_id
+        if same_target and (seen.memo, seen.target) != (snap.memo.version, target.version):
             problems.append(refusal(
                 "docs.draw_preview_stale",
                 f"Memo {memo_ref} or {_ref(target)} changed after the preview. Check the new preview, then confirm again.",
                 memo=memo_ref, target=_ref(target)))
-        elif target is None and seen.memo != snap.memo.version:
+        elif not same_target and seen.memo != snap.memo.version:
             problems.append(refusal(
                 "docs.draw_preview_stale_memo",
                 f"Memo {memo_ref} changed after the preview. Check the new preview, then confirm again.",

@@ -3541,9 +3541,9 @@ celerpUpdateBulkAlloc();
             return _action_error(error_message(e))
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{target_id}"})
 
-    def _draw_body(form) -> dict:
+    def _draw_picks(form) -> dict:
         """The Invoice selected panel as a draw request: the units of each selected line by its
-        line id, the draft invoice chosen (None for a new one) and the versions its preview read."""
+        line id and the draft invoice chosen (None for a new one)."""
         quantities = {}
         for idx, qty in _selected_line_quantities(form):
             line_id = str(form.get(f"line_id_{idx}") or "")
@@ -3553,11 +3553,17 @@ celerpUpdateBulkAlloc();
                 quantities[line_id] = qty
         if not quantities:
             raise ValueError(t("documents.select_lines_to_invoice"))
-        memo_v, target_v = (str(form.get(k) or "").strip() for k in ("expected_memo", "expected_target"))
         return {"line_ids": list(quantities), "quantities": quantities,
-                "target_doc_id": str(form.get("target_doc_id") or "").strip() or None,
-                "expected_versions": ({"memo": int(memo_v), "target": int(target_v) if target_v.isdigit() else None}
-                                      if memo_v.isdigit() else None)}
+                "target_doc_id": str(form.get("target_doc_id") or "").strip() or None}
+
+    def _draw_versions(form) -> dict | None:
+        """The versions the latest preview read, bound to the invoice it read them for."""
+        memo_v, target_v, target_id = (str(form.get(k) or "").strip()
+                                       for k in ("expected_memo", "expected_target", "expected_target_id"))
+        if not memo_v.isdigit():
+            return None
+        bound = target_v.isdigit() and bool(target_id)
+        return {"memo": int(memo_v), "target": int(target_v) if bound else None, "target_id": target_id if bound else None}
 
     # Invoice selected: chosen units of a memo onto a new or a draft invoice of its customer.
     @app.post("/docs/{entity_id}/invoice-lines")
@@ -3568,7 +3574,8 @@ celerpUpdateBulkAlloc();
             return _R("", status_code=401, headers={"HX-Redirect": "/login"})
         form = await request.form()
         try:
-            body = {**_draw_body(form), "idempotency_key": required_operation_key(form, "invoice-lines")}
+            body = {**_draw_picks(form), "expected_versions": _draw_versions(form),
+                    "idempotency_key": required_operation_key(form, "invoice-lines")}
             result = await api.invoice_lines(token, entity_id, body)
         except ValueError as exc:
             return _action_error(str(exc))
@@ -3587,7 +3594,8 @@ celerpUpdateBulkAlloc();
             return P(t("error.session_expired"), cls="cell-error")
         form = await request.form()
         try:
-            preview = await api.invoice_lines_preview(token, entity_id, _draw_body(form))
+            # A preview always reads fresh: the versions it shows are the ones a submit sends back.
+            preview = await api.invoice_lines_preview(token, entity_id, _draw_picks(form))
         except ValueError:
             return ""
         except APIError as e:
@@ -7007,11 +7015,15 @@ def _draw_panel(entity_id: str, doc: dict, targets: list | None, unit_map: dict)
 def _draw_panel_preview(memo: dict, preview: dict) -> FT:
     """What Invoice selected would do, from the server's dry run: the reason it cannot, or the
     fixed amounts the invoice takes from the memo, its total after the draw and what stays on
-    the memo. Carries the versions it was worked out on so the draw is refused if either moved."""
+    the memo. Carries the versions it was worked out on, and the invoice they were read for, so
+    the draw is refused if either moved."""
     currency = memo.get("currency") or ""
-    versions = [Input(type="hidden", name=name, value=str(preview[key]))
-                for name, key in (("expected_memo", "memo_version"), ("expected_target", "target_version"))
-                if preview.get(key) is not None]
+    read = {"memo_version": preview.get("memo_version"), "target_version": preview.get("target_version"),
+            "target_id": (preview.get("target") or {}).get("id")}
+    versions = [Input(type="hidden", name=name, value=str(read[key]))
+                for name, key in (("expected_memo", "memo_version"), ("expected_target", "target_version"),
+                                  ("expected_target_id", "target_id"))
+                if read[key] is not None]
     if preview.get("problems"):
         return Div(*versions, P(refusal_text(preview["problems"]), cls="cell-error"))
     taken = _fixed_amounts_text(preview.get("fixed_taken"), currency)
