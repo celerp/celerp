@@ -368,8 +368,8 @@ async def test_every_change_to_an_existing_item_takes_the_company_lock(client, s
 # next rebuild, so it becomes an event instead.
 _WRITERS = {
     ("celerp/projections/engine.py", "Projection("): "the apply core every event goes through",
-    ("celerp/projections/engine.py", "await session.execute(delete(Projection) if company_id is None else "
-     "delete(Projection).where(Projection.company_id == company_id))"): "rebuild from the ledger, whose events were each judged when written",
+    ("celerp/projections/engine.py", "await session.execute(delete(Projection).where(Projection.company_id == company))"):
+        "rebuild from the ledger, whose events were each judged when written",
     ("celerp/events/engine.py", "transition = await ProjectionEngine.apply_event(session, entry)"): "emit_event, the hold check itself",
     ("celerp/routers/ledger.py", "await ProjectionEngine.rebuild(session, company_id=company_id)"): "rebuild from the judged ledger",
     ("celerp/services/company_backup.py", "await ProjectionEngine.rebuild(session, company_id)"): "whole-company restore",

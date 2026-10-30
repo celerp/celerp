@@ -293,10 +293,10 @@ class ProjectionEngine:
         unknown = await ProjectionEngine.unreplayable(session, company_id)
         if unknown:
             raise UnhandledEventsError(unknown)
-        await session.execute(delete(Projection) if company_id is None else delete(Projection).where(Projection.company_id == company_id))
-        query = select(LedgerEntry).order_by(LedgerEntry.id.asc())
-        if company_id:
-            query = query.where(LedgerEntry.company_id == company_id)
+        # One delete per company, in id order, so each names the company whose rows it takes.
+        for company in sorted(companies, key=str):
+            await session.execute(delete(Projection).where(Projection.company_id == company))
+        query = select(LedgerEntry).where(LedgerEntry.company_id.in_(companies)).order_by(LedgerEntry.id.asc())
         entries = (await session.execute(query)).scalars().all()
         total = len(entries)
         # The desktop app reads these lines to show progress while a large company replays.

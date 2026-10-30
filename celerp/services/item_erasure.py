@@ -26,7 +26,7 @@ from celerp.accounting_roles import refusal
 from celerp.models.import_batch import ImportBatch
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
-from celerp.services.company_lock import locked_company
+from celerp.services.company_lock import lock_company, locked_company
 
 _CHUNK = 200
 
@@ -178,12 +178,14 @@ async def require_unlocked_history(session: AsyncSession, company_id, entity_ids
 
 
 async def erase_items(session: AsyncSession, company_id, entity_ids) -> None:
-    """Remove the items and every ledger row of theirs. Runs inside the caller's
-    transaction and does not commit; the caller has already checked they may go. Refused
+    """Remove the items and every ledger row of theirs, under the company's lock taken
+    first. Runs inside the caller's transaction and does not commit; the caller has
+    already checked they may go. Refused
     when any of them has history inside the locked period (``require_unlocked_history``)."""
     ids = sorted(set(entity_ids))
     if not ids:
         return
+    await lock_company(session, company_id)
     await require_unlocked_history(session, company_id, ids)
     keys = {(state or {}).get("idempotency_key") for (state,) in (await session.execute(
         sa.select(Projection.state).where(Projection.company_id == company_id, Projection.entity_id.in_(ids))))}
