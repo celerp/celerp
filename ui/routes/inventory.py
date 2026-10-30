@@ -2800,8 +2800,8 @@ function celerpPrintLabel(entityId, templateId) {
                     # The cell shows the lot's whole value, landed cost included; the item's
                     # goods cost is what is left of the entered total without it.
                     try:
-                        change = cost_written_back(old_item, float(value), dp=currency_dp(await _company_currency(token)),
-                                                   confirm=True)
+                        change = cost_written_back(old_item, str(form.get("value", "")).strip(),
+                                                   dp=currency_dp(await _company_currency(token)), confirm=True)
                     except CostTotalBelowLanded as exc:
                         return await _refused_cell(request, entity_id, field, refusal_text(exc.detail), str(form.get("value", "")))
                     if change:
@@ -2857,7 +2857,8 @@ function celerpPrintLabel(entityId, templateId) {
                 if field in COST_ITEM_KEYS:
                     # The unit cost shown is the lot's value per unit, landed cost included.
                     try:
-                        change = cost_written_back(old_item, float(value), dp=currency_dp(await _company_currency(token)),
+                        change = cost_written_back(old_item, str(form.get("value", "")).strip(),
+                                                   dp=currency_dp(await _company_currency(token)),
                                                    per_unit=field == "cost_price", confirm=True)
                     except CostTotalBelowLanded as exc:
                         return await _refused_cell(request, entity_id, field, refusal_text(exc.detail), str(form.get("value", "")))
@@ -4008,7 +4009,7 @@ function celerpPrintLabel(entityId, templateId) {
             # The box opens on the parent's whole value as shown; sent back as shown it keeps
             # the parent's cost and freight, read like every other cost door.
             try:
-                if cost_written_back(await api.get_item(token, entity_id), child_cost_total,
+                if cost_written_back(await api.get_item(token, entity_id), str(cost_raw).strip(),
                                      dp=currency_dp(await _company_currency(token)), confirm=True) is None:
                     child_cost_total = None
             except CostTotalBelowLanded:
@@ -4374,7 +4375,7 @@ function celerpPrintLabel(entityId, templateId) {
                     # like every other cost door; the unit input of an unknown cost opens empty.
                     cur = (company_for_price.get("currency") or "").strip() or "USD"
                     try:
-                        change = cost_written_back(item_for_price, price, per_unit=per_unit, confirm=True,
+                        change = cost_written_back(item_for_price, val, per_unit=per_unit, confirm=True,
                                                    dp=rate_dp(cur) if per_unit else currency_dp(cur))
                     except CostTotalBelowLanded as exc:
                         return Div(t("inventory.not_saved_detail", detail=refusal_text(exc.detail)), id="pricing-save-status",

@@ -3997,9 +3997,12 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
         float(parent.state.get("cost_price") or 0) * parent_qty
     )
     # A cost that differs from the parent's is a price write, so it takes the same
-    # set_inventory_prices gate as PATCH; with no cost sent (or the parent's cost sent
-    # back) the child keeps the parent's cost.
-    if payload.child_cost_total is not None and payload.child_cost_total != parent_cost_total:
+    # set_inventory_prices gate as PATCH, and so is any cost sent for a parent whose goods cost
+    # is not known: the page opens that box empty, so a value sent was typed and confirms it.
+    # With no cost sent (or a known parent's cost sent back) the child keeps the parent's cost.
+    cost_kept = payload.child_cost_total is None or (
+        payload.child_cost_total == parent_cost_total and goods_cost_known(parent.state))
+    if not cost_kept:
         reject_price_change({"cost_total"}, role, settings)
     effective_cost = payload.child_cost_total if payload.child_cost_total is not None else parent_cost_total
     cost_refusal = negative_cost_error(payload.child_sku, effective_cost)
@@ -4111,7 +4114,7 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
     #    parent_price_keys note above). Only cost carries over.
 
     # 2b. Set child goods cost via item.pricing.set (consistent with split/post_item flows).
-    #     Kept at the parent's cost, it is as known as the parent's; a restated cost is known.
+    #     Kept at the parent's cost, it is as known as the parent's; a cost sent is known.
     await emit_event(
         session,
         company_id=company_id,
@@ -4119,8 +4122,7 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
         entity_type="item",
         event_type="item.pricing.set",
         data={"price_type": "cost_total", "new_price": child_goods,
-              **({GOODS_COST_UNKNOWN: True} if effective_cost == parent_cost_total
-                 and not goods_cost_known(parent.state) else {})},
+              **({GOODS_COST_UNKNOWN: True} if cost_kept and not goods_cost_known(parent.state) else {})},
         actor_id=user.id,
         location_id=None,
         source="api",

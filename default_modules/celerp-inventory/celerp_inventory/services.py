@@ -236,33 +236,39 @@ class CostTotalBelowLanded(ValueError):
         super().__init__(self.detail["message"])
 
 
-def cost_written_back(state: dict, shown: float, *, dp: int, per_unit: bool = False,
+def cost_written_back(state: dict, typed: str, *, dp: int, per_unit: bool = False,
                       confirm: bool = False) -> dict | None:
     """The goods-cost change (``fields_changed`` of an item.updated) a cost the user wrote back
     means, or None when it changes nothing. Every door that takes a cost as it was shown or
-    exported (inventory cells, the Pricing tab, the transform page, the item import) reads it
-    here, never by itself.
+    exported (inventory cells, the Pricing tab, the transform page, the item import) hands the
+    text it received here, never a number it parsed or compared itself.
 
-    ``shown`` is the lot's whole value as shown, landed cost included: a total, or with
-    ``per_unit`` that value per unit, either at the ``dp`` decimals the door shows or exports
-    it. A value equal to what the door shows for the lot, compared at those decimals (the unit
-    as a unit, never unit x quantity), is no change; with ``confirm`` a lot whose goods cost is
-    not known takes it as a deliberate set (its edit opens empty, so what the user typed is
-    what they know). Otherwise the goods cost is the total less the landed cost the lot
-    carries. A unit cost of a lot without stock is the cost its next units wait at.
-    Raises CostTotalBelowLanded when the total is below the landed cost."""
-    shown = float(shown)
+    ``typed`` is the lot's whole value as the user wrote it, landed cost included: a total, or
+    with ``per_unit`` that value per unit. It is no change when it equals what the lot carries
+    rounded to the decimals the door shows (``dp``) or the decimals typed, whichever are more:
+    the shown value saved back is no change, and any digit typed that differs is a change. With
+    ``confirm`` a lot whose goods cost is not known takes it as a deliberate set (its edit opens
+    empty, so what the user typed is what they know). Otherwise the goods cost is the total less
+    the landed cost the lot carries. A unit cost of a lot without stock is the cost its next
+    units wait at. Raises TypeError for a value that is not text, ValueError for text that is
+    not a number, and CostTotalBelowLanded for a total below the landed cost."""
+    if not isinstance(typed, str):
+        raise TypeError("cost_written_back takes the cost as the text the user typed")
+    shown = float(typed)
+    exact = Decimal(typed.strip())
+    exponent = exact.as_tuple().exponent
+    places = max(dp, -exponent if isinstance(exponent, int) else 0)
     qty = float(state.get("quantity") or 0)
-    value = float(recorded_value(state))
     if per_unit and not qty:
-        waiting = state.get("cost_price")
-        if waiting is not None and round(shown, dp) == round(float(waiting), dp):
-            return None
-        return {"cost_price": {"new": shown}}
-    carried = value / qty if per_unit else value
-    if round(shown, dp) == round(carried, dp) and not (confirm and not goods_cost_known(state)):
+        carried = state.get("cost_price")
+    else:
+        carried = float(recorded_value(state)) / qty if per_unit else float(recorded_value(state))
+    if (carried is not None and round(shown, places) == round(float(carried), places)
+            and not (confirm and not goods_cost_known(state))):
         return None
-    total = round_basis(shown * qty if per_unit else shown)
+    if per_unit and not qty:
+        return {"cost_price": {"new": shown}}
+    total = round_basis(float(exact * Decimal(repr(qty))) if per_unit else shown)
     landed = round_basis(sum(float(v or 0) for v in (state.get("landed_costs") or {}).values()))
     if total < landed:
         raise CostTotalBelowLanded(landed)
@@ -3388,17 +3394,18 @@ def _pop_cost_change(data: dict, state: dict) -> dict | None:
 
     A cost total is the lot's whole value as the export writes it, and a unit cost is that
     value per unit, both at the export's BASIS_DP decimals, so both are read through
-    cost_written_back: a value equal to what the export holds for the lot is no change.
+    cost_written_back as the row holds them: a value equal to what the export holds for the
+    lot is no change.
     Returns ``fields_changed`` for an item.updated restatement, or None when the row
     changes no cost. Raises TypeError or ValueError for a cost that is not a number, and
     CostTotalBelowLanded for a total below the lot's landed cost.
     """
     cost_total, cost_price = data.pop("cost_total", None), data.pop("cost_price", None)
     if cost_total not in (None, ""):
-        return cost_written_back(state, float(cost_total), dp=BASIS_DP)
+        return cost_written_back(state, str(cost_total), dp=BASIS_DP)
     if cost_price in (None, ""):
         return None
-    return cost_written_back(state, float(cost_price), dp=BASIS_DP, per_unit=True)
+    return cost_written_back(state, str(cost_price), dp=BASIS_DP, per_unit=True)
 
 
 async def _cost_restatement_error(session: AsyncSession, company_id, record: dict, row: dict) -> dict | None:
