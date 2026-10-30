@@ -4,12 +4,14 @@
 """The census fails a writer no test covers: a mutating route whose source reaches a write
 and that no test made write durably, and a write site no observed request write passed
 through, unless the coverage-gap baseline (mutation_coverage_gaps.json) names it. The
-baseline does not grow and holds no entry that no longer matches a gap."""
+baseline does not grow, holds no entry that no longer matches a gap, and holds no entry the
+base branch's copy does not: a change may drop entries, never add or swap one in."""
 
 from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 
 import pytest
@@ -36,7 +38,9 @@ WRITER = "api POST /new"
 SITE = "celerp/routers/x.py create add"
 
 
-def _census(tmp_path, monkeypatch, routes=None, sites=None, gaps=()) -> tuple[int, str]:
+def _census(tmp_path, monkeypatch, routes=None, sites=None, gaps=(), base_gaps=None) -> tuple[int, str]:
+    """Runs the census with *gaps* checked out over a base commit holding *base_gaps*
+    (the same entries when not given)."""
     (tmp_path / "celerp" / "routers").mkdir(parents=True)
     (tmp_path / "celerp" / "routers" / "x.py").write_text(SOURCE)
     monkeypatch.setattr(mutation_census, "ROOT", str(tmp_path))
@@ -48,9 +52,15 @@ def _census(tmp_path, monkeypatch, routes=None, sites=None, gaps=()) -> tuple[in
     (folder / "census-1-gw0.routes.json").write_text(json.dumps(inventory))
     (folder / "census-1-gw0.json").write_text(json.dumps({"routes": routes or {}, "sites": sites or {}, "findings": []}))
     (tmp_path / "baseline.json").write_text("[]")
+    git = ["git", "-C", str(tmp_path), "-c", "user.name=t", "-c", "user.email=t@example.com"]
+    subprocess.run([*git, "init", "-q"], check=True)
+    (tmp_path / "gaps.json").write_text(json.dumps(list(gaps if base_gaps is None else base_gaps)))
+    subprocess.run([*git, "add", "gaps.json"], check=True)
+    subprocess.run([*git, "commit", "-qm", "base"], check=True)
     (tmp_path / "gaps.json").write_text(json.dumps(list(gaps)))
     status = mutation_census.main([str(folder), "--out", str(tmp_path / "census.md"), "--enforce",
-                                   "--baseline", str(tmp_path / "baseline.json"), "--gaps", str(tmp_path / "gaps.json")])
+                                   "--baseline", str(tmp_path / "baseline.json"), "--gaps", str(tmp_path / "gaps.json"),
+                                   "--base", "HEAD"])
     return status, (tmp_path / "census.md").read_text()
 
 
@@ -121,6 +131,41 @@ def test_a_gap_entry_without_its_classification_is_refused(tmp_path, change, err
     path.write_text(json.dumps([{k: v for k, v in {**_route_gap(), **change}.items() if v is not None}]))
     with pytest.raises(ValueError, match=error):
         mutation_baseline.load_gaps(str(path))
+
+
+OTHER = "api POST /other"
+
+
+def test_a_gap_entry_the_base_branch_does_not_hold_fails(tmp_path, monkeypatch):
+    status, text = _census(tmp_path, monkeypatch, gaps=[_route_gap(), _site_gap()], base_gaps=[_site_gap()])
+    assert status == 1
+    assert "| route | api POST /new | never requested | not in the list at HEAD |" in text
+
+
+def test_a_newly_untested_route_swapped_in_for_an_accepted_one_fails(tmp_path, monkeypatch):
+    """The count stays the same, so only the comparison with the base branch catches it."""
+    status, text = _census(tmp_path, monkeypatch, gaps=[_route_gap(), _site_gap()],
+                           base_gaps=[_route_gap(OTHER), _site_gap()])
+    assert status == 1
+    assert "| route | api POST /new | never requested | not in the list at HEAD |" in text
+
+
+def test_dropping_an_entry_the_base_branch_holds_passes(tmp_path, monkeypatch):
+    status, text = _census(tmp_path, monkeypatch, routes=WROTE, gaps=[_site_gap()],
+                           base_gaps=[_route_gap(), _site_gap()])
+    assert status == 0
+    assert "| site | celerp/routers/x.py create add | reached from a route | matched |" in text
+
+
+def test_a_base_without_the_gaps_file_compares_nothing(tmp_path, monkeypatch):
+    """The change that brings the list in has no earlier copy to compare with."""
+    git = ["git", "-C", str(tmp_path), "-c", "user.name=t", "-c", "user.email=t@example.com"]
+    subprocess.run([*git, "init", "-q"], check=True)
+    subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "base"], check=True)
+    (tmp_path / "gaps.json").write_text(json.dumps([_route_gap()]))
+    assert mutation_baseline.gaps_at("HEAD", str(tmp_path / "gaps.json")) is None
+    with pytest.raises(subprocess.CalledProcessError):
+        mutation_baseline.gaps_at("no-such-ref", str(tmp_path / "gaps.json"))
 
 
 def test_the_checked_in_coverage_gaps_load_and_do_not_grow():

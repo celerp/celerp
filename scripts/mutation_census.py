@@ -4,7 +4,7 @@
 """Report what the write observer (mutation_observer.py) saw across a test run.
 
     python scripts/mutation_census.py <census folder>... [--out census.md] [--coverage coverage.json] [--baseline file]
-        [--gaps file] [--enforce]
+        [--gaps file] [--base ref] [--enforce]
 
 Reads every census-*.json and census-*.routes.json under the folders (one pair per test
 process, so the folders of all CI shards together give the whole suite) and writes:
@@ -26,11 +26,14 @@ process, so the folders of all CI shards together give the whole suite) and writ
   every entry no finding matched or its own reproducing test did not see;
 - the coverage gaps: each mutating route whose source reaches a write that no test made
   write durably, and each write site no request write passed through, against the accepted
-  ones (mutation_coverage_gaps.json), with every entry that no longer matches its gap.
+  ones (mutation_coverage_gaps.json), with every entry that no longer matches its gap or
+  that the base branch's list (git ref origin/main by default) does not hold.
 
 With --enforce the exit status is 1 when a finding matches no baseline entry, an entry
 is stale or not reproduced by its test, a read route no test requested reaches a write, a
-coverage gap has no entry, or a coverage-gap entry no longer matches its gap."""
+coverage gap has no entry, or a coverage-gap entry no longer matches its gap or is not in the
+base branch's list: the list only shrinks, so a newly untested writer cannot take the place of
+an accepted one."""
 
 from __future__ import annotations
 
@@ -39,6 +42,7 @@ import ast
 import glob
 import json
 import os
+import subprocess
 import sys
 from collections import defaultdict
 
@@ -168,7 +172,8 @@ def _passed_through(site, sent) -> bool:
                for line, name, begins in sent)
 
 
-def report(folders, out, coverage_path=None, baseline=mutation_baseline.PATH, gaps=mutation_baseline.GAPS_PATH):
+def report(folders, out, coverage_path=None, baseline=mutation_baseline.PATH, gaps=mutation_baseline.GAPS_PATH,
+           base=mutation_baseline.GAPS_BASE):
     files, routes, sites, findings, inventory = load(folders)
     coverage = _coverage(coverage_path)
     graph = static_calls.Graph()
@@ -321,11 +326,17 @@ def report(folders, out, coverage_path=None, baseline=mutation_baseline.PATH, ga
     known_sites = {("site", f"{rel} {fn} {name}") for rel, _, _, fn, name, _ in static_sites}
     served = {("route", f"{_APP_LABEL.get(a, a)} {m} {p}") for a, m, p in mutating}
     gap_entries = mutation_baseline.load_gaps(gaps)
+    try:
+        base_entries = mutation_baseline.gaps_at(base, gaps)
+    except subprocess.CalledProcessError as exc:
+        raise SystemExit(f"cannot read the coverage gaps at {base} ({exc.stderr.strip()}); "
+                         f"fetch it first: git fetch origin main") from exc
     unnamed = [k for k in (*route_gaps, *site_gaps) if k not in gap_entries]
     lines += ["## Coverage gaps", "",
               f"- Mutating routes reaching a write that no test made write: {len(route_gaps)}; write sites "
               f"(by file, function and call) no request write passed through: {len(site_gaps)}.",
-              f"- Accepted (mutation_coverage_gaps.json): {len(gap_entries)}; named by no entry: {len(unnamed)}.", "",
+              f"- Accepted (mutation_coverage_gaps.json): {len(gap_entries)}; named by no entry: {len(unnamed)}; "
+              f"compared with the list at {base}" + ("." if base_entries is not None else ", which has none yet."), "",
               "### Named by no entry", "", "| App | Route | Source | Class |", "|---|---|---|---|"]
     lines += [route_gaps[k][1] for k in unnamed if k[0] == "route"]
     lines += ["", "| Site | Count | Lines |", "|---|---|---|"]
@@ -343,6 +354,8 @@ def report(folders, out, coverage_path=None, baseline=mutation_baseline.PATH, ga
             status = "stale: covered"
         else:
             status = "stale: no such gap"
+        if base_entries is not None and k not in base_entries:
+            status = f"not in the list at {base}"
         gap_failing += status != "matched"
         lines.append(f"| {k[0]} | {k[1]} | {entry['class']} | {status} |")
     lines.append("")
@@ -364,8 +377,10 @@ def main(argv=None) -> int:
     parser.add_argument("--coverage", help="a coverage.py JSON report of the same run, with branches")
     parser.add_argument("--baseline", default=mutation_baseline.PATH, help="the accepted findings")
     parser.add_argument("--gaps", default=mutation_baseline.GAPS_PATH, help="the accepted coverage gaps")
+    parser.add_argument("--base", default=mutation_baseline.GAPS_BASE,
+                        help="the git ref whose coverage gaps the accepted ones may only shrink")
     args = parser.parse_args(argv)
-    count = report(args.folders, args.out, args.coverage, args.baseline, args.gaps)
+    count = report(args.folders, args.out, args.coverage, args.baseline, args.gaps, args.base)
     return 1 if args.enforce and count else 0
 
 

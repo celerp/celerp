@@ -97,6 +97,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2  # the merge commit and the main it merges into, whose coverage gaps it may only shrink
 
       - uses: actions/setup-python@v7
         with:
@@ -112,11 +114,12 @@ jobs:
       # (scripts/mutation_census.py).
       # Fails on a write no baseline entry accepts, on an entry no finding matched or its own
       # test did not reproduce, and on a writer no test covers that mutation_coverage_gaps.json
-      # does not name, or an entry there that no longer matches its gap.
+      # does not name, or an entry there that no longer matches its gap or that main's copy
+      # does not hold.
       - name: Report
         run: |
           status=0
-          python scripts/mutation_census.py ${{ runner.temp }}/census/census-shard-* --out census.md --enforce || status=$?
+          python scripts/mutation_census.py ${{ runner.temp }}/census/census-shard-* --out census.md --base HEAD^1 --enforce || status=$?
           head -c 1000000 census.md >> "$GITHUB_STEP_SUMMARY"
           exit $status
 
