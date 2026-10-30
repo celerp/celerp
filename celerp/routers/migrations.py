@@ -275,11 +275,14 @@ async def _start_errors(session: AsyncSession) -> AsyncIterator[None]:
         raise HTTPException(status_code=500, detail=t("migration.err_start_failed")) from None
 
 
-async def _claim(session: AsyncSession, run_id: uuid.UUID, scan_token: str, *, awaiting: bool) -> None:
+async def _claim(session: AsyncSession, run_id: uuid.UUID, user_id: uuid.UUID, scan_token: str, *,
+                 awaiting: bool) -> None:
     """Start, phase two, after phase one committed: move the source into the run and start
     it, or, while it waits for its modules, restart Celerp to load them; startup then
-    starts the same run. Only the call that started the run schedules the runner."""
+    starts the same run. Only the call that started the run schedules the runner. The
+    request acts for the run's company, so a creator who no longer controls it is refused."""
     async with _start_errors(session):
+        await migrations.get_owned_migration_run(session, run_id, user_id)
         started = await migrations.claim_source(session, run_id, token=scan_token, start=not awaiting)
     if started:
         migrations.schedule_run(run_id)
@@ -370,7 +373,7 @@ async def bootstrap_start(payload: BootstrapStartIn, session: AsyncSession = Dep
             await asyncio.to_thread(bootstrap.clear_setup_code)
         except Exception:
             logger.warning("Setup-code cleanup failed after bootstrap migration start", exc_info=True)
-    await _claim(session, run_id, payload.scan_token, awaiting=awaiting)
+    await _claim(session, run_id, user.id, payload.scan_token, awaiting=awaiting)
     return {**tokens, "run_id": str(run_id), "preparing": awaiting}
 
 
@@ -432,7 +435,7 @@ async def start_from_scan(payload: StartFromScanIn, response: Response, ctx: Aut
             raise migrations.MigrationError(409, t(migrations.SCAN_ALREADY_STARTED))
         run_id = run.id
         await session.commit()
-    await _claim(session, run_id, payload.scan_token, awaiting=awaiting)
+    await _claim(session, run_id, ctx.user.id, payload.scan_token, awaiting=awaiting)
     return {"run_id": str(run_id), "preparing": awaiting}
 
 
@@ -503,7 +506,7 @@ async def start_company_start(request: Request, payload: StartCompanyStartIn,
                            awaiting=awaiting)
         run_id = run.id
         tokens = await issue_token_pair(session, user=user, company_id=run.company_id, expected_snonce=None)
-    await _claim(session, run_id, payload.scan_token, awaiting=awaiting)
+    await _claim(session, run_id, user.id, payload.scan_token, awaiting=awaiting)
     return {**tokens, "run_id": str(run_id), "preparing": awaiting}
 
 

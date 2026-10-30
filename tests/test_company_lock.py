@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: BUSL-1.1
 
 """Company settings are one JSON value, so every change to them is made on a company
-loaded with locked_company() in the same transaction."""
+loaded with locked_company() in the same transaction. A lock is proved held only when the
+company row was there to lock."""
 
 from __future__ import annotations
 
@@ -12,7 +13,9 @@ import pytest
 from sqlalchemy.orm.attributes import flag_modified
 
 from celerp.models.company import Company
-from celerp.services.company_lock import locked_company
+from celerp.services.company_lock import (
+    holds_company_lock, lock_company, lock_company_for_deletion, locked_company, noted,
+)
 
 pytestmark = pytest.mark.asyncio
 
@@ -78,4 +81,27 @@ async def test_numbering_without_the_lock_is_refused(session):
     next_doc_ref(company, "invoice")
     with pytest.raises(RuntimeError, match="locked_company"):
         await session.flush()
+    await session.rollback()
+
+
+async def test_locking_a_company_that_is_not_there_proves_no_lock(session):
+    missing = uuid.uuid4()
+    assert await lock_company(session, missing) is False
+    assert holds_company_lock(session, missing) is False
+    await session.rollback()
+
+
+async def test_locking_a_company_that_is_there_proves_the_lock(session):
+    company_id = await _company(session)
+    assert await lock_company(session, company_id) is True
+    assert holds_company_lock(session, company_id) is True
+    await session.rollback()
+
+
+async def test_locking_for_deletion_proves_only_a_company_that_is_there(session):
+    company_id = await _company(session)
+    missing = uuid.uuid4()
+    assert await lock_company_for_deletion(session, missing) is False
+    assert await lock_company_for_deletion(session, company_id) is True
+    assert noted(session, "deleting") == [company_id]
     await session.rollback()

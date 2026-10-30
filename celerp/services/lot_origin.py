@@ -1589,7 +1589,7 @@ async def _move_events(session: AsyncSession, company_id, move_id: str) -> list[
     """The lot events of move ``move_id``, one per lot it moved."""
     rows = (await session.execute(select(LedgerEntry).where(
         LedgerEntry.company_id == company_id, LedgerEntry.event_type == MOVED,
-        LedgerEntry.idempotency_key.like(f"lot-move:{move_id}:%")).order_by(LedgerEntry.id))).scalars()
+        LedgerEntry.idempotency_key.startswith(f"lot-move:{move_id}:", autoescape=True)).order_by(LedgerEntry.id))).scalars()
     return [r for r in rows if (r.metadata_ or {}).get("move") == move_id]
 
 

@@ -23,6 +23,8 @@ from celerp.models.connector_config import ConnectorConfig, OutboundQueue
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 
+pytestmark = pytest.mark.usefixtures("connector_modules_running")
+
 API = "https://relay.test/connectors/xero/api"
 DOC_ID = "doc:inv-1"
 CONTACT = "contact-1"

@@ -195,6 +195,7 @@ async def test_a_rebuild_replays_a_recorded_second_creation(committed_engine, ra
     """History written before second creations were refused still replays exactly."""
     from celerp.models.ledger import LedgerEntry
     from celerp.projections.engine import ProjectionEngine
+    from celerp.services.company_lock import lock_company
 
     cid, _ = await _company(committed_engine)
     lot = f"item:{uuid.uuid4()}"
@@ -206,6 +207,7 @@ async def test_a_rebuild_replays_a_recorded_second_creation(committed_engine, ra
                               idempotency_key=f"legacy:{lot}:{n}", metadata_={}))
         await s.commit()
     async with maker(committed_engine)() as s:
+        await lock_company(s, cid)
         await ProjectionEngine.rebuild(s, cid)
         await s.commit()
 

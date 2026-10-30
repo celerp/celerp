@@ -773,7 +773,7 @@ async def test_invoice_status_cards_include_proforma(client, session):
         "awaiting_payment_count": 7,
         "overdue_count": 0,
     }
-    html = str(_doc_status_cards([], "", summary, "USD", doc_type="invoice", lang="en"))
+    html = str(_doc_status_cards(summary, "invoice", currency="USD", lang="en"))
     assert "Pro" in html or "pro" in html.lower(), "Pro-forma card missing from invoice status cards"
     assert "All Issued" in html or "all_issued" in html.lower(), "All Issued card missing from invoice status cards"
 

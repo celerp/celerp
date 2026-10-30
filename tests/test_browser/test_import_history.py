@@ -19,9 +19,12 @@ _ITEMS_CSV = (
 
 @pytest.fixture(scope="module")
 def import_location(api):
-    """Ensure a location named 'Default' exists for import tests."""
-    r = api.post("/companies/me/locations", json={"name": "Default", "type": "warehouse"})
-    assert r.status_code in {200, 201, 409}, f"Failed to create location: {r.text}"
+    """Ensure a location named 'Default' exists for import tests. An import of
+    _ITEMS_CSV that ran first has already made it."""
+    names = {loc["name"] for loc in api.get("/companies/me/locations").json()["items"]}
+    if "Default" not in names:
+        r = api.post("/companies/me/locations", json={"name": "Default", "type": "warehouse"})
+        assert r.status_code == 200, f"Failed to create location: {r.text}"
 
 
 @pytest.fixture

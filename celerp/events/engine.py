@@ -541,13 +541,24 @@ async def emit_event(
     if _backup_active():
         raise HTTPException(status_code=503, detail=t("error.backup_running"))
 
+    # Work inside a module writes only while its company still uses that module.
+    from celerp.services.company_lock import judge_module_writes
+    await judge_module_writes(session, kwargs["company_id"])
+
     schema = EVENT_SCHEMA_MAP.get(kwargs["event_type"])
     if schema is None:
         raise ValueError(f"Unknown event_type: {kwargs['event_type']}")
 
     # A list's write carries the totals it gives the list, whichever path writes it, so a
     # replay (backup restore, rebuild) gives the list the totals it was saved with.
+    # Only Documents gives a list its totals, so a list is written only while the company uses it
+    # and this process has started it.
     if kwargs["event_type"] in LIST_TOTALLED_EVENTS:
+        from celerp.models.company import Company
+        from celerp.modules.boundary import require_on
+
+        row = (await session.execute(select(Company.settings).where(Company.id == kwargs["company_id"]))).first()
+        require_on(None if row is None else dict(row[0] or {}), "celerp-docs")
         from celerp_docs.doc_projections import with_list_totals
 
         stored = None
@@ -665,9 +676,12 @@ async def emit_event(
         await _refuse_stripe_payment_removal(session, kwargs)
 
     if kwargs.get("event_type") in {"shop.sync.enabled", "shop.sync.disabled"}:
-        from celerp.connectors.ownership import lock_connector_key
+        from celerp.connectors.ownership import holds_connector_fence
 
-        await lock_connector_key(session, "shopify")
+        # Opting an item in or out races a Shopify connect or disconnect unless the
+        # caller holds the Shopify fence, which ranks before the company lock.
+        if not holds_connector_fence(session, "shopify"):
+            raise RuntimeError(f"{kwargs['event_type']} needs the Shopify connector fence held first")
 
     # Physical codes (barcode, RFID / EPC) are unique per company among the codes a write
     # INTRODUCES: the item's code set after the event is compared with its set before, so

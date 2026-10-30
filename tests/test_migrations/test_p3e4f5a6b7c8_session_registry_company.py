@@ -122,11 +122,11 @@ async def _sign_in_before_the_upgrade(engine, user_id, company_id, role: str) ->
     its session registered the way that release registered it."""
     from celerp.credentials import create_access_token, create_refresh_token
     from celerp.services.auth import validate_access_token
-    from celerp.services.session_tracker import get_nonce
+    from celerp.services.session_tracker import lock_auth_state
     from migration_support import maker
 
     async with maker(engine)() as s:
-        snonce = await get_nonce(s, str(user_id))
+        snonce = (await lock_auth_state(s, str(user_id))).nonce
         access, jti = create_access_token(str(user_id), str(company_id), role, snonce=snonce)
         await s.execute(text("INSERT INTO session_registry (jti, user_id, expiry) VALUES (:j, :u, :e)"),
                         {"j": jti, "u": user_id, "e": _later()})

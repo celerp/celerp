@@ -4,7 +4,10 @@
 supporter card). Pure render — no server."""
 from __future__ import annotations
 
+import httpx
 from fasthtml.common import to_xml
+
+from test_helpers import make_test_token
 
 from ui.components.shell import _topbar, base_shell, star_supporter_card
 
@@ -61,3 +64,41 @@ def test_supporter_card_component():
 
 def test_card_asks_for_the_dashboard_copy():
     assert "/stars/cta?medium=dashboard" in to_xml(star_supporter_card())
+
+
+class _SaidBadge:
+    """Stands in for the API client: records what the claim posts and answers with a badge."""
+
+    def __init__(self):
+        self.posted = []
+
+    def __call__(self, *args, **kwargs):
+        return self
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def post(self, path, json=None):
+        self.posted.append((path, json))
+        return httpx.Response(200, json={"badge": {"label": "Supporter <1>"}})
+
+
+async def test_a_returned_credential_is_saved_only_when_the_user_confirms(monkeypatch):
+    """The relay returns by a GET carrying the credential; that GET asks, the POST saves."""
+    from ui.app import app as ui_app
+    import ui.routes.stars as stars
+
+    said = _SaidBadge()
+    monkeypatch.setattr(stars.api, "_local_client", said)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=ui_app), base_url="http://ui",
+                                 follow_redirects=False, cookies={"celerp_token": make_test_token()}) as c:
+        r = await c.get("/stars/claim", params={"cred": "a'b<c"})
+        assert r.status_code == 200 and said.posted == []
+        assert "method='post' action='/stars/claim'" in r.text
+        assert "value='a&#x27;b&lt;c'" in r.text
+        r = await c.post("/stars/claim", data={"cred": "a'b<c"})
+    assert said.posted == [("/stars/badge", {"cred": "a'b<c"})]
+    assert r.status_code == 200 and "Supporter &lt;1&gt;" in r.text

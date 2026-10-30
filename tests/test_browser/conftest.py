@@ -13,6 +13,7 @@ Skip from default suite: pytest -m "not browser"
 from __future__ import annotations
 
 import os
+import re
 import socket
 import threading
 import time
@@ -172,7 +173,7 @@ _API_LIMITS = httpx.Limits(keepalive_expiry=3.0)
 def seeded_user(api_server):
     """
     Register an admin user + seed a company via the API.
-    Returns {"email": str, "password": str, "access_token": str}.
+    Returns {"email": str, "password": str, "access_token": str, "refresh_token": str}.
     """
     with httpx.Client(base_url=api_server, timeout=10, limits=_API_LIMITS) as client:
         # Bootstrap the app first (creates DB tables)
@@ -194,12 +195,12 @@ def seeded_user(api_server):
             })
         assert r.status_code == 200, f"Auth failed: {r.text}"
         data = r.json()
-        access_token = data["access_token"]
 
     return {
         "email": _TEST_EMAIL,
         "password": _TEST_PASSWORD,
-        "access_token": access_token,
+        "access_token": data["access_token"],
+        "refresh_token": data["refresh_token"],
     }
 
 
@@ -307,12 +308,38 @@ def pytest_runtest_makereport(item, call):
 
 # ── API helper (for seeding in tests) ────────────────────────────────────────
 
+class _RenewingAuth(httpx.Auth):
+    """Renews the client's sign-in once when the API answers 401, as the UI does: an
+    access token lives minutes and a worker's run outlives it. The renewed token goes
+    on the client's own Authorization header, which tests read."""
+
+    def __init__(self, refresh_token: str) -> None:
+        self.refresh_token = refresh_token
+        self.client: httpx.Client | None = None
+
+    def auth_flow(self, request):
+        response = yield request
+        if response.status_code != 401 or self.client is None:
+            return
+        renewed = yield httpx.Request("POST", request.url.copy_with(path="/auth/token/refresh", query=None),
+                                      json={"refresh_token": self.refresh_token})
+        if renewed.status_code != 200:
+            return
+        renewed.read()
+        pair = renewed.json()
+        self.refresh_token = pair["refresh_token"]
+        self.client.headers["Authorization"] = request.headers["Authorization"] = f"Bearer {pair['access_token']}"
+        yield request
+
+
 @pytest.fixture(scope="session")
 def api(api_server, seeded_user):
-    """Synchronous httpx client pre-authed against the API."""
+    """Synchronous httpx client signed in to the API, renewing its sign-in when it lapses."""
+    auth = _RenewingAuth(seeded_user["refresh_token"])
     headers = {"Authorization": f"Bearer {seeded_user['access_token']}"}
-    with httpx.Client(base_url=api_server, headers=headers, timeout=10,
+    with httpx.Client(base_url=api_server, headers=headers, auth=auth, timeout=10,
                       limits=_API_LIMITS) as client:
+        auth.client = client
         yield client
 
 
@@ -333,6 +360,21 @@ def clear_session_registry() -> None:
     with conn.cursor() as cur:
         cur.execute("DELETE FROM session_registry;")
     conn.close()
+
+
+def css_class(name: str) -> re.Pattern:
+    """A class attribute holding *name* as one whole class, for expect(...).to_have_class.
+    The expect retries until it holds; a class read once can see the element mid-swap,
+    while htmx still holds its settling classes."""
+    return re.compile(rf"(^|\s){re.escape(name)}(\s|$)")
+
+
+def release_held_routes(page, glob: str, held: list) -> None:
+    """Aborts the requests a test held with page.route(glob, held.append), then removes
+    the route. Unrouting first would send every held request on to the server."""
+    for route in held:
+        route.abort()
+    page.unroute(glob)
 
 
 def wait_for_landing(page, timeout: float = 30000) -> str:
@@ -418,3 +460,19 @@ def _reset_event_loop_after_playwright():
     # All browser tests finished. Install a new loop so pytest-asyncio can
     # create its own runner for any tests that follow.
     asyncio.get_event_loop_policy().set_event_loop(asyncio.new_event_loop())
+
+
+@pytest.fixture(scope="module")
+def install():
+    """A new install for this test module, on its own database and ports (fresh_install)."""
+    from .fresh_install import new_install
+
+    with new_install() as fresh:
+        yield fresh
+
+
+@pytest.fixture
+def fresh(install):
+    """The module's new install with no owner yet."""
+    install.ensure_new()
+    return install

@@ -15,6 +15,8 @@ import httpx
 import pytest
 from playwright.sync_api import Page, expect
 
+from .conftest import css_class
+
 pytestmark = pytest.mark.browser
 
 _HINT_TEXT = json.loads((Path(__file__).parents[2] / "ui" / "locales" / "en.json").read_text())["shell.import_hint"]
@@ -72,7 +74,7 @@ def test_arrow_dismissed_by_click_and_esc(page: Page, fresh_company):
     expect(page.locator(".import-arrow")).to_be_visible()
     page.keyboard.press("Escape")
     expect(page.locator(".import-arrow")).to_have_count(0)
-    expect(page.locator("[data-import-hint]")).not_to_have_class("import-arrow-pulse")
+    expect(page.locator("[data-import-hint]")).not_to_have_class(css_class("import-arrow-pulse"))
 
     page.goto("/docs?hint=import")
     expect(page.locator(".import-arrow")).to_be_visible()

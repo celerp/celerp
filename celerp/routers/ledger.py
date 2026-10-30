@@ -15,8 +15,9 @@ from celerp.services.activity_redaction import (
 )
 from celerp.services.ledger_display import display_fields, entry_ts
 from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
+from celerp.services.company_lock import lock_company
 from ui.i18n import t
-from celerp.services.permissions import get_current_company_settings, require_permission
+from celerp.services.permissions import carry_authority, get_current_company_settings, require_permission
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -95,6 +96,7 @@ async def get_entry(entry_id: int, company_id: str = Depends(get_current_company
 async def rebuild(
     company_id: str = Depends(get_current_company_id),
     _: None = require_permission("manage_company_lifecycle"),
+    request_session: AsyncSession = Depends(get_session),
 ) -> dict:
     # A full rebuild deletes every projection for the company and replays the
     # whole ledger, which can exceed the request statement_timeout on a mature
@@ -103,6 +105,8 @@ async def rebuild(
     # is gated on the owner-only company-lifecycle permission so an ordinary
     # subuser cannot open concurrent full replays outside the request pool budget.
     async with get_lifecycle_session_ctx() as session:
+        carry_authority(request_session, session)
+        await lock_company(session, company_id)
         await ProjectionEngine.rebuild(session, company_id=company_id)
         await session.commit()
     return {"ok": True}

@@ -20,3 +20,8 @@ from __future__ import annotations
 # more connections than the pool holds for interactive work.
 REQUEST_DB_POOL_SIZE = 10
 REQUEST_DB_MAX_OVERFLOW = 5
+
+# How long turning a module off waits for the company's running work in that module to
+# finish (modules.boundary.settle_module_use). The UI's turn-off request waits longer than
+# this, so it always gets the outcome: turned off, or still busy.
+MODULE_SETTLE_SECONDS = 30.0

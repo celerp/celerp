@@ -438,7 +438,6 @@ async def test_canonical_sent_transition_can_participate_in_peer_transaction(mon
 
 
 @pytest.mark.asyncio
-@pytest.mark.usefixtures("docs_running")
 async def test_real_service_invoice_mirror_posts_once_in_second_company(client, session):
     from sqlalchemy import select, func
     from celerp.models.ledger import LedgerEntry

@@ -71,17 +71,13 @@ def held_runner(monkeypatch):
     from celerp.services import migrations
 
     release = threading.Event()
-    tasks: set[asyncio.Task] = set()
+    run = migrations.run_migration
 
-    def schedule(run_id):
-        async def later():
-            await asyncio.to_thread(release.wait, 120)
-            await migrations.run_migration(run_id)
-        task = asyncio.get_running_loop().create_task(later())
-        tasks.add(task)
-        task.add_done_callback(tasks.discard)
+    async def later(run_id):
+        await asyncio.to_thread(release.wait, 120)
+        await run(run_id)
 
-    monkeypatch.setattr(migrations, "schedule_run", schedule)
+    monkeypatch.setattr(migrations, "run_migration", later)
     yield release
     release.set()
 

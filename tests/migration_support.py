@@ -430,9 +430,8 @@ async def creator_run(session, run_id):
     return await migrations.get_owned_migration_run(session, run_id, creator)
 
 
-def posting_choices_from(readiness: list[dict]) -> dict:
-    """The posting accounts a user finishing a migration would pick, by the rule the
-    packaged smoke uses on a running copy (scripts/smoke_records.py)."""
+def smoke_records():
+    """The packaged smoke's script (scripts/smoke_records.py), which is not a package."""
     import importlib.util
     from pathlib import Path
 
@@ -440,7 +439,13 @@ def posting_choices_from(readiness: list[dict]) -> dict:
     spec = importlib.util.spec_from_file_location("smoke_records", path)
     smoke = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(smoke)
-    return smoke.posting_choices(readiness)
+    return smoke
+
+
+def posting_choices_from(readiness: list[dict]) -> dict:
+    """The posting accounts a user finishing a migration would pick, by the rule the
+    packaged smoke uses on a running copy."""
+    return smoke_records().posting_choices(readiness)
 
 
 async def finalize_run(session, run):

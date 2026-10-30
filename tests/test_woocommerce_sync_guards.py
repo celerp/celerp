@@ -99,7 +99,7 @@ def test_platform_identity_uses_the_platform_specific_variant_key():
 
 
 def test_detached_external_link_suppresses_legacy_identity_fallback():
-    from celerp_inventory.services import external_link_for_state
+    from celerp.connectors.product_links import external_link_for_state
 
     state = {
         "idempotency_key": "woocommerce:55",

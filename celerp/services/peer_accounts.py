@@ -491,13 +491,24 @@ def use_problem(other: dict, target: dict | None, code: str, books: str) -> str 
     return None
 
 
-async def held_item(session: AsyncSession, company_id: uuid.UUID, item_id) -> CompanyPeerAttention:
+async def _item_to_change(session: AsyncSession, company_id: uuid.UUID, item_id,
+                          closed: str) -> CompanyPeerAttention:
+    """The open item a request changes, read with the company under its lock as the
+    previous holder committed them, so two answers to one item never both apply."""
     try:
         key = uuid.UUID(str(item_id))
     except ValueError:
-        raise HTTPException(404, "This item is not open.") from None
-    item = await session.get(CompanyPeerAttention, key)
-    if item is None or item.company_id != company_id or not item.fix:
+        raise HTTPException(404, closed) from None
+    await locked_company(session, company_id)
+    item = await session.get(CompanyPeerAttention, key, populate_existing=True)
+    if item is None or item.company_id != company_id:
+        raise HTTPException(404, closed)
+    return item
+
+
+async def held_item(session: AsyncSession, company_id: uuid.UUID, item_id) -> CompanyPeerAttention:
+    item = await _item_to_change(session, company_id, item_id, "This item is not open.")
+    if not item.fix:
         raise HTTPException(404, "This item is not open.")
     return item
 
@@ -565,12 +576,8 @@ async def added(session: AsyncSession, company_id: uuid.UUID) -> list[dict]:
 
 
 async def added_item(session: AsyncSession, company_id: uuid.UUID, item_id) -> CompanyPeerAttention:
-    try:
-        key = uuid.UUID(str(item_id))
-    except ValueError:
-        raise HTTPException(404, "This notice is closed.") from None
-    item = await session.get(CompanyPeerAttention, key)
-    if item is None or item.company_id != company_id or item.kind != peer_attention.ADDED:
+    item = await _item_to_change(session, company_id, item_id, "This notice is closed.")
+    if item.kind != peer_attention.ADDED:
         raise HTTPException(404, "This notice is closed.")
     return item
 
@@ -678,6 +685,7 @@ async def answer_review(session: AsyncSession, company_id: uuid.UUID, source_com
     """Link or add each reviewed account; ``finish`` ends the review, after which the
     client's accounts are placed as any connected company's are, and each record that
     waited for it says it is fixed until the next sync places it."""
+    await locked_company(session, company_id)
     pending = {row["id"]: row for c in await review(session, company_id)
                if c["source_company_id"] == str(source_company_id) for row in c["accounts"]}
     waited = [item for item in await peer_attention.open_items(session, [company_id])

@@ -23,6 +23,7 @@ from sqlalchemy import func, select
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.projections.engine import ProjectionEngine
+from celerp.services.company_lock import lock_company
 from celerp.services import auto_je
 from celerp.services.company_lock import locked_company
 from test_money_boundary import _bill, _company, _item
@@ -199,6 +200,7 @@ async def test_rebuilding_the_books_later_keeps_the_entry_date(session, client, 
     await session.commit()
     later = datetime(2026, 10, 9, 5, 0, tzinfo=timezone.utc)
     _clock(monkeypatch, later, later.date())
+    await lock_company(session, auth["company_id"])
     await ProjectionEngine.rebuild(session, auth["company_id"])
     await session.commit()
     assert (await _entry(session, auth, je_id))["ts"] == "2026-10-02"

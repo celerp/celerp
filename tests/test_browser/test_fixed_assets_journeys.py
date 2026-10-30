@@ -10,6 +10,7 @@ import io
 import os
 import re
 import threading
+import time
 import uuid
 from datetime import date, timedelta
 from pathlib import Path
@@ -21,6 +22,8 @@ from PIL import Image
 from playwright.sync_api import Page, expect
 
 from celerp.accounting_roles import SEEDED_TARGETS
+
+from .conftest import css_class
 
 pytestmark = pytest.mark.browser
 
@@ -453,6 +456,17 @@ def _edges(page: Page, table: str) -> tuple[float, float]:
     return strip(2), strip(width - 5)
 
 
+def _painted(page: Page, table: str, shown) -> tuple[float, ...]:
+    """The table's edges once *shown* accepts them, else as they are after five seconds. A
+    loaded machine can paint the shade a frame or more after the class that draws it is set."""
+    end = time.monotonic() + 5
+    while True:
+        edges = _edges(page, table)
+        if shown(*edges) or time.monotonic() > end:
+            return edges
+        page.wait_for_timeout(100)
+
+
 def test_u50_a_table_wider_than_a_phone_shades_where_more_columns_wait(page: Page, fresh_company):
     c = fresh_company
     _started(c)
@@ -461,7 +475,8 @@ def test_u50_a_table_wider_than_a_phone_shades_where_more_columns_wait(page: Pag
     # Wide enough for every column, the register is unshaded.
     page.set_viewport_size({"width": 1600, "height": 900})
     page.goto("/fixed-assets")
-    assert page.locator(table).evaluate("t => t.parentElement.className").find("scroll-more") < 0
+    expect(page.locator(table).locator("xpath=..")).not_to_have_class(css_class("scroll-more-left"))
+    expect(page.locator(table).locator("xpath=..")).not_to_have_class(css_class("scroll-more-right"))
     # Narrower, it scrolls in its own box and the page itself never scrolls sideways.
     page.set_viewport_size({"width": 1280, "height": 900})
     assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
@@ -471,13 +486,13 @@ def test_u50_a_table_wider_than_a_phone_shades_where_more_columns_wait(page: Pag
     # More columns wait to the right: the right edge is visibly darker than the left.
     page.wait_for_function("t => document.querySelector(t).parentElement.classList.contains('scroll-more-right')",
                            arg=table, timeout=5000)
-    left, right = _edges(page, table)
+    left, right = _painted(page, table, lambda l, r: r < l - 30)
     assert right < left - 30, (left, right)
     # Scrolled to the end, the shade moves to the left edge, where the first columns now wait.
     box.evaluate("b => { b.scrollLeft = b.scrollWidth; }")
     page.wait_for_function("t => !document.querySelector(t).parentElement.classList.contains('scroll-more-right')",
                            arg=table, timeout=5000)
-    left_end, right_end = _edges(page, table)
+    left_end, right_end = _painted(page, table, lambda l, r: l < r - 30 and r > right + 30)
     assert left_end < right_end - 30 and right_end > right + 30, (left, right, left_end, right_end)
 
 

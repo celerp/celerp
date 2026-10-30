@@ -4,7 +4,7 @@
 """Tests for scalability implementation: Steps 1-6.
 
 Coverage:
-- session_tracker: register_token, active_user_ids, get_nonce auto-create,
+- session_tracker: register_token, active_user_ids, get_nonce reads the issued nonce,
   clear, expired JTIs excluded from active set
 - runtime_state: get_runtime_state defaults, set_draining, is_draining
 - DrainMiddleware: write blocked, read allowed, bypass paths, fail-open
@@ -136,8 +136,10 @@ class TestSessionTracker:
         assert user_id in active2, "Live JTI must appear in active_user_ids"
 
     @pytest.mark.asyncio
-    async def test_get_nonce_auto_creates(self, session, client):
-        """get_nonce creates a user_auth_state row on first call for a new user."""
+    async def test_get_nonce_reads_the_issued_nonce(self, session, client):
+        """get_nonce reads the nonce issuance stored, and creates no row for a user without one."""
+        from celerp.models.auth import UserAuthState
+        from celerp.models.company import User
         from celerp.services.session_tracker import clear, get_nonce, invalidate_sessions
 
         # Register a real user
@@ -148,15 +150,21 @@ class TestSessionTracker:
         assert r.status_code == 200
         import base64, json as _json
         token = r.json()["access_token"]
-        user_id = _json.loads(base64.b64decode(token.split(".")[1] + "=="))["sub"]
+        claims = _json.loads(base64.b64decode(token.split(".")[1] + "=="))
+        user_id = claims["sub"]
 
-        # Call get_nonce - must return a non-empty string (auto-creates row)
         nonce1 = await get_nonce(session, user_id)
-        assert nonce1, "get_nonce must return a non-empty nonce"
+        assert nonce1 == claims["snonce"], "get_nonce must return the nonce the token was issued with"
 
         # Second call returns same nonce (idempotent)
         nonce2 = await get_nonce(session, user_id)
         assert nonce1 == nonce2, "get_nonce must be stable"
+
+        bare = User(id=uuid.uuid4(), email="bare-nonce@test.com", name="Bare", is_active=True)
+        session.add(bare)
+        await session.commit()
+        assert await get_nonce(session, str(bare.id)) == ""
+        assert await session.get(UserAuthState, bare.id) is None, "a read creates no auth state"
 
         # invalidate_sessions rotates the nonce
         await invalidate_sessions(session, user_id)
@@ -307,11 +315,12 @@ class TestDrainMiddleware:
         transaction so this completes.
         """
         from celerp.services.runtime_state import (
-            get_runtime_state, _drain_cache_bust, _SINGLETON_ID)
+            _get_or_create, _drain_cache_bust, _SINGLETON_ID)
         from celerp.models.auth import SystemRuntimeState
 
-        # Request session (connection A) creates + holds the singleton uncommitted.
-        await get_runtime_state(session)
+        # Request session (connection A) creates + holds the singleton uncommitted, as a
+        # drain change does before it commits.
+        await _get_or_create(session)
         assert await session.get(SystemRuntimeState, _SINGLETON_ID) is not None
         # Force the next write's is_draining to hit the DB rather than the 1s cache
         # - the exact window the CI flake needs.
