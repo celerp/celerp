@@ -5813,6 +5813,8 @@ async def _freight_since_receipt(session: AsyncSession, company_id, doc_id: str,
                 key := _reversal_key(e.event_type, e.data, e.meta)) is not None:
             netted[key] = netted.get(key, 0.0) + moved_of(e)
     now: dict[str, dict] = {}
+    carved = {e.lot: str(e.data.get("parent_id") or "") for e in entries
+              if e.event_type == "item.split_from" and e.source == "fulfill_split"}
     seen: set[tuple[str, str]] = set()
     pending: list[tuple[str, float]] = []  # parts split off and not yet off the lot they left
     own_done = 0.0
@@ -5840,18 +5842,26 @@ async def _freight_since_receipt(session: AsyncSession, company_id, doc_id: str,
             line = line if line in freight.lines else None
             line_before = line_done.get(line, 0.0)
             others = [x for x, h in family_of.items() if h.with_receipt and x != e.lot and _held(now.get(x)) > 0]
+            # A part carved off a lot to go back carries only what the bill charged for it
+            # (_freight_sent_back); the rest stays on the lot it was carved from. A lot that
+            # goes back whole gives up all it carries.
+            carved_from = carved.get(e.lot)
             for k in kinds:
                 own = pools.get(e.lot, {}).get(k, Decimal(0))
                 held = {x: pools.get(x, {}).get(k, Decimal(0)) for x in others}
                 take = freight.sent_back(k, own + sum(held.values(), Decimal(0)), units, own_done, line,
                                          line_before, currency)
-                gives = own if _held(e.after) <= 1e-12 else min(take, own)
+                emptied = _held(e.after) <= 1e-12
+                gives = own if emptied and not carved_from else min(take, own)
                 if gives:
                     pools[e.lot][k] = own - gives
                 rest = [x for x in others if held[x] > 0]
                 for x, given in zip(rest, allocate_pro_rata(take - gives, [held[x] for x in rest], currency)
                                     if take > gives and rest else []):
                     pools[x][k] -= given
+                if emptied and carved_from and own > gives:
+                    pools[e.lot][k] = Decimal(0)
+                    pools.setdefault(carved_from, {})[k] = pools.get(carved_from, {}).get(k, Decimal(0)) + own - gives
                 back[k] += max(take, gives)
                 sent.setdefault(e.lot, {})[k] = sent.get(e.lot, {}).get(k, Decimal(0)) + max(take, gives)
             own_done += units
