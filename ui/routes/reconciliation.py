@@ -615,6 +615,14 @@ async def _fresh_workspace(token: str, session_id: str, notice: str | None = Non
 
 # ── CSV import helpers ────────────────────────────────────────────────────────
 
+def _page_flashes(request: Request) -> tuple:
+    """What the page was sent back with: ``msg`` is a refusal, ``done`` an action that
+    went through."""
+    msg = request.query_params.get("msg", "").strip()
+    done = request.query_params.get("done", "").strip()
+    return (flash(msg) if msg else None, flash(done, "success") if done else None)
+
+
 def _workspace_redirect(session_id: str, msg: str = "") -> Response:
     """204 + HX-Redirect back to the workspace so htmx navigates the browser
     instead of swapping a full page into #recon-workspace. The message is
@@ -821,9 +829,8 @@ def setup_routes(app):
               "color": color} for s, color in _SESSION_STATUSES.items()],
             base, status or None)
         shown = [i for i in items if not status or i["status"] == status]
-        msg = request.query_params.get("msg", "").strip()
         return await base_shell(
-            flash(msg) if msg else None,
+            *_page_flashes(request),
             page_header(f"{t('recon.history')}: {bank.get('bank_name', '')}",
                         A(t("btn.back"), href="/settings/accounting?tab=bank-accounts", cls="btn btn--secondary"),
                         reconcile),
@@ -850,14 +857,15 @@ def setup_routes(app):
         try:
             bank = await api.get_bank_account(token, bank_id)
             base = bank.get("relabel_to")
-            msg = t("recon.relabel_done", currency=bank["currency"], base=base) if base else ""
             if base:
                 await api.patch_bank_account(token, bank_id, {"currency": base})
+                done = t("recon.relabel_done", currency=bank["currency"], base=base)
+                return RedirectResponse(back + "?done=" + quote(done, safe=""), status_code=303)
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
-            msg = str(e.detail)
-        return RedirectResponse(back + ("?msg=" + quote(msg, safe="") if msg else ""), status_code=303)
+            return RedirectResponse(back + "?msg=" + quote(str(e.detail), safe=""), status_code=303)
+        return RedirectResponse(back, status_code=303)
 
     @app.get("/accounting/reconcile/{session_id}")
     async def reconcile_workspace(request: Request, session_id: str):
@@ -878,10 +886,9 @@ def setup_routes(app):
                 status_code=302,
             )
 
-        msg = request.query_params.get("msg", "").strip()
         workspace = _workspace_view(session_id, recon, bank, lines, book_entries, bank["currency"])
         return await base_shell(
-            flash(msg) if msg else None,
+            *_page_flashes(request),
             workspace,
             title=page_title("recon.workspace_title"),
             nav_active="accounting",

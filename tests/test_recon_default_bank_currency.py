@@ -9,6 +9,7 @@ import uuid
 
 import pytest
 
+from ui.i18n import t
 from test_reconciliation_history import legacy_deposit, admin, deposit, start
 
 pytestmark = pytest.mark.asyncio
@@ -91,8 +92,11 @@ async def test_mislabelled_bank_is_corrected_from_the_notice_and_its_reconciliat
         for page in (f"/accounting/reconcile/{sid}", f"/accounting/reconcile/history/{b['id']}"):
             assert action in (await ui.get(page)).text, page
         r = await ui.post(f"/accounting/reconcile/relabel/{b['id']}", data={"next": f"/accounting/reconcile/{sid}"})
-        assert r.status_code == 303 and r.headers["location"].startswith(f"/accounting/reconcile/{sid}?msg="), r.headers
-        assert action not in (await ui.get(r.headers["location"])).text
+        assert r.status_code == 303 and r.headers["location"].startswith(f"/accounting/reconcile/{sid}?done="), r.headers
+        page = (await ui.get(r.headers["location"])).text
+        assert action not in page
+        # The correction went through, so it reads as done, not as a refusal.
+        assert "flash flash--success" in page and t("recon.relabel_done", currency="THB", base="USD") in page
 
     assert (await client.get(f"/accounting/bank-accounts/{b['id']}", headers=h)).json()["currency"] == "USD"
     items = {i["id"]: i for i in (await client.get(
