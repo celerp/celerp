@@ -2854,11 +2854,11 @@ function celerpPrintLabel(entityId, templateId) {
                 # get_item returns a flatten_item result: attribute fields are already
                 # promoted to top level, so old_item.get(field) is always authoritative.
                 old_item = await api.get_item(token, entity_id)
-                if field == "cost_price":
+                if field in COST_ITEM_KEYS:
                     # The unit cost shown is the lot's value per unit, landed cost included.
                     try:
                         change = cost_written_back(old_item, float(value), dp=currency_dp(await _company_currency(token)),
-                                                   per_unit=True, confirm=True)
+                                                   per_unit=field == "cost_price", confirm=True)
                     except CostTotalBelowLanded as exc:
                         return await _refused_cell(request, entity_id, field, refusal_text(exc.detail), str(form.get("value", "")))
                     if change:
@@ -3922,7 +3922,8 @@ function celerpPrintLabel(entityId, templateId) {
         if can_see_cost:
             child_cells.append(
                 Td(
-                    Input(type="number", name="child_cost_total", value=fmt(parent_cost_total) if parent_cost_known else "", step="0.01",
+                    Input(type="number", name="child_cost_total", step="any",
+                          value=fmt(parent_cost_total, currency_dp(company.get("currency") or "USD")) if parent_cost_known else "",
                           cls="form-input form-input--xs sp-input",
                           oninput="transformCostManualEdit(this)"),
                     cls="sp-td sp-td--num",
@@ -4003,6 +4004,17 @@ function celerpPrintLabel(entityId, templateId) {
             child_cost_total = float(str(cost_raw).strip()) if cost_present else None
         except ValueError:
             return Div(P(t("inventory.invalid_numeric_input"), cls="flash flash--warning"), id="bulk-action-result")
+        if child_cost_total is not None:
+            # The box opens on the parent's whole value as shown; sent back as shown it keeps
+            # the parent's cost and freight, read like every other cost door.
+            try:
+                if cost_written_back(await api.get_item(token, entity_id), child_cost_total,
+                                     dp=currency_dp(await _company_currency(token)), confirm=True) is None:
+                    child_cost_total = None
+            except CostTotalBelowLanded:
+                pass  # a cost below the parent's freight is the child's goods cost entire
+            except APIError as e:
+                return Div(P(str(e.detail), cls="flash flash--warning"), id="bulk-action-result")
 
         child_weight_raw = str(form.get("child_weight", "")).strip()
         child_pieces_raw = str(form.get("child_pieces", "")).strip()
@@ -7585,7 +7597,9 @@ def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency:
         actions = _row_actions(pl, editable)
         price_val = resolve_price(item, pl_name)
         unit_val = _fmt_rate(price_val, rdp) if price_val else ""
-        total_val = f"{price_val * qty:.2f}" if price_val and has_qty else ""
+        # An editable total is a door a value is written back through, so it shows the
+        # currency's precision, the one its save is compared at.
+        total_val = f"{price_val * qty:.{cdp}f}" if price_val and has_qty else ""
         if not editable:
             # Read-only display: recipe-managed cost (edited on the Manufacturing tab)
             # or a derived price list (computed from the base price list). The value spans
@@ -7605,7 +7619,7 @@ def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency:
                  "hx_include": "this", "hx_swap": "none"}
         unit_input = Input(type="number", name=conventional_key, id=unit_id, value=unit_val,
                            step="any", min="0", placeholder="--", cls="form-input",
-                           oninput=f"syncPricingTotal('{unit_id}','{total_id}',{qty})",
+                           oninput=f"syncPricingTotal('{unit_id}','{total_id}',{qty},{cdp})",
                            onkeydown=enter_commits, **_save)
         if conventional_key == "cost_price":
             # The cost total saves as the total typed (the lot's whole value), not as a unit
@@ -7616,7 +7630,7 @@ def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency:
             # Editing the total back-fills the unit, then re-fires its autosave.
             total_save = {"onchange": f"document.getElementById('{unit_id}').dispatchEvent(new Event('change'))"}
             carried = ()
-        total_input = Input(type="number", id=total_id, value=total_val, step="0.01", min="0",
+        total_input = Input(type="number", id=total_id, value=total_val, step="any", min="0",
                             placeholder="--", cls="form-input", disabled=not has_qty,
                             oninput=f"syncPricingUnit('{unit_id}','{total_id}',{qty},{cdp},{rdp})",
                             onkeydown=enter_commits, **total_save)
@@ -7678,10 +7692,10 @@ def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency:
     return Div(
         Script("""
 function roundTo(x, d) { var f = Math.pow(10, d); return Math.round((x + Number.EPSILON) * f) / f; }
-function syncPricingTotal(unitId, totalId, qty) {
+function syncPricingTotal(unitId, totalId, qty, cdp) {
   var u = parseFloat(document.getElementById(unitId).value);
   var tEl = document.getElementById(totalId);
-  if (tEl) tEl.value = (isNaN(u) || !qty) ? '' : (u * qty).toFixed(2);
+  if (tEl) tEl.value = (isNaN(u) || !qty) ? '' : (u * qty).toFixed(cdp);
 }
 function syncPricingUnit(unitId, totalId, qty, cdp, rdp) {
   if (!qty) return;

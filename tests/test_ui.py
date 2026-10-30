@@ -20721,8 +20721,10 @@ async def test_transform_handler_distinguishes_absent_from_zero_cost(ui_client):
     child_cost_total (a cost-restricted role's preview never renders the input), it
     sends None so the server preserves the parent cost; a permitted role's literal 0
     is a real value and is sent as 0.0. The old handler defaulted absence to 0, which
-    zeroed the child cost, so the absent-cost assertion is red at merge-base."""
+    zeroed the child cost, so the absent-cost assertion is red at merge-base. The parent
+    carries 40.00, so the 0 is a cost other than the one the page showed."""
     transform = AsyncMock(return_value={"child_sku": "C-1", "parent_sku": "P-1"})
+    parent = AsyncMock(return_value={"quantity": 5, "cost_total": 40.0})
     base = {
         "entity_id": "item:1",
         "child_sku": "C-1",
@@ -20731,7 +20733,8 @@ async def test_transform_handler_distinguishes_absent_from_zero_cost(ui_client):
         "child_qty": "5",
     }
     ui_client.cookies.update(_authed())
-    with patch("ui.api_client.transform_item", new=transform):
+    with patch("ui.api_client.transform_item", new=transform), patch("ui.api_client.get_item", new=parent), \
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"currency": "USD"})):
         r_absent = await ui_client.post("/api/items/bulk/transform", data=base)
         absent_payload = transform.await_args.args[2]
         r_zero = await ui_client.post(

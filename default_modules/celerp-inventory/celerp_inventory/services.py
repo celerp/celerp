@@ -240,7 +240,8 @@ def cost_written_back(state: dict, shown: float, *, dp: int, per_unit: bool = Fa
                       confirm: bool = False) -> dict | None:
     """The goods-cost change (``fields_changed`` of an item.updated) a cost the user wrote back
     means, or None when it changes nothing. Every door that takes a cost as it was shown or
-    exported (inventory cells, the Pricing tab, the item import) reads it here, never by itself.
+    exported (inventory cells, the Pricing tab, the transform page, the item import) reads it
+    here, never by itself.
 
     ``shown`` is the lot's whole value as shown, landed cost included: a total, or with
     ``per_unit`` that value per unit, either at the ``dp`` decimals the door shows or exports

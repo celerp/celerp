@@ -108,6 +108,13 @@ async def test_a_stocked_source_without_the_price_leaves_it_unset(client, sessio
     assert "retail_price" not in await _state(session, auth, m)
 
 
+async def test_a_price_held_under_its_list_name_or_its_key_is_one_price(client, session, auth):
+    a = await _item(client, auth, qty=1, attributes={"Retail": 10.0})
+    b = await _item(client, auth, qty=1, retail_price=12.0)
+    m = await _read(client, auth, await _merge(client, auth, [a, b]))
+    assert m["retail_price"] == 11.0 and "Retail" not in (m.get("attributes") or {}), m
+
+
 # ── F2: cost ─────────────────────────────────────────────────────────────────
 
 async def test_sources_without_cost_give_a_lot_without_cost(client, session, auth):
@@ -332,6 +339,23 @@ async def test_a_correction_reaches_the_second_generation(client, session, auth)
     await _set_cost(client, auth, b, 60.0)
     st = await _state(session, auth, y)
     assert st["cost_total"] == 170.0 and MARK not in st, st
+
+
+@pytest.mark.parametrize("confirmed", ["result", "part"])
+async def test_confirming_a_part_at_the_value_it_carries_makes_every_merge_after_it_known(client, session, auth, confirmed):
+    """The merged lot confirmed at its value, or its part without cost confirmed at the nothing it
+    carries: the merges it went into are known once all their parts are, at the same value."""
+    await _seed(session, auth)
+    a = await _item(client, auth, qty=2, cost_total=100.0)
+    b = await _item(client, auth, qty=3)
+    x = await _merge(client, auth, [a, b])
+    y = await _merge(client, auth, [x, await _item(client, auth, qty=1, cost_total=50.0)])
+    events = await _counts(session, auth, y)
+    await _set_cost(client, auth, *((x, 100.0) if confirmed == "result" else (b, 0.0)))
+    for lot, value in ((x, 100.0), (y, 150.0)):
+        st = await _state(session, auth, lot)
+        assert st["cost_total"] == value and MARK not in st, (lot, st)
+    assert (await _counts(session, auth, y))[1] == events[1]
 
 
 async def test_a_cost_set_on_the_result_stands_through_a_part_correction(client, session, auth):
