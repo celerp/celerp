@@ -34,10 +34,10 @@ async def admin(client) -> tuple[str, dict]:
     return tok, {"Authorization": f"Bearer {tok}"}
 
 
-async def bank(client, h, *, currency="USD", opening=OPENING, name="Harbor Bank", number="0001") -> dict:
+async def bank(client, h, *, currency="USD", opening=OPENING, name="Harbor Bank", number="0001", rate=None) -> dict:
     r = await client.post("/accounting/bank-accounts", json={
         "bank_name": name, "account_number": number, "bank_type": "checking",
-        "currency": currency, "opening_balance": opening}, headers=h)
+        "currency": currency, "opening_balance": opening, "rate": rate}, headers=h)
     assert r.status_code == 200, r.text
     return r.json()
 
@@ -463,30 +463,40 @@ async def test_start_prefers_the_open_session_of_a_duplicated_date(client, sessi
 
 # --- Currency (B) and precision (C) ---------------------------------------------------
 
-async def test_currency_change_refused_once_the_account_has_history(client, session):
+async def test_currency_change_refused_once_a_posting_carries_a_foreign_amount(client, session):
     _, h = await admin(client)
-    posted = await bank(client, h, opening=0.0)
-    await deposit(client, h, posted, "2026-09-05", 10.0)
-    reconciled = await bank(client, h, opening=0.0, name="Recon Bank", number="0002")
-    await start(client, h, reconciled["id"], "2026-09-30", 0.0)
-    for b in (posted, reconciled):
-        r = await client.patch(f"/accounting/bank-accounts/{b['id']}", json={"currency": "EUR"}, headers=h)
+    b = await bank(client, h, currency="EUR", opening=0.0)
+    await fx_deposit(client, h, b, 100, 1.08, 108)
+    for target in ("USD", "GBP"):
+        r = await client.patch(f"/accounting/bank-accounts/{b['id']}", json={"currency": target}, headers=h)
         assert r.status_code == 409, r.text
         detail = r.json()["detail"]
-        assert "USD" in detail and "new bank account" in detail and "transfer" in detail
-        got = (await client.get(f"/accounting/bank-accounts/{b['id']}", headers=h)).json()
-        assert got["currency"] == "USD"
+        assert "EUR" in detail and "new bank account" in detail and "transfer" in detail
+        assert (await client.get(f"/accounting/bank-accounts/{b['id']}", headers=h)).json()["currency"] == "EUR"
 
 
 async def test_currency_change_refused_on_a_ledger_account_another_bank_has_used(client, session):
     from test_recon_guard import second_bank_on
     _, h = await admin(client)
-    a = await bank(client, h, opening=0.0)
-    await deposit(client, h, a, "2026-09-05", 10.0)
+    a = await bank(client, h, currency="EUR", opening=0.0)
+    await fx_deposit(client, h, a, 100, 1.08, 108)
     b = await second_bank_on(client, h, a)
     r = await client.patch(f"/accounting/bank-accounts/{b['id']}", json={"currency": "EUR"}, headers=h)
     assert r.status_code == 409, r.text
     assert (await client.get(f"/accounting/bank-accounts/{b['id']}", headers=h)).json()["currency"] == "USD"
+
+
+async def test_base_only_account_relabels_to_the_books_currency_and_back(client, session):
+    """Postings carrying books-currency amounts only read the same whatever the account is
+    labelled: relabelling such an account changes no amount, so it is allowed and undoable."""
+    _, h = await admin(client)
+    b = await bank(client, h, opening=0.0)
+    je = await deposit(client, h, b, "2026-09-05", 10.0)
+    await completed(client, h, b, "2026-09-30", 10.0, [je])
+    for target in ("THB", "USD", "THB", "USD"):
+        r = await client.patch(f"/accounting/bank-accounts/{b['id']}", json={"currency": target}, headers=h)
+        assert r.status_code == 200 and r.json()["currency"] == target, r.text
+    assert (await history(client, h, b["id"])).json()["items"][0]["needs_review"] is False
 
 
 async def test_currency_change_allowed_before_use(client, session):
@@ -498,11 +508,11 @@ async def test_currency_change_allowed_before_use(client, session):
     assert r.status_code == 200, r.text
 
 
-async def test_currency_change_waits_for_a_first_posting(monkeypatch, real_engine, real_client):
+async def test_currency_change_waits_for_a_first_foreign_posting(monkeypatch, real_engine, real_client):
     from celerp_accounting import routes
     boss, a, _ = await _harbor(real_engine)
     h = auth(await token(real_engine, boss, a))
-    b = await bank(real_client, h, opening=0.0)
+    b = await bank(real_client, h, currency="EUR", opening=0.0)
     reached, release = asyncio.Event(), asyncio.Event()
     real = routes.emit_event
 
@@ -513,10 +523,10 @@ async def test_currency_change_waits_for_a_first_posting(monkeypatch, real_engin
             await release.wait()
         return out
     monkeypatch.setattr(routes, "emit_event", held)
-    posting = asyncio.create_task(deposit(real_client, h, b, "2026-09-05", 10.0))
+    posting = asyncio.create_task(fx_deposit(real_client, h, b, 100, 1.08, 108))
     await asyncio.wait_for(reached.wait(), 10)
     patching = asyncio.create_task(real_client.patch(
-        f"/accounting/bank-accounts/{b['id']}", json={"currency": "EUR"}, headers=h))
+        f"/accounting/bank-accounts/{b['id']}", json={"currency": "USD"}, headers=h))
     try:
         for _ in range(500):
             if await _waiting_on_a_lock(real_engine):
@@ -533,7 +543,7 @@ async def test_currency_change_waits_for_a_first_posting(monkeypatch, real_engin
     assert r.status_code == 409, r.text
     async with maker(real_engine)() as s:
         assert (await s.execute(text("SELECT currency FROM bank_accounts WHERE id = :b"),
-                                {"b": b["id"]})).scalar() == "USD"
+                                {"b": b["id"]})).scalar() == "EUR"
 
 
 async def test_three_decimal_currency_completes_at_its_own_precision(client, session):

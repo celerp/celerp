@@ -63,7 +63,8 @@ from celerp.services.je_keys import je_void_data
 from celerp.services.journal_accounts import require_destinations
 from celerp.services.line_measures import line_label
 from celerp.services.money import (
-    checked_exchange_rate, currency_dp, require_line_amount, round_money, to_base, to_decimal, to_stored_float,
+    books_currency, checked_exchange_rate, currency_dp, require_line_amount, round_money, split_to_base, to_base,
+    to_decimal, to_stored_float,
 )
 from celerp.services.permissions import locked_authority, require_permission
 from celerp.schemas.numbers import FiniteFloat
@@ -232,7 +233,8 @@ _DEFAULT_BANK_CODE = "1111"
 
 async def _seed_default_bank_account(session: AsyncSession, company_id: uuid.UUID) -> None:
     """Create a default bank account, kept in the company's base currency, so
-    reconciliation is never empty. Idempotent."""
+    reconciliation is never empty. Idempotent. It follows the books' currency while
+    nothing on it was posted in another (``default_bank_follows_books_hook``)."""
     from sqlalchemy import select as _select
 
     currency = await _base_currency(session, company_id)
@@ -347,6 +349,21 @@ async def seed_chart_of_accounts_hook(*, session: AsyncSession, company_id: uuid
     await reconcile_company(session, company_id, UNGUESSED_ROLES)
     company = await session.get(Company, company_id)
     company.settings = {**(company.settings or {}), INVENTORY_ORIGIN_KEY: INVENTORY_ORIGIN_SCHEMA}
+
+
+async def default_bank_follows_books_hook(*, session: AsyncSession, company_id: uuid.UUID) -> None:
+    """The on_books_currency_set slot: the default bank account, seeded before the company
+    chose its currency, is kept in the books' currency while no posting on it carries an
+    amount in another. Every entry on it is then a books-currency amount, so it moves with
+    them and nothing is revalued."""
+    bank = (await session.execute(select(BankAccount).where(
+        BankAccount.company_id == company_id, BankAccount.chart_account_code == _DEFAULT_BANK_CODE,
+    ))).scalar_one_or_none()
+    if bank is None:
+        return
+    base = await _base_currency(session, company_id)
+    if bank.currency != base and not await _bank_has_foreign_amounts(session, company_id, bank):
+        bank.currency = base
 
 
 async def backfill_chart_of_accounts_hook(*, session: AsyncSession) -> None:
@@ -980,7 +997,7 @@ async def _base_currency(session: AsyncSession, company_id: uuid.UUID) -> str:
     from celerp.models.company import Company
 
     company = await session.get(Company, company_id)
-    return (company.settings or {}).get("currency", "USD") if company else "USD"
+    return books_currency(company.settings or {} if company else {})
 
 
 def _validated_line_fx(base: str, line: "ManualJELine", index: int) -> tuple[str, Decimal] | None:
@@ -2557,6 +2574,8 @@ class BankAccountCreate(BaseModel):
     bank_type: str  # checking|savings|credit_card
     currency: str
     opening_balance: FiniteFloat = 0.0
+    # Converts an opening balance in another currency than the books' into them.
+    rate: FiniteFloat | None = None
     account_code: str | None = None  # optional override; auto-assigned if None
 
 
@@ -2605,9 +2624,11 @@ async def _bank_dicts(
     """
     rows = await journal_rows(session, company_id)
     posted_ids = {je_id for je_id, _state, _ts in rows}
+    base = await _base_currency(session, company_id)
     out = []
     for b in banks:
         net = Decimal(0)
+        foreign = False
         for _je_id, state, _ts in rows:
             for entry in state.get("entries", []):
                 if entry.get("account") == b.chart_account_code:
@@ -2615,9 +2636,14 @@ async def _bank_dicts(
                     if amounts is None:
                         continue
                     net += amounts[0] - amounts[1]
+                    foreign = foreign or _carries_foreign_amount(entry)
         d = _bank_to_dict(b)
         d["balance"] = float(net)
         d["opening_unbacked"] = bool(b.opening_balance) and _opening_je_id(b.id) not in posted_ids
+        # The currency the account can be corrected to: one labelled in another currency
+        # than the books', whose postings carry books-currency amounts only, reads none of
+        # them, and setting it to the books' currency makes every one readable.
+        d["relabel_to"] = base if b.currency != base and not foreign else None
         out.append(d)
     return out
 
@@ -2702,6 +2728,7 @@ async def create_bank_account(
         raise HTTPException(status_code=422, detail=t("acct.err_currency_unknown", currency=payload.currency))
 
     opening = bool(payload.opening_balance)
+    base = await _base_currency(session, company_id)
     roles = [AccountRole.CASH_AND_EQUIVALENTS] + ([AccountRole.RETAINED_EARNINGS] if opening else [])
     targets = await resolve_many(session, company_id, roles)
     cash_header = targets[AccountRole.CASH_AND_EQUIVALENTS.value]
@@ -2725,6 +2752,7 @@ async def create_bank_account(
 
     # Create opening balance JE if opening_balance != 0
     if opening:
+        rate = _bank_rate(bank, base, payload.rate)
         retained = targets[AccountRole.RETAINED_EARNINGS.value]
         je_id = _opening_je_id(bank.id)
         idem_c = f"opening:{bank.id}:c"
@@ -2735,15 +2763,9 @@ async def create_bank_account(
         from celerp.services.business_time import business_date_at
         company = await session.get(Company, company_id)
         today = business_date_at(datetime.now(timezone.utc), (company.settings or {}).get("timezone"))
-        ob = float(payload.opening_balance)
+        ob = to_decimal(payload.opening_balance)
         # Debit the bank account, credit equity (the retained earnings account)
-        entries = [
-            {"account": code, "debit": ob, "credit": 0.0},
-            {"account": retained, "debit": 0.0, "credit": ob},
-        ] if ob > 0 else [
-            {"account": retained, "debit": abs(ob), "credit": 0.0},
-            {"account": code, "debit": 0.0, "credit": abs(ob)},
-        ]
+        entries = _bank_entries(bank, base, rate, [({"account": retained}, abs(ob))], inflow=ob > 0)
         await emit_event(
             session,
             company_id=company_id,
@@ -2775,13 +2797,21 @@ async def create_bank_account(
     return (await _bank_dicts(session, company_id, [bank]))[0]
 
 
-async def _bank_has_history(session: AsyncSession, company_id: uuid.UUID, bank: BankAccount) -> bool:
-    """Whether the account's ledger account carries a posted journal line or the account
-    has a reconciliation: amounts and statements recorded in its currency."""
-    if await _je_entries_for_account(session, company_id, bank):
-        return True
-    return (await session.execute(select(ReconciliationSession.id).where(
-        ReconciliationSession.bank_account_id == bank.id).limit(1))).first() is not None
+def _carries_foreign_amount(entry: dict) -> bool:
+    """Whether a journal line carries an amount in a currency other than the books'."""
+    return bool(entry.get("fx_currency") and (entry.get("fx_debit") or entry.get("fx_credit")))
+
+
+async def _bank_has_foreign_amounts(session: AsyncSession, company_id: uuid.UUID, bank: BankAccount) -> bool:
+    """Whether a posted line on the account's ledger account carries an amount in a
+    currency other than the books'. Lines holding books-currency amounts only read the
+    same whatever the account is labelled, so relabelling such an account (for example
+    to the books' currency, which makes its figures readable) loses nothing and can be
+    changed back; a foreign amount is readable only in its own currency, so it fixes
+    the label."""
+    return any(entry.get("account") == bank.chart_account_code and _line_amounts(entry) is not None
+               and _carries_foreign_amount(entry)
+               for _, state, _ in await journal_rows(session, company_id) for entry in state.get("entries", []))
 
 
 @router.patch("/bank-accounts/{bank_id}")
@@ -2810,7 +2840,7 @@ async def patch_bank_account(
         # An account kept in a currency ISO 4217 has since withdrawn keeps it; none is moved to one.
         if normed not in CURRENCY_CODES and normed != b.currency:
             raise HTTPException(status_code=422, detail=t("acct.err_currency_unknown", currency=payload.currency))
-        if normed != b.currency and await _bank_has_history(session, company_id, b):
+        if normed != b.currency and await _bank_has_foreign_amounts(session, company_id, b):
             raise HTTPException(status_code=409, detail=t("acct.err_bank_currency_in_use", currency=b.currency))
         b.currency = normed
     if payload.is_active and not b.is_active:
@@ -2833,6 +2863,12 @@ class TransferCreate(BaseModel):
     date: str  # ISO date "YYYY-MM-DD"
     description: str = ""
     reference: str = ""
+    # Converts the amount, in the source account's currency, into the books' currency
+    # when that account is kept in another.
+    rate: FiniteFloat | None = None
+    # What the destination account receives in its own currency, when it is kept in
+    # another currency than both the source account and the books.
+    to_amount: FiniteFloat | None = None
 
 
 @router.post("/transfers")
@@ -2876,10 +2912,21 @@ async def create_transfer(
     idem_c = f"transfer:{je_id}:c"
     idem_p = f"transfer:{je_id}:p"
     memo = payload.description or f"Transfer {str(payload.from_bank_id)[:8]} → {str(payload.to_bank_id)[:8]}"
-    entries = [
-        {"account": to_bank.chart_account_code, "debit": payload.amount, "credit": 0.0},
-        {"account": from_bank.chart_account_code, "debit": 0.0, "credit": payload.amount},
-    ]
+    base = await _base_currency(session, company_id)
+    to_fields = {"account": to_bank.chart_account_code}
+    entries = _bank_entries(from_bank, base, _bank_rate(from_bank, base, payload.rate),
+                            [(to_fields, to_decimal(payload.amount))], inflow=False)
+    if to_bank.currency != from_bank.currency:
+        # The destination moves the same books-currency amount, held in its own currency.
+        moved = to_decimal(entries[0]["credit"])
+        if to_bank.currency == base:
+            entries[1] = _money_line(to_fields, base, None, moved, moved, debit=True)
+        else:
+            received = round_money(payload.to_amount or 0, to_bank.currency)
+            if received <= 0 or moved <= 0:
+                raise HTTPException(status_code=422, detail=t("acct.err_transfer_to_amount", currency=to_bank.currency))
+            entries[1] = _money_line(to_fields, to_bank.currency, checked_exchange_rate(moved / received),
+                                     received, moved, debit=True)
 
     await emit_event(
         session,
@@ -3020,13 +3067,16 @@ def _recon_balance(
             round_money(to_decimal(recon.statement_balance) - matched, bank.currency))
 
 
-def _settled_difference(
-    recon: ReconciliationSession, bank: BankAccount, all_entries: list[dict]
+async def _settled_difference(
+    db: AsyncSession, recon: ReconciliationSession, bank: BankAccount, all_entries: list[dict]
 ) -> Decimal:
     """The difference left to reconcile, refusing when it cannot be known."""
     balance = _recon_balance(recon, bank, all_entries)
     if balance is None:
-        raise HTTPException(status_code=422, detail=t("acct.err_recon_amount_unknown", currency=bank.currency))
+        relabel = (await _bank_dicts(db, recon.company_id, [bank]))[0]["relabel_to"]
+        raise HTTPException(status_code=422, detail=t(
+            "acct.err_recon_amount_unknown_relabel", currency=bank.currency, base=relabel) if relabel else t(
+            "acct.err_recon_amount_unknown", currency=bank.currency))
     return balance[1]
 
 
@@ -3127,6 +3177,50 @@ def _bank_amounts(line: dict, bank_currency: str, base: str) -> tuple[Decimal, D
     return _line_amounts(line) if bank_currency == base else None
 
 
+def _bank_rate(bank: BankAccount, base: str, rate: float | None) -> Decimal | None:
+    """The rate converting *bank*'s currency into the books' *base*: None for an account
+    kept in the books' currency, otherwise the one entered, which is then required."""
+    if bank.currency == base:
+        return None
+    if rate is None:
+        raise HTTPException(status_code=422, detail=t("acct.err_bank_rate_required", currency=bank.currency, base=base))
+    try:
+        return checked_exchange_rate(rate)
+    except ValueError:
+        raise HTTPException(status_code=422, detail=t("acct.err_bank_rate_invalid", raw=rate)) from None
+
+
+def _money_line(fields: dict, currency: str, rate: Decimal | None, amount: Decimal, base_amount: Decimal,
+                *, debit: bool) -> dict:
+    """One journal line moving *amount* of *currency*, *base_amount* in the books'
+    currency, with the foreign amount and *rate* when the currency is not the books'."""
+    line = {**fields, "debit": to_stored_float(base_amount) if debit else 0.0,
+            "credit": 0.0 if debit else to_stored_float(base_amount)}
+    if rate is not None:
+        line.update({"fx_debit": to_stored_float(amount) if debit else None,
+                     "fx_credit": None if debit else to_stored_float(amount),
+                     "fx_currency": currency, "fx_rate": to_stored_float(rate)})
+    return line
+
+
+def _bank_entries(bank: BankAccount, base: str, rate: Decimal | None, offsets: list[tuple[dict, Decimal]],
+                  *, inflow: bool) -> list[dict]:
+    """Every line of an entry moving money on *bank*, the one way any writer builds it:
+    the bank line, into the account when *inflow*, and the *offsets*, each a line's
+    fields with its amount in the account's currency. Amounts are written in the
+    account's currency, so the reconciliation always reads them; on an account kept in
+    another currency than the books' they carry that amount and *rate* (``_bank_rate``),
+    and their books-currency amounts are converted once so the entry balances."""
+    parts = [round_money(a, bank.currency) for _, a in offsets]
+    based = parts if rate is None else split_to_base(parts, rate, base)
+    return [
+        _money_line({"account": bank.chart_account_code}, bank.currency, rate, sum(parts, Decimal(0)),
+                    sum(based, Decimal(0)), debit=inflow),
+        *(_money_line(fields, bank.currency, rate, part, b, debit=not inflow)
+          for (fields, _), part, b in zip(offsets, parts, based)),
+    ]
+
+
 async def _je_entries_for_account(
     session: AsyncSession, company_id: uuid.UUID, bank: BankAccount
 ) -> list[dict]:
@@ -3134,6 +3228,7 @@ async def _je_entries_for_account(
     debit, credit}, the amounts in the bank account's currency (None when unknown, see
     ``_bank_amounts``)."""
     base = await _base_currency(session, company_id)
+    opening = _opening_je_id(bank.id)
     result = []
     for je_id, state, _ in await journal_rows(session, company_id):
         for entry in state.get("entries", []):
@@ -3141,6 +3236,11 @@ async def _je_entries_for_account(
                 if _line_amounts(entry) is None:
                     continue
                 amounts = _bank_amounts(entry, bank.currency, base)
+                if amounts is None and je_id == opening:
+                    # An opening balance posted before it carried its own amount was posted
+                    # as the figure typed in the account's currency, which the account keeps.
+                    typed = to_decimal(bank.opening_balance or 0)
+                    amounts = (typed, Decimal(0)) if typed > 0 else (Decimal(0), -typed)
                 debit, credit = (to_stored_float(round_money(a, bank.currency)) for a in amounts) if amounts else (None, None)
                 result.append({
                     "je_id": je_id,
@@ -3264,7 +3364,7 @@ async def get_reconciliation(
 
     d = _recon_to_dict(recon)
     d.update({
-        "bank_account": _bank_to_dict(bank),
+        "bank_account": (await _bank_dicts(db, company_id, [bank]))[0],
         "all_entries": all_entries,
         "unreconciled_entries": unreconciled,
         "reconciled_entries": reconciled,
@@ -3310,7 +3410,7 @@ async def complete_reconciliation(
         return _recon_to_dict(recon)
 
     bank, all_entries = await _recon_bank_and_entries(db, recon, company_id)
-    difference = _settled_difference(recon, bank, all_entries)
+    difference = await _settled_difference(db, recon, bank, all_entries)
 
     if difference != 0:
         raise HTTPException(
@@ -3425,10 +3525,12 @@ class StmtLineCreatePayload(BaseModel):
     # A bank line settled straight to a control account belongs to a party, and
     # this is the only chance to say which: nothing downstream can infer it.
     contact: str | None = None
+    rate: FiniteFloat | None = None  # the account's currency into the books', when they differ
 
 
 class StmtLineSplitPayload(BaseModel):
     splits: list[dict]  # [{account_code, amount, memo, contact}]
+    rate: FiniteFloat | None = None  # the account's currency into the books', when they differ
 
 
 class StmtLinePatch(BaseModel):
@@ -3442,6 +3544,7 @@ class BulkConfirmPayload(BaseModel):
 class WriteOffPayload(BaseModel):
     account_code: str | None = None  # unset: the company's general expense account
     memo: str = "Bank reconciliation adjustment"
+    rate: FiniteFloat | None = None  # the account's currency into the books', when they differ
 
 
 class ReconRuleCreate(BaseModel):
@@ -3900,25 +4003,18 @@ async def create_je_from_line(
     memo = payload.memo or sl.description
     je_id = await _next_reconciliation_je_id(db, company_id, f"je:recon:{sl.id}")
 
-    # Determine debit/credit based on amount sign
-    bank_debit = max(float(sl.amount), 0)
-    bank_credit = max(-float(sl.amount), 0)
-    other_debit = bank_credit  # offset entry
-    other_credit = bank_debit
-
     idem_c = je_idempotency_key(je_id, "recon_create", "c")
     idem_p = je_idempotency_key(je_id, "recon_create", "p")
 
     # The bank side has no party by nature; the offset side carries the one the
     # operator named, so a bank line settled to a control account lands on that
     # party's statement instead of in the unattributed bucket.
-    offset = {"account": payload.account_code, "debit": other_debit, "credit": other_credit}
+    offset = {"account": payload.account_code}
     if payload.contact:
         offset["contact"] = payload.contact
-    entries = [
-        {"account": bank.chart_account_code, "debit": bank_debit, "credit": bank_credit},
-        offset,
-    ]
+    base = await _base_currency(db, company_id)
+    entries = _bank_entries(bank, base, _bank_rate(bank, base, payload.rate),
+                            [(offset, abs(to_decimal(sl.amount)))], inflow=sl.amount > 0)
     await import_service.check_line_contacts(db, company_id, entries)
 
     await emit_event(
@@ -3982,19 +4078,18 @@ async def split_stmt_line(
     idem_c = je_idempotency_key(je_id, "recon_split", "c")
     idem_p = je_idempotency_key(je_id, "recon_split", "p")
 
-    bank_debit = max(float(sl.amount), 0)
-    bank_credit = max(-float(sl.amount), 0)
-    entries = [{"account": bank.chart_account_code, "debit": bank_debit, "credit": bank_credit}]
+    offsets = []
     for s in payload.splits:
-        amt = float(s.get("amount", 0))
-        split = {
-            "account": s["account_code"],
-            "debit": amt if sl.amount < 0 else 0.0,
-            "credit": amt if sl.amount >= 0 else 0.0,
-        }
+        split = {"account": s["account_code"]}
         if s.get("contact"):
             split["contact"] = s["contact"]
-        entries.append(split)
+        offsets.append((split, to_decimal(s.get("amount", 0))))
+    if sum((a for _, a in offsets), Decimal(0)) != abs(to_decimal(sl.amount)):
+        raise HTTPException(status_code=422, detail=t(
+            "acct.err_split_total", total=_money_text(sum((a for _, a in offsets), Decimal(0)), bank.currency),
+            amount=_money_text(abs(to_decimal(sl.amount)), bank.currency)))
+    base = await _base_currency(db, company_id)
+    entries = _bank_entries(bank, base, _bank_rate(bank, base, payload.rate), offsets, inflow=sl.amount >= 0)
     await import_service.check_line_contacts(db, company_id, entries)
 
     await emit_event(
@@ -4193,10 +4288,10 @@ async def write_off_difference(
              if e.get("account") == bank.chart_account_code),
             {},
         )
-        amount = float(bank_entry.get("debit") or 0) - float(bank_entry.get("credit") or 0)
-        return {"je_id": je_id, "amount": amount}
+        amounts = _bank_amounts(bank_entry, bank.currency, await _base_currency(db, company_id))
+        return {"je_id": je_id, "amount": None if amounts is None else to_stored_float(amounts[0] - amounts[1])}
 
-    remaining = _settled_difference(recon, bank, all_entries)
+    remaining = await _settled_difference(db, recon, bank, all_entries)
 
     tol = round_money(recon.tolerance if recon.tolerance is not None else 1, bank.currency)
     if abs(remaining) > tol:
@@ -4217,12 +4312,9 @@ async def write_off_difference(
     idem_c = je_idempotency_key(recon.statement_date, f"recon_wo_{session_id}", "c")
     idem_p = je_idempotency_key(recon.statement_date, f"recon_wo_{session_id}", "p")
 
-    bank_debit = max(difference, 0)
-    bank_credit = max(-difference, 0)
-    entries = [
-        {"account": bank.chart_account_code, "debit": bank_debit, "credit": bank_credit},
-        {"account": account_code, "debit": bank_credit, "credit": bank_debit},
-    ]
+    base = await _base_currency(db, company_id)
+    entries = _bank_entries(bank, base, _bank_rate(bank, base, payload.rate),
+                            [({"account": account_code}, abs(remaining))], inflow=remaining > 0)
 
     await emit_event(
         db, company_id=company_id, entity_id=je_id, entity_type="journal_entry",

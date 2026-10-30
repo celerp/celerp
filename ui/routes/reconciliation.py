@@ -476,6 +476,7 @@ def _workspace_view(
 
     return Div(
         completed,
+        _relabel_notice(bank, f"/accounting/reconcile/{session_id}"),
         P(t("recon.needs_review"), cls="flash flash--warning") if recon.get("needs_review") else None,
         header,
         toolbar,
@@ -493,6 +494,25 @@ def _workspace_view(
         cls="recon-workspace",
         **{"data-session-id": session_id,
            "data-select-first": t("recon.select_line_first")},
+    )
+
+
+def _relabel_notice(bank: dict, back: str) -> FT | None:
+    """The account is labelled in another currency than the books' while every entry on
+    it carries a books-currency amount only, so none of its amounts can be read. Says so
+    and offers the correction: setting the account to the books' currency changes no
+    amount, and setting it back in the account's settings undoes it."""
+    base = bank.get("relabel_to")
+    if not base:
+        return None
+    return Div(
+        Span(t("recon.relabel_notice", currency=bank.get("currency", ""), base=base)),
+        Form(
+            Input(type="hidden", name="next", value=back),
+            Button(t("recon.relabel_button", base=base), type="submit", cls="btn btn--primary btn--sm"),
+            method="post", action=f"/accounting/reconcile/relabel/{bank.get('id', '')}",
+        ),
+        cls="flash flash--warning recon-relabel",
     )
 
 
@@ -754,11 +774,14 @@ def setup_routes(app):
               "color": color} for s, color in _SESSION_STATUSES.items()],
             base, status or None)
         shown = [i for i in items if not status or i["status"] == status]
+        msg = request.query_params.get("msg", "").strip()
         return await base_shell(
+            flash(msg) if msg else None,
             page_header(f"{t('recon.history')}: {bank.get('bank_name', '')}",
                         A(t("btn.back"), href="/settings/accounting?tab=bank-accounts", cls="btn btn--secondary"),
                         reconcile),
             P(t("recon.history_intro"), cls="text-muted"),
+            _relabel_notice(bank, base),
             cards,
             _history_table(shown, bank["currency"]) if items else Div(
                 P(t("recon.history_empty"), cls="empty-state"), reconcile, cls="settings-card"),
@@ -766,6 +789,28 @@ def setup_routes(app):
             nav_active="accounting",
             request=request,
         )
+
+    @app.post("/accounting/reconcile/relabel/{bank_id}")
+    async def relabel_bank(request: Request, bank_id: str):
+        """Set an account to the books' currency (``_relabel_notice``), then return to the
+        page the notice was on, saying what changed and how to change it back."""
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        back = str((await request.form()).get("next", ""))
+        if not back.startswith("/accounting/reconcile/") or "//" in back or "\\" in back:
+            back = f"/accounting/reconcile/history/{bank_id}"
+        try:
+            bank = await api.get_bank_account(token, bank_id)
+            base = bank.get("relabel_to")
+            msg = t("recon.relabel_done", currency=bank["currency"], base=base) if base else ""
+            if base:
+                await api.patch_bank_account(token, bank_id, {"currency": base})
+        except APIError as e:
+            if e.status == 401:
+                return RedirectResponse("/login", status_code=302)
+            msg = str(e.detail)
+        return RedirectResponse(back + ("?msg=" + quote(msg, safe="") if msg else ""), status_code=303)
 
     @app.get("/accounting/reconcile/{session_id}")
     async def reconcile_workspace(request: Request, session_id: str):
