@@ -53,35 +53,32 @@ def negative_cost_error(label: str, *costs: Any) -> str | None:
     return None
 
 
-def event_goods_costs(event_type: str, data: dict) -> list:
-    """The goods-cost values an item event writes."""
+def written_goods_costs(event_type: str, data: dict) -> dict:
+    """The goods-cost keys an item event writes, with the values it writes to them: the
+    one reading of "this event sets the goods cost" every check shares."""
     if event_type == "item.updated":
         changes = data.get("fields_changed") or {}
-        return [(changes.get(key) or {}).get("new") for key in GOODS_COST_KEYS if key in changes]
+        return {key: (changes[key] or {}).get("new") for key in GOODS_COST_KEYS if key in changes}
     if event_type == "item.pricing.set":
-        return [data.get("new_price")] if data.get("price_type") in GOODS_COST_KEYS else []
+        return {data["price_type"]: data.get("new_price")} if data.get("price_type") in GOODS_COST_KEYS else {}
     if event_type in _COST_SETTING_EVENTS:
-        return [data.get(key) for key in GOODS_COST_KEYS]
-    return []
+        return {key: data[key] for key in GOODS_COST_KEYS if key in data}
+    return {}
+
+
+def event_goods_costs(event_type: str, data: dict) -> list:
+    """The goods-cost values an item event writes."""
+    return list(written_goods_costs(event_type, data).values())
 
 
 def writes_goods_cost(event_type: str, data: dict) -> bool:
     """Whether an item event sets the lot's goods cost."""
-    if event_type == "item.updated":
-        return any(key in (data.get("fields_changed") or {}) for key in GOODS_COST_KEYS)
-    if event_type == "item.pricing.set":
-        return data.get("price_type") in GOODS_COST_KEYS
-    return event_type in _COST_SETTING_EVENTS and any(key in data for key in GOODS_COST_KEYS)
+    return bool(written_goods_costs(event_type, data))
 
 
 def clears_goods_cost(event_type: str, data: dict) -> bool:
     """Whether an item event removes the lot's goods cost (sets a goods-cost key empty)."""
-    if event_type == "item.updated":
-        changes = data.get("fields_changed") or {}
-        return any((changes[key] or {}).get("new") in (None, "") for key in GOODS_COST_KEYS if key in changes)
-    if event_type == "item.pricing.set":
-        return data.get("price_type") in GOODS_COST_KEYS and data.get("new_price") in (None, "")
-    return False
+    return any(value in (None, "") for value in written_goods_costs(event_type, data).values())
 
 
 def unknown_flag_error(event_type: str, data: dict) -> str | None:

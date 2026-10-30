@@ -40,7 +40,7 @@ from celerp.services.account_roles import current_settings, is_consigned, lot_ac
 from celerp.services.business_time import business_date_at
 from celerp.services.demo import delete_untouched_demo_items
 from celerp.services.goods_cost import (GOODS_COST_UNKNOWN, clears_goods_cost, event_goods_costs, lot_label,
-                                       negative_cost_error)
+                                       negative_cost_error, writes_goods_cost)
 from celerp.services.cost_visibility import COST_ITEM_KEYS
 from celerp.services.money import allocate_pro_rata, round_basis, to_decimal
 from celerp.services.company_lock import holds_company_lock, lock_company, lock_projections, locked_company
@@ -357,12 +357,10 @@ async def _cost_is_traceable(session: AsyncSession, company_id, entity_id: str, 
     return not any(audits_lowering.values())
 
 
-_COST_KEYS = frozenset({"cost_total", "cost_price", "cost_base"})
-
-
 async def _merge_parts(session: AsyncSession, company_id, entity_id: str) -> list[str] | None:
     """The lots a merge result was made from, while its cost is still the merge's own
-    (no cost was set on it since); else None."""
+    (no cost was set on it since); else None. A correction carried into it from a part
+    (restated_from) and a merge's own cost write (reason from_merge) are the merge's."""
     rows = (await session.execute(
         select(LedgerEntry.event_type, LedgerEntry.data, LedgerEntry.metadata_)
         .where(LedgerEntry.company_id == company_id, LedgerEntry.entity_id == entity_id)
@@ -370,9 +368,11 @@ async def _merge_parts(session: AsyncSession, company_id, entity_id: str) -> lis
     )).all()
     if not rows or rows[0][0] != "item.created":
         return None
-    for event_type, data, _ in rows[1:]:
-        data = data or {}
-        if event_type == "item.cost_adjusted" or _COST_KEYS & {*data, *(data.get("fields_changed") or {})}:
+    for event_type, data, metadata in rows[1:]:
+        metadata = metadata or {}
+        if metadata.get("restated_from") or metadata.get("reason") == "from_merge":
+            continue
+        if writes_goods_cost(event_type, data or {}):
             return None
     parts = (rows[0][2] or {}).get("merged_from")
     return list(parts) if isinstance(parts, list) and parts else None
@@ -481,7 +481,7 @@ async def _sale_of_lot(session: AsyncSession, company_id, entity_id: str, state:
 @dataclass
 class _Restatement:
     label: str
-    successors: list[tuple[str, float]]      # (entity_id, new goods basis)
+    successors: list[tuple[str, dict]]       # (entity_id, its item.cost_adjusted data)
     repriced: dict[str, list[dict]]          # lot id -> per-invoice-line COGS changes
     lots: list[str]                          # the item and every merge result it reads
     docs: list[str]                          # the invoices it adjusts
@@ -529,7 +529,7 @@ async def _restatement(session: AsyncSession, company_id, entity_id: str, event_
             "cannot be carried automatically"
         )
 
-    successors: list[tuple[str, float]] = []
+    successors: list[tuple[str, dict]] = []
     restated: list[tuple[str, dict, dict]] = [(entity_id, old, new)]   # (entity_id, before, after)
     if status in ("merged", "sold", "disposed") and old_basis != new_basis:
         # A write-off of a whole traceable lot can be restated below. Other disposals
@@ -542,7 +542,7 @@ async def _restatement(session: AsyncSession, company_id, entity_id: str, event_
                 f"{label} was merged, and a merge result's cost is the sum of its parts, so clearing "
                 "the cost of one part cannot be carried automatically; correct the merge result's cost instead")
         seen = {entity_id}
-        prev_id, prev_basis = entity_id, new_basis
+        prev_id, prev_basis, prev_state = entity_id, new_basis, new
         current, next_id = label, old.get("merged_into") if status == "merged" else None
         if status == "merged" and not next_id:
             raise CostRestatementConflict(f"{label} is merged, but its merge lineage is not recorded")
@@ -564,23 +564,26 @@ async def _restatement(session: AsyncSession, company_id, entity_id: str, event_
                     "written off, so the correction cannot be carried through it automatically"
                 )
             basis = _basis_or_conflict(state, current)
-            if goods_basis(state) is None:
-                # A merge result with no cost had a part with no cost; with this part
-                # corrected it costs the sum of its parts once every part has one.
-                bases = []
-                for part in await _merge_parts(session, company_id, next_id) or []:
-                    part_row = None if part == prev_id else await _read(part)
-                    bases.append(prev_basis if part == prev_id else goods_basis(part_row.state or {}) if part_row else None)
-                if not bases or any(b is None for b in bases):
-                    break
-                delta = round_basis(sum(bases))
             if basis + delta < 0:
                 raise CostRestatementConflict(
                     f"{label}'s cost went into {current}, whose cost cannot absorb a change of {delta:g}"
                 )
-            prev_id, prev_basis = next_id, round_basis(basis + delta)
-            successors.append((next_id, prev_basis))
-            restated.append((next_id, state, apply_item_event(state, "item.cost_adjusted", {"cost_total": prev_basis})))
+            # The value follows the part, generation after generation. While the result's
+            # cost is still the merge's own, its goods cost is known when every part that
+            # holds units or goods value is known; once a cost was set on it, its own stands.
+            adjusted: dict = {"cost_total": round_basis(basis + delta)}
+            parts = await _merge_parts(session, company_id, next_id)
+            if parts is not None:
+                known = True
+                for part in parts:
+                    row = None if part == prev_id else await _read(part)
+                    st = prev_state if part == prev_id else (row.state or {}) if row is not None else None
+                    known = known and st is not None and (goods_cost_empty(st) or goods_cost_known(st))
+                adjusted[GOODS_COST_UNKNOWN] = not known
+            prev_id, prev_basis = next_id, adjusted["cost_total"]
+            prev_state = apply_item_event(state, "item.cost_adjusted", adjusted)
+            successors.append((next_id, adjusted))
+            restated.append((next_id, state, prev_state))
             next_id = state.get("merged_into") if succ_status == "merged" else None
             if succ_status == "merged" and not next_id:
                 raise CostRestatementConflict(f"{current} is merged, but its merge lineage is not recorded")
@@ -730,10 +733,10 @@ async def restate_item_cost(
     lineage = {"restated_from": entity_id}
     if data.get("manufacturing_order_id"):
         lineage["manufacturing_order_id"] = data["manufacturing_order_id"]
-    for succ_id, basis in successors:
+    for succ_id, adjusted in successors:
         await emit_event(
             session, company_id=company_id, entity_id=succ_id, entity_type="item",
-            event_type="item.cost_adjusted", data={"cost_total": basis},
+            event_type="item.cost_adjusted", data=adjusted,
             actor_id=actor_id, location_id=None, source=source,
             idempotency_key=f"cost-restate:{identity}:{succ_id}",
             metadata_=_metadata(succ_id, lineage),

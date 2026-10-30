@@ -271,3 +271,55 @@ async def test_preview_hides_cost_from_a_role_that_cannot_see_it(client, session
     b = await _item(client, auth, qty=3, cost_total=50.0, retail_price=10.0)
     operator = await _user_with_role(client, session, auth["headers"], "operator")
     assert await _preview(client, operator, [a, b]) == {"retail_price": 10.0}
+
+
+# ── P3: correcting a part's cost through a merge ────────────────────────────
+
+async def _set_cost(client, auth, item_id: str, cost: float | None) -> None:
+    r = await client.patch(f"/items/{item_id}", headers=auth["headers"],
+                           json={"fields_changed": {"cost_total": {"new": cost}}})
+    assert r.status_code == 200, r.text
+
+
+async def test_costing_the_unknown_part_makes_the_merged_cost_known(client, session, auth):
+    await _seed(session, auth)
+    a = await _item(client, auth, qty=2, cost_total=100.0)
+    b = await _item(client, auth, qty=3)
+    x = await _merge(client, auth, [a, b])
+    await _set_cost(client, auth, b, 60.0)
+    st = await _state(session, auth, x)
+    assert st["cost_total"] == 160.0 and MARK not in st, st
+
+
+async def test_correcting_the_known_part_moves_the_value_and_keeps_it_unknown(client, session, auth):
+    await _seed(session, auth)
+    a = await _item(client, auth, qty=2, cost_total=100.0)
+    b = await _item(client, auth, qty=3)
+    x = await _merge(client, auth, [a, b])
+    await _set_cost(client, auth, a, 120.0)
+    st = await _state(session, auth, x)
+    assert st["cost_total"] == 120.0 and st[MARK] is True, st
+
+
+async def test_a_correction_reaches_the_second_generation(client, session, auth):
+    await _seed(session, auth)
+    a = await _item(client, auth, qty=2, cost_total=100.0)
+    b = await _item(client, auth, qty=3)
+    c = await _item(client, auth, qty=1, cost_total=10.0)
+    x = await _merge(client, auth, [a, b])
+    y = await _merge(client, auth, [x, c])
+    assert (await _state(session, auth, y))[MARK] is True
+    await _set_cost(client, auth, b, 60.0)
+    st = await _state(session, auth, y)
+    assert st["cost_total"] == 170.0 and MARK not in st, st
+
+
+async def test_a_cost_set_on_the_result_stands_through_a_part_correction(client, session, auth):
+    await _seed(session, auth)
+    a = await _item(client, auth, qty=2, cost_total=100.0)
+    b = await _item(client, auth, qty=3)
+    x = await _merge(client, auth, [a, b])
+    await _set_cost(client, auth, x, 150.0)
+    await _set_cost(client, auth, a, 110.0)
+    st = await _state(session, auth, x)
+    assert st["cost_total"] == 160.0 and MARK not in st, st
