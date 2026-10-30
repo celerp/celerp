@@ -508,9 +508,11 @@ async def connector_release_scope(
     session: AsyncSession, company_id, connector: str
 ) -> list[ConnectorConfig]:
     """The rows a disconnect by this company releases: its own row plus any
-    legacy row with no company. Raises when this company holds no row."""
+    legacy row with no company, taken under the company's lock (a retake for a caller
+    that holds it). Raises when this company holds no row."""
     company_id = str(company_id)
     legacy_id = ensure_instance_id()
+    await lock_company(session, uuid.UUID(company_id))
     owners = {str(row.company_id) for row in await _connector_rows(session, connector)}
     if company_id not in owners:
         raise ConnectorOwnershipError(t("error.connector_not_here", service=_service(connector)))

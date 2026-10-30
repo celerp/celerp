@@ -503,17 +503,20 @@ async def test_connector_release_scope_names_what_a_disconnect_may_touch(_db_eng
             ConnectorConfig(company_id=legacy, connector=legacy_only),
         ])
         await session.commit()
-    # Each scope is asked in a request of its own, as a disconnect asks it.
+    # Each scope is asked in a request of its own, as a disconnect asks it, and takes the
+    # rows it names under the company's lock, whoever calls it.
     try:
-        async with get_session_ctx() as session:
-            rows = await connector_release_scope(session, a, shared)
-            assert [str(r.company_id) for r in rows] == [a]
-        async with get_session_ctx() as session:
-            rows = await connector_release_scope(session, a, legacy_only)
-            assert sorted(str(r.company_id) for r in rows) == sorted([a, legacy])
-        async with get_session_ctx() as session:
-            with pytest.raises(ConnectorOwnershipError):
-                await connector_release_scope(session, c, shared)
+        with ungated_connector_takes("celerp/connectors/ownership.py") as ungated:
+            async with get_session_ctx() as session:
+                rows = await connector_release_scope(session, a, shared)
+                assert [str(r.company_id) for r in rows] == [a]
+            async with get_session_ctx() as session:
+                rows = await connector_release_scope(session, a, legacy_only)
+                assert sorted(str(r.company_id) for r in rows) == sorted([a, legacy])
+            async with get_session_ctx() as session:
+                with pytest.raises(ConnectorOwnershipError):
+                    await connector_release_scope(session, c, shared)
+        assert ungated == set()
     finally:
         await _forget([shared, legacy_only], a, b, c)
 
