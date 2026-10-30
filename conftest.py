@@ -1086,13 +1086,14 @@ async def client(session: AsyncSession):
     async def _request_session():
         # Production's session closes, rolling back, when the route raises, before an
         # exception handler runs (one that notifies in a session of its own, as
-        # middleware.notify_refused does). So does the test session's request transaction,
+        # middleware.notify_refused does), releasing its locks too, a row lock a read took
+        # (lock_company) as much as a write's. So does the test session's request transaction,
         # unless a sibling request shares it or something durable was committed inside it,
         # which a rollback would also undo: the request then ends as _request_scoped judges.
         try:
             yield session
         except Exception:
-            if turn["requests"] == 1 and turn["wrote"] and not turn["durable"]:
+            if turn["requests"] == 1 and not turn["durable"]:
                 await session.rollback()
                 turn["wrote"] = False
             raise
