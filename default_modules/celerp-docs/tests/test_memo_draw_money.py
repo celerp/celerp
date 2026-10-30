@@ -123,7 +123,8 @@ async def test_remainder_ignores_edited_drawn_price(client, session):
     doc = await state(client, h, first)
     lines = [{**li, "unit_price": 9.0} if li.get("drawn_from") else li for li in doc["line_items"]]
     await ok(await client.patch(f"/docs/{first}", headers=h,
-                                json={"line_items": lines, "expected_version": doc["version"]}))
+                                json={"fields_changed": {"line_items": {"new": lines}},
+                                      "expected_version": doc["version"]}))
 
     second = await state(client, h, await drawn(client, h, memo, {lids[0]: 1}))
     last = await state(client, h, await drawn(client, h, memo, {lids[0]: 1}))

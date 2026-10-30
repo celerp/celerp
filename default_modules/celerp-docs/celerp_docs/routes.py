@@ -57,7 +57,7 @@ from celerp.services.line_measures import (FULL, floor_to_unit, line_label, prop
 from celerp.services.document_lines import (
     MemoDraw, MemoReturn, assert_line_holds_respected, assert_new_references_eligible,
     line_id_counts, line_item_id, linked_items, memo_out_refusal, out_on_another_memo, received_line_index,
-    shipped_elsewhere, strip_line_ids,
+    refuse_drawn_line_action, shipped_elsewhere, strip_line_ids,
 )
 from celerp.services.attachments import attach_file, storing
 from celerp.services.csv_export import csv_stream, resolve_export_cols
@@ -10529,6 +10529,7 @@ async def _line_action(session, company_id, user, owner: Projection, action: str
         return done
     line_items = owner.state.get("line_items", [])
     indices = (select_lines or _selected_line_indices)(line_items, body)
+    refuse_drawn_line_action(owner.state, indices)
     result = await run(indices)
     # Read after the action, which gives lines from an older version their ids.
     line_items = owner.state.get("line_items", [])

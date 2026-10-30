@@ -17,6 +17,7 @@ from celerp.services.document_lines import (
     MemoDraw,
     MemoReturn,
     assert_document_item_uniqueness,
+    assert_drawn_lines_authorized,
     assert_line_holds_respected,
     assert_new_references_eligible,
     assert_protected_lines_kept,
@@ -622,14 +623,16 @@ async def emit_event(
     # events are never re-validated.
     if kwargs.get("entity_type") in ("doc", "list"):
         data = kwargs.get("data") or {}
-        line_set = None
-        if isinstance(data.get("line_items"), list):
-            line_set = data["line_items"]
-        elif isinstance(data.get("fields_changed"), dict):
-            changed = data["fields_changed"].get("line_items")
-            if isinstance(changed, dict):
-                line_set = changed.get("new")
-        if line_set is not None:
+        changed = data.get("fields_changed") if isinstance(data.get("fields_changed"), dict) else {}
+        # The fields the write sets, whether it carries them whole or as changes.
+        sets = {field: data[field] for field in ("line_items", "contact_id", "currency") if field in data}
+        sets.update({field: change["new"] for field, change in changed.items()
+                     if field in ("line_items", "contact_id", "currency") and isinstance(change, dict)
+                     and "new" in change})
+        line_set = sets.get("line_items") if isinstance(sets.get("line_items"), list) else None
+        sets["line_items"] = line_set
+        stored = {}
+        if line_set is not None or "contact_id" in sets or "currency" in sets:
             # The stored record, read only when it is of the same type (the Projection PK
             # is (company_id, entity_id) with no type discriminator).
             proj = await session.get(
@@ -637,9 +640,16 @@ async def emit_event(
             )
             same = proj is not None and proj.entity_type == kwargs.get("entity_type")
             stored = (proj.state or {}) if same else {}
-            # Every line carries a stable line id: new lines get one, lines already on the
-            # record keep theirs, and a malformed or repeated id is refused.
-            normalize_line_ids(line_set, stored.get("line_items"))
+            if line_set is not None:
+                # Every line carries a stable line id: new lines get one, lines already on
+                # the record keep theirs, and a malformed or repeated id is refused.
+                normalize_line_ids(line_set, stored.get("line_items"))
+            # A line drawn from a memo is added only by the draw, leaves only by Back to
+            # memo, and keeps what it is and the invoice's customer and currency meanwhile.
+            await assert_drawn_lines_authorized(
+                session, kwargs.get("company_id"), kwargs.get("entity_id"), stored, sets, memo_draw=memo_draw,
+            )
+        if line_set is not None:
             # A line that holds, shipped or received stock keeps its id, its item and (once
             # shipped or received) its position.
             await assert_protected_lines_kept(

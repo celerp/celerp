@@ -40,7 +40,8 @@ async def _has_drawn_from(client, h, entity_id: str) -> bool | None:
 
 async def _patch_lines(client, h, doc_id: str, lines: list[dict]):
     st = await state(client, h, doc_id)
-    return await client.patch(f"/docs/{doc_id}", headers=h, json={"line_items": lines, "expected_version": st["version"]})
+    return await client.patch(f"/docs/{doc_id}", headers=h, json={
+        "fields_changed": {"line_items": {"new": lines}}, "expected_version": st["version"]})
 
 
 async def _upsert_lines(client, h, doc_id: str, lines: list[dict]):

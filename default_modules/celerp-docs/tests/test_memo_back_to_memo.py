@@ -341,11 +341,11 @@ async def test_back_to_memo_grant_shape_engine(client, session):
     changed = [{**li, "unit_price": 1.0} if li["line_id"] == two["line_id"] else li for li in without_one]
     for lines in (added, changed):
         with pytest.raises(HTTPException) as e:
-            await emitted(lines, memo_return=MemoReturn(removed=frozenset({one["line_id"]})))
+            await emitted(lines, memo_draw=MemoReturn(removed=frozenset({one["line_id"]})))
         assert e.value.detail["message_key"] == "docs.memo_provenance_forged"
     with pytest.raises(HTTPException) as e:
-        await emitted(without_one, memo_draw=MemoDraw(line_ids=frozenset()))
+        await emitted(without_one, memo_draw=MemoDraw(memo_id=m1, draw_id="d", lines={}))
     assert e.value.detail["message_key"] == "docs.drawn_line_back_to_memo"
     with pytest.raises(AssertionError):
-        await emitted(doc["line_items"], memo_return=MemoReturn(removed=frozenset({one["line_id"]})))
+        await emitted(doc["line_items"], memo_draw=MemoReturn(removed=frozenset({one["line_id"]})))
     assert (await state(client, h, pf))["version"] == doc["version"]

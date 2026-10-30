@@ -78,7 +78,7 @@ async def test_writers_take_company_lock_first(client, session, writer):
     if writer == "patch_lines":
         st = await state(client, h, inv)
         lines = [{**st["line_items"][0], "description": "Edited"}, *st["line_items"][1:]]
-        call = lambda: client.patch(f"/docs/{inv}", headers=h, json={"line_items": lines, "expected_version": st["version"]})
+        call = lambda: client.patch(f"/docs/{inv}", headers=h, json={"fields_changed": {"line_items": {"new": lines}}, "expected_version": st["version"]})
     elif writer == "finalize":
         d = await draft(client, h, lines=[service_line()])
         labels[d] = "invoice"
