@@ -47,7 +47,7 @@ from ui.components.activity import activity_table
 from ui.components.notes import notes_tab as _shared_notes_tab, note_edit_form as _shared_note_edit_form
 from ui.components.files import files_error, files_section as _shared_doc_files_section, files_session_expired
 from ui.components.operation_key import (
-    operation_key_attrs, operation_key_input, operation_key_vals, required_operation_key, submitted_operation_key,
+    FIELD as OPERATION_KEY_FIELD, operation_key_attrs, operation_key_input, operation_key_vals, required_operation_key, submitted_operation_key,
 )
 
 
@@ -3556,15 +3556,6 @@ celerpUpdateBulkAlloc();
         return {"line_ids": list(quantities), "quantities": quantities,
                 "target_doc_id": str(form.get("target_doc_id") or "").strip() or None}
 
-    def _draw_versions(form) -> dict | None:
-        """The versions the latest preview read, bound to the invoice it read them for."""
-        memo_v, target_v, target_id = (str(form.get(k) or "").strip()
-                                       for k in ("expected_memo", "expected_target", "expected_target_id"))
-        if not memo_v.isdigit():
-            return None
-        bound = target_v.isdigit() and bool(target_id)
-        return {"memo": int(memo_v), "target": int(target_v) if bound else None, "target_id": target_id if bound else None}
-
     # Invoice selected: chosen units of a memo onto a new or a draft invoice of its customer.
     @app.post("/docs/{entity_id}/invoice-lines")
     async def invoice_lines_route(request: Request, entity_id: str):
@@ -3574,7 +3565,11 @@ celerpUpdateBulkAlloc();
             return _R("", status_code=401, headers={"HX-Redirect": "/login"})
         form = await request.form()
         try:
-            body = {**_draw_picks(form), "expected_versions": _draw_versions(form),
+            # The draw confirms the preview on screen: its binding, or nothing at all.
+            binding = str(form.get("binding") or "").strip()
+            if not binding:
+                raise ValueError(t("documents.draw_wait_for_preview"))
+            body = {**_draw_picks(form), "binding": binding,
                     "idempotency_key": required_operation_key(form, "invoice-lines")}
             result = await api.invoice_lines(token, entity_id, body)
         except ValueError as exc:
@@ -3594,7 +3589,7 @@ celerpUpdateBulkAlloc();
             return P(t("error.session_expired"), cls="cell-error")
         form = await request.form()
         try:
-            # A preview always reads fresh: the versions it shows are the ones a submit sends back.
+            # A preview always reads fresh: the binding it answers with is the one a submit sends back.
             preview = await api.invoice_lines_preview(token, entity_id, _draw_picks(form))
         except ValueError:
             return ""
@@ -6644,11 +6639,11 @@ _RETURN_LOTS_JS = """
 """
 
 
-def _line_action_submit(label: str, cls: str) -> FT:
+def _line_action_submit(label: str, cls: str, **attrs) -> FT:
     """The submit button of a line action form. The second click of a double click does
     nothing, so the action's confirm is asked once; the form disables the button while its
     request is on the way."""
-    return Button(label, type="submit", cls=cls, onclick="if(event.detail>1)event.preventDefault()")
+    return Button(label, type="submit", cls=cls, onclick="if(event.detail>1)event.preventDefault()", **attrs)
 
 
 def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, show_fulfill: bool = False, is_inbound: bool = False, inbound_line_items: list | None = None, locations: list | None = None, scan_marks: bool = False, show_reserve: bool = False, show_release: bool = False, can_delete: bool = True, unit_map: dict | None = None, item_meta_map: dict | None = None, draw_panel: FT | None = None, show_back_to_memo: bool = False) -> FT:
@@ -7001,10 +6996,13 @@ def _draw_panel(entity_id: str, doc: dict, targets: list | None, unit_map: dict)
         Input(type="hidden", name="currency", value=doc.get("currency") or ""),
         Div(Label(t("documents.invoice_target"), cls="form-label"),
             searchable_select("target_doc_id", options, value=""), cls="inline-form-row"),
+        # A newer preview cancels an older one still on the way, so an older answer never lands last.
         Div(id="draw-preview", hx_post=f"/docs/{entity_id}/invoice-lines/preview", hx_include="#draw-panel",
-            hx_trigger="change from:#draw-panel, input delay:400ms from:#draw-panel, celerpDrawOpen"),
+            hx_trigger="change from:#draw-panel, input delay:400ms from:#draw-panel, celerpDrawOpen",
+            hx_sync="this:replace"),
         operation_key_input(),
-        _line_action_submit(t("btn.invoice_selected"), "btn btn--primary btn--sm"),
+        # Enabled only by a preview of the current selection (the page script's _drawHold).
+        _line_action_submit(t("btn.invoice_selected"), "btn btn--primary btn--sm", disabled=True),
         id="draw-panel", style="display:none", hx_post=f"/docs/{entity_id}/invoice-lines", hx_swap="none",
         hx_disabled_elt="find button[type=submit]",
         # The preview inside swaps its own answer in; the form's swap and disabled element are the draw's alone.
@@ -7015,21 +7013,16 @@ def _draw_panel(entity_id: str, doc: dict, targets: list | None, unit_map: dict)
 def _draw_panel_preview(memo: dict, preview: dict) -> FT:
     """What Invoice selected would do, from the server's dry run: the reason it cannot, or the
     fixed amounts the invoice takes from the memo, its total after the draw and what stays on
-    the memo. Carries the versions it was worked out on, and the invoice they were read for, so
-    the draw is refused if either moved."""
+    the memo. Carries the preview's binding, which the confirm sends so the draw is refused
+    unless it is exactly the one shown."""
     currency = memo.get("currency") or ""
-    read = {"memo_version": preview.get("memo_version"), "target_version": preview.get("target_version"),
-            "target_id": (preview.get("target") or {}).get("id")}
-    versions = [Input(type="hidden", name=name, value=str(read[key]))
-                for name, key in (("expected_memo", "memo_version"), ("expected_target", "target_version"),
-                                  ("expected_target_id", "target_id"))
-                if read[key] is not None]
+    binding = [Input(type="hidden", name="binding", value=preview["binding"])] if preview.get("binding") else []
     if preview.get("problems"):
-        return Div(*versions, P(refusal_text(preview["problems"]), cls="cell-error"))
+        return Div(*binding, P(refusal_text(preview["problems"]), cls="cell-error"))
     taken = _fixed_amounts_text(preview.get("fixed_taken"), currency)
     total = float((preview.get("totals_after") or {}).get("total") or 0)
     left = float(((preview.get("left_on_memo") or {}).get("fixed") or {}).get("still_on_memo") or 0)
-    return Div(*versions,
+    return Div(*binding,
                P(t("documents.draw_takes_fixed", amounts=taken)) if taken else "",
                P(t("documents.draw_preview_totals", total=fmt_money(total, currency))),
                P(t("documents.draw_preview_left", left=fmt_money(left, currency)), cls="text-muted"))
@@ -10569,6 +10562,36 @@ async function celerpCsvImport(input, entityId) {{
   var reserveBtn=document.getElementById('li-bulk-reserve-btn');
   var revertBtn=document.getElementById('li-bulk-revert-btn');
   var drawPanel=document.getElementById('draw-panel');
+  // Invoice selected confirms only the preview on screen: a change to the selection holds the
+  // button until the preview of the new selection answers with its binding.
+  function _drawAsk(){{
+    var f=new FormData(drawPanel); f.delete('binding'); f.delete({OPERATION_KEY_FIELD!r});
+    return new URLSearchParams(f).toString();
+  }}
+  var _drawShown=null;  // the selection the preview on screen was worked out for
+  function _drawHold(){{
+    if(!drawPanel||_drawAsk()===_drawShown) return;
+    _drawShown=null;
+    var btn=drawPanel.querySelector('button[type=submit]');
+    if(btn) btn.disabled=true;
+    drawPanel.querySelectorAll('#draw-preview input[name=binding]').forEach(function(el){{el.remove();}});
+  }}
+  if(drawPanel){{
+    drawPanel.addEventListener('input',_drawHold);
+    drawPanel.addEventListener('change',_drawHold);
+    drawPanel.addEventListener('htmx:beforeRequest',function(e){{
+      if(e.detail.elt.id!=='draw-preview') return;
+      e.detail.elt._celerpAsk=_drawAsk();
+      _drawHold();
+    }});
+    drawPanel.addEventListener('htmx:afterSwap',function(e){{
+      if(e.detail.elt.id!=='draw-preview') return;
+      var current=e.detail.elt._celerpAsk===_drawAsk()&&!!e.detail.elt.querySelector('input[name=binding]');
+      _drawShown=current?e.detail.elt._celerpAsk:null;
+      var btn=drawPanel.querySelector('button[type=submit]');
+      if(btn) btn.disabled=!current;
+    }});
+  }}
   function _hideBtns(){{
     if(labelsBtn) labelsBtn.style.display='none';
     if(fulfillBtn) fulfillBtn.style.display='none';

@@ -14,7 +14,7 @@ from celerp.projections.engine import ProjectionEngine
 from celerp.models.ledger import LedgerEntry
 from memo_draw_support import (
     also_keys, auth, auth_full, contact, draft, draw, drawn, drawn_lines, item, key_of, lot, memo_out, ok, owner,
-    pay, preview_versions, revoke, service_line, state,
+    pay, revoke, service_line, state,
 )
 
 
@@ -325,7 +325,7 @@ async def test_draw_preview_matches_stored(client, session, target):
     await nothing_written(client, h, memo, lots[0] + lots[1], pf, before)
     assert await ledger_rows(session) == rows
     assert preview["problems"] == []
-    inv = await drawn(client, h, memo, pick, target=pf, expected_versions=preview_versions(preview))
+    inv = await drawn(client, h, memo, pick, target=pf, binding=preview["binding"])
     doc, m = await state(client, h, inv), await state(client, h, memo)
     stored = drawn_lines(doc, memo)
     assert [(p["memo_line_id"], p["quantity"], p["line_total"]) for p in preview["lines"]] == \
@@ -338,36 +338,7 @@ async def test_draw_preview_matches_stored(client, session, target):
     assert preview["left_on_memo"]["fixed"] == m["memo_fixed_amounts"]
 
 
-@pytest.mark.parametrize("change", ["other_draw", "target_edit", "target_finalize"])
-async def test_draw_preview_stale_refused(client, session, change):
-    h = await auth(session)
-    memo, lids, lots = await memo_out(client, h, [(4, 10.0)], lots_per_line=4)
-    pf = await draft(client, h, lines=[service_line()])
-    preview = await ok(await draw(client, h, memo, {lids[0]: 1}, target=pf, dry_run=True))
-    seen = preview_versions(preview)
-
-    if change == "other_draw":
-        await drawn(client, h, memo, {lids[0]: 1})
-    elif change == "target_edit":
-        doc = await state(client, h, pf)
-        await ok(await client.patch(f"/docs/{pf}", headers=h, json={"fields_changed": {"notes": {"new": "changed"}}, "expected_version": doc["version"]}))
-    else:
-        await ok(await client.post(f"/docs/{pf}/finalize", headers=h))
-    after = await versions(client, h, memo, pf)
-
-    r = await draw(client, h, memo, {lids[0]: 1}, target=pf, expected_versions=seen)
-
-    assert r.status_code == 409, r.text
-    assert key_of(r) == "docs.draw_preview_stale"
-    text = r.json()["detail"]["message"]
-    m, t = await state(client, h, memo), await state(client, h, pf)
-    assert m["ref_id"] in text and t["ref_id"] in text
-    if change == "target_finalize":
-        assert "docs.draw_target_not_draft" in also_keys(r)
-        return
-    assert (m["version"], t["version"]) == (after["memo"], after["target"])
-    fresh = await ok(await draw(client, h, memo, {lids[0]: 1}, target=pf, dry_run=True))
-    await drawn(client, h, memo, {lids[0]: 1}, target=pf, expected_versions=preview_versions(fresh))
+# ── A confirmed draw is the one the preview showed ────────────────────────────
 
 
 async def _bump(client, h, doc_id: str) -> None:
@@ -376,42 +347,148 @@ async def _bump(client, h, doc_id: str) -> None:
         "fields_changed": {"notes": {"new": uuid.uuid4().hex}}, "expected_version": doc["version"]}))
 
 
-@pytest.mark.parametrize(("read_for", "sent_to"), [("new", "a"), ("a", "b"), ("a", "new")])
-async def test_draw_versions_count_only_for_the_invoice_they_were_read_for(client, session, read_for, sent_to):
-    """Choosing another invoice after a preview never makes the draw stale: the versions the
-    preview read for one invoice are never compared with another document's."""
-    h = await auth(session)
-    memo, lids, _lots = await memo_out(client, h, [(4, 10.0)], lots_per_line=4)
-    drafts = {"new": None, "a": await draft(client, h, lines=[service_line()]),
-              "b": await draft(client, h, lines=[service_line()])}
-    await _bump(client, h, drafts["b"])
-    preview = await ok(await draw(client, h, memo, {lids[0]: 1}, target=drafts[read_for], dry_run=True))
-
-    inv = await drawn(client, h, memo, {lids[0]: 1}, target=drafts[sent_to], expected_versions=preview_versions(preview))
-
-    assert inv == drafts[sent_to] if sent_to != "new" else inv not in drafts.values()
-
-
-async def test_draw_read_for_another_invoice_still_refuses_a_changed_memo(client, session):
-    h = await auth(session)
-    memo, lids, _lots = await memo_out(client, h, [(4, 10.0)], lots_per_line=4)
-    a, b = await draft(client, h, lines=[service_line()]), await draft(client, h, lines=[service_line()])
-    preview = await ok(await draw(client, h, memo, {lids[0]: 1}, target=a, dry_run=True))
-    await drawn(client, h, memo, {lids[0]: 1})
-
-    r = await draw(client, h, memo, {lids[0]: 1}, target=b, expected_versions=preview_versions(preview))
-
+async def _refused_as_differs(client, h, r, memo: str, lots: list[str], target: str | None, before: dict) -> None:
     assert r.status_code == 409, r.text
-    assert key_of(r) == "docs.draw_preview_stale_memo"
+    assert key_of(r) == "docs.draw_preview_differs", r.text
+    assert (await state(client, h, memo))["ref_id"] in r.json()["detail"]["message"]
+    await nothing_written(client, h, memo, lots, target, before)
 
 
-async def test_a_target_version_names_the_invoice_it_was_read_for(client, session):
+@pytest.mark.parametrize("change", ["other_draw", "memo_payment_voided", "target_edit", "target_finalize"])
+async def test_draw_refused_when_memo_or_target_changed_after_the_preview(client, session, change):
     h = await auth(session)
-    memo, lids, _lots = await memo_out(client, h, [(4, 10.0)], lots_per_line=4)
+    memo, lids, lots = await memo_out(client, h, [(4, 10.0)], lots_per_line=4)
     pf = await draft(client, h, lines=[service_line()])
     preview = await ok(await draw(client, h, memo, {lids[0]: 1}, target=pf, dry_run=True))
 
-    r = await draw(client, h, memo, {lids[0]: 1}, target=pf,
-                   expected_versions={"memo": preview["memo_version"], "target": preview["target_version"]})
+    if change == "other_draw":
+        await drawn(client, h, memo, {lids[0]: 1})
+    elif change == "memo_payment_voided":
+        await ok(await pay(client, h, memo, 5.0))
+        p = next(p for p in (await state(client, h, memo))["payments"] if p.get("status", "active") == "active")
+        await ok(await client.post(f"/docs/{memo}/void-payment", headers=h, json={"payment_index": p["index"]}))
+    elif change == "target_edit":
+        await _bump(client, h, pf)
+    else:
+        await ok(await client.post(f"/docs/{pf}/finalize", headers=h))
+    after = await versions(client, h, memo, pf)
+    still_out = [i for i in lots[0] if await owner(client, h, i) == ("memo_out", memo)]
 
-    assert r.status_code == 422, r.text
+    r = await draw(client, h, memo, {lids[0]: 1}, target=pf, binding=preview["binding"])
+
+    await _refused_as_differs(client, h, r, memo, still_out, pf, after)
+    if change == "target_finalize":
+        assert "docs.draw_target_not_draft" in also_keys(r)
+        return
+    fresh = await ok(await draw(client, h, memo, {lids[0]: 1}, target=pf, dry_run=True))
+    await drawn(client, h, memo, {lids[0]: 1}, target=pf, binding=fresh["binding"])
+
+
+@pytest.mark.parametrize(("shown", "sent"), [("new", "a"), ("a", "new"), ("a", "b"), ("b", "a")])
+async def test_draw_refused_when_sent_to_another_invoice_than_the_preview(client, session, shown, sent):
+    """Previewed for one invoice, confirmed for another (new to draft, draft to new, draft to
+    draft), even with no record changed in between: the totals shown were another invoice's."""
+    h = await auth(session)
+    memo, lids, lots = await memo_out(client, h, [(4, 10.0)], lots_per_line=4)
+    drafts = {"new": None, "a": await draft(client, h, lines=[service_line()]),
+              "b": await draft(client, h, lines=[service_line()])}
+    preview = await ok(await draw(client, h, memo, {lids[0]: 1}, target=drafts[shown], dry_run=True))
+    before = await versions(client, h, memo, drafts[sent])
+    shown_before = await versions(client, h, memo, drafts[shown])
+
+    r = await draw(client, h, memo, {lids[0]: 1}, target=drafts[sent], binding=preview["binding"])
+
+    await _refused_as_differs(client, h, r, memo, lots[0], drafts[sent], before)
+    await nothing_written(client, h, memo, lots[0], drafts[shown], shown_before)
+
+
+@pytest.mark.parametrize("change", ["more_units", "fewer_units", "another_line", "line_dropped", "line_order"])
+async def test_draw_refused_when_lines_or_quantities_differ_from_the_preview(client, session, change):
+    """A quantity or line changed and confirmed before the new preview came back."""
+    h = await auth(session)
+    memo, lids, lots = await memo_out(client, h, [(4, 10.0), (3, 20.0)], lots_per_line=1)
+    shown = {lids[0]: 2, lids[1]: 1}
+    preview = await ok(await draw(client, h, memo, shown, dry_run=True))
+    sent = {"more_units": {lids[0]: 3, lids[1]: 1}, "fewer_units": {lids[0]: 1, lids[1]: 1},
+            "another_line": {lids[0]: 2}, "line_dropped": {lids[0]: 2}, "line_order": {lids[1]: 1, lids[0]: 2}}[change]
+    if change == "another_line":
+        preview = await ok(await draw(client, h, memo, {lids[1]: 1}, dry_run=True))
+    before = await versions(client, h, memo, None)
+
+    r = await draw(client, h, memo, sent, binding=preview["binding"])
+
+    await _refused_as_differs(client, h, r, memo, lots[0] + lots[1], None, before)
+
+
+async def test_overlapping_previews_only_the_latest_confirms(client, session):
+    """Two previews in flight for successive selections: the confirm of the latest selection
+    carries the latest preview's binding and succeeds; one carrying the older answer is refused."""
+    h = await auth(session)
+    memo, lids, lots = await memo_out(client, h, [(4, 10.0)], lots_per_line=1)
+    older = await ok(await draw(client, h, memo, {lids[0]: 1}, dry_run=True))
+    newer = await ok(await draw(client, h, memo, {lids[0]: 3}, dry_run=True))
+    before = await versions(client, h, memo, None)
+
+    r = await draw(client, h, memo, {lids[0]: 3}, binding=older["binding"])
+    await _refused_as_differs(client, h, r, memo, lots[0], None, before)
+
+    inv = await drawn(client, h, memo, {lids[0]: 3}, binding=newer["binding"])
+    assert sum(li["quantity"] for li in drawn_lines(await state(client, h, inv), memo)) == 3
+    assert newer["totals_after"]["total"] == pytest.approx((await state(client, h, inv))["total"])
+
+
+@pytest.mark.parametrize("target", ["new", "draft"])
+async def test_draw_confirmed_as_previewed_succeeds(client, session, target):
+    h = await auth(session)
+    memo, lids, _lots = await memo_out(client, h, [(4, 10.0)], lots_per_line=4)
+    pf = await draft(client, h, lines=[service_line()]) if target == "draft" else None
+    preview = await ok(await draw(client, h, memo, {lids[0]: 2}, target=pf, dry_run=True))
+
+    inv = await drawn(client, h, memo, {lids[0]: 2}, target=pf, binding=preview["binding"])
+
+    assert preview["problems"] == [] and preview["binding"]
+    assert inv == pf if pf else inv.startswith("doc:")
+    assert preview["totals_after"]["total"] == pytest.approx((await state(client, h, inv))["total"])
+
+
+# Every field of the draw request either changes what the draw bills, and a change after the
+# preview refuses the confirm, or is named here as one that does not.
+_NOT_BILLED = {"idempotency_key", "dry_run", "binding"}
+
+
+def _mutations(lids: list[str], other_draft: str) -> dict:
+    return {
+        "line_ids": lambda b: {**b, "line_ids": [*b["line_ids"], lids[1]]},
+        "quantities": lambda b: {**b, "quantities": {lids[0]: 1}},
+        "target_doc_id": lambda b: {**b, "target_doc_id": other_draft},
+        "weights": lambda b: {**b, "weights": {lids[0]: 0.5}},
+        "pieces": lambda b: {**b, "pieces": {lids[0]: 1}},
+        "line_entity_ids": lambda b: {**b, "line_entity_ids": ["item:any"]},
+    }
+
+
+async def test_every_billing_field_of_the_draw_is_bound_to_the_preview(client, session):
+    from celerp_docs.routes import DRAW_UNBOUND_FIELDS, InvoiceLinesRequest
+
+    h = await auth(session)
+    memo, lids, lots = await memo_out(client, h, [(4, 10.0), (3, 20.0)], lots_per_line=1)
+    pf, other = await draft(client, h, lines=[service_line()]), await draft(client, h, lines=[service_line()])
+    mutations = _mutations(lids, other)
+    assert _NOT_BILLED == DRAW_UNBOUND_FIELDS
+    assert set(mutations) == set(InvoiceLinesRequest.model_fields) - _NOT_BILLED, \
+        "a new draw request field must be bound to the preview or named in _NOT_BILLED"
+    shown = {"line_ids": [lids[0]], "quantities": {lids[0]: 2}, "target_doc_id": pf}
+    preview = await ok(await client.post(f"/docs/{memo}/invoice-lines", headers=h, json={**shown, "dry_run": True}))
+    before = await versions(client, h, memo, pf)
+
+    for field, mutate in mutations.items():
+        body = {**mutate(shown), "binding": preview["binding"], "idempotency_key": uuid.uuid4().hex}
+        r = await client.post(f"/docs/{memo}/invoice-lines", headers=h, json=body)
+        if field == "line_entity_ids":
+            assert r.status_code == 422, r.text
+        else:
+            assert key_of(r) == "docs.draw_preview_differs", (field, r.text)
+        await nothing_written(client, h, memo, lots[0] + lots[1], pf, before)
+
+    await ok(await client.post(f"/docs/{memo}/invoice-lines", headers=h,
+                               json={**shown, "binding": preview["binding"], "idempotency_key": uuid.uuid4().hex}))

@@ -661,6 +661,82 @@ def test_choosing_another_invoice_after_a_preview_invoices_onto_it(page, ui_serv
     assert float(api.get(f"/docs/{invoice_id}").json()["total"]) == float(totals[sent_to].strip("$"))
 
 
+def _open_draw_panel(page, ui_server, doc_id):
+    page.goto(f"{ui_server}/docs/{doc_id}", wait_until="domcontentloaded")
+    _assert_no_crash(page, "memo invoice selected")
+    page.locator(".li-select").first.check()
+    page.locator("#li-bulk-select").select_option(value="li-invoice")
+
+
+def _hold_previews(page):
+    """Holds every Invoice selected preview request until the test lets it through."""
+    held = []
+    page.route("**/invoice-lines/preview", lambda route: held.append(route))
+    return held
+
+
+def _let_through(route):
+    try:
+        route.continue_()
+    except Exception:
+        pass  # the page already cancelled it for a newer preview
+
+
+def test_invoice_selected_cannot_confirm_until_the_preview_of_the_selection_returns(page, ui_server, api):
+    """Changing a quantity and pressing the button at once never invoices against the old
+    preview: the button waits for the preview of the units now typed."""
+    doc_id, _item = _shipped_memo(api, f"MDW-{uuid.uuid4().hex[:6]}", 4)
+    _open_draw_panel(page, ui_server, doc_id)
+    preview, confirm = page.locator("#draw-preview"), page.locator("#draw-panel button[type=submit]")
+    page.locator("#draw-panel input[name=qty_0]").fill("1")
+    expect(preview).to_contain_text("Invoice total after this: $10.00")
+    expect(confirm).to_be_enabled()
+
+    held = _hold_previews(page)
+    page.locator("#draw-panel input[name=qty_0]").fill("3")
+    expect(confirm).to_be_disabled()
+    page.wait_for_timeout(600)
+    expect(confirm).to_be_disabled()
+    assert held, "the preview of the new quantity was sent"
+    for route in held:
+        _let_through(route)
+    expect(preview).to_contain_text("Invoice total after this: $30.00")
+    expect(confirm).to_be_enabled()
+    confirm.click()
+    page.wait_for_url(lambda url: f"/docs/{doc_id}" not in url and "/docs/" in url)
+    invoice_id = page.url.rsplit("/docs/", 1)[1].split("?")[0]
+    assert float(api.get(f"/docs/{invoice_id}").json()["total"]) == 30.0
+
+
+def test_invoice_selected_keeps_the_newest_preview_when_an_older_answer_comes_last(page, ui_server, api):
+    """A slow preview of an earlier quantity answering after the preview of the later one never
+    replaces it, and the button invoices the quantity shown."""
+    doc_id, _item = _shipped_memo(api, f"MDS-{uuid.uuid4().hex[:6]}", 4)
+    _open_draw_panel(page, ui_server, doc_id)
+    preview, confirm = page.locator("#draw-preview"), page.locator("#draw-panel button[type=submit]")
+    page.locator("#draw-panel input[name=qty_0]").fill("4")
+    expect(preview).to_contain_text("Invoice total after this: $40.00")
+
+    held = []
+    page.route("**/invoice-lines/preview",
+               lambda route: held.append(route) if "qty_0=1&" in (route.request.post_data or "") + "&"
+               else route.continue_())
+    page.locator("#draw-panel input[name=qty_0]").fill("1")
+    page.wait_for_timeout(600)
+    assert len(held) == 1
+    older = held.pop()
+    page.locator("#draw-panel input[name=qty_0]").fill("2")
+    expect(preview).to_contain_text("Invoice total after this: $20.00")
+    _let_through(older)
+    page.wait_for_timeout(600)
+    expect(preview).to_contain_text("Invoice total after this: $20.00")
+    expect(confirm).to_be_enabled()
+    confirm.click()
+    page.wait_for_url(lambda url: f"/docs/{doc_id}" not in url and "/docs/" in url)
+    invoice_id = page.url.rsplit("/docs/", 1)[1].split("?")[0]
+    assert float(api.get(f"/docs/{invoice_id}").json()["total"]) == 20.0
+
+
 def test_setting_a_memo_tax_rate_previews_each_rate_typed_then_saves(page, ui_server, api):
     """A memo whose tax was entered as an amount gets a rate from its Rate cell: every rate
     typed shows the tax it gives, and Save sets it with a notice."""

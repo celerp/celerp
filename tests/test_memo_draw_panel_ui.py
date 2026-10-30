@@ -75,7 +75,7 @@ def test_memo_draw_panel_names_fixed_amounts_left(left, takes, names):
     assert 'id="draw-panel"' in html and "invoice-lines" in html
 
     from fasthtml.common import to_xml
-    preview = {"problems": [], "memo_version": 3, "fixed_taken": takes, "totals_after": {"total": 300.0},
+    preview = {"problems": [], "fixed_taken": takes, "totals_after": {"total": 300.0},
                "left_on_memo": {"fixed": {"still_on_memo": 50.0}}}
     panel = to_xml(_draw_panel_preview(memo, preview))
     for amount in names:
@@ -163,47 +163,63 @@ def test_a_drawn_invoice_line_badge_names_the_memo_its_goods_are_out_on():
 
 
 _PICKS = {"line_id_0": LINE, "qty_0": "1", "currency": "USD"}
-_HELD = {"expected_memo": "3", "expected_target": "5", "expected_target_id": "doc:pf-1"}
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("target", ["", "doc:pf-2"])
-async def test_a_draw_preview_reads_fresh_whatever_versions_the_panel_holds(ui_client, target):
-    """Choosing another invoice re-previews; the versions an earlier preview read are never
-    sent with it, so they cannot make the new preview stale."""
-    preview = AsyncMock(return_value={"problems": [], "memo_version": 3, "target": {"id": target or None},
-                                      "target_version": 7 if target else None, "totals_after": {"total": 10.0}})
+@pytest.mark.parametrize("problems", [[], [{"message_key": "docs.draw_target_not_draft", "message": "Not a draft."}]])
+async def test_a_draw_preview_reads_fresh_and_carries_its_binding(ui_client, target, problems):
+    """A preview never sends the binding the panel holds, and its answer, refused or not,
+    carries the binding of this preview alone: the one a confirm sends back."""
+    preview = AsyncMock(return_value={"problems": problems, "binding": "b-new", "totals_after": {"total": 10.0}})
     with patch("ui.api_client.invoice_lines_preview", new=preview):
-        r = await ui_client.post(f"/docs/{MEMO}/invoice-lines/preview", data={**_PICKS, **_HELD, "target_doc_id": target})
+        r = await ui_client.post(f"/docs/{MEMO}/invoice-lines/preview",
+                                 data={**_PICKS, "binding": "b-old", "target_doc_id": target})
     assert r.status_code == 200, r.text
     body = preview.await_args.args[2]
-    assert "expected_versions" not in body and body["target_doc_id"] == (target or None)
+    assert "binding" not in body and body["target_doc_id"] == (target or None)
+    assert re.findall(r'name="binding" value="([^"]*)"', r.text) == ["b-new"]
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("held", "sent"), [
-    (_HELD, {"memo": 3, "target": 5, "target_id": "doc:pf-1"}),
-    ({"expected_memo": "3"}, {"memo": 3, "target": None, "target_id": None}),
-])
-async def test_a_draw_submit_sends_the_versions_bound_to_the_invoice_they_were_read_for(ui_client, held, sent):
-    draw = AsyncMock(return_value={"target_doc_id": "doc:pf-1"})
+async def test_a_failed_draw_preview_carries_no_binding(ui_client):
+    from ui.api_client import APIError
+    failed = AsyncMock(side_effect=APIError(404, "Not found.", {}))
+    with patch("ui.api_client.invoice_lines_preview", new=failed):
+        r = await ui_client.post(f"/docs/{MEMO}/invoice-lines/preview", data={**_PICKS, "binding": "b-old"})
+    assert 'name="binding"' not in r.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("target", ["", "doc:pf-1"])
+async def test_a_draw_submit_sends_the_binding_of_the_preview_on_screen(ui_client, target):
+    draw = AsyncMock(return_value={"target_doc_id": target or "doc:inv-9"})
     with patch("ui.api_client.invoice_lines", new=draw):
-        r = await ui_client.post(f"/docs/{MEMO}/invoice-lines",
-                                 data={**_PICKS, **held, "target_doc_id": "doc:pf-1", "idempotency_key": "k-1"})
+        r = await ui_client.post(f"/docs/{MEMO}/invoice-lines", data={
+            **_PICKS, "binding": "b-shown", "target_doc_id": target, "idempotency_key": "k-1"})
     assert r.status_code == 204, r.text
-    assert draw.await_args.args[2]["expected_versions"] == sent
+    sent = draw.await_args.args[2]
+    assert sent["binding"] == "b-shown" and sent["target_doc_id"] == (target or None)
+    assert sent["quantities"] == {LINE: 1.0}
 
 
-@pytest.mark.parametrize(("target", "hidden"), [
-    ({"id": "doc:pf-1"}, {"expected_memo": "3", "expected_target": "5", "expected_target_id": "doc:pf-1"}),
-    ({"id": None}, {"expected_memo": "3"}),
-])
-def test_a_draw_preview_carries_the_invoice_its_versions_were_read_for(target, hidden):
+@pytest.mark.asyncio
+async def test_a_draw_submit_without_a_preview_is_refused_and_sends_nothing(ui_client):
+    draw = AsyncMock(return_value={"target_doc_id": "doc:inv-9"})
+    with patch("ui.api_client.invoice_lines", new=draw):
+        r = await ui_client.post(f"/docs/{MEMO}/invoice-lines", data={**_PICKS, "idempotency_key": "k-1"})
+    assert t("documents.draw_wait_for_preview") in r.headers.get("HX-Trigger", "")
+    draw.assert_not_awaited()
+
+
+def test_the_draw_confirm_waits_for_the_preview_of_the_current_selection():
+    """Confirm starts disabled and only a preview answer carrying a binding enables it; a newer
+    preview request replaces an older one in flight, so an older answer never lands last."""
     from fasthtml.common import to_xml
-    from ui.routes.documents import _draw_panel_preview
+    from ui.routes.documents import _draw_panel
 
-    preview = {"problems": [], "memo_version": 3, "target": target,
-               "target_version": 5 if target["id"] else None, "totals_after": {"total": 10.0}}
-    panel = to_xml(_draw_panel_preview(_memo(), preview))
-    found = dict(re.findall(r'name="(expected_\w+)" value="([^"]*)"', panel))
-    assert found == hidden
+    panel = to_xml(_draw_panel(MEMO, _memo(), [], {}))
+    submit = re.search(r"<button[^>]*type=\"submit\"[^>]*>", panel).group(0)
+    assert "disabled" in submit
+    preview = re.search(r'<div[^>]*id="draw-preview"[^>]*>', panel).group(0)
+    assert 'hx-sync="this:replace"' in preview

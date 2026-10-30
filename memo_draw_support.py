@@ -115,7 +115,7 @@ def service_line(price: float = 20.0, **extra) -> dict:
 
 async def draw(client, h, memo: str, quantities: dict[str, float] | None = None, *, line_ids: list[str] | None = None,
                target: str | None = None, key: str | None = None, dry_run: bool = False,
-               expected_versions: dict | None = None):
+               binding: str | None = None):
     """POST the draw: ``quantities`` maps memo line id to units, ``line_ids`` draws whole lines."""
     body: dict = {"line_ids": list(line_ids or quantities or []), "idempotency_key": key or uuid.uuid4().hex}
     if quantities:
@@ -124,15 +124,9 @@ async def draw(client, h, memo: str, quantities: dict[str, float] | None = None,
         body["target_doc_id"] = target
     if dry_run:
         body["dry_run"] = True
-    if expected_versions is not None:
-        body["expected_versions"] = expected_versions
+    if binding is not None:
+        body["binding"] = binding
     return await client.post(f"/docs/{memo}/invoice-lines", headers=h, json=body)
-
-
-def preview_versions(preview: dict) -> dict:
-    """The versions a draw preview read, bound to the invoice it read them for, as the
-    confirmed draw sends them back."""
-    return {"memo": preview["memo_version"], "target": preview["target_version"], "target_id": preview["target"]["id"]}
 
 
 async def drawn(client, h, memo: str, quantities: dict[str, float] | None = None, **kw) -> str:

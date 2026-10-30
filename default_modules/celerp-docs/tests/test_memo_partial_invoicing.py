@@ -144,7 +144,7 @@ def test_invoice_lines_request_has_no_remaining_count():
     from celerp_docs.routes import InvoiceLinesRequest
 
     fields = set(InvoiceLinesRequest.model_fields)
-    assert {"line_ids", "quantities", "target_doc_id", "dry_run", "expected_versions"} <= fields
+    assert {"line_ids", "quantities", "target_doc_id", "dry_run", "binding"} <= fields
     assert not {f for f in fields if "remain" in f or "left" in f}
 
 

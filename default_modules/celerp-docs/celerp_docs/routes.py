@@ -11205,31 +11205,16 @@ async def revert_lines(
 # memo records what the draw took, so the rest stays on the memo and nothing bills twice.
 
 
-class DrawVersions(BaseModel):
-    """The versions of the memo and the target invoice a preview was worked out on.
-    ``target_id`` names the draft invoice ``target`` was read for (None: a new invoice), so a
-    version read for one invoice is never compared with another's."""
-    memo: int
-    target: int | None = None
-    target_id: str | None = None
-
-    @model_validator(mode="after")
-    def _target_names_its_invoice(self):
-        if (self.target is None) != (self.target_id is None):
-            raise ValueError("A target version needs the target_id of the invoice it was read for.")
-        return self
-
-
 class InvoiceLinesRequest(RevertLinesRequest):
     """Invoice goods out on a memo. ``line_ids`` names the memo lines and ``quantities`` the
     units of each to invoice, by line id (omitted: every unit the line has out).
     ``target_doc_id`` names a draft invoice of the same customer to add them to; without it
     a new invoice is made. ``dry_run`` returns what the draw would bill and leave on the memo
-    without writing anything; ``expected_versions``, the versions that preview read, refuses
-    the draw when the memo changed since, or the target when the preview was read for it."""
+    without writing anything, with its ``binding``; sending that ``binding`` back with the draw
+    refuses it unless it is exactly the draw the preview showed (draw_binding)."""
     target_doc_id: str | None = None
     dry_run: bool = False
-    expected_versions: DrawVersions | None = None
+    binding: str | None = None
 
     @model_validator(mode="after")
     def _names_lines_by_id(self):
@@ -11320,6 +11305,21 @@ def _terms_text(terms: dict) -> str:
     return ", ".join(parts) or "no discount or tax"
 
 
+# The draw request fields that do not change what it bills; every other field is bound to the preview.
+DRAW_UNBOUND_FIELDS = frozenset({"idempotency_key", "dry_run", "binding"})
+
+
+def draw_binding(snap: _DrawSnapshot, body: InvoiceLinesRequest) -> str:
+    """The draw a preview shows, as one digest: the memo and its version, the target and its
+    version (none: a new invoice), and every field of the request that changes what is billed,
+    lines in their order with their quantities."""
+    target = snap.target
+    shown = {"memo": [snap.memo.entity_id, snap.memo.version],
+             "target": [target.entity_id, target.version] if target else None,
+             "request": body.model_dump(mode="json", exclude=set(DRAW_UNBOUND_FIELDS))}
+    return hashlib.sha256(json.dumps(shown, sort_keys=True).encode()).hexdigest()
+
+
 def draw_problems(snap: _DrawSnapshot, body: InvoiceLinesRequest, *,
                   everything: bool = False) -> tuple[list[dict], list[tuple[int, float]]]:
     """Everything that stops this draw, in the one order the preview and the write report it,
@@ -11329,19 +11329,11 @@ def draw_problems(snap: _DrawSnapshot, body: InvoiceLinesRequest, *,
     memo, target = snap.memo.state, snap.target
     memo_ref = _ref(snap.memo)
     problems: list[dict] = []
-    seen = body.expected_versions
-    if seen is not None:
-        same_target = target is not None and seen.target_id == body.target_doc_id
-        if same_target and (seen.memo, seen.target) != (snap.memo.version, target.version):
-            problems.append(refusal(
-                "docs.draw_preview_stale",
-                f"Memo {memo_ref} or {_ref(target)} changed after the preview. Check the new preview, then confirm again.",
-                memo=memo_ref, target=_ref(target)))
-        elif not same_target and seen.memo != snap.memo.version:
-            problems.append(refusal(
-                "docs.draw_preview_stale_memo",
-                f"Memo {memo_ref} changed after the preview. Check the new preview, then confirm again.",
-                memo=memo_ref))
+    if body.binding is not None and body.binding != draw_binding(snap, body):
+        problems.append(refusal(
+            "docs.draw_preview_differs",
+            f"Memo {memo_ref}, the invoice or the lines and quantities chosen changed after the preview. "
+            "Check the new preview, then confirm again.", memo=memo_ref))
     if memo.get("status") not in MEMO_DRAW_STATUSES:
         key = "documents.err_memo_nothing_out" if memo.get("status") == "converted" else "documents.err_memo_issue_first"
         return [*problems, refusal(key, t(key))], []
@@ -11495,7 +11487,7 @@ def _draw_bill(snap: _DrawSnapshot, picks: list[tuple[int, float]], draw_id: str
 
 async def _draw_preview(session, company_id, memo_id: str, body: InvoiceLinesRequest) -> dict:
     """What the draw would do, read without locks or writes; its figures are the write's own
-    (_draw_bill), and its versions let the confirmed draw refuse a record changed since."""
+    (_draw_bill), and its binding lets the confirmed draw refuse anything but this draw."""
     memo = await _get_doc(session, company_id, memo_id)
     _refuse_not_memo(memo.state)
     target = await _get_doc(session, company_id, body.target_doc_id) if body.target_doc_id else None
@@ -11506,8 +11498,8 @@ async def _draw_preview(session, company_id, memo_id: str, body: InvoiceLinesReq
         invoice_id, doc_number = None, peek_draft_ref(company, "invoice")
     else:
         invoice_id, doc_number = target.entity_id, _ref(target)
-    preview = {"target": {"id": invoice_id, "ref_id": doc_number}, "memo_version": memo.version,
-               "target_version": target.version if target else None, "problems": problems,
+    preview = {"target": {"id": invoice_id, "ref_id": doc_number}, "binding": draw_binding(snap, body),
+               "problems": problems,
                "lines": [], "fixed_taken": {}, "tax": None, "totals_after": {}, "left_on_memo": {}}
     if problems:
         return preview
