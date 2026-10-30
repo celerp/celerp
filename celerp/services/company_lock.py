@@ -20,7 +20,7 @@ from celerp.models.projections import Projection
 AUTHORITY = "celerp_request_authority"
 _REFUSED = "celerp_authority_refused"
 # What the locks taken in this transaction proved, each with the (sub)transaction that
-# took it: "locked" (lock_company completed, company id), "loaded" (locked_company,
+# took it: "locked" (lock_company held its row, company id), "loaded" (locked_company,
 # company id), "deleting" (lock_company_for_deletion holds its row, company id), "judged"
 # (the authority judged again, company id as text) and "modules" (the modules judged,
 # (company id as text, names)). PostgreSQL releases a lock taken in a
@@ -69,7 +69,8 @@ async def lock_company(session: AsyncSession, company_id) -> bool:
         select(Company.id).where(Company.id == company_id).with_for_update(key_share=True)
     )).first() is not None
     await _judge_authority_again(session, company_id)
-    note(session, "locked", company_id)
+    if found:
+        note(session, "locked", company_id)
     return found
 
 
@@ -222,7 +223,7 @@ async def locked_company(session: AsyncSession, company_id) -> Company | None:
 
 
 def holds_company_lock(session, company_id) -> bool:
-    """True when lock_company() for the company completed in this transaction, judging
+    """True when lock_company() found and locked the company in this transaction, judging
     the request's authority again, and PostgreSQL still holds the lock it took."""
     return str(company_id) in {str(c) for c in noted(session, "locked")}
 

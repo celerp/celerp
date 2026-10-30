@@ -92,24 +92,22 @@ def holds_connector_fence(session: AsyncSession, connector: str) -> bool:
 
 async def lock_connector_runtime(session: AsyncSession) -> None:
     """Join the shared connector-runtime fence for this transaction."""
+    if session.get_bind().dialect.name != "sqlite":
+        await session.execute(
+            sa.text("SELECT pg_advisory_xact_lock_shared(hashtextextended(:k, 0))"),
+            {"k": "connector-runtime"},
+        )
     note(session, _FENCE, "connector-runtime")
-    if session.get_bind().dialect.name == "sqlite":
-        return
-    await session.execute(
-        sa.text("SELECT pg_advisory_xact_lock_shared(hashtextextended(:k, 0))"),
-        {"k": "connector-runtime"},
-    )
 
 
 async def lock_connector_maintenance(session: AsyncSession) -> None:
     """Wait for connector work to finish and exclude new work."""
+    if session.get_bind().dialect.name != "sqlite":
+        await session.execute(
+            sa.text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"),
+            {"k": "connector-runtime"},
+        )
     note(session, _FENCE, _MAINTENANCE)
-    if session.get_bind().dialect.name == "sqlite":
-        return
-    await session.execute(
-        sa.text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"),
-        {"k": "connector-runtime"},
-    )
 
 
 @asynccontextmanager
@@ -173,9 +171,12 @@ async def lock_connector_key(
     Connecting and disconnecting hold it EXCLUSIVE behind a bounded wait
     and raise ConnectorBusyError when work is still running."""
     await lock_connector_runtime(session)
+    if session.get_bind().dialect.name != "sqlite":
+        await _take_connector_key(session, connector, exclusive)
     note(session, _FENCE, f"connector-owner:{connector}")
-    if session.get_bind().dialect.name == "sqlite":
-        return
+
+
+async def _take_connector_key(session: AsyncSession, connector: str, exclusive: bool) -> None:
     key = {"k": f"connector-owner:{connector}"}
     if not exclusive:
         await session.execute(
