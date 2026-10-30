@@ -19,6 +19,7 @@ from celerp.models.company import Company
 from celerp.models.projections import Projection
 from celerp.projections.engine import ProjectionEngine
 from celerp.projections.handlers.shopify import apply_shop_sync_event
+from celerp.services.company_lock import lock_company
 
 
 def test_handler_toggles_flag_and_preserves_state():
@@ -41,17 +42,19 @@ async def _emit(session, cid, eid, event_type, data, *, fence=True):
         event_type=event_type, data=data, actor_id=None, location_id=None,
         source="test", idempotency_key=str(uuid.uuid4()), metadata_={},
     )
+    await session.commit()      # each change is a transaction of its own, fence first
 
 
 @pytest.mark.asyncio
 async def test_shop_sync_event_sets_projection_column(session):
     cid = uuid.uuid4()
     session.add(Company(id=cid, name="SyncCo", slug=f"syncco-{cid.hex[:8]}"))
-    await session.flush()
+    await session.commit()    # the company exists before any sync of its items
     eid = "item:sync-1"
     await _emit(session, cid, eid, "item.created", {"sku": "S", "name": "A", "quantity": 1})
     await _emit(session, cid, eid, "shop.sync.enabled", {})
-    await ProjectionEngine.rebuild(session)
+    await lock_company(session, cid)
+    await ProjectionEngine.rebuild(session, cid)
 
     proj = (await session.execute(select(Projection).where(Projection.entity_id == eid))).scalar_one()
     assert proj.is_sync_to_shopify is True          # denormalized column set by the engine
@@ -62,12 +65,13 @@ async def test_shop_sync_event_sets_projection_column(session):
 async def test_shop_sync_disabled_clears_flag(session):
     cid = uuid.uuid4()
     session.add(Company(id=cid, name="SyncCo2", slug=f"syncco2-{cid.hex[:8]}"))
-    await session.flush()
+    await session.commit()    # the company exists before any sync of its items
     eid = "item:sync-2"
     await _emit(session, cid, eid, "item.created", {"sku": "S2", "name": "B", "quantity": 1})
     await _emit(session, cid, eid, "shop.sync.enabled", {})
     await _emit(session, cid, eid, "shop.sync.disabled", {})
-    await ProjectionEngine.rebuild(session)
+    await lock_company(session, cid)
+    await ProjectionEngine.rebuild(session, cid)
 
     proj = (await session.execute(select(Projection).where(Projection.entity_id == eid))).scalar_one()
     assert proj.is_sync_to_shopify is False
@@ -79,12 +83,13 @@ async def test_shop_sync_event_needs_the_shopify_fence_held(session):
     fence ranks before the company lock, so emit_event checks it and never takes it."""
     cid = uuid.uuid4()
     session.add(Company(id=cid, name="FenceCo", slug=f"fenceco-{cid.hex[:8]}"))
-    await session.flush()
+    await session.commit()    # the company exists before any sync of its items
     eid = "item:fence-1"
     await _emit(session, cid, eid, "item.created", {"sku": "F", "name": "Fence", "quantity": 1})
 
     with pytest.raises(RuntimeError, match="Shopify connector fence"):
         await _emit(session, cid, eid, "shop.sync.disabled", {}, fence=False)
+    await session.rollback()
     await _emit(session, cid, eid, "shop.sync.disabled", {})
 
 
