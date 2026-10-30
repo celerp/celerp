@@ -35,6 +35,7 @@ from celerp.migrations._data_reconcile import get_meta, set_meta
 from celerp.models.company import Company
 from celerp.models.projections import Projection
 from celerp.notifications import service as notification_service
+from celerp.services.company_lock import lock_company
 from celerp.services.account_roles import LotOriginError, line_has_role, line_roles
 
 log = logging.getLogger(__name__)
@@ -227,6 +228,13 @@ async def run_cogs_backfill(session) -> dict:
         if backfill and backfill.get("status") == "posted":
             cogs = sum(float(e.get("debit") or 0) for e in backfill.get("entries", []))
             _count_posted(earlier.setdefault(company_id, counts()), cogs, backfill.get("ts"))
+
+    # Every company a doc may post for is locked up front, in id order: a posting takes its
+    # company lock before the Projection rows, and this transaction holds each posting's rows
+    # to its end, so a later company's lock is never waited on while an earlier one's rows are held.
+    await lock_company(session, *{
+        company_id for company_id, _doc_id in doc_jes
+    })
 
     per_company: dict = {}
     for doc in docs:
