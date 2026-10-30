@@ -28,7 +28,7 @@ from test_channel_link_truth import (  # noqa: F401  (connect_session is a fixtu
     _connect, _item, _set_state, _state, connect_session)
 from test_channel_link_truth import _register as _owner
 from migration_support import real_engine  # noqa: F401 - fixture
-from test_helpers import REPO_ROOT, mark_running
+from test_helpers import REPO_ROOT, as_another_client, mark_running
 from test_payments_stripe import (  # noqa: F401  (payments_on is a fixture)
     BOOKS, PAID, _company_id, _doc_state, _h, _payable_invoice, _register, payments_on)
 
@@ -248,10 +248,15 @@ async def test_a_payment_whose_company_turns_documents_off_after_it_was_admitted
     payload = _delivery(tok, eid)
     real = payments._lock_company_of
 
+    async def turn_off(cid):
+        async with payments._own_session() as other:
+            settings = await other.scalar(select(Company.settings).where(Company.id == cid))
+            await other.execute(update(Company).where(Company.id == cid)
+                                .values(settings=disable_for_company(settings, "celerp-docs")))
+            await other.commit()
+
     async def turned_off_first(s, cid):
-        settings = await s.scalar(select(Company.settings).where(Company.id == cid))
-        await s.execute(update(Company).where(Company.id == cid)
-                        .values(settings=disable_for_company(settings, "celerp-docs")))
+        await as_another_client(turn_off(cid))
         return await real(s, cid)
 
     monkeypatch.setattr(payments, "_lock_company_of", turned_off_first)
