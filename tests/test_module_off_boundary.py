@@ -901,7 +901,7 @@ _REVIEWED: dict[tuple[str, str], str] = {
     ("celerp/services/peer_refunds.py", "replay_source_refunds"): _PEER,
     ("ui/routes/contacts.py", "setup_routes"): _OWN_UI,
     **{(_DOCS_UI, name): _OWN_UI for name in (
-        "_hold_refusal", "_physical_lots", "_sales_options", "_doc_line_actions",
+        "_hold_refusal", "_physical_lots", "_drawable_lots", "_doc_line_actions",
         "_writeoff_account_choices", "_payment_section", "_doc_detail", "setup_routes")},
     ("celerp/output/doc_print.py", "render_doc_print_html"):
         "its list-totals step runs only for a list; its callers are Documents' share route "

@@ -503,7 +503,7 @@ class TestLiveSearchResults:
         """After a search on /docs, Export CSV, the status cards and the header summary follow
         the search, like a reload would. The panel needs nothing: the search box is in it."""
         listed = AsyncMock(return_value={"items": [_DOC], "total": 1})
-        summary = AsyncMock(return_value={**_SUMMARY, "ar_outstanding": 40, "ar_total": 90, "invoice_count": 2})
+        summary = AsyncMock(return_value={**_SUMMARY, "ar_outstanding": 40, "ar_total": 90, "total_count": 2})
         ui_client.cookies.update(_cookies())
         with patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)), \
              patch("ui.api_client.list_docs", new=listed), patch("ui.api_client.get_doc_summary", new=summary):
@@ -517,7 +517,7 @@ class TestLiveSearchResults:
                 assert tag, (pattern, text[:300])
                 assert ('hx-swap-oob="true"' in tag.group(0)) is oob, tag.group(0)
         assert summary.call_args.args[1].get("q") == "ruby"
-        assert "2 invoices in this period" in r.text
+        assert re.search(r'id="docs-summary"[^>]*>.*?Invoices: 2<', r.text, re.S)
         assert 'id="doc-filters"' not in r.text and 'id="docs-dates"' not in r.text
         assert "q=ruby" in re.search(r'href="(/docs/export/csv\?[^"]*)"', r.text).group(1)
 
@@ -629,7 +629,8 @@ class TestDocsFilterPanel:
 
     @pytest.mark.asyncio
     async def test_header_summary_shows_ar_billed_and_count(self, ui_client):
-        summary = {**_SUMMARY, "ar_outstanding": 1234.5, "ar_total": 5000, "invoice_count": 12, "unvalued_count": 2}
+        summary = {**_SUMMARY, "ar_outstanding": 1234.5, "ar_total": 5000, "ar_paid": 3765.5, "total_count": 12,
+                   "invoice_unvalued_count": 2}
         r = await self._get(ui_client, "/docs?type=invoice", summary)
         header = re.search(r'<div class="page-header">.*?<div class="page-actions">', r.text, re.S).group(0)
         subtitle = re.search(r'<div class="page-subtitle">\s*(<span id="docs-summary".*?)\s*</div>', header, re.S)
@@ -637,13 +638,14 @@ class TestDocsFilterPanel:
         items = re.findall(r'<span class="doc-summary-item[^"]*">([^<]*)</span>', subtitle.group(1))
         assert items[0].startswith("AR: ") and "1,234.50" in items[0], items
         assert items[1].startswith("Billed: ") and "5,000.00" in items[1], items
-        assert items[2] == "12 invoices in this period", items
-        assert items[3].startswith("2 not in the totals"), items
+        assert items[2].startswith("Paid: ") and "3,765.50" in items[2], items
+        assert items[3] == "Invoices: 12", items
+        assert items[4].startswith("2 not in the totals"), items
         assert "valuation-bar" not in r.text
 
     @pytest.mark.asyncio
     async def test_header_summary_counts_other_types(self, ui_client):
-        r = await self._get(ui_client, "/docs?type=memo", {**_SUMMARY, "memo_count": 4})
+        r = await self._get(ui_client, "/docs?type=memo", {**_SUMMARY, "total_count": 4})
         line = re.search(r'<span id="docs-summary" class="doc-summary">(.*?)\s*</div>', r.text, re.S).group(1)
         items = re.findall(r'<span class="doc-summary-item[^"]*">([^<]*)</span>', line)
         assert len(items) == 1 and "AR:" not in items[0] and "4" in items[0], items

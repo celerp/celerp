@@ -74,7 +74,8 @@ _PURE = frozenset({
     "upper", "current_date", "current_timestamp", "hashtext", "hashtextextended",
     # string, json and set functions
     "array_position", "convert_to", "encode", "format", "gen_random_uuid", "generate_series",
-    "json_array_elements", "json_array_length", "jsonb_populate_record", "like_escape",
+    "json_array_elements", "json_array_elements_text", "json_array_length", "json_typeof",
+    "jsonb_populate_record", "like_escape",
     "octet_length", "quote_ident", "reverse", "sha256", "strpos", "to_jsonb", "unnest",
     # catalog and session information (pg_current_xact_id assigns the transaction an id,
     # which changes no data)

@@ -41,10 +41,10 @@ def _not_deleted():
 
 def _matches(q: str):
     """The query in name, email, phone, company name or any tag, ignoring case."""
-    pattern = "%" + q.lower().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+    needle = q.lower()
 
     def like(expr):
-        return sa.func.lower(expr).like(pattern, escape="\\")
+        return sa.func.lower(expr).contains(needle, autoescape=True)
 
     tag = sa.func.json_array_elements_text(_STATE["tags"]).table_valued("value").alias("tag")
     tags = sa.case(

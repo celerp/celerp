@@ -26,7 +26,7 @@ def test_document_list_names_the_type():
 
 def test_count_summary_names_the_type():
     from ui.routes.documents import _doc_summary_line
-    _shows_supplier_credit_note(to_xml(_doc_summary_line({"debit_note_count": 1}, "debit_note")))
+    _shows_supplier_credit_note(to_xml(_doc_summary_line({"type": "debit_note"}, {"total_count": 1}, {})))
 
 
 def test_list_cards_count_issued_notes():

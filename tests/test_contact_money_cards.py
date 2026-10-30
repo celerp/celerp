@@ -359,7 +359,7 @@ async def test_a_view_of_unissued_documents_states_their_count_and_total(owner_u
     assert _summary_chips(page.text) == {"Documents": "56"}, _summary_chips(page.text)
     card = "Draft" if status == "draft" else "Void"
     # The card for the rows shown is the one marked.
-    assert re.search(rf'status-card--active">\s*<span class="status-card-label">{card}<', page.text), card
+    assert re.search(rf'status-card--active"[^>]*>\s*<span class="status-card-label">{card}<', page.text), card
     assert re.search(rf'status-card-label">{card}</span>\s*<span class="status-card-count">56</span>\s*</', page.text), card
     typed = await owner_ui.get(view + "&type=invoice")
     assert _summary_chips(typed.text) == {"Invoices": "55", "Total": fmt_money(550.0, None)}, _summary_chips(typed.text)
