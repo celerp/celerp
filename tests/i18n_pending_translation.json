@@ -694,82 +694,107 @@
       ]
     },
     "acct.err_bank_currency_in_use": {
-      "en": "This account already has transactions or reconciliations in {currency}, so its currency can't change. Add a new bank account in the new currency and move the balance with a transfer.",
+      "en": "Some transactions on this account carry amounts in {currency}, so its currency can't change. Add a new bank account in the new currency, then move the balance to it with a journal entry.",
       "params": [
         "currency"
       ]
     },
-    "error.recon_entry_held": {
-      "en": "The reconciliation of {account} for the statement of {dates} counts this entry. Unmatch it there first. If that reconciliation is completed, reopen it to do that.",
+    "acct.err_je_bank_currency": {
+      "en": "Account {account} is a bank account kept in {currency}. Enter that line in {currency} with its exchange rate, then post the entry.",
       "params": [
         "account",
-        "dates"
+        "currency"
       ]
     },
-    "error.recon_entry_held_ask": {
-      "en": "The reconciliation of {account} for the statement of {dates} counts this entry. Ask someone who manages accounting to reopen that reconciliation and unmatch the entry.",
+    "acct.opening_rate": {
+      "en": "Exchange rate to {base}",
       "params": [
-        "account",
-        "dates"
+        "base"
       ]
     },
-    "error.recon_period_changed": {
-      "en": "This would change the completed reconciliation of {account} for the statement of {dates}. Changes dated after {last_date} don't affect it. To make this change, reopen that reconciliation first.",
+    "acct.opening_rate_hint": {
+      "en": "Only for an account in another currency with an opening balance: what one unit of its currency is worth in {base}.",
       "params": [
-        "account",
-        "dates",
-        "last_date"
+        "base"
       ]
     },
-    "error.recon_period_changed_ask": {
-      "en": "This would change the completed reconciliation of {account} for the statement of {dates}. Changes dated after {last_date} don't affect it. To make this change, ask someone who manages accounting to reopen that reconciliation.",
+    "acct.err_bank_rate_required": {
+      "en": "This account is kept in {currency} and your books in {base}. Enter the exchange rate from {currency} to {base}, then try again.",
       "params": [
-        "account",
-        "dates",
-        "last_date"
+        "base",
+        "currency"
       ]
     },
-    "enum.recon_session_status.open": {
-      "en": "In progress",
-      "params": []
-    },
-    "enum.recon_session_status.completed": {
-      "en": "Completed",
-      "params": []
-    },
-    "recon.history": {
-      "en": "Reconciliation history",
-      "params": []
-    },
-    "recon.history_intro": {
-      "en": "Every reconciliation of this account, newest statement first. Completed ones open read-only. Reopen one to change it.",
-      "params": []
-    },
-    "recon.history_empty": {
-      "en": "This account has no reconciliations yet. Start one with Reconcile.",
-      "params": []
-    },
-    "recon.reopen_confirm": {
-      "en": "Reopen this reconciliation? Its matches stay as they are and your books don't change. Complete it again when you're done.",
-      "params": []
-    },
-    "recon.bulk_confirm_skipped": {
-      "en": "{count} lines weren't confirmed. Each one shows why. Match them by hand.",
+    "acct.err_bank_rate_invalid": {
+      "en": "The exchange rate {raw} isn't usable. Enter a number greater than zero, then try again.",
       "params": [
-        "count"
+        "raw"
       ]
     },
-    "recon.bulk_confirm_skipped_one": {
-      "en": "1 line wasn't confirmed. It shows why. Match it by hand.",
+    "acct.err_transfer_to_amount": {
+      "en": "The destination account is kept in {currency}. Enter the amount it receives in {currency}, then try again.",
+      "params": [
+        "currency"
+      ]
+    },
+    "acct.err_split_total": {
+      "en": "The splits add up to {total}, but the statement line is {amount}. Change the split amounts so they add up to the line.",
+      "params": [
+        "amount",
+        "total"
+      ]
+    },
+    "acct.err_recon_amount_unknown": {
+      "en": "Some entries this reconciliation counts were posted without an amount in {currency}, so it can't be balanced. Their amounts show as \"--\". Press Undo on each of them, then complete it.",
+      "params": [
+        "currency"
+      ]
+    },
+    "acct.err_recon_amount_unknown_relabel": {
+      "en": "This account is set to {currency}, but its entries were posted in {base} only, so this reconciliation can't be balanced. Set the account to {base} with the button at the top of this page, then complete it.",
+      "params": [
+        "base",
+        "currency"
+      ]
+    },
+    "acct.err_recon_book_entry_no_amount": {
+      "en": "That transaction was posted without an amount in this account's currency, so it can't be matched here. If this page offers to set the account's currency, do that first. Otherwise void the transaction and post it again with its amount in the account's currency.",
       "params": []
     },
-    "recon.needs_review": {
-      "en": "Needs review: this reconciliation counts an entry that's no longer in this account's books, or it no longer balances with its statement. Open it to check.",
-      "params": []
+    "recon.rate_label": {
+      "en": "Rate from {currency} to {base}",
+      "params": [
+        "base",
+        "currency"
+      ]
     },
-    "notice.online_fee_failed.reconciled": {
-      "en": "the fee's date falls inside a completed bank reconciliation. Someone who manages accounting can reopen that reconciliation; the fee is recorded when Celerp Cloud delivers it again.",
-      "params": []
+    "recon.relabel_notice": {
+      "en": "This account is set to {currency}, but every entry on it was posted in your books' currency, {base}. That's why its amounts show as \"--\" and its reconciliations can't balance. Setting the account to {base} changes no amounts, and you can change it back later in the account's settings.",
+      "params": [
+        "base",
+        "currency"
+      ]
+    },
+    "recon.relabel_button": {
+      "en": "Set this account to {base}",
+      "params": [
+        "base"
+      ]
+    },
+    "recon.relabel_done": {
+      "en": "This account is now kept in {base}. To undo this, edit the account and set its currency back to {currency}.",
+      "params": [
+        "base",
+        "currency"
+      ]
+    },
+    "documents.err_payment_bank_currency": {
+      "en": "That bank account is kept in {bank_currency}, and this payment is in {doc_currency}. Pick an account kept in {doc_currency} or {base}, then record the payment.",
+      "params": [
+        "bank_currency",
+        "base",
+        "doc_currency"
+      ]
     }
   }
 }
