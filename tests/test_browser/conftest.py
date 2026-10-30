@@ -369,6 +369,15 @@ def css_class(name: str) -> re.Pattern:
     return re.compile(rf"(^|\s){re.escape(name)}(\s|$)")
 
 
+def wait_for_topbar(page) -> None:
+    """Waits until the top bar's help button and company switcher have loaded in place of
+    their placeholders. Both arrive after the page's load event and, on a phone, add a top
+    bar row that pushes the page down, so a layout read before then can measure one box
+    before the shift and the next one after it."""
+    for placeholder in ("#topbar-help", "#topbar-company-switcher"):
+        page.wait_for_selector(placeholder, state="detached")
+
+
 def release_held_routes(page, glob: str, held: list) -> None:
     """Aborts the requests a test held with page.route(glob, held.append), then removes
     the route. Unrouting first would send every held request on to the server."""

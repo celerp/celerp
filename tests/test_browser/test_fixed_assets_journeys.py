@@ -23,7 +23,7 @@ from playwright.sync_api import Page, expect
 
 from celerp.accounting_roles import SEEDED_TARGETS
 
-from .conftest import css_class
+from .conftest import css_class, wait_for_topbar
 
 pytestmark = pytest.mark.browser
 
@@ -501,6 +501,7 @@ def test_the_register_filter_keeps_its_button_beside_a_field_on_a_phone(page: Pa
     _started(c)
     page.set_viewport_size({"width": 390, "height": 844})
     page.goto("/fixed-assets")
+    wait_for_topbar(page)
     form = page.locator("main form[action='/fixed-assets']")
     button = form.locator("button[type=submit]").bounding_box()
     classes = form.locator(".combobox-wrap").first.bounding_box()
