@@ -57,7 +57,8 @@ def test_memo_draw_panel_names_fixed_amounts_left(left, takes, names):
     assert 'id="draw-panel"' in html and "invoice-lines" in html
 
     from fasthtml.common import to_xml
-    preview = {"fixed_taken": takes, "total": 300.0, "memo_fixed_left": {"shipping": 0, "discount": 0, "tax": 0}}
+    preview = {"problems": [], "memo_version": 3, "fixed_taken": takes, "totals_after": {"total": 300.0},
+               "left_on_memo": {"fixed": {"still_on_memo": 50.0}}}
     panel = to_xml(_draw_panel_preview(memo, preview))
     for amount in names:
         assert amount in panel
@@ -82,9 +83,9 @@ def test_memo_line_labels_show_invoiced_and_sold():
 
 @pytest.mark.asyncio
 async def test_back_to_memo_response_names_reopened_memo(ui_client):
-    answer = {"returned": 1, "reopened_memos": [{"memo_id": MEMO, "doc_number": "M-12"}]}
+    answer = {"removed": [LINE], "reopened_memos": [{"id": MEMO, "doc_number": "M-12"}]}
     with patch("ui.api_client.back_to_memo", new=AsyncMock(return_value=answer)):
-        r = await ui_client.post("/docs/doc:pf-1/back-to-memo", data={"line_ids": LINE})
+        r = await ui_client.post("/docs/doc:pf-1/back-to-memo", data={"line_id": LINE, "idempotency_key": "k-1"})
     assert r.status_code == 204, r.text
     toast = r.headers.get("HX-Trigger", "")
     assert "M-12" in toast and f"/docs/{MEMO}" in toast and '"persist": true' in toast.replace("True", "true")
@@ -94,11 +95,11 @@ async def test_back_to_memo_response_names_reopened_memo(ui_client):
 async def test_memo_rate_cell_ui(ui_client):
     issued = _memo(memo_fixed_amounts={"shipping": 0, "discount": 0, "tax": 35.0, "takes": [], "still_on_memo": 385.0})
     html = _html(issued)
-    assert "/docs/doc:memo-1/field/tax_rate/edit" in html and t("click_to_edit") in html
+    assert "/docs/doc:memo-1/field/tax_rate/edit" in html and t("documents.click_to_edit") in html
     assert "--" in html
 
     get_doc = AsyncMock(return_value=issued)
-    rate = AsyncMock(return_value={"tax": 28.0, "total": 378.0, "tax_rate": 8})
+    rate = AsyncMock(return_value={"tax": 28.0, "total": 378.0, "tax_rate": 8, "previous_tax": 35.0, "version": 4})
     with patch("ui.api_client.get_doc", new=get_doc), patch("ui.api_client.get_company", new=AsyncMock(return_value={})), \
             patch("ui.api_client.set_memo_tax_rate", new=rate):
         editor = await ui_client.get(f"/docs/{MEMO}/field/tax_rate/edit")

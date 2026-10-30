@@ -1682,7 +1682,7 @@ async def _attach_memo_takes(session: AsyncSession, company_id, doc: dict, state
         if not held:
             continue
         labels = (["On Memo"] if out.get(line.get("line_id")) else []) + [
-            "Returned" if h.pop("taken_back") else _take_label(h["doc_number"], h["status"]) for h in held]
+            "Returned" if h["taken_back"] else _take_label(h["doc_number"], h["status"]) for h in held]
         lines[i] = {**line, "invoiced_on": held, "shipped_label": ", ".join(labels)}
     doc["line_items"] = lines
 
