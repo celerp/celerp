@@ -2726,8 +2726,8 @@ celerpUpdateBulkAlloc();
         form = await request.form()
         currency = str(form.get("currency") or "") or "USD"
         try:
-            result = await api.set_memo_tax_rate(token, entity_id, float(str(form.get("value") or "")),
-                                                 _form_version(form), dry_run=True)
+            result = await api.memo_tax_rate_preview(token, entity_id, float(str(form.get("value") or "")),
+                                                     _form_version(form))
         except ValueError:
             return Span("")
         except APIError as e:
@@ -3587,7 +3587,7 @@ celerpUpdateBulkAlloc();
             return P(t("error.session_expired"), cls="cell-error")
         form = await request.form()
         try:
-            preview = await api.invoice_lines(token, entity_id, _draw_body(form), dry_run=True)
+            preview = await api.invoice_lines_preview(token, entity_id, _draw_body(form))
         except ValueError:
             return ""
         except APIError as e:

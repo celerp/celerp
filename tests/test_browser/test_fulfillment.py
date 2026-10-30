@@ -23,6 +23,8 @@ import uuid
 import pytest
 from playwright.sync_api import expect
 
+from .conftest import css_class
+
 pytestmark = pytest.mark.browser
 
 
@@ -598,9 +600,10 @@ def test_shipping_goods_another_invoice_set_aside_shows_a_lasting_notice(page, u
     assert api.get(f"/items/{item_id}").json()["status"] == "sold"
 
 
-def test_invoice_selected_on_a_memo_shows_the_preview(page, ui_server, api):
+def test_invoice_selected_on_a_memo_previews_then_invoices_the_units_typed(page, ui_server, api):
     """Choosing Invoice selected on a memo line shows the server's preview of the invoice
-    inside the panel, and it follows the quantity typed."""
+    inside the panel, it follows the quantity typed, and the button invoices those units and
+    opens the new invoice while the rest stays on the memo."""
     doc_id, _item = _shipped_memo(api, f"MDP-{uuid.uuid4().hex[:6]}", 4)
     page.goto(f"{ui_server}/docs/{doc_id}", wait_until="domcontentloaded")
     _assert_no_crash(page, "memo invoice selected")
@@ -610,6 +613,12 @@ def test_invoice_selected_on_a_memo_shows_the_preview(page, ui_server, api):
     expect(preview).to_contain_text("Invoice total after this: $40.00")
     page.locator("#draw-panel input[name=qty_0]").fill("1")
     expect(preview).to_contain_text("Invoice total after this: $10.00")
+    page.locator("#draw-panel button[type=submit]").click()
+    page.wait_for_url(lambda url: f"/docs/{doc_id}" not in url and "/docs/" in url)
+    invoice_id = page.url.rsplit("/docs/", 1)[1].split("?")[0]
+    invoice = api.get(f"/docs/{invoice_id}").json()
+    assert invoice["doc_type"] == "invoice" and float(invoice["total"]) == 10.0
+    assert float(api.get(f"/docs/{doc_id}").json()["line_items"][0]["out_quantity"]) == 3
 
 
 def test_setting_a_memo_tax_rate_previews_each_rate_typed_then_saves(page, ui_server, api):
@@ -630,6 +639,9 @@ def test_setting_a_memo_tax_rate_previews_each_rate_typed_then_saves(page, ui_se
     page.locator("[hx-get*='/field/tax_rate']").first.click()
     field = page.locator("form.editable-cell input[name=value]")
     preview = page.locator("form.editable-cell .memo-rate-preview")
+    # htmx binds the editor's triggers when it settles the swap, the step that drops htmx-added;
+    # a rate typed before then would go unheard.
+    expect(page.locator("form.editable-cell")).not_to_have_class(css_class("htmx-added"))
     field.fill("10")
     expect(preview).to_contain_text("$10.00")
     field.fill("20")

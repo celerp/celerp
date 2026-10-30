@@ -116,9 +116,10 @@ async def test_memo_rate_cell_ui(ui_client):
     assert "--" in html
 
     get_doc = AsyncMock(return_value=issued)
-    rate = AsyncMock(return_value={"tax": 28.0, "total": 378.0, "tax_rate": 8, "previous_tax": 35.0, "version": 4})
+    answer = {"tax": 28.0, "total": 378.0, "tax_rate": 8, "previous_tax": 35.0, "version": 4}
+    rate, preview_rate = AsyncMock(return_value=answer), AsyncMock(return_value=answer)
     with patch("ui.api_client.get_doc", new=get_doc), patch("ui.api_client.get_company", new=AsyncMock(return_value={})), \
-            patch("ui.api_client.set_memo_tax_rate", new=rate):
+            patch("ui.api_client.set_memo_tax_rate", new=rate), patch("ui.api_client.memo_tax_rate_preview", new=preview_rate):
         editor = await ui_client.get(f"/docs/{MEMO}/field/tax_rate/edit")
         assert editor.status_code == 200
         assert 'type="number"' in editor.text and t("btn.save") in editor.text
@@ -126,15 +127,15 @@ async def test_memo_rate_cell_ui(ui_client):
 
         preview = await ui_client.post(f"/docs/{MEMO}/tax-rate/preview", data={"value": "8"})
         assert "28.00" in preview.text
-        assert rate.await_args.kwargs.get("dry_run") is True
+        assert preview_rate.await_count == 1 and rate.await_count == 0
 
         display = await ui_client.get(f"/docs/{MEMO}/field/tax_rate/display")
         assert display.status_code == 200
-        assert rate.await_count == 1
+        assert preview_rate.await_count == 1 and rate.await_count == 0
 
         saved = await ui_client.patch(f"/docs/{MEMO}/field/tax_rate", data={"value": "8"})
         assert saved.status_code == 200 and "28.00" in saved.text
-        assert rate.await_args.kwargs.get("dry_run") in (None, False)
+        assert rate.await_count == 1
         assert t("documents.memo_tax_rate_set").split("{")[0].strip() in saved.headers.get("HX-Trigger", "")
 
     from ui.api_client import APIError

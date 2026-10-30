@@ -65,6 +65,9 @@ READ_SAFE = {
     "ui.api_client.manufacturing_requirements": "POST /manufacturing/to-make/requirements carries the item ids; "
                                                 "the route only reads",
     "ui.api_client.doctor_report": "POST /admin/doctor without fix is the dry-run report; it writes nothing",
+    "ui.api_client.invoice_lines_preview": "POST /docs/{id}/invoice-lines with dry_run returns the preview; "
+                                           "it writes nothing",
+    "ui.api_client.memo_tax_rate_preview": "POST /docs/{id}/tax-rate with dry_run returns the preview; it writes nothing",
     "ui.api_client.get_billing_portal_url": "POST /settings/cloud/billing-portal asks the relay for a portal link; "
                                             "nothing is saved",
 }
