@@ -1387,6 +1387,62 @@ async def test_the_orm_names_the_company_of_every_row_it_flushes(session, auth):
     assert after.get("company_ungated", 0) == before.get("company_ungated", 0)
 
 
+# ── A table without a company column whose rows belong to its parent's company ──
+
+_RESET_STEPS = ("DELETE FROM ai_job_steps WHERE (job_id) IN (SELECT id FROM ai_batch_jobs "
+                "WHERE company_id = CAST(CAST($1 AS text) AS uuid))")
+_STEP_BY_JOB = "UPDATE ai_job_steps SET status=$1 WHERE ai_job_steps.job_id = $2::UUID"
+
+
+@pytest.mark.parametrize("locked, counted", [
+    ("c1", None),          # the parent's company is locked: gated
+    ("c2", "none"),        # another company's lock
+    (None, "none"),        # no lock
+])
+def test_a_child_row_is_judged_under_its_parents_company(recorder, locked, counted):
+    """ai_job_steps has no company column: a step is its job's. A statement that picks the
+    steps through the job's company names that company, so the census judges the take, and
+    a take without that company's lock is counted rather than left unmeasured."""
+    if locked:
+        recorder.statement(1, _LOCK_COMPANY, (locked,), 0.0)
+    recorder.statement(1, _RESET_STEPS, ("c1",), 0.0)
+    info = recorder.dump()["classes"]["row:ai_job_steps"]
+    assert info.get("ungated_takes", []) == ([f"update|{counted}"] if counted else [])
+
+
+def test_a_child_row_under_its_companys_deletion_lock_is_company_gated(recorder):
+    recorder.statement(1, _DELETE_COMPANY, ("c1",), 0.0)
+    recorder.statement(1, _RESET_STEPS, ("c1",), 0.0)
+    assert ("order", "row:ai_job_steps") not in _kinds(recorder)
+    assert recorder.edges[("key:companies", "row:ai_job_steps")]["company_gated"] == {"row:ai_job_steps"}
+
+
+@pytest.mark.parametrize("named, counted", [
+    ("c1", None),          # the job was named in this transaction as c1's: gated
+    ("c2", "none"),        # the job is another company's
+    (None, "unknown"),     # nothing names the job: unknown, never assumed gated
+])
+def test_a_child_row_keyed_by_its_parent_is_judged_under_the_parents_company(recorder, named, counted):
+    recorder.statement(1, _LOCK_COMPANY, ("c1",), 0.0)
+    if named:
+        recorder.name_row(1, "ai_batch_jobs", "j1", named)
+    recorder.statement(1, _STEP_BY_JOB, ("done", "j1"), 0.0)
+    info = recorder.dump()["classes"]["row:ai_job_steps"]
+    assert info.get("ungated_takes", []) == ([f"nokey|{counted}"] if counted else [])
+
+
+def test_every_table_belongs_to_a_company_or_is_declared_an_installation_table():
+    """The census measures a table only when it can name the company of its rows. A table
+    with neither a company column nor one foreign key to a company's table would be left out
+    silently (zero ungated takes meaning unmeasured), so each such table is declared."""
+    tables = [t for t, m in lock_rank._app_tables().items() if m is not None]
+    unowned = {t for t in tables if not lock_rank._company_owned(t)}
+    assert unowned == lock_rank.INSTALLATION_TABLES
+    assert lock_rank._company_link("ai_job_steps") == ("job_id", "ai_batch_jobs")
+    assert lock_rank._company_link("notification_reads") == ("notification_id", "notifications")
+    assert "row:ai_job_steps" in lock_rank.static_writers()
+
+
 def test_a_closed_sync_connection_leaves_no_session_lock_behind():
     # Postgres drops a closed connection's session locks; a later connection given the same
     # object id (the version fence takes its lock again on a new one) must not inherit them.

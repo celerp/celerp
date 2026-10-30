@@ -355,18 +355,20 @@ class Recorder:
         try:
             found = _locks(statement, parameters)
         except Exception as exc:  # an unparseable lock statement is itself a finding
-            found = [(f"?unparsed:{type(exc).__name__}", "wait", "", "", "")]
+            found = [(f"?unparsed:{type(exc).__name__}", "wait", "", "", "", "")]
         if not found:
             return
         site, origin = _site(), _origin()
         execution = sys.modules.get("celerp.connectors.execution")
         in_execution = execution is not None and execution.current() is not None
-        for cls, mode, key, company, row in found:
+        for cls, mode, key, company, row, parent in found:
             if cls == "-unlock":
                 self.release_session(conn_key, mode)
                 continue
             if row and not company:
                 company = self.rows[conn_key].get((cls.split(":", 1)[1], row), "")
+            if parent and not company:
+                company = self.rows[conn_key].get((_company_link(cls.split(":", 1)[1])[1], parent), "")
             self.acquire(conn_key, Lock(cls, mode, site, origin, key, in_execution, company, row=row), waited)
 
     def name_row(self, conn_key: int, table: str, row: str, company: str) -> None:
@@ -431,7 +433,7 @@ class Recorder:
             if company:
                 self.company_rows[conn_key].setdefault(company, set()).add(_strength(lock))
             return
-        if not lock.cls.startswith(("row:", "key:")) or not _has_company(table):
+        if not lock.cls.startswith(("row:", "key:")) or not _company_owned(table):
             return
         if lock.company and self._company_held(conn_key, lock):
             return
@@ -1038,6 +1040,35 @@ def _has_company(table: str) -> bool:
     return mapped is not None and _company_column(table) in mapped.c
 
 
+# Tables whose rows belong to no one company: the installation's users, their sign-in state,
+# password resets and badges, a user's own import files and templates, the runtime state, and
+# the payments and refunds the installation holds for whichever company it matches them to.
+# The census judges no take of them under a company's lock.
+INSTALLATION_TABLES = frozenset({
+    "migration_batch_files", "migration_templates", "password_reset_notices", "password_resets",
+    "payment_closures", "payment_recoveries", "supporter_badges", "system_runtime_state",
+    "unmatched_payments", "unmatched_refunds", "user_auth_state", "users"})
+
+
+@functools.lru_cache(maxsize=None)
+def _company_link(table: str) -> tuple[str, str] | None:
+    """(column, parent) for a table without a company column whose every row names, by its
+    one required foreign key to a table with one, the row of a company's table it belongs to:
+    a job's steps, a conversation's messages, a run's entity maps. None otherwise."""
+    mapped = _app_tables().get(table)
+    if mapped is None or _has_company(table):
+        return None
+    links = {(fk.parent.name, fk.column.table.name) for fk in mapped.foreign_keys
+             if fk.column.table.name != table and not fk.parent.nullable and _has_company(fk.column.table.name)}
+    return links.pop() if len(links) == 1 else None
+
+
+def _company_owned(table: str) -> bool:
+    """Whether each row of the table belongs to one company: by its company column or its
+    parent's."""
+    return _has_company(table) or _company_link(table) is not None
+
+
 @functools.lru_cache(maxsize=None)
 def _company_keyed(table: str) -> bool:
     """Whether every unique key of the table, its primary key and its SECRET_KEYED column
@@ -1100,8 +1131,46 @@ SECRET_KEYED = {"doc_share_tokens": "token", "company_peer_grants": "token_hash"
 def _company_param(table: str, where) -> tuple[int, ...] | None:
     """The parameter a WHERE clause binds the table's company column to, when that equality
     is the whole clause or one of its top-level AND terms: every row it selects names that
-    company. None when no such term exists."""
-    return _column_param(_company_column(table), where)
+    company. For a table whose rows are their parent's company, the term is its parent key
+    IN (SELECT the parent's key FROM the parent WHERE the parent's company term). None when no
+    such term exists."""
+    link = _company_link(table)
+    if link is None:
+        return _column_param(_company_column(table), where)
+    column, parent = link
+    if parent == "companies":
+        return _column_param(column, where)
+    target = next(fk.column.name for fk in _app_tables()[table].foreign_keys if fk.parent.name == column)
+    for term in _and_terms(where):
+        body = term.get("SubLink", {})
+        select_ = body.get("subselect", {}).get("SelectStmt", {})
+        picked = [t["ResTarget"]["val"] for t in select_.get("targetList", ())]
+        if (body.get("subLinkType") == "ANY_SUBLINK" and _column_name(body.get("testexpr")) == column
+                and [_column_name(v) for v in picked] == [target]
+                and [f.get("RangeVar", {}).get("relname") for f in select_.get("fromClause", ())] == [parent]):
+            return _company_param(parent, select_.get("whereClause"))
+    return None
+
+
+def _parent_param(table: str, where) -> tuple[int, ...] | None:
+    """For a table whose rows are their parent's company, the one parameter a WHERE clause
+    binds the parent key to by equality: every row it selects is that parent's. None otherwise."""
+    link = _company_link(table)
+    return _column_param(link[0], where) if link and link[1] != "companies" else None
+
+
+def _and_terms(where) -> list:
+    """The top-level AND terms of a WHERE clause (the clause itself when it is no AND)."""
+    if where is None:
+        return []
+    (kind, body), = where.items()
+    return body["args"] if kind == "BoolExpr" and body["boolop"] == "AND_EXPR" else [where]
+
+
+def _column_name(node) -> str | None:
+    """The column a bare column reference names (its last field); None for any other node."""
+    fields = (node or {}).get("ColumnRef", {}).get("fields", [])
+    return fields[-1].get("String", {}).get("sval") if fields else None
 
 
 @functools.lru_cache(maxsize=None)
@@ -1123,17 +1192,12 @@ def _row_param(table: str, where) -> tuple[int, ...] | None:
 def _column_param(column: str, where) -> tuple[int, ...] | None:
     """The one parameter a WHERE clause binds ``column`` to by equality, as the whole clause
     or one of its top-level AND terms; None when no such term exists."""
-    if where is None:
-        return None
-    (kind, body), = where.items()
-    terms = body["args"] if kind == "BoolExpr" and body["boolop"] == "AND_EXPR" else [where]
-    for term in terms:
+    for term in _and_terms(where):
         (kind, body), = term.items()
         if kind != "A_Expr" or body.get("kind") != "AEXPR_OP" or body["name"][0]["String"]["sval"] != "=":
             continue
         for col, val in ((body.get("lexpr"), body.get("rexpr")), (body.get("rexpr"), body.get("lexpr"))):
-            fields = (col or {}).get("ColumnRef", {}).get("fields", [])
-            if fields and fields[-1].get("String", {}).get("sval") == column:
+            if _column_name(col) == column:
                 numbers = _params(val)
                 if numbers and len(numbers) == 1:
                     return numbers
@@ -1142,16 +1206,17 @@ def _column_param(column: str, where) -> tuple[int, ...] | None:
 
 @functools.lru_cache(maxsize=8192)
 def _row_locks(statement: str) -> tuple[tuple[tuple[str, str, tuple[int, ...] | None, tuple[int, ...] | None,
-                                                    tuple[int, ...] | None], ...], tuple]:
+                                                    tuple[int, ...] | None, tuple[int, ...] | None], ...], tuple]:
     """(class, mode, parameter numbers of the key, of the company, of the one row's primary
-    key) for each row or table lock the statement takes, and the placeholder map. A statement
-    the parser rejects raises."""
+    key, of the one parent whose company the rows are) for each row or table lock the statement
+    takes, and the placeholder map. A statement the parser rejects raises."""
     from pglast.parser import parse_sql_json
 
     text, names = _numbered(statement)
     tree = json.loads(parse_sql_json(text))
     ctes = {body["ctename"] for kind, body in _nodes(tree) if kind == "CommonTableExpr"}
-    out: list[tuple[str, str, tuple[int, ...] | None, tuple[int, ...] | None, tuple[int, ...] | None]] = []
+    out: list[tuple[str, str, tuple[int, ...] | None, tuple[int, ...] | None, tuple[int, ...] | None,
+                    tuple[int, ...] | None]] = []
     for kind, body in _nodes(tree):
         if kind == "SelectStmt" and body.get("lockingClause"):
             tables = _from_tables(body.get("fromClause"), ctes)
@@ -1162,32 +1227,30 @@ def _row_locks(statement: str) -> tuple[tuple[tuple[str, str, tuple[int, ...] | 
                 mode = f"{_ROW_STRENGTH[c['strength']]} {_WAIT_POLICY[c.get('waitPolicy', 'LockWaitBlock')]}"
                 named = [r["RangeVar"]["relname"] for r in c.get("lockedRels", ())]
                 for t in ([tables.get(n, n) for n in named] if named else list(tables.values())):
-                    company, row = (_company_param(t, where), _row_param(t, where)) if len(tables) == 1 else (None, None)
+                    company, row, parent = _one_table(t, where) if len(tables) == 1 else (None, None, None)
                     shares_key = _foreign_key_share(t, _ROW_STRENGTH[c["strength"]])
-                    out.append((f"{'key' if shares_key else 'row'}:{t}", mode, key, company, row))
+                    out.append((f"{'key' if shares_key else 'row'}:{t}", mode, key, company, row, parent))
                     if mode.startswith("update ") and t in _parents():
-                        out.append((f"key:{t}", mode, key, company, row))
+                        out.append((f"key:{t}", mode, key, company, row, parent))
         elif kind == "LockStmt":
             mode = f"{TABLE_MODES[body['mode']]} {'nowait' if body.get('nowait') else 'wait'}"
-            out += [(f"tbl:{r['RangeVar']['relname']}", mode, None, None, None) for r in body["relations"]]
+            out += [(f"tbl:{r['RangeVar']['relname']}", mode, None, None, None, None) for r in body["relations"]]
         elif kind == "UpdateStmt":
             table, where = body["relation"]["relname"], body.get("whereClause")
-            company, row = (None, None) if body.get("fromClause") else (_company_param(table, where),
-                                                                         _row_param(table, where))
-            out.append((f"row:{table}", "write", _params(where), company, row))
+            company, row, parent = (None, None, None) if body.get("fromClause") else _one_table(table, where)
+            out.append((f"row:{table}", "write", _params(where), company, row, parent))
             fks = _foreign_keys(table)
             for target in body.get("targetList", ()):
                 t = target["ResTarget"]
                 if t.get("name") in fks:
-                    out.append((f"key:{fks[t['name']]}", "key share wait", _params(t.get("val")), None, None))
+                    out.append((f"key:{fks[t['name']]}", "key share wait", _params(t.get("val")), None, None, None))
         elif kind == "DeleteStmt":
             table, where = body["relation"]["relname"], body.get("whereClause")
             key = _params(where)
-            company, row = (None, None) if body.get("usingClause") else (_company_param(table, where),
-                                                                          _row_param(table, where))
-            out.append((f"row:{table}", "delete", key, company, row))
+            company, row, parent = (None, None, None) if body.get("usingClause") else _one_table(table, where)
+            out.append((f"row:{table}", "delete", key, company, row, parent))
             if table in _parents():
-                out.append((f"key:{table}", "delete", key, company, row))
+                out.append((f"key:{table}", "delete", key, company, row, parent))
         elif kind == "InsertStmt":
             table = body["relation"]["relname"]
             fks = _foreign_keys(table)
@@ -1205,15 +1268,20 @@ def _row_locks(statement: str) -> tuple[tuple[tuple[str, str, tuple[int, ...] | 
                 if numbers and all(n and len(n) == 1 for n in numbers):
                     company = tuple(n[0] for n in numbers)
             if not _insert_waits_on_no_key(table) and (_serial_keyed(table) is None or _serial_keyed(table) in cols):
-                out.append((f"row:{table}", "insert", None, company, None))
+                out.append((f"row:{table}", "insert", None, company, None, None))
             for col, ref in fks.items():
                 if cols and col not in cols:
                     continue
                 values = [r["List"]["items"][cols.index(col)] for r in rows if cols] or None
-                out.append((f"key:{ref}", "key share wait", _params(values) if values else None, None, None))
+                out.append((f"key:{ref}", "key share wait", _params(values) if values else None, None, None, None))
             if body.get("onConflictClause", {}).get("action") == "ONCONFLICT_UPDATE":
-                out.append((f"row:{table}", "write", None, company if table != "companies" else None, None))
+                out.append((f"row:{table}", "write", None, company if table != "companies" else None, None, None))
     return tuple(dict.fromkeys(out)), names
+
+
+def _one_table(table: str, where) -> tuple[tuple[int, ...] | None, ...]:
+    """(company, row, parent) parameters of a statement on one table (see ``_row_locks``)."""
+    return _company_param(table, where), _row_param(table, where), _parent_param(table, where)
 
 
 def _company(numbers: tuple[int, ...] | None, names: tuple, parameters) -> str:
@@ -1222,31 +1290,32 @@ def _company(numbers: tuple[int, ...] | None, names: tuple, parameters) -> str:
     return values.pop() if len(values) == 1 and "None" not in values else ""
 
 
-def _locks(statement: str, parameters) -> list[tuple[str, str, str, str, str]]:
-    """(class, mode, key, company, row) for each lock the statement takes, ``row`` the primary
-    key of the one company row a row lock, UPDATE or DELETE names by it ("" otherwise);
-    ('-unlock', class, '', '', '') for an unlock."""
-    out: list[tuple[str, str, str, str, str]] = []
+def _locks(statement: str, parameters) -> list[tuple[str, str, str, str, str, str]]:
+    """(class, mode, key, company, row, parent) for each lock the statement takes, ``row`` the
+    primary key of the one company row a row lock, UPDATE or DELETE names by it, ``parent`` the
+    key of the one parent row whose company the rows are ("" otherwise);
+    ('-unlock', class, '', '', '', '') for an unlock."""
+    out: list[tuple[str, str, str, str, str, str]] = []
     for m in _ADVISORY.finditer(statement):
         try_, xact, verb, shared, args = m.groups()
         cls = _advisory_class(args, parameters or ())
         if verb.lower() == "unlock":
-            out.append(("-unlock", cls, "", "", ""))
+            out.append(("-unlock", cls, "", "", "", ""))
             continue
         mode = ("xact" if xact else "session") + (" shared" if shared else " exclusive")
-        out.append((cls, mode + (" try" if try_ else " wait"), _advisory_key(statement, parameters), "", ""))
+        out.append((cls, mode + (" try" if try_ else " wait"), _advisory_key(statement, parameters), "", "", ""))
     if out or not _LOCKING.search(statement):
         return out
     found, names = _row_locks(statement)
     out = []
-    for cls, mode, numbers, company, row in found:
+    for cls, mode, numbers, company, row, parent in found:
         if cls.split(":", 1)[1] not in _app_tables():
             continue
         key = _row_key(numbers, names, parameters)
-        row_id = _company(row, names, parameters)
+        row_id, parent_id = _company(row, names, parameters), _company(parent, names, parameters)
         # A multi-row insert is one insert per row: each company it names is inserted (R1, R2).
         companies = [company] if mode != "insert" else [(n,) for n in company or ()] or [company]
-        out += [(cls, mode, key, c, row_id)
+        out += [(cls, mode, key, c, row_id, parent_id)
                 for c in dict.fromkeys(_company(n, names, parameters) for n in companies)]
     return out
 
@@ -1505,7 +1574,7 @@ def static_writers() -> dict[str, list[str]]:
     table whose insert waits on a key of its own (not FRESH_KEYED or FRESH_PARENTED, not serial-keyed)."""
     out: dict[str, set[str]] = defaultdict(set)
     for table, found in _scan_writers(_production_files()).items():
-        if table not in _app_tables() or not _has_company(table):
+        if table not in _app_tables() or not _company_owned(table):
             continue
         for path, function, kind in found:
             if kind == "insert" and (_insert_waits_on_no_key(table) or _serial_keyed(table) is not None):
