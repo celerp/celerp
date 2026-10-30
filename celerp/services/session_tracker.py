@@ -108,25 +108,12 @@ async def get_nonce(session: AsyncSession, user_id: str) -> str:
     Authentication must observe a revocation as soon as its transaction commits,
     including across workers, so this path deliberately has no in-process cache.
 
-    Auto-creates a ``user_auth_state`` row with a fresh nonce on first call
-    (new user, first login).  Returns empty string if the user no longer exists
-    (e.g. after it was removed) so callers treat it as an eviction (nonce mismatch).
+    Only reads: issuance creates the row (``lock_auth_state``). Returns empty string
+    when the user has none (removed, or its auth state cleared), so callers treat it
+    as an eviction (nonce mismatch).
     """
-    uid = _uuid_mod.UUID(user_id)
-    row = await session.get(UserAuthState, uid, populate_existing=True)
-    if row is not None:
-        return row.nonce
-    # Check the user exists before creating a new auth-state row.
-    # If the user was deleted, return "" so the caller
-    # detects a nonce mismatch and treats the session as evicted — no FK insert.
-    from celerp.models.company import User as _User
-    user_exists = await session.get(_User, uid)
-    if user_exists is None:
-        return ""
-    nonce = str(_uuid_mod.uuid4())
-    session.add(UserAuthState(user_id=uid, nonce=nonce))
-    await session.commit()
-    return nonce
+    row = await session.get(UserAuthState, _uuid_mod.UUID(user_id), populate_existing=True)
+    return row.nonce if row is not None else ""
 
 
 async def invalidate_sessions(

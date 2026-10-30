@@ -26,7 +26,7 @@ from celerp.models.projections import Projection
 from celerp.services.attachments import attach_file, local_attachment_url_path, remove_attachment, storing
 from celerp.services.auth import AuthContext, get_auth_context, get_current_company_id, get_current_user
 from celerp.services.peer_import import peer_batch
-from celerp.services.company_lock import lock_projections
+from celerp.services.company_lock import lock_company, lock_projections
 from celerp.services.currencies import require_currency_code, require_phone
 from celerp.services.permissions import locked_authority, require_permission
 from ui.i18n import t
@@ -141,6 +141,7 @@ async def _get_contact(session: AsyncSession, company_id, contact_id: str) -> Pr
 
 @router.post("/contacts", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True})
 async def create_contact(payload: ContactCreate, company_id: str = Depends(get_current_company_id), user=Depends(get_current_user), _: None = require_permission("edit_contacts"), session: AsyncSession = Depends(get_session)) -> dict:
+    await lock_company(session, company_id)
     if payload.idempotency_key:
         replay = await find_event_by_idempotency(session, company_id, payload.idempotency_key)
         if replay is not None:
@@ -227,6 +228,7 @@ async def update_contact(contact_id: str, payload: ContactUpdate, company_id: st
 
 @router.post("/contacts/{contact_id}/tags")
 async def tag_contact(contact_id: str, payload: TagBody, company_id: str = Depends(get_current_company_id), user=Depends(get_current_user), _: None = require_permission("edit_contacts"), session: AsyncSession = Depends(get_session)) -> dict:
+    await _locked_contact(session, company_id, contact_id)
     entry = await emit_event(
         session,
         company_id=company_id,
@@ -250,7 +252,7 @@ async def tag_contact(contact_id: str, payload: TagBody, company_id: str = Depen
 async def _locked_contact(session: AsyncSession, company_id, contact_id: str) -> Projection:
     """The contact a change applies to, read once no other write to it is in flight."""
     row = (await lock_contacts(session, company_id, [contact_id])).get(contact_id)
-    if row is None:
+    if row is None or row.entity_type != "contact":
         raise HTTPException(status_code=404, detail=t("error.record_not_found"))
     return row
 
@@ -454,9 +456,7 @@ async def add_contact_note(
     _: None = require_permission("edit_contacts"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    row = await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})
-    if row is None or row.entity_type != "contact":
-        raise HTTPException(status_code=404, detail=t("error.record_not_found"))
+    row = await _locked_contact(session, company_id, contact_id)
 
     note_id = f"note:{uuid.uuid4()}"
     entry = await emit_event(
@@ -556,9 +556,7 @@ async def add_contact_person(
     _: None = require_permission("edit_contacts"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    row = await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})
-    if row is None or row.entity_type != "contact":
-        raise HTTPException(status_code=404, detail=t("error.record_not_found"))
+    row = await _locked_contact(session, company_id, contact_id)
     require_phone(payload.phone)
     person_id = f"person:{uuid.uuid4()}"
     entry = await emit_event(
@@ -588,9 +586,7 @@ async def update_contact_person(
     _: None = require_permission("edit_contacts"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    row = await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})
-    if row is None or row.entity_type != "contact":
-        raise HTTPException(status_code=404, detail=t("error.record_not_found"))
+    row = await _locked_contact(session, company_id, contact_id)
     person = next((p for p in row.state.get("people") or [] if p.get("person_id") == person_id), {})
     if payload.phone != person.get("phone"):
         require_phone(payload.phone)
@@ -620,9 +616,7 @@ async def remove_contact_person(
     _: None = require_permission("edit_contacts"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    row = await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})
-    if row is None or row.entity_type != "contact":
-        raise HTTPException(status_code=404, detail=t("error.record_not_found"))
+    row = await _locked_contact(session, company_id, contact_id)
     entry = await emit_event(
         session,
         company_id=company_id,
@@ -651,9 +645,7 @@ async def add_contact_address(
     _: None = require_permission("edit_contacts"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    row = await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})
-    if row is None or row.entity_type != "contact":
-        raise HTTPException(status_code=404, detail=t("error.record_not_found"))
+    row = await _locked_contact(session, company_id, contact_id)
     address_id = f"address:{uuid.uuid4()}"
     entry = await emit_event(
         session,
@@ -682,9 +674,7 @@ async def update_contact_address(
     _: None = require_permission("edit_contacts"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    row = await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})
-    if row is None or row.entity_type != "contact":
-        raise HTTPException(status_code=404, detail=t("error.record_not_found"))
+    row = await _locked_contact(session, company_id, contact_id)
     entry = await emit_event(
         session,
         company_id=company_id,
@@ -711,9 +701,7 @@ async def remove_contact_address(
     _: None = require_permission("edit_contacts"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    row = await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})
-    if row is None or row.entity_type != "contact":
-        raise HTTPException(status_code=404, detail=t("error.record_not_found"))
+    row = await _locked_contact(session, company_id, contact_id)
     entry = await emit_event(
         session,
         company_id=company_id,

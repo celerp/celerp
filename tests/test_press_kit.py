@@ -73,10 +73,13 @@ _NEW_BY_VERTICAL = {
 }
 _VERTICALS = sorted(_NEW_BY_VERTICAL)
 
-# The accountants website page set: hand-picked screens the cloud site's accountants
-# page embeds by jsDelivr URL, so a rename or drop breaks that page.
+# The accountants website page set: the screens the cloud site's accountants page
+# embeds by jsDelivr URL, so a rename or drop breaks that page.
 _ACCOUNTANTS = _SHOTS / "accountants"
-_ACCOUNTANTS_SCREENS = {"migration-verify", "new-company", "company-backup"}
+_ACCOUNTANTS_SCREENS = {
+    "migration-verify", "new-company", "company-backup",
+    "client-companies", "fixed-assets", "bank-reconciliation",
+}
 
 # Width caps documented for each tier.
 _CANONICAL_MAX_W = 1600

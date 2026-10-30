@@ -165,7 +165,15 @@ async def test_every_job_shape_reads_the_same_with_its_runner_alive_dead_failing
         await _lapse(session, case.job_id)
     elif runner == "restarted":
         await jobs.shutdown()
+        # A resumed job's send polls the one the kill cut off, and records each poll on
+        # the test's one connection, where a refused reset's savepoint would take it
+        # back (on separate connections it never could). The polls are spaced out and
+        # the job is read and reset just after one.
+        monkeypatch.setattr(deadlines, "RESEND_DELAY_S", 5.0)
+        sent = cloud.sends[case.identity]
         await jobs.recover_on_start()
+        if jobs.task_alive(case.job_id):
+            await until(lambda: cloud.sends[case.identity] > sent)
 
     status, offered = await _seen(client, token, company_id, user_id, case)
     expected_status, expected_offer, reset_allowed = EXPECTED[shape, runner]
@@ -351,6 +359,7 @@ async def test_a_reopen_racing_a_conversation_delete_never_reopens_its_orphaned_
         assert await jobs.resume(case.job_id, company_id, user_id) is None
     else:
         async with jobs.SessionLocal() as s:
+            await jobs.lock_for_ai(s, row.company_id)
             assert not await jobs.reopen_question(s, case.job_id, row.auth_nonce)
             await s.commit()
         assert jobs.liveness(await _row(session, case.job_id)) == "ended"
@@ -469,6 +478,7 @@ async def _ended_by_a_competing_claim(session, case: Case) -> str:
     from celerp.models.ai import AIJobStep
     await _lapse(session, case.job_id)
     async with jobs.SessionLocal() as s:
+        await jobs._lock_job(s, case.job_id)
         competitor = await jobs._claim(s, case.job_id)
         await s.commit()
     assert competitor is not None and competitor[:len(jobs.RUNNER_ID)] == jobs.RUNNER_ID
@@ -478,6 +488,7 @@ async def _ended_by_a_competing_claim(session, case: Case) -> str:
         run = jobs._file_run(row, competitor)
         (step,) = (await session.execute(select(AIJobStep.id).where(AIJobStep.job_id == case.job_id))).scalars()
         async with jobs.SessionLocal() as s:
+            await jobs.lock_for_ai(s, run.company_id)
             await jobs._set_step(s, run, step, state="done", result={"filename": "competitor", "answer": "Theirs."})
             await s.commit()
         await jobs._end_job(run)

@@ -91,9 +91,11 @@ async def _replayed_states(engine, cid) -> tuple[dict, dict]:
     """The company's stored projection states, and the states its ledger replays to."""
     from celerp.models.projections import Projection
     from celerp.projections.engine import ProjectionEngine
+    from celerp.services.company_lock import lock_company
     async with maker(engine)() as s:
         stored = {p.entity_id: p.state for p in (await s.execute(
             select(Projection).where(Projection.company_id == cid))).scalars()}
+        await lock_company(s, cid)
         await ProjectionEngine.rebuild(s, cid)
         await s.flush()
         replayed = {p.entity_id: p.state for p in (await s.execute(

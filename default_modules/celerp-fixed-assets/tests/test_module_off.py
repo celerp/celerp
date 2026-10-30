@@ -9,7 +9,6 @@ from pathlib import Path
 
 import pytest
 
-from celerp.services.auth import MODULE_OFF
 from fa_fixtures import FA
 from test_runs import _contributed, _managed_from, _run, _set_module, _tick
 from test_sales import _sell
@@ -97,7 +96,7 @@ async def test_s11_records_read_only_while_off(fa):
     shown = await fa.get(f"/assets/{car}")
     assert shown.status_code == 200 and shown.json()["name"] == "Owner's car", shown.text
     refused = await fa.patch(f"/assets/{car}", {"name": "Renamed"})
-    assert refused.status_code == 403 and refused.json()["detail"] == MODULE_OFF, refused.text
+    assert refused.status_code == 403 and refused.json()["detail"]["message_key"] == "modules.off_for_company", refused.text
 
     for path in (f"/fixed-assets/assets/{car}", "/fixed-assets"):
         page = await fa.page(path)

@@ -20,6 +20,9 @@ from __future__ import annotations
 import uuid
 
 import pytest
+from playwright.sync_api import expect
+
+from .conftest import css_class
 
 pytestmark = pytest.mark.browser
 
@@ -131,7 +134,7 @@ def test_manual_je_post_and_void_journey(page, ui_server, seeded_chart, party):
     page.fill('#je-lines [name="debit_0"]', "42.50")
 
     chip = page.locator("#je-balance-chip")
-    assert "val-chip--alert" in (chip.get_attribute("class") or "")
+    expect(chip).to_have_class(css_class("val-chip--alert"))
 
     _pick_account(page, 1, "4100")
     page.fill('#je-lines [name="credit_1"]', "42.50")

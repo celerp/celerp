@@ -15,7 +15,6 @@ from celerp.services.peer_inventory import receive_stock_audit
 from test_payments_stripe import _register, _h, _company_id
 from peer_marks_support import KEY, memory_marks  # noqa: F401
 
-pytestmark = pytest.mark.usefixtures("docs_running")
 
 
 @pytest.mark.asyncio

@@ -88,11 +88,11 @@ async def _mentions(session: AsyncSession, company_id, needles: dict[str, list[s
         texts = [(eid, f"{eid}\n{text}") for eid, text in (await session.execute(
             sa.select(Projection.entity_id, state_text).where(
                 Projection.company_id == company_id,
-                sa.or_(*(state_text.contains(t) for t in terms), *(Projection.entity_id.contains(t) for t in terms)),
+                sa.or_(*(state_text.contains(t, autoescape=True) for t in terms), *(Projection.entity_id.contains(t, autoescape=True) for t in terms)),
             ))).all() if eid not in own]
         texts += [(eid, text) for eid, text in (await session.execute(
             sa.select(LedgerEntry.entity_id, data_text).where(
-                LedgerEntry.company_id == company_id, sa.or_(*(data_text.contains(t) for t in terms)),
+                LedgerEntry.company_id == company_id, sa.or_(*(data_text.contains(t, autoescape=True) for t in terms)),
             ))).all() if eid not in own]
         for eid, n in chunk:
             hits = {other for other, text in texts if n in text}
@@ -111,7 +111,7 @@ async def release_from_imports(session: AsyncSession, company_id, entity_ids) ->
     batch_text = sa.cast(ImportBatch.entity_ids, sa.Text)
     for batch in (await session.execute(sa.select(ImportBatch).where(
             ImportBatch.company_id == company_id, ImportBatch.status == "active",
-            sa.or_(*(batch_text.contains(f'"{e}"') for e in sorted(ids))),
+            sa.or_(*(batch_text.contains(f'"{e}"', autoescape=True) for e in sorted(ids))),
     ).with_for_update().execution_options(populate_existing=True))).scalars().all():
         kept = [e for e in batch.entity_ids or [] if e not in ids]
         if len(kept) != len(batch.entity_ids or []):

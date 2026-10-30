@@ -1,0 +1,1579 @@
+[
+ {
+  "route": "api POST /ai/upload",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches lock hold_company."
+ },
+ {
+  "route": "api POST /auth/password-reset-notices/acknowledge",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches commit."
+ },
+ {
+  "route": "api POST /backup/import",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api DELETE, api POST, commit, write delete, write session.add, write session.delete."
+ },
+ {
+  "route": "api POST /backup/import-bootstrap",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api DELETE, commit, write delete, write session.add, write session.delete."
+ },
+ {
+  "route": "api POST /backup/import/continue",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api DELETE, commit, write delete, write session.add, write session.delete."
+ },
+ {
+  "route": "api POST /backup/restore/{backup_id}",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api DELETE, api POST, commit, write delete, write session.add, write session.delete."
+ },
+ {
+  "route": "api POST /backup/trigger",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "api POST /companies/me/modules/buy",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "api POST /companies/me/modules/marketplace-download",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "api POST /companies/me/modules/{module_name}/delete",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches commit."
+ },
+ {
+  "route": "api POST /companies/me/modules/{module_name}/purge-data",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches commit."
+ },
+ {
+  "route": "api POST /company-backups/bootstrap/import-module",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches lock lock_company, lock locked_company."
+ },
+ {
+  "route": "api POST /company-backups/bootstrap/prepare",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches lock lock_company, lock locked_company."
+ },
+ {
+  "route": "api POST /company-backups/bootstrap/read",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST, lock lock_company, lock locked_company."
+ },
+ {
+  "route": "api POST /company-backups/import-module",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches lock lock_company, lock locked_company."
+ },
+ {
+  "route": "api POST /company-backups/prepare",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches lock lock_company, lock locked_company."
+ },
+ {
+  "route": "api POST /company-backups/read",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST, lock lock_company, lock locked_company."
+ },
+ {
+  "route": "api POST /company-backups/send-handoff",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api PUT."
+ },
+ {
+  "route": "api POST /company-backups/start-company/read",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST, lock lock_company, lock locked_company."
+ },
+ {
+  "route": "api POST /connectors/{connector_name}/sync-plan",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches commit, lock lock_company, write session.add."
+ },
+ {
+  "route": "api POST /items/import/preview",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches lock lock_company, lock locked_company."
+ },
+ {
+  "route": "api POST /items/import/rows/preview",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches lock lock_company, lock locked_company."
+ },
+ {
+  "route": "api POST /migrations/several",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches commit, write session.add."
+ },
+ {
+  "route": "api DELETE /migrations/several/{file_id}",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches commit, write session.delete."
+ },
+ {
+  "route": "api POST /migrations/start-company/scan",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches write update."
+ },
+ {
+  "route": "api DELETE /migrations/templates/{source_system}",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches commit."
+ },
+ {
+  "route": "api POST /settings/cloud-activate",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "api POST /settings/cloud-claim",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "api DELETE /stars/badge",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api DELETE, commit, write session.delete."
+ },
+ {
+  "route": "api POST /stars/badge",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches commit, write session.add."
+ },
+ {
+  "route": "api POST /stars/dismiss",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches commit, write session.add."
+ },
+ {
+  "route": "ui POST /account/email",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /accounting/import/chart/mapped",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /accounting/import/chart/revalidate",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /accounting/reconcile/start",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /accounting/reconcile/{session_id}/auto-match",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /accounting/reconcile/{session_id}/bulk-confirm",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /accounting/reconcile/{session_id}/complete",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /accounting/reconcile/{session_id}/lines/{line_id}/create-confirm",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /accounting/reconcile/{session_id}/lines/{line_id}/skip",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api PATCH."
+ },
+ {
+  "route": "ui POST /accounting/reconcile/{session_id}/lines/{line_id}/split-confirm",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /accounting/reconcile/{session_id}/write-off",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /accounting/sync-accounts/added/{item_id}",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /accounting/sync-accounts/holds/{item_id}",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /accounting/sync-accounts/review",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /ai/dismiss-all-ui/{conversation_id}/{message_id}",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui DELETE /ai/memory-clear",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api DELETE."
+ },
+ {
+  "route": "ui POST /ai/upload",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /api/items/bulk/channel-sync/{platform}/{action}",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /api/items/bulk/duplicate",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /api/items/bulk/expire",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /api/items/bulk/make-available",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /api/items/bulk/revert-to-draft",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /api/items/bulk/shopify-sync/{action}",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /api/items/bulk/transfer",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /api/items/merge/preview",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui DELETE /api/items/{entity_id}",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /api/items/{entity_id}/adjust",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /api/items/{entity_id}/archive",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui DELETE /api/items/{entity_id}/attachments/{att_id}",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api DELETE."
+ },
+ {
+  "route": "ui POST /api/items/{entity_id}/batch-split",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /api/items/{entity_id}/bring-back-in",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /api/items/{entity_id}/channel-sync/{platform}/{action}",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /api/items/{entity_id}/duplicate",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /api/items/{entity_id}/expire",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /api/items/{entity_id}/make-available",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /api/items/{entity_id}/recipe-autosave",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api PUT."
+ },
+ {
+  "route": "ui POST /api/items/{entity_id}/reserve",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /api/items/{entity_id}/restore",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /api/items/{entity_id}/restore-deleted",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /api/items/{entity_id}/return-to-vendor",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /api/items/{entity_id}/revert-to-draft",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /api/items/{entity_id}/split",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /api/items/{entity_id}/split-inline",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /api/items/{entity_id}/status",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /api/items/{entity_id}/transfer",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /api/items/{entity_id}/unreserve",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /backup/import",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /backup/import/continue",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /backup/restore/{backup_id}",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /backup/trigger",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /contacts/{contact_id}/addresses",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api POST."
+ },
+ {
+  "route": "ui DELETE /contacts/{contact_id}/addresses/{address_id}",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api DELETE."
+ },
+ {
+  "route": "ui PATCH /contacts/{contact_id}/addresses/{address_id}",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api PATCH."
+ },
+ {
+  "route": "ui POST /contacts/{contact_id}/addresses/{address_id}/make-primary",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api PATCH."
+ },
+ {
+  "route": "ui POST /contacts/{contact_id}/files",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui DELETE /contacts/{contact_id}/files/{file_id}",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api DELETE."
+ },
+ {
+  "route": "ui POST /contacts/{contact_id}/files/{file_id}/description",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api PATCH."
+ },
+ {
+  "route": "ui POST /contacts/{contact_id}/files/{file_id}/tag",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /contacts/{contact_id}/notes",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api POST."
+ },
+ {
+  "route": "ui DELETE /contacts/{contact_id}/notes/{note_id}",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api DELETE."
+ },
+ {
+  "route": "ui PATCH /contacts/{contact_id}/notes/{note_id}",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api PATCH."
+ },
+ {
+  "route": "ui POST /contacts/{contact_id}/people",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api POST."
+ },
+ {
+  "route": "ui DELETE /contacts/{contact_id}/people/{person_id}",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api DELETE."
+ },
+ {
+  "route": "ui PATCH /contacts/{contact_id}/people/{person_id}",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api PATCH."
+ },
+ {
+  "route": "ui POST /contacts/{contact_id}/tags/add",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api PATCH, api POST."
+ },
+ {
+  "route": "ui POST /contacts/{contact_id}/tags/remove",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api PATCH."
+ },
+ {
+  "route": "ui POST /crm/contacts/bulk/delete",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /crm/contacts/merge",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /crm/import/contacts/confirm",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /dashboard/finish-setup/dismiss",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api PATCH."
+ },
+ {
+  "route": "ui POST /dashboard/older-stock/dismiss",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api PATCH."
+ },
+ {
+  "route": "ui POST /docs/bulk-accounting-sync",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /docs/bulk-payment",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /docs/create-blank",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /docs/import/confirm",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /docs/import/shared",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /docs/{entity_id}/convert",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /docs/{entity_id}/delete-payment",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api DELETE."
+ },
+ {
+  "route": "ui POST /docs/{entity_id}/field/{field}",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api PATCH."
+ },
+ {
+  "route": "ui POST /docs/{entity_id}/files",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui DELETE /docs/{entity_id}/files/{file_id}",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api DELETE."
+ },
+ {
+  "route": "ui POST /docs/{entity_id}/files/{file_id}/description",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api PATCH."
+ },
+ {
+  "route": "ui POST /docs/{entity_id}/files/{file_id}/tag",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api PATCH."
+ },
+ {
+  "route": "ui PATCH /docs/{entity_id}/line/{li_index}/field/{field}",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api PATCH."
+ },
+ {
+  "route": "ui POST /docs/{entity_id}/notes",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api POST."
+ },
+ {
+  "route": "ui DELETE /docs/{entity_id}/notes/{note_id}",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api DELETE."
+ },
+ {
+  "route": "ui PATCH /docs/{entity_id}/notes/{note_id}",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api PATCH."
+ },
+ {
+  "route": "ui POST /docs/{entity_id}/payment",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui DELETE /docs/{entity_id}/receive",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api DELETE."
+ },
+ {
+  "route": "ui DELETE /docs/{entity_id}/receive-return",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api DELETE."
+ },
+ {
+  "route": "ui POST /docs/{entity_id}/receive-return",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /docs/{entity_id}/refund",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /docs/{entity_id}/refund-credit",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api POST."
+ },
+ {
+  "route": "ui DELETE /docs/{entity_id}/share",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api DELETE."
+ },
+ {
+  "route": "ui POST /docs/{entity_id}/share",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /docs/{entity_id}/void-payment",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /finance/company-files",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /forgot-password",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /inventory/import/errors",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /inventory/import/revalidate",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /inventory/import/review",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /items/{entity_id}/files/{file_id}/description",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api PATCH."
+ },
+ {
+  "route": "ui POST /items/{entity_id}/files/{file_id}/hero",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /items/{entity_id}/files/{file_id}/tag",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /lists/from-items/add",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api PATCH."
+ },
+ {
+  "route": "ui POST /lists/from-items/new",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /lists/import/confirm",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /lists/new-audit",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /lists/{entity_id}/items/csv",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api PATCH."
+ },
+ {
+  "route": "ui POST /lists/{entity_id}/notes",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api POST."
+ },
+ {
+  "route": "ui DELETE /lists/{entity_id}/notes/{note_id}",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api DELETE."
+ },
+ {
+  "route": "ui PATCH /lists/{entity_id}/notes/{note_id}",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api PATCH."
+ },
+ {
+  "route": "ui POST /logout",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /manufacturing/runs/{run_id}/repair-output",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /migrations/templates/{source}/forget",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api DELETE."
+ },
+ {
+  "route": "ui POST /migrations/{run_id}/xero-attachments",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /migrations/{run_id}/xero-attachments/confirm",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /migrations/{run_id}/xero-attachments/stop",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /modules/buy",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /modules/community-import",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /modules/import",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /modules/import-path",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /modules/marketplace-download",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /modules/marketplace-install",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /modules/restart",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /modules/{module_name}/delete",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /notifications/read-all",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /notifications/{notification_id}/read",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /password-reset-notices/acknowledge",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /settings/accountant-access/grants",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /settings/accounting/bank-accounts/new",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api POST."
+ },
+ {
+  "route": "ui PATCH /settings/accounting/bank-accounts/{bank_id}",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api PATCH."
+ },
+ {
+  "route": "ui PATCH /settings/accounting/bank-accounts/{bank_id}/toggle",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api PATCH."
+ },
+ {
+  "route": "ui POST /settings/accounting/chart/seed",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api POST."
+ },
+ {
+  "route": "ui PATCH /settings/accounting/chart/{code}/cash-flow",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api PATCH."
+ },
+ {
+  "route": "ui POST /settings/accounting/close-year",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /settings/accounting/period-lock",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui PATCH /settings/accounting/posting-accounts/{key}",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api PUT."
+ },
+ {
+  "route": "ui POST /settings/accounting/rules",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api POST."
+ },
+ {
+  "route": "ui DELETE /settings/accounting/rules/{rule_id}",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api DELETE."
+ },
+ {
+  "route": "ui POST /settings/base-price-list",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api PATCH."
+ },
+ {
+  "route": "ui POST /settings/cat-schema/{category}/add",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api PATCH."
+ },
+ {
+  "route": "ui DELETE /settings/cat-schema/{category}/{idx}",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api PATCH."
+ },
+ {
+  "route": "ui PATCH /settings/cat-schema/{category}/{idx}/{field}",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api PATCH."
+ },
+ {
+  "route": "ui DELETE /settings/categories/{category_key}",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api DELETE."
+ },
+ {
+  "route": "ui POST /settings/cloud-accept-tos",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /settings/cloud-activate",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /settings/cloud-claim",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /settings/cloud-disconnect",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /settings/cloud-send-otp",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /settings/company-handoff",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui DELETE /settings/company/deactivate",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api DELETE."
+ },
+ {
+  "route": "ui POST /settings/connectors/celerp/from-accountant/{je_id}/reverse",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api POST."
+ },
+ {
+  "route": "ui DELETE /settings/connectors/{platform}/attention/{record_id}/reconciled",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api DELETE, api POST."
+ },
+ {
+  "route": "ui POST /settings/connectors/{platform}/attention/{record_id}/reconciled",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api DELETE, api POST."
+ },
+ {
+  "route": "ui POST /settings/connectors/{platform}/connect-apikey",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST, commit, lock lock_company, write session.add, write session.delete."
+ },
+ {
+  "route": "ui POST /settings/connectors/{platform}/deposit-account",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api PATCH."
+ },
+ {
+  "route": "ui DELETE /settings/connectors/{platform}/disconnect",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api DELETE."
+ },
+ {
+  "route": "ui POST /settings/connectors/{platform}/frequency",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches commit, lock lock_company, write session.add, write session.delete."
+ },
+ {
+  "route": "ui POST /settings/connectors/{platform}/oauth-redirect",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui DELETE /settings/connectors/{platform}/reset",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api DELETE."
+ },
+ {
+  "route": "ui POST /settings/connectors/{platform}/sync",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui PATCH /settings/contacts/defaults",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api PATCH."
+ },
+ {
+  "route": "ui POST /settings/contacts/tags",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api PATCH."
+ },
+ {
+  "route": "ui DELETE /settings/contacts/tags/{tag_name}",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api PATCH."
+ },
+ {
+  "route": "ui PATCH /settings/contacts/tags/{tag_name}",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api PATCH."
+ },
+ {
+  "route": "ui POST /settings/default-price-list",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api PATCH."
+ },
+ {
+  "route": "ui POST /settings/import-history/{batch_id}/undo",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui PUT /settings/labels/{tmpl_id}",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api PUT."
+ },
+ {
+  "route": "ui DELETE /settings/locations/{location_id}",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api DELETE."
+ },
+ {
+  "route": "ui PATCH /settings/locations/{location_id}/{field}",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api PATCH."
+ },
+ {
+  "route": "ui POST /settings/numbering/{doc_type}/reset",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api PATCH."
+ },
+ {
+  "route": "ui PATCH /settings/numbering/{doc_type}/{field}",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api PATCH."
+ },
+ {
+  "route": "ui POST /settings/partner-claim/accept",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /settings/partner-claim/resolve",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /settings/password",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /settings/payments",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api PATCH."
+ },
+ {
+  "route": "ui POST /settings/payments/connect",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /settings/payments/disconnect",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui PATCH /settings/price-lists/{idx}/{field}",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api PATCH."
+ },
+ {
+  "route": "ui PATCH /settings/sales/line-identifier",
+  "class": "never requested",
+  "reason": "No test requests this route; its source reaches api PATCH."
+ },
+ {
+  "route": "ui POST /settings/saved-copies/{kept_id}/delete",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api DELETE."
+ },
+ {
+  "route": "ui PATCH /settings/schema/{idx}/{field}",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api PATCH."
+ },
+ {
+  "route": "ui DELETE /settings/units/{name}",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api PUT."
+ },
+ {
+  "route": "ui POST /settings/users/new",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui PATCH /settings/users/{user_id}/{field}",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api PATCH."
+ },
+ {
+  "route": "ui POST /settings/verticals/apply-preset",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /setup/import-backup",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /setup/new-company",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /stars/claim",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /stars/dismiss",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "route": "ui POST /subscriptions/import/confirm",
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
+ },
+ {
+  "site": "celerp/ai/conversations.py create_conversation execute",
+  "count": 1,
+  "class": "reached from a route",
+  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
+ },
+ {
+  "site": "celerp/ai/usage.py reconcile_usage execute",
+  "count": 2,
+  "class": "not reached from a route",
+  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
+ },
+ {
+  "site": "celerp/connectors/outbound_queue.py _release_rows execute",
+  "count": 2,
+  "class": "reached from a route",
+  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
+ },
+ {
+  "site": "celerp/connectors/outbound_queue.py clear execute",
+  "count": 1,
+  "class": "not reached from a route",
+  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
+ },
+ {
+  "site": "celerp/connectors/outbound_queue.py enqueue_outbound add",
+  "count": 1,
+  "class": "not reached from a route",
+  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
+ },
+ {
+  "site": "celerp/connectors/outbound_queue.py retain execute",
+  "count": 1,
+  "class": "not reached from a route",
+  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
+ },
+ {
+  "site": "celerp/connectors/outbound_queue.py save execute",
+  "count": 1,
+  "class": "not reached from a route",
+  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
+ },
+ {
+  "site": "celerp/connectors/ownership.py claim_connector_ownership delete",
+  "count": 1,
+  "class": "reached from a route",
+  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
+ },
+ {
+  "site": "celerp/connectors/sync_runner.py _finish_run add",
+  "count": 1,
+  "class": "reached from a route",
+  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
+ },
+ {
+  "site": "celerp/events/engine.py connector_upsert emit_event",
+  "count": 1,
+  "class": "not reached from a route",
+  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
+ },
+ {
+  "site": "celerp/routers/auth.py acknowledge_reset_notices execute",
+  "count": 1,
+  "class": "reached from a route",
+  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
+ },
+ {
+  "site": "celerp/routers/auth.py authenticate execute",
+  "count": 1,
+  "class": "reached from a route",
+  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
+ },
+ {
+  "site": "celerp/services/auto_je.py void emit_event",
+  "count": 1,
+  "class": "not reached from a route",
+  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
+ },
+ {
+  "site": "celerp/services/backup_import.py _clear_restored_connector_state execute",
+  "count": 2,
+  "class": "reached from a route",
+  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
+ },
+ {
+  "site": "celerp/services/company_reset.py reset execute",
+  "count": 1,
+  "class": "reached from a route",
+  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
+ },
+ {
+  "site": "celerp/services/lot_origin.py _normalize emit_event",
+  "count": 1,
+  "class": "not reached from a route",
+  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
+ },
+ {
+  "site": "celerp/services/migration_batches.py add add",
+  "count": 1,
+  "class": "reached from a route",
+  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
+ },
+ {
+  "site": "celerp/services/migration_batches.py remove delete",
+  "count": 1,
+  "class": "reached from a route",
+  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
+ },
+ {
+  "site": "celerp/services/migration_core_sink.py _import_attachment execute",
+  "count": 1,
+  "class": "not reached from a route",
+  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
+ },
+ {
+  "site": "celerp/services/migration_core_sink.py _import_location add",
+  "count": 1,
+  "class": "not reached from a route",
+  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
+ },
+ {
+  "site": "celerp/services/migration_core_sink.py stage_file_cleanup execute",
+  "count": 1,
+  "class": "not reached from a route",
+  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
+ },
+ {
+  "site": "celerp/services/migration_templates.py forget execute",
+  "count": 1,
+  "class": "reached from a route",
+  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
+ },
+ {
+  "site": "celerp/services/migration_templates.py remember execute",
+  "count": 1,
+  "class": "reached from a route",
+  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
+ },
+ {
+  "site": "celerp/services/migration_xero_attachments.py attach execute",
+  "count": 2,
+  "class": "not reached from a route",
+  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
+ },
+ {
+  "site": "celerp/services/migration_xero_attachments.py save execute",
+  "count": 1,
+  "class": "not reached from a route",
+  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
+ },
+ {
+  "site": "celerp/services/migrations.py _checkpoint execute",
+  "count": 1,
+  "class": "reached from a route",
+  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
+ },
+ {
+  "site": "celerp/services/migrations.py _record_mappings execute",
+  "count": 1,
+  "class": "reached from a route",
+  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
+ },
+ {
+  "site": "celerp/services/migrations.py discard execute",
+  "count": 2,
+  "class": "reached from a route",
+  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
+ },
+ {
+  "site": "celerp/services/payments.py _apply_refund execute",
+  "count": 1,
+  "class": "reached from a route",
+  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
+ },
+ {
+  "site": "celerp/services/payments.py _settle delete",
+  "count": 1,
+  "class": "reached from a route",
+  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
+ },
+ {
+  "site": "celerp/services/payments.py prepare_company_closure add",
+  "count": 1,
+  "class": "reached from a route",
+  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
+ },
+ {
+  "site": "celerp/services/payments.py receive_payment execute",
+  "count": 2,
+  "class": "not reached from a route",
+  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
+ },
+ {
+  "site": "celerp/services/payments.py receive_refund execute",
+  "count": 1,
+  "class": "not reached from a route",
+  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
+ },
+ {
+  "site": "celerp/services/payments.py receive_release execute",
+  "count": 1,
+  "class": "not reached from a route",
+  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
+ },
+ {
+  "site": "celerp/services/payments.py record_recovery add",
+  "count": 1,
+  "class": "reached from a route",
+  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
+ },
+ {
+  "site": "celerp/services/payments.py return_unmatched execute",
+  "count": 1,
+  "class": "reached from a route",
+  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
+ },
+ {
+  "site": "celerp/services/payments.py unrecord_company execute",
+  "count": 1,
+  "class": "reached from a route",
+  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
+ },
+ {
+  "site": "celerp/services/peer_identity.py resolve_peer_location add",
+  "count": 1,
+  "class": "not reached from a route",
+  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
+ },
+ {
+  "site": "celerp/services/peer_inventory.py complete_revision add",
+  "count": 1,
+  "class": "not reached from a route",
+  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
+ },
+ {
+  "site": "celerp/services/peer_journals.py apply_firm_journal emit_event",
+  "count": 4,
+  "class": "not reached from a route",
+  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
+ },
+ {
+  "site": "celerp/services/peer_journals.py apply_firm_lock execute",
+  "count": 1,
+  "class": "not reached from a route",
+  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
+ },
+ {
+  "site": "celerp/services/peer_journals.py mark execute",
+  "count": 1,
+  "class": "not reached from a route",
+  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
+ },
+ {
+  "site": "celerp/services/peer_journals.py receive_journal emit_event",
+  "count": 1,
+  "class": "not reached from a route",
+  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
+ },
+ {
+  "site": "celerp/services/provisioning.py ensure_default_location add",
+  "count": 1,
+  "class": "reached from a route",
+  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
+ },
+ {
+  "site": "celerp/services/reorder.py run_all_alerts add",
+  "count": 1,
+  "class": "not reached from a route",
+  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
+ },
+ {
+  "site": "celerp/services/runtime_state.py _get_or_create add",
+  "count": 1,
+  "class": "reached from a route",
+  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
+ },
+ {
+  "site": "celerp/services/session_tracker.py clear execute",
+  "count": 1,
+  "class": "not reached from a route",
+  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
+ },
+ {
+  "site": "celerp/services/session_tracker.py run_jti_cleanup_loop execute",
+  "count": 1,
+  "class": "not reached from a route",
+  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
+ },
+ {
+  "site": "celerp/services/supporter_badge.py claim add",
+  "count": 1,
+  "class": "reached from a route",
+  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
+ },
+ {
+  "site": "celerp/services/supporter_badge.py remove delete",
+  "count": 1,
+  "class": "reached from a route",
+  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
+ },
+ {
+  "site": "default_modules/celerp-accounting/celerp_accounting/routes.py _add_seeded_accounts add",
+  "count": 1,
+  "class": "not reached from a route",
+  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
+ },
+ {
+  "site": "default_modules/celerp-admin/celerp_admin/routes.py _check_contact_file_schema emit_event",
+  "count": 1,
+  "class": "not reached from a route",
+  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
+ },
+ {
+  "site": "default_modules/celerp-admin/celerp_admin/routes.py _check_legacy_item_prices emit_event",
+  "count": 1,
+  "class": "not reached from a route",
+  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
+ },
+ {
+  "site": "default_modules/celerp-contacts/celerp_contacts/migrations.py backfill_self_contact_identity emit_event",
+  "count": 2,
+  "class": "not reached from a route",
+  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
+ },
+ {
+  "site": "default_modules/celerp-contacts/celerp_contacts/migrations.py migrate_self_contacts emit_event",
+  "count": 1,
+  "class": "not reached from a route",
+  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
+ },
+ {
+  "site": "default_modules/celerp-contacts/celerp_contacts/routes.py merge_contacts_service emit_event",
+  "count": 1,
+  "class": "reached from a route",
+  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
+ },
+ {
+  "site": "default_modules/celerp-contacts/celerp_contacts/services.py create_crm_entity emit_event",
+  "count": 1,
+  "class": "not reached from a route",
+  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
+ },
+ {
+  "site": "default_modules/celerp-docs/celerp_docs/customs_freeze.py freeze_issued_customs_lists emit_event",
+  "count": 1,
+  "class": "not reached from a route",
+  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
+ },
+ {
+  "site": "default_modules/celerp-docs/celerp_docs/doc_service.py _record_woocommerce_hold emit_event",
+  "count": 1,
+  "class": "not reached from a route",
+  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
+ },
+ {
+  "site": "default_modules/celerp-docs/celerp_docs/doc_service.py mark_doc_pushed emit_event",
+  "count": 1,
+  "class": "not reached from a route",
+  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
+ },
+ {
+  "site": "default_modules/celerp-docs/celerp_docs/doc_service.py upsert_order_from_woocommerce emit_event",
+  "count": 1,
+  "class": "not reached from a route",
+  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
+ },
+ {
+  "site": "default_modules/celerp-docs/celerp_docs/historical_lots.py link_historical_lots emit_event",
+  "count": 1,
+  "class": "not reached from a route",
+  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
+ },
+ {
+  "site": "default_modules/celerp-docs/celerp_docs/imported_cutover.py _correct emit_event",
+  "count": 1,
+  "class": "not reached from a route",
+  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
+ },
+ {
+  "site": "default_modules/celerp-docs/celerp_docs/legacy_credit_notes.py _post emit_event",
+  "count": 1,
+  "class": "reached from a route",
+  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
+ },
+ {
+  "site": "default_modules/celerp-docs/celerp_docs/legacy_credit_notes.py _void_with_invoice emit_event",
+  "count": 1,
+  "class": "reached from a route",
+  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
+ },
+ {
+  "site": "default_modules/celerp-docs/celerp_docs/received_legacy.py move_legacy_imports delete",
+  "count": 1,
+  "class": "not reached from a route",
+  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
+ },
+ {
+  "site": "default_modules/celerp-docs/celerp_docs/routes.py _payments_tip_suffix add",
+  "count": 1,
+  "class": "reached from a route",
+  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
+ },
+ {
+  "site": "default_modules/celerp-docs/celerp_docs/routes.py record_historical_delivery emit_event",
+  "count": 4,
+  "class": "not reached from a route",
+  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
+ },
+ {
+  "site": "default_modules/celerp-docs/celerp_docs/routes.py record_historical_receipt emit_event",
+  "count": 1,
+  "class": "not reached from a route",
+  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
+ },
+ {
+  "site": "default_modules/celerp-docs/celerp_docs/routes.py reverse_payment_refund emit_event",
+  "count": 1,
+  "class": "reached from a route",
+  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
+ },
+ {
+  "site": "default_modules/celerp-docs/celerp_docs/routes.py unvoid_doc emit_event",
+  "count": 1,
+  "class": "reached from a route",
+  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
+ },
+ {
+  "site": "default_modules/celerp-docs/celerp_docs/routes_payments.py record_stripe_release emit_event",
+  "count": 1,
+  "class": "reached from a route",
+  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
+ },
+ {
+  "site": "default_modules/celerp-inventory/celerp_inventory/services.py set_external_link emit_event",
+  "count": 1,
+  "class": "reached from a route",
+  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
+ },
+ {
+  "site": "default_modules/celerp-inventory/celerp_inventory/services.py stamp_catalog_family_members emit_event",
+  "count": 1,
+  "class": "reached from a route",
+  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
+ },
+ {
+  "site": "default_modules/celerp-inventory/celerp_inventory/services.py update_item_from_connector emit_event",
+  "count": 1,
+  "class": "not reached from a route",
+  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
+ },
+ {
+  "site": "default_modules/celerp-inventory/celerp_inventory/services.py upsert_external_product emit_event",
+  "count": 3,
+  "class": "not reached from a route",
+  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
+ },
+ {
+  "site": "default_modules/celerp-manufacturing/celerp_manufacturing/migrations.py migrate_boms_to_recipes emit_event",
+  "count": 1,
+  "class": "not reached from a route",
+  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
+ }
+]

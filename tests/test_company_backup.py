@@ -25,6 +25,7 @@ from pathlib import Path
 
 import pytest
 
+import mutation_observer
 from ui.i18n import t
 from sqlalchemy import text
 
@@ -1388,10 +1389,11 @@ async def _bk_reshaped(engine, cid, gadget, statements) -> None:
 async def _bk_ddl(engine, statements: list[str]) -> None:
     """The statements as one transaction of another connection, giving up after a second
     waiting for a lock."""
-    async with engine.begin() as conn:
-        await conn.execute(text("SET LOCAL lock_timeout = '1s'"))
-        for sql in statements:
-            await conn.execute(text(sql))
+    with mutation_observer.another_client():
+        async with engine.begin() as conn:
+            await conn.execute(text("SET LOCAL lock_timeout = '1s'"))
+            for sql in statements:
+                await conn.execute(text(sql))
 
 
 @pytest.mark.parametrize("shape", list(_BK_CHANGED))

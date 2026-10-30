@@ -118,7 +118,7 @@ async def _books(session, company_id) -> Books:
     records = {parse_period(s["month"]): s for _, s in await _entities(session, company_id, "fa_run")}
     rows = (await session.execute(select(Projection.entity_id, Projection.state).where(
         Projection.company_id == company_id, Projection.entity_type == "journal_entry",
-        Projection.entity_id.startswith(_JOURNAL)))).all()
+        Projection.entity_id.startswith(_JOURNAL, autoescape=True)))).all()
     journals: dict[int, dict[int, dict]] = {}
     for entity_id, state in rows:
         month, cycle = entity_id.removeprefix(_JOURNAL).split(":")

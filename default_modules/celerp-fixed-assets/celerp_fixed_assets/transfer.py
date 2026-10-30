@@ -169,13 +169,14 @@ async def transfer(session, company_id, user_id, asset_id: str, body: dict) -> d
     await _lock_in_order(session, company_id, theirs)
 
     async def plan(fa):
+        # Both companies' locks before the asset's row lock, as undo takes them.
+        _, their_settings = await locked_authority(session, theirs, user_id, KEYS)
         row = (await lock_projections(session, company_id, [asset_id])).get(asset_id)
         if row is None or row.entity_type != "fa_asset":
             raise HTTPException(status_code=404, detail="No such asset.")
         asset = row.state
         in_use(asset_id, asset, "it cannot be transferred")
         day = _date(body.get("date"), "The transfer date")
-        _, their_settings = await locked_authority(session, theirs, user_id, KEYS)
         our_name, their_name = await _name(session, company_id), await _name(session, theirs)
         if not _uses(their_settings):
             raise conflict(f"{their_name} does not use fixed assets. Turn the module on there and confirm its "

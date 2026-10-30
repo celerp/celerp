@@ -10,6 +10,7 @@ import uuid
 from pathlib import Path
 
 import pytest
+from playwright.sync_api import expect
 
 from .test_inventory_merge_after_disconnect_browser import _db
 
@@ -22,6 +23,24 @@ def _mark_unresolved(company_id: str, run_id: str) -> None:
     state = _db("SELECT state FROM projections WHERE company_id = %s AND entity_id = %s", company_id, run_id)[0][0]
     _db("UPDATE projections SET state = CAST(%s AS json) WHERE company_id = %s AND entity_id = %s",
         json.dumps({**state, "wip_unresolved": "books disagree"}), company_id, run_id)
+
+
+@pytest.fixture
+def value_beyond_stock_in_shared_company(api):
+    """What other browser tests can leave in the shared company: 10.00 on the components account
+    beyond any stock on hand, which the app refuses to reconcile a run's value against. The entry
+    is reversed afterwards, so the tests that follow find the shared company as it was."""
+    def post(debit: str, credit: str) -> None:
+        r = api.post("/accounting/journal-entries", json={
+            "ts": "2026-03-10", "memo": "Value beyond stock",
+            "entries": [{"account": debit, "debit": 10.0, "credit": 0}, {"account": credit, "debit": 0, "credit": 10.0}],
+            "idempotency_token": uuid.uuid4().hex,
+        })
+        assert r.status_code == 200, r.text
+
+    post("1130-P", "1111")
+    yield
+    post("1111", "1130-P")
 
 
 def _run_needing_reconciliation(api) -> tuple[str, str, str]:
@@ -47,10 +66,9 @@ def _run_needing_reconciliation(api) -> tuple[str, str, str]:
 
 # Both tests run in their own company: whether a run's value may come from retained earnings
 # depends on every inventory account's balance, which other tests move in the shared one.
-def test_a_run_needing_reconciliation_is_reconciled_on_its_page(page, ui_server, fresh_company):
-    api = fresh_company
+def test_a_run_needing_reconciliation_is_reconciled_on_its_page(page, ui_server, value_beyond_stock_in_shared_company, fresh_company):
     SHOTS.mkdir(parents=True, exist_ok=True)
-    product, run_id, _ = _run_needing_reconciliation(api)
+    product, run_id, _ = _run_needing_reconciliation(fresh_company)
 
     page.set_viewport_size({"width": 1440, "height": 1000})
     page.goto(f"{ui_server}/inventory/{product}?tab=manufacturing", wait_until="domcontentloaded")
@@ -63,19 +81,18 @@ def test_a_run_needing_reconciliation_is_reconciled_on_its_page(page, ui_server,
     value = page.locator("#reconcile-panel input[name='value']")
     value.fill("0")
     value.press("Escape")
-    assert page.evaluate("document.activeElement.name") != "value", "Escape did not leave the field"
+    expect(page.locator('[name="value"]:focus'), "Escape did not leave the field").to_have_count(0)
     page.screenshot(path=str(SHOTS / "reconcile-run.png"), full_page=True)
 
     page.click("#reconcile-panel button[type='submit']")
     page.wait_for_selector("#reconcile-panel .flash--success", timeout=10000)
     assert "The run can issue, return, receive and complete again." in page.inner_text("#reconcile-panel")
     assert page.evaluate("window.__stay") == 1
-    assert not api.get(f"/manufacturing/{run_id}").json().get("wip_unresolved")
+    assert not fresh_company.get(f"/manufacturing/{run_id}").json().get("wip_unresolved")
 
 
-def test_a_key_spent_on_another_action_is_replaced_so_the_user_can_send_again(page, ui_server, fresh_company):
-    api = fresh_company
-    _, run_id, company_id = _run_needing_reconciliation(api)
+def test_a_key_spent_on_another_action_is_replaced_so_the_user_can_send_again(page, ui_server, value_beyond_stock_in_shared_company, fresh_company):
+    _, run_id, company_id = _run_needing_reconciliation(fresh_company)
     key = "#reconcile-panel input[name='idempotency_key']"
     page.goto(f"{ui_server}/manufacturing/runs/{run_id}/reconcile", wait_until="domcontentloaded")
     page.wait_for_selector("#reconcile-panel form", timeout=10000)
@@ -99,4 +116,4 @@ def test_a_key_spent_on_another_action_is_replaced_so_the_user_can_send_again(pa
     page.fill("#reconcile-panel input[name='value']", "0")
     page.click("#reconcile-panel button[type='submit']")
     page.wait_for_selector("#reconcile-panel .flash--success", timeout=10000)
-    assert not api.get(f"/manufacturing/{run_id}").json().get("wip_unresolved")
+    assert not fresh_company.get(f"/manufacturing/{run_id}").json().get("wip_unresolved")

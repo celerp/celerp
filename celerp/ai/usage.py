@@ -69,49 +69,65 @@ async def record_usage(
 async def reconcile_usage(session: AsyncSession) -> None:
     """One pass: mark unresolved every pending row the service can no longer confirm,
     then settle up to RECONCILE_BATCH other pending rows whose reconcile time has
-    passed, from ONE status read of their operations, then commit. A charged one
-    takes its charge; one never charged takes 0. One still running, or with no terminal
-    status (not yet known to the service, or past its fencing capacity), is asked
-    again after RECONCILE_RETRY_S so the next due rows get their turn; every row stays
-    as it was when the service cannot be asked or answers no status. A row sent again after the read has a
-    new reconcile time and is left for a later pass; so is a row a job in this
-    process still holds."""
+    passed, from ONE status read of their operations. A charged one takes its charge;
+    one never charged takes 0. One still running, or with no terminal status (not yet
+    known to the service, or past its fencing capacity), is asked again after
+    RECONCILE_RETRY_S so the next due rows get their turn; every row stays as it was
+    when the service cannot be asked or answers no status. A row sent again after the
+    read has a new reconcile time and is left for a later pass; so is a row a job in
+    this process still holds.
+
+    The rows are read, and the service asked, with no transaction open; what came
+    back is written one company at a time, each in a short transaction under its
+    company lock, so a company whose lock is held (or that is gone) waits for a later
+    pass without holding up any other."""
     now = datetime.now(timezone.utc)
-    await session.execute(
-        update(AIUsage)
-        .where(AIUsage.pending, ~AIUsage.unresolved,
-               AIUsage.created_at < deadlines.confirmable_since(await deadlines.limits(), now))
-        .values(unresolved=True))
+    stale_before = deadlines.confirmable_since(await deadlines.limits(), now)
     held = jobs.held_operation_ids()
+    stale = set((await session.execute(
+        select(AIUsage.company_id).where(AIUsage.pending, ~AIUsage.unresolved, AIUsage.created_at < stale_before)
+        .distinct())).scalars())
     rows = (await session.execute(
-        select(AIUsage.id, AIUsage.operation_id, AIUsage.reconcile_at)
+        select(AIUsage.id, AIUsage.company_id, AIUsage.operation_id, AIUsage.reconcile_at)
         .where(AIUsage.pending, ~AIUsage.unresolved, AIUsage.reconcile_at < now,
+               AIUsage.created_at >= stale_before,
                *([AIUsage.operation_id.not_in(held)] if held else []))
         .order_by(AIUsage.reconcile_at)
         .limit(deadlines.RECONCILE_BATCH)
     )).all()
-    if not rows:
-        await session.commit()
-        return
-    try:
-        statuses = await llm.operations_status([r.operation_id for r in rows])
-    except (llm.RelayError, httpx.HTTPError, ValueError, TimeoutError) as exc:
-        log.info("AI usage reconcile skipped: %s", type(exc).__name__)
-        await session.commit()
-        return
-    by_id = {s["operation_id"]: s for s in statuses}
-    for row in rows:
-        status = by_id.get(str(row.operation_id))
-        if status is None or status["state"] not in ("charged", "not_charged"):
-            settled = {"reconcile_at": now + timedelta(seconds=deadlines.RECONCILE_RETRY_S)}
-        else:
-            settled = {"pending": False,
-                       "credits": status["credits"] if status["state"] == "charged" else 0}
-        await session.execute(
-            update(AIUsage)
-            .where(AIUsage.id == row.id, AIUsage.pending, AIUsage.reconcile_at == row.reconcile_at)
-            .values(**settled))
     await session.commit()
+    by_id: dict = {}
+    if rows:
+        try:
+            by_id = {s["operation_id"]: s for s in await llm.operations_status([r.operation_id for r in rows])}
+        except (llm.RelayError, httpx.HTTPError, ValueError, TimeoutError) as exc:
+            log.info("AI usage reconcile skipped: %s", type(exc).__name__)
+            rows = []
+    for company_id in sorted(stale | {r.company_id for r in rows}, key=str):
+        try:
+            await jobs.lock_for_ai(session, company_id)
+            if company_id in stale:
+                await session.execute(
+                    update(AIUsage)
+                    .where(AIUsage.company_id == company_id, AIUsage.pending, ~AIUsage.unresolved,
+                           AIUsage.created_at < stale_before)
+                    .values(unresolved=True))
+            for row in (r for r in rows if r.company_id == company_id):
+                status = by_id.get(str(row.operation_id))
+                if status is None or status["state"] not in ("charged", "not_charged"):
+                    settled = {"reconcile_at": now + timedelta(seconds=deadlines.RECONCILE_RETRY_S)}
+                else:
+                    settled = {"pending": False,
+                               "credits": status["credits"] if status["state"] == "charged" else 0}
+                await session.execute(
+                    update(AIUsage)
+                    .where(AIUsage.id == row.id, AIUsage.pending, ~AIUsage.unresolved,
+                           AIUsage.reconcile_at == row.reconcile_at)
+                    .values(**settled))
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            log.warning("AI usage of company %s not reconciled this pass", company_id, exc_info=True)
 
 
 async def reconcile_usage_loop(session_factory) -> None:

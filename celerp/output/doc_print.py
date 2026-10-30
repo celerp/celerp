@@ -23,7 +23,7 @@ from fasthtml.common import (
 
 from celerp.output.branding import BRAND_TEXT as _BRAND_LABEL, brand_url as _brand_url
 from celerp.output.document_context import prepare_document_output
-from celerp.services.doc_balance import is_awaiting_payment, outstanding_balance
+from celerp.services.doc_balance import doc_tax, doc_value, is_awaiting_payment, outstanding_balance
 from celerp.services.line_measures import line_identifier as _line_identifier, measure_sublines, qty_label
 from celerp.services.list_behavior import DEFAULT_LIST_TYPE, LIST_BEHAVIOR, SUPPLIER_DOC_TYPES
 from celerp.services.money import document_line_amount, to_decimal
@@ -459,8 +459,8 @@ def render_doc_print_html(doc: dict, *, import_url: str | None = None,
         )
 
     subtotal = doc.get("subtotal") or 0
-    tax_total = doc.get("tax_total") or doc.get("tax") or 0
-    grand_total = doc.get("grand_total") or doc.get("total") or 0
+    tax_total = doc_tax(doc)
+    grand_total = doc_value(doc, "total") or 0
     list_totals = None
     if doc_type == "list":
         from celerp_docs.doc_money import stored_list_totals

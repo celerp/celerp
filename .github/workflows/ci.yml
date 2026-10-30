@@ -24,7 +24,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        group: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+        group: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
 
     services:
       postgres:
@@ -55,13 +55,15 @@ jobs:
       - name: Install deps
         run: pip install uv && uv pip install --system -e ".[dev]" pytest-xdist pytest-split -c constraints.txt
 
-      - name: Run tests (shard ${{ matrix.group }}/14)
+      - name: Run tests (shard ${{ matrix.group }}/16)
         env:
           ALLOW_INSECURE_JWT: "true"
           # Run on the Postgres service (each xdist worker gets its own database).
           DATABASE_URL: postgresql+asyncpg://celerp:celerp@localhost:5432/celerp_test
+          # Each test process writes what the write observer saw here; the census job reads all shards.
+          CELERP_MUTATION_CENSUS: ${{ runner.temp }}/mutation-census
         # ubuntu-latest has 2 vCPUs, so a single `-n auto` run can't keep up.
-        # pytest-split fans the suite across 14 parallel runners; each still uses -n auto
+        # pytest-split fans the suite across 16 parallel runners; each still uses -n auto
         # within its 2 cores.
         # Process tests run in their own job so the split stays even.
         # The split balances measured time from tests/.test_durations (refresh it with
@@ -73,12 +75,60 @@ jobs:
         # backup and reset files in one shard.
         run: >
           timeout 600 pytest tests/ default_modules/*/tests/ -n auto -q --tb=short --no-cov
-          --timeout=30
           -m "not browser and not embedded_pg and not process and not integration"
-          --splits 14 --group ${{ matrix.group }} --splitting-algorithm least_duration
+          --splits 16 --group ${{ matrix.group }} --splitting-algorithm least_duration
           --durations-path tests/.test_durations
           --ignore=tests/test_visual.py
           --ignore=tests/test_browser
+
+      - name: Upload the write observer's census
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: census-shard-${{ matrix.group }}
+          path: ${{ runner.temp }}/mutation-census
+          if-no-files-found: error
+          retention-days: 7
+
+  census:
+    name: Mutation census
+    needs: [shard, process, browser]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2  # the merge commit and the main it merges into, whose coverage gaps it may only shrink
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: census-shard-*
+          path: ${{ runner.temp }}/census
+
+      # The route inventory, the writes made without the company lock and the write sites
+      # the suite passed through, from every unit, process and browser shard together
+      # (scripts/mutation_census.py).
+      # Fails on a write no baseline entry accepts, on an entry no finding matched or its own
+      # test did not reproduce, and on a writer no test covers that mutation_coverage_gaps.json
+      # does not name, or an entry there that no longer matches its gap, that main's copy
+      # does not hold, or that counts more write sites than main's copy of it.
+      - name: Report
+        run: |
+          status=0
+          python scripts/mutation_census.py ${{ runner.temp }}/census/census-shard-* --out census.md --base HEAD^1 --enforce || status=$?
+          head -c 1000000 census.md >> "$GITHUB_STEP_SUMMARY"
+          exit $status
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: mutation-census
+          path: census.md
+          retention-days: 30
 
   process:
     name: Process tests
@@ -119,11 +169,20 @@ jobs:
           ALLOW_INSECURE_JWT: "true"
           # Run on the Postgres service (each xdist worker gets its own database).
           DATABASE_URL: postgresql+asyncpg://celerp:celerp@localhost:5432/celerp_test
+          CELERP_MUTATION_CENSUS: ${{ runner.temp }}/mutation-census
         run: >
           timeout 600 pytest tests/ default_modules/*/tests/ -m "process and not integration" -n auto -q --tb=short --no-cov
-          --timeout=30
           --ignore=tests/test_visual.py
           --ignore=tests/test_browser
+
+      - name: Upload the write observer's census
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: census-shard-process
+          path: ${{ runner.temp }}/mutation-census
+          if-no-files-found: error
+          retention-days: 7
 
   integration:
     name: Integration validation
@@ -215,16 +274,32 @@ jobs:
           # Each xdist worker gets its own database AND its own server ports (see
           # tests/test_browser/conftest.py), so -n parallelism is safe.
           DATABASE_URL: postgresql+asyncpg://celerp:celerp@localhost:5432/celerp_test
+          # The servers run in the test process, so the write observer sees every request.
+          CELERP_MUTATION_CENSUS: ${{ runner.temp }}/mutation-census
         # Clear the default `-m 'not browser'` addopts, select browser tests, and shard them across
         # 6 runners with pytest-split. Each runner runs its group SERIALLY (no -n): a browser test
         # is CPU-heavy (Chromium + an API + a UI server), so intra-runner parallelism on a 2-vCPU
         # box causes contention timeouts. The thread-based timeout is required for Playwright tests.
-        # A shard takes about 6.5 minutes; the 13 minute cap leaves room for a slow runner
-        # inside the 15 minute job limit.
+        # A shard takes 8 to 10 minutes; the 15 minute cap leaves room for a slow runner
+        # inside the 22 minute job limit.
+        # As in the unit job, the split balances measured time from tests/.test_durations: a
+        # first-run test boots a new install, so one costs as much as fifty others, and a split
+        # by count alone put them all on one shard. Refresh the browser entries with
+        # --store-durations when a browser test is added or a shard nears the cap.
         run: >
           timeout 900 pytest tests/test_browser -m browser -o addopts=""
           --timeout=120 --timeout-method=thread --no-cov --tb=short -p no:cacheprovider
-          --splits 6 --group ${{ matrix.group }}
+          --splits 6 --group ${{ matrix.group }} --splitting-algorithm least_duration
+          --durations-path tests/.test_durations
+
+      - name: Upload the write observer's census
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: census-shard-browser-${{ matrix.group }}
+          path: ${{ runner.temp }}/mutation-census
+          if-no-files-found: error
+          retention-days: 7
 
       # On failure, upload the Playwright traces + screenshots so CI-only browser flakes
       # (which never reproduce locally) can be diagnosed: `playwright show-trace <name>.trace.zip`.
@@ -463,7 +538,7 @@ jobs:
   # (this job), which passes only when every unit, process, browser, electron, AND lockfile job passed.
   test:
     name: Test
-    needs: [shard, process, integration, browser, embedded, electron, lockfile, constraints, mac-intel-deps, update-changes, update-e2e]
+    needs: [shard, census, process, integration, browser, embedded, electron, lockfile, constraints, mac-intel-deps, update-changes, update-e2e]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -471,6 +546,10 @@ jobs:
         run: |
           if [ "${{ needs.shard.result }}" != "success" ]; then
             echo "One or more unit-test shards failed (result: ${{ needs.shard.result }})"
+            exit 1
+          fi
+          if [ "${{ needs.census.result }}" != "success" ]; then
+            echo "The mutation census failed (result: ${{ needs.census.result }})"
             exit 1
           fi
           if [ "${{ needs.process.result }}" != "success" ]; then
@@ -513,4 +592,4 @@ jobs:
             echo "Self-update end to end failed (result: ${{ needs.update-e2e.result }})"
             exit 1
           fi
-          echo "All unit, process, browser, embedded, electron, lockfile, constraints, and self-update checks passed."
+          echo "All unit, census, process, browser, embedded, electron, lockfile, constraints, and self-update checks passed."

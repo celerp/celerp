@@ -65,6 +65,7 @@ from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, User
 from celerp.modules.importer import TABLE_NAME, InstalledModules, installed_modules
 from celerp.modules import requirements
+from celerp.modules.boundary import take_company_locks
 from celerp.modules.loader import module_label
 from celerp.modules.registry import commit_with_load_set, company_modules, hold_module_state, set_enabled
 from celerp.services import attachments, bootstrap, company_lifecycle
@@ -75,6 +76,7 @@ from celerp.services.company_backup_files import private_file
 from celerp.services.company_lock import hold_company, lock_company, lock_company_for_deletion, locked_company
 from celerp.services.lot_origin import place_company_stock
 from celerp.services.migrations import COMPANY_NAME_MAX, company_name_error
+from celerp.services.permissions import act_for
 from celerp.services.provisioning import create_install_owner, provision_restored_company
 from ui.i18n import t
 
@@ -128,6 +130,8 @@ LINEAGE_SETTING = "lineage_id"
 # from, where the same people work under them; anywhere else the restored company works
 # under this installation's role permissions.
 ROLE_PERMISSIONS_SETTING = "role_grants"
+# The permission a restore that creates or replaces a company acts under there.
+LIFECYCLE = "manage_company_lifecycle"
 
 # What a backup carries and what stays with the installation, as the preview states it.
 INCLUDED = ("records", "settings", "attachments")
@@ -1229,19 +1233,25 @@ class RestoreResult:
     role_permissions: str | None = None
 
 
-def _lock_key(backup_id: str) -> int:
-    return int.from_bytes(hashlib.sha256(backup_id.encode()).digest()[:8], "big", signed=True)
+# The restore's advisory locks, each named for what it holds: a claim of a backup, or of
+# the company a backup was made from, ranks before any company lock (_claim, _lock); an
+# owner's company names and a new company's landing files are narrower, taken after it.
+CLAIM = "restore-claim:"
 
 
-def _landing_key(company_id) -> int:
-    return _lock_key(f"landing:{company_id}")
+def _advisory(function: str):
+    return text(f"SELECT {function}(hashtextextended(:k, 0))")
+
+
+def _landing_key(company_id) -> str:
+    return f"restore-landing:{company_id}"
 
 
 async def _land(session: AsyncSession, company_id) -> None:
     """Mark the new company's attachment files as landing, held by this transaction: the
     mark outlives a crash, and the lock ends with the transaction, whether it commits,
     rolls back or its connection is lost."""
-    await session.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": _landing_key(company_id)})
+    await session.execute(_advisory("pg_advisory_xact_lock"), {"k": _landing_key(company_id)})
     await asyncio.to_thread(attachments.mark_landing, str(company_id))
 
 
@@ -1254,8 +1264,7 @@ async def reconcile_landings() -> None:
         except ValueError:
             continue
         async with AsyncSession(bind=celerp.db.engine) as session:
-            if not await session.scalar(text("SELECT pg_try_advisory_xact_lock(:k)"),
-                                        {"k": _landing_key(company_id)}):
+            if not await session.scalar(_advisory("pg_try_advisory_xact_lock"), {"k": _landing_key(company_id)}):
                 continue
             try:
                 if await session.get(Company, company_id) is None:
@@ -1277,8 +1286,7 @@ async def _wait_for(session: AsyncSession, lock) -> None:
 
 async def _lock(session: AsyncSession, backup_id: str) -> None:
     """Wait for any other restore or reactivation of this backup to finish."""
-    await _wait_for(session, lambda s: s.execute(text("SELECT pg_advisory_xact_lock(:k)"),
-                                                 {"k": _lock_key(backup_id)}))
+    await _wait_for(session, lambda s: s.execute(_advisory("pg_advisory_xact_lock"), {"k": CLAIM + backup_id}))
 
 
 async def _claim(session: AsyncSession, backup_id: str, source: str) -> None:
@@ -1286,7 +1294,7 @@ async def _claim(session: AsyncSession, backup_id: str, source: str) -> None:
     refusing at once while another restore of either runs: two of them would create the
     same company twice, or one under the same web address the other is creating."""
     for key, refusal_key in ((backup_id, RESTORE_RUNNING), (f"source:{source}", OTHER_RESTORE_RUNNING)):
-        if not await session.scalar(text("SELECT pg_try_advisory_xact_lock(:k)"), {"k": _lock_key(key)}):
+        if not await session.scalar(_advisory("pg_try_advisory_xact_lock"), {"k": CLAIM + key}):
             raise BackupError(409, t(refusal_key))
 
 
@@ -1462,9 +1470,9 @@ async def _replaceable(session: AsyncSession, backup: BackupFile, mode: str, use
 async def _plan(session: AsyncSession, backup: BackupFile, mode: str, user_id, current_company_id, *,
                 lock: bool) -> tuple[RestorePlan, Company | None]:
     """The plan and the destination company. With ``lock`` the source and destination
-    companies (in id order) and the caller's membership of the destination are locked, so
-    the plan, including the source team and role permissions it carries, holds until the
-    transaction ends."""
+    companies (in id order), then the caller's company names and membership of the
+    destination are locked, so the plan, including the name it picks and the source team
+    and role permissions it carries, holds until the transaction ends."""
     m = backup.manifest
     backup_id, source = m["backup_id"], m["company"]["id"]
     me = uuid.UUID(str(user_id))
@@ -1474,6 +1482,8 @@ async def _plan(session: AsyncSession, backup: BackupFile, mode: str, user_id, c
     if lock:
         for cid in sorted({*([source] if same_lineage else []), *([str(found.id)] if found is not None else [])}):
             await lock_company(session, uuid.UUID(cid))
+        # One restore at a time per owner, so two cannot both take the same free name.
+        await session.execute(_advisory("pg_advisory_xact_lock"), {"k": f"restore-names:{me}"})
     if found is None:
         team = await _missing_team(session, source, me, None) if same_lineage else ()
         grants = await _source_grants(session, source) if same_lineage else None
@@ -1584,6 +1594,8 @@ async def _check_replay(session: AsyncSession, company_id) -> None:
     restored records keep their own times and versions."""
     from celerp.projections.engine import ProjectionEngine
     restored = await _projection_states(session, company_id)
+    # Taken outside the savepoint, so the replay's rollback keeps the lock.
+    await lock_company(session, company_id)
     savepoint = await session.begin_nested()
     try:
         await ProjectionEngine.rebuild(session, company_id)
@@ -1606,12 +1618,18 @@ async def _rebind_actors(session: AsyncSession, company_id) -> None:
         f"AND CAST(l.metadata AS jsonb) -> 'backup_actor' ->> 'user_ref' = {_USER_REF}"), {"c": company_id})
 
 
-async def _apply_existing(session: AsyncSession, plan: RestorePlan, destination: Company, source: str) -> int:
-    """Give the missing team access to the company the backup was already restored as.
+async def _apply_existing(session: AsyncSession, plan: RestorePlan, destination: Company, source: str,
+                          user_id) -> int:
+    """Give the missing team access to the company the backup was already restored as,
+    acting there as the owner _plan found the caller to be, judged again under its lock.
     The first time a team is carried into it, the source's role permissions come along
     unless it has its own; after that restoring never writes them again."""
     if plan.action != ADD_TEAM:
         return 0
+    act_for(session, destination.id, user_id, "owner", "manage_users")
+    if plan.role_grants:
+        act_for(session, destination.id, user_id, "owner", "manage_permissions")
+    await lock_company(session, destination.id)
     added = await _add_team(session, destination.id, plan.team_to_add)
     settings = dict(destination.settings or {})
     if plan.role_grants:
@@ -1684,13 +1702,21 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
             await session.execute(text("SET LOCAL TimeZone = 'UTC'"))
             # Before any lock that waits, so a restore started twice is refused at once.
             await _claim(session, backup_id, source)
+            from celerp.connectors.ownership import lock_connector_key, lock_connector_maintenance
             if replacing is not None:
-                # As a company reset takes them: before any other lock on the company.
-                from celerp.connectors.ownership import lock_connector_maintenance
+                # As a company reset takes it: before any other lock on the company.
                 await lock_connector_maintenance(session)
-                if not await lock_company_for_deletion(session, replacing.company_id):
-                    raise BackupError(404, t("error.company_unavailable") + _NOT_REPLACED)
+            else:
+                # Restored items are opted out of Shopify (_turn_off_shop_sync) under its fence.
+                await lock_connector_key(session, "shopify")
             await hold_module_state(session)
+            if replacing is not None:
+                # The company's lock after the module-state boundary, as every change to
+                # modules takes them, so a module turned on meanwhile waits, never deadlocks.
+                [found] = await take_company_locks(
+                    session, lambda: lock_company_for_deletion(session, replacing.company_id))
+                if not found:
+                    raise BackupError(404, t("error.company_unavailable") + _NOT_REPLACED)
             checked = await check_backup(session, backup)
             if mode == "bootstrap":
                 await _wait_for(session, bootstrap.lock_bootstrap)  # any other first-owner setup
@@ -1708,9 +1734,6 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
             else:
                 if mode == "start_company" and not await hold_companyless_login(session, user_id):
                     raise BackupError(409, t(HAS_COMPANY))
-                # One restore at a time per owner, so two cannot both take the same free name.
-                await session.execute(text("SELECT pg_advisory_xact_lock(:k)"),
-                                      {"k": _lock_key(f"names:{user_id}")})
                 plan, destination = await _plan(session, backup, mode, user_id, current_company_id, lock=True)
                 if plan.action == REFUSE:
                     raise BackupError(409, t(NOT_A_MEMBER))
@@ -1724,9 +1747,9 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
                 if replacing is not None:
                     if plan.action != CREATE or plan.replace_id != str(replacing.company_id):
                         raise StalePreview(plan)
-                    target = await _check_replacing(session, replacing, user_id)
+                    target, target_role = await _check_replacing(session, replacing, user_id)
                 if destination is not None:
-                    team = await _apply_existing(session, plan, destination, source)
+                    team = await _apply_existing(session, plan, destination, source, user_id)
                     result = RestoreResult(company_id=str(destination.id), company_name=destination.name,
                                            outcome=TEAM_ADDED if team else OPENED_EXISTING,
                                            backup_created_at=m["created_at"], user_id=str(user_id),
@@ -1781,6 +1804,8 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
                     settings["role_grants"] = grants
                 company = await provision_restored_company(session, owner=user, company_name=name,
                                                            company_id=new_id, settings=settings)
+                # Its rows are written as the new company's, whose owner the caller now is.
+                act_for(session, new_id, user.id, "owner", LIFECYCLE)
                 try:
                     for name in checked.order:
                         await _insert(session, zf, name, m["tables"][name]["columns"], id_map)
@@ -1801,7 +1826,8 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
             team = await _add_team(session, new_id, team_to_add) if team_to_add else 0
             if replacing is not None:
                 # Last, once its team has the new company, so no one is signed out by it.
-                closure, task_id = await _reset_replaced(session, target, replacing.typed_name)
+                closure, task_id = await _reset_replaced(session, target, replacing.typed_name, user.id,
+                                                         target_role)
             await session.commit()
             if replacing is not None:
                 replacing.committed = True
@@ -1976,25 +2002,28 @@ async def replace_offer(session: AsyncSession, backup: BackupFile, plan: Restore
     if incoming["last_changed"] is not None and any(newer.values()):
         older = {**newer, "since": incoming["last_changed"]}
     return {"company_id": str(company.id), "company_name": company.name,
-            "can_replace": role_has_permission(settings, role, "manage_company_lifecycle"),
+            "can_replace": role_has_permission(settings, role, LIFECYCLE),
             "current": current, "incoming": incoming, "older": older, "changed_after_copy": after}
 
 
-async def _check_replacing(session: AsyncSession, replacing: _Replacing, user_id) -> Company:
-    """The company to replace, once its owner typed its name and it is as it was backed
-    up, under the lock the caller holds."""
+async def _check_replacing(session: AsyncSession, replacing: _Replacing, user_id) -> tuple[Company, str]:
+    """The company to replace and the caller's role there, once its owner typed its name
+    and it is as it was backed up, under the deletion lock the caller holds. The request
+    then acts for that company and holds its lock, which judges that authority again."""
     from celerp.services.permissions import read_authority, role_has_permission
     company = await session.get(Company, replacing.company_id, populate_existing=True)
     role, settings = await read_authority(session, company.id, uuid.UUID(str(user_id)))
-    if not role_has_permission(settings, role, "manage_company_lifecycle"):
+    if not role_has_permission(settings, role, LIFECYCLE):
         raise BackupError(403, t(REPLACE_OWNER_ONLY, company=company.name), "not_owner")
+    act_for(session, company.id, user_id, role, LIFECYCLE)
+    await lock_company(session, company.id)
     if replacing.typed_name != company.name:
         raise BackupError(422, t(REPLACE_NAME, company=company.name), "name_mismatch")
     canonical = lambda value: json.dumps(value, sort_keys=True)  # noqa: E731
     if (canonical(_kept_settings(company.settings)) != canonical(replacing.kept["company"]["settings"])
             or not await _as_kept(session, company, replacing.kept)):
         raise BackupError(409, t(REPLACE_CHANGED, company=company.name), "changed")
-    return company
+    return company, role
 
 
 async def _as_kept(session: AsyncSession, company: Company, kept: dict) -> bool:
@@ -2041,10 +2070,12 @@ async def _as_kept(session: AsyncSession, company: Company, kept: dict) -> bool:
     return True
 
 
-async def _reset_replaced(session: AsyncSession, company: Company, typed_name: str):
-    """Delete the replaced company in the restore's transaction; its payment closure and
-    cleanup task, for after the transaction ends."""
+async def _reset_replaced(session: AsyncSession, company: Company, typed_name: str, user_id, role: str):
+    """Delete the replaced company in the restore's transaction, acting for it again as
+    the caller whose *role* _check_replacing judged; its payment closure and cleanup task,
+    for after the transaction ends."""
     from celerp.services import company_reset
+    act_for(session, company.id, user_id, role, LIFECYCLE)
     try:
         done = await company_reset.reset(session, company, typed_name)
     except company_reset.ResetRefused as exc:

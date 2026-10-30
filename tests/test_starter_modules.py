@@ -202,6 +202,186 @@ async def test_an_install_that_registered_and_never_enabled_a_module_starts_curr
     assert _enabled(cfg) == {"celerp-inventory"}
 
 
+async def test_a_company_with_its_own_module_list_gets_the_starter_modules_at_the_next_start(
+        client, session, monkeypatch, tmp_path):
+    """A company holding starter records that chose its own modules without them has the
+    starter modules added to its own list at the first start, is told so, and the step is
+    not run again."""
+    from celerp.models.notification import Notification
+    from celerp.modules.registry import company_modules
+    from celerp.services.company_lock import locked_company
+
+    _without(monkeypatch, *_STARTERS)
+    _installed(monkeypatch, tmp_path, ["celerp-docs"])
+    old = await _registered_on_older_release(session)
+    company = await locked_company(session, old["company_id"])
+    company.settings = {**company.settings, "enabled_modules": ["celerp-docs"]}
+    await session.commit()
+
+    await _start(monkeypatch)
+
+    assert _STARTERS <= company_modules(await _company_settings(session, old["company_id"]))
+    assert len((await session.execute(select(Notification).where(
+        Notification.company_id == old["company_id"], Notification.title == "Inventory and Contacts were turned on",
+    ))).scalars().all()) == 1
+    marker = (await session.execute(text("SELECT value FROM instance_meta WHERE key = :k"), {"k": _MARKER})).scalar()
+    assert marker == "done"
+
+
+async def test_a_start_that_fails_before_its_commit_leaves_the_installations_modules_as_they_were(
+        client, session, monkeypatch, tmp_path):
+    """Nothing is turned on that no company was told about: a start that fails before its
+    commit leaves the config file as it was, and the next start tries again."""
+    from celerp.models.notification import Notification
+
+    _without(monkeypatch, *_STARTERS)
+    cfg = _installed(monkeypatch, tmp_path, [])
+    old = await _registered_on_older_release(session)
+
+    async def _fails(*_a, **_k):
+        raise RuntimeError("the notice could not be saved")
+
+    with patch("celerp.notifications.service.create", _fails):
+        await _start(monkeypatch)
+
+    assert _enabled(cfg) == set()
+    session.expire_all()
+    assert not (await session.execute(select(Notification).where(
+        Notification.company_id == old["company_id"]))).scalars().all()
+    await _start(monkeypatch)
+    assert _STARTERS <= _enabled(cfg)
+
+
+@pytest.fixture
+def made(committed_engine):
+    """Sessions on committed state, for starts that run beside another process's change."""
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+    return async_sessionmaker(bind=committed_engine, class_=AsyncSession, expire_on_commit=False)
+
+
+async def _told(made, company_id) -> int:
+    from celerp.models.notification import Notification
+    from celerp.services.starter_modules import NOTICE_TITLE
+    async with made() as s:
+        return len((await s.execute(select(Notification).where(
+            Notification.company_id == company_id, Notification.title == NOTICE_TITLE))).scalars().all())
+
+
+async def _marker(made):
+    async with made() as s:
+        return (await s.execute(text("SELECT value FROM instance_meta WHERE key = :k"), {"k": _MARKER})).scalar()
+
+
+async def test_a_config_file_that_cannot_be_written_is_tried_again_at_the_next_start(
+        committed_engine, made, monkeypatch, tmp_path):
+    """The config file cannot be written once (another program holds it). That start turns
+    nothing on and tells no company anything; the next start turns the modules on and says so."""
+    import celerp.config as config
+    from celerp.services.starter_modules import enable_starter_modules
+
+    cfg = _installed(monkeypatch, tmp_path, ["celerp-docs"])
+    async with made() as s:
+        old = await _registered_on_older_release(s)
+    real, writes = config.replace_enabled_modules, []
+
+    def _locked_once(names):
+        writes.append(names)
+        if len(writes) == 1:
+            raise PermissionError("config.toml is open in another program")
+        return real(names)
+
+    monkeypatch.setattr(config, "replace_enabled_modules", _locked_once)
+    async with made() as s:
+        with pytest.raises(PermissionError):
+            await enable_starter_modules(s)
+    assert _enabled(cfg) == {"celerp-docs"}
+    assert await _marker(made) is None
+    assert await _told(made, old["company_id"]) == 0
+
+    async with made() as s:
+        await enable_starter_modules(s)
+    assert _STARTERS | {"celerp-docs"} <= _enabled(cfg)
+    assert await _marker(made) == "done"
+    assert await _told(made, old["company_id"]) == 1
+
+
+async def test_a_commit_that_reports_a_failure_after_it_landed_is_finished_at_the_next_start(
+        committed_engine, made, monkeypatch, tmp_path):
+    """The database commits the start's change and the connection drops before it says so.
+    The start puts the config file back, but the companies were told: the next start puts the
+    starter modules back in the file, and tells no one twice."""
+    from sqlalchemy.ext.asyncio import AsyncSession
+    from celerp.services.starter_modules import enable_starter_modules
+
+    cfg = _installed(monkeypatch, tmp_path, ["celerp-labels"])
+    async with made() as s:
+        old = await _registered_on_older_release(s)
+    real, commits = AsyncSession.commit, []
+
+    async def _lost_reply(self):
+        await real(self)
+        commits.append(1)
+        if len(commits) == 1:
+            raise ConnectionError("server closed the connection unexpectedly")
+
+    monkeypatch.setattr(AsyncSession, "commit", _lost_reply)
+    async with made() as s:
+        with pytest.raises(ConnectionError):
+            await enable_starter_modules(s)
+    assert await _told(made, old["company_id"]) == 1
+    monkeypatch.setattr(AsyncSession, "commit", real)
+
+    async with made() as s:
+        await enable_starter_modules(s)
+    assert _STARTERS | {"celerp-labels"} <= _enabled(cfg)
+    assert await _marker(made) == "done"
+    assert await _told(made, old["company_id"]) == 1
+
+
+async def test_a_module_turned_on_while_the_starter_modules_go_on_is_kept(
+        committed_engine, made, monkeypatch, tmp_path):
+    """Another process (celerp module install) turns Labels on for every company while this
+    start turns the starter modules on. Both changes stay: the installation keeps Labels and
+    the company gets Inventory and Contacts as well as Labels."""
+    import functools
+
+    import celerp.modules.registry as registry
+    from celerp.modules.boundary import take_company_locks
+    from celerp.services.company_lock import locked_company
+    from celerp.services.starter_modules import enable_starter_modules
+
+    cfg = _installed(monkeypatch, tmp_path, ["celerp-docs"])
+    async with made() as s:
+        old = await _registered_on_older_release(s)
+    real_hold, other = registry.hold_module_state, []
+
+    async def _install_labels():
+        async with made() as s:
+            await real_hold(s)
+            ids = (await s.scalars(select(Company.id).order_by(Company.id))).all()
+            for c in await take_company_locks(s, *(functools.partial(locked_company, s, i) for i in ids)):
+                c.settings, _ = registry.enable_for_company(c.settings, "celerp-labels")
+            await registry.commit_with_load_set(s)
+
+    async def _hold(s, **kw):
+        held = await real_hold(s, **kw)
+        if not other:
+            other.append(asyncio.create_task(_install_labels()))
+            await asyncio.sleep(0.2)
+        return held
+
+    monkeypatch.setattr(registry, "hold_module_state", _hold)
+    async with made() as s:
+        await enable_starter_modules(s)
+    await asyncio.wait_for(other[0], 10)
+
+    assert {"celerp-labels"} | _STARTERS <= _enabled(cfg)
+    async with made() as s:
+        own = registry.company_modules((await s.get(Company, old["company_id"])).settings)
+    assert {"celerp-labels"} | _STARTERS <= own
+    assert await _told(made, old["company_id"]) == 1
+
+
 async def test_starter_records_never_turn_on_a_module_that_holds_other_records(
         client, session, monkeypatch, tmp_path):
     """Records of a module that is not enabled (a manufacturing run) still hold the start

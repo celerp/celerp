@@ -62,6 +62,13 @@ _crm_src = os.path.join(os.path.dirname(__file__), "..", "premium_modules", "cel
 _crm_available = os.path.isfile(os.path.join(_crm_src, "celerp_sales_funnel", "__init__.py"))
 
 
+def mark_running(monkeypatch, *names: str) -> None:
+    """Record *names* as loaded. The unit harness mounts module routes directly, so the
+    loader would otherwise list none of them as running."""
+    from celerp.modules import loader
+    monkeypatch.setattr(loader, "_loaded", [*loader._loaded, *({"name": n, "version": "1.0.0"} for n in names)])
+
+
 async def until(predicate, timeout: float = 10.0) -> None:
     """Wait for ``predicate`` (sync or async), polling; fails the test at ``timeout``."""
     async def _wait():
@@ -73,6 +80,19 @@ async def until(predicate, timeout: float = 10.0) -> None:
                 return
             await asyncio.sleep(0.01)
     await asyncio.wait_for(_wait(), timeout)
+
+
+async def until_a_lock_waits(engine, timeout: float = 10.0) -> None:
+    """Wait until some transaction of the test database waits on a lock. pg_stat_activity
+    is a snapshot per transaction, so each poll reads on a connection of its own."""
+    from sqlalchemy import text
+
+    async def _waiting() -> bool:
+        async with engine.connect() as conn:
+            return bool((await conn.execute(text(
+                "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() "
+                "AND wait_event_type = 'Lock'"))).scalar_one())
+    await until(_waiting, timeout)
 
 
 async def settled_question(client, headers: dict, conversation_id: str, question_id) -> dict:
@@ -151,15 +171,19 @@ def authed_cookies(role: str = "owner") -> dict:
 async def make_authed_token(session, user_id: str, company_id: str, role: str) -> str:
     """Mint a signed, DB-valid v2 access token for an already-seeded user.
 
-    Fetches the user's current DB nonce so the token passes
-    ``validate_access_token``'s nonce-equality check. Use this anywhere a test
-    needs to call an authenticated endpoint as a specific seeded user without
-    going through the login gate (which allows only one active session per user).
-    The user, its ``UserCompany`` membership and the company must already exist.
+    Fetches the user's current DB nonce, creating it as issuance does for a user
+    that has none, so the token passes ``validate_access_token``'s nonce-equality
+    check. Use this anywhere a test needs to call an authenticated endpoint as a
+    specific seeded user without going through the login gate (which allows only
+    one active session per user). The user, its ``UserCompany`` membership and the
+    company must already exist.
     """
     from celerp.credentials import create_access_token
-    from celerp.services.session_tracker import get_nonce
+    from celerp.services.session_tracker import get_nonce, lock_auth_state
     snonce = await get_nonce(session, str(user_id))
+    if not snonce:
+        snonce = (await lock_auth_state(session, str(user_id))).nonce
+        await session.commit()
     token, _ = create_access_token(str(user_id), str(company_id), role, snonce=snonce)
     return token
 

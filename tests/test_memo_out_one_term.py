@@ -42,7 +42,7 @@ def test_no_second_copy_of_the_on_memo_term(path):
     assert "documents.status_memo_out" not in cat
 
 
-_DE_MEMO_DOC_KEYS = ("documents.finalize_tip_memo", "documents.memo_ref", "documents.tip_convert_memo",
+_DE_MEMO_DOC_KEYS = ("documents.finalize_tip_memo", "documents.tip_convert_memo",
                      "documents.tip_convert_quote_memo", "documents.finalize_label_memo",
                      "event.memo.created", "event.memo.returned")
 

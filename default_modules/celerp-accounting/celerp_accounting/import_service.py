@@ -210,7 +210,7 @@ async def next_bank_account_code(session: AsyncSession, company_id: uuid.UUID, p
     else:
         stem = f"{parent_code}-"
     used = set((await session.execute(
-        select(Account.code).where(Account.company_id == company_id, Account.code.like(f"{stem}%"))
+        select(Account.code).where(Account.company_id == company_id, Account.code.startswith(stem, autoescape=True))
     )).scalars().all())
     n = 1
     while _bank_code(stem, n) in used:

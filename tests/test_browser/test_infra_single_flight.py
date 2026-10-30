@@ -20,6 +20,8 @@ from __future__ import annotations
 import pytest
 from fasthtml.common import to_xml
 
+from .conftest import release_held_routes
+
 pytestmark = pytest.mark.browser
 
 
@@ -91,9 +93,4 @@ def test_submit_button_single_flights(page, ui_server, name, render, post_path, 
         f"second request, but {len(requests)} were issued")
 
     # Release the held route so teardown does not block on the outstanding request.
-    page.unroute(route_glob)
-    for route in held:
-        try:
-            route.abort()
-        except Exception:
-            pass
+    release_held_routes(page, route_glob, held)

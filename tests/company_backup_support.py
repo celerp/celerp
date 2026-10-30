@@ -15,6 +15,7 @@ import zipfile
 from sqlalchemy import text
 
 from celerp.projections.engine import ProjectionEngine
+from celerp.services.company_lock import lock_company
 
 from migration_support import OWNER_EMAIL, auth, maker
 from test_helpers import make_authed_token
@@ -54,6 +55,7 @@ async def company(engine, user_id, name: str, marker: str, *, settings: dict | N
             "source, idempotency_key) VALUES (:c, 'item:1', 'item', 'item.created', CAST(:d AS json), :u, :l, 'api', :k)"),
             {"c": cid, "d": json.dumps({"name": marker, "location_id": str(loc)}), "u": user_id, "l": loc,
              "k": f"k-{marker}"})
+        await lock_company(s, cid)
         await ProjectionEngine.rebuild(s, cid)
         await s.commit()
         return cid
@@ -62,6 +64,7 @@ async def company(engine, user_id, name: str, marker: str, *, settings: dict | N
 async def settle(engine, company_id) -> None:
     """Rebuild the company's records from its ledger, as Celerp keeps them."""
     async with maker(engine)() as s:
+        await lock_company(s, company_id)
         await ProjectionEngine.rebuild(s, company_id)
         await s.commit()
 

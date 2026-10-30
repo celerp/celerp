@@ -95,7 +95,7 @@ async def _posted_entry(session: AsyncSession, company_id, cn_id: str) -> bool:
 
     rows = (await session.execute(select(Projection).where(
         Projection.company_id == company_id, Projection.entity_type == "journal_entry",
-        Projection.entity_id.like(f"je:auto:{cn_id}:fin%")))).scalars().all()
+        Projection.entity_id.startswith(f"je:auto:{cn_id}:fin", autoescape=True)))).scalars().all()
     return any((r.state or {}).get("status") == "posted" for r in rows)
 
 

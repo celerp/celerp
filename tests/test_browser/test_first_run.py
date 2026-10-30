@@ -2,167 +2,24 @@
 # SPDX-License-Identifier: LicenseRef-Proprietary
 """First run on a fresh install: one setup form, then the dashboard.
 
-The suite's shared servers already carry a seeded owner, so these tests boot their
-own API and UI processes against their own empty database, and empty it again
-before each test: every test starts exactly where a new user starts.
+The suite's shared servers already carry a seeded owner, so these tests run on a new
+install (fresh_install), emptied again before each test: every test starts exactly
+where a new user starts.
 """
 from __future__ import annotations
 
 import os
-import shutil
-import socket
-import subprocess
-import sys
-import tempfile
-import time
-from pathlib import Path
 from urllib.parse import urlsplit
 
 import httpx
 import pytest
 from playwright.sync_api import Page, expect
 
-from boot_support import Supervised, wait_until_started
+from .fresh_install import API_PORT, REPO, install_env
 
 pytestmark = pytest.mark.browser
 
-_REPO = Path(__file__).resolve().parents[2]
-_worker = os.environ.get("PYTEST_XDIST_WORKER", "")
-_offset = int(_worker[2:]) if _worker[2:].isdigit() else 0
-_BASE = int(os.environ.get("BROWSER_TEST_PORT_BASE", "18000"))
-_API_PORT = _BASE + 200 + _offset
-_UI_PORT = _BASE + 300 + _offset
 _PASSWORD = "FirstRun123!"
-
-
-def _pg(dbname: str):
-    import psycopg2
-    parts = urlsplit(os.environ["DATABASE_URL"].replace("+asyncpg", ""))
-    conn = psycopg2.connect(host=parts.hostname, port=parts.port, user=parts.username,
-                            password=parts.password, dbname=dbname)
-    conn.autocommit = True
-    return conn
-
-
-def _wait_http(url: str, proc: subprocess.Popen, timeout: float = 60.0) -> None:
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        if proc.poll() is not None:
-            raise RuntimeError(f"server for {url} exited with {proc.returncode}")
-        try:
-            httpx.get(url, timeout=1.0)
-            return
-        except httpx.HTTPError:
-            time.sleep(0.2)
-    raise RuntimeError(f"{url} did not answer within {timeout}s")
-
-
-class _FreshInstall:
-    """An API and a UI process on their own database, with no owner yet."""
-
-    def __init__(self) -> None:
-        url = os.environ["DATABASE_URL"]
-        parts = urlsplit(url)
-        self.db = parts.path.lstrip("/") + "_first_run"
-        self.db_url = url.rsplit("/", 1)[0] + "/" + self.db
-        self.api = f"http://127.0.0.1:{_API_PORT}"
-        self.ui = f"http://127.0.0.1:{_UI_PORT}"
-        self.tmp = Path(tempfile.mkdtemp(prefix="celerp-first-run-"))
-        self.servers: Supervised | None = None
-
-    def _spawn(self, app: str, port: int, env: dict) -> subprocess.Popen:
-        with open(self.tmp / f"{port}.log", "ab") as log:
-            return subprocess.Popen(
-                [sys.executable, "-m", "uvicorn", app, "--host", "127.0.0.1", "--port", str(port)],
-                cwd=_REPO, env=env, stdout=log, stderr=subprocess.STDOUT,
-            )
-
-    def start(self) -> None:
-        for port in (_API_PORT, _UI_PORT):
-            with socket.socket() as s:
-                if s.connect_ex(("127.0.0.1", port)) == 0:
-                    raise RuntimeError(f"port {port} is in use; set BROWSER_TEST_PORT_BASE")
-        cfg = self.tmp / "config"
-        shutil.rmtree(cfg, ignore_errors=True)
-        cfg.mkdir()
-        env = dict(os.environ)
-        env.pop("PYTEST_XDIST_WORKER", None)
-        env.update({
-            "DATABASE_URL": self.db_url,
-            "CELERP_CONFIG": str(cfg / "config.toml"),
-            "MODULE_DIR": ",".join(str(_REPO / d) for d in ("default_modules", "premium_modules")
-                                   if (_REPO / d).is_dir()),
-            "API_URL": self.api,
-            "CELERP_API_URL": self.api,
-        })
-
-        def spawn() -> tuple[subprocess.Popen, subprocess.Popen]:
-            procs = [self._spawn("celerp.main:app", _API_PORT, env)]
-            try:
-                _wait_http(f"{self.api}/health", procs[0])
-                procs.append(self._spawn("ui.app:app", _UI_PORT, env))
-                _wait_http(f"{self.ui}/health", procs[1])
-            except Exception:
-                for proc in procs:
-                    proc.kill()
-                raise
-            return procs[0], procs[1]
-
-        self.servers = Supervised(spawn, cfg / ".restart_requested")
-        wait_until_started(self.api)
-
-    def stop(self) -> None:
-        if self.servers:
-            self.servers.stop()
-            self.servers = None
-
-    def reset(self) -> None:
-        """Back to a new install: no owner, no company, a fresh config."""
-        self.stop()
-        conn = _pg(self.db)
-        try:
-            with conn.cursor() as cur:
-                cur.execute("DROP SCHEMA public CASCADE; CREATE SCHEMA public;")
-        finally:
-            conn.close()
-        self.start()
-
-    def company(self, ctx) -> dict:
-        """The signed-in browser's company, read with its own session token."""
-        token = next(c["value"] for c in ctx.cookies() if c["name"] == "celerp_token")
-        r = httpx.get(f"{self.api}/companies/me", headers={"Authorization": f"Bearer {token}"}, timeout=10)
-        r.raise_for_status()
-        return r.json()
-
-
-@pytest.fixture(scope="module")
-def install():
-    fresh = _FreshInstall()
-    conn = _pg("postgres")
-    try:
-        with conn.cursor() as cur:
-            cur.execute(f'DROP DATABASE IF EXISTS "{fresh.db}" WITH (FORCE)')
-            cur.execute(f'CREATE DATABASE "{fresh.db}"')
-    finally:
-        conn.close()
-    fresh.start()
-    yield fresh
-    fresh.stop()
-    conn = _pg("postgres")
-    try:
-        with conn.cursor() as cur:
-            cur.execute(f'DROP DATABASE IF EXISTS "{fresh.db}" WITH (FORCE)')
-    finally:
-        conn.close()
-    shutil.rmtree(fresh.tmp, ignore_errors=True)
-
-
-@pytest.fixture
-def fresh(install):
-    """The install with no owner: emptied again when an earlier test finished setup."""
-    if httpx.get(f"{install.api}/auth/bootstrap-status", timeout=10).json().get("bootstrapped"):
-        install.reset()
-    return install
 
 
 def _context(playwright, *, width: int = 1280, locale: str = "en-US", timezone_id: str = "Asia/Bangkok",
@@ -195,6 +52,19 @@ def _fill_text_fields(page: Page, email: str) -> None:
 
 def _hidden(page: Page, name: str) -> str:
     return page.locator(f'#setup-form input[type="hidden"][name="{name}"]').input_value()
+
+
+def test_a_new_install_inherits_nothing_the_other_tests_set(monkeypatch):
+    """The shared browser servers turn every module on through ENABLED_MODULES; a new install
+    started after them must still load only what a new install loads."""
+    for name, value in (("ENABLED_MODULES", "celerp-docs"), ("PYTHONPATH", "/elsewhere"),
+                        ("DATA_DIR", "/shared"), ("MODULE_DIR", "/shared/modules")):
+        monkeypatch.setenv(name, value)
+
+    env = install_env()
+
+    assert not {"ENABLED_MODULES", "PYTHONPATH", "DATA_DIR", "MODULE_DIR"} & set(env)
+    assert env["PATH"] == os.environ["PATH"]
 
 
 @pytest.mark.parametrize("width", [390, 1280])
@@ -399,7 +269,7 @@ def test_keyboard_and_focus(playwright, fresh):
     try:
         page = ctx.new_page()
         page.goto(f"{fresh.ui}/setup", wait_until="networkidle")
-        assert page.evaluate("() => document.activeElement.id") == "company_name"
+        expect(page.locator("#company_name")).to_be_focused()
         for name in ("vertical", "currency"):
             wrap = page.locator(f'.combobox-wrap:has(input[type="hidden"][name="{name}"])')
             wrap.locator(".combobox-input").click()
@@ -414,10 +284,7 @@ def test_keyboard_and_focus(playwright, fresh):
         page.wait_for_load_state("networkidle")
         assert urlsplit(page.url).path == "/setup"
         expect(page.locator(".flash")).to_be_visible()
-        active = page.evaluate("() => document.activeElement.closest('.combobox-wrap')"
-                               " && document.activeElement.closest('.combobox-wrap')"
-                               ".querySelector('input[type=hidden]').name")
-        assert active == "currency", active
+        expect(page.locator('.combobox-wrap:has(input[type="hidden"][name="currency"]) :focus')).to_have_count(1)
     finally:
         browser.close()
 
@@ -495,7 +362,7 @@ def test_dropdown_reopens_on_click_after_esc(playwright, fresh):
         browser.close()
 
 
-_LOCALE_DIR = Path(__file__).resolve().parents[2] / "ui" / "locales"
+_LOCALE_DIR = REPO / "ui" / "locales"
 _SETUP_SCREEN_KEYS = (
     "page.set_up_your_workspace", "btn.create_workspace", "setup.choose_business_type",
     "setup.options_heading", "setup.option_restore_title", "setup.option_restore_desc",
@@ -569,3 +436,76 @@ def test_setup_options_side_by_side_small_and_flush_left(playwright, fresh, widt
         assert max(sizes["text"]) < min(sizes["label"]), sizes
     finally:
         browser.close()
+
+
+_PRESETS = REPO / "default_modules" / "celerp-verticals" / "celerp_verticals" / "presets"
+
+
+def _offered_types() -> dict[str, list[str]]:
+    """Every business type the setup page offers, with the modules its preset names."""
+    import json
+
+    presets = (json.loads(p.read_text("utf-8")) for p in sorted(_PRESETS.glob("*.json")))
+    return {p["name"]: p.get("modules", []) for p in presets if not p.get("hidden")}
+
+
+@pytest.mark.parametrize("vertical", sorted(_offered_types()))
+def test_each_business_type_chosen_first_on_a_new_install(playwright, fresh, vertical):
+    """Each business type, chosen on the setup form as the first thing a new install does,
+    reaches a dashboard that shows its figures with no error. Celerp restarts to load the
+    type's modules exactly when one of them (or a module it needs) is not among those a new
+    install runs, and afterwards every module the company uses is running."""
+    from celerp.modules.loader import is_core_folded
+    from celerp.services.starter_modules import STARTER_MODULES
+    from migration_support import smoke_records
+
+    boot = httpx.get(f"{fresh.api}/health", timeout=10).json()["boot"]
+    browser, ctx = _context(playwright)
+    try:
+        page = ctx.new_page()
+        visited: list[str] = []
+        failures: list[str] = []
+        page.on("framenavigated", lambda f: visited.append(urlsplit(f.url).path) if f == page.main_frame else None)
+        page.on("pageerror", lambda e: failures.append(str(e)))
+        page.goto(f"{fresh.ui}/setup", wait_until="networkidle")
+        _fill_text_fields(page, f"{vertical}@first-run.test")
+        _choose(page, "vertical", vertical)
+        _choose(page, "currency", "USD")
+        page.locator('#setup-form button[type="submit"]').click()
+        page.wait_for_url(f"{fresh.ui}/dashboard", timeout=180000)
+        page.wait_for_load_state("load")
+
+        expect(page.locator(".kpi-grid").first).to_be_visible()
+        assert page.locator(".kpi-grid").first.locator(":scope > *").count() > 0, "the dashboard shows no figures"
+        expect(page.locator(".charts-section")).to_be_visible()
+        expect(page.locator(".quick-links-section")).to_be_visible()
+        assert page.locator(".error-banner").count() == 0, page.locator(".error-banner").all_inner_texts()
+        assert not failures, failures
+
+        token = next(c["value"] for c in ctx.cookies() if c["name"] == "celerp_token")
+        listed = httpx.get(f"{fresh.api}/companies/me/modules", headers={"Authorization": f"Bearer {token}"},
+                           timeout=30)
+        listed.raise_for_status()
+        modules = {m["name"]: m for m in listed.json()}
+        uses = smoke_records().turned_on(_offered_types()[vertical], modules)
+        not_running_at_first = sorted(m for m in uses if m not in STARTER_MODULES and not is_core_folded(m))
+        restarted = "/setup/activating" in visited
+        assert restarted == bool(not_running_at_first), (vertical, visited, not_running_at_first)
+        assert (httpx.get(f"{fresh.api}/health", timeout=10).json()["boot"] != boot) == restarted
+        stopped = {m: modules[m] for m in uses if not (modules[m]["enabled"] and modules[m]["running"])}
+        assert not stopped, stopped
+        assert fresh.company(ctx)["settings"]["vertical"] == vertical
+    finally:
+        browser.close()
+
+
+def test_every_business_type_sets_up_on_a_new_install(fresh, tmp_path):
+    """Every business type the setup page offers sets up a company on one new install, one
+    after another: Celerp restarts exactly when a type needs modules that are not running,
+    every module each type needs runs afterwards, and every company keeps its type. The
+    packaged builds take the same walk."""
+    from migration_support import smoke_records
+
+    port_file = tmp_path / "api-port"
+    port_file.write_text(str(API_PORT))
+    smoke_records().first_run(str(port_file), str(_PRESETS))

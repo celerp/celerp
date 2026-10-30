@@ -17,7 +17,8 @@ _DOC_TYPES = ("invoice", "memo", "quotation", "bill", "consignment_in", "purchas
 
 @pytest.mark.parametrize("doc_type", _DOC_TYPES)
 def test_page_line_actions_match_the_api_status_maps(doc_type):
-    from celerp_docs.doc_constants import FULFILLABLE_STATUSES, RESERVABLE_DOC_STATUSES, REVERTIBLE_STATUSES
+    from celerp.services.record_quantities import FULFILLABLE_STATUSES
+    from celerp_docs.doc_constants import RESERVABLE_DOC_STATUSES, REVERTIBLE_STATUSES
     from ui.routes.documents import _doc_line_actions
     for status in _STATUSES:
         acts = _doc_line_actions(doc_type, status)

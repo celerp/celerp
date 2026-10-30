@@ -352,7 +352,6 @@ async def validate_access_token(session: AsyncSession, token: str) -> AuthContex
 # The only routes a staged company's own token reaches. Token refresh, logout and health
 # do not authenticate through this dependency, so they stay available as well.
 STAGED_ALLOWED_PREFIX = "/migrations/"
-MODULE_OFF = "This module is turned off for your company."
 # The signed access token a request was authenticated with, kept on its session.
 SIGNED_TOKEN = "celerp_signed_access_token"
 
@@ -386,16 +385,19 @@ async def get_auth_context(
                             headers={"WWW-Authenticate": "Bearer"})
     if ctx.company.is_migration_staged and not request.url.path.startswith(STAGED_ALLOWED_PREFIX):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=t("auth.company_staged"))
+    from celerp.modules.boundary import require_company_uses
     from celerp.modules.loader import reads_when_off, route_module
-    from celerp.modules.registry import uses_module
 
     module = route_module(request.scope)
-    if module and not uses_module(ctx.company.settings, module) and not reads_when_off(request.scope, module):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=MODULE_OFF)
+    if module and reads_when_off(request.scope, module):
+        module = None
+    if module:
+        require_company_uses(ctx.company.settings, module)
     # The authority the request starts with is judged again under the company lock
-    # (company_lock), so a write that waits there never runs on revoked access.
+    # (company_lock), so a write that waits there never runs on revoked access or
+    # on a module the company has since turned off.
     from celerp.services.permissions import authorize_request, end_request
-    authority = authorize_request(session, ctx.company_id, ctx.user.id, ctx.role)
+    authority = authorize_request(session, ctx.company_id, ctx.user.id, ctx.role, module)
     if token is not None:
         session.info[SIGNED_TOKEN] = token
     request.state.company_id = ctx.company_id  # the company a refused request places stock for (OlderStockMiddleware)

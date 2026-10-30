@@ -9,6 +9,7 @@ These assert memo + list drafts render with that layout, like invoices do.
 from __future__ import annotations
 
 import pytest
+from playwright.sync_api import expect
 
 pytestmark = pytest.mark.browser
 
@@ -180,13 +181,14 @@ def test_doc_lines_headers_align_over_their_column_and_qty_inputs_uniform(page, 
     page.goto(f"{ui_server}/docs/{doc_id}", wait_until="domcontentloaded")
     page.wait_for_selector("table.doc-lines tbody tr", timeout=5000)
 
-    aligns = dict(page.eval_on_selector_all(
-        "table.doc-lines thead th", "els => els.map(e => [e.className, getComputedStyle(e).textAlign])"))
     figures = ("col-qty", "col-unit-price", "col-disc", "col-tax", "col-total")
-    for cls, align in aligns.items():
-        want = "right" if any(f in cls.split() for f in figures) else "center"
-        assert align == want, (cls, align)
-    assert sum(any(f in c.split() for f in figures) for c in aligns) == len(figures), aligns
+    for f in figures:
+        head = page.locator(f"table.doc-lines thead th.{f}")
+        expect(head).to_have_count(1)
+        expect(head).to_have_css("text-align", "right")
+    others = page.locator("table.doc-lines thead th" + "".join(f":not(.{f})" for f in figures))
+    for i in range(others.count()):
+        expect(others.nth(i)).to_have_css("text-align", "center")
 
     qty_widths = page.eval_on_selector_all(
         "td.col-qty input[data-name=quantity]", "els => els.map(e => Math.round(e.offsetWidth))")

@@ -3,11 +3,11 @@
 """An online payment is recorded on the books its payment page opened with only while
 they still describe the ledger, judged at the moment it is recorded. A change of the
 company's currency or of the invoice's rate that commits while the payment is on its
-way, or that is still committing when the payment reaches the invoice, keeps the
+way, or that is still committing when the payment reaches the company, keeps the
 payment among the unmatched instead of posting it on books the company no longer keeps.
 
-Each test holds the payment on a real PostgreSQL connection just before it takes the
-invoice, lets another connection change the books, then lets the payment finish."""
+Each test holds the payment on a real PostgreSQL connection just before it takes its
+company's lock, lets another connection change the books, then lets the payment finish."""
 
 from __future__ import annotations
 
@@ -19,25 +19,10 @@ from sqlalchemy import text
 from company_backup_support import token
 from migration_support import auth, code_config, maker, real_client, real_engine  # noqa: F401
 from test_company_reset_payments import (_OCTOBER_3, _Cloud, _company_settings, _harbor, _payment_journal,
-                                         _payments_on, _rate_changed, _references, _shared_invoice, _unmatched,
-                                         _waiting_on_a_lock)
+                                         _hold_before_the_company, _payments_on, _rate_changed, _references,
+                                         _shared_invoice, _unmatched, _waiting_on_a_lock)
 
 pytestmark = pytest.mark.asyncio
-
-
-def _hold_the_payment(monkeypatch) -> tuple[asyncio.Event, asyncio.Event]:
-    """Hold the payment just before it takes the invoice's row lock, until released."""
-    from celerp_docs import routes
-    reached, release = asyncio.Event(), asyncio.Event()
-    real = routes._get_doc
-
-    async def held(session, company_id, entity_id, *, for_update=False):
-        if for_update and not reached.is_set():
-            reached.set()
-            await release.wait()
-        return await real(session, company_id, entity_id, for_update=for_update)
-    monkeypatch.setattr(routes, "_get_doc", held)
-    return reached, release
 
 
 async def _books_balance(engine, company_id) -> tuple[float, float]:
@@ -77,10 +62,10 @@ async def test_a_change_committed_while_the_payment_is_on_its_way_keeps_it_among
         monkeypatch, real_engine, real_client, change):
     """The company moves its books from dollars to baht, or the owner gives the invoice
     another rate, and that commits after the payment arrived but before it reaches the
-    invoice."""
+    company."""
     boss, a, eid, cloud = await _opened(monkeypatch, real_engine, real_client,
                                         **({"currency": "THB"} if change == "rate" else {}))
-    reached, release = _hold_the_payment(monkeypatch)
+    reached, release = _hold_before_the_company(monkeypatch)
     cloud.pay(a, eid, "pi_paid", amount_minor=50000, paid_at=_OCTOBER_3)
     paying = asyncio.create_task(cloud.deliver())
     await asyncio.wait_for(reached.wait(), 10)
@@ -99,12 +84,12 @@ async def test_a_change_committed_while_the_payment_is_on_its_way_keeps_it_among
     await _kept_unmatched(real_engine, cloud, a, eid, before)
 
 
-async def test_a_currency_change_still_committing_when_the_payment_reaches_the_invoice_keeps_it_among_the_unmatched(
+async def test_a_currency_change_still_committing_when_the_payment_reaches_the_company_keeps_it_among_the_unmatched(
         monkeypatch, real_engine, real_client):
-    """The company's settings save holds the company when the payment reaches the
-    invoice: the payment waits for it, then judges its books against what it saved."""
+    """The company's settings save holds the company when the payment reaches it: the
+    payment waits for it, then judges its books against what it saved."""
     boss, a, eid, cloud = await _opened(monkeypatch, real_engine, real_client)
-    reached, release = _hold_the_payment(monkeypatch)
+    reached, release = _hold_before_the_company(monkeypatch)
     cloud.pay(a, eid, "pi_paid", amount_minor=50000, paid_at=_OCTOBER_3)
     paying = asyncio.create_task(cloud.deliver())
     await asyncio.wait_for(reached.wait(), 10)

@@ -45,7 +45,9 @@ async def _category_of(session, cid, eid) -> str | None:
 
 async def _rebuild(session, cid) -> None:
     from celerp.projections.engine import ProjectionEngine
+    from celerp.services.company_lock import lock_company
 
+    await lock_company(session, cid)
     await ProjectionEngine.rebuild(session, cid)
     await session.commit()
 

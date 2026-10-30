@@ -44,7 +44,7 @@ async def _posted_journals(session, company_id, ids: list[str] | None = None, pr
     if ids is not None:
         query = query.where(Projection.entity_id.in_(ids))
     if prefix is not None:
-        query = query.where(Projection.entity_id.startswith(prefix))
+        query = query.where(Projection.entity_id.startswith(prefix, autoescape=True))
     return {eid: state for eid, state in (await session.execute(query)).all()}
 
 

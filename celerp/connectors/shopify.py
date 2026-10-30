@@ -33,6 +33,7 @@ from celerp.connectors.base import (
     SyncResult,
 )
 import celerp.connectors.upsert as _upsert
+from celerp.modules.boundary import needs_modules
 
 log = logging.getLogger(__name__)
 
@@ -87,6 +88,7 @@ class ShopifyConnector(ConnectorBase):
 
     # -- Products --------------------------------------------------------------
 
+    @needs_modules("celerp-inventory")
     async def sync_products(self, ctx: ConnectorContext, since: datetime | None = None) -> SyncResult:
         """
         Pull Shopify products into Celerp catalog product anchors (one per variant).
@@ -176,6 +178,7 @@ class ShopifyConnector(ConnectorBase):
 
     # -- Orders ----------------------------------------------------------------
 
+    @needs_modules("celerp-docs")
     async def sync_orders(self, ctx: ConnectorContext, since: datetime | None = None) -> SyncResult:
         """
         Pull Shopify orders -> Celerp documents (type=invoice, status=unpaid/paid).
@@ -216,6 +219,7 @@ class ShopifyConnector(ConnectorBase):
 
     # -- Contacts --------------------------------------------------------------
 
+    @needs_modules("celerp-contacts")
     async def sync_contacts(self, ctx: ConnectorContext, since: datetime | None = None) -> SyncResult:
         """Pull Shopify customers -> Celerp CRM contacts."""
         result = SyncResult(entity=SyncEntity.CONTACTS)
@@ -238,6 +242,7 @@ class ShopifyConnector(ConnectorBase):
 
     # -- Outbound: Inventory push ----------------------------------------------
 
+    @needs_modules("celerp-inventory")
     async def sync_inventory_out(self, ctx: ConnectorContext) -> SyncResult:
         """Push Celerp stock levels -> Shopify inventory levels (outbound).
 
@@ -285,6 +290,7 @@ class ShopifyConnector(ConnectorBase):
 
     # -- Outbound: Products push -----------------------------------------------
 
+    @needs_modules("celerp-inventory")
     async def sync_products_out(self, ctx: ConnectorContext) -> SyncResult:
         """Push Celerp item updates -> Shopify products (fields, images, certificates)."""
         from celerp.connectors.images import build_platform_image_payload, build_platform_cert_payload

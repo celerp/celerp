@@ -332,11 +332,13 @@ async def test_a_manual_rebuild_refuses_events_it_cannot_replay(session, without
     """Rebuilding from the ledger by hand (Doctor, the ledger rebuild) refuses before it
     deletes anything when a module the ledger needs is not enabled."""
     from celerp.projections.engine import ProjectionEngine, UnhandledEventsError
+    from celerp.services.company_lock import lock_company
 
     cid = await _seed_run(session)
     rows = await _rows(session, cid)
     without_manufacturing()
     with pytest.raises(UnhandledEventsError) as err:
+        await lock_company(session, cid)
         await ProjectionEngine.rebuild(session, company_id=cid)
     assert "Manufacturing" in str(err.value)
     assert await _rows(session, cid) == rows

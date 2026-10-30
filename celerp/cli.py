@@ -1637,10 +1637,14 @@ def module() -> None:
 async def _enable_for_every_company(db_url: str, names: list[str]) -> int:
     """Turn *names* on for every company and recompute the load set; the number of companies.
 
-    Refused, with nothing changed, for a name that is not an installed module."""
+    Refused, with nothing changed, for a name that is not an installed module, or while
+    other work of a company still holds it (boundary.CompanyBusy)."""
+    import functools
+
     from sqlalchemy import select
     from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
     from celerp.models.company import Company
+    from celerp.modules.boundary import take_company_locks
     from celerp.modules.registry import commit_with_load_set, enable_for_company, hold_module_state, is_installed
     from celerp.services.company_lock import locked_company
 
@@ -1652,8 +1656,9 @@ async def _enable_for_every_company(db_url: str, names: list[str]) -> int:
             if missing:
                 raise ValueError(f"Module '{missing[0]}' is not installed.")
             company_ids = (await session.scalars(select(Company.id).order_by(Company.id))).all()
-            for company_id in company_ids:
-                company = await locked_company(session, company_id)
+            companies = await take_company_locks(
+                session, *(functools.partial(locked_company, session, company_id) for company_id in company_ids))
+            for company in companies:
                 for name in names:
                     company.settings, _deps = enable_for_company(company.settings, name)
             await commit_with_load_set(session)
@@ -1679,9 +1684,14 @@ def module_install(names: tuple[str, ...]) -> None:
     ensure_database(cfg)
     from celerp.migrations.compatibility import mutating_scope
     db_url = cfg["database"]["url"]
+    from celerp.modules.boundary import CompanyBusy
     try:
         with mutating_scope(_sync_url(db_url)) as held, held.write_window():
             companies = asyncio.run(_enable_for_every_company(db_url, list(names)))
+    except CompanyBusy:
+        click.echo("Other work for one of your companies is still being saved, so the modules were "
+                   "not turned on for any company. Try again in a minute.", err=True)
+        sys.exit(1)
     except Exception as exc:
         click.echo(f"Error: {exc}", err=True)
         sys.exit(1)

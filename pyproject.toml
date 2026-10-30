@@ -96,6 +96,9 @@ dev = [
     "pytest-playwright>=0.5",
     "pytest-timeout>=2.3",
     "pytest-xdist>=3.5",
+    # The test-only write observer (mutation_observer.py) classifies SQL by its PostgreSQL
+    # syntax tree. Pinned: a parser release can change how a statement is classified.
+    "pglast==8.7",
     "testcontainers[postgres]>=4.15",
 ]
 prod = [
@@ -125,6 +128,7 @@ markers = [
     "browser: Playwright browser UI tests (requires running servers + Chromium). Run separately with: pytest tests/test_browser/ -m browser",
     "embedded_pg: bundled-PostgreSQL integration tests (boot a real pgserver cluster; ~slow). Run separately with: pytest -m embedded_pg",
     "process: spawns OS processes or races separate database connections (slow). CI runs these in their own job.",
+    "observer_control: the write observer's own controls, which make the findings they check on purpose.",
     "integration: several installations, each its own server process and database, and a stand-in relay (slow). CI runs these in their own job.",
 ]
 

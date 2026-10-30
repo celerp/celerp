@@ -237,3 +237,16 @@ def test_crm_new_is_not_a_form(page, ui_server):
         f"/crm/new should redirect but stayed at: {page.url}"
     )
     _assert_no_crash(page, "/crm/new redirect target")
+
+
+def test_new_company_item_print_menu_lists_preset_labels(page: Page, fresh_company, ui_server):
+    """A company that never opened Settings > Labels still finds the preset label templates
+    in an item's print menu: the menu's templates read gives a company without any the presets."""
+    r = fresh_company.post("/items", json={"sku": "LBLMENU1", "name": "Label Menu", "quantity": 1, "sell_by": "piece"})
+    assert r.status_code in (200, 201), f"item create failed: {r.text}"
+    item_id = r.json()["id"]
+
+    page.goto(f"{ui_server}/inventory/{item_id}", wait_until="domcontentloaded")
+    page.wait_for_selector(".print-label-dropdown a.dropdown-item:has-text('Barcode Sticker (24x24)')",
+                           state="attached", timeout=15000)
+    _assert_no_crash(page, "item print menu")

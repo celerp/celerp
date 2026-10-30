@@ -95,6 +95,71 @@ describe("watchForRestart", () => {
     expect(onCrash).not.toHaveBeenCalled();
   });
 
+  test("the API is announced once its exit is watched, and again after each restart", async () => {
+    const { deps, getApiProcess } = makeTestDeps({ sentinelExists: true });
+    const watched = [];
+    deps.onWatching = jest.fn(() => watched.push(getApiProcess().listenerCount("exit")));
+    const first = getApiProcess();
+
+    watchForRestart("postgres://x", deps);
+    expect(watched).toEqual([1]);
+
+    first.emit("exit", 0);
+    await new Promise(r => setTimeout(r, 10));
+
+    expect(getApiProcess()).not.toBe(first);
+    expect(watched).toEqual([1, 1]);
+  });
+
+  test("the stopped API's port is taken away before the restart starts the next one", async () => {
+    const { deps, getApiProcess } = makeTestDeps({ sentinelExists: true });
+    const order = [];
+    deps.onStopped = jest.fn(() => order.push("stopped"));
+    deps.onWatching = jest.fn(() => order.push("watching"));
+    const startApi = deps.startApi;
+    deps.startApi = jest.fn(async (url) => { order.push("startApi"); await startApi(url); });
+    const first = getApiProcess();
+
+    watchForRestart("postgres://x", deps);
+    first.emit("exit", 0);
+    await new Promise(r => setTimeout(r, 10));
+
+    expect(order).toEqual(["watching", "stopped", "startApi", "watching"]);
+  });
+
+  test.each([
+    ["the app is quitting", { stopping: true, code: 0 }],
+    ["the API crashed", { stopping: false, code: 1 }],
+    ["the API stopped on its own", { stopping: false, code: 0 }],
+  ])("the stopped API's port is taken away when %s", async (_why, { stopping, code }) => {
+    const { deps, getApiProcess, startApi } = makeTestDeps({ sentinelExists: false });
+    deps.onStopped = jest.fn();
+    deps.isStopping = () => stopping;
+
+    watchForRestart("postgres://x", deps);
+    getApiProcess().emit("exit", code);
+    await new Promise(r => setTimeout(r, 10));
+
+    expect(deps.onStopped).toHaveBeenCalledTimes(1);
+    expect(startApi).not.toHaveBeenCalled();
+  });
+
+  test("a restart that comes back without an API announces nothing", async () => {
+    const { deps } = makeTestDeps({ sentinelExists: true });
+    deps.onWatching = jest.fn();
+    let api = deps.getApiProcess();
+    const first = api;
+    deps.getApiProcess = () => api;
+    deps.startApi = jest.fn(async () => { api = null; });
+    watchForRestart("postgres://x", deps);
+
+    first.emit("exit", 0);
+    await new Promise(r => setTimeout(r, 10));
+
+    expect(deps.startApi).toHaveBeenCalledTimes(1);
+    expect(deps.onWatching).toHaveBeenCalledTimes(1);
+  });
+
   test("onRestart callback is invoked after successful respawn", async () => {
     const { deps } = makeTestDeps({ sentinelExists: true });
     const onRestart = jest.fn();

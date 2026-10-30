@@ -33,6 +33,9 @@ import time
 from pathlib import Path
 
 import pytest
+from playwright.sync_api import expect
+
+from .conftest import css_class
 
 pytestmark = pytest.mark.browser
 
@@ -281,21 +284,18 @@ def test_demand_planning_interactions(page, ui_server, api):
     )
     bead_row = page.locator("#mfg-table tr.data-row:has-text('DP-BEAD')")
     assert bead_row.count() >= 1, "DP-BEAD row should be in DOM (just hidden)"
-    assert "dp-row-hidden" in (bead_row.first.get_attribute("class") or ""), (
-        "DP-BEAD row does not have .dp-row-hidden after unchecking Covered"
-    )
+    expect(bead_row.first, "DP-BEAD row does not have .dp-row-hidden after unchecking Covered").to_have_class(
+        css_class("dp-row-hidden"))
 
     # The Needed row (DP-WIRE) is still visible (not hidden).
     wire_hidden = page.locator("#mfg-table tr.data-row:has-text('DP-WIRE')")
     assert wire_hidden.count() >= 1
-    assert "dp-row-hidden" not in (wire_hidden.first.get_attribute("class") or ""), (
-        "DP-WIRE (Needed) should still be visible"
-    )
+    expect(wire_hidden.first, "DP-WIRE (Needed) should still be visible").not_to_have_class(
+        css_class("dp-row-hidden"))
 
     # The Status funnel should now have .colfilter--active.
-    assert "colfilter--active" in (status_funnel.get_attribute("class") or ""), (
-        "Status funnel should have .colfilter--active after applying a filter"
-    )
+    expect(status_funnel, "Status funnel should have .colfilter--active after applying a filter").to_have_class(
+        css_class("colfilter--active"))
 
     # Screenshot: board after unchecking Covered - bead row hidden.
     page.screenshot(path=str(SHOTS / "demand-planning-covered-hidden.png"), full_page=True)

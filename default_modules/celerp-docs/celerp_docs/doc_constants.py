@@ -2,22 +2,13 @@
 # SPDX-License-Identifier: MIT
 """Shared constants for the docs module."""
 
-from collections.abc import Callable
-from decimal import Decimal
-
-from celerp.services.doc_balance import MEMO_LIVE_STATUSES
 from celerp.services.list_behavior import SCAN_RUNS_FIELD
+from celerp.services.record_quantities import FULFILLABLE_STATUSES
 
-# Per-doc-type allowlist: maps doc_type → set of statuses where fulfill-lines is permitted.
-# Only doc types listed here support the fulfill-lines / revert-lines endpoints.
-# Adding a new status requires an explicit decision per doc type (true-predicate design).
-# Inbound doc types (bill, consignment_in) are intentionally excluded: receiving goods
-# is handled by POST /receive (creates parcels). fulfill-lines is outbound-only.
-# UI counterpart: ui/routes/documents.py _fin_show_fulfill — keep in sync manually (different package).
-FULFILLABLE_STATUSES: dict[str, frozenset[str]] = {
-    "memo":    MEMO_LIVE_STATUSES,
-    "invoice": frozenset({"sent", "final", "partial", "paid", "awaiting_payment"}),
-}
+# The statuses each outbound document type ships in (FULFILLABLE_STATUSES), POST /receive takes
+# goods in (RECEIVABLE_STATUSES) and a quotation converts in (QUOTATION_SPENT_STATUSES), with what
+# a stored document can still move, live in core (celerp.services.record_quantities): they give
+# stored documents their meaning whether or not this module is running.
 
 # Per-doc-type allowlist for the ledger-neutral reserve-lines action ("Set as reserved" and
 # "Set as available" on a reserved line). Reserve never draws stock or posts COGS, so it is
@@ -44,22 +35,6 @@ DRAFT_REVERT_STATUSES = frozenset({"final", "sent", "awaiting_payment"})
 INBOUND_DRAFT_REVERT_STATUSES = DRAFT_REVERT_STATUSES | {"received", "partially_received", "fulfilled"}
 DRAFT_REVERT_RETURNED = frozenset({"partial_returned", "returned"})
 
-# Per-doc-type allowlist of the statuses POST /receive takes goods in. An issued purchase
-# document receives in every status its payments and earlier receipts or returns can move it
-# to; a void, closed or converted one receives nothing. A purchase order may receive while
-# still a draft (its receipt books its own entry), and so may a consignment (consigned goods
-# are not owned, so their receipt books nothing); a draft bill has not been issued, so it
-# receives nothing. The finalized view offers Receive Goods from the same map.
-_RECEIVING_STATUSES = frozenset({
-    "final", "sent", "awaiting_payment", "partial", "paid",
-    "received", "partially_received", "partial_returned", "returned",
-})
-RECEIVABLE_STATUSES: dict[str, frozenset[str]] = {
-    "bill": _RECEIVING_STATUSES,
-    "consignment_in": _RECEIVING_STATUSES | {"draft"},
-    "purchase_order": _RECEIVING_STATUSES | {"draft"},
-}
-
 # Statuses each document type sends goods back to its supplier in (POST /return-items): once
 # goods have come in on it, and until all of them have gone back. A bill or purchase order
 # paid in part or in full returns goods too: what was paid for them becomes a supplier credit.
@@ -76,45 +51,6 @@ CONVERTIBLE_STATUSES: dict[str, frozenset[str]] = {
     "memo": frozenset({"final", "sent", "received", "partially_received", "converted"}),
     "consignment_in": frozenset({"final", "sent", "received", "partially_received", "partial_returned", "returned"}),
 }
-QUOTATION_SPENT_STATUSES = frozenset({"void", "converted"})
-
-
-def sent_out_by(item_state: dict, doc_id: str) -> bool:
-    """Whether document ``doc_id`` sent these goods out (sold or out on memo): it
-    fulfilled them, or holds them as their status document."""
-    return item_state.get("status") in ("sold", "memo_out") and (
-        doc_id in (item_state.get("fulfilled_for_docs") or []) or item_state.get("status_doc_id") == doc_id)
-
-
-def quantities_still_moving(state: dict, shipped: Callable[[dict], bool]) -> list[tuple[dict, float]]:
-    """Each line of a document with the quantity on it that can still be received, shipped or
-    carried into a converted document. A draft and an open quotation carry their whole lines, since
-    converting a quotation copies them. A document that receives carries what each line has not
-    received yet; one that ships carries the lines whose goods have not gone out (``shipped``),
-    and nothing once all of them have. A subscription template carries its whole lines until it
-    is cancelled, since it keeps making documents from them. What came in or went out, even if it
-    can still be sent back or converted (a memo bills what is out on it, a consignment buys what
-    was kept), sits in its item, so a document that can only do that carries nothing. Any other
-    document, a converted one among them, is history."""
-    doc_type, status = state.get("doc_type"), state.get("status")
-    lines = [line for line in state.get("line_items") or [] if isinstance(line, dict)]
-    if (doc_type == "quotation" and status not in QUOTATION_SPENT_STATUSES) \
-            or (doc_type in TEMPLATE_DOC_TYPES and status != "cancelled"):
-        return [(line, line.get("quantity")) for line in lines]
-    if status in RECEIVABLE_STATUSES.get(doc_type, ()):
-        return [(line, left) for line in lines if (left := _unreceived(line)) > 0]
-    if status in FULFILLABLE_STATUSES.get(doc_type, ()):
-        if state.get("fulfillment_status") == "fulfilled":
-            return []
-        return [(line, line.get("quantity")) for line in lines if not shipped(line)]
-    if status in (None, "draft"):
-        return [(line, line.get("quantity")) for line in lines]
-    return []
-
-
-def _unreceived(line: dict) -> float:
-    ordered, received = (Decimal(str(float(line.get(key) or 0))) for key in ("quantity", "quantity_received"))
-    return float(ordered - received)
 
 
 # The payment methods that record a credit note applied to a document rather than money:
@@ -122,17 +58,6 @@ def _unreceived(line: dict) -> float:
 # "supplier_credit") and the note's own side is "applied". A pair moves no cash, so it is
 # never refunded or deleted, only voided as a pair.
 CREDIT_APPLICATION_METHODS: frozenset[str] = frozenset({"credit_note", "applied", "supplier_credit"})
-
-# Doc types that are subscription templates (not fulfillable, not part of normal doc counters).
-# These are recurring template docs - they should never show a fulfill button.
-TEMPLATE_DOC_TYPES: frozenset[str] = frozenset({"subscription_invoice", "subscription_po"})
-
-
-def template_label(state: dict, entity_id: str = "") -> str:
-    """A subscription template's name as the subscriptions list shows it: its reference, else its
-    number, else its name, else the last part of its id. A template made with New subscription
-    has a reference and no name."""
-    return state.get("ref_id") or state.get("doc_number") or state.get("name") or entity_id.split(":")[-1]
 
 # Document types whose line prices are the company's own selling prices, so a
 # price that differs from its reference needs set_sales_doc_prices. Purchase and

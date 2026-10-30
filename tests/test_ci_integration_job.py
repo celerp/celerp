@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import tomllib
+
 import yaml
 
 WORKFLOW = Path(__file__).resolve().parent.parent / ".github" / "workflows" / "ci.yml"
@@ -36,3 +38,15 @@ def check_integration_validation_job(workflow: dict) -> list[str]:
 
 def test_ci_runs_the_integration_suite_in_its_own_job():
     assert check_integration_validation_job(yaml.safe_load(WORKFLOW.read_text())) == []
+
+
+def test_the_unit_shards_take_the_suite_timeout_from_pyproject():
+    """The per-test timeout of the unit and process shards is pyproject's --timeout alone: a
+    --timeout on the command line overrides it, and a tighter one fails shards on runner timing
+    (a 12s test measured past 30s under parallel load) rather than on a hung test."""
+    jobs = yaml.safe_load(WORKFLOW.read_text())["jobs"]
+    runs = {name: " ".join(step.get("run", "") for step in jobs[name]["steps"]) for name in ("shard", "process")}
+    assert all("pytest" in run for run in runs.values())
+    assert {name: run for name, run in runs.items() if "--timeout" in run} == {}
+    addopts = tomllib.loads((WORKFLOW.parents[2] / "pyproject.toml").read_text())["tool"]["pytest"]["ini_options"]["addopts"]
+    assert "--timeout=60" in addopts.split()

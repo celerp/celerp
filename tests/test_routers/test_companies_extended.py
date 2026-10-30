@@ -264,6 +264,42 @@ async def test_payment_terms_batch_import_missing_name(client):
     assert "Missing name" in r.json()["errors"][0]
 
 
+@pytest.mark.asyncio
+async def test_purchasing_payment_terms_batch_import_creates_and_skips(client):
+    headers = await _register(client, "ppt_import")
+    payload = {"records": [_pt_record("Net 75", 75), _pt_record("Net 75", 75, idem="pt75-b"),
+                           _pt_record("Soon", "x")]}
+    r = await client.post("/companies/me/purchasing-payment-terms/import/batch", json=payload, headers=headers)
+    assert r.status_code == 200, r.text
+    assert (r.json()["created"], r.json()["skipped"], r.json()["errors"]) == (1, 1, ["Soon: Invalid days"])
+    terms = (await client.get("/companies/me/purchasing-payment-terms", headers=headers)).json()
+    assert {"name": "Net 75", "days": 75, "description": ""} in terms
+
+
+@pytest.mark.asyncio
+async def test_locations_batch_import_creates_and_skips(client):
+    headers = await _register(client, "loc_import")
+    payload = {"records": [{"name": "Back Room", "type": "store"}, {"name": "Back Room"}, {"name": " "}]}
+    r = await client.post("/companies/me/locations/import/batch", json=payload, headers=headers)
+    assert r.status_code == 200, r.text
+    assert r.json() == {"created": 1, "skipped": 1, "failed": 1}
+    names = [loc["name"] for loc in (await client.get("/companies/me/locations", headers=headers)).json()["items"]]
+    assert names.count("Back Room") == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("path", "body", "read"), [
+    ("/companies/me/column-prefs", {"prefs": {"__all__": ["sku", "name"]}}, {"__all__": ["sku", "name"]}),
+    ("/companies/me/contact-tags", {"tags": [{"name": "VIP", "color": "gold"}]}, [{"name": "VIP", "color": "gold"}]),
+    ("/companies/me/default-price-list", {"name": "Wholesale"}, "Wholesale"),
+])
+async def test_company_setting_patch_is_read_back(client, path, body, read):
+    headers = await _register(client, f"set_{path.rsplit('/', 1)[-1]}")
+    r = await client.patch(path, json=body, headers=headers)
+    assert r.status_code == 200, r.text
+    assert (await client.get(path, headers=headers)).json() == read
+
+
 # ── /health routes ────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio

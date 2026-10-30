@@ -56,7 +56,7 @@ from celerp.services.attachments import (
 from celerp.services import peer_access
 from celerp.services.auth import AuthContext, get_auth_context, get_current_company_id, get_current_user
 from celerp.services.peer_import import SourceRevision, peer_batch
-from celerp.services.company_lock import lock_chart, locked_company
+from celerp.services.company_lock import lock_chart, lock_company, locked_company
 from celerp.services.doc_balance import canonical_doc_type
 from celerp.services.je_keys import je_void_data
 from celerp.services.journal_accounts import require_destinations
@@ -1685,6 +1685,7 @@ async def create_manual_journal_entry(
 ) -> dict:
     """Post a manual journal entry. Validates accounts and balance; the period
     lock is enforced by the event engine on the entry's date."""
+    await lock_company(session, company_id)
     _require_iso_date(payload.ts or "", t("acct.field_entry_date"))
     if len(payload.entries) < 2:
         raise HTTPException(status_code=422, detail=t("acct.err_je_two_lines"))
@@ -2744,6 +2745,7 @@ async def create_bank_account(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    await lock_company(session, company_id)
     if payload.bank_type not in _BANK_TYPES:
         raise HTTPException(status_code=422, detail=t("acct.err_bank_type", types=_enum_labels("bank_type", sorted(_BANK_TYPES))))
     currency = payload.currency.upper()
@@ -2832,9 +2834,11 @@ async def patch_bank_account(
     _: None = require_permission("manage_accounting"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    await lock_company(session, company_id)
     b = (
         await session.execute(
             select(BankAccount).where(BankAccount.id == bank_id, BankAccount.company_id == company_id)
+            .execution_options(populate_existing=True)
         )
     ).scalar_one_or_none()
     if not b:
@@ -2886,6 +2890,7 @@ async def create_transfer(
 ) -> dict:
     if payload.amount <= 0:
         raise HTTPException(status_code=422, detail="Transfer amount must be positive")
+    await lock_company(session, company_id)
 
     from_bank = (
         await session.execute(
@@ -2989,11 +2994,14 @@ async def _get_recon(
     *,
     for_update: bool = False,
 ) -> ReconciliationSession:
+    """The company's reconciliation; with *for_update*, the one way a reconciliation
+    writer enters: the company lock (judging the request again), then the session row."""
     query = select(ReconciliationSession).where(
         ReconciliationSession.id == session_id,
         ReconciliationSession.company_id == company_id,
     )
     if for_update:
+        await lock_company(db, company_id)
         query = query.with_for_update()
     recon = (await db.execute(query)).scalar_one_or_none()
     if not recon:
@@ -3130,6 +3138,7 @@ async def start_reconciliation(
     _: None = require_permission("manage_accounting"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    await lock_company(session, company_id)
     bank = (
         await session.execute(
             select(BankAccount).where(
@@ -3266,6 +3275,7 @@ async def reopen_reconciliation(
     as they are and no journal entry is written; the reopening is recorded as an event.
     Reopening one that is already in progress changes nothing."""
     recon = await _get_recon(db, session_id, company_id)
+    await lock_company(db, company_id)
     # One open reconciliation per statement: lock the bank account first, as
     # start_reconciliation does, so a start or another reopen of the same statement
     # waits for this one. Then lock this reconciliation and read its status as committed
@@ -4205,6 +4215,7 @@ async def create_recon_rule(
     _: None = require_permission("manage_accounting"),
     db: AsyncSession = Depends(get_session),
 ) -> dict:
+    await lock_company(db, company_id)
     bank = (await db.execute(select(BankAccount.id).where(
         BankAccount.id == payload.bank_account_id, BankAccount.company_id == company_id,
     ))).scalar_one_or_none()
@@ -4230,6 +4241,20 @@ async def create_recon_rule(
     return _rule_to_dict(rule)
 
 
+async def _locked_rule(db: AsyncSession, company_id: uuid.UUID, rule_id: uuid.UUID) -> ReconciliationRule:
+    """The company's rule, read under the company lock its writers take."""
+    await lock_company(db, company_id)
+    rule = (await db.execute(
+        select(ReconciliationRule).where(
+            ReconciliationRule.id == rule_id,
+            ReconciliationRule.company_id == company_id,
+        ).execution_options(populate_existing=True)
+    )).scalar_one_or_none()
+    if not rule:
+        raise HTTPException(status_code=404, detail=t("acct.err_rule_not_found"))
+    return rule
+
+
 @router.patch("/rules/{rule_id}")
 async def patch_recon_rule(
     rule_id: uuid.UUID,
@@ -4238,14 +4263,7 @@ async def patch_recon_rule(
     _: None = require_permission("manage_accounting"),
     db: AsyncSession = Depends(get_session),
 ) -> dict:
-    rule = (await db.execute(
-        select(ReconciliationRule).where(
-            ReconciliationRule.id == rule_id,
-            ReconciliationRule.company_id == company_id,
-        )
-    )).scalar_one_or_none()
-    if not rule:
-        raise HTTPException(status_code=404, detail=t("acct.err_rule_not_found"))
+    rule = await _locked_rule(db, company_id, rule_id)
     for field in ("match_field", "match_pattern", "match_type", "target_account_code",
                   "default_memo", "default_tax", "is_active"):
         val = getattr(payload, field)
@@ -4262,14 +4280,7 @@ async def delete_recon_rule(
     _: None = require_permission("manage_accounting"),
     db: AsyncSession = Depends(get_session),
 ) -> dict:
-    rule = (await db.execute(
-        select(ReconciliationRule).where(
-            ReconciliationRule.id == rule_id,
-            ReconciliationRule.company_id == company_id,
-        )
-    )).scalar_one_or_none()
-    if not rule:
-        raise HTTPException(status_code=404, detail=t("acct.err_rule_not_found"))
+    rule = await _locked_rule(db, company_id, rule_id)
     await db.delete(rule)
     await db.commit()
     return {"deleted": str(rule_id)}
@@ -4977,7 +4988,7 @@ async def close_fiscal_year(
         1 for k in (await session.execute(
             select(LedgerEntry.idempotency_key).where(
                 LedgerEntry.company_id == company_id,
-                LedgerEntry.idempotency_key.like(f"je:{year_end}:fiscal.close%"),
+                LedgerEntry.idempotency_key.startswith(f"je:{year_end}:fiscal.close", autoescape=True),
             )
         )).scalars().all()
         if k.endswith(":c")

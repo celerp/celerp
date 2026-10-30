@@ -32,14 +32,15 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.db import get_lifecycle_session_ctx
+from celerp.db import get_lifecycle_session_ctx, get_session
 from celerp.held_back import held_back
 from celerp.events.engine import emit_event
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.projections.engine import ProjectionEngine
 from celerp.services.auth import get_current_company_id, get_current_user
-from celerp.services.permissions import require_permission
+from celerp.services.company_lock import lock_company
+from celerp.services.permissions import carry_authority, require_permission
 from celerp.services.je_keys import je_idempotency_key, je_void_data
 from celerp.services.physical_codes import physical_code_conflicts
 
@@ -1173,6 +1174,7 @@ async def run_doctor(
     company_id=Depends(get_current_company_id),
     user=Depends(get_current_user),
     _: None = require_permission("manage_company_settings"),
+    request_session: AsyncSession = Depends(get_session),
 ) -> dict:
     cause = held_back(request.app)
     if fix and cause is not None:
@@ -1187,8 +1189,12 @@ async def run_doctor(
     # scans, their repairs, and the full projection rebuild routinely exceed the
     # request-scoped lock and statement timeouts, which would sever the operation
     # mid-repair. Run the whole thing on the unbounded lifecycle session instead,
-    # the same engine /ledger/rebuild uses.
+    # the same engine /ledger/rebuild uses. Repairs run under the company lock, which
+    # judges the request's authority again on this session.
     async with get_lifecycle_session_ctx() as session:
+        carry_authority(request_session, session)
+        if fix:
+            await lock_company(session, company_id)
         results = []
         for name in check_names:
             result = await _CHECK_FNS[name](session, company_id, user.id, fix=fix)
@@ -1198,6 +1204,8 @@ async def run_doctor(
             await session.commit()
 
         if rebuild and fix:
+            # The repairs' commit released the lock; the replay takes it again.
+            await lock_company(session, company_id)
             await ProjectionEngine.rebuild(session, company_id=company_id)
             await session.commit()
 

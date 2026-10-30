@@ -214,6 +214,17 @@ async def _standing(session: AsyncSession, company_id: uuid.UUID, category: str,
     )).scalar()
 
 
+async def _hold_company(session: AsyncSession, company_id: uuid.UUID) -> None:
+    """Notifiers dedupe on what the company already has, a read-check-write: two
+    writers checking at once would each add the notice. The company lock makes the
+    second wait for the first to commit. A caller already holding it keeps its place
+    in the lock order."""
+    from celerp.services.company_lock import holds_company_lock, lock_company
+
+    if not holds_company_lock(session, company_id):
+        await lock_company(session, company_id)
+
+
 async def has_standing(
     session: AsyncSession,
     company_id: uuid.UUID,
@@ -248,6 +259,7 @@ async def notify_once(
         Notification.body == body,
         Notification.user_id == user_id if user_id is not None else Notification.user_id.is_(None),
     )
+    await _hold_company(session, company_id)
     if (await session.execute(select(Notification.id).where(*same).limit(1))).first():
         await session.execute(update(Notification).where(*same, Notification.action_url.is_distinct_from(action_url))
                               .values(action_url=action_url))
@@ -273,6 +285,7 @@ async def notify_standing(
     it stands it is brought up to date with this body, so it never shows an earlier
     state, and once dismissed a condition that persists notifies again. ``action_url``
     and ``i18n`` as for ``create``. Caller commits. Returns whether it was created."""
+    await _hold_company(session, company_id)
     standing = await _standing(session, company_id, category, title)
     if standing is not None:
         await session.execute(update(Notification).where(Notification.id == standing)
@@ -280,6 +293,14 @@ async def notify_standing(
         return False
     await create(session, company_id, category, title, body, action_url=action_url, priority="high", i18n=i18n)
     return True
+
+
+async def _every_company(session: AsyncSession) -> list[uuid.UUID]:
+    """Every company, in id order: an instance-wide notifier takes their locks one by one
+    (_hold_company), so two of them meet in the same order."""
+    from celerp.models.company import Company
+
+    return list((await session.execute(select(Company.id).order_by(Company.id))).scalars().all())
 
 
 async def notify_every_company(
@@ -294,10 +315,8 @@ async def notify_every_company(
     """An instance-wide condition, told to every company (notify_standing): a reboot
     while a notice stands brings it up to date instead of adding another. Caller commits.
     Returns the number of notifications created."""
-    from celerp.models.company import Company
-
     created = 0
-    for cid in (await session.execute(select(Company.id))).scalars().all():
+    for cid in await _every_company(session):
         created += await notify_standing(session, cid, category, title, body, action_url=action_url, i18n=i18n)
     return created
 
@@ -306,16 +325,17 @@ async def clear_every_company(session: AsyncSession, category: str, title: str) 
     """An instance-wide condition (see notify_every_company) no longer holds: every
     company's notice of it is removed, so a notice that stands always means the
     condition holds now. Caller commits. Returns the number removed."""
-    result = await session.execute(
-        delete(Notification).where(Notification.category == category, Notification.title == title)
-    )
-    return result.rowcount
+    removed = 0
+    for cid in await _every_company(session):
+        removed += await clear_standing(session, cid, category, title)
+    return removed
 
 
 async def clear_standing(session: AsyncSession, company_id: uuid.UUID, category: str, title: str) -> int:
     """A company's condition (see notify_standing) no longer holds: its notice is
     removed, so a notice that stands always means the condition holds now. Caller
     commits. Returns the number removed."""
+    await _hold_company(session, company_id)
     result = await session.execute(
         delete(Notification).where(Notification.company_id == company_id, Notification.category == category,
                                    Notification.title == title)

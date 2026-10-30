@@ -475,9 +475,9 @@ def _second_engine():
 async def test_connector_work_shares_the_fence_and_only_ownership_changes_wait(_db_engine, monkeypatch):
     """Connector work holds the per-connector fence shared, so two syncs on one
     connector proceed together; an ownership change takes it exclusive and, while
-    work is running, gives up with a busy error instead of stalling."""
+    work is running, gives up with a busy error instead of stalling, holding no fence."""
     import asyncio
-    from celerp.connectors.ownership import ConnectorBusyError, lock_connector_key
+    from celerp.connectors.ownership import ConnectorBusyError, holds_connector_fence, lock_connector_key
 
     if _db_engine.dialect.name == "sqlite":
         pytest.skip("advisory locks are Postgres-only")
@@ -490,6 +490,8 @@ async def test_connector_work_shares_the_fence_and_only_ownership_changes_wait(_
             await asyncio.wait_for(lock_connector_key(work_b, connector), timeout=5)
             with pytest.raises(ConnectorBusyError):
                 await lock_connector_key(owner, connector, exclusive=True)
+            assert holds_connector_fence(work_a, connector) is True
+            assert holds_connector_fence(owner, connector) is False
             await owner.rollback()
             await work_a.rollback()
             await work_b.rollback()

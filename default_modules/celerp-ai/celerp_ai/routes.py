@@ -713,6 +713,7 @@ async def query_in_conversation(
     from celerp.ai import jobs
     from celerp.ai.batch import create_batch_job
     from celerp.ai.conversations import add_message, get_conversation
+    await jobs.lock_for_ai(session, company_id)
     conv = await get_conversation(session, conversation_id, company_id, user.id)
     if conv is None:
         raise HTTPException(status_code=404, detail=t("ai.err_conversation_not_found"))
@@ -904,8 +905,8 @@ async def _attach_confirmed_bill_receipt(
     """Keep the source receipt on its confirmed bill through ordinary file attachment."""
     from celerp.ai.files import load_file
     from celerp.events.engine import find_event_by_idempotency
-    from celerp.models.projections import Projection
     from celerp.services.attachments import attach_file, storing
+    from celerp.services.company_lock import lock_projections
 
     data = result.get("data")
     doc_id = data.get("id") if isinstance(data, dict) else None
@@ -921,15 +922,17 @@ async def _attach_confirmed_bill_receipt(
         if replay.event_type != "doc.file_attached" or replay.entity_id != doc_id:
             raise ValueError("Receipt identity was already used for another document")
         return
-    original = await session.get(Projection, (company_id, doc_id))
-    if original is None or original.entity_type != "doc" or original.state.get("doc_type") != "bill":
-        raise ValueError("Confirmed bill is no longer available")
     content, source = load_file(source_id, company_id, user_id)
     mime = str(source.get("content_type") or "")
     filename = source.get("filename") or "Receipt"
     stable_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{company_id}:{operation}"))
     async with storing(session, company_id) as files:
         meta = await files.file(content, filename, mime, att_id=stable_id)
+        # Read under the company lock after storing, so a bill deleted meanwhile, or a
+        # user who has lost access, leaves no file behind.
+        original = (await lock_projections(session, company_id, [doc_id])).get(doc_id)
+        if original is None or original.entity_type != "doc" or original.state.get("doc_type") != "bill":
+            raise ValueError("Confirmed bill is no longer available")
         await attach_file(
             session, company_id, "doc", doc_id, meta, user_id,
             source="api", idempotency_key=idem, document_tag="receipt",

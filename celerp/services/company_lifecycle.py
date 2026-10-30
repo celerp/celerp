@@ -17,7 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.models.accounting import UserCompany
-from celerp.models.company import Company
+from celerp.services.company_lock import locked_company
 from celerp.services.provisioning import unique_slug
 from ui.i18n import t
 
@@ -39,13 +39,13 @@ class Reactivated:
 async def reactivate_company(session: AsyncSession, company_id, user_id) -> Reactivated:
     """Reactivate the company for one of its owners and commit.
 
-    The company row is locked first, so of two simultaneous reactivations one does the
+    The company lock is taken first, so of two simultaneous reactivations one does the
     work and the other finds the company already active and returns it unchanged. The
     web address it had before the deactivation comes back unless another company took it
     meanwhile, in which case it gets a free one. Connectors the deactivation disconnected
     stay disconnected; their names are returned so the owner can connect them again."""
     from celerp.connectors import ownership
-    company = await session.get(Company, uuid.UUID(str(company_id)), with_for_update=True, populate_existing=True)
+    company = await locked_company(session, uuid.UUID(str(company_id)))
     owner = company is not None and await session.scalar(select(UserCompany.id).where(
         UserCompany.user_id == uuid.UUID(str(user_id)), UserCompany.company_id == company.id,
         UserCompany.role == "owner", UserCompany.is_active.is_(True)).limit(1)) is not None

@@ -155,8 +155,17 @@ def test_import_backup_cancelled_at_the_warning_sends_nothing_browser(page, reco
     assert set(_company_names(url)) == {_RENAMED}
 
 
+@pytest.fixture
+def recorded_history():
+    """The live database with its migration history recorded, as every install has it, so
+    the safety copy a recovery takes of it can be put back."""
+    from celerp.config import settings
+    with released_migration_history(settings.database_url):
+        yield
+
+
 def test_failed_recovery_shows_its_outcome_after_signing_in_again_browser(
-        page, ui_server, api, seeded_user, keep_sign_ins, tmp_path, monkeypatch):
+        page, ui_server, api, seeded_user, keep_sign_ins, recorded_history, tmp_path, monkeypatch):
     """A recovery that fails after it started is put back and signs everyone out. The page
     says so and offers sign-in; the login page says only that it did not complete; the
     first page after signing in again shows the failure, once."""
@@ -169,8 +178,7 @@ def test_failed_recovery_shows_its_outcome_after_signing_in_again_browser(
 
     url = settings.database_url.replace("postgresql+asyncpg://", "postgresql://")
     names = _company_names(url)
-    with released_migration_history(settings.database_url):
-        backup.dump_database(settings.database_url, tmp_path / "database.dump")
+    backup.dump_database(settings.database_url, tmp_path / "database.dump")
     dump = (tmp_path / "database.dump").read_bytes()
     real_reconcile = backup_import._reconcile_schema
     failed = []

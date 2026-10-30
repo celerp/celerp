@@ -21,6 +21,9 @@ import time
 from pathlib import Path
 
 import pytest
+from playwright.sync_api import expect
+
+from .conftest import css_class
 
 pytestmark = pytest.mark.browser
 
@@ -187,10 +190,10 @@ def test_wip_bulk_actions_and_priority_funnel(page, ui_server, api):
         timeout=3000,
     )
     high_row = page.locator(f"#mfg-table tr.data-row:has(input.bulk-select[value='{run_a}'])")
-    assert "dp-row-hidden" in (high_row.first.get_attribute("class") or ""), \
-        "High-priority run row should be hidden after unchecking High"
+    expect(high_row.first, "High-priority run row should be hidden after unchecking High").to_have_class(
+        css_class("dp-row-hidden"))
     low_row = page.locator(f"#mfg-table tr.data-row:has(input.bulk-select[value='{run_b}'])")
-    assert "dp-row-hidden" not in (low_row.first.get_attribute("class") or ""), \
-        "Low-priority run row should still be visible"
-    assert "colfilter--active" in (prio_funnel.get_attribute("class") or ""), \
-        "Priority funnel should be .colfilter--active after filtering"
+    expect(low_row.first, "Low-priority run row should still be visible").not_to_have_class(
+        css_class("dp-row-hidden"))
+    expect(prio_funnel, "Priority funnel should be .colfilter--active after filtering").to_have_class(
+        css_class("colfilter--active"))

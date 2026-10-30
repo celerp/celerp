@@ -1234,7 +1234,7 @@ async def test_connector_authorize_url_success(client):
          patch("celerp.gateway.state.with_relay_client", relay):
         mock_settings.gateway_token = "my-api-key"
 
-        response = await client.get(
+        response = await client.post(
             "/settings/connectors/quickbooks/authorize-url", headers=_h(token)
         )
 
@@ -1264,7 +1264,7 @@ async def test_connector_authorize_url_requires_disconnect_before_reconnect(clie
          patch("celerp.routers.health._relay_reports_connected", AsyncMock(return_value=True)), \
          patch("celerp.gateway.state.with_relay_client", relay):
         mock_settings.gateway_token = "my-api-key"
-        response = await client.get(
+        response = await client.post(
             "/settings/connectors/quickbooks/authorize-url", headers=_h(token)
         )
 
@@ -1295,7 +1295,7 @@ async def test_connector_authorize_url_replaces_an_unfinished_authorization(clie
          patch("celerp.routers.health._relay_reports_connected", AsyncMock(return_value=False)), \
          patch("celerp.gateway.state.with_relay_client", relay):
         mock_settings.gateway_token = "my-api-key"
-        response = await client.get(
+        response = await client.post(
             "/settings/connectors/quickbooks/authorize-url", headers=_h(token)
         )
 
@@ -1321,7 +1321,7 @@ async def test_connector_authorize_url_waits_when_connection_state_is_unknown(cl
          patch("celerp.routers.health._relay_reports_connected", AsyncMock(return_value=None)), \
          patch("celerp.gateway.state.with_relay_client", relay):
         mock_settings.gateway_token = "my-api-key"
-        response = await client.get(
+        response = await client.post(
             "/settings/connectors/quickbooks/authorize-url", headers=_h(token)
         )
 
@@ -1332,19 +1332,21 @@ async def test_connector_authorize_url_waits_when_connection_state_is_unknown(cl
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("connector_modules_running")
 async def test_connector_authorize_url_not_connected(client):
     """Returns error when no gateway_token configured."""
     token = await _register(client, "auth-url-notoken")
 
     with _relay_settings() as mock_settings:
         mock_settings.gateway_token = ""
-        r = await client.get("/settings/connectors/shopify/authorize-url", headers=_h(token))
+        r = await client.post("/settings/connectors/shopify/authorize-url", headers=_h(token))
 
     assert r.status_code == 200
     assert "error" in r.json()
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("connector_modules_running")
 async def test_connector_authorize_url_shopify_passes_shop(client):
     """Shopify authorize URL request forwards the shop param to the relay."""
     token = await _register(client, "auth-url-shopify")
@@ -1374,7 +1376,7 @@ async def test_connector_authorize_url_shopify_passes_shop(client):
         )
         mock_httpx.return_value.__aenter__.return_value.get = AsyncMock(side_effect=fake_get)
 
-        r = await client.get(
+        r = await client.post(
             "/settings/connectors/shopify/authorize-url",
             params={"shop": "my-shop.myshopify.com"},
             headers=_h(token),
@@ -1700,7 +1702,7 @@ async def test_connector_authorize_failure_releases_new_claim_after_cancel(clien
          patch("celerp.connectors.ownership.release_connector_ownership", release), \
          patch("celerp.gateway.state.with_relay_client", relay):
         mock_settings.gateway_token = "my-api-key"
-        response = await client.get(
+        response = await client.post(
             "/settings/connectors/quickbooks/authorize-url",
             headers=_h(token),
         )
@@ -1731,7 +1733,7 @@ async def test_connector_authorize_ambiguous_cleanup_keeps_new_claim(client):
          patch("celerp.connectors.ownership.release_connector_ownership", release), \
          patch("celerp.gateway.state.with_relay_client", relay):
         mock_settings.gateway_token = "my-api-key"
-        response = await client.get(
+        response = await client.post(
             "/settings/connectors/quickbooks/authorize-url",
             headers=_h(token),
         )
@@ -1800,7 +1802,7 @@ async def test_connector_reauthorize_requires_disconnect_without_releasing_owner
          patch("celerp.routers.health._relay_reports_connected", AsyncMock(return_value=True)), \
          patch("celerp.gateway.state.with_relay_client", relay):
         mock_settings.gateway_token = "my-api-key"
-        response = await client.get(
+        response = await client.post(
             "/settings/connectors/quickbooks/authorize-url",
             headers=_h(token),
         )
@@ -1826,7 +1828,7 @@ async def test_connector_authorize_lock_failure_keeps_durable_claim(client):
          patch("celerp.connectors.ownership.lock_connector_operation", lock), \
          patch("celerp.connectors.ownership.release_connector_ownership", release):
         mock_settings.gateway_token = "my-api-key"
-        response = await client.get(
+        response = await client.post(
             "/settings/connectors/quickbooks/authorize-url",
             headers=_h(token),
         )
@@ -1873,7 +1875,7 @@ async def test_connector_authorize_url_does_not_hold_up_a_running_sync(client, s
          patch("celerp.routers.health._relay_reports_connected", _probe), \
          patch("celerp.gateway.state.with_relay_client", AsyncMock(side_effect=[cancelled, url_resp])):
         mock_settings.gateway_token = "my-api-key"
-        response = await client.get(
+        response = await client.post(
             "/settings/connectors/quickbooks/authorize-url", headers=_h(token)
         )
 

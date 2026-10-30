@@ -9,6 +9,7 @@ from __future__ import annotations
 import uuid
 
 import pytest
+from playwright.sync_api import expect
 
 pytestmark = pytest.mark.browser
 
@@ -40,7 +41,7 @@ def test_building_list_scan_accumulates_then_add_submits_without_reload(page, ui
     page.wait_for_selector(f'#line-body [data-name="sku"][value="SCN-{tag}"]', timeout=8000)
     assert page.evaluate("window.__scanProbe") == 1, "page reloaded on scan"
     # Focus stays on the scan bar, cleared and ready for the next run.
-    assert page.evaluate("document.activeElement && document.activeElement.id") == "scan-bar-input"
+    expect(page.locator("#scan-bar-input")).to_be_focused()
     assert page.locator("#scan-bar-input").input_value() == ""
 
 

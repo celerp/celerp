@@ -91,7 +91,7 @@ def test_product_channel_platforms_match_registry():
 def test_external_link_for_state_stays_pure():
     """The decoder needs no database: a stale link is still decoded, a detached one is
     not, and a legacy key only decodes for the platform it names."""
-    from celerp_inventory.services import external_link_for_state
+    from celerp.connectors.product_links import external_link_for_state
     stale = {"external_links": {"shopify": dict(LIVE_SHOPIFY)}}
     assert external_link_for_state(stale, "shopify")["product_id"] == "9001"
     assert external_link_for_state({"external_links": {"shopify": {"detached": True}}}, "shopify") == {}
@@ -114,6 +114,8 @@ EXTERNAL_LINK_CALLERS: dict[tuple[str, str], tuple[str, str]] = {
     ("celerp/connectors/woocommerce.py", "_reconcile_missing_product_links"): ("SYNC", _SYNC),
     ("celerp/connectors/woocommerce.py", "ensure_product_link"): ("SYNC", _SYNC),
     ("celerp/connectors/woocommerce.py", "handle_product_deleted"): ("SYNC", _SYNC),
+    ("celerp/connectors/product_links.py", "refuse_while_links_cannot_detach"):
+        ("PURE", "decides whether a link is left to detach"),
     ("celerp/connectors/outbound_queue.py", "enqueue_item_change"):
         ("SYNC", "queues Woo pushes only while an outbound WooCommerce config is held by the company"),
     ("default_modules/celerp-connectors/celerp_connectors/routes.py", "set_item_sync"):
@@ -382,6 +384,7 @@ async def test_local_product_merge_never_channel_linked(client, session):
     assert await _channel_state(client, h, r.json()["id"]) == {}
 
 
+@pytest.mark.usefixtures("connector_modules_running")
 async def test_disconnect_detaches_identity_and_allows_merge(client, session, connect_session):
     h, cid = await _register(client)
     await _connect(session, cid, "shopify")
@@ -402,6 +405,7 @@ async def _ledger_rows(session, cid: str) -> int:
     return await session.scalar(text("SELECT count(*) FROM ledger WHERE company_id = :c"), {"c": uuid.UUID(cid)})
 
 
+@pytest.mark.usefixtures("connector_modules_running")
 async def test_deactivate_reactivate_detaches_links_and_allows_merge(client, session):
     h, cid = await _register(client)
     await _connect(session, cid, "shopify")
@@ -417,6 +421,7 @@ async def test_deactivate_reactivate_detaches_links_and_allows_merge(client, ses
     assert r.status_code == 200, r.text
 
 
+@pytest.mark.usefixtures("connector_modules_running")
 async def test_deactivation_detach_is_idempotent_and_cleans_stale_links(client, session):
     """Deactivation detaches every product-channel identity, stale ones included, and a
     repeated deactivation writes nothing more."""
@@ -436,6 +441,7 @@ async def test_deactivation_detach_is_idempotent_and_cleans_stale_links(client, 
     assert await _ledger_rows(session, cid) == before
 
 
+@pytest.mark.usefixtures("connector_modules_running")
 async def test_deactivation_rolls_back_when_detach_fails(client, session):
     from celerp.models.company import Company
     from celerp.models.connector_config import ConnectorConfig
@@ -674,6 +680,7 @@ async def test_merge_racing_connect_rechecks_ownership(real_engine, real_client)
         await holder.close()
 
 
+@pytest.mark.usefixtures("connector_modules_running")
 async def test_item_sync_route_toggles_the_shopify_sync_flag_through_the_ledger(client, session):
     """POST /connector-items/shopify/sync emits shop.sync.enabled/disabled and the
     projection's sync flag follows; a second identical request changes nothing."""

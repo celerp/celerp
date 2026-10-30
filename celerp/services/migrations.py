@@ -20,6 +20,7 @@ record took, as its CIF record states it, in the entity map metadata.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import csv
 import io
 import logging
@@ -88,12 +89,12 @@ from celerp.services import migration_templates
 from celerp.services import posting_readiness
 from celerp.services.auth import first_usable_company_link, normalize_role
 from celerp.services.company_files import delete_company_data
-from celerp.services.company_lock import lock_company
+from celerp.services.company_lock import judge_without_company_lock, lock_company
 from celerp.services.lot_origin import place_company_stock
 from celerp.services.csv_export import csv_safe
-from celerp.services.permissions import role_has_permission
+from celerp.services.permissions import act_for, role_has_permission
 from celerp.services.provisioning import add_missing_required_defaults
-from ui.i18n import t
+from ui.i18n import current_lang, set_lang, t
 
 logger = logging.getLogger(__name__)
 
@@ -464,12 +465,13 @@ async def claim_source(session: AsyncSession, run_id: uuid.UUID, *, token: str |
     Idempotent, so a repeated start and startup recovery both finish a start that died
     part way; only a ``preparing`` run is changed. Returns whether this call started the
     run, so exactly one caller schedules the runner. A source found in neither place
-    fails the run."""
+    fails the run. Locks in canonical order: the run's company, the scan claim, the run row."""
     run = await session.get(MigrationRun, run_id)
     if run is None:
         return False
+    await lock_company(session, run.company_id)
     await lock_scan_claim(session, run.scan_claim_sha256)
-    await _lock_run(session, run)
+    await _lock_run(session, run, company=False)
     if run.status != _S.PREPARING:
         await session.commit()
         return False
@@ -551,10 +553,12 @@ def _may_manage(row) -> bool:
 
 
 async def get_owned_migration_run(session: AsyncSession, run_id: uuid.UUID, user_id: uuid.UUID) -> MigrationRun:
-    """The run, if *user_id* started it and still owns its company; otherwise not found."""
+    """The run, if *user_id* started it and still owns its company; otherwise not found.
+    The request then acts for the run's company, so its company lock judges that control again."""
     row = (await session.execute(_owned_runs(user_id).where(MigrationRun.id == run_id))).first()
     if row is None or not _may_manage(row):
         raise MigrationError(404, t(NOT_FOUND))
+    act_for(session, row[0].company_id, user_id, normalize_role(row.role), "manage_company_lifecycle")
     return row[0]
 
 
@@ -590,7 +594,9 @@ async def request_start(session: AsyncSession, run: MigrationRun) -> None:
 async def request_cancel(session: AsyncSession, run: MigrationRun) -> None:
     """Persist a cancel request; the runner stops between batches. Commits.
 
-    Only the run row is locked: the runner holds the company lock during a batch."""
+    Only the run row is locked: the runner holds the company lock during a batch, and a
+    cancel is saved at once, so the request is judged again without waiting for it."""
+    await judge_without_company_lock(session, run.company_id)
     await _lock_run(session, run, company=False)
     if not can_transition(_S(run.status), _S.CANCEL_REQUESTED):
         raise _illegal("cancel", run)
@@ -603,8 +609,14 @@ _TASKS: set[asyncio.Task] = set()
 
 
 def schedule_run(run_id: uuid.UUID) -> None:
-    """Start the runner in this process. The run row, not the task, is authoritative."""
-    task = asyncio.get_running_loop().create_task(run_migration(run_id))
+    """Start the runner in this process. The run row, not the task, is authoritative.
+
+    The runner outlives the request that starts it, so it runs in a context of its own:
+    none of the request's state (its module admissions, its write tracking) carries over,
+    only the starter's language for the messages the run records."""
+    context = contextvars.Context()
+    context.run(set_lang, current_lang())
+    task = context.run(asyncio.get_running_loop().create_task, run_migration(run_id))
     _TASKS.add(task)
     task.add_done_callback(_TASKS.discard)
 

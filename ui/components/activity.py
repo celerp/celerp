@@ -349,17 +349,18 @@ def _category(key: str, category_names: dict | None) -> str:
 
 
 def detail_from_entry(data: dict, event_type: str, currency: str | None = None,
-                      category_names: dict | None = None) -> str:
+                      category_names: dict | None = None, *, docs_on: bool = False) -> str:
     """Extract a short human-readable detail string from a ledger entry's data dict.
 
     category_names: ``category_labels`` of the company's category names, so a renamed or
-    company-made category reads as named rather than as its key."""
+    company-made category reads as named rather than as its key.
+    docs_on: the company can open Documents (``can_open``), so a line's tax change reads as one."""
     if not data or not isinstance(data, dict):
         return ""
     fields_changed = data.get("fields_changed", {})
     if fields_changed and isinstance(fields_changed, dict):
         summary = _fields_changed_summary(fields_changed, currency, category_names,
-                                          show_totals=event_type in _TOTAL_EVENT_TYPES)
+                                          show_totals=event_type in _TOTAL_EVENT_TYPES, docs_on=docs_on)
         if summary:
             return summary
         # fields_changed was present but all entries were noise (empty→empty etc.)
@@ -526,7 +527,7 @@ def detail_from_entry(data: dict, event_type: str, currency: str | None = None,
         target_ref = data.get("target_ref") or data.get("target_doc_number") or ""
         return f"→ {target_ref}" if target_ref else (doc_ref or "")
     if event_type == "doc.updated":
-        return _fields_changed_summary(fields_changed, currency, category_names)
+        return _fields_changed_summary(fields_changed, currency, category_names, docs_on=docs_on)
     if event_type == "doc.shared":
         return doc_ref or ""
     if event_type == "doc.received":
@@ -635,7 +636,7 @@ def _discount_change_summary(fields_changed: dict, currency: str | None):
     return ", ".join(parts), _DISCOUNT_CONSUMED
 
 
-def _line_tax_change_summary(fields_changed: dict, currency: str | None):
+def _line_tax_change_summary(fields_changed: dict, currency: str | None, docs_on: bool):
     """Per-item tax-rate changes from a line_items diff, then the tax the document charges as
     it was recalculated, once, e.g. 'DEMO-AUTO-007 Tax 0% → 7%, Tax: $0.00 → $453.10'. A line's
     own amount is never worked out again here: the document's discount and rounding decide it.
@@ -644,7 +645,7 @@ def _line_tax_change_summary(fields_changed: dict, currency: str | None):
     document, ``tax_amount`` on a list) is consumed so the history doesn't also dump it bare.
     """
     change = fields_changed.get("line_items")
-    if not isinstance(change, dict):
+    if not docs_on or not isinstance(change, dict):  # only Documents gives a line its tax
         return [], frozenset()
     old, new = change.get("old"), change.get("new")
     if not isinstance(old, list) or not isinstance(new, list):
@@ -717,13 +718,15 @@ def _doc_tax_change_summary(fields_changed: dict, currency: str | None, show_tot
 
 
 def _fields_changed_summary(fields_changed: dict, currency: str | None = None,
-                            category_names: dict | None = None, *, show_totals: bool = False) -> str:
+                            category_names: dict | None = None, *, show_totals: bool = False,
+                            docs_on: bool = False) -> str:
     """Compact summary of field changes from a ledger data dict.
 
     Scalar changes: "field: old → new", each value formatted by its field type.
     Complex changes (list/dict): "Lines edited", "Contact updated", etc.
     Unknown complex: "field updated".
     show_totals: the change is to the totals themselves, so they are not suppressed as derived.
+    docs_on: as in detail_from_entry.
     """
     if not fields_changed or not isinstance(fields_changed, dict):
         return ""
@@ -736,7 +739,7 @@ def _fields_changed_summary(fields_changed: dict, currency: str | None = None,
 
     # Per-item tax-rate changes render explicitly (which item, the % and the amount); doing so
     # consumes the document-level `tax` scalar so the same change isn't also dumped item-less.
-    tax_parts, tax_consumed = _line_tax_change_summary(fields_changed, currency)
+    tax_parts, tax_consumed = _line_tax_change_summary(fields_changed, currency, docs_on)
     # Document-level taxes name the tax added, removed or re-rated, never the internal key.
     doc_tax_parts, doc_tax_consumed = _doc_tax_change_summary(
         fields_changed, currency, show_total="total" not in consumed)
@@ -1119,7 +1122,8 @@ def activity_table(ledger: list[dict], *, title: str | None = None,
                    currency: str | None = None,
                    category_names: dict | None = None,
                    resizable: bool = False,
-                   deleted: dict[str, dict] | None = None) -> FT:
+                   deleted: dict[str, dict] | None = None,
+                   docs_on: bool = False) -> FT:
     """Unified DRY activity table used by all detail pages and dashboard.
 
     Columns: Event (linked to entity) | When (timestamp) | User | Details
@@ -1129,6 +1133,7 @@ def activity_table(ledger: list[dict], *, title: str | None = None,
     currency: ISO code used to format money amounts in the Details column.
     category_names: ``category_labels`` of the company's category names (see detail_from_entry).
     deleted: deleted items by id; a split or transform parent among them is marked "[Deleted]".
+    docs_on: as in detail_from_entry.
 
     title/empty_msg default to None so their text resolves in the request language
     at render time; a caller may still pass an explicit string to override.
@@ -1195,7 +1200,7 @@ def activity_table(ledger: list[dict], *, title: str | None = None,
         # File events (any entity): filename linked to the file (name only once deleted).
         if _is_file_event(raw_type) and isinstance(data, dict):
             return [_assemble(e, content, _file_event_detail(e, data, raw_type), "")]
-        detail = detail_from_entry(data, raw_type, currency, category_names) if isinstance(data, dict) else ""
+        detail = detail_from_entry(data, raw_type, currency, category_names, docs_on=docs_on) if isinstance(data, dict) else ""
 
         # Drop rows that carried only noise (empty→empty field changes with no other detail)
         if not detail and isinstance(data, dict) and data.get("fields_changed"):

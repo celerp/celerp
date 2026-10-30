@@ -6,7 +6,7 @@ from __future__ import annotations
 import asyncio as _asyncio
 import json as _json
 import logging
-from datetime import datetime, timezone as _tz
+from datetime import date, datetime, timezone as _tz
 from urllib.parse import quote_plus as _quote_plus, urlencode
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -16,20 +16,21 @@ from starlette.responses import RedirectResponse
 
 import ui.api_client as api
 from ui.components.icons import import_icon
+from ui.components.module_off import can_open
 from ui.api_client import APIError
 from ui.components.attrs import hx_vals
 from ui.components.shell import base_shell, info_tip, page_header, page_title
 from ui.components.table import search_bar, search_results, pagination, per_page_value, EMPTY, breadcrumbs, status_cards, empty_state_cta, fmt_money, format_value, add_new_option, data_table, column_manager
 from ui.components.notes import notes_tab as _shared_notes_tab, note_edit_form as _shared_note_edit_form
 from ui.components.files import files_error, files_error_block, files_section as _shared_files_section, files_session_expired, linked_files, _DOCUMENT_TAGS
-from celerp.services.business_time import business_today
+from celerp.services.doc_balance import doc_value, settled_on
 from celerp.services.currencies import KNOWN_CURRENCY_CODES
 from ui.components.currency import currency_combobox_td
 from ui.components.phone import phone_input_td, phone_head_items as _phone_head_items
 from ui.config import get_token as _token, get_role as _get_role
 from celerp.services.permissions import role_has_permission
 from ui.i18n import t, get_lang
-from ui.routes.reports import _date_filter_bar, _get_company, _parse_dates
+from ui.routes.reports import _date_filter_bar, _get_company, _parse_dates, _resolve_preset
 
 logger = logging.getLogger(__name__)
 
@@ -182,6 +183,15 @@ def _files_section(contact: dict, contact_id: str, docs: list[dict] | None = Non
     return _shared_files_section("contact", contact_id, merged, **kwargs)
 
 
+async def _contact_docs(token: str, contact_id: str, company: dict | None = None) -> list[dict]:
+    """The contact's documents, or none while the company cannot open Documents: its own
+    files then list without the documents' attachments. A failed read raises APIError."""
+    if not can_open(company if company is not None else await api.get_company(token), "celerp-docs"):
+        return []
+    resp = await api.list_contact_docs(token, contact_id, {"limit": 999})
+    return resp.get("items", []) if isinstance(resp, dict) else resp
+
+
 def _contact_info_card(
     c: dict, *, oob: bool = False, hide_fields: tuple = (),
     company_name_help: str = "",
@@ -230,10 +240,36 @@ def _settings_card(c: dict) -> FT:
     )
 
 
-def _financial_summary(docs: list[dict], contact_id: str = "", company: dict | None = None,
-                       consigned_total: float | None = None, on_memo_total: float | None = None) -> FT:
-    """Compute and render financial summary cards from contact docs.
+async def _invoice_totals(token: str, contact_id: str, company: dict) -> dict[str, float | None]:
+    """The contact's invoice money cards, from the document summary the invoice list's cards use,
+    so each card shows the figure of the list card it opens, over the same invoices (issued, not
+    draft or void) in the company currency: ``invoiced`` (All issued) and ``paid`` (every payment
+    on those invoices, part payments included) over this fiscal year to date, ``outstanding``
+    (Awaiting payment) what the invoices awaiting payment still owe. Each is None when the summary could not be
+    read; an ended session (401) is raised, so the page goes to sign-in. ``open_credit`` is what the contact's open credit notes still have to apply or refund,
+    shown under Outstanding: the aging report nets it, the awaiting-payment list does not."""
+    date_from, date_to = _resolve_preset("this_fy", company)
+    scope = {"doc_type": "invoice", "contact_id": contact_id}
+    try:
+        ytd, open_, credit = await _asyncio.gather(
+            api.get_doc_summary(token, scope | {"date_from": date_from, "date_to": date_to}),
+            api.get_doc_summary(token, scope),
+            api.get_doc_summary(token, scope | {"doc_type": "credit_note"}),
+        )
+    except APIError as e:
+        if e.status == 401:
+            raise
+        return {"invoiced": None, "paid": None, "outstanding": None, "open_credit": None}
+    return {"invoiced": ytd.get("all_issued_total"), "paid": ytd.get("ar_paid"),
+            "outstanding": open_.get("awaiting_payment_total"), "open_credit": credit.get("open_credit_total")}
 
+
+def _financial_summary(docs: list[dict], contact_id: str = "", invoice_totals: dict | None = None,
+                       consigned_total: float | None = None, on_memo_total: float | None = None) -> FT:
+    """Render the financial summary cards for a contact.
+
+    invoice_totals holds the Total invoiced, Total paid and Outstanding figures
+    (``_invoice_totals``); a missing figure shows as EMPTY, never as 0.00.
     consigned_total / on_memo_total are the live value of goods currently held on
     consignment from this supplier (at cost) and currently out on memo to this customer
     (at the price they were quoted). Both come from the contact-scoped holdings filter,
@@ -241,28 +277,22 @@ def _financial_summary(docs: list[dict], contact_id: str = "", company: dict | N
     figure was unavailable (e.g. the caller could not reach the API, or costs are
     hidden from this role), and the card falls back to the document-derived total.
     """
-    from ui.routes.reports import _fy_start
-    company = company or {}
-    today = business_today(company.get("timezone"))
-    # Reuse the canonical parser: it falls back to Jan 1 on a malformed
-    # fiscal_year_start (e.g. "01" with no day) instead of crashing the page.
-    fy_start = _fy_start(company.get("fiscal_year_start") or "01-01", today)
-    fy_start_str = fy_start.isoformat()
+    totals = invoice_totals or {}
+
+    def _money(key: str) -> str:
+        value = totals.get(key)
+        return fmt_money(value, None) if value is not None else EMPTY
 
     invoices = [d for d in docs if d.get("doc_type") == "invoice"]
-    ytd_invoices = [d for d in invoices if (d.get("issue_date") or "") >= fy_start_str]
-    total_invoiced = sum(float(d.get("total_amount") or 0) for d in ytd_invoices)
-    total_paid = sum(float(d.get("amount_paid") or 0) for d in ytd_invoices)
-    outstanding = total_invoiced - total_paid
 
-    # Avg days to pay (all-time, not just YTD)
+    # Avg days to pay (all-time, not just YTD): from issue to the last active payment of each
+    # paid invoice.
     days = []
     for d in invoices:
-        if d.get("status") == "paid" and d.get("paid_date") and d.get("issue_date"):
+        paid_on, issued_on = settled_on(d), doc_value(d, "issue_date")
+        if d.get("status") == "paid" and paid_on and issued_on:
             try:
-                paid_dt = datetime.fromisoformat(str(d["paid_date"])[:10])
-                issue_dt = datetime.fromisoformat(str(d["issue_date"])[:10])
-                days.append((paid_dt - issue_dt).days)
+                days.append((date.fromisoformat(paid_on) - date.fromisoformat(str(issued_on)[:10])).days)
             except (ValueError, TypeError):
                 pass
     avg_dtp = f"{sum(days) // len(days)}d" if days else EMPTY
@@ -273,7 +303,7 @@ def _financial_summary(docs: list[dict], contact_id: str = "", company: dict | N
     if consigned_total is None:
         consignment_docs = [d for d in docs if d.get("doc_type") == "consignment_in"]
         total_consigned = sum(
-            float(d.get("total_amount") or 0) for d in consignment_docs
+            float(d.get("total") or 0) for d in consignment_docs
             if d.get("status") not in ("void", "converted")
         )
     else:
@@ -290,16 +320,18 @@ def _financial_summary(docs: list[dict], contact_id: str = "", company: dict | N
             return A(*content, href=href, cls="financial-card financial-card--link")
         return Div(*content, cls="financial-card")
 
-    ytd_filter = f"&from_date={fy_start_str}&to_date={today.isoformat()}"
+    ytd_filter = "&preset=this_fy"
     contact_filter = f"&contact_id={contact_id}" if contact_id else ""
 
     return Div(
-        _card(t("contacts.total_invoiced"), fmt_money(total_invoiced, None), sub_label=t("contacts.year_to_date"),
+        _card(t("contacts.total_invoiced"), _money("invoiced"), sub_label=t("contacts.year_to_date"),
               href=f"/docs?type=invoice{contact_filter}{ytd_filter}" if contact_id else ""),
-        _card(t("contacts.total_paid"), fmt_money(total_paid, None), sub_label=t("contacts.year_to_date"),
-              href=f"/docs?type=invoice&status=paid{contact_filter}{ytd_filter}" if contact_id else ""),
-        _card(t("th.outstanding"), fmt_money(outstanding, None),
-              href=f"/docs?type=invoice&status=awaiting_payment{contact_filter}" if contact_id else ""),
+        _card(t("contacts.total_paid"), _money("paid"), sub_label=t("contacts.paid_year_to_date"),
+              href=f"/docs?type=invoice&all_issued=1{contact_filter}{ytd_filter}" if contact_id else ""),
+        _card(t("th.outstanding"), _money("outstanding"),
+              sub_label=t("contacts.open_credit", amount=_money("open_credit")) if totals.get("open_credit") else "",
+              href=(f"/docs?type=invoice&awaiting_only=1{contact_filter}&preset=all"
+                    if contact_id else "")),
         _card(t("contacts.avg_days_to_pay"), avg_dtp),
         # An unavailable figure shows as EMPTY rather than 0.00, which would wrongly read
         # as "this customer is holding nothing of ours".
@@ -439,12 +471,15 @@ def _people_section(contact: dict) -> FT:
     )
 
 
-def _tab_bar(cid: str, active: str = "documents", lead_tabs: list | None = None, reload_documents: bool = False) -> FT:
+def _tab_bar(cid: str, active: str = "documents", lead_tabs: list | None = None, reload_documents: bool = False,
+             documents: bool = True) -> FT:
     """HTMX-driven tab bar for Documents / Notes / Activity. lead_tabs prepends extra (key, label, href)
     tabs (e.g. the company's Files tab, which loads a different route than /contacts/{cid}/tab/{key}).
     reload_documents turns the Documents tab into a plain link to the contact page: after a failed
-    documents read only a full page load restores the cards, files and documents together."""
-    tabs = list(lead_tabs or []) + [("documents", t("page.documents"), None), ("notes", t("label.notes"), None), ("activity", t("contacts.tab_activity"), None)]
+    documents read only a full page load restores the cards, files and documents together.
+    documents=False leaves the Documents tab out, for a company that cannot open Documents."""
+    tabs = [*(lead_tabs or []), *([("documents", t("page.documents"), None)] if documents else []),
+            ("notes", t("label.notes"), None), ("activity", t("contacts.tab_activity"), None)]
     return Div(
         *[A(label, href=f"/contacts/{cid}", cls="tab active", id=f"tab-{key}")
           if reload_documents and key == "documents" else A(
@@ -480,12 +515,12 @@ def _documents_tab(docs: list[dict], contact: dict | None = None, contact_id: st
                 Td(A(format_value(doc_num), href=f"/docs/{doc_id}", cls="table-link")),
                 Td(format_value(d.get("doc_type"), "badge", domain="doc_type")),
                 Td(format_value(str(d.get("issue_date") or "")[:10] or None)),
-                Td(format_value(d.get("total_amount"), "money"), cls="cell--number"),
+                Td(format_value(d.get("total"), "money", d.get("currency")), cls="cell--number"),
                 Td(format_value(d.get("status"), "badge", domain="doc_status")),
                 cls="data-row",
             ))
         docs_section = Table(
-            Thead(Tr(Th(t("th.doc")), Th(t("th.doc_type")), Th(t("th.date")), Th(t("th.total")), Th(t("th.status")))),
+            Thead(Tr(Th(t("th.doc")), Th(t("th.doc_type")), Th(t("th.date")), Th(t("th.total"), cls="cell--number"), Th(t("th.status")))),
             Tbody(*rows),
             cls="data-table sticky-head",
         )
@@ -523,10 +558,10 @@ def _notes_tab(contact_id: str, notes: list[dict], tz: str = "UTC") -> FT:
     )
 
 
-def _contact_ledger_table(ledger: list[dict]) -> FT:
+def _contact_ledger_table(ledger: list[dict], docs_on: bool) -> FT:
     """Activity history section for contact detail page."""
     from ui.components.activity import activity_table
-    return activity_table(ledger, max_display=10)
+    return activity_table(ledger, max_display=10, docs_on=docs_on)
 
 
 def _contacts_bulk_toolbar(contact_type: str) -> FT:
@@ -798,13 +833,16 @@ async def build_contact_detail(contact: dict, docs: list, vocab: list, company: 
                          title: str | None = None,
                          consigned_total: float | None = None,
                          on_memo_total: float | None = None,
+                         invoice_totals: dict | None = None,
                          docs_error: FT | None = None) -> FT:
     """Shared assembly for the contact detail page. The Company Details page reuses this verbatim with
     show_financials=False / show_delete=False / show_contact_addresses=False (the company is its own
     customer+vendor self-contact, and it has no financial-summary-against-itself) - one page layout, no
     fork. The only differences are the conditional sections gated by the flags. ``docs_error`` is the
     notice for a failed documents read: it replaces the Documents tab and the document-derived
-    financial cards, which would otherwise show figures computed from an empty list."""
+    financial cards, which would otherwise show figures computed from an empty list. While the
+    company cannot open Documents there is no Documents tab and no financial cards; the contact's
+    files get their own tab, open by default."""
     contact_name = contact.get("name", t("contacts.contact_name_fallback"))
     contact_type = contact.get("contact_type", "")
     if back is not None:
@@ -819,6 +857,7 @@ async def build_contact_detail(contact: dict, docs: list, vocab: list, company: 
     cid = contact.get("entity_id") or contact.get("id") or contact_id
     is_deleted = bool(contact.get("deleted"))
     page_title = title or contact_name
+    docs_on = can_open(company, "celerp-docs")
 
     autofocus_script = (
         Script("document.querySelector('.cell--clickable')?.click();")
@@ -861,9 +900,9 @@ async def build_contact_detail(contact: dict, docs: list, vocab: list, company: 
         autofocus_script,
         action_bar,
         delete_btn,
-        *([_financial_summary(docs, contact_id=cid, company=company,
+        *([_financial_summary(docs, contact_id=cid, invoice_totals=invoice_totals,
                               consigned_total=consigned_total, on_memo_total=on_memo_total)]
-          if show_financials and docs_error is None else []),
+          if show_financials and docs_on and docs_error is None else []),
         Div(
             Div(
                 _contact_info_card(contact),
@@ -879,9 +918,11 @@ async def build_contact_detail(contact: dict, docs: list, vocab: list, company: 
         ),
         *([_addresses_section(contact)] if show_contact_addresses else []),
         *(extra_sections or []),
-        _tab_bar(cid, reload_documents=docs_error is not None),
+        _tab_bar(cid, reload_documents=docs_error is not None) if docs_on else
+        _tab_bar(cid, active="files", lead_tabs=[("files", t("label.files"), None)], documents=False),
         Div(
-            docs_error if docs_error is not None else _documents_tab(docs, contact, cid),
+            (docs_error if docs_error is not None else _documents_tab(docs, contact, cid)) if docs_on else
+            _files_section(contact, cid),
             id="tab-content",
         ),
         title=f"{page_title} - Celerp",
@@ -1178,10 +1219,10 @@ def setup_routes(app):
                 files_error_block(body, e.status),
                 title=page_title("nav.customers"), nav_active="customers", request=request,
             )
+        company = await _get_company(token)
         docs_error = None
         try:
-            docs_resp = await api.list_contact_docs(token, contact_id, {"limit": 999})
-            docs = docs_resp.get("items", []) if isinstance(docs_resp, dict) else docs_resp
+            docs = await _contact_docs(token, contact_id, company)
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
@@ -1192,7 +1233,6 @@ def setup_routes(app):
             vocab = await api.get_contact_tags_vocabulary(token)
         except Exception:
             vocab = []
-        company = await _get_company(token)
 
         # Live holdings behind the On Memo / Consignment cards. limit=1 because only the
         # scope-wide value_total is needed here; the full list is the click-through.
@@ -1205,13 +1245,18 @@ def setup_routes(app):
                 return None
             return resp.get("value_total") if isinstance(resp, dict) else None
 
-        on_memo_total, consigned_total = await _asyncio.gather(
-            _holdings_total("on_memo_to"), _holdings_total("consigned_from"),
-        )
+        # The money cards show only while the company can open Documents and its documents
+        # loaded; otherwise nothing behind them is read.
+        on_memo_total = consigned_total = invoice_totals = None
+        if docs_error is None and can_open(company, "celerp-docs"):
+            on_memo_total, consigned_total, invoice_totals = await _asyncio.gather(
+                _holdings_total("on_memo_to"), _holdings_total("consigned_from"),
+                _invoice_totals(token, contact_id, company),
+            )
 
         return await build_contact_detail(contact, docs, vocab, company, request, contact_id=contact_id,
                                           on_memo_total=on_memo_total, consigned_total=consigned_total,
-                                          docs_error=docs_error)
+                                          invoice_totals=invoice_totals, docs_error=docs_error)
 
     # ── Company Details (Finance) ─────────────────────────────────────────
     # The company is its own customer+vendor self-contact, so this page is the same contact-detail
@@ -1287,7 +1332,8 @@ def setup_routes(app):
             ),
             _addresses_section(contact),
             _tab_bar(sid, active="company-files",
-                     lead_tabs=[("company-files", t("label.files"), "/finance/company-files/_section")]),
+                     lead_tabs=[("company-files", t("label.files"), "/finance/company-files/_section")],
+                     documents=can_open(company, "celerp-docs")),
             Div(files_html, id="tab-content"),
             title=page_title("settings.company_details"), nav_active="company-details",
             extra_head=_phone_head_items(), request=request,
@@ -1296,11 +1342,15 @@ def setup_routes(app):
     async def _company_files_section(token: str, **section_kwargs) -> FT:
         """Aggregate + render the read-only company-wide files section (company docs + item images +
         doc attachments). Shared by the page and its sort/pagination _section route. A failed read
-        raises APIError: only a company that really has no self-contact, items or documents is empty."""
+        raises APIError: only a company that really has no self-contact, items or documents is empty.
+        Item and document files are listed while the company can open Inventory and Documents."""
+        company = await api.get_company(token)
         sid = await _resolve_self_contact_id(token)
         self_contact = (await api.get_contact(token, sid) or {}) if sid else {}
-        items = (await api.list_items(token, {"limit": 9999})).get("items", [])
-        docs = (await api.list_docs(token, {"limit": 9999})).get("items", [])
+        items = ((await api.list_items(token, {"limit": 9999})).get("items", [])
+                 if can_open(company, "celerp-inventory") else [])
+        docs = ((await api.list_docs(token, {"limit": 9999})).get("items", [])
+                if can_open(company, "celerp-docs") else [])
         files = _collect_company_files(self_contact, items, docs)
         # can_upload=True: the dropzone POSTs to base_url (/finance/company-files), which routes the file
         # onto the self-contact so it shows here AND in the company's customer/vendor entries. Item and
@@ -1374,6 +1424,18 @@ def setup_routes(app):
         # The company self-contact has its own Files tab, so its Documents tab is docs-only (no dup files).
         return _documents_tab(docs, contact, cid, show_files=not contact.get("is_self"))
 
+    @app.get("/contacts/{contact_id}/tab/files")
+    async def contact_tab_files(request: Request, contact_id: str):
+        token = _token(request)
+        if not token:
+            return files_session_expired()
+        try:
+            contact = await api.get_contact(token, contact_id)
+            docs = await _contact_docs(token, contact_id)
+        except APIError as e:
+            return files_error(t("msg.files_load_failed", detail=str(e.detail)), e.status)
+        return _files_section(contact, contact_id, docs)
+
     @app.get("/contacts/{contact_id}/tab/notes")
     async def contact_tab_notes(request: Request, contact_id: str):
         token = _token(request)
@@ -1392,11 +1454,12 @@ def setup_routes(app):
         if not token:
             return P(t("error.session_expired"), cls="cell-error")
         try:
-            ledger_resp = await api.list_ledger(token, {"entity_id": contact_id, "limit": 10})
+            ledger_resp, company = await _asyncio.gather(
+                api.list_ledger(token, {"entity_id": contact_id, "limit": 10}), api.get_company(token))
             ledger = ledger_resp.get("items", []) if isinstance(ledger_resp, dict) else []
         except Exception:
-            ledger = []
-        return _contact_ledger_table(ledger)
+            ledger, company = [], {}
+        return _contact_ledger_table(ledger, can_open(company, "celerp-docs"))
 
     # ── Notes routes ─────────────────────────────────────────────────────
 
@@ -1712,7 +1775,7 @@ def setup_routes(app):
                 ),
                 Div(
                     Button(t("btn.save"), type="submit", cls="btn btn--primary btn--sm"),
-                    Button(t("btn.cancel"), type="button", cls="btn btn--secondary btn--sm", onclick=f"htmx.ajax('GET','/contacts/{contact_id}/tab/documents','#tab-content');location.reload()"),
+                    Button(t("btn.cancel"), type="button", cls="btn btn--secondary btn--sm", onclick="location.reload()"),
                     cls="form-row",
                 ),
                 hx_patch=f"/contacts/{contact_id}/people/{person_id}",
@@ -1977,10 +2040,10 @@ def setup_routes(app):
         try:
             await api.upload_contact_file(token, contact_id, content, filename, content_type, description, document_tag)
             contact = await api.get_contact(token, contact_id)
-            docs_resp = await api.list_contact_docs(token, contact_id, {"limit": 999})
+            docs = await _contact_docs(token, contact_id)
         except APIError as e:
             return files_error(str(e.detail), e.status)
-        return _files_section(contact, contact_id, docs_resp.get("items", []))
+        return _files_section(contact, contact_id, docs)
 
     @app.delete("/contacts/{contact_id}/files/{file_id}")
     async def contact_delete_file(request: Request, contact_id: str, file_id: str):
@@ -1990,10 +2053,10 @@ def setup_routes(app):
         try:
             await api.delete_contact_file(token, contact_id, file_id)
             contact = await api.get_contact(token, contact_id)
-            docs_resp = await api.list_contact_docs(token, contact_id, {"limit": 999})
+            docs = await _contact_docs(token, contact_id)
         except APIError as e:
             return files_error(str(e.detail), e.status)
-        return _files_section(contact, contact_id, docs_resp.get("items", []))
+        return _files_section(contact, contact_id, docs)
 
     @app.post("/contacts/{contact_id}/files/{file_id}/tag")
     async def contact_tag_file(request: Request, contact_id: str, file_id: str):
@@ -2005,10 +2068,10 @@ def setup_routes(app):
         try:
             await api.tag_contact_file(token, contact_id, file_id, document_tag)
             contact = await api.get_contact(token, contact_id)
-            docs_resp = await api.list_contact_docs(token, contact_id, {"limit": 999})
+            docs = await _contact_docs(token, contact_id)
         except APIError as e:
             return files_error(str(e.detail), e.status)
-        return _files_section(contact, contact_id, docs_resp.get("items", []))
+        return _files_section(contact, contact_id, docs)
 
     @app.post("/contacts/{contact_id}/files/{file_id}/description")
     async def contact_patch_file_description(request: Request, contact_id: str, file_id: str):
@@ -2020,10 +2083,10 @@ def setup_routes(app):
         try:
             await api.patch_contact_file_description(token, contact_id, file_id, description)
             contact = await api.get_contact(token, contact_id)
-            docs_resp = await api.list_contact_docs(token, contact_id, {"limit": 999})
+            docs = await _contact_docs(token, contact_id)
         except APIError as e:
             return files_error(str(e.detail), e.status)
-        return _files_section(contact, contact_id, docs_resp.get("items", []))
+        return _files_section(contact, contact_id, docs)
 
     @app.get("/contacts/{contact_id}/files/_section")
     async def contact_files_section(request: Request, contact_id: str):
@@ -2033,10 +2096,10 @@ def setup_routes(app):
         qp = request.query_params
         try:
             contact = await api.get_contact(token, contact_id)
-            docs_resp = await api.list_contact_docs(token, contact_id, {"limit": 999})
+            docs = await _contact_docs(token, contact_id)
         except APIError as e:
             return files_error(str(e.detail), e.status)
-        return _files_section(contact, contact_id, docs_resp.get("items", []),
+        return _files_section(contact, contact_id, docs,
             page=int(qp.get("page", "1") or "1"),
             sort_dir=qp.get("sort_dir", "desc"),
             tag_filter=qp.get("tag_filter", ""),

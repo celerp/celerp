@@ -2126,6 +2126,8 @@ async def test_a_backup_needing_what_this_server_lacks_is_refused_before_anythin
     }[kind]
     if kind == "tablespace" and await _exists_sql(admin, "current_setting('server_version_num')::int < 150000"):
         pytest.skip("a tablespace inside the data directory needs PostgreSQL 15")
+    if kind != "policy role" and not await _is_superuser(admin):
+        pytest.skip(f"adding a {kind} needs a superuser: set ADMIN_DATABASE_URL to one")
     _set_enabled(["celerp-inventory"])
     rec = _Recovery(tmp_path, monkeypatch, real_database=True)
     user = await owner(real_engine)

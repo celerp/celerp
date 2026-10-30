@@ -6,6 +6,7 @@ backup is taken first and kept, and Undo puts the previous version back."""
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import uuid
 from pathlib import Path
@@ -13,6 +14,7 @@ from pathlib import Path
 import pytest
 from sqlalchemy import text
 
+import mutation_observer
 from company_backup_support import download, manifest, member, owner, read, token
 from migration_support import auth, real_client, real_engine  # noqa: F401
 from test_company_backup_lifecycle import _data_dir  # noqa: F401
@@ -245,11 +247,12 @@ async def test_a_change_made_after_the_backup_is_kept_stops_the_replace(real_cli
                                        headers=auth(tok))
             assert r.status_code == 200, r.text
         elif change == "other_table":
-            async with real_engine.begin() as conn:
-                await conn.execute(text(
-                    "UPDATE projections SET state = CAST(CAST(state AS jsonb) || '{\"name\": \"Renamed\"}' AS json) "
-                    "WHERE company_id = :c AND entity_id = (SELECT min(entity_id) FROM projections "
-                    "WHERE company_id = :c AND entity_type = 'item')"), {"c": uuid.UUID(cid)})
+            with mutation_observer.another_client():
+                async with real_engine.begin() as conn:
+                    await conn.execute(text(
+                        "UPDATE projections SET state = CAST(CAST(state AS jsonb) || '{\"name\": \"Renamed\"}' "
+                        "AS json) WHERE company_id = :c AND entity_id = (SELECT min(entity_id) FROM projections "
+                        "WHERE company_id = :c AND entity_type = 'item')"), {"c": uuid.UUID(cid)})
         else:
             name = attachments.company_file_name(cid, url)
             (_data_dir / "static" / "attachments" / cid / name).write_bytes(_PNG + b"rewritten")
@@ -277,7 +280,7 @@ async def test_records_checked_for_the_replace_cannot_change_until_it_commits(re
     reset = cb._reset_replaced
     edits: list[str] = []
 
-    async def edit_then_reset(session, company, typed_name):
+    async def edit_then_reset(session, company, *args):
         async with real_engine.connect() as conn:
             await conn.execute(text("SET lock_timeout = '300ms'"))
             try:
@@ -289,7 +292,7 @@ async def test_records_checked_for_the_replace_cannot_change_until_it_commits(re
             except DBAPIError:
                 edits.append("waited")
             await conn.rollback()
-        return await reset(session, company, typed_name)
+        return await reset(session, company, *args)
 
     monkeypatch.setattr(cb, "_reset_replaced", edit_then_reset)
     r = await real_client.post("/company-backups/replace", json=_replace_request(preview), headers=auth(tok))
@@ -351,8 +354,6 @@ async def test_a_failure_after_the_replace_committed_keeps_the_backup(real_clien
 
 async def test_a_cancellation_after_the_replace_committed_keeps_the_backup(real_client, real_engine, _data_dir,
                                                                           monkeypatch):
-    import asyncio
-
     from celerp.services import company_backup as cb
     tok, data = await _copy_then_more_work(real_client, real_engine)
     old = _cid(tok)
@@ -374,3 +375,44 @@ async def test_a_cancellation_after_the_replace_committed_keeps_the_backup(real_
     assert new != old
     [kept] = await cb.kept_backups(new)
     assert kept["company_name"] == NAME
+
+
+async def test_turning_a_module_on_while_the_company_is_replaced_waits_for_the_replace(real_client, real_engine,
+                                                                                    monkeypatch):
+    """A module is turned on for the company while its replace holds the company: the turn-on
+    waits for the replace, never a deadlock or a server error, then is told the access it
+    was saving under changed; the replace goes ahead."""
+    from celerp.services import company_backup as cb
+    tok, data = await _copy_then_more_work(real_client, real_engine)
+    preview = (await read(real_client, tok, data)).json()
+    held, release = asyncio.Event(), asyncio.Event()
+    lock = cb.lock_company_for_deletion
+
+    async def lock_then_hold(session, company_id):
+        found = await lock(session, company_id)
+        if not held.is_set():
+            held.set()
+            await release.wait()
+        return found
+
+    monkeypatch.setattr(cb, "lock_company_for_deletion", lock_then_hold)
+    replacing = asyncio.create_task(real_client.post("/company-backups/replace", json=_replace_request(preview),
+                                                     headers=auth(tok)))
+    await asyncio.wait_for(held.wait(), 60)
+    turning_on = asyncio.create_task(real_client.post("/companies/me/modules/celerp-docs/enable", headers=auth(tok)))
+    for _ in range(400):
+        async with real_engine.connect() as conn:
+            if (await conn.execute(text(
+                    "SELECT count(*) FROM pg_stat_activity "
+                    "WHERE datname = current_database() AND wait_event_type = 'Lock'"))).scalar_one():
+                break
+        await asyncio.sleep(0.02)
+    else:
+        raise AssertionError("the turn-on never waited for the replace")
+    release.set()
+    replaced = await asyncio.wait_for(replacing, 60)
+    turned_on = await asyncio.wait_for(turning_on, 60)
+    assert replaced.status_code == 200, replaced.text
+    assert turned_on.status_code == 403, turned_on.text
+    assert "access to this company was changed" in turned_on.json()["detail"]
+    assert [n for _, n in await _companies(real_engine)] == [NAME]

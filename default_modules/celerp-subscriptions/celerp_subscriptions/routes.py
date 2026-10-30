@@ -23,11 +23,11 @@ from celerp.models.company import Company
 from celerp.models.projections import Projection
 from celerp.services.auth import get_current_company_id, get_current_user
 from celerp.services.business_time import business_today, company_today
-from celerp.services.company_lock import locked_company
+from celerp.services.company_lock import lock_projections, locked_company
 from celerp.services.permissions import require_permission
 from celerp.services.terms import resolve_document_terms
 from celerp.services.units import require_moving_fits_units
-from celerp_docs.doc_constants import template_label
+from celerp.services.record_quantities import template_label
 from celerp_docs.doc_money import document_money
 from celerp_docs.routes import finalize_document
 from celerp_docs.sequences import next_draft_ref
@@ -81,6 +81,16 @@ def _compute_due_date(issue_date: date, payment_terms: str | None, company: Comp
     return None
 
 
+async def _locked_subscription(session: AsyncSession, company_id: uuid.UUID, entity_id: str) -> Projection:
+    """The template under the company lock and its own row lock, as the previous writer
+    committed it: a lifecycle change checks its status and writes the next one, so two
+    changes at once never both pass the check."""
+    proj = (await lock_projections(session, company_id, [entity_id])).get(entity_id)
+    if not proj or proj.state.get("doc_type") not in SUBSCRIPTION_DOC_TYPES:
+        raise HTTPException(status_code=404, detail=t("subscriptions.err_not_found"))
+    return proj
+
+
 class GenerateBody(BaseModel):
     idempotency_key: str | None = Field(None, max_length=255)
 
@@ -121,9 +131,7 @@ def _build_router() -> APIRouter:
                     or "result" not in (earlier.metadata_ or {})):
                 raise HTTPException(status_code=409, detail="Idempotency key was already used for another operation")
             return earlier.metadata_["result"]
-        proj = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
-        if not proj or proj.state.get("doc_type") not in SUBSCRIPTION_DOC_TYPES:
-            raise HTTPException(status_code=404, detail=t("subscriptions.err_not_found"))
+        proj = await _locked_subscription(session, company_id, entity_id)
         if proj.state.get("status") == "cancelled":
             raise HTTPException(status_code=409, detail=t("subscriptions.err_generate_cancelled"))
 
@@ -244,9 +252,7 @@ def _build_router() -> APIRouter:
         user=Depends(get_current_user),
         session: AsyncSession = Depends(get_session),
     ) -> dict:
-        proj = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
-        if not proj or proj.state.get("doc_type") not in SUBSCRIPTION_DOC_TYPES:
-            raise HTTPException(status_code=404, detail=t("subscriptions.err_not_found"))
+        proj = await _locked_subscription(session, company_id, entity_id)
         if proj.state.get("status") != "active":
             raise HTTPException(status_code=409, detail=t("subscriptions.err_pause_not_active"))
         await emit_event(session, company_id=company_id, entity_id=entity_id, entity_type="doc",
@@ -264,9 +270,7 @@ def _build_router() -> APIRouter:
         user=Depends(get_current_user),
         session: AsyncSession = Depends(get_session),
     ) -> dict:
-        proj = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
-        if not proj or proj.state.get("doc_type") not in SUBSCRIPTION_DOC_TYPES:
-            raise HTTPException(status_code=404, detail=t("subscriptions.err_not_found"))
+        proj = await _locked_subscription(session, company_id, entity_id)
         if proj.state.get("status") != "paused":
             raise HTTPException(status_code=409, detail=t("subscriptions.err_resume_not_paused"))
         next_run = _next_run_date(
@@ -292,9 +296,7 @@ def _build_router() -> APIRouter:
         user=Depends(get_current_user),
         session: AsyncSession = Depends(get_session),
     ) -> dict:
-        proj = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
-        if not proj or proj.state.get("doc_type") not in SUBSCRIPTION_DOC_TYPES:
-            raise HTTPException(status_code=404, detail=t("subscriptions.err_not_found"))
+        proj = await _locked_subscription(session, company_id, entity_id)
         if proj.state.get("status") == "cancelled":
             raise HTTPException(status_code=409, detail=t("subscriptions.err_already_cancelled"))
         await emit_event(session, company_id=company_id, entity_id=entity_id, entity_type="doc",
@@ -313,9 +315,7 @@ def _build_router() -> APIRouter:
         session: AsyncSession = Depends(get_session),
     ) -> dict:
         """Promote a draft subscription template to active, computing next_run_date."""
-        proj = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
-        if not proj or proj.state.get("doc_type") not in SUBSCRIPTION_DOC_TYPES:
-            raise HTTPException(status_code=404, detail=t("subscriptions.err_not_found"))
+        proj = await _locked_subscription(session, company_id, entity_id)
         if proj.state.get("status") != "draft":
             raise HTTPException(status_code=409, detail=t("subscriptions.err_activate_not_draft"))
         frequency = proj.state.get("frequency", "monthly")

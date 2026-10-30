@@ -211,3 +211,177 @@ def test_posting_choices_keep_stock_accounts_for_stock_roles():
     assert _smoke.posting_choices(readiness) == {
         "roles": {"landed_freight": "1010", "cash": "1000"},
         "add_accounts": [{"code": "9sal", "role": "sales"}]}
+
+
+@pytest.mark.parametrize("first", [None, "", "  \n", "starting", "0", "70000"])
+def test_serving_waits_for_a_port_file_that_is_missing_or_not_a_port_yet(monkeypatch, tmp_path, first):
+    """Celerp rewrites its api-port file as it restarts: until the file names a port
+    the API is not taken from it, and the wait ends as soon as it does."""
+    port_file = tmp_path / "api-port"
+    if first is not None:
+        port_file.write_text(first)
+    now = [0.0]
+
+    def sleep(seconds):
+        now[0] += seconds
+        if now[0] >= 3:
+            port_file.write_text("8123\n")
+
+    monkeypatch.setattr(time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(time, "sleep", sleep)
+
+    assert _smoke._serving(str(port_file), deadline=60) == "http://127.0.0.1:8123"
+    assert 3 <= now[0] < 4
+
+
+@pytest.mark.parametrize("value", [None, "", "8080x"])
+def test_serving_fails_at_the_callers_deadline_without_making_up_a_port(clock, tmp_path, capsys, value):
+    port_file = tmp_path / "api-port"
+    if value is not None:
+        port_file.write_text(value)
+
+    with pytest.raises(SystemExit) as exc:
+        _smoke._serving(str(port_file), deadline=20)
+
+    assert exc.value.code == 1
+    assert 20 <= clock[0] < 21
+    assert f"no API port in {port_file}" in capsys.readouterr().err
+
+
+def test_serving_waits_a_bounded_time_when_the_caller_has_no_deadline(clock, tmp_path):
+    with pytest.raises(SystemExit):
+        _smoke._serving(str(tmp_path / "api-port"))
+
+    assert 0 < clock[0] <= 61
+
+
+_DEPENDS = {"celerp-inventory": [], "celerp-contacts": ["celerp-inventory"],
+            "celerp-docs": ["celerp-inventory", "celerp-contacts"], "celerp-manufacturing": ["celerp-inventory"],
+            "celerp-verticals": ["celerp-inventory"]}
+
+
+class _NewInstall:
+    """A fake new install: the starter modules run, a restart loads every module a
+    company uses unless it is ``broken``, and the business-type answer either says
+    what the server would decide or ``lies`` about it for one type."""
+
+    def __init__(self, tmp_path, lies=None, broken=()):
+        self.port_file = tmp_path / "api-port"
+        self.port_file.write_text("8001")
+        self.running = {"celerp-inventory", "celerp-contacts"}
+        self.companies: dict[str, dict] = {}
+        self.current = None
+        self.lies, self.broken = lies, set(broken)
+        self.boot, self.restarts = 1, []
+
+    def _new_company(self, name):
+        cid = f"c{len(self.companies)}"
+        self.companies[cid] = {"name": name, "modules": {"celerp-inventory", "celerp-contacts"}, "vertical": None}
+        self.current = cid
+        return {"access_token": cid}
+
+    def http(self, method, url, token=None, body=None, timeout=30):
+        path = url.split(":", 2)[2].split("/", 1)[1]
+        path = "/" + path
+        company = self.companies.get(token)
+        if path == "/auth/register":
+            return 200, self._new_company(body["company_name"])
+        if path == "/auth/login-force":
+            return 200, {"access_token": self.current}
+        if path.startswith("/auth/switch-company/"):
+            self.current = path.rsplit("/", 1)[1]
+            return 200, {"access_token": self.current}
+        if path == "/companies" and method == "POST":
+            return 200, self._new_company(body["name"])
+        if path == "/companies/me" and method == "PATCH":
+            return 200, {}
+        if path == "/companies/me":
+            return 200, {"id": token, "settings": {"vertical": company["vertical"]}}
+        if path == "/companies/me/modules":
+            return 200, [{"name": n, "depends_on": d, "enabled": n in company["modules"],
+                          "running": n in self.running} for n, d in _DEPENDS.items()]
+        if path == "/companies/me/business-type":
+            vertical = body["vertical"]
+            wanted = set(_PRESETS[vertical])
+            while True:
+                more = {d for n in wanted for d in _DEPENDS[n]} - wanted
+                if not more:
+                    break
+                wanted |= more
+            company["modules"] |= wanted
+            company["vertical"] = vertical
+            need = any(n not in self.running for n in company["modules"])
+            return 200, {"restart_required": (not need) if vertical == self.lies else need}
+        if path == "/system/restart":
+            self.restarts.append(self.current)
+            self.boot += 1
+            self.running = {n for c in self.companies.values() for n in c["modules"]} - self.broken
+            self.port_file.write_text(str(8000 + self.boot))
+            return 202, {}
+        if path == "/health":
+            return 200, {"boot": self.boot}
+        if path == "/health/ready":
+            return 200, {}
+        raise AssertionError(f"unexpected {method} {path}")
+
+
+_PRESETS = {"blank": ["celerp-inventory"], "retail": ["celerp-docs", "celerp-verticals"],
+            "furniture": ["celerp-docs", "celerp-manufacturing"],
+            "wholesale": ["celerp-docs"], "hidden": ["celerp-docs"]}
+
+
+def _presets(tmp_path):
+    folder = tmp_path / "presets"
+    folder.mkdir()
+    for name, modules in _PRESETS.items():
+        (folder / f"{name}.json").write_text(json.dumps({"name": name, "modules": modules, "hidden": name == "hidden"}))
+    return str(folder)
+
+
+def test_first_run_restarts_only_for_the_types_whose_modules_are_not_running(monkeypatch, clock, tmp_path, capsys):
+    install = _NewInstall(tmp_path)
+    monkeypatch.setattr(_smoke, "http", install.http)
+
+    _smoke.first_run(str(install.port_file), _presets(tmp_path))
+
+    # blank runs on the starter modules, furniture turns on docs and manufacturing,
+    # retail then needs only verticals and wholesale nothing new.
+    chosen = {c["vertical"]: cid for cid, c in install.companies.items()}
+    assert install.restarts == [chosen["furniture"], chosen["retail"]]
+    assert "hidden" not in chosen
+    out = capsys.readouterr().out
+    assert "blank: set up, its modules were already running" in out
+    assert "furniture: set up, restarted and its modules are running" in out
+
+
+def test_first_run_fails_when_the_server_misjudges_the_restart(monkeypatch, clock, tmp_path, capsys):
+    install = _NewInstall(tmp_path, lies="wholesale")
+    monkeypatch.setattr(_smoke, "http", install.http)
+
+    with pytest.raises(SystemExit):
+        _smoke.first_run(str(install.port_file), _presets(tmp_path))
+
+    assert "wholesale: the server says a restart is needed" in capsys.readouterr().err
+
+
+def test_first_run_fails_when_the_server_skips_a_restart_the_type_needs(monkeypatch, clock, tmp_path, capsys):
+    install = _NewInstall(tmp_path, lies="furniture")
+    monkeypatch.setattr(_smoke, "http", install.http)
+
+    with pytest.raises(SystemExit):
+        _smoke.first_run(str(install.port_file), _presets(tmp_path))
+
+    err = capsys.readouterr().err
+    assert "furniture: the server says no restart is needed" in err
+    assert "celerp-docs" in err and "celerp-manufacturing" in err
+
+
+def test_first_run_fails_when_a_module_the_type_needs_is_not_running_after_the_restart(
+        monkeypatch, clock, tmp_path, capsys):
+    install = _NewInstall(tmp_path, broken={"celerp-manufacturing"})
+    monkeypatch.setattr(_smoke, "http", install.http)
+
+    with pytest.raises(SystemExit):
+        _smoke.first_run(str(install.port_file), _presets(tmp_path))
+
+    assert "furniture: after the restart celerp-manufacturing is not running" in capsys.readouterr().err

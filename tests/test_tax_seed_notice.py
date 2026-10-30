@@ -279,3 +279,35 @@ async def test_quotations_saved_under_the_earlier_tax_rule_are_told_and_never_ch
     assert r.status_code == 200, r.text
     await _run(session)
     assert await _list_notice(session, auth["company_id"]) is None
+
+
+async def _bell_links(client, h) -> dict[str, str]:
+    """The link of each tax seed notice the company's bell shows, by retired-seed entry."""
+    r = await client.get("/notifications", headers=h, params={"limit": 100})
+    assert r.status_code == 200, r.text
+    prefix = "notice.tax_seed."
+    return {n["i18n"]["title"][len(prefix):-len(".title")]: n["action_url"] for n in r.json()["items"]
+            if ((n.get("i18n") or {}).get("title") or "").startswith(prefix)}
+
+
+async def test_saving_the_sales_list_fixed_moves_the_notice_link_to_the_purchasing_list(client):
+    """The retired rows saved in both lists, then fixed in the sales list: the same notices stand
+    and now link to the purchasing list, where the rows still are."""
+    h = await _register(client)
+    sales, purchase = "/settings/sales?tab=taxes", "/settings/purchasing?tab=taxes"
+    assert (await client.patch("/companies/me/taxes", headers=h, json={"taxes": _OLD_ET})).status_code == 200
+    assert (await client.patch("/companies/me/purchasing-taxes", headers=h, json={"taxes": _OLD_ET})).status_code == 200
+    assert await _bell_links(client, h) == {"et-wht-2025": sales, "et-tot-2025": sales}
+
+    fixed = [r for r in _OLD_ET if r["name"] not in ("WHT 2%", "TOT 2%", "TOT 10%")]
+    assert (await client.patch("/companies/me/taxes", headers=h, json={"taxes": fixed})).status_code == 200
+    assert await _bell_links(client, h) == {"et-wht-2025": purchase, "et-tot-2025": purchase}
+
+
+async def test_a_company_past_the_notification_cap_keeps_only_its_newest(client, monkeypatch):
+    """Two notices raised by one save with the cap at one: the older is pruned in the same request,
+    and the one kept is the newer, raised second in RETIRED_SEED_ROWS order."""
+    monkeypatch.setattr("celerp.notifications.service.MAX_PER_COMPANY", 1)
+    h = await _register(client)
+    assert (await client.patch("/companies/me/taxes", headers=h, json={"taxes": _OLD_ET})).status_code == 200
+    assert await _bell(client, h) == {"et-tot-2025"}

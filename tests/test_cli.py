@@ -912,3 +912,33 @@ def test_command_line_messages_have_no_em_dash():
                 if isinstance(part, ast.Constant) and isinstance(part.value, str) and "—" in part.value:
                     found.append(f"line {part.lineno}: {part.value!r}")
     assert found == []
+
+
+def test_module_install_meeting_a_busy_company_says_no_company_got_the_modules(tmp_config, valid_cfg):
+    """`celerp module install` turns modules on for every company at once; when one company's
+    other work holds it up, the whole change is refused, so the message speaks of the
+    companies of the installation and says none of them got the modules."""
+    from celerp.modules.boundary import CompanyBusy
+
+    _write_config(valid_cfg)
+
+    class _Held:
+        @contextlib.contextmanager
+        def write_window(self):
+            yield
+
+    @contextlib.contextmanager
+    def _scope(url, accept=None):
+        yield _Held()
+
+    async def _busy(url, names):
+        raise CompanyBusy()
+
+    with patch("celerp.cli.ensure_database"), \
+         patch("celerp.migrations.compatibility.mutating_scope", side_effect=_scope), \
+         patch("celerp.cli._enable_for_every_company", side_effect=_busy):
+        result = CliRunner().invoke(main, ["module", "install", "celerp-docs"])
+    assert result.exit_code == 1
+    assert result.output.strip() == (
+        "Other work for one of your companies is still being saved, so the modules were not "
+        "turned on for any company. Try again in a minute.")

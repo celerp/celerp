@@ -32,7 +32,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.accounting_roles import refusal
-from celerp.db import get_session
+from celerp.db import get_session, one_unit
 from celerp.events.engine import emit_event, find_event_by_idempotency
 from celerp.models.projections import Projection
 from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
@@ -411,7 +411,10 @@ def _fits(state: dict, booked: dict, target: Projection) -> bool:
 # ---------------------------------------------------------------------------
 
 async def _received_row(session: AsyncSession, company_id, rid: str) -> Projection:
-    row = await session.get(Projection, (company_id, rid))
+    """The received document a request books or follows, read under the company lock as
+    the previous holder left it, so a revision recorded meanwhile is the one judged."""
+    await lock_company(session, company_id)
+    row = await _fresh(session, company_id, rid)
     if row is None or row.entity_type != ENTITY_TYPE:
         raise HTTPException(status_code=404, detail=t("documents.err_received_not_found"))
     return row
@@ -437,42 +440,44 @@ async def book(session: AsyncSession, company_id, rid: str, *, role: str, settin
     """Create our own draft from a received document, at most once.
 
     The draft is made through the canonical create path for its kind, and the
-    version recorded is that create event's own id."""
-    from celerp_docs.routes import DocCreatePayload, ListCreatePayload, create_doc, create_list
+    version recorded is that create event's own id. The draft and the booked marker
+    commit together, under the company lock the booking judged under."""
+    from celerp_docs.routes import DocCreatePayload, ListCreatePayload, create_doc_record, create_list_record
 
-    state = (await _received_row(session, company_id, rid)).state or {}
-    if state.get("booked"):
-        booked = state["booked"]
-        return {"id": booked["target_id"], "kind": booked["target_kind"]}
-    target = BOOK_TARGETS.get(state.get("doc_type") or "")
-    if target is None:
-        raise HTTPException(
-            status_code=422,
-            detail=t("documents.err_received_not_bookable"),
-        )
-    document = state.get("document") or {}
-    if (reason := unrepresentable(document, target)) is not None:
-        raise HTTPException(status_code=422, detail=reason)
-    fields = {k: v for k, v in managed_fields(document, target).items() if v is not None}
-    common = {"status": "draft", "source_received_id": rid, "idempotency_key": f"book:{rid}:{company_id}"}
-    if target.kind == "list":
-        created = await create_list(
-            ListCreatePayload(list_type=target.type, **common, **fields),
-            company_id, None, role, settings, user, session,
-        )
-    else:
-        created = await create_doc(
-            DocCreatePayload(doc_type=target.type, **common, **fields),
-            company_id, None, role, settings, user, session,
-        )
-    await _emit(session, company_id, rid, "received_doc.booked", {
-        "target_id": created["id"],
-        "target_kind": target.kind,
-        "target_type": target.type,
-        "revision_seq": state["current_seq"],
-        "revision_digest": state["current_digest"],
-        "target_version": created["event_id"],
-    }, user, f"{rid}:booked:{company_id}")
+    with one_unit(session):
+        state = (await _received_row(session, company_id, rid)).state or {}
+        if state.get("booked"):
+            booked = state["booked"]
+            return {"id": booked["target_id"], "kind": booked["target_kind"]}
+        target = BOOK_TARGETS.get(state.get("doc_type") or "")
+        if target is None:
+            raise HTTPException(
+                status_code=422,
+                detail=t("documents.err_received_not_bookable"),
+            )
+        document = state.get("document") or {}
+        if (reason := unrepresentable(document, target)) is not None:
+            raise HTTPException(status_code=422, detail=reason)
+        fields = {k: v for k, v in managed_fields(document, target).items() if v is not None}
+        common = {"status": "draft", "source_received_id": rid, "idempotency_key": f"book:{rid}:{company_id}"}
+        if target.kind == "list":
+            created = await create_list_record(
+                ListCreatePayload(list_type=target.type, **common, **fields),
+                company_id, role, settings, user, session, commit=False,
+            )
+        else:
+            created = await create_doc_record(
+                DocCreatePayload(doc_type=target.type, **common, **fields),
+                company_id, role, settings, user, session, commit=False,
+            )
+        await _emit(session, company_id, rid, "received_doc.booked", {
+            "target_id": created["id"],
+            "target_kind": target.kind,
+            "target_type": target.type,
+            "revision_seq": state["current_seq"],
+            "revision_digest": state["current_digest"],
+            "target_version": created["event_id"],
+        }, user, f"{rid}:booked:{company_id}")
     await session.commit()
     return {"id": created["id"], "kind": target.kind}
 
@@ -490,42 +495,45 @@ async def update_draft(session: AsyncSession, company_id, rid: str, *, role: str
 
     The patch is a compare-and-set against the version recorded at booking or
     at the last update, so a local edit landing at the same moment wins and
-    this call is rejected."""
-    from celerp_docs.routes import DocPatch, patch_doc, patch_list
+    this call is rejected. The patch and the version followed commit together."""
+    from celerp_docs.routes import DocPatch, _refuse_synced, write_doc_patch, write_list_patch
 
-    state = (await _received_row(session, company_id, rid)).state or {}
-    booked = state.get("booked")
-    if not booked:
-        raise HTTPException(status_code=409, detail=t("documents.err_book_first"))
-    result = {"id": booked["target_id"], "kind": booked["target_kind"]}
-    seq, digest = state["current_seq"], state["current_digest"]
-    if booked["revision_digest"] == digest:
-        return result
-    patch_key = f"{rid}:update:{seq}:{company_id}"
-    applied = await find_event_by_idempotency(session, company_id, patch_key)
-    if applied is not None:
-        version = applied.id
-    else:
-        target = await _fresh(session, company_id, booked["target_id"])
-        status = revision_state(state, target)
-        if status != UPDATE_AVAILABLE:
-            raise HTTPException(status_code=409, detail=t(_NOT_UPDATABLE.get(status, "documents.err_book_first")))
-        kind = BookTarget(booked["target_kind"], booked["target_type"])
-        wanted = managed_fields(state.get("document") or {}, kind)
-        current = target.state or {}
-        changed = {k: {"old": current.get(k), "new": v} for k, v in wanted.items() if current.get(k) != v}
-        version = booked["target_version"]
-        if changed:
-            patch = patch_list if kind.kind == "list" else patch_doc
-            patched = await patch(
-                booked["target_id"],
-                DocPatch(fields_changed=changed, idempotency_key=patch_key, expected_version=version),
-                company_id, None, role, settings, user, session,
-            )
-            version = patched["event_id"] or version
-    await _emit(session, company_id, rid, "received_doc.draft_updated",
-                {"revision_seq": seq, "revision_digest": digest, "target_version": version},
-                user, f"{rid}:draft_updated:{seq}:{company_id}")
+    with one_unit(session):
+        state = (await _received_row(session, company_id, rid)).state or {}
+        booked = state.get("booked")
+        if not booked:
+            raise HTTPException(status_code=409, detail=t("documents.err_book_first"))
+        result = {"id": booked["target_id"], "kind": booked["target_kind"]}
+        seq, digest = state["current_seq"], state["current_digest"]
+        if booked["revision_digest"] == digest:
+            return result
+        patch_key = f"{rid}:update:{seq}:{company_id}"
+        applied = await find_event_by_idempotency(session, company_id, patch_key)
+        if applied is not None:
+            version = applied.id
+        else:
+            target = await _fresh(session, company_id, booked["target_id"])
+            status = revision_state(state, target)
+            if status != UPDATE_AVAILABLE:
+                raise HTTPException(status_code=409, detail=t(_NOT_UPDATABLE.get(status, "documents.err_book_first")))
+            kind = BookTarget(booked["target_kind"], booked["target_type"])
+            wanted = managed_fields(state.get("document") or {}, kind)
+            current = target.state or {}
+            changed = {k: {"old": current.get(k), "new": v} for k, v in wanted.items() if current.get(k) != v}
+            version = booked["target_version"]
+            if changed:
+                patch = DocPatch(fields_changed=changed, idempotency_key=patch_key, expected_version=version)
+                if kind.kind == "list":
+                    patched = await write_list_patch(session, company_id, role, settings, user,
+                                                     booked["target_id"], patch)
+                else:
+                    await _refuse_synced(session, company_id, booked["target_id"])
+                    patched = await write_doc_patch(session, company_id, role, settings, user,
+                                                    booked["target_id"], patch)
+                version = patched["event_id"] or version
+        await _emit(session, company_id, rid, "received_doc.draft_updated",
+                    {"revision_seq": seq, "revision_digest": digest, "target_version": version},
+                    user, f"{rid}:draft_updated:{seq}:{company_id}")
     await session.commit()
     return result
 

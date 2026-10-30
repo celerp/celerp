@@ -597,14 +597,46 @@ async def test_first_run_imports_a_missing_module_in_flow(real_client, real_engi
     assert r.status_code == 200, r.text
     upload_token = r.json()["upload_token"]
     assert r.json()["modules"][0]["status"] == "missing"
+    r = await real_client.post("/company-backups/bootstrap/import-module", data={"upload_token": upload_token},
+                               files={"file": ("acme-gadgets.zip", _gadgets_zip())})
+    _gadgets_ready(r, upload_token)
+
+
+def _gadgets_zip() -> bytes:
     import zipfile
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr("acme-gadgets/__init__.py", 'PLUGIN_MANIFEST = {"name": "acme-gadgets", "version": "1.0.0", '
                                                 '"display_name": "Gadgets"}\n')
-    r = await real_client.post("/company-backups/bootstrap/import-module", data={"upload_token": upload_token},
-                               files={"file": ("acme-gadgets.zip", buf.getvalue())})
+    return buf.getvalue()
+
+
+def _gadgets_ready(r, upload_token: str) -> None:
     assert r.status_code == 200, r.text
     assert r.json()["modules"] == [{"name": "acme-gadgets", "label": "Gadgets", "status": "enable_required",
                                     "first_party": False}]
     assert r.json()["upload_token"] == upload_token
+
+
+async def test_owner_imports_a_missing_module_into_their_restore(real_client, real_engine, installed, monkeypatch):
+    """The owner's restore takes the module it lacks through the same importer, keeping the upload."""
+    _first_party(monkeypatch)
+    _, _, tok = await _setup(real_engine)
+    data = _needs_module(await download(real_client, tok), "acme-gadgets")
+    upload_token = (await read(real_client, tok, data)).json()["upload_token"]
+    r = await real_client.post("/company-backups/import-module", data={"upload_token": upload_token},
+                               files={"file": ("acme-gadgets.zip", _gadgets_zip())}, headers=auth(tok))
+    _gadgets_ready(r, upload_token)
+
+
+async def test_first_run_discards_its_upload(real_client, real_engine, _data_dir):
+    """Leaving a first-run restore deletes the backup it staged, and nothing else."""
+    _, _, tok = await _setup(real_engine)
+    data = await download(real_client, tok)
+    await _fresh_install(real_engine)
+    r = await real_client.post("/company-backups/bootstrap/read", files={"file": ("a.celerp-company", data)})
+    assert r.status_code == 200, r.text
+    assert _uploads(_data_dir)
+    r = await real_client.post("/company-backups/bootstrap/discard", json={"upload_token": r.json()["upload_token"]})
+    assert r.status_code == 204, r.text
+    assert _uploads(_data_dir) == []

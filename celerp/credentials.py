@@ -36,8 +36,8 @@ def create_access_token(
     session slot is not duplicated.  Otherwise a fresh UUID4 is minted.
 
     *snonce* is mandatory and keyword-only: it must be the caller-provided
-    per-user nonce fetched from DB via
-    ``session_tracker.get_nonce(session, user_id)`` before calling this function.
+    per-user nonce read from DB under ``session_tracker.lock_auth_state``
+    before calling this function.
     There is no default - a session-bound token can never be minted without one.
 
     *role* and *email* are UI/client hints only - they are NEVER used for

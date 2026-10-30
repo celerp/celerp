@@ -749,8 +749,8 @@ async def test_declining_the_modules_writes_nothing_and_names_them(routed_ui, re
 
 
 async def test_staged_copy_marked_open_now_opens_it(routed_ui, real_engine, real_client):
-    """Back from the restart, a copy the owner chose Enable and open for is opened under the
-    name they chose, without asking again."""
+    """Back from the restart, a copy the owner chose Enable and open for shows a page that
+    says it is opening and posts the opening; the page load itself opens nothing."""
     ui, router = routed_ui
     _, _, tok = await _setup(real_engine)
     data = await download(real_client, tok)
@@ -759,7 +759,14 @@ async def test_staged_copy_marked_open_now_opens_it(routed_ui, real_engine, real
     await _upload_and_preview(ui, base, data)
     router.overrides[("GET", "/company-backups/staged")] = _needing(
         router, modules=[], open_now={"company_name": "Alpha Copy"})
+    before = await _company_ids(real_engine)
     r = await ui.get(f"{base}/staged")
+    assert r.status_code == 200 and r.headers["X-Celerp-Staged"] == "1"
+    page = _page(r)
+    assert t("company_backup.opening_chosen", name="Alpha Copy") in page
+    assert f'action="{base}/staged"' in page and 'method="post"' in page
+    assert await _company_ids(real_engine) == before, "loading the page opens nothing"
+    r = await ui.post(f"{base}/staged")
     assert r.status_code == 303 and r.headers["location"] == f"{base}/done", r.text
     async with real_engine.connect() as conn:
         names = (await conn.execute(text("SELECT name FROM companies"))).scalars().all()

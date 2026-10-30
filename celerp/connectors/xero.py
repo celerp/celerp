@@ -37,6 +37,7 @@ from celerp.connectors.base import (
     SyncResult,
 )
 import celerp.connectors.upsert as _upsert
+from celerp.modules.boundary import needs_modules
 
 if TYPE_CHECKING:
     from celerp.connectors.outbound_queue import OutboundOperation
@@ -190,6 +191,7 @@ class XeroConnector(ConnectorBase):
 
     # -- Products (Items in Xero) ----------------------------------------------
 
+    @needs_modules("celerp-inventory")
     async def sync_products(self, ctx: ConnectorContext, since: datetime | None = None) -> SyncResult:
         """
         Pull Xero Items -> Celerp items.
@@ -243,6 +245,7 @@ class XeroConnector(ConnectorBase):
 
     # -- Invoices / Orders -----------------------------------------------------
 
+    @needs_modules("celerp-docs")
     async def sync_orders(self, ctx: ConnectorContext, since: datetime | None = None) -> SyncResult:
         """
         Pull Xero Invoices (ACCREC type) -> Celerp documents.
@@ -290,6 +293,7 @@ class XeroConnector(ConnectorBase):
 
     # -- Contacts --------------------------------------------------------------
 
+    @needs_modules("celerp-contacts")
     async def sync_contacts(self, ctx: ConnectorContext, since: datetime | None = None) -> SyncResult:
         """Pull Xero Contacts -> Celerp CRM contacts."""
         result = SyncResult(entity=SyncEntity.CONTACTS)
@@ -312,6 +316,7 @@ class XeroConnector(ConnectorBase):
 
     # -- Outbound: Invoices push -----------------------------------------------
 
+    @needs_modules("celerp-docs")
     async def sync_invoices_out(self, ctx: ConnectorContext) -> SyncResult:
         """Push Celerp invoices -> Xero (outbound). Each invoice is queued and
         delivered through the outbound queue, so an interrupted push resumes as
@@ -359,6 +364,7 @@ class XeroConnector(ConnectorBase):
         )
         return result
 
+    @needs_modules("celerp-docs")
     async def sync_invoice_identity_out(
         self, ctx: ConnectorContext, operation: OutboundOperation
     ) -> SyncResult:

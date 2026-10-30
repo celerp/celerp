@@ -35,7 +35,7 @@ async def unique_slug(session: AsyncSession, name: str) -> str:
     """A company web address made from ``name`` that no other company uses."""
     base = re.sub(r"[^a-z0-9]+", "-", name.strip().lower()).strip("-") or uuid.uuid4().hex[:12]
     taken = set((await session.execute(
-        select(Company.slug).where((Company.slug == base) | Company.slug.like(f"{base}-%"))
+        select(Company.slug).where((Company.slug == base) | Company.slug.startswith(f"{base}-", autoescape=True))
     )).scalars())
     slug, n = base, 2
     while slug in taken:

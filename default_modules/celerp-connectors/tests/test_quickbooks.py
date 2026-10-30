@@ -12,7 +12,7 @@ import respx
 import httpx
 
 from celerp.connectors.quickbooks import QuickBooksConnector
-from celerp.connectors.base import SyncEntity
+from celerp.connectors.base import ConnectorContext, SyncEntity
 
 
 @pytest.fixture
@@ -74,6 +74,6 @@ async def test_sync_products_incremental(qb, ctx_quickbooks, mock_upsert_item):
 
 @pytest.mark.asyncio
 async def test_missing_realm_id(qb):
-    ctx = type("Ctx", (), {"company_id": "co", "access_token": "tok", "store_handle": "", "extra": None})()
+    ctx = ConnectorContext(company_id="test-co", access_token="tok", store_handle="")
     with pytest.raises(ValueError, match="realmId"):
         await qb.sync_products(ctx)

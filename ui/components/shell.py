@@ -426,10 +426,17 @@ document.addEventListener('click', function(e) {
       m.style.cssText = '';
     });
   }
-  if (!e.target.closest('.combobox-wrap')) {
+  // A click that began on a list is a pick, even when the list moved before the button
+  // came up and the click lands on what is around it.
+  if (!e.target.closest('.combobox-wrap') && !pressedInCombobox) {
     document.querySelectorAll('.combobox-list.open').forEach(function(l) { l.classList.remove('open'); });
   }
+  pressedInCombobox = false;
 });
+var pressedInCombobox = false;
+document.addEventListener('mousedown', function(e) {
+  pressedInCombobox = !!e.target.closest('.combobox-wrap');
+}, true);
 
 /* Searchable combobox — works with .combobox-wrap > .combobox-input + .combobox-list */
 function initCombobox(wrap) {
@@ -481,6 +488,14 @@ function initCombobox(wrap) {
 
   // The list is position:fixed, so keep it inside the viewport: open above the input
   // when there is more room there, and never let it run past either side.
+  // While it is open it is placed again every frame, so it stays under its field whatever
+  // moves the page (a scroll, a resize, content loaded or a notice shown above the field).
+  var following = false;
+  function follow() {
+    if (!list.classList.contains('open') || !list.isConnected) { following = false; return; }
+    positionList();
+    requestAnimationFrame(follow);
+  }
   function positionList() {
     var r = input.getBoundingClientRect();
     var gap = 8, vw = document.documentElement.clientWidth, vh = window.innerHeight;
@@ -493,6 +508,7 @@ function initCombobox(wrap) {
     list.style.top = up ? 'auto' : (r.bottom + 2) + 'px';
     list.style.bottom = up ? (vh - r.top + 2) + 'px' : 'auto';
     list.style.left = Math.max(gap, Math.min(r.left, vw - gap - list.offsetWidth)) + 'px';
+    if (!following) { following = true; requestAnimationFrame(follow); }
   }
 
   function showList() {
@@ -584,9 +600,9 @@ function initCombobox(wrap) {
     clearPickNote();
     var val = opt.dataset.value !== undefined ? opt.dataset.value : opt.textContent.trim();
     var label = opt.textContent.trim();
-    // __new__:URL values trigger a redirect instead of a form submission
+    // __new__:URL values create a record by POST to URL, which answers with HX-Redirect
     if (val.indexOf('__new__:') === 0) {
-      window.location = val.slice('__new__:'.length);
+      htmx.ajax('POST', val.slice('__new__:'.length), {swap: 'none'});
       return;
     }
     if (isMulti && bag) {

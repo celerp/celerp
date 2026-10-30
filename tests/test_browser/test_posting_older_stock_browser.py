@@ -11,6 +11,7 @@ import uuid
 
 import pytest
 
+from .conftest import css_class
 from .test_migration_wizard_browser import _pg_admin
 
 pytestmark = pytest.mark.browser
@@ -128,18 +129,15 @@ def test_a_notice_asking_for_action_leads_the_bell_and_stands_out(page, ui_serve
     page.click(".notif-bell-btn")
     items = page.locator("#notif-panel .notif-item")
     expect(items.first).to_contain_text(f"Act {tag}")
-    first = items.first
-    assert "notif-item--high" in (first.get_attribute("class") or "")
     news = page.locator("#notif-panel .notif-item", has_text=f"News 1 {tag}")
-    assert "notif-item--high" not in (news.get_attribute("class") or "")
-    # The bell list re-renders whenever a notifications fetch lands (page load and the click both
-    # fetch), so both colours are read in one script from the list as it stands, not from nodes
-    # located earlier that a later render may have replaced.
-    page.wait_for_function("""() => {
+    expect(news).to_be_visible()
+    expect(items.first).to_have_class(css_class("notif-item--high"))
+    expect(news).not_to_have_class(css_class("notif-item--high"))
+    # Opening the panel and loading the page each render the list again, so both colours
+    # are read in one step: a read split in two can land on a notice the panel replaced.
+    colours = page.evaluate("""news => {
         const items = [...document.querySelectorAll('#notif-panel .notif-item')];
-        const high = items.find(el => el.classList.contains('notif-item--high'));
-        const plain = items.find(el => !el.classList.contains('notif-item--high'));
-        if (!high || !plain) return false;
         const colour = el => getComputedStyle(el).borderLeftColor;
-        return colour(high) !== colour(plain);
-    }""", timeout=5000)
+        return [colour(items[0]), colour(items.find(el => el.textContent.includes(news)))];
+    }""", f"News 1 {tag}")
+    assert colours[0] != colours[1], colours

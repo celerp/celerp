@@ -233,7 +233,7 @@ async def test_a_draft_bill_still_receives_nothing(client, session, auth):
 
 def test_inbound_status_gate_from_constants():
     """The finalized view offers Receive Goods exactly in the statuses the API receives in."""
-    from celerp_docs.doc_constants import RECEIVABLE_STATUSES
+    from celerp.services.record_quantities import RECEIVABLE_STATUSES
     from ui.routes.documents import _doc_detail
 
     assert {"paid", "partial", "partial_returned", "received"} <= RECEIVABLE_STATUSES["bill"]

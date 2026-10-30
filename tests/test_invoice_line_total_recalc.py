@@ -296,6 +296,21 @@ class TestHeaderDiscount:
         assert "Discount (" not in r.text, "a flat discount must not show a percentage"
         assert "$850.00" in r.text, "total = subtotal - flat discount (no tax)"
 
+    @pytest.mark.asyncio
+    async def test_current_total_and_balance_win_over_older_keys(self, ui_client):
+        """An imported document keeps the older total_amount and outstanding_balance keys; once
+        it is edited and paid its current total and balance are the ones shown."""
+        line = {"description": "Widget", "quantity": 1, "unit_price": 90.0, "discount_pct": 0, "line_total": 90.0}
+        doc = {**_DRAFT_DOC, "entity_id": "d:old", "status": "partial", "line_items": [line],
+               "subtotal": 90.0, "total": 90.0, "total_amount": 100.0,
+               "amount_outstanding": 40.0, "outstanding_balance": 100.0}
+        ui_client.cookies.update(_authed())
+        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)):
+            r = await ui_client.get("/docs/d:old")
+        assert r.status_code == 200
+        assert 'id="doc-total" class="total-value total-value--final">$90.00<' in r.text
+        assert "$40.00" in r.text and "$100.00" not in r.text
+
     def test_print_view_shows_discount(self):
         """The printable invoice shows the header discount between Subtotal and Total."""
         from celerp.output.doc_print import render_doc_print_html

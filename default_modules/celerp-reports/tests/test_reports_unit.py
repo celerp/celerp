@@ -32,12 +32,61 @@ class _FakeSession:
     def __init__(self, rows):
         self.rows = rows
 
-    async def execute(self, _):
+    async def execute(self, stmt):
+        if len(stmt.selected_columns) == 2:
+            # Aging: each document's state with the name it shows, worked out by the
+            # report's own name expression over these rows.
+            return _Res(await _shown_names(self.rows, stmt.selected_columns[1]))
         return _Res(self.rows)
+
+
+async def _shown_names(rows, shown) -> list:
+    """(state, *shown*) for each document of *rows*, *shown* run as SQL over a table that
+    holds *rows* as one company's records, so a contact row's name counts as it does live."""
+    from sqlalchemy import insert, select, text
+    from sqlalchemy.ext.asyncio import create_async_engine
+    from celerp.models.projections import Projection
+
+    company_id = uuid.uuid4()
+    engine = create_async_engine("sqlite+aiosqlite://")
+    try:
+        async with engine.connect() as conn:
+            await conn.execute(text("CREATE TABLE projections (company_id CHAR(32) NOT NULL, "
+                                    "entity_id TEXT NOT NULL, entity_type VARCHAR(64) NOT NULL, "
+                                    "state JSON NOT NULL, PRIMARY KEY (company_id, entity_id))"))
+            await conn.execute(insert(Projection.__table__), [
+                {"company_id": company_id, "entity_id": p.entity_id, "entity_type": p.entity_type,
+                 "state": p.state} for p in rows])
+            result = await conn.execute(select(Projection.state, shown)
+                                        .where(Projection.entity_type == "doc")
+                                        .order_by(Projection.entity_id))
+            return [tuple(row) for row in result.all()]
+    finally:
+        await engine.dispose()
 
 
 def _proj(entity_id: str, entity_type: str, state: dict, location_id=None):
     return SimpleNamespace(entity_id=entity_id, entity_type=entity_type, state=state, location_id=location_id)
+
+
+@pytest.mark.asyncio
+async def test_aging_shows_a_party_by_its_contacts_name_over_the_name_the_document_holds():
+    """The fake runs the report's own name expression, so a renamed contact shows by its
+    current name, a document whose contact has no record by the name it holds, and a supplier
+    document by its older supplier fields."""
+    today = business_today(None)
+    owed = {"doc_type": "invoice", "status": "final", "total": 40, "amount_outstanding": 40,
+            "due_date": today.isoformat(), "date": today.isoformat()}
+    session = _FakeSession([
+        _proj("contact:1", "contact", {"name": "Live Name"}),
+        _proj("doc:1", "doc", {**owed, "contact_id": "contact:1", "contact_name": "Old Name"}),
+        _proj("doc:2", "doc", {**owed, "contact_id": "contact:gone", "contact_name": "Held Name"}),
+        _proj("doc:3", "doc", {**owed, "doc_type": "bill", "supplier_id": "contact:1"}),
+    ])
+    ar = await reports.ar_aging(company_id=uuid.uuid4(), session=session)
+    ap = await reports.ap_aging(company_id=uuid.uuid4(), session=session)
+    assert sorted(line["customer_name"] for line in ar["lines"]) == ["Held Name", "Live Name"]
+    assert [line.get("supplier_name") for line in ap["lines"]] == ["Live Name"]
 
 
 @pytest.mark.asyncio

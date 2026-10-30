@@ -1276,7 +1276,7 @@ class TestActivityFeed:
             "entity_id": "item:92f778e9-0000-0000-0000-000000000000",
             "name": "Burmese Ruby 2.5ct",
             "ts": "2026-03-20T10:00:00Z",
-        }], {}))
+        }], {}, False))
         assert "Burmese Ruby 2.5ct" in html
         # Hash must only appear inside an href, not as visible text
         import re
@@ -1293,7 +1293,7 @@ class TestActivityFeed:
             "entity_id": eid,
             "name": "Emerald",
             "ts": "2026-03-20T10:00:00Z",
-        }], {}))
+        }], {}, False))
         assert f"/inventory/{eid}" in html
 
     def test_activity_feed_no_actor_hash(self):
@@ -1306,7 +1306,7 @@ class TestActivityFeed:
             "name": "Test",
             "ts": "2026-03-20T10:00:00Z",
             "actor_name": "Noah Severs",
-        }], {}))
+        }], {}, False))
         assert "f9a514bf" not in html
         assert "Noah Severs" in html
 
@@ -1643,7 +1643,7 @@ class TestCRMPage:
         """When the holdings figure cannot be fetched the page still renders, and the
         Consignment card falls back to the document-derived total."""
         contact = {**_CONTACTS[0], "contact_type": "vendor"}
-        docs = [{"doc_type": "consignment_in", "status": "received", "total_amount": 900.0}]
+        docs = [{"doc_type": "consignment_in", "status": "received", "total": 900.0}]
         ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_contact", new=AsyncMock(return_value=contact)),
@@ -4608,14 +4608,29 @@ class TestListsCreateBlank:
         assert "/lists/list:VIEW-001" in r.headers.get("HX-Redirect", "")
 
     @pytest.mark.asyncio
-    async def test_lists_new_get_redirects_without_interim_page(self, ui_client):
-        """/lists/new GET no longer shows a form - creates immediately and redirects."""
+    async def test_lists_new_get_opens_the_lists_without_creating_one(self, ui_client):
+        """A GET never creates: /lists/new opens the lists, whose New List button posts."""
         ui_client.cookies.update(_authed())
-        with patch("ui.api_client.create_list",
-                   new=AsyncMock(return_value={"id": "list:VIEW-002"})):
+        create = AsyncMock(return_value={"id": "list:VIEW-002"})
+        with patch("ui.api_client.create_list", new=create):
             r = await ui_client.get("/lists/new", follow_redirects=False)
         assert r.status_code == 302
-        assert "/lists/list:VIEW-002" in r.headers.get("location", "")
+        assert r.headers.get("location") == "/lists"
+        create.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_inventory_new_get_creates_nothing_and_create_blank_makes_a_component(self, ui_client):
+        """The picker's "+ Add new component" posts to create-blank; GET /inventory/new only opens the list."""
+        ui_client.cookies.update(_authed())
+        create = AsyncMock(return_value={"id": "item:C-1"})
+        with patch("ui.api_client.create_item", new=create):
+            r = await ui_client.get("/inventory/new?type=component", follow_redirects=False)
+            assert r.status_code == 302 and r.headers.get("location") == "/inventory"
+            create.assert_not_awaited()
+            r = await ui_client.post("/inventory/create-blank?type=component")
+        assert r.status_code == 204
+        assert r.headers.get("HX-Redirect") == "/inventory/item:C-1"
+        assert create.await_args.args[1]["inventory_type"] == "component"
 
     @pytest.mark.asyncio
     async def test_lists_page_no_href_new(self, ui_client):
@@ -6584,6 +6599,7 @@ class TestFilesSectionErrorReplies:
         assert r.status_code == 400 and "files-section-" not in r.text
 
 
+@pytest.mark.usefixtures("connector_modules_running")
 class TestCompanyFilesAggregation:
     """The company-wide Files section reads the self-contact, items and documents; a failed read is
     an error reply, never an empty or partial list that would replace the real one."""
@@ -10285,7 +10301,7 @@ class TestModulesUI:
         interpolation path)."""
         deps = [
             {"name": "base-mod", "label": "Base", "version": "1.0", "author": "Celerp",
-             "enabled": True, "running": True},
+             "enabled": True, "running": True, "needed_by": ["child-mod"]},
             {"name": "child-mod", "label": "Child", "version": "1.0", "author": "Celerp",
              "enabled": True, "running": True, "depends_on": ["base-mod"]},
         ]
@@ -10299,6 +10315,9 @@ class TestModulesUI:
             r = await ui_client.get("/modules")
         assert r.status_code == 200
         assert b"Other modules need this one" in r.content and b"Child" in r.content  # tooltip rendered
+        # The API's needed_by decides, so a module it does not list keeps its Turn off.
+        assert r.content.count(b"Other modules need this one") == 1
+        assert b'hx-post="/modules/child-mod/disable"' in r.content
 
     @pytest.mark.asyncio
     async def test_paid_module_license_failure_shows_connect_upsell(self, ui_client):
@@ -11784,6 +11803,7 @@ class TestAuditColumnAlignment:
         assert 'onclick="celerpAddLine()"' not in counting.text
 
 
+@pytest.mark.usefixtures("connector_modules_running")
 class TestCompanyDetailsPage:
     """The Finance > Company Details page is organized like a customer/vendor page: a Contact Info card
     (the company's identity, incl. its email) + a Settings card (currency/timezone/fiscal), the
@@ -12226,6 +12246,7 @@ class TestPaymentsSettingsPage:
         assert "/settings/payments/disconnect" in r.text
 
 
+@pytest.mark.usefixtures("connector_modules_running")
 class TestCompanyAllFilesView:
     """The unified Finance > All Files view aggregates company documents, item images and doc
     attachments into one read-only table, each row linking back to its owning entity."""
@@ -14631,8 +14652,8 @@ class TestCsvImportSellByValidation:
         assert "setupBlockDrag" in html
 
     @pytest.mark.asyncio
-    async def test_preset_seeding_when_empty(self, label_client):
-        """When no templates exist, presets are seeded via API."""
+    async def test_empty_list_page_posts_no_presets(self, label_client):
+        """The templates read seeds presets itself, so a page load never POSTs them."""
         call_log = []
 
         class MockResponse:
@@ -14643,24 +14664,12 @@ class TestCsvImportSellByValidation:
                 return {"items": self._items}
 
         class MockClient:
-            def __init__(self):
-                self._call_count = 0
-
             async def __aenter__(self):
                 return self
             async def __aexit__(self, *a):
                 pass
             async def get(self, url, **kw):
-                self._call_count += 1
-                if self._call_count == 1:
-                    # First fetch: empty
-                    return MockResponse(items=[])
-                # After seeding: return preset templates
-                return MockResponse(items=[
-                    {"id": "p1", "name": "Barcode Sticker (24x24)", "format": "24x24mm", "copies": 1},
-                    {"id": "p2", "name": "Shelf Label (100x50)", "format": "100x50mm", "copies": 1},
-                    {"id": "p3", "name": "QR Label (62x29)", "format": "62x29mm", "copies": 1},
-                ])
+                return MockResponse(items=[])
             async def post(self, url, **kw):
                 call_log.append(url)
                 return MockResponse(status=201)
@@ -14668,12 +14677,8 @@ class TestCsvImportSellByValidation:
         label_client.cookies.update(_authed())
         with patch("httpx.AsyncClient", return_value=MockClient()):
             r = await label_client.get("/settings/labels")
-        # After seeding, redirects to first template
-        assert r.status_code == 302
-        assert "/settings/labels/p1" in r.headers["location"]
-        # 6 presets were POSTed (3 square sticker + 3 original)
-        assert len(call_log) == 6
-        assert all("/api/labels/templates" in u for u in call_log)
+        assert r.status_code == 200
+        assert call_log == []
 
     @pytest.mark.asyncio
     async def test_editor_drag_js_uses_global_function(self, label_client):
@@ -15342,7 +15347,7 @@ class TestProFormaLabel:
         """
         from ui.routes.documents import _doc_status_cards
         from fasthtml.common import to_xml
-        html = to_xml(_doc_status_cards([], "", doc_type="invoice"))
+        html = to_xml(_doc_status_cards(None, "invoice"))
         assert "Pro Forma" in html  # draft count visible in card bar
         assert "All Issued" in html
         assert "Awaiting Payment" in html

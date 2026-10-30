@@ -176,12 +176,13 @@ async def search_activity(
         except ValueError:
             pass
     if q:
-        ql = f"%{q.lower()}%"
+        # autoescape: a % or _ in the search is matched as itself, not as a wildcard.
+        ql = q.lower()
         stmt = stmt.where(
             _sa.or_(
-                _sa.func.lower(LedgerEntry.event_type).like(ql),
-                _sa.func.lower(LedgerEntry.entity_id).like(ql),
-                _sa.cast(LedgerEntry.data, _sa.Text).ilike(ql),
+                _sa.func.lower(LedgerEntry.event_type).contains(ql, autoescape=True),
+                _sa.func.lower(LedgerEntry.entity_id).contains(ql, autoescape=True),
+                _sa.func.lower(_sa.cast(LedgerEntry.data, _sa.Text)).contains(ql, autoescape=True),
             )
         )
 

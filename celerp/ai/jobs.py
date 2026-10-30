@@ -32,6 +32,13 @@ open job answers is never pruned. A runner that raises is never given up on whil
 process lives: it runs again after a growing delay and keeps its lease meanwhile, so
 the job reads as running and Stop ends it.
 
+Every transaction that writes a company's AI rows takes the company lock first
+(``lock_for_ai``), before any job-row lock, as every other write of the company does:
+a reset, a permission change or a module switch waits for it, or it waits for them
+and then sees their outcome. A company gone meanwhile stops the write. A claim and a
+fenced write refuse to run without it. The one exception is a runner's lease renewal
+(``_heartbeat``), which writes only its own lease, conditionally on its runner id.
+
 A question is a job too, so no request waits on the model: the thread route answers
 202 and the browser polls the question's state, and a synchronous caller (``/ai/query``,
 the module API) waits at most ``deadlines.SYNC_WAIT_S`` from its start. A question
@@ -67,10 +74,12 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
 import httpx
+from fastapi import HTTPException
 from sqlalchemy import and_, or_, select, update
 
 from celerp.ai import deadlines
 from celerp.db import SessionLocal
+from celerp.services.company_lock import lock_company, noted
 from ui.i18n import t
 
 log = logging.getLogger(__name__)
@@ -346,12 +355,12 @@ async def _claim(session, job_id: uuid.UUID, where=None, *, own: bool = False, *
     when the job matches ``where`` (by default: open). Returns the runner id the claim
     wrote, which its holder's renewals and final write are fenced on; None, and nothing
     written, otherwise: a stop or a reopen never takes a job a runner holds, this
-    process's included."""
+    process's included. Only under the job's company lock."""
     from celerp.models.ai import AIBatchJob
     free = or_(AIBatchJob.lease_until.is_(None), AIBatchJob.lease_until <= _now(),
-               *([AIBatchJob.runner_id.startswith(RUNNER_ID)] if own else []))
+               *([AIBatchJob.runner_id.startswith(RUNNER_ID, autoescape=True)] if own else []))
     runner_id = _runner_id()
-    claimed = await session.execute(update(AIBatchJob).where(AIBatchJob.id == job_id, free,
+    claimed = await session.execute(update(AIBatchJob).where(AIBatchJob.id == job_id, free, _under_lock(session),
                                                              is_open() if where is None else where)
                                     .values(runner_id=runner_id, lease_until=_lease_end(), **values))
     return runner_id if claimed.rowcount == 1 else None
@@ -359,10 +368,11 @@ async def _claim(session, job_id: uuid.UUID, where=None, *, own: bool = False, *
 
 async def _fenced(session, job_id: uuid.UUID, runner_id: str):
     """The job's row, locked for its final write, while the claim ``runner_id`` still
-    holds it open; None, and the write refused, once another claim took it or it ended."""
+    holds it open; None, and the write refused, once another claim took it or it ended.
+    Only under the job's company lock."""
     from celerp.models.ai import AIBatchJob
-    job = (await session.execute(select(AIBatchJob).where(AIBatchJob.id == job_id).with_for_update()
-                                 .execution_options(populate_existing=True))).scalar_one_or_none()
+    job = (await session.execute(select(AIBatchJob).where(AIBatchJob.id == job_id, _under_lock(session))
+                                 .with_for_update().execution_options(populate_existing=True))).scalar_one_or_none()
     if job is None or job.runner_id != runner_id or liveness(job) == "ended":
         log.warning("AI job %s: a runner whose claim was taken or whose job ended wrote; its write was refused", job_id)
         return None
@@ -372,6 +382,45 @@ async def _fenced(session, job_id: uuid.UUID, runner_id: str):
 class ClaimTaken(Exception):
     """Another claim took the job, or it ended: the runner that held it writes nothing
     more, sends nothing more, and stops."""
+
+
+class CompanyGone(ClaimTaken, HTTPException):
+    """The job's company is gone: nothing more is written for it. A request that waited
+    for the lock of a company reset meanwhile is answered not found."""
+
+    def __init__(self) -> None:
+        HTTPException.__init__(self, status_code=404, detail=t("error.company_unavailable"))
+
+
+async def lock_for_ai(session, company_id: uuid.UUID) -> None:
+    """The company lock, taken once at the start of every transaction that writes the
+    AI's rows of a company (its jobs, steps, conversations, messages and usage), before
+    any job-row lock. Raises CompanyGone, and nothing is written, when the company is
+    gone. A session outside a request carries no request authority for the lock to judge
+    again, so a job's runner asks ``_refusal`` for its asker's access."""
+    if not await lock_company(session, company_id):
+        raise CompanyGone()
+
+
+async def _lock_job(session, job_id: uuid.UUID):
+    """Take the company lock of a job, then read the job as committed under it; None
+    when the job is gone."""
+    from celerp.models.ai import AIBatchJob
+    company_id = await session.scalar(select(AIBatchJob.company_id).where(AIBatchJob.id == job_id))
+    if company_id is None:
+        return None
+    await lock_for_ai(session, company_id)
+    return await session.get(AIBatchJob, job_id, populate_existing=True)
+
+
+def _under_lock(session):
+    """The condition a claim or a fenced write puts on a job row: its company is one
+    whose lock this transaction holds. With none held, the write is refused outright."""
+    from celerp.models.ai import AIBatchJob
+    held = noted(session, "locked")
+    if not held:
+        raise RuntimeError("an AI job row written without its company lock (lock_for_ai)")
+    return AIBatchJob.company_id.in_([uuid.UUID(str(c)) for c in held])
 
 
 async def _hold(session, claim) -> None:
@@ -434,9 +483,9 @@ def documents_job(*, request: JobRequest, file_ids: list[str], job_id: uuid.UUID
 async def _end_unheld(session, *where) -> bool:
     """End, in the caller's transaction, every open job matching ``where`` as stopped:
     a reading job cancelled, a question failed. False, and nothing written, while a
-    runner holds one of them."""
+    runner holds one of them. Only under the jobs' company lock."""
     from celerp.models.ai import AIBatchJob
-    rows = (await session.execute(select(AIBatchJob).where(is_open(), *where).with_for_update()
+    rows = (await session.execute(select(AIBatchJob).where(is_open(), _under_lock(session), *where).with_for_update()
                                   .execution_options(populate_existing=True))).scalars().all()
     if any(liveness(job) == "running" for job in rows):
         return False
@@ -497,9 +546,13 @@ async def _supervise(job_id: uuid.UUID) -> None:
     failures = 0
     try:
         while True:
-            async with SessionLocal() as session:
-                claim[0] = await _claim(session, job_id, own=True)
-                await session.commit()
+            try:
+                async with SessionLocal() as session:
+                    claim[0] = None if await _lock_job(session, job_id) is None else \
+                        await _claim(session, job_id, own=True)
+                    await session.commit()
+            except CompanyGone:
+                claim[0] = None
             if claim[0] is None:
                 break       # ended, or another process runs it
             try:
@@ -530,7 +583,13 @@ async def _supervise(job_id: uuid.UUID) -> None:
 async def _heartbeat(job_id: uuid.UUID, claim: list[str | None], stop: asyncio.Event) -> None:
     """Renew the task's claim on the job (``claim[0]``, its runner id) every
     LEASE_RENEW_S until ``stop``. A renewal that fails is tried again at the next beat;
-    a claim another took is never renewed."""
+    a claim another took is never renewed.
+
+    The one write of a job row made without its company lock: it sets the lease end
+    only, of the row its own claim holds, under that row's lock. A renewal that waited
+    for the company lock would wait behind any long holder of it (an import, a
+    migration batch) past the lease, and a healthy runner's job would read as nobody's,
+    for a Stop or another process to take."""
     from celerp.models.ai import AIBatchJob
     while True:
         try:
@@ -540,9 +599,9 @@ async def _heartbeat(job_id: uuid.UUID, claim: list[str | None], stop: asyncio.E
             pass
         try:
             async with SessionLocal() as session:
-                await session.execute(update(AIBatchJob).where(
-                    AIBatchJob.id == job_id, AIBatchJob.runner_id == claim[0], is_open()
-                ).values(lease_until=_lease_end()))
+                held = (AIBatchJob.id == job_id, AIBatchJob.runner_id == claim[0], is_open())
+                if await session.scalar(select(AIBatchJob.id).where(*held).with_for_update()) is not None:
+                    await session.execute(update(AIBatchJob).where(*held).values(lease_until=_lease_end()))
                 await session.commit()
         except Exception:
             log.warning("AI job %s: its lease was not renewed", job_id, exc_info=True)
@@ -606,6 +665,25 @@ async def _refusal(session, company_id: uuid.UUID, user_id: uuid.UUID) -> str | 
     return None
 
 
+class Refused(Exception):
+    """A step's asker may no longer send it: it leaves unsent. ``key`` is the job's
+    error key (``_refusal``)."""
+
+    def __init__(self, key: str) -> None:
+        super().__init__(key)
+        self.key = key
+
+
+async def _admitted(session, claim) -> None:
+    """Take the company lock of ``claim``'s job and admit its asker again under it, in
+    the transaction that records a step's send. A permission change commits under the
+    same lock, so one committed first leaves the step unsent (Refused) and one committed
+    after it finds the step already sent."""
+    await lock_for_ai(session, claim.company_id)
+    if (refusal := await _refusal(session, claim.company_id, claim.user_id)) is not None:
+        raise Refused(refusal)
+
+
 async def recover_on_start() -> int:
     """Run once at start-up, before the usage reconcile loop. This process is the one
     that runs AI jobs, so a lease no task of it holds belongs to a process that is
@@ -615,36 +693,55 @@ async def recover_on_start() -> int:
     task starts. A job whose user may no longer use the assistant ends failed with
     that reason. An interactive question is left unheld, which reads as interrupted:
     it is never sent again but by the user asking again under its id. Returns how
-    many jobs resumed."""
+    many jobs resumed. Each company's jobs are taken in a transaction of their own,
+    under its company lock; a company gone meanwhile has no jobs left to resume."""
     from celerp.models.ai import AIBatchJob, AIJobStep
     resumed: list[uuid.UUID] = []
     async with SessionLocal() as session:
-        rows = (await session.execute(select(AIBatchJob).where(is_open()))).scalars().all()
-        for job in rows:
-            if task_alive(job.id):
-                continue
-            release(job)
-            if job.mode == "interactive":
-                continue
-            # A question is admitted before each of its model steps, and stores a refusal
-            # as its answer (``_JobJournal.admit``).
-            refusal = await _refusal(session, job.company_id, job.user_id) if job.kind == "documents" else None
-            if refusal is not None:
-                job.status, job.error = "failed", t(refusal)
-                job.completed_at = _now()
-                continue
-            ops = (await session.execute(
-                select(AIJobStep.operation_id).where(AIJobStep.job_id == job.id, AIJobStep.state.in_(OPEN_STEPS))
-            )).scalars().all()
-            _held_operations.update(op for op in ops if op is not None)
-            if job.kind == "question":
-                _held_operations.add(job.id)
-            hold(job)
-            resumed.append(job.id)
+        companies = (await session.execute(select(AIBatchJob.company_id).where(is_open()).distinct())).scalars().all()
         await session.commit()
+    for company_id in sorted(companies, key=str):
+        async with SessionLocal() as session:
+            try:
+                await lock_for_ai(session, company_id)
+            except CompanyGone:
+                continue
+            resumed += await _recover_company(session, company_id)
+            await session.commit()
     for job_id in resumed:
         start_job(job_id)
     return len(resumed)
+
+
+async def _recover_company(session, company_id: uuid.UUID) -> list[uuid.UUID]:
+    """``recover_on_start`` for one company's open jobs, in the caller's transaction
+    under its company lock: the ids of the jobs to start."""
+    from celerp.models.ai import AIBatchJob, AIJobStep
+    resumed: list[uuid.UUID] = []
+    rows = (await session.execute(select(AIBatchJob).where(is_open(), AIBatchJob.company_id == company_id)
+                                  .execution_options(populate_existing=True))).scalars().all()
+    for job in rows:
+        if task_alive(job.id):
+            continue
+        release(job)
+        if job.mode == "interactive":
+            continue
+        # A question is admitted before each of its model steps, and stores a refusal
+        # as its answer (``_JobJournal.admit``).
+        refusal = await _refusal(session, job.company_id, job.user_id) if job.kind == "documents" else None
+        if refusal is not None:
+            job.status, job.error = "failed", t(refusal)
+            job.completed_at = _now()
+            continue
+        ops = (await session.execute(
+            select(AIJobStep.operation_id).where(AIJobStep.job_id == job.id, AIJobStep.state.in_(OPEN_STEPS))
+        )).scalars().all()
+        _held_operations.update(op for op in ops if op is not None)
+        if job.kind == "question":
+            _held_operations.add(job.id)
+        hold(job)
+        resumed.append(job.id)
+    return resumed
 
 
 async def _reopen(job_id: uuid.UUID, company_id: uuid.UUID, user_id: uuid.UUID, *, retry: bool) -> int | None:
@@ -655,6 +752,7 @@ async def _reopen(job_id: uuid.UUID, company_id: uuid.UUID, user_id: uuid.UUID, 
     being asked again under its id (``reopen_question``)."""
     from celerp.models.ai import AIJobStep
     async with SessionLocal() as session:
+        await lock_for_ai(session, company_id)
         job = await owned_job(session, job_id, company_id=company_id, user_id=user_id, shape="documents")
         if job is None or liveness(job) == "running":
             return None     # not this user's reading job, or run by a runner
@@ -695,13 +793,12 @@ async def cancel(job_id: uuid.UUID, company_id: uuid.UUID, user_id: uuid.UUID) -
     and is kept. One nobody runs ends now, as stopped. False when the job is not this
     user's or has ended."""
     async with SessionLocal() as session:
+        await lock_for_ai(session, company_id)
         job = await owned_job(session, job_id, company_id=company_id, user_id=user_id)
         if job is None or liveness(job) == "ended":
             return False
         job.cancel_requested_at = _now()
-        unheld = liveness(job) == "unheld"
-        await session.commit()
-        runner_id = await _claim(session, job_id) if unheld else None
+        runner_id = await _claim(session, job_id) if liveness(job) == "unheld" else None
         await session.commit()
     if runner_id is not None:
         await _end_stopped(job_id, runner_id)
@@ -732,9 +829,9 @@ def _file_run(job, runner_id: str):
 # ── The runner ────────────────────────────────────────────────────────────────
 
 async def _run_job(job_id: uuid.UUID, runner_id: str) -> None:
-    from celerp.models.ai import AIBatchJob, AIJobStep
+    from celerp.models.ai import AIJobStep
     async with SessionLocal() as session:
-        job = await session.get(AIBatchJob, job_id)
+        job = await _lock_job(session, job_id)
         if job is None or liveness(job) == "ended":
             return
         rows = (await session.execute(
@@ -775,6 +872,7 @@ async def _supervised_step(run, step_pk: uuid.UUID, file_id: str, operation_id: 
                 if attempt < STEP_ATTEMPTS:
                     await asyncio.sleep(STEP_RETRY_DELAY_S * attempt)
         async with SessionLocal() as session:
+            await lock_for_ai(session, run.company_id)
             await _set_step(session, run, step_pk, state="failed",
                             result={"filename": file_id, "error": t("ai.err_file_unexpected")})
             await session.commit()
@@ -799,6 +897,7 @@ async def _document_step(run, step_pk: uuid.UUID, file_id: str, operation_id: uu
 
     async def _before_send(nbytes: int) -> None:
         async with SessionLocal() as session:
+            await _admitted(session, run)
             await _set_step(session, run, step_pk, state="running")
             await usage.record_usage(session, company_id=run.company_id, user_id=run.user_id,
                                      operation_id=operation_id, send_bytes=nbytes)
@@ -810,12 +909,17 @@ async def _document_step(run, step_pk: uuid.UUID, file_id: str, operation_id: uu
         async with SessionLocal() as session:
             refusal = await _refusal(session, run.company_id, run.user_id)
             await session.commit()
+        if refusal is None:
+            try:
+                outcome = await batch.read_file(run, file_id, operation_id, before_send=_before_send)
+            except Refused as exc:
+                refusal = exc.key
         if refusal is not None:
             # Unsent steps stay pending and uncharged; finished ones keep their results.
             run.stop_reason = refusal
             return
-        outcome = await batch.read_file(run, file_id, operation_id, before_send=_before_send)
     async with SessionLocal() as session:
+        await lock_for_ai(session, run.company_id)
         await _set_step(session, run, step_pk, state=outcome.state, result=outcome.result,
                         credits=outcome.credits, charge_known=outcome.known)
         if outcome.sent:
@@ -841,6 +945,7 @@ async def _end_job(run) -> None:
     from celerp.ai import batch
     from celerp.models.ai import AIJobStep
     async with SessionLocal() as session:
+        await lock_for_ai(session, run.company_id)
         job = await _fenced(session, run.job_id, run.runner_id)
         if job is None:
             return
@@ -902,6 +1007,7 @@ async def notify(company_id: uuid.UUID, user_id: uuid.UUID, conversation_id: uui
     try:
         from celerp.notifications.service import create as create_notification
         async with SessionLocal() as session:
+            await lock_for_ai(session, company_id)
             await create_notification(
                 session, company_id, "ai", title, body, user_id=user_id,
                 action_url=f"/ai?conversation={conversation_id}" if conversation_id else "/ai",
@@ -1012,9 +1118,12 @@ class _JobJournal(Journal):
     def background(self) -> bool:
         return self.job_id in _background
 
-    async def admit(self) -> None:
+    @staticmethod
+    def _refused(refusal: str):
         from fastapi import HTTPException
+        return HTTPException(status_code=403, detail={"code": refusal.removeprefix("ai."), "message": t(refusal)})
 
+    async def admit(self) -> None:
         from celerp.models.ai import AIBatchJob
         async with SessionLocal() as session:
             refusal = await _refusal(session, self.company_id, self.user_id)
@@ -1024,7 +1133,7 @@ class _JobJournal(Journal):
         if stopped is not None:
             raise Stopped()
         if refusal is not None:
-            raise HTTPException(status_code=403, detail={"code": refusal.removeprefix("ai."), "message": t(refusal)})
+            raise self._refused(refusal)
 
     def on_wait(self, what: str | None) -> None:
         if what is not None:
@@ -1058,6 +1167,10 @@ class _JobJournal(Journal):
     async def sending(self, key: str, identity: dict, nbytes: int) -> None:
         from celerp.ai import usage
         async with SessionLocal() as session:
+            try:
+                await _admitted(session, self)
+            except Refused as exc:
+                raise self._refused(exc.key) from None
             await self._step(session, key, "running", identity)
             await usage.record_usage(session, company_id=self.company_id, user_id=self.user_id,
                                      operation_id=self.question_id, send_bytes=nbytes)
@@ -1068,6 +1181,7 @@ class _JobJournal(Journal):
         if state != "done" and key not in self._pk:
             return      # never sent: nothing to record
         async with SessionLocal() as session:
+            await lock_for_ai(session, self.company_id)
             pk = await self._step(session, key, state)
             await _set_step(session, self, pk, state=state, result=result, credits=(result or {}).get("credits") or None)
             await session.commit()
@@ -1089,6 +1203,8 @@ async def promote(job_id: uuid.UUID) -> None:
     from celerp.models.ai import AIBatchJob
     _background.add(job_id)
     async with SessionLocal() as session:
+        if await _lock_job(session, job_id) is None:
+            return
         await session.execute(
             update(AIBatchJob).where(AIBatchJob.id == job_id, AIBatchJob.promoted_at.is_(None))
             .values(mode="background", promoted_at=datetime.now(timezone.utc)))
@@ -1194,7 +1310,7 @@ async def _run_question(job_id: uuid.UUID, runner_id: str) -> None:
     from celerp.ai import service
     from celerp.models.ai import AIBatchJob, AIJobStep
     async with SessionLocal() as session:
-        job = await session.get(AIBatchJob, job_id)
+        job = await _lock_job(session, job_id)
         if job is None or liveness(job) == "ended":
             return
         run = await _question_context(session, job)
@@ -1236,6 +1352,8 @@ async def _finish_question(job_id: uuid.UUID, result, refusal, runner_id: str) -
     from celerp.models.ai import AIMessage
     ended = refusal or result
     async with SessionLocal() as session:
+        if await _lock_job(session, job_id) is None:
+            return
         job = await _fenced(session, job_id, runner_id)
         if job is None:
             return
@@ -1307,6 +1425,7 @@ async def ask(*, company_id: uuid.UUID, user_id: uuid.UUID, query: str, file_ids
     job_id = job_id or uuid.uuid4()
     request = JobRequest.question(company_id=company_id, user_id=user_id, query=query, file_ids=file_ids)
     async with SessionLocal() as session:
+        await lock_for_ai(session, company_id)
         job = await reused_job(session, job_id, request)
         started_here = False
         if job is None:
@@ -1316,6 +1435,7 @@ async def ask(*, company_id: uuid.UUID, user_id: uuid.UUID, query: str, file_ids
                 started_here = True
             except IntegrityError:
                 await session.rollback()
+                await lock_for_ai(session, company_id)
                 job = await reused_job(session, job_id, request)     # another send created it first
         if job is not None and liveness(job) != "running":
             started_here = await reopen_question(session, job_id, auth_nonce)

@@ -3,8 +3,9 @@
 """Read-only search over document projections.
 
 The q-grammar (comma-separated OR terms across doc_number/ref_id/contact_name/
-contact_id/ref) lives here so the list route and the global-search provider
-share one source of truth for what a search term matches.
+contact_id/ref and the contact name a document shows) lives here so the list
+route and the global-search provider share one source of truth for what a
+search term matches.
 """
 from __future__ import annotations
 
@@ -13,6 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.models.projections import Projection
+from celerp_contacts.references import party_name_sql
 
 _SEARCH_FIELDS = ("doc_number", "ref_id", "contact_name", "contact_id", "ref")
 
@@ -29,11 +31,12 @@ def doc_q_clause(q: str | None):
     terms = [t.strip().lower() for t in q.split(",") if t.strip()]
     if not terms:
         return None
+    # The name the list shows (party_name_sql) as well as the stored fields, so a
+    # document that holds only its contact's id is found by that contact's name. Each
+    # term is matched as typed: a % or _ in it is that character, never a wildcard.
+    searched = [Projection.state[f].as_string() for f in _SEARCH_FIELDS] + [party_name_sql()]
     term_clauses = [
-        _sa.or_(*[
-            _sa.func.lower(Projection.state[f].as_string()).like(f"%{term}%")
-            for f in _SEARCH_FIELDS
-        ])
+        _sa.or_(*[_sa.func.lower(field).contains(term, autoescape=True) for field in searched])
         for term in terms
     ]
     return _sa.or_(*term_clauses)

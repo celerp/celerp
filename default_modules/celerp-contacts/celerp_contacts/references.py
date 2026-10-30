@@ -10,12 +10,16 @@ that a concurrent merge or delete has already tombstoned.
 """
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from celerp.models.projections import Projection
 from celerp.services.company_lock import lock_projections
 from celerp_contacts.projections import _compose_address
+
+# The fields a contact's name is read from, first one set wins (contact_snapshot, party_name_sql).
+CONTACT_NAME_FIELDS = ("name", "display_name")
 
 CONTACT_TYPE_FILTER: dict[str, tuple[str, ...]] = {
     "customer": ("customer", "both"),
@@ -86,7 +90,7 @@ def contact_snapshot(state: dict) -> dict:
 
     shipping = _pick("shipping")
     return {
-        "contact_name": state.get("name") or state.get("display_name") or "",
+        "contact_name": next((state[f] for f in CONTACT_NAME_FIELDS if state.get(f)), ""),
         "contact_company_name": state.get("company_name") or "",
         "contact_email": state.get("email") or "",
         "contact_phone": state.get("phone") or "",
@@ -95,3 +99,26 @@ def contact_snapshot(state: dict) -> dict:
         "contact_shipping_address": _text("shipping"),
         "shipping_attn": (shipping.get("attn") or "") if shipping else "",
     }
+
+
+
+def _named(record, *fields: str):
+    """The first of *fields* *record* holds, as SQL; NULL when none is set."""
+    return func.coalesce(*(func.nullif(record.state[f].as_string(), "") for f in fields))
+
+
+def party_name_sql(record=Projection, party: str | None = None):
+    """How a record row shows its party, as SQL, never by the contact's id: the name of the
+    contact it names (contact_id, else ``<party>_id``), else the name it holds itself
+    (contact_name, else ``<party>_name``), else NULL. *party* is the older field prefix a
+    record may still hold (customer, supplier). One expression for every list, sort, export
+    and report that shows a party, so each shows and orders by the same name."""
+    ids, names = ("contact_id",), ("contact_name",)
+    if party:
+        ids, names = (*ids, f"{party}_id"), (*names, f"{party}_name")
+    contact = aliased(Projection)
+    named = (select(_named(contact, *CONTACT_NAME_FIELDS))
+             .where(contact.company_id == record.company_id, contact.entity_type == "contact",
+                    contact.entity_id == _named(record, *ids))
+             .scalar_subquery())
+    return func.coalesce(named, _named(record, *names))

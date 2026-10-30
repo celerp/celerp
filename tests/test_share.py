@@ -936,7 +936,7 @@ def test_print_view_escapes_injected_html():
 @pytest.mark.asyncio
 async def test_import_link_rejects_non_https(client: AsyncClient):
     tok = await _token(client)
-    r = await client.get("/docs/import", params={"link": "http://evil.example.com/share/abc"}, headers=_h(tok))
+    r = await client.post("/docs/import-link", params={"link": "http://evil.example.com/share/abc"}, headers=_h(tok))
     assert r.status_code == 400
 
 
@@ -944,7 +944,7 @@ async def test_import_link_rejects_non_https(client: AsyncClient):
 async def test_import_link_rejects_private_and_metadata_hosts(client: AsyncClient):
     tok = await _token(client)
     for host in ("https://127.0.0.1", "https://10.0.0.1", "https://169.254.169.254", "https://192.168.1.1"):
-        r = await client.get("/docs/import", params={"link": f"{host}/share/abc"}, headers=_h(tok))
+        r = await client.post("/docs/import-link", params={"link": f"{host}/share/abc"}, headers=_h(tok))
         assert r.status_code == 400, host
 
 
@@ -956,7 +956,7 @@ async def test_import_link_rejects_private_and_metadata_hosts(client: AsyncClien
 ])
 async def test_import_link_rejects_links_without_a_share_page(client: AsyncClient, link):
     tok = await _token(client)
-    r = await client.get("/docs/import", params={"link": link}, headers=_h(tok))
+    r = await client.post("/docs/import-link", params={"link": link}, headers=_h(tok))
     assert r.status_code == 400
 
 
@@ -979,8 +979,8 @@ async def test_import_link_fetches_the_bundle_next_to_the_share_page(client: Asy
     fetch = AsyncMock(return_value=_bundle_response({"doc_type": "invoice", "currency": "USD", "ref_id": "EXT-9", "total": 5.0}))
     with patch("celerp_docs.routes_share.validate_public_base_url", new=AsyncMock(return_value=link)), \
          patch("celerp.services.outbound_url.fetch_public_bytes", new=fetch):
-        r = await client.get("/docs/import", params={"link": link}, headers=_h(tok), follow_redirects=False)
-        again = await client.get("/docs/import", params={"link": link}, headers=_h(tok), follow_redirects=False)
+        r = await client.post("/docs/import-link", params={"link": link}, headers=_h(tok), follow_redirects=False)
+        again = await client.post("/docs/import-link", params={"link": link}, headers=_h(tok), follow_redirects=False)
 
     assert fetch.await_args.args[0] == f"{link}/bundle"
     assert r.status_code == 302 and r.headers["location"].startswith("/docs/received/rcv:")
@@ -1304,6 +1304,34 @@ async def test_share_status_lifecycle(client: AsyncClient):
     revoked = (await client.delete(f"/docs/{entity_id}/share", headers=_h(tok))).json()
     assert revoked["active"] is False and revoked["revoked"] is True
     assert revoked["token"] == first["token"]
+
+
+@pytest.mark.asyncio
+async def test_a_viewer_sees_the_status_light_but_gets_no_share_link(client: AsyncClient, session):
+    """The share link is a credential: a role without edit_documents reads only whether
+    the document is shared, and opening the Share panel or sharing is refused and mints
+    nothing."""
+    import uuid
+    from sqlalchemy import func, select
+    from celerp.models.accounting import UserCompany
+    from celerp.models.company import Company, User
+    from celerp.models.share import DocShareToken
+    from test_helpers import make_authed_token
+    entity_id = await _create_doc(client, await _token(client))
+    company_id = await session.scalar(select(Company.id).where(Company.name == "ShareCo"))
+    uid = uuid.uuid4()
+    session.add(User(id=uid, email="viewer@test.example", name="Viewer", auth_hash="x", is_active=True))
+    await session.flush()
+    session.add(UserCompany(user_id=uid, company_id=company_id, role="viewer", is_active=True))
+    await session.commit()
+    viewer = _h(await make_authed_token(session, str(uid), str(company_id), "viewer"))
+
+    r = await client.get(f"/docs/{entity_id}/share/state", headers=viewer)
+    assert (r.status_code, r.json()) == (200, {"active": False})
+    assert (await client.get(f"/docs/{entity_id}/share", headers=viewer)).status_code == 403
+    assert (await client.post(f"/docs/{entity_id}/share", headers=viewer)).status_code == 403
+    assert await session.scalar(select(func.count()).select_from(DocShareToken)
+                                .where(DocShareToken.entity_id == entity_id)) == 0
 
 
 @pytest.mark.asyncio

@@ -438,7 +438,6 @@ async def _serve(_app: FastAPI, held):
                 from celerp.services.starter_modules import enable_starter_modules
                 async with _StarterSession() as _starter_sess:
                     await enable_starter_modules(_starter_sess)
-                    await _starter_sess.commit()
             except Exception:
                 logging.getLogger(__name__).exception("Enabling the starter modules failed (non-fatal)")
             # Fetch the free verdict of every installed celerp- module that has

@@ -103,7 +103,7 @@ async def enqueue_item_change(session, entry, *, previous_state: dict | None = N
     company_id = str(entry.company_id)
     if not await _pushes_outbound(session, company_id, "woocommerce"):
         return False
-    from celerp_inventory.services import external_link_for_state
+    from celerp.connectors.product_links import external_link_for_state
 
     row = await session.get(
         Projection, {"company_id": entry.company_id, "entity_id": entry.entity_id}

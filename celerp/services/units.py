@@ -15,6 +15,9 @@ from fastapi import HTTPException
 from ui.i18n import t
 
 from celerp.accounting_roles import refusal
+from celerp.services.record_quantities import (
+    TEMPLATE_DOC_TYPES, doc_still_moving, run_name, run_still_moving, sent_out_by, template_label,
+)
 
 # Units sold by weight/volume/length allow fractional quantities.
 # "piece" (decimals=0) enforces positive integers.
@@ -85,9 +88,9 @@ async def get_company_units(session, company_id) -> list[dict]:
     under the same lock, so a quantity checked here can never be stored under decimals it was
     not checked against. A copy the session loaded earlier in the request is never trusted."""
     from celerp.models.company import Company
-    from celerp.services.company_lock import holds_company_lock, locked_company
+    from celerp.services.company_lock import holds_locked_company, locked_company
 
-    if holds_company_lock(session, company_id):
+    if holds_locked_company(session, company_id):
         company = await session.get(Company, company_id)
     else:
         company = await locked_company(session, company_id)
@@ -197,18 +200,14 @@ def _item_units(items: dict[str, dict]) -> dict[str, str]:
 def _still_moving(entity_id: str, entity_type: str, state: dict, items: dict[str, dict]) -> list[tuple[dict, float]]:
     """Each line of a document, list or manufacturing run with the quantity on it that can still
     move: what a document can still receive, ship or carry into a converted document
-    (quantities_still_moving), a list's lines while it is a draft or finalized (its closing action
+    (doc_still_moving), a list's lines while it is a draft or finalized (its closing action
     is still to come), and what an open run still has to issue and receive. ``items`` are the
     item states by id, to tell which goods a document already sent out."""
-    from celerp_docs.doc_constants import quantities_still_moving, sent_out_by
-    from celerp_manufacturing.movements import quantities_still_moving as run_still_moving
-
     from celerp.services.document_lines import line_item_id
     from celerp.services.list_behavior import DRAFT, FINALIZED
 
     if entity_type == "doc":
-        return quantities_still_moving(
-            state, lambda line: sent_out_by(items.get(line_item_id(line)) or {}, entity_id))
+        return doc_still_moving(state, lambda line: sent_out_by(items.get(line_item_id(line)) or {}, entity_id))
     if entity_type == "mfg_order":
         return run_still_moving(state)
     return [(line, line.get("quantity")) for line in state.get("line_items") or []
@@ -300,6 +299,16 @@ def _unit_type(unit: dict) -> str:
     return unit.get("unit_type") or "quantity"
 
 
+def _holder_label(entity_id: str, entity_type: str, state: dict) -> tuple[str | None, bool]:
+    """A document, list or manufacturing run as the user knows it, and whether it is a
+    subscription template."""
+    if entity_type == "mfg_order":
+        return run_name(state), False
+    if entity_type == "doc" and state.get("doc_type") in TEMPLATE_DOC_TYPES:
+        return template_label(state, entity_id), True
+    return state.get("doc_number") or state.get("ref_id") or state.get("name"), False
+
+
 async def check_units_change(session, company_id, old_units: list[dict], new_units: list[dict]) -> None:
     """A change to the company's units that would change what stored quantities mean is refused
     with 422, naming a few of the items, open documents and subscriptions that hold them, with the
@@ -320,9 +329,6 @@ async def check_units_change(session, company_id, old_units: list[dict], new_uni
     compare with, so it is checked against what is stored in it. A line with no unit of its own
     is in its item's unit, found by item id or SKU."""
     from sqlalchemy import or_, select
-
-    from celerp_docs.doc_constants import TEMPLATE_DOC_TYPES, template_label
-    from celerp_manufacturing.movements import run_name
 
     from celerp.models.projections import Projection
     from celerp.services.line_measures import FULL, stored_sell_qty
@@ -361,18 +367,12 @@ async def check_units_change(session, company_id, old_units: list[dict], new_uni
         held: list = []
         partly_received = False
         for entity_id, entity_type, state, lines in rows:
-            template = state.get("doc_type") in TEMPLATE_DOC_TYPES
             if entity_type == "item":
                 quantities = item_holds(state)
-                label = state.get("sku") or state.get("name")
+                label, template = state.get("sku") or state.get("name"), False
             else:
                 quantities = [qty for line, qty in lines if _line_unit(line, item_unit) == name and line_holds(qty)]
-                if entity_type == "mfg_order":
-                    label = run_name(state)
-                elif template:
-                    label = template_label(state, entity_id)
-                else:
-                    label = state.get("doc_number") or state.get("ref_id") or state.get("name")
+                label, template = _holder_label(entity_id, entity_type, state)
             if quantities:
                 (templates if template else holders).append(str(label or "-"))
                 held.extend(quantities)

@@ -35,6 +35,10 @@ function restartSentinelPath(proc) {
  * then re-attach the watcher (so subsequent restarts also work). When startApi
  * resolves false (the database was refused), nothing else starts.
  * If absent and exit code is non-zero: call onCrash.
+ * onWatching runs each time a live API's exit is watched (at boot and after every
+ * restart): from then on a restart request is carried out, so that is when the app
+ * may tell others where its API is. onStopped runs as soon as a watched API exits,
+ * whatever comes next, so the app stops telling others about it.
  * Once the app is stopping, an exit is neither a restart nor a crash, and a
  * restart under way stops before its next step; trackRestart lets the shutdown
  * wait for it.
@@ -49,6 +53,8 @@ function restartSentinelPath(proc) {
  *   sentinelPath: string,
  *   onCrash: (err: Error) => void,
  *   onRestart?: () => void,
+ *   onWatching?: () => void,
+ *   onStopped?: () => void,
  *   isStopping: () => boolean,
  *   trackRestart: (restart: Promise<void>) => void,
  *   fs?: typeof import("fs"),
@@ -63,6 +69,8 @@ function watchForRestart(dbUrl, {
   sentinelPath,
   onCrash,
   onRestart,
+  onWatching,
+  onStopped,
   isStopping,
   trackRestart,
   fs: fsOverride,
@@ -71,7 +79,7 @@ function watchForRestart(dbUrl, {
   if (!proc) return;
   const fs = fsOverride || require("fs");
   const deps = { getApiProcess, getUiProcess, setUiProcess, startApi, startUi, sentinelPath, onCrash, onRestart,
-                 isStopping, trackRestart, fs };
+                 onWatching, onStopped, isStopping, trackRestart, fs };
 
   async function respawn() {
     try {
@@ -89,6 +97,7 @@ function watchForRestart(dbUrl, {
   }
 
   proc.once("exit", (code) => {
+    if (onStopped) onStopped();
     if (isStopping()) return;
     if (fs.existsSync(sentinelPath)) {
       fs.unlinkSync(sentinelPath);
@@ -98,6 +107,7 @@ function watchForRestart(dbUrl, {
       onCrash(new Error(`API process exited unexpectedly with code ${code}`));
     }
   });
+  if (onWatching) onWatching();
 }
 
 /**

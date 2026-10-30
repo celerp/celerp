@@ -527,6 +527,7 @@ async def test_s8_run_movements_rebuild_projection(fa):
 
 async def test_invariant_projection_rebuilds_from_movements(fa):
     from celerp.events.engine import ProjectionEngine
+    from celerp.services.company_lock import lock_company
 
     await _managed_from(fa)
     car = await _contributed(fa)
@@ -539,6 +540,7 @@ async def test_invariant_projection_rebuilds_from_movements(fa):
     await _run(fa, "2026-03")
     before = {a: await fa.state(a) for a in (car, shed)}
     assert D(before[shed]["accumulated_depreciation"]) > D("6000")
+    await lock_company(fa.session, fa.auth["company_id"])
     await ProjectionEngine.rebuild(fa.session, company_id=fa.auth["company_id"])
     await fa.session.commit()
     for asset_id, state in before.items():

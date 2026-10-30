@@ -52,7 +52,8 @@ async def search_subscription_templates(
     The q search is pushed into the WHERE so it runs BEFORE the COUNT and LIMIT;
     a Python post-filter would run after pagination truncated the rows. A
     template stores ref_id at creation and only gains doc_number on a later
-    renumber, so both are matched; name is the human template label.
+    renumber, so both are matched; name is the human template label. A % or _ in a
+    term is that character, never a wildcard.
     """
     where = _base_where(company_id, direction)
     if status:
@@ -60,7 +61,7 @@ async def search_subscription_templates(
     if q and q.strip():
         terms = [t.strip().lower() for t in q.split(",") if t.strip()]
         where.append(_or(*[
-            _func.lower(Projection.state[f].as_string()).like(f"%{term}%")
+            _func.lower(Projection.state[f].as_string()).contains(term, autoescape=True)
             for term in terms for f in _SEARCH_FIELDS
         ]))
     total = (await session.execute(

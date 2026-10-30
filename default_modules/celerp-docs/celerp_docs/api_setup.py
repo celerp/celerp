@@ -14,7 +14,7 @@ def setup_api_routes(app) -> None:
 
     register_sink(SINK)
     # share.public_router and received_router must come before docs.router so
-    # /docs/import and /docs/received aren't swallowed by /docs/{entity_id}
+    # /docs/import-link and /docs/received aren't swallowed by /docs/{entity_id}
     app.include_router(share_public_router, tags=["share-public"])
     app.include_router(pay_public_router, tags=["payments-public"])
     app.include_router(received_router, tags=["received"])

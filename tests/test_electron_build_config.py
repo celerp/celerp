@@ -437,7 +437,8 @@ def test_packaged_build_checks_its_modules_and_boots_with_every_locked_module():
     assert "wait" not in failed
     # The force-quit check reads the database's data directory from the running
     # database; the app does not keep its data under $HOME on every runner.
-    assert 'PG_PIDFILE="$PG_DATA/postmaster.pid"' in unix["run"] and 'find "$HOME"' not in unix["run"].split("boot smoke OK")[1]
+    force_quit = unix["run"].split("# A force-quit app must not leave its servers running", 1)[1].split("force-quit OK on", 1)[0]
+    assert 'PG_PIDFILE="$PG_DATA/postmaster.pid"' in force_quit and 'find "$HOME"' not in force_quit
     # Linux and macOS: a force-quit app (SIGKILL) must leave no API or database running.
     assert 'kill -9 "$ELECTRON"' in unix["run"] and "left the API or the database running" in unix["run"]
     # A fresh install under an account named with spaces and non-ASCII letters: the
@@ -551,8 +552,15 @@ def test_windows_boot_smoke_runs_as_an_administrator_with_uac_off():
     assert 'if ($state -ne $Account)' in smoke and '$child -ne "standard"' in smoke
     assert smoke.index("--token-state") < smoke.index('$port = Launch $exe "first launch"')
     assert "/health/ready" in smoke and '"db"\\s*:\\s*"ok"' in smoke
+    # A launch that never gets ready, and a new install that cannot be set up, show the
+    # app's output and every log in the account's data folder (the one before a restart too).
+    output = smoke.split("function AppOutput(", 1)[1].split("\n}\n", 1)[0]
+    assert "Electron stdout/stderr" in output and "Get-Content $boot -Tail 200" in output
+    assert "\\.log(\\.prev)?$" in output
     launch = smoke.split("function Launch(", 1)[1].split("\n}\n", 1)[0]
-    assert launch.index("Electron stdout/stderr") < launch.index('Fail "$what`: db:ok not reached')
+    assert launch.index("AppOutput $boot") < launch.index('Fail "$what`: db:ok not reached')
+    new_install = smoke.split('$port = Launch $exe "new install" -NewInstall', 1)[1].split("ForceQuit", 1)[0]
+    assert new_install.index("AppOutput") < new_install.index('Fail "setting up a new install')
 
 
 def test_checks_that_run_the_packaged_python_leave_the_build_unchanged():

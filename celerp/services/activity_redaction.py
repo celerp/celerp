@@ -16,6 +16,8 @@ contribution.
 
 from __future__ import annotations
 
+from sqlalchemy import Select
+
 from celerp.services.permissions import role_has_permission
 
 # The cost fields gated by view_inventory_costs (mirrors the inventory item-visibility rule).
@@ -35,7 +37,7 @@ def hidden_event_prefixes(settings: dict | None, role: str | None) -> list[str]:
             if c.get("permission") and not role_has_permission(settings, role or "", c["permission"])]
 
 
-def readable_events(stmt, settings: dict | None, role: str | None):
+def readable_events(stmt: Select, settings: dict | None, role: str | None) -> Select:
     """``stmt`` over ledger entries narrowed to the events this role can read."""
     from celerp.models.ledger import LedgerEntry
 

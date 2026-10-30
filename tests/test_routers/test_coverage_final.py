@@ -308,12 +308,12 @@ async def test_share_view_list_entity(client):
 
 
 # ---------------------------------------------------------------------------
-# share.py lines 197-212: GET /docs/import HTTP errors
+# share.py lines 197-212: POST /docs/import-link HTTP errors
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
 async def test_share_import_doc_http_404(client):
-    """GET /docs/import when sender returns 404 → 404 (lines 206-207)."""
+    """POST /docs/import-link when sender returns 404 → 404 (lines 206-207)."""
     tok = await _reg(client)
 
     response = MagicMock(status_code=404, content=b"", headers={})
@@ -322,8 +322,8 @@ async def test_share_import_doc_http_404(client):
                new=AsyncMock(return_value="https://other.celerp.test/share/fake-token")), \
          patch("celerp.services.outbound_url.fetch_public_bytes",
                new=AsyncMock(return_value=response)):
-        r = await client.get(
-            "/docs/import?link=https://other.celerp.test/share/fake-token",
+        r = await client.post(
+            "/docs/import-link?link=https://other.celerp.test/share/fake-token",
             headers=_h(tok),
         )
     assert r.status_code == 404
@@ -331,7 +331,7 @@ async def test_share_import_doc_http_404(client):
 
 @pytest.mark.asyncio
 async def test_share_import_doc_http_502(client):
-    """GET /docs/import when sender returns 5xx → 502 (lines 207-208)."""
+    """POST /docs/import-link when sender returns 5xx → 502 (lines 207-208)."""
     tok = await _reg(client)
 
     response = MagicMock(status_code=503, content=b"", headers={})
@@ -340,8 +340,8 @@ async def test_share_import_doc_http_502(client):
                new=AsyncMock(return_value="https://other.celerp.test/share/fake-token")), \
          patch("celerp.services.outbound_url.fetch_public_bytes",
                new=AsyncMock(return_value=response)):
-        r = await client.get(
-            "/docs/import?link=https://other.celerp.test/share/fake-token",
+        r = await client.post(
+            "/docs/import-link?link=https://other.celerp.test/share/fake-token",
             headers=_h(tok),
         )
     assert r.status_code == 502
@@ -349,15 +349,15 @@ async def test_share_import_doc_http_502(client):
 
 @pytest.mark.asyncio
 async def test_share_import_doc_network_error(client):
-    """GET /docs/import when network fails → 502 (lines 209-210)."""
+    """POST /docs/import-link when network fails → 502 (lines 209-210)."""
     tok = await _reg(client)
 
     with patch("celerp_docs.routes_share.validate_public_base_url",
                new=AsyncMock(return_value="https://other.celerp.test/share/fake-token")), \
          patch("celerp.services.outbound_url.fetch_public_bytes",
                new=AsyncMock(side_effect=ConnectionError("network fail"))):
-        r = await client.get(
-            "/docs/import?link=https://other.celerp.test/share/fake-token",
+        r = await client.post(
+            "/docs/import-link?link=https://other.celerp.test/share/fake-token",
             headers=_h(tok),
         )
     assert r.status_code == 502

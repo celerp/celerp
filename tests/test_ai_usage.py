@@ -32,7 +32,7 @@ from celerp.models.ai import AIConversation, AIMessage, AIUsage
 from celerp.services.auth import decode_access_token
 from celerp.services.business_time import business_today
 from migration_support import maker, real_client, real_engine  # noqa: F401
-from test_helpers import invite_user, register_admin, settled_question, signed_request, until
+from test_helpers import invite_user, register_admin, settled_question, signed_request, until, until_a_lock_waits
 
 
 def _claims(token: str) -> tuple[uuid.UUID, uuid.UUID]:
@@ -505,12 +505,13 @@ async def test_question_sent_again_while_it_is_answered_runs_once(client, owner,
 
 @pytest.mark.parametrize("window", ["not_yet_stored", "already_answered"])
 async def test_repeat_send_in_a_read_window_runs_once(real_client, real_engine, drained_jobs, monkeypatch, window):
-    """A repeat that reads the question just as the first send moves on is still one model
-    run and one charge. Both windows are forced with events, not sleeps: the repeat's
-    read of the question is held while the first send's job reaches the model, and in
-    the second window the job also answers before the repeat acts on that read, which
-    then returns the answer and never reopens the question. On real connections: the
-    repeat's refused insert rolls back only its own transaction, as in production."""
+    """A repeat that reads the question just as another write for it moves on is still
+    one model run and one charge. The repeat reads under the company lock, so the other
+    write waits for it: the first send of a question nothing stored yet, or the job's
+    answer to a question stored but not answered. The repeat acts on what it read, and
+    the other write then sees what the repeat did. Both windows are forced with events
+    and the database's own lock wait, not sleeps. On real connections: a refused insert
+    rolls back only its own transaction, as in production."""
     from celerp.ai import conversations
 
     monkeypatch.setattr(jobs, "SessionLocal", maker(real_engine))
@@ -532,35 +533,32 @@ async def test_repeat_send_in_a_read_window_runs_once(real_client, real_engine, 
     conv = await _conversation(client, token)
     question = uuid.uuid4()
     real_find = conversations.find_question
-    first_send: list[asyncio.Task] = []
-
-    async def _read_while_first_send_moves_on(*args, **kw):
-        if first_send:
-            return await real_find(*args, **kw)
-        first_send.append(asyncio.ensure_future(_ask(client, token, conv, question)))
-        if window == "not_yet_stored":
-            read = await real_find(*args, **kw)  # nothing stored yet: a new question
-            await in_model.wait()
-            return read
+    other: list[asyncio.Task] = []
+    if window == "already_answered":
+        other.append(asyncio.ensure_future(_ask(client, token, conv, question)))
         await in_model.wait()
-        read = await real_find(*args, **kw)  # stored, not yet answered
-        release.set()
-        await first_send[0]
-        await until(lambda: not jobs.task_alive(question))  # the job stored its answer
+
+    async def _read_while_another_write_moves_on(*args, **kw):
+        if window == "not_yet_stored" and other:
+            return await real_find(*args, **kw)     # the other send, after the repeat
+        read = await real_find(*args, **kw)
+        if window == "not_yet_stored":
+            other.append(asyncio.ensure_future(_ask(client, token, conv, question)))
+        else:
+            release.set()
+        await until_a_lock_waits(real_engine)
         return read
 
-    monkeypatch.setattr(conversations, "find_question", _read_while_first_send_moves_on)
+    monkeypatch.setattr(conversations, "find_question", _read_while_another_write_moves_on)
     repeat = await _ask(client, token, conv, question)
     release.set()
-    first = await first_send[0]
-    assert first.status_code == 202, first.text
+    first = await other[0]
     reply = (await _settled(client, token, conv, question))["message"]
-    if window == "not_yet_stored":
-        assert repeat.status_code == 409, repeat.text
-        assert repeat.json()["detail"]["code"] == "question_in_progress"
-    else:
-        assert (repeat.status_code, repeat.json()["asked_again"], repeat.json()["answer"]) == (
-            200, True, reply["content"])
+    started, refused = (repeat, first) if window == "not_yet_stored" else (first, repeat)
+    assert started.status_code == 202, started.text
+    assert refused.status_code == 409, refused.text
+    assert refused.json()["detail"]["code"] == "question_in_progress"
+    assert reply["role"] == "assistant"
     assert sent == [question]
     assert [m["role"] for m in await _messages(client, token, conv)] == ["user", "assistant"]
     assert _counts((await _usage(client, token)).json()["users"]) == [(1, 1)]

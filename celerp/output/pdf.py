@@ -32,6 +32,7 @@ from reportlab.pdfgen import canvas as _rl_canvas
 
 from celerp.output.branding import BRAND_TEXT as _BRAND_TEXT, brand_url as _brand_url
 from celerp.output.document_context import prepare_document_output
+from celerp.services.doc_balance import doc_tax, doc_value
 from celerp.tax_regimes import tax_entries
 
 # DejaVu Sans (Unicode-capable - supports currency symbols like ฿, ₹, €, etc.) ships
@@ -426,9 +427,9 @@ def generate_document_pdf(doc: dict[str, Any], company: dict[str, Any] | None = 
 
     # --- Totals ---
     subtotal = float(doc.get("subtotal") or 0)
-    tax = float(doc.get("tax_amount") or doc.get("tax") or 0)
-    total = float(doc.get("total_amount") or doc.get("total") or 0) or subtotal + tax
-    outstanding = float(doc.get("outstanding_balance") or doc.get("amount_outstanding") or 0)
+    tax = float(doc_tax(doc))
+    total = float(doc_value(doc, "total") or 0) or subtotal + tax
+    outstanding = float(doc_value(doc, "amount_outstanding") or 0)
 
     totals_data = [
         [Paragraph("Subtotal", s["total_label"]), Paragraph(_fmt_money(subtotal, currency), s["total_value"])],

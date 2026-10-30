@@ -521,3 +521,55 @@ async def test_startup_saves_the_weights_an_earlier_release_printed(client, auth
     await _start(session)
     await _reweigh_and_relabel(client, auth, item_id)
     assert _printed((await _shared_lines(session, auth, ship))[0]) == printed
+
+
+async def _set_docs(session, company_id, on: bool) -> None:
+    from celerp.modules.registry import get_enabled, set_enabled
+    from celerp.services.company_lock import locked_company
+
+    session.expire_all()
+    company = await locked_company(session, company_id)
+    settings = dict(company.settings or {})
+    enabled = get_enabled(settings) if "enabled_modules" in settings else {"celerp-docs", "celerp-inventory"}
+    company.settings = set_enabled(settings, (enabled | {"celerp-docs"}) if on else (enabled - {"celerp-docs"}))
+    await session.commit()
+
+
+async def test_startup_freeze_waits_for_a_company_with_documents_off(client, auth, session):
+    """A company with Documents off keeps its lists untouched and leaves the marker unset, so the
+    start after it turns Documents back on saves them; nothing is counted as failed meanwhile."""
+    from celerp_docs.customs_freeze import freeze_issued_customs_lists
+
+    await _reset_marker(session)
+    item_id = await _item(client, auth)
+    ship = await _issued_by_an_earlier_release(client, auth, session, item_id)
+    await _set_docs(session, auth["company_id"], on=False)
+    before = await _updates(session, auth["company_id"])
+
+    result = await freeze_issued_customs_lists(session)
+    await session.commit()
+    assert result["failed"] == 0 and result["staged"] == 1
+    assert await _updates(session, auth["company_id"]) == before
+    assert await _marker(session) is None
+
+    await _set_docs(session, auth["company_id"], on=True)
+    await _start(session)
+    assert (await _lines(client, auth, ship))[0]["hs_code"] == "1234"
+    assert await _marker(session)
+
+
+async def test_a_company_with_documents_off_and_every_list_saved_lets_the_freeze_finish(client, auth, session):
+    """Only a list still lacking its item details is work that waits: a company with Documents
+    off whose issued lists are all saved does not keep the startup freeze running."""
+    from celerp_docs.customs_freeze import freeze_issued_customs_lists
+
+    item_id = await _item(client, auth)
+    ship = await _list(client, auth, "shipping_doc", item_id)
+    await _issue(client, auth, ship)
+    await _set_docs(session, auth["company_id"], on=False)
+    await _reset_marker(session)
+
+    result = await freeze_issued_customs_lists(session)
+    await session.commit()
+    assert result["failed"] == 0 and result["staged"] == 0
+    assert await _marker(session)

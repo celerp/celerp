@@ -547,10 +547,11 @@ def setup_ui_routes(app) -> None:
         )
         return _reply(parts, done=True, question_id=question_id, asked_again=asked_again)
 
-    @app.get("/ai/proposals-ui")
+    @app.post("/ai/proposals-ui")
     async def ai_proposals_ui(request: Request):
         """The reading job's bubble polls this until the job ends, then it is
-        swapped for the finished line, the assistant's summary and the bill cards."""
+        swapped for the finished line, the assistant's summary and the bill cards.
+        A POST: the first poll after the job ends saves the proposals message."""
         from starlette.responses import Response as _R
         token = _token(request)
         if not token:
@@ -1661,12 +1662,14 @@ def _job_done_line(job: dict, lang: str = "en") -> FT:
                cls="ai-msg ai-msg--ai ai-job ai-job--done", data_job_id=str(job.get("id", "")))
 
 
-def _pending_bubble(poll_url: str, delay_s: float, *children: FT, cls: str, also_on: str = "", **attrs) -> FT:
-    """A bubble that reads ``poll_url`` after ``delay_s`` seconds (at once for 0) and is
-    replaced by what it returns: the one way the thread follows a running job."""
+def _pending_bubble(poll_url: str, delay_s: float, *children: FT, cls: str, also_on: str = "",
+                    method: str = "get", **attrs) -> FT:
+    """A bubble that calls ``poll_url`` after ``delay_s`` seconds (at once for 0) and is
+    replaced by what it returns: the one way the thread follows a running job. A poll
+    that may save something (``method="post"``) is never a GET."""
     poll = f"load delay:{delay_s:g}s" if delay_s else "load"
-    return Div(*children, cls=cls, hx_get=poll_url, hx_trigger=", ".join(filter(None, (poll, also_on))),
-               hx_swap="outerHTML", **attrs)
+    return Div(*children, cls=cls, hx_trigger=", ".join(filter(None, (poll, also_on))),
+               hx_swap="outerHTML", **{f"hx_{method}": poll_url}, **attrs)
 
 
 def _job_button(job_id: str, action: str, label: str, conversation_id: str, *, target: str,
@@ -1722,7 +1725,7 @@ def _job_bubble(job: dict, conversation_id: str, lang: str = "en") -> FT:
         Div(Div(cls="ai-job__bar", style=f"width:{pct}%"), cls="ai-job__track"),
         P(t("ai.job_reading_hint", lang), cls="ai-job__hint"),
         *stop,
-        cls="ai-msg ai-msg--ai ai-job", also_on="celerp:job-done",
+        cls="ai-msg ai-msg--ai ai-job", also_on="celerp:job-done", method="post",
         id=dom_id,
         data_job_id=job_id,
         data_total=str(total),

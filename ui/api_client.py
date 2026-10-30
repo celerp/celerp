@@ -12,7 +12,7 @@ from urllib.parse import quote
 import httpx
 from starlette.responses import PlainTextResponse
 
-from celerp.capacity import REQUEST_DB_POOL_SIZE
+from celerp.capacity import MODULE_SETTLE_SECONDS, REQUEST_DB_POOL_SIZE
 from celerp.services.auth import CALLER_HEADER, CONNECT_HEADER, connect_caller, is_loopback
 from celerp.services.company_settings import BOOKS_KEYS, GENERAL
 from celerp.tax_regimes import doc_side
@@ -1463,7 +1463,7 @@ async def import_shared_doc(token: str, share_page: str) -> str:
     """Fetch a document shared from another Celerp into Received; returns its UI path."""
     async with _local_error_mapping():
         async with _local_client(token, timeout=30.0, follow_redirects=False) as c:
-            r = await c.get("/docs/import", params={"link": share_page})
+            r = await c.post("/docs/import-link", params={"link": share_page})
     return _received_doc_path(r)
 
 
@@ -3464,8 +3464,10 @@ async def enable_module(token: str, module_name: str) -> dict:
 
 
 async def disable_module(token: str, module_name: str) -> dict:
-    """POST /companies/me/modules/{name}/disable — disable a module (admin only)."""
-    async with _api_client(token) as c:
+    """POST /companies/me/modules/{name}/disable: disable a module (admin only). The
+    turn-off can wait MODULE_SETTLE_SECONDS for the company's running work in the module,
+    so this waits longer than that and always gets its outcome."""
+    async with _api_client(token, timeout=MODULE_SETTLE_SECONDS + 30) as c:
         result = _raise(await c.post(f"/companies/me/modules/{module_name}/disable")).json()
     _invalidate_inventory_metadata()
     return result
@@ -3969,12 +3971,12 @@ async def get_connectors_catalog(token: str) -> tuple[list[dict], str, bool]:
 
 
 async def get_connector_authorize_url(token: str, platform: str, shop: str = "") -> dict:
-    """GET /settings/connectors/{platform}/authorize-url — returns {authorize_url} or {error}."""
+    """POST /settings/connectors/{platform}/authorize-url - claims the connector, returns {authorize_url} or {error}."""
     params = {}
     if shop:
         params["shop"] = shop
     async with _api_client(token) as c:
-        return _raise(await c.get(f"/settings/connectors/{platform}/authorize-url", params=params)).json()
+        return _raise(await c.post(f"/settings/connectors/{platform}/authorize-url", params=params)).json()
 
 
 async def store_connector_credentials(

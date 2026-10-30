@@ -9,15 +9,26 @@ the changed entity from the platform API.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from typing import Any
 
 from celerp.connectors.base import ConnectorContext, SyncDirection, entity_allowed
 from celerp.connectors.sync_runner import run_sync
+from celerp.capacity import MODULE_SETTLE_SECONDS
+from celerp.modules.boundary import ModuleBusy, ModuleRefused
 import celerp.connectors as connector_registry
 
 log = logging.getLogger(__name__)
+
+# A store sends a webhook once and Celerp never acknowledges it (it arrives over the
+# gateway), so a delivery refused because modules were being changed is handled again
+# here, MODULE_SETTLE_SECONDS later (the wait the refusal names), up to this many times.
+# Past that, the next scheduled sync pulls what it named.
+_BUSY_RETRIES = 3
+# The deliveries waiting to be handled again, kept so none is dropped mid-wait.
+_RETRYING: set[asyncio.Task] = set()
 
 # Maps webhook topic prefixes to sync entity names
 _TOPIC_ENTITY_MAP = {
@@ -54,17 +65,61 @@ async def handle_webhook(
     expected_store_handle: str | None = None,
     expected_webhook_secret: str | None = None,
 ) -> None:
-    """Handle an incoming webhook event by running a targeted inbound sync."""
+    """Handle an incoming webhook event by running a targeted inbound sync. One refused
+    because modules were being changed is handled again later (_BUSY_RETRIES), without
+    holding up the caller."""
+    fence = {"expected_config_id": expected_config_id, "expected_store_handle": expected_store_handle,
+             "expected_webhook_secret": expected_webhook_secret}
+    if await _handle_once(event, ctx, direction, **fence):
+        _again_later(event, ctx, direction, fence, _BUSY_RETRIES)
+
+
+def _again_later(event: WebhookEvent, ctx: ConnectorContext, direction: SyncDirection,
+                 fence: dict, attempts: int) -> None:
+    async def again() -> None:
+        await asyncio.sleep(MODULE_SETTLE_SECONDS)
+        try:
+            busy = await _handle_once(event, ctx, direction, **fence)
+        except Exception as exc:  # noqa: BLE001 - as the gateway logs a delivery that failed
+            log.warning("webhook: %s/%s for %s failed when tried again: %s",
+                        event.platform, event.topic, ctx.company_id, exc)
+            return
+        if not busy:
+            return
+        if attempts > 1:
+            _again_later(event, ctx, direction, fence, attempts - 1)
+        else:
+            log.warning("webhook: %s/%s for %s still refused while modules change; the next "
+                        "scheduled sync pulls it", event.platform, event.topic, ctx.company_id)
+
+    task = asyncio.create_task(again())
+    _RETRYING.add(task)
+    task.add_done_callback(_RETRYING.discard)
+
+
+async def _handle_once(
+    event: WebhookEvent,
+    ctx: ConnectorContext,
+    direction: SyncDirection,
+    *,
+    expected_config_id,
+    expected_store_handle: str | None,
+    expected_webhook_secret: str | None,
+) -> bool:
+    """Handle the event once. True when it was refused because modules were being changed,
+    so handling it again later can succeed."""
     entity = topic_to_entity(event.topic)
     if not entity:
         log.warning("webhook: unknown topic %s for %s", event.topic, event.platform)
-        return
+        return False
 
     try:
         connector = connector_registry.get(event.platform)
     except KeyError:
         log.error("webhook: unknown platform %s", event.platform)
-        return
+        return False
+
+    deletion_busy = False
 
     normalized_topic = event.topic.replace("/", ".").lower()
     if event.platform == "woocommerce" and normalized_topic == "product.deleted":
@@ -84,40 +139,47 @@ async def handle_webhook(
                     require_owner=True,
                 )
                 if expected_config_id is not None and config.id != expected_config_id:
-                    return
+                    return False
                 if (
                     expected_webhook_secret is not None
                     and config.webhook_secret != expected_webhook_secret
                 ):
-                    return
+                    return False
                 current_direction = SyncDirection(config.direction)
                 if not entity_allowed(entity, current_direction):
-                    return
+                    return False
                 current_ctx = await fetch_context(
                     ctx.company_id,
                     event.platform,
                     ownership_session=guard_session,
                 )
                 if current_ctx is None:
-                    return
+                    return False
                 if (
                     expected_store_handle is not None
                     and current_ctx.store_handle != expected_store_handle
                 ):
-                    return
+                    return False
                 await connector.handle_product_deleted(
                     current_ctx, event.payload or {}
                 )
                 await guard_session.commit()
         except ConnectorOwnershipError:
-            return
-        log.info(
-            "webhook: processed targeted WooCommerce product deletion for %s",
-            ctx.company_id,
-        )
-        return
+            return False
+        except ModuleRefused as exc:
+            # Refused before anything changed. The product sync below records the
+            # refusal on the store's sync history; one refused as busy is handled again,
+            # and once Inventory runs the daily reconcile pass finds the product the
+            # store no longer returns.
+            deletion_busy = isinstance(exc, ModuleBusy)
+        else:
+            log.info(
+                "webhook: processed targeted WooCommerce product deletion for %s",
+                ctx.company_id,
+            )
+            return False
 
-    await run_sync(
+    result = await run_sync(
         connector,
         ctx,
         entity,
@@ -135,6 +197,7 @@ async def handle_webhook(
         event.topic,
         ctx.company_id,
     )
+    return deletion_busy or result.busy
 
 
 async def dispatch_woocommerce_webhook(

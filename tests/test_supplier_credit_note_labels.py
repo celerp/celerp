@@ -35,7 +35,7 @@ def test_list_cards_count_issued_notes():
     from ui.i18n import t
     from ui.routes.documents import _doc_status_cards
     summary = {"count_by_status": {"final": 1, "void": 1}, "all_issued_count": 1}
-    html = to_xml(_doc_status_cards([SCN], "", summary, doc_type="debit_note"))
+    html = to_xml(_doc_status_cards(summary, "debit_note"))
     assert t("status.all_issued") in html and "all_issued=1" in html
     for absent in ("status.awaiting_payment", "status.overdue", "label.paid", "documents.not_restocked"):
         assert t(absent) not in html, absent

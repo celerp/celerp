@@ -6,7 +6,8 @@ account. An archival of that account racing the payment either lands before it, 
 payment is kept among the unmatched, or waits for it, and the payment posts while the
 account is still open. A payment is never posted into an archived account.
 
-Each test holds the payment on a real PostgreSQL connection, lets another connection
+Each test holds the payment on a real PostgreSQL connection, before it takes its
+company's lock or after it judged the deposit account, lets another connection
 archive the deposit account, then lets the payment finish."""
 
 from __future__ import annotations
@@ -18,10 +19,11 @@ from sqlalchemy import text
 
 from company_backup_support import token
 from migration_support import auth, code_config, maker, real_client, real_engine  # noqa: F401
-from test_company_reset_payments import (_OCTOBER_3, _Cloud, _harbor, _payment_journal, _payments_on,
-                                         _references, _shared_invoice, _unmatched, _waiting_on_a_lock)
+from test_company_reset_payments import (_OCTOBER_3, _Cloud, _harbor, _hold_before_the_company, _payment_journal,
+                                         _payments_on, _references, _shared_invoice, _unmatched,
+                                         _waiting_on_a_lock)
 
-pytestmark = [pytest.mark.asyncio, pytest.mark.usefixtures("docs_running")]
+pytestmark = pytest.mark.asyncio
 
 
 async def _paying_into_a_bank(monkeypatch, engine, client):
@@ -44,32 +46,19 @@ async def _paying_into_a_bank(monkeypatch, engine, client):
     return boss, a, eid, code, cloud
 
 
-def _hold(monkeypatch, *, after_the_deposit_check: bool) -> tuple[asyncio.Event, asyncio.Event]:
-    """Hold the payment, until released, just before it takes the invoice's row lock, or
-    just after it judged the deposit account, still inside its transaction."""
-    from celerp_docs import routes, routes_payments
+def _hold_after_the_deposit_check(monkeypatch) -> tuple[asyncio.Event, asyncio.Event]:
+    """Hold the payment just after it judged the deposit account, still inside its
+    transaction, until released."""
+    from celerp_docs import routes_payments
     reached, release = asyncio.Event(), asyncio.Event()
+    real_check = routes_payments.require_online_deposit_account
 
-    async def wait() -> None:
+    async def checked(session, company_id, code):
+        await real_check(session, company_id, code)
         if not reached.is_set():
             reached.set()
             await release.wait()
-
-    if after_the_deposit_check:
-        real_check = routes_payments.require_online_deposit_account
-
-        async def checked(session, company_id, code):
-            await real_check(session, company_id, code)
-            await wait()
-        monkeypatch.setattr(routes_payments, "require_online_deposit_account", checked)
-    else:
-        real_doc = routes._get_doc
-
-        async def held(session, company_id, entity_id, *, for_update=False):
-            if for_update:
-                await wait()
-            return await real_doc(session, company_id, entity_id, for_update=for_update)
-        monkeypatch.setattr(routes, "_get_doc", held)
+    monkeypatch.setattr(routes_payments, "require_online_deposit_account", checked)
     return reached, release
 
 
@@ -101,7 +90,7 @@ async def test_archiving_the_deposit_account_while_its_bank_is_active_is_refused
     to while a payment is on its way. The bank account is still active, so the chart
     refuses, and the payment posts into the open account."""
     boss, a, eid, code, cloud = await _paying_into_a_bank(monkeypatch, real_engine, real_client)
-    reached, release = _hold(monkeypatch, after_the_deposit_check=False)
+    reached, release = _hold_before_the_company(monkeypatch)
     cloud.pay(a, eid, "pi_paid", amount_minor=50000, paid_at=_OCTOBER_3)
     paying = asyncio.create_task(cloud.deliver())
     await asyncio.wait_for(reached.wait(), 10)
@@ -126,7 +115,7 @@ async def test_a_bank_and_its_account_archived_while_the_payment_is_on_its_way_k
     headers = auth(await token(real_engine, boss, a))
     bank_id = (await real_client.get("/accounting/bank-accounts", headers=headers)).json()["items"]
     bank_id = next(b["id"] for b in bank_id if b["chart_account_code"] == code)
-    reached, release = _hold(monkeypatch, after_the_deposit_check=False)
+    reached, release = _hold_before_the_company(monkeypatch)
     cloud.pay(a, eid, "pi_paid", amount_minor=50000, paid_at=_OCTOBER_3)
     paying = asyncio.create_task(cloud.deliver())
     await asyncio.wait_for(reached.wait(), 10)
@@ -148,7 +137,7 @@ async def test_a_chart_account_archived_under_an_active_bank_while_the_payment_i
     """Any writer of the chart that leaves the bank account active, committed before the
     payment reaches the invoice."""
     boss, a, eid, code, cloud = await _paying_into_a_bank(monkeypatch, real_engine, real_client)
-    reached, release = _hold(monkeypatch, after_the_deposit_check=False)
+    reached, release = _hold_before_the_company(monkeypatch)
     cloud.pay(a, eid, "pi_paid", amount_minor=50000, paid_at=_OCTOBER_3)
     paying = asyncio.create_task(cloud.deliver())
     await asyncio.wait_for(reached.wait(), 10)
@@ -168,7 +157,7 @@ async def test_an_archival_still_committing_when_the_payment_reaches_the_account
     """The archival holds the chart account when the payment reaches it: the payment waits
     for it, then finds the account archived."""
     boss, a, eid, code, cloud = await _paying_into_a_bank(monkeypatch, real_engine, real_client)
-    reached, release = _hold(monkeypatch, after_the_deposit_check=False)
+    reached, release = _hold_before_the_company(monkeypatch)
     cloud.pay(a, eid, "pi_paid", amount_minor=50000, paid_at=_OCTOBER_3)
     paying = asyncio.create_task(cloud.deliver())
     await asyncio.wait_for(reached.wait(), 10)
@@ -200,7 +189,7 @@ async def test_an_archival_that_reaches_the_account_while_the_payment_posts_wait
     arrives: the archival waits until the payment is recorded, so the payment posts into
     an account that was open, and is the last thing that account took."""
     boss, a, eid, code, cloud = await _paying_into_a_bank(monkeypatch, real_engine, real_client)
-    reached, release = _hold(monkeypatch, after_the_deposit_check=True)
+    reached, release = _hold_after_the_deposit_check(monkeypatch)
     cloud.pay(a, eid, "pi_paid", amount_minor=50000, paid_at=_OCTOBER_3)
     paying = asyncio.create_task(cloud.deliver())
     await asyncio.wait_for(reached.wait(), 10)
@@ -251,7 +240,7 @@ async def test_cash_archived_or_retyped_while_a_payment_is_on_its_way_keeps_it_a
     eid, share = await _shared_invoice(real_client, real_engine, boss, a)
     assert (await real_client.get(f"/pay/{share}", follow_redirects=False)).status_code == 303
     assert cloud.opened[eid]["deposit_account"] == "1119"
-    reached, release = _hold(monkeypatch, after_the_deposit_check=False)
+    reached, release = _hold_before_the_company(monkeypatch)
     cloud.pay(a, eid, "pi_paid", amount_minor=50000, paid_at=_OCTOBER_3)
     paying = asyncio.create_task(cloud.deliver())
     await asyncio.wait_for(reached.wait(), 10)

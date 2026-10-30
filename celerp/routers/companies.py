@@ -402,11 +402,8 @@ async def _check_books_change(session: AsyncSession, company_id, current: dict, 
     # A deposit account: empty is the default account.
     if value is None or (isinstance(value, str) and value == ""):
         return value
-    from celerp.modules.loader import is_running
-    if not is_running("celerp-docs"):
-        raise HTTPException(status_code=422, detail=refusal(
-            "company.deposit_account_needs_docs",
-            "Turn on Documents on the Modules page before choosing a deposit account."))
+    from celerp.modules.boundary import require_on
+    require_on(current, "celerp-docs")
     if not isinstance(value, str):
         raise HTTPException(status_code=422, detail=refusal(
             "company.deposit_account_not_code",
@@ -579,6 +576,7 @@ async def batch_import_settings(
     from sqlalchemy import select as _select
     from celerp.models.ledger import LedgerEntry
 
+    await lock_company(session, company_id)
     keys = [r.idempotency_key for r in body.records]
     existing_keys = set((await session.execute(
         _select(LedgerEntry.idempotency_key).where(
@@ -636,6 +634,7 @@ async def create_location(
     _: None = require_permission("manage_company_settings"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    await lock_company(session, company_id)
     loc = Location(
         id=uuid.uuid4(),
         company_id=company_id,
@@ -677,6 +676,7 @@ async def import_locations_batch(
     __: None = require_permission("import_export_data"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    await lock_company(session, company_id)
     existing = {
         r.name
         for r in (await session.execute(select(Location).where(Location.company_id == company_id))).scalars().all()
@@ -769,8 +769,10 @@ async def delete_location(
         loc_uuid = uuid.UUID(location_id)
     except ValueError:
         raise HTTPException(status_code=400, detail=t("company.err_location_invalid"))
-    # Locked before the item count: an import naming this location holds it until
-    # the import commits, so the count below includes the items it placed here.
+    # The company first, as every writer that places a record at a location takes it,
+    # then the location: an import naming this location holds it until the import
+    # commits, so the count below includes the items it placed here.
+    await lock_company(session, company_id)
     loc = await session.get(Location, loc_uuid, with_for_update=True, populate_existing=True)
     if loc is None or loc.company_id != company_id:
         raise HTTPException(status_code=404, detail=t("company.err_location_not_found"))
@@ -825,9 +827,15 @@ async def transfer_install_owner(
     owner: User = Depends(require_install_owner),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Transfer installation-wide authority to an active user in this company."""
+    """Transfer installation-wide authority to an active user in this company.
+
+    The company lock comes before the login rows, as in every company request that
+    locks a login, and holds the company for the notice the transfer leaves there. Logins
+    are locked FOR NO KEY UPDATE: a sign-in holding the login's session state still writes
+    the rows that name the login, so this never waits on it while it waits here."""
+    await lock_company(session, company_id)
     current = (await session.execute(
-        select(User).where(User.is_install_owner.is_(True)).with_for_update()
+        select(User).where(User.is_install_owner.is_(True)).with_for_update(key_share=True)
     )).scalar_one_or_none()
     if current is None or current.id != owner.id:
         raise HTTPException(status_code=403, detail="Installation owner access required")
@@ -835,7 +843,7 @@ async def transfer_install_owner(
         return {"ok": True}
 
     target = (await session.execute(
-        select(User).where(User.id == user_id).with_for_update()
+        select(User).where(User.id == user_id).with_for_update(key_share=True)
     )).scalar_one_or_none()
     membership = (await session.execute(
         select(UserCompany).where(
@@ -876,9 +884,12 @@ async def _staff_reset_target(
     target_q = select(User).where(User.id == user_id)
     if lock:
         # The company, then the user's row, then the memberships: the order patch_user
-        # takes them in, so a role change made at the same moment waits or is seen.
+        # takes them in, so a role change made at the same moment waits or is seen. FOR NO
+        # KEY UPDATE, as patch_user: a sign-in of this user may hold their session state,
+        # which ending their sessions waits for, and still has to write its session record
+        # (a key share on the login).
         await lock_company(session, company_id)
-        target_q = target_q.with_for_update()
+        target_q = target_q.with_for_update(key_share=True)
     target = (await session.execute(target_q)).scalar_one_or_none()
     links = [] if target is None else (await session.execute(
         select(UserCompany).where(UserCompany.user_id == user_id, UserCompany.is_active.is_(True))
@@ -1021,8 +1032,11 @@ async def patch_user(
     from sqlalchemy import func as _func
 
     await lock_company(session, company_id)
+    # FOR NO KEY UPDATE: a sign-in of this user may hold their session state, which
+    # invalidate_sessions below waits for, and still has to write its session record (a
+    # key share on the login).
     user = (await session.execute(
-        select(User).where(User.id == user_id).with_for_update()
+        select(User).where(User.id == user_id).with_for_update(key_share=True)
     )).scalar_one_or_none()
     link = (await session.execute(
         select(UserCompany).where(
@@ -1623,15 +1637,8 @@ async def get_terms_conditions(company_id=Depends(get_current_company_id), sessi
     company = await session.get(Company, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
-    configured = company.settings.get("terms_conditions")
-    templates = terms_templates(company.settings)
-    if configured is not None and templates != configured:
-        company = await locked_company(session, company_id)
-        templates = terms_templates(company.settings)
-        if company.settings.get("terms_conditions") != templates:
-            company.settings = {**company.settings, "terms_conditions": templates}
-        await session.commit()
-    return templates
+    # The normalised templates are what an edit saves back (PATCH); a read never saves them.
+    return terms_templates(company.settings)
 
 
 @router.patch("/me/terms-conditions")
@@ -1881,11 +1888,12 @@ async def list_modules(
         loaded_modules, read_manifest_metadata,
     )
     from celerp.modules.meta import read_meta
-    from celerp.modules.registry import company_modules
+    from celerp.modules.registry import company_modules, dependents
 
     company = await session.get(Company, company_id)
     settings_dict: dict = company.settings or {} if company else {}
     enabled_names = company_modules(settings_dict)
+    needed_by = dependents(settings_dict)
     loaded_by_name: dict[str, dict] = {m["name"]: m for m in loaded_modules()}
     load_errs = load_errors()
     module_dir_raw = os.environ.get("MODULE_DIR", "")
@@ -1946,6 +1954,8 @@ async def list_modules(
                     "table_prefix": manifest_source.get("table_prefix") or None,
                     # A module built into Celerp is on for every company.
                     "enabled": pkg_name in enabled_names or is_core_folded(pkg_name),
+                    # The modules this company uses that need it: Turn off waits for them.
+                    "needed_by": needed_by.get(pkg_name, []),
                     # Core-folded modules (ai/backup/connectors) are wired at app
                     # construction, never in loaded_by_name - is_running() counts them.
                     "running": is_running(pkg_name),
@@ -1990,6 +2000,7 @@ async def enable_module(
 ) -> dict:
     """Turn a module on for this company, with the modules it needs. Refused
     for a name that is not an installed module."""
+    from celerp.modules.boundary import take_company_locks
     from celerp.modules.registry import (
         commit_with_load_set, enable_for_company, get_enabled, hold_module_state, is_installed, restart_needed,
     )
@@ -1997,7 +2008,7 @@ async def enable_module(
     await hold_module_state(session)
     if not is_installed(module_name):
         raise HTTPException(status_code=404, detail=t("company.err_module_not_found"))
-    company = await locked_company(session, company_id)
+    [company] = await take_company_locks(session, lambda: locked_company(session, company_id))
     if not company:
         raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
     company.settings, also_enabled = enable_for_company(company.settings, module_name)
@@ -2023,9 +2034,12 @@ async def disable_module(
 ) -> dict:
     """Turn a module off for this company. Other companies keep using it. Refused for a
     module built into Celerp, which is always on."""
+    from celerp.accounting_roles import refusal
+    from celerp.modules.boundary import refused_past_lock_timeout, settle_module_use, take_company_locks
     from celerp.modules.loader import is_core_folded, module_label
     from celerp.modules.registry import (
-        ModuleStillNeeded, commit_with_load_set, disable_for_company, get_enabled, hold_module_state,
+        ModuleStillNeeded, commit_with_load_set, disable_for_company, get_enabled,
+        hold_company_modules, hold_module_gate, hold_module_state,
     )
     from celerp.services.turn_off_preflight import outstanding
 
@@ -2033,8 +2047,20 @@ async def disable_module(
         raise HTTPException(status_code=409, detail=(
             f"{module_label(module_name)} is part of Celerp and is always on."))
 
-    await hold_module_state(session)
-    company = await locked_company(session, company_id)
+    # Each wait is bounded, so the answer always comes within the UI's wait
+    # (api_client.disable_module): turned off, or a 409 that says to try again.
+    label = module_label(module_name)
+    changing = HTTPException(status_code=409, detail=refusal(
+        "modules.change_busy",
+        f"Another change to modules is in progress, so the {label} module was not turned off. "
+        "Try again in a minute.", module=label))
+    with refused_past_lock_timeout(changing):
+        await hold_module_gate(session, company_id, module_name)
+    await settle_module_use(company_id, module_name)
+    with refused_past_lock_timeout(changing):
+        await hold_module_state(session, bounded=True)
+    _, company = await take_company_locks(
+        session, lambda: hold_company_modules(session, company_id), lambda: locked_company(session, company_id))
     if not company:
         raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
     blocking = (await outstanding(session, company_id, module_name))["blocking"]
@@ -2575,6 +2601,7 @@ async def deactivate_company(
         lock_connector_maintenance,
         record_connector_reset,
     )
+    from celerp.connectors.product_links import detach_product_links
     from celerp.connectors.remote_state import (
         ConnectorRemoteCleanupError,
         revoke_connector_remote_state,
@@ -2583,9 +2610,8 @@ async def deactivate_company(
     from celerp.models.connector_config import ConnectorConfig, OutboundQueue
 
     await lock_connector_maintenance(session)
-    company = await session.get(
-        Company, company_id, with_for_update=True, populate_existing=True
-    )
+    await lock_company(session, company_id)
+    company = await session.get(Company, company_id, populate_existing=True)
     if not company:
         raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
     company_id_str = str(company_id)
@@ -2596,12 +2622,12 @@ async def deactivate_company(
     )).all())
     # Product links become history before anything is revoked remotely, so a
     # failure here leaves the company and its connections untouched.
-    import celerp_inventory.services as inventory_services
     for platform in PRODUCT_CHANNEL_PLATFORMS:
         try:
-            await inventory_services.detach_external_links_for_platform(
-                session, company_id_str, platform
-            )
+            await detach_product_links(session, company_id_str, platform)
+        except HTTPException:
+            await session.rollback()
+            raise
         except Exception as exc:
             await session.rollback()
             raise HTTPException(
@@ -2693,6 +2719,12 @@ DEFAULT_PRICE_LISTS: list[dict] = [
 ]
 
 
+def _stored_price_lists(settings: dict) -> list[dict]:
+    """The company's price lists; the defaults until it saves its own."""
+    existing = settings.get("price_lists")
+    return copy.deepcopy(DEFAULT_PRICE_LISTS) if existing is None else existing
+
+
 class PriceListsPatch(BaseModel):
     price_lists: list[dict]
     # Set together with price_lists so renaming the base list stays consistent in one write.
@@ -2712,23 +2744,7 @@ async def get_price_lists(
     company = await session.get(Company, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
-    existing = company.settings.get("price_lists")
-    if existing is None:
-        company = await locked_company(session, company_id)
-        existing = company.settings.get("price_lists")
-    if existing is not None:
-        price_lists = existing
-    else:
-        # Lazy seed defaults on first access
-        import copy
-        seeded = copy.deepcopy(DEFAULT_PRICE_LISTS)
-        settings = dict(company.settings)
-        settings["price_lists"] = seeded
-        if "default_price_list" not in settings:
-            settings["default_price_list"] = DEFAULT_PRICE_LIST_NAME
-        company.settings = settings
-        await session.commit()
-        price_lists = seeded
+    price_lists = _stored_price_lists(company.settings)
     if not role_has_permission(company.settings, role, "view_inventory_costs"):
         # Without view_inventory_costs: no cost lists, and names/descriptions only. A
         # derived list's factor stays gated because price ÷ factor would reveal a
@@ -2754,7 +2770,7 @@ async def patch_price_lists(
     settings = dict(company.settings)
     error = price_config_error(payload.price_lists,
                                payload.base_price_list or settings.get("base_price_list"),
-                               settings.get("price_lists") or [])
+                               _stored_price_lists(settings))
     if error:
         raise HTTPException(status_code=422, detail=error)
     settings["price_lists"] = normalized_price_lists(payload.price_lists)
@@ -2787,7 +2803,7 @@ async def patch_base_price_list(
     if company is None:
         raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
     settings = dict(company.settings)
-    price_lists = settings.get("price_lists") or []
+    price_lists = _stored_price_lists(settings)
     target = next((pl for pl in price_lists if pl.get("name") == payload.name), None)
     if target is None:
         raise HTTPException(status_code=422, detail=t("company.err_price_list_missing", name=payload.name))

@@ -64,9 +64,11 @@ Screen names per folder:
 Screens picked for one page of the Celerp website, in WebP (q82, 1280x800). The page embeds them by
 jsDelivr URL, so renaming or removing a file breaks that page.
 
+<!-- PRESS_KIT:page-sets-table start -->
 | Page | Folder | Screens | CDN base |
 |---|---|---|---|
-| Accountants | `accountants/` | `migration-verify`, `new-company`, `company-backup` | .../screenshots/accountants/`<name>.webp` |
+| Accountants | `accountants/` | `migration-verify`, `new-company`, `company-backup`, `client-companies`, `fixed-assets`, `bank-reconciliation` | .../screenshots/accountants/`<name>.webp` |
+<!-- PRESS_KIT:page-sets-table end -->
 
 ## Artwork (hand-illustrated brand graphics)
 

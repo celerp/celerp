@@ -511,7 +511,7 @@ def test_per_item_tax_change_names_the_item_and_the_tax_charged():
                  "unit_price": 7192, "line_total": 7192, "tax_rate": 7}],
     }
     for scalar in ("tax", "tax_amount"):  # a document's tax amount, a list's
-        summary = _fields_changed_summary({"line_items": lines, scalar: {"old": 0.0, "new": 453.10}}, "USD")
+        summary = _fields_changed_summary({"line_items": lines, scalar: {"old": 0.0, "new": 453.10}}, "USD", docs_on=True)
         assert summary.startswith("DEMO-AUTO-007 Tax 0% → 7%"), summary
         assert summary.count("453.10") == 1 and "503.44" not in summary, summary
 
@@ -524,7 +524,7 @@ def test_per_item_tax_change_reads_structured_taxes():
         "new": [{"sku": "A", "name": "A", "line_total": 1000,
                  "taxes": [{"code": "VAT", "rate": 10.0}]}],
     }, "tax": {"old": 0, "new": 100}}
-    summary = _fields_changed_summary(fields, "USD")
+    summary = _fields_changed_summary(fields, "USD", docs_on=True)
     assert "A Tax 0% → 10%" in summary
     assert "100.00" in summary
 

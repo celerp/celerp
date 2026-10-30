@@ -82,6 +82,6 @@ async def test_unknown_connector_authorize_url_names_it_in_the_callers_language(
     from test_helpers import register_admin
     monkeypatch.setattr(settings, "gateway_token", "relay")
     h = {"Authorization": f"Bearer {await register_admin(client)}", "Accept-Language": "de"}
-    r = await client.get("/settings/connectors/nosuch/authorize-url", headers=h)
+    r = await client.post("/settings/connectors/nosuch/authorize-url", headers=h)
     assert r.status_code == 404, r.text
     assert r.json()["detail"] == t("connectors.unknown_connector", "de", platform="nosuch")

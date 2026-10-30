@@ -1314,7 +1314,7 @@ async def query_items(
     except ownership.ConnectorOwnershipError:
         _connected = set()
     if f.source:
-        from celerp_inventory.services import external_link_for_state
+        from celerp.connectors.product_links import external_link_for_state
         _platform = f.source.strip().lower()
         result = [
             r for r in result
@@ -2935,6 +2935,10 @@ async def bulk_shopify_sync(payload: BulkShopifySyncBody, company_id=Depends(get
     shop.sync.enabled/disabled, which sets is_sync_to_shopify on each item's projection."""
     if not payload.entity_ids:
         raise HTTPException(status_code=422, detail=t("inventory.err_none_selected"))
+    from celerp.connectors.ownership import lock_connector_key
+
+    # Hold Shopify steady (connect and disconnect wait) before the company and item locks.
+    await lock_connector_key(session, "shopify")
     await _lock_selected_items(session, company_id, payload.entity_ids)
     event_type = "shop.sync.enabled" if payload.enable else "shop.sync.disabled"
     event_ids = []
@@ -4262,7 +4266,8 @@ async def _plan_merge(session: AsyncSession, company_id, payload: MergeBody, set
     source items as read by the caller; the merge passes them locked."""
     from celerp.connectors import ownership, registry
     from celerp.services.auto_je import company_currency, merge_reclassification
-    from celerp_inventory.services import external_link_for_state, normalize_sku
+    from celerp.connectors.product_links import external_link_for_state
+    from celerp_inventory.services import normalize_sku
 
     reject_system_item_fields({"attributes": payload.resolved_attributes or {}})
     reject_price_change(
@@ -5125,7 +5130,7 @@ async def undo_import_batch(
     rows = await lock_projections(session, company_id, entity_ids)
     entries = (await session.execute(select(Projection).where(
         Projection.company_id == company_id,
-        Projection.entity_id.startswith(f"je:auto:opening-stock:{batch.id}:")))).scalars().all()
+        Projection.entity_id.startswith(f"je:auto:opening-stock:{batch.id}:", autoescape=True)))).scalars().all()
     unexpected = sorted(e.entity_id for e in entries if (e.state or {}).get("status") != "posted")
     if unexpected:
         raise HTTPException(status_code=409, detail={

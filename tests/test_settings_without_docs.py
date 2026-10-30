@@ -44,11 +44,15 @@ async def test_setup_settings_save_without_documents(client, docs_not_running):
 
 @pytest.mark.asyncio
 async def test_deposit_account_without_documents_is_refused_unchanged(client, docs_not_running):
+    """The company uses Documents and this process has not started it: the same refusal
+    as every other place Documents does the work, and nothing in the request is saved.
+    The other states are in test_module_off_boundary.py."""
     h = await _owner(client)
     r = await client.patch("/companies/me/books", json={"stripe_deposit_account": "1000", "currency": "EUR"},
                            headers=h)
-    assert r.status_code == 422, r.text
-    assert "Documents" in r.text
+    detail = r.json()["detail"]
+    assert (r.status_code, detail["message_key"]) == (403, "modules.starts_after_restart"), r.text
+    assert detail["message"] == "The Documents module starts after Celerp restarts."
     settings = (await client.get("/companies/me", headers=h)).json()["settings"]
     assert "stripe_deposit_account" not in settings
     assert settings.get("currency") != "EUR"

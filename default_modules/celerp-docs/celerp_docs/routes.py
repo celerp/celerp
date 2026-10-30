@@ -9,7 +9,7 @@ import hashlib
 import json
 import math
 import uuid
-from dataclasses import asdict, dataclass, replace as _dc_replace
+from dataclasses import asdict, dataclass, fields as _dc_fields, replace as _dc_replace
 from datetime import datetime, timezone, date as _date
 from decimal import Decimal
 from collections.abc import Awaitable, Callable, Iterable
@@ -71,10 +71,13 @@ from celerp.services.money import allocate_pro_rata, books_currency, checked_exc
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, coerce_price, get_price_config, is_cost_list_name, line_price_list, price_keys_in, resolve_price
 from celerp.services.terms import resolve_document_terms
 from celerp.services.payment_terms import company_payment_terms, due_date_for_terms
-from celerp_contacts.references import contact_accepts, contact_snapshot, lock_contacts
+from celerp_contacts.references import (
+    contact_accepts, contact_snapshot, lock_contacts, party_name_sql,
+)
 from celerp.output.document_context import prepare_document_output
-from celerp_docs.doc_constants import WRITEOFF_ACCOUNT_TYPES, INBOUND_DOC_TYPES, DRAFT_REVERT_RETURNED, DRAFT_REVERT_STATUSES, INBOUND_DRAFT_REVERT_STATUSES, FULFILLABLE_STATUSES, LEGACY_CONTACT_FIELDS, LIFECYCLE_OWNED_FIELDS, NON_FINANCIAL_DOC_TYPES, RECEIVABLE_STATUSES, RESERVABLE_DOC_STATUSES, REVERTIBLE_STATUSES, SALES_PRICED_DOC_TYPES, SUPPLIER_RETURN_STATUSES, CREDIT_APPLICATION_METHODS, CONVERTIBLE_STATUSES, QUOTATION_SPENT_STATUSES, sent_out_by
-from celerp.services.doc_balance import DOC_FIELD_FALLBACKS, doc_value, is_awaiting_payment, is_overdue_document, is_owed, outstanding_balance
+from celerp_docs.doc_constants import WRITEOFF_ACCOUNT_TYPES, INBOUND_DOC_TYPES, DRAFT_REVERT_RETURNED, DRAFT_REVERT_STATUSES, INBOUND_DRAFT_REVERT_STATUSES, LEGACY_CONTACT_FIELDS, LIFECYCLE_OWNED_FIELDS, NON_FINANCIAL_DOC_TYPES, RESERVABLE_DOC_STATUSES, REVERTIBLE_STATUSES, SALES_PRICED_DOC_TYPES, SUPPLIER_RETURN_STATUSES, CREDIT_APPLICATION_METHODS, CONVERTIBLE_STATUSES
+from celerp.services.record_quantities import FULFILLABLE_STATUSES, QUOTATION_SPENT_STATUSES, RECEIVABLE_STATUSES, sent_out_by
+from celerp.services.doc_balance import DOC_FIELD_FALLBACKS, doc_value, is_awaiting_payment, is_open_credit, is_overdue_document, is_owed, is_paid_document, outstanding_balance
 from celerp.services.list_behavior import (
     DRAFT, FINALIZED, CLOSED, VOID, DEFAULT_LIST_TYPE, LIST_TYPES, SCAN_RUNS_FIELD, SUPPLIER_DOC_TYPES, ScanBehavior,
     behavior, scan_behavior, status_key, terminal_action, is_money_list,
@@ -995,6 +998,8 @@ class DocListFilters:
     q: str | None = None
     contact_id: str | None = None
     overdue_only: bool = False
+    awaiting_only: bool = False
+    paid_only: bool = False
     all_issued: bool = False
     unfulfilled_only: bool = False
     not_restocked: bool = False
@@ -1032,8 +1037,8 @@ def _doc_issue_date():
 
 def _doc_sql_where(company_id: str, f: DocListFilters) -> list:
     """The SQL WHERE for ``f`` (company scope included): every filter the DB can evaluate. The
-    multi-field filters (overdue_only, unfulfilled_only, not_restocked, not_stocked) are not
-    here; query_docs applies them in Python, and the summary ignores them by design."""
+    flag filters (``_doc_flag_rules``) are not here; they run row by row (``_doc_filter``), and
+    ``_doc_list_filter`` pairs the two."""
     id_list = [x.strip() for x in f.ids.split(",") if x.strip()] if f.ids else []
     if len(id_list) > MAX_IDS_FILTER:
         raise HTTPException(status_code=422, detail=t("documents.err_too_many_ids", max=MAX_IDS_FILTER))
@@ -1106,6 +1111,8 @@ def _doc_sql_order(field: str, descending: bool) -> list:
         expr = Projection.updated_at
     elif field == "issue_date":
         expr = _doc_issue_date()
+    elif field == "contact_name":
+        expr = party_name_sql()
     else:
         values = [
             _func.nullif(Projection.state[k].as_string(), "")
@@ -1125,11 +1132,12 @@ def _doc_display(state: dict) -> dict:
     return state | {field: doc_value(state, field) for field in DOC_FIELD_FALLBACKS}
 
 
-def _doc_row(r: Projection) -> dict:
-    """The list row for a document: its displayed state (``_doc_display``) with ``id`` and
-    ``_updated_at``. A document with no issue_date shows the day it was created, the date
-    ``_doc_issue_date`` windows and sorts it by."""
-    row = r.state | {"id": r.entity_id, "_updated_at": r.updated_at.isoformat() if r.updated_at else None}
+def _doc_row(r: Projection, contact_name: str | None) -> dict:
+    """The list row for a document: its displayed state (``_doc_display``) with ``id``,
+    ``_updated_at`` and the ``contact_name`` the list shows (``party_name_sql``). A document with
+    no issue_date shows the day it was created, the date ``_doc_issue_date`` windows and sorts it by."""
+    row = r.state | {"id": r.entity_id, "_updated_at": r.updated_at.isoformat() if r.updated_at else None,
+                     "contact_name": contact_name}
     if not row.get("issue_date") and r.created_at:
         row["issue_date"] = r.created_at.date().isoformat()
     return _doc_display(row)
@@ -1139,21 +1147,61 @@ def _doc_row(r: Projection) -> dict:
 _DOC_FILTER_KEYS = ("doc_type", "status", "due_date", "amount_outstanding", "total", "fulfillment_status", "return_received_items", "received_items")
 
 
+def _doc_flag_rules(today: str) -> dict[str, Callable[[dict], bool]]:
+    """The rule each flag filter of the list selects a displayed row (``_doc_display``) by, on
+    ``today``. The list applies it (``_doc_filter``) and the summary counts it (``_doc_summary``)
+    with the same function, so a status card linked through a flag counts the rows it opens."""
+    def issued(x: dict) -> bool:
+        return x.get("status") not in (DRAFT, VOID)
+
+    return {
+        "overdue_only": lambda x: is_overdue_document(x, today),
+        "awaiting_only": lambda x: is_awaiting_payment(x.get("doc_type"), x.get("status")),
+        "paid_only": is_paid_document,
+        "unfulfilled_only": lambda x: issued(x) and x.get("status") != CLOSED and x.get("fulfillment_status") != "fulfilled",
+        "not_restocked": lambda x: issued(x) and not (x.get("return_received_items") or []),
+        "not_stocked": lambda x: issued(x) and not (x.get("received_items") or []),
+    }
+
+
+# Each flag filter's summary figures: the count key, and the receivable total (key, field) its
+# issued invoices add to, or None.
+_DOC_FLAG_FIGURES: dict[str, tuple[str, tuple[str, str] | None]] = {
+    "overdue_only": ("overdue_count", ("overdue", "amount_outstanding")),
+    "awaiting_only": ("awaiting_payment_count", ("awaiting_payment", "amount_outstanding")),
+    "paid_only": ("paid_count", ("paid", "total")),
+    "unfulfilled_only": ("unfulfilled_count", ("unfulfilled", "total")),
+    "not_restocked": ("not_restocked_count", None),
+    "not_stocked": ("not_stocked_count", None),
+}
+_DOC_FLAGS = tuple(_DOC_FLAG_FIGURES)
+
+
 async def _doc_filter(session: AsyncSession, company_id: str, f: DocListFilters):
-    """The filters that run row by row over displayed rows (``_doc_display``), as one predicate,
+    """The flag filters set on ``f`` (``_doc_flag_rules``) as one predicate over displayed rows,
     or None when none is set and every filter is in the SQL WHERE. The company's day is read only
-    when a filter needs it."""
-    checks = []
-    if f.overdue_only:
-        today = (await company_today(session, company_id)).isoformat()
-        checks.append(lambda x: is_overdue_document(x, today))
-    if f.unfulfilled_only:
-        checks.append(lambda x: x.get("status") not in ("draft", "void", "closed") and x.get("fulfillment_status") != "fulfilled")
-    if f.not_restocked:
-        checks.append(lambda x: x.get("status") not in ("draft", "void") and not (x.get("return_received_items") or []))
-    if f.not_stocked:
-        checks.append(lambda x: x.get("status") not in ("draft", "void") and not (x.get("received_items") or []))
-    return (lambda x: all(c(x) for c in checks)) if checks else None
+    when a filter is set."""
+    flags = [flag for flag in _DOC_FLAGS if getattr(f, flag)]
+    if not flags:
+        return None
+    rules = _doc_flag_rules((await company_today(session, company_id)).isoformat())
+    checks = [rules[flag] for flag in flags]
+    return lambda x: all(c(x) for c in checks)
+
+
+async def _doc_list_filter(session: AsyncSession, company_id: str, f: DocListFilters):
+    """The list's filter step for ``f``: its SQL WHERE (``_doc_sql_where``) and the row-by-row
+    predicate over displayed rows (``_doc_filter``, None when no such filter is set). The list,
+    its CSV export and its summary all select their rows through this, so they cannot drift."""
+    return _doc_sql_where(company_id, f), await _doc_filter(session, company_id, f)
+
+
+# The filters the status cards split the list by. The cards count the set the other filters
+# select; the summary's own figures count the rows the list shows, every filter applied.
+# An ids batch is split too: a card link keeps search, contact and dates only, so a card counts
+# the rows its link lands on.
+_DOC_SPLIT_FILTERS = ("status", "status_in", "exclude_status", "all_issued", *_DOC_FLAGS, "converted_to_type", "ids")
+_DOC_FILTER_DEFAULTS = {fl.name: fl.default for fl in _dc_fields(DocListFilters)}
 
 
 def _doc_base_amounts(state: dict, fields: tuple[str, ...], base_currency: str) -> dict[str, Decimal] | None:
@@ -1212,13 +1260,12 @@ async def query_docs(session: AsyncSession, company_id: str, f: DocListFilters, 
     the index passes its page."""
     # Every single-field filter is in the SQL WHERE. The multi-field filters (``_doc_filter``) run
     # in Python over the SQL-ordered rows, so both paths share one ORDER BY.
-    base_where = _doc_sql_where(company_id, f)
+    base_where, keep = await _doc_list_filter(session, company_id, f)
     order_by = _doc_sql_order(_doc_sort_field(f), f.dir == "desc")
-    keep = await _doc_filter(session, company_id, f)
 
     if keep is not None:
-        rows = (await session.execute(select(Projection).where(*base_where).order_by(*order_by))).scalars().all()
-        out = [x for x in map(_doc_row, rows) if keep(x)]
+        rows = (await session.execute(select(Projection, party_name_sql()).where(*base_where).order_by(*order_by))).all()
+        out = [x for x in (_doc_row(*row) for row in rows) if keep(x)]
         total = len(out)
         if offset:
             out = out[offset:]
@@ -1231,7 +1278,7 @@ async def query_docs(session: AsyncSession, company_id: str, f: DocListFilters, 
     total = (await session.execute(count_q)).scalar_one()
 
     list_q = (
-        select(Projection)
+        select(Projection, party_name_sql())
         .where(*base_where)
         .order_by(*order_by)
         .offset(offset)
@@ -1239,8 +1286,8 @@ async def query_docs(session: AsyncSession, company_id: str, f: DocListFilters, 
     if limit is not None:
         list_q = list_q.limit(limit)
 
-    rows = (await session.execute(list_q)).scalars().all()
-    return {"items": [_doc_row(r) for r in rows], "total": total}
+    rows = (await session.execute(list_q)).all()
+    return {"items": [_doc_row(*row) for row in rows], "total": total}
 
 
 @router.get("", dependencies=[require_permission("view_documents")], openapi_extra={"x-celerp-agent": True})
@@ -1298,44 +1345,74 @@ async def get_doc_summary(
     company_id: str = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Counts and totals for the document list, over the same filters as list_docs (type, search,
-    contact, ids, date window) so the cards over a filtered list count the rows the list shows.
-    The status filters are ignored: the cards split the filtered set by status.
+    """Counts and totals for the document list. The figures count the rows the list shows for
+    the same filters (``_doc_list_filter``); ``cards`` holds the same figures for the set the
+    status cards split, which is those filters without the ones the cards split by
+    (``_DOC_SPLIT_FILTERS``). One read of the rows serves both.
 
     Totals are in the company currency (``_doc_base_amounts``). A document that cannot be valued
-    there is left out of every total and counted in ``unvalued_count``."""
+    there is left out of every total and counted in ``unvalued_count`` (and, when it is an issued
+    invoice, in ``invoice_unvalued_count``). ``open_credit_total`` is
+    what the open credit notes and supplier credit notes still have to apply or refund
+    (``is_open_credit``, the rule the aging reports net them by). ``total_by_status`` totals the
+    documents of every type by status. A sort the list refuses is refused here too."""
+    _doc_sort_field(filters)
     today = (await company_today(session, company_id)).isoformat()
     company = await session.get(Company, company_id)
     base_currency = (company.settings or {}).get("currency", "USD") if company else "USD"
-    summary_where = _doc_sql_where(company_id, _dc_replace(filters, status=None, status_in=None, exclude_status=None, all_issued=False))
-    rows = (await session.execute(select(Projection).where(*summary_where))).scalars().all()
+    cards_f = _dc_replace(filters, **{k: _DOC_FILTER_DEFAULTS[k] for k in _DOC_SPLIT_FILTERS})
+    where, keep = await _doc_list_filter(session, company_id, filters)
+    card_where, card_keep = await _doc_list_filter(session, company_id, cards_f)
+    rows = (await session.execute(
+        select(Projection.state, _sa.and_(*where).label("listed")).where(*card_where))).all()
+
+    def kept(state: dict, test) -> bool:
+        return test is None or test(_doc_display(state))
+
+    summary = _doc_summary([s for s, listed in rows if listed and kept(s, keep)], today, base_currency)
+    if cards_f == filters:
+        return summary | {"cards": summary}
+    return summary | {"cards": _doc_summary([s for s, _l in rows if kept(s, card_keep)], today, base_currency)}
+
+
+def _doc_summary(states: list[dict], today: str, base_currency: str) -> dict:
+    """The counts and totals of ``get_doc_summary`` over the documents ``states``."""
     totals = dict.fromkeys((
         "ar_gross", "ar_paid", "ar_outstanding", "awaiting_payment", "overdue", "paid", "sent",
-        "draft", "void", "memo", "unfulfilled",
+        "draft", "void", "memo", "unfulfilled", "open_credit",
     ), Decimal(0))
     count_by_status: dict[str, int] = {}
+    total_by_status: dict[str, Decimal] = {}
+    rules = _doc_flag_rules(today)
+    flag_counts = dict.fromkeys(rules, 0)
     invoice_count = 0
-    awaiting_payment_count = 0
-    overdue_count = 0
-    paid_count = 0
-    unfulfilled_count = 0
-    not_restocked_count = 0
-    not_stocked_count = 0
     unvalued_count = 0
+    invoice_unvalued_count = 0
 
     def add(key: str, amounts: dict[str, Decimal] | None, field: str) -> None:
         if amounts is not None:
             totals[key] += amounts[field]
 
-    for row in rows:
-        state = row.state
+    for state in states:
         st = state.get("status", "")
         count_by_status[st] = count_by_status.get(st, 0) + 1
         dt = state.get("doc_type")
+        open_credit = dt != "invoice" and st not in ("void", "draft") and is_open_credit(state)
+        amounts = _doc_base_amounts(state, ("total", "amount_outstanding", "amount_paid") if dt == "invoice"
+                                    else ("total", "amount_outstanding") if open_credit else ("total",), base_currency)
+        total_by_status.setdefault(st, Decimal(0))
+        if amounts is None:
+            unvalued_count += 1
+        else:
+            total_by_status[st] += amounts["total"]
+        shown = _doc_display(state)
+        for flag, rule in rules.items():
+            if rule(shown):
+                flag_counts[flag] += 1
+                money = _DOC_FLAG_FIGURES[flag][1]
+                if money and dt == "invoice":
+                    add(money[0], amounts, money[1])
         if dt == "invoice":
-            amounts = _doc_base_amounts(state, ("total", "amount_outstanding", "amount_paid"), base_currency)
-            if amounts is None:
-                unvalued_count += 1
             if st == "draft":
                 add("draft", amounts, "total")
                 continue
@@ -1343,41 +1420,17 @@ async def get_doc_summary(
                 add("void", amounts, "total")
                 continue
             invoice_count += 1
+            invoice_unvalued_count += amounts is None
             add("ar_gross", amounts, "total")
             add("ar_paid", amounts, "amount_paid")
             add("ar_outstanding", amounts, "amount_outstanding")
-            if state.get("fulfillment_status") != "fulfilled":
-                unfulfilled_count += 1
-                add("unfulfilled", amounts, "total")
-            if is_awaiting_payment(dt, st):
-                awaiting_payment_count += 1
-                add("awaiting_payment", amounts, "amount_outstanding")
-                if is_overdue_document(state, today):
-                    overdue_count += 1
-                    add("overdue", amounts, "amount_outstanding")
-                if st == "sent":
-                    add("sent", amounts, "amount_outstanding")
-            elif st == "paid":
-                paid_count += 1
-                add("paid", amounts, "total")
-        else:
-            if st in ("void", "draft"):
-                continue
+            if st == "sent":
+                add("sent", amounts, "amount_outstanding")
+        elif st not in ("void", "draft"):
             if dt == "memo":
-                amounts = _doc_base_amounts(state, ("total",), base_currency)
-                if amounts is None:
-                    unvalued_count += 1
                 add("memo", amounts, "total")
-            if is_awaiting_payment(dt, st):
-                awaiting_payment_count += 1
-            if is_overdue_document(state, today):
-                overdue_count += 1
-            if dt == "credit_note":
-                if not (state.get("return_received_items") or []):
-                    not_restocked_count += 1
-            if dt == "bill":
-                if not (state.get("received_items") or []):
-                    not_stocked_count += 1
+            if open_credit:
+                add("open_credit", amounts, "amount_outstanding")
     money = {k: to_stored_float(round_money(v, base_currency)) for k, v in totals.items()}
     draft_count = count_by_status.get("draft", 0)
     total_rows = sum(count_by_status.values())
@@ -1389,11 +1442,9 @@ async def get_doc_summary(
         "non_void_count": sum(v for k, v in count_by_status.items() if k not in ("void", "draft")),
         "all_issued_count": all_issued_count,
         "all_issued_total": money["ar_gross"],
-        "awaiting_payment_count": awaiting_payment_count,
+        **{count_key: flag_counts[flag] for flag, (count_key, _money) in _DOC_FLAG_FIGURES.items()},
         "awaiting_payment_total": money["awaiting_payment"],
-        "overdue_count": overdue_count,
         "overdue_total": money["overdue"],
-        "paid_count": paid_count,
         "paid_total": money["paid"],
         "sent_total": money["sent"],
         "draft_total": money["draft"],
@@ -1402,13 +1453,13 @@ async def get_doc_summary(
         "ar_paid": money["ar_paid"],
         "ar_outstanding": money["ar_outstanding"],
         "invoice_count": invoice_count,
-        "unfulfilled_count": unfulfilled_count,
         "unfulfilled_total": money["unfulfilled"],
-        "not_restocked_count": not_restocked_count,
-        "not_stocked_count": not_stocked_count,
         "unvalued_count": unvalued_count,
+        "invoice_unvalued_count": invoice_unvalued_count,
         "memo_all_total": money["memo"],
+        "open_credit_total": money["open_credit"],
         "count_by_status": count_by_status,
+        "total_by_status": {k: to_stored_float(round_money(v, base_currency)) for k, v in total_by_status.items()},
     }
 
 
@@ -1737,6 +1788,13 @@ async def create_doc(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    return await create_doc_record(payload, company_id, role, settings, user, session)
+
+
+async def create_doc_record(payload: DocCreatePayload, company_id, role: str, settings: dict, user,
+                            session: AsyncSession, *, commit: bool = True) -> dict:
+    """Create a document (create_doc). ``commit=False`` leaves the transaction open, so a
+    caller that creates inside a larger change keeps it atomic."""
     from celerp.services import auto_je
 
     idem_key = payload.idempotency_key or str(uuid.uuid4())
@@ -1860,7 +1918,8 @@ async def create_doc(
     if getattr(entry, "was_deduped", False):
         return {"event_id": entry.id, "id": entry.entity_id}
 
-    await session.commit()
+    if commit:
+        await session.commit()
     return {"event_id": entry.id, "id": entry.entity_id}
 
 
@@ -2120,7 +2179,7 @@ async def _sender_reply_to(session: AsyncSession, company_id, user) -> str:
     return cfg.get("email") or getattr(user, "email", "") or ""
 
 
-async def _payments_tip_suffix(session, company_id) -> str:
+async def _payments_tip_suffix(session: AsyncSession, company_id) -> str:
     """One-time payments pitch that piggybacks on the first delivery receipt
     for a payable doc (no separate nag notification). Empty string once shown,
     once payments are on, or when the instance cannot take payments anyway."""
@@ -3562,20 +3621,19 @@ async def _posted_journal_entries(session: AsyncSession, company_id: str, entity
 
     Entries are found by the id every automatic posting is minted with,
     `je:auto:{doc_id}:{op}` (`celerp/services/auto_je.py`), the same prefix match
-    payment recording uses below. `_` and `%` are escaped so a document id
-    carrying either cannot widen the match. This finds entries posted FOR the
+    payment recording uses below. The match escapes `_` and `%`, so a document id
+    carrying either cannot widen it. This finds entries posted FOR the
     document, which is not the same as every entry that mentions it: a credit
     note applied to an invoice posts under the invoice's id, and is unreachable
     here by design, because applying a credit note requires finalising it and a
     finalised document is refused a line earlier.
     """
-    prefix = entity_id.replace("\\", "\\\\").replace("_", r"\_").replace("%", r"\%")
     rows = await session.execute(
         select(Projection.entity_id)
         .where(
             Projection.company_id == company_id,
             Projection.entity_type == "journal_entry",
-            Projection.entity_id.like(f"je:auto:{prefix}:%", escape="\\"),
+            Projection.entity_id.startswith(f"je:auto:{entity_id}:", autoescape=True),
         )
         .order_by(Projection.entity_id)
     )
@@ -4378,7 +4436,7 @@ async def delete_payment(
         _pay_rows = (await session.execute(
             _sa.select(Projection).where(
                 Projection.company_id == company_id,
-                Projection.entity_id.like(f"je:auto:{entity_id}:pay:%"),
+                Projection.entity_id.startswith(f"je:auto:{entity_id}:pay:", autoescape=True),
             )
         )).scalars().all()
         _owners = [c for c in _pay_rows if _owns(c.state)]
@@ -7624,7 +7682,7 @@ async def add_doc_note(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    await _get_doc(session, company_id, entity_id)
+    await _get_doc(session, company_id, entity_id, for_update=True)
     if not payload.note.strip():
         raise HTTPException(status_code=422, detail=t("documents.err_note_empty"))
     note_id = f"note:{uuid.uuid4()}"
@@ -7656,7 +7714,7 @@ async def update_doc_note(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    await _get_doc(session, company_id, entity_id)
+    await _get_doc(session, company_id, entity_id, for_update=True)
     row = await session.get(Projection, {"company_id": company_id, "entity_id": note_id})
     if row is None or row.entity_type != "doc_note" or row.state.get("doc_id") != entity_id:
         raise HTTPException(status_code=404, detail=t("documents.err_note_not_found"))
@@ -7680,7 +7738,7 @@ async def delete_doc_note(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    await _get_doc(session, company_id, entity_id)
+    await _get_doc(session, company_id, entity_id, for_update=True)
     row = await session.get(Projection, {"company_id": company_id, "entity_id": note_id})
     if row is None or row.entity_type != "doc_note" or row.state.get("doc_id") != entity_id:
         raise HTTPException(status_code=404, detail=t("documents.err_note_not_found"))
@@ -8065,24 +8123,23 @@ async def export_docs_csv(
     """The document list as CSV: the same filters, order and displayed values as the index, every
     matching row (no page), and the columns the screen asked for via ``cols``."""
     out_cols = resolve_export_cols(cols, _DOC_EXPORT_COLS, _DOC_EXPORT_COLS)
-    base_where = _doc_sql_where(company_id, filters)
+    base_where, keep = await _doc_list_filter(session, company_id, filters)
     order_by = _doc_sql_order(_doc_sort_field(filters), filters.dir == "desc")
-    keep = await _doc_filter(session, company_id, filters)
     # Read only the state keys the exported columns and the row filters need, never whole documents.
-    fields = {c for c in out_cols if c != "entity_id"} | (set(_DOC_FILTER_KEYS) if keep else set())
+    fields = {c for c in out_cols if c not in ("entity_id", "contact_name")} | (set(_DOC_FILTER_KEYS) if keep else set())
     keys = sorted(fields | {k for field in fields for k in DOC_FIELD_FALLBACKS.get(field, ())})
 
     async def _rows():
         stmt = (
-            select(Projection.entity_id, *(Projection.state[k] for k in keys))
+            select(Projection.entity_id, party_name_sql(), *(Projection.state[k] for k in keys))
             .where(*base_where)
             .order_by(*order_by)
             .execution_options(yield_per=500)
         )
         result = await session.stream(stmt)
         try:
-            async for entity_id, *values in result:
-                row = _doc_display({k: v for k, v in zip(keys, values) if v is not None})
+            async for entity_id, contact_name, *values in result:
+                row = _doc_display({k: v for k, v in zip(keys, values) if v is not None} | {"contact_name": contact_name})
                 if keep is None or keep(row):
                     yield row | {"entity_id": entity_id}
         finally:
@@ -8234,12 +8291,12 @@ def _list_converted(target_type: str | None = None) -> list:
 
 def _list_search_where(q: str):
     """SQL predicate for the free-text list search over the reference, the shown customer and
-    the contact id."""
-    ql = f"%{q.lower()}%"
+    the contact id. A % or _ in the search is matched as itself, not as a wildcard."""
+    ql = q.lower()
     return _sa.or_(
-        _func.lower(Projection.state["ref_id"].as_string()).like(ql),
-        _func.lower(_list_customer()).like(ql),
-        _func.lower(Projection.state["contact_id"].as_string()).like(ql),
+        _func.lower(Projection.state["ref_id"].as_string()).contains(ql, autoescape=True),
+        _func.lower(_list_customer()).contains(ql, autoescape=True),
+        _func.lower(Projection.state["contact_id"].as_string()).contains(ql, autoescape=True),
     )
 
 
@@ -8586,6 +8643,13 @@ async def create_list(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    return await create_list_record(payload, company_id, role, settings, user, session)
+
+
+async def create_list_record(payload: ListCreatePayload, company_id, role: str, settings: dict, user,
+                             session: AsyncSession, *, commit: bool = True) -> dict:
+    """Create a List (create_list). ``commit=False`` leaves the transaction open, so a
+    caller that creates inside a larger change keeps it atomic."""
     idem_key = payload.idempotency_key or str(uuid.uuid4())
     digest = _request_digest("list", None, None, payload.model_dump(mode="json", exclude={"idempotency_key"}))
 
@@ -8639,7 +8703,8 @@ async def create_list(
         )
     entry = await _emit_list(session, company_id, entity_id, "list.created", data, user, idem_key,
                              meta={"request": digest})
-    await session.commit()
+    if commit:
+        await session.commit()
     return {"event_id": entry.id, "id": entity_id}
 
 
@@ -9614,7 +9679,7 @@ async def add_list_note(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    await _get_list(session, company_id, entity_id)
+    await _get_list_for_update(session, company_id, entity_id)
     if not payload.note.strip():
         raise HTTPException(status_code=422, detail=t("documents.err_note_empty"))
     note_id = f"note:{uuid.uuid4()}"
@@ -9646,7 +9711,7 @@ async def update_list_note(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    await _get_list(session, company_id, entity_id)
+    await _get_list_for_update(session, company_id, entity_id)
     row = await session.get(Projection, {"company_id": company_id, "entity_id": note_id})
     if row is None or row.entity_type != "list_note" or row.state.get("list_id") != entity_id:
         raise HTTPException(status_code=404, detail=t("documents.err_note_not_found"))
@@ -9670,7 +9735,7 @@ async def delete_list_note(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    await _get_list(session, company_id, entity_id)
+    await _get_list_for_update(session, company_id, entity_id)
     row = await session.get(Projection, {"company_id": company_id, "entity_id": note_id})
     if row is None or row.entity_type != "list_note" or row.state.get("list_id") != entity_id:
         raise HTTPException(status_code=404, detail=t("documents.err_note_not_found"))
@@ -11903,6 +11968,13 @@ async def undo_receive(
     already returned to the supplier keep the receipt in place: undoing it would orphan the
     posted return. Undoing a receipt already undone reports that instead of failing.
     """
+    return await undo_receive_record(entity_id, company_id, user, session, commit=True)
+
+
+async def undo_receive_record(entity_id: str, company_id: str, user, session: AsyncSession, *,
+                              commit: bool = True) -> dict:
+    """Undo everything received on a bill (undo_receive). ``commit=False`` leaves the
+    transaction open, so a caller that undoes inside a larger change keeps it atomic."""
     from celerp.services import auto_je
 
     row = await _get_doc(session, company_id, entity_id, for_update=True)
@@ -12074,7 +12146,8 @@ async def undo_receive(
               if "lot_quantity_added" in x and 0 <= x.get("po_line_index", -1) < len(lines)],
     )
 
-    await session.commit()
+    if commit:
+        await session.commit()
     return {"undone": True, "item_ids": received_item_ids}
 
 
@@ -13549,7 +13622,8 @@ async def undo_write_off(
     adjustment_ids = (await session.execute(select(Projection.entity_id).where(
         Projection.company_id == company_id,
         Projection.entity_type == "journal_entry",
-        Projection.entity_id.like(f"je:auto:{entity_id}:cost:%:writeoff_cost:0"),
+        Projection.entity_id.startswith(f"je:auto:{entity_id}:cost:", autoescape=True),
+        Projection.entity_id.endswith(":writeoff_cost:0", autoescape=True),
     ).order_by(Projection.entity_id))).scalars().all()
     for adjustment_id in adjustment_ids:
         derived_id = adjustment_id.removeprefix("je:auto:").removesuffix(":writeoff_cost:0")

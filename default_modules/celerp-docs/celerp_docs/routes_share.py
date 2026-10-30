@@ -7,7 +7,7 @@ How a share works:
   1. The sender shares a document (POST /docs/{id}/share) and gets a link to a
      read-only page for it.
   2. That page has an Import button for recipients who use Celerp.
-  3. The recipient pastes the link into their own Celerp (GET /docs/import?link=).
+  3. The recipient pastes the link into their own Celerp (POST /docs/import-link?link=).
   4. The document arrives under Received, apart from the recipient's own books,
      until they book it as a local draft.
   5. When the sender's Celerp is not reachable from the recipient, the page offers
@@ -42,6 +42,7 @@ from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.models.share import DocShareToken, is_active as share_is_active
 from celerp.services.auth import get_current_company_id, get_current_user
+from celerp.services.company_lock import lock_company
 from celerp.services.money import document_line_amount, round_money, to_decimal, to_stored_float
 from celerp.services.permissions import require_permission
 from celerp.services.outbound_url import validate_public_base_url
@@ -329,8 +330,15 @@ async def _find_share_row(session: AsyncSession, company_id, entity_id: str) -> 
         select(DocShareToken).where(
             DocShareToken.company_id == company_id,
             DocShareToken.entity_id == entity_id,
-        )
+        ).execution_options(populate_existing=True)
     )).scalar_one_or_none()
+
+
+async def _share_row_to_change(session: AsyncSession, company_id, entity_id: str) -> DocShareToken | None:
+    """The document's share link, read under the company lock as the previous holder
+    left it, so two requests never mint two links or overwrite each other's change."""
+    await lock_company(session, company_id)
+    return await _find_share_row(session, company_id, entity_id)
 
 
 async def _active_share_row(session: AsyncSession, token: str) -> DocShareToken | None:
@@ -345,7 +353,7 @@ async def get_or_create_share_token(session: AsyncSession, company_id, entity_id
     """Return the entity's share token row, minting a deactivated one if none
     exists. A document's link is stable for its lifetime: activation (Share),
     deactivation (Revoke) and expiry toggle the same token. Caller commits."""
-    row = await _find_share_row(session, company_id, entity_id)
+    row = await _share_row_to_change(session, company_id, entity_id)
     if row is None:
         row = DocShareToken(
             company_id=company_id, entity_id=entity_id,
@@ -416,6 +424,14 @@ async def share_import_url(session: AsyncSession, row: DocShareToken | None,
     return import_accept_url(view_url) if view_url else None
 
 
+def _shareable(row: Projection | None) -> None:
+    """Refuse a share of anything but a shareable document or list."""
+    if row is None or row.entity_type not in ("doc", "list"):
+        raise HTTPException(status_code=404, detail=t("documents.document_not_found"))
+    if not is_shareable(row.entity_type, row.state or {}):
+        raise HTTPException(status_code=422, detail=t("documents.err_share_type_not_shareable"))
+
+
 async def _share_status(session: AsyncSession, row: DocShareToken | None) -> dict:
     """Uniform share-state payload for the UI: status/create/revoke all return it."""
     if row is None:
@@ -457,16 +473,14 @@ async def share_state(
 async def share_status(
     entity_id: str,
     company_id: _uuid.UUID = Depends(get_current_company_id),
+    _: None = require_permission("edit_documents"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Share state for a document or list. Mints the (deactivated) token on
-    first call so the UI always shows the document's stable URL; never
-    activates anything."""
-    row = await session.get(Projection, (company_id, entity_id))
-    if row is None or row.entity_type not in ("doc", "list"):
-        raise HTTPException(status_code=404, detail=t("documents.document_not_found"))
-    if not is_shareable(row.entity_type, row.state or {}):
-        raise HTTPException(status_code=422, detail=t("documents.err_share_type_not_shareable"))
+    """Share panel state for a document or list, with its link. Mints the
+    (deactivated) token on first call so the panel always shows the document's
+    stable URL; never activates anything. The link is a credential, so this needs
+    the permission sharing does; the status light reads /share/state."""
+    _shareable(await session.get(Projection, (company_id, entity_id)))
     share_row = await get_or_create_share_token(session, company_id, entity_id)
     await session.commit()
     return await _share_status(session, share_row)
@@ -482,12 +496,6 @@ async def create_share_link(
 ) -> dict:
     """Create the public share token for a document or list (or update the
     expiry of the existing one)."""
-    row = await session.get(Projection, (company_id, entity_id))
-    if row is None or row.entity_type not in ("doc", "list"):
-        raise HTTPException(status_code=404, detail=t("documents.document_not_found"))
-    if not is_shareable(row.entity_type, row.state or {}):
-        raise HTTPException(status_code=422, detail=t("documents.err_share_type_not_shareable"))
-
     expires = None
     if body and body.expires_at:
         try:
@@ -498,6 +506,9 @@ async def create_share_link(
         if expires <= datetime.now(timezone.utc):
             raise HTTPException(status_code=422, detail=t("documents.err_share_expiry_past"))
 
+    # Judged under the company lock, so a void that lands first is the state it sees.
+    await lock_company(session, company_id)
+    _shareable(await session.get(Projection, (company_id, entity_id), populate_existing=True))
     share_row = await get_or_create_share_token(session, company_id, entity_id)
     share_row.revoked_at = None
     share_row.expires_at = expires
@@ -518,7 +529,7 @@ async def revoke_share_link(
 ) -> dict:
     """Deactivate the share link immediately. The token row persists so the
     document keeps its stable URL; Share turns the same link back on."""
-    token_row = await _find_share_row(session, company_id, entity_id)
+    token_row = await _share_row_to_change(session, company_id, entity_id)
     if not token_row:
         raise HTTPException(status_code=404, detail=t("documents.err_share_none"))
     token_row.revoked_at = datetime.now(timezone.utc)
@@ -749,7 +760,7 @@ async def download_share_bundle(
     )
 
 
-@public_router.get("/docs/import")
+@public_router.post("/docs/import-link")
 async def import_shared_doc(
     link: str | None = Query(None, description="The share link: the page the sender's document is shown on"),
     src: str | None = Query(None, description="Older link form: the sender's public address, given with token"),

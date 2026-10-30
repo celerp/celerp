@@ -49,6 +49,18 @@ class TestGeneratePdf:
         data = _pdf(doc)
         assert _is_pdf(data)
 
+    def test_current_total_and_balance_win_over_older_keys(self):
+        """An imported document's older total_amount and outstanding_balance keys never print
+        over its current total and balance."""
+        import io
+
+        import pypdf
+
+        data = _pdf({"doc_type": "invoice", "ref_id": "INV-OLD", "currency": "USD", "subtotal": 90.0,
+                     "total": 90.0, "total_amount": 100.0, "amount_outstanding": 40.0, "outstanding_balance": 100.0})
+        text = "\n".join(page.extract_text() or "" for page in pypdf.PdfReader(io.BytesIO(data)).pages)
+        assert "90.00" in text and "40.00" in text and "100.00" not in text
+
     def test_with_outstanding_balance(self):
         """Outstanding > 0 triggers an extra row in totals table."""
         doc = {

@@ -131,7 +131,10 @@ async def test_company_that_turned_a_module_off_is_refused_while_another_keeps_i
     assert (await client.get(f"/{inner}/ping", headers=b)).status_code == 200
     refused = await client.get(f"/{inner}/ping", headers=a)
     assert refused.status_code == 403
-    assert refused.json()["detail"] == "This module is turned off for your company."
+    from celerp.modules.loader import module_label
+    assert refused.json()["detail"] == {
+        "message": f"The {module_label(name)} module is turned off for your company.",
+        "message_key": "modules.off_for_company", "params": {"module": module_label(name)}}
 
 
 @pytest.mark.asyncio
@@ -383,3 +386,34 @@ def test_a_path_is_never_an_installed_module(module_dir, name):
     """Resolving a module name never yields the module folder, its parent, or a nested path."""
     (module_dir / "__init__.py").write_text("PLUGIN_MANIFEST = {'name': '.', 'version': '1.0.0'}\n")
     assert loader.resolve_module_path(name, str(module_dir)) is None
+
+
+# ── A module built into Celerp never holds a dependency on ───────────────────
+
+_WITH_CONNECTORS = ["celerp-inventory", "celerp-contacts", "celerp-docs", "celerp-accounting",
+                    "celerp-connectors"]
+
+
+@pytest.mark.asyncio
+async def test_documents_turns_off_for_a_company_whose_list_includes_connectors(client, monkeypatch):
+    """Connectors is part of Celerp, always on, and refuses its syncs and orders while
+    Documents is off, so it never stops Documents being turned off. A module the company
+    can turn off still does, by name."""
+    monkeypatch.setenv("ENABLED_MODULES", ",".join(_WITH_CONNECTORS))
+    monkeypatch.delenv("CELERP_SUPERVISED", raising=False)
+    monkeypatch.setenv("MODULE_DIR", str(Path(__file__).resolve().parents[1] / "default_modules"))
+    h = {"Authorization": f"Bearer {await register_admin(client)}"}
+
+    held = await client.post("/companies/me/modules/celerp-docs/disable", headers=h)
+    assert held.status_code == 409, held.text
+    assert held.json()["detail"] == "Accounting needs this module. Turn that off first."
+
+    assert (await client.post("/companies/me/modules/celerp-accounting/disable", headers=h)).status_code == 200
+    r = await client.post("/companies/me/modules/celerp-docs/disable", headers=h)
+    assert r.status_code == 200, r.text
+    assert "celerp-docs" not in r.json()["enabled_modules"]
+    assert "celerp-connectors" in r.json()["enabled_modules"]
+
+    listed = {m["name"]: m for m in (await client.get("/companies/me/modules", headers=h)).json()}
+    assert listed["celerp-inventory"]["needed_by"] == ["celerp-contacts"]
+    assert listed["celerp-connectors"]["enabled"] is True

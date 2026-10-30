@@ -23,6 +23,7 @@ import pytest
 from playwright.sync_api import expect
 
 from celerp.help.checks import CAPTURE_MARKER, MAX_IMAGE_BYTES, shipped_pages
+from celerp_labels.presets import PRESET_TEMPLATES
 from ui.i18n import t
 
 from .conftest import _set_auth_cookie
@@ -58,6 +59,12 @@ def demo_token(api_server, api):
             # already-started state.
             r = await client.post("/fixed-assets/api/start", headers={"Authorization": f"Bearer {token}"})
             assert r.status_code in (200, 201), r.text
+            # The default label templates are created through their write route, so no
+            # page's first read seeds them: which labels page reads first depends on test order.
+            for preset in PRESET_TEMPLATES:
+                r = await client.post("/api/labels/templates", json=preset,
+                                      headers={"Authorization": f"Bearer {token}"})
+                assert r.status_code == 201, r.text
 
     random.seed(20261022)
     # Playwright's sync API keeps its own event loop running on this thread for the whole

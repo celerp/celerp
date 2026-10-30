@@ -27,7 +27,7 @@ from sqlalchemy import func, select
 from celerp.events.engine import emit_event
 from celerp.models.projections import Projection
 from celerp.services.business_time import business_date_at
-from celerp.services.company_lock import locked_company
+from celerp.services.company_lock import lock_company, locked_company
 from celerp.services.lot_origin import held_value
 from stock_books import assert_books_carry_stock
 from test_cost_restatement import _state
@@ -465,6 +465,7 @@ async def test_a_rebuild_reproduces_kept_stock(session, client, auth):
     split = await _available(client, auth, 10.0)
     await _ok(client, auth, "POST", f"/items/{split}/split", {"children": [{"quantity": 1}]})
 
+    await lock_company(session, auth["company_id"])
     await ProjectionEngine.rebuild(session, auth["company_id"])
     await session.commit()
 

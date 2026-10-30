@@ -158,10 +158,7 @@ def test_overlapping_scan_batches_no_duplicate(page, ui_server, api):
         page.wait_for_timeout(50)
     assert len(held) >= 2, f"expected both scan batches in flight, held {len(held)}"
     for route in held:
-        try:
-            route.continue_()
-        except Exception:
-            pass
+        route.continue_()
     for p in (page, second):
         p.unroute("**/docs/*/scan")
     page.wait_for_timeout(2000)

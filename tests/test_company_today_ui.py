@@ -111,13 +111,14 @@ async def test_new_journal_entry_and_reconciliation_start_on_the_company_day(co)
 
 
 async def test_contact_summary_counts_the_company_fiscal_year(co):
-    from ui.routes.contacts import _financial_summary
+    from ui.routes.contacts import _invoice_totals
 
-    invoice = {"doc_type": "invoice", "issue_date": "2031-03-31", "total_amount": 4321}
-    html = to_xml(_financial_summary([invoice], contact_id="contact:1",
-                                     company={"timezone": co.tz, "fiscal_year_start": "04-01"}))
-    # On 1 April the fiscal year that started that day holds no March invoice; on 31 March it does.
-    assert ("4,321" in html) is (co.day == date(2031, 3, 31))
+    calls = _spy(co, "get_doc_summary", {})
+    await _invoice_totals("token", "contact:1", {"timezone": co.tz, "fiscal_year_start": "04-01"})
+    ytd = next(params for _, params in calls if "date_from" in params)
+    # On 1 April the fiscal year starts that day; on 31 March it is the year that began a year before.
+    fy_start = co.day if co.day == date(2031, 4, 1) else date(2030, 4, 1)
+    assert (ytd["date_from"], ytd["date_to"]) == (fy_start.isoformat(), co.day.isoformat())
 
 
 async def test_prints_are_dated_the_company_day(co):

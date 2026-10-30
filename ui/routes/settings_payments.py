@@ -27,6 +27,7 @@ from starlette.responses import RedirectResponse
 import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.cloud_gate import upgrade_banner
+from ui.components.module_off import module_off_page
 from ui.components.shell import base_shell, page_header, page_title, flash
 from ui.components.table import (
     EMPTY, add_new_option, bank_account_options, display_cell, editable_cell, fmt_money,
@@ -232,7 +233,16 @@ async def _load(token: str) -> tuple[bool, bool, str, list[dict], str | None, di
     return relay_ok, enabled, deposit, banks, status.get("state"), unmatched
 
 
+async def _documents_off(request: Request, token: str):
+    """Online payments are recorded on invoices, so the page is Documents' to open:
+    the shared module-off page while the company cannot use it, else None."""
+    return await module_off_page(request, "celerp-docs", await api.get_company(token))
+
+
 async def _page_with_error(request: Request, token: str, error: APIError):
+    off = await _documents_off(request, token)
+    if off is not None:
+        return off
     relay_ok, enabled, deposit, banks, state, unmatched = await _load(token)
     has_team = _has_team_features(await _commercial_state(request))
     return await base_shell(
@@ -304,6 +314,9 @@ def setup_routes(app):
         if redir:
             return redir
         try:
+            off = await _documents_off(request, token)
+            if off is not None:
+                return off
             relay_ok, enabled, deposit, banks, state, unmatched = await _load(token)
         except APIError as e:
             return await base_shell(flash(str(e.detail)), title=page_title("nav.payments"),

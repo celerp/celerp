@@ -188,7 +188,9 @@ def _refused(r, status: int, key: str) -> dict:
 # --- Placed at start -------------------------------------------------------------------
 
 
-@pytest.mark.timeout(120)  # importing 2000 lots is the slow part, not placing them
+# Importing 2000 lots is the slow part, not placing them: 25-35s on a workstation,
+# past 120s on a 2-vCPU CI runner shared with a second test worker.
+@pytest.mark.timeout(240)
 async def test_thousands_of_imported_older_lots_are_placed_in_one_start(session, client, auth):
     lots = await _imported(session, client, auth, [1.0] * 2000)
     await _older_release(session, auth)

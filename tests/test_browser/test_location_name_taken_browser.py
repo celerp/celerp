@@ -4,8 +4,6 @@
 tells the user the name is taken instead of failing without a word, and adds nothing."""
 from __future__ import annotations
 
-import time
-
 import pytest
 
 from ui.i18n import t
@@ -26,11 +24,9 @@ def test_adding_a_location_twice_says_the_name_is_taken(page, fresh_company):
     _seed_demo_items(fresh_company)
     page.goto("/settings/inventory?tab=locations")
     page.click(_ADD)
-    deadline = time.monotonic() + _WAIT_MS / 1000
-    while "New Location" not in _names(fresh_company) and time.monotonic() < deadline:
-        time.sleep(0.2)
-    page.goto("/settings/inventory?tab=locations")
+    # The add answers with HX-Redirect to this tab, which reloads it with the new row.
     page.locator("td", has_text="New Location").first.wait_for(timeout=_WAIT_MS)
+    page.wait_for_load_state()
     before = _names(fresh_company)
     assert before.count("New Location") == 1
 

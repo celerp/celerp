@@ -1,0 +1,39 @@
+name: CI Installers Mirror
+
+# Fills the CI mirror draft with a published release's installers, for a release
+# the upgrade tests may pick that the release build did not mirror itself (one
+# published before the mirror existed). The seed downloads each installer from the
+# public release once, so each counts once on the public counter; a copy already
+# mirrored is left alone (scripts/ci_installers.py seed).
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to mirror (latest: the latest published release)"
+        type: string
+        default: latest
+      assets:
+        description: "Installers to mirror, separated by spaces"
+        type: string
+        default: "Celerp-Setup.exe Celerp.AppImage"
+
+permissions:
+  contents: write
+
+jobs:
+  seed:
+    # One writer to the mirror at a time (build.yml mirror-installers shares the group).
+    concurrency:
+      group: ci-installers-mirror
+      cancel-in-progress: false
+      queue: max
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Mirror ${{ inputs.tag }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          ASSETS: ${{ inputs.assets }}
+        run: python3 scripts/ci_installers.py seed "$TAG" $ASSETS

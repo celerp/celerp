@@ -144,6 +144,10 @@ async def test_emitting_a_non_birth_event_for_a_missing_item_is_refused(committe
         data = {"to_location_id": str(await _a_location(committed_engine, cid))}
 
     async with maker(committed_engine)() as s:
+        if event_type.startswith("shop.sync."):
+            # As the bulk opt-in route does: the Shopify fence first.
+            from celerp.connectors.ownership import lock_connector_key
+            await lock_connector_key(s, "shopify")
         with pytest.raises(HTTPException) as refused:
             await emit_event(s, company_id=cid, entity_id=lot, entity_type="item", event_type=event_type,
                              data=data, actor_id=None, location_id=None, source="api",

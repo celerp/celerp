@@ -24,6 +24,7 @@ from sqlalchemy import func, select
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.projections.engine import ProjectionEngine
+from celerp.services.company_lock import lock_company
 from test_helpers import create_item, perm_setup
 from ui.i18n import t
 
@@ -176,6 +177,7 @@ async def test_historical_run_with_a_dangling_component_still_rebuilds(client, s
         idempotency_key=str(uuid.uuid4()), metadata_={},
     ))
     await session.flush()
+    await lock_company(session, company_id)
     await ProjectionEngine.rebuild(session, company_id)
     await session.flush()
     row = await session.get(Projection, {"company_id": company_id, "entity_id": "mfg:old"}, populate_existing=True)

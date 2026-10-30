@@ -371,3 +371,30 @@ async def test_reading_a_started_scan_names_its_run_to_its_creator_only(real_cli
         await s.commit()
     r = await real_client.post("/migrations/scan/read", headers=auth(admin_token), json=read)
     assert r.status_code == 410, r.text
+
+
+@pytest.mark.asyncio
+async def test_retry_by_a_creator_no_longer_in_the_staged_company_is_refused(real_client, real_engine, migration_env,
+                                                                             monkeypatch):
+    """Finishing a start acts for the staged company, so a retry from a creator whose
+    membership there has ended is refused and the run is left as it was."""
+    from celerp.models.accounting import UserCompany
+    from celerp.services import migration_scan_store as store
+    from sqlalchemy import update
+
+    admin_token = await register_admin(real_client)
+    scan_token = await _scan(real_client, admin_token)
+    real_claim = store.claim_for_run
+    monkeypatch.setattr(store, "claim_for_run", lambda *a, **k: (_ for _ in ()).throw(Crash()))
+    assert (r := await _start(real_client, admin_token, scan_token)) is None or r.status_code == 500
+    run = await _only_run(real_engine)
+    async with maker(real_engine)() as s:
+        await s.execute(update(UserCompany).where(UserCompany.company_id == run.company_id).values(is_active=False))
+        await s.commit()
+
+    monkeypatch.setattr(store, "claim_for_run", real_claim)
+    r = await _start(real_client, admin_token, scan_token)
+    assert r.status_code == 404, r.text
+    assert (await _only_run(real_engine)).status == "preparing"
+    assert (_scan_dir(migration_env, scan_token) / "artifact-1").is_file()
+    assert migration_env["scheduled"] == []

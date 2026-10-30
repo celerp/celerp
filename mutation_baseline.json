@@ -1,0 +1,524 @@
+[
+ {
+  "route": "api DELETE /api/labels/templates/{template_id}",
+  "kind": "unprotected",
+  "table": "label_templates",
+  "fingerprint": "7cf1abef21331854",
+  "where": [
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py _run",
+   "default_modules/celerp-labels/celerp_labels/routes.py delete_template"
+  ],
+  "test": "default_modules/celerp-labels/tests/test_labels.py::test_template_delete",
+  "issue": "https://github.com/celerp/celerp/issues/405",
+  "owner": "celerp-labels",
+  "remove_when": "the write takes the company lock (lock_company) at its owning service"
+ },
+ {
+  "route": "api GET /api/labels/sources/{source}",
+  "kind": "unprotected",
+  "table": "label_templates",
+  "fingerprint": "66666111f73d39ef",
+  "where": [
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "default_modules/celerp-labels/celerp_labels/routes.py get_source",
+   "default_modules/celerp-labels/celerp_labels/routes.py _source_templates"
+  ],
+  "test": "default_modules/celerp-fixed-assets/tests/test_files_tags.py::test_u49_the_first_print_tag_prints_on_the_shipped_asset_tag",
+  "issue": "https://github.com/celerp/celerp/issues/405",
+  "owner": "celerp-labels",
+  "remove_when": "the write takes the company lock (lock_company) at its owning service"
+ },
+ {
+  "route": "ui GET /labels/print-source -> api GET /api/labels/sources/{source}",
+  "kind": "read-route-write",
+  "table": "label_templates",
+  "fingerprint": "66666111f73d39ef",
+  "where": [
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "default_modules/celerp-labels/celerp_labels/routes.py get_source",
+   "default_modules/celerp-labels/celerp_labels/routes.py _source_templates"
+  ],
+  "test": "default_modules/celerp-fixed-assets/tests/test_files_tags.py::test_u49_the_first_print_tag_prints_on_the_shipped_asset_tag",
+  "issue": "https://github.com/celerp/celerp/issues/405",
+  "owner": "celerp-labels",
+  "remove_when": "the presets are seeded by a locked writer, never by a read route"
+ },
+ {
+  "route": "api GET /api/labels/sources/{source}",
+  "kind": "unprotected",
+  "table": "label_templates",
+  "fingerprint": "66666111f73d39ef",
+  "where": [
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "default_modules/celerp-labels/celerp_labels/routes.py get_source",
+   "default_modules/celerp-labels/celerp_labels/routes.py _source_templates",
+   "default_modules/celerp-labels/celerp_labels/routes.py _seed_presets"
+  ],
+  "test": "default_modules/celerp-fixed-assets/tests/test_files_tags.py::test_u49_the_first_print_tag_prints_on_the_shipped_asset_tag",
+  "issue": "https://github.com/celerp/celerp/issues/405",
+  "owner": "celerp-labels",
+  "remove_when": "the write takes the company lock (lock_company) at its owning service"
+ },
+ {
+  "route": "ui GET /labels/print-source -> api GET /api/labels/sources/{source}",
+  "kind": "read-route-write",
+  "table": "label_templates",
+  "fingerprint": "66666111f73d39ef",
+  "where": [
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "default_modules/celerp-labels/celerp_labels/routes.py get_source",
+   "default_modules/celerp-labels/celerp_labels/routes.py _source_templates",
+   "default_modules/celerp-labels/celerp_labels/routes.py _seed_presets"
+  ],
+  "test": "default_modules/celerp-fixed-assets/tests/test_files_tags.py::test_u49_the_first_print_tag_prints_on_the_shipped_asset_tag",
+  "issue": "https://github.com/celerp/celerp/issues/405",
+  "owner": "celerp-labels",
+  "remove_when": "the presets are seeded by a locked writer, never by a read route"
+ },
+ {
+  "route": "api GET /api/labels/templates",
+  "kind": "unprotected",
+  "table": "label_templates",
+  "fingerprint": "66666111f73d39ef",
+  "where": [
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "default_modules/celerp-labels/celerp_labels/routes.py list_templates",
+   "default_modules/celerp-labels/celerp_labels/routes.py _seed_presets"
+  ],
+  "test": "default_modules/celerp-labels/tests/test_labels.py::test_default_templates_seeded_on_first_read",
+  "issue": "https://github.com/celerp/celerp/issues/405",
+  "owner": "celerp-labels",
+  "remove_when": "the write takes the company lock (lock_company) at its owning service"
+ },
+ {
+  "route": "api GET /api/labels/templates",
+  "kind": "read-route-write",
+  "table": "label_templates",
+  "fingerprint": "66666111f73d39ef",
+  "where": [
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "default_modules/celerp-labels/celerp_labels/routes.py list_templates",
+   "default_modules/celerp-labels/celerp_labels/routes.py _seed_presets"
+  ],
+  "test": "default_modules/celerp-labels/tests/test_labels.py::test_default_templates_seeded_on_first_read",
+  "issue": "https://github.com/celerp/celerp/issues/405",
+  "owner": "celerp-labels",
+  "remove_when": "the presets are seeded by a locked writer, never by a read route"
+ },
+ {
+  "route": "ui GET /api/items/{entity_id}/label-templates -> api GET /api/labels/templates",
+  "kind": "read-route-write",
+  "table": "label_templates",
+  "fingerprint": "66666111f73d39ef",
+  "where": [
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "default_modules/celerp-labels/celerp_labels/routes.py list_templates",
+   "default_modules/celerp-labels/celerp_labels/routes.py _seed_presets"
+  ],
+  "test": "tests/test_browser/test_item_detail_audit.py::test_new_company_item_print_menu_lists_preset_labels",
+  "issue": "https://github.com/celerp/celerp/issues/405",
+  "owner": "celerp-labels",
+  "remove_when": "the presets are seeded by a locked writer, never by a read route"
+ },
+ {
+  "route": "api PATCH /ai/conversations/{conversation_id}",
+  "kind": "unprotected",
+  "table": "ai_conversations",
+  "fingerprint": "f4f6eb3bd33a959b",
+  "where": [
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py _run",
+   "default_modules/celerp-ai/celerp_ai/routes.py rename_conv"
+  ],
+  "test": "default_modules/celerp-ai/tests/test_routes_coverage.py::test_conversation_lifecycle",
+  "issue": "https://github.com/celerp/celerp/issues/406",
+  "owner": "celerp-ai",
+  "remove_when": "the write takes the company lock (lock_company) at its owning service"
+ },
+ {
+  "route": "api POST /ai/conversations",
+  "kind": "unprotected",
+  "table": "ai_conversations",
+  "fingerprint": "cbcf7959a01323f3",
+  "where": [
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py _run",
+   "default_modules/celerp-ai/celerp_ai/routes.py create_conv",
+   "celerp/ai/conversations.py create_conversation"
+  ],
+  "test": "default_modules/celerp-ai/tests/test_routes_coverage.py::test_conversation_lifecycle",
+  "issue": "https://github.com/celerp/celerp/issues/406",
+  "owner": "celerp-ai",
+  "remove_when": "the write takes the company lock (lock_company) at its owning service"
+ },
+ {
+  "route": "api POST /ai/conversations/{conversation_id}/confirm",
+  "kind": "unprotected",
+  "table": "ai_messages",
+  "fingerprint": "0ae88b6558f86b92",
+  "where": [
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py _run",
+   "default_modules/celerp-ai/celerp_ai/routes.py confirm_action",
+   "default_modules/celerp-ai/celerp_ai/routes.py _run_confirmed_action",
+   "celerp/ai/conversations.py claim_tool_call"
+  ],
+  "test": "default_modules/celerp-ai/tests/test_routes_coverage.py::test_confirm_action_capability_unavailable",
+  "issue": "https://github.com/celerp/celerp/issues/406",
+  "owner": "celerp-ai",
+  "remove_when": "the write takes the company lock (lock_company) at its owning service"
+ },
+ {
+  "route": "api POST /ai/conversations/{conversation_id}/confirm",
+  "kind": "unprotected",
+  "table": "ai_messages",
+  "fingerprint": "0ae88b6558f86b92",
+  "where": [
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py _run",
+   "default_modules/celerp-ai/celerp_ai/routes.py confirm_action",
+   "default_modules/celerp-ai/celerp_ai/routes.py _run_confirmed_action",
+   "celerp/ai/conversations.py finalize_tool_call"
+  ],
+  "test": "default_modules/celerp-ai/tests/test_routes_coverage.py::test_confirm_action_capability_unavailable",
+  "issue": "https://github.com/celerp/celerp/issues/406",
+  "owner": "celerp-ai",
+  "remove_when": "the write takes the company lock (lock_company) at its owning service"
+ },
+ {
+  "route": "api POST /ai/conversations/{conversation_id}/confirm-all",
+  "kind": "unprotected",
+  "table": "ai_messages",
+  "fingerprint": "0ae88b6558f86b92",
+  "where": [
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py _run",
+   "default_modules/celerp-ai/celerp_ai/routes.py confirm_all",
+   "default_modules/celerp-ai/celerp_ai/routes.py _run_confirmed_action",
+   "celerp/ai/conversations.py claim_tool_call"
+  ],
+  "test": "default_modules/celerp-ai/tests/test_routes_coverage.py::test_confirm_all_executes_in_order",
+  "issue": "https://github.com/celerp/celerp/issues/406",
+  "owner": "celerp-ai",
+  "remove_when": "the write takes the company lock (lock_company) at its owning service"
+ },
+ {
+  "route": "api POST /ai/conversations/{conversation_id}/confirm-all",
+  "kind": "unprotected",
+  "table": "ai_messages",
+  "fingerprint": "0ae88b6558f86b92",
+  "where": [
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py _run",
+   "default_modules/celerp-ai/celerp_ai/routes.py confirm_all",
+   "default_modules/celerp-ai/celerp_ai/routes.py _run_confirmed_action",
+   "celerp/ai/conversations.py finalize_tool_call"
+  ],
+  "test": "default_modules/celerp-ai/tests/test_routes_coverage.py::test_confirm_all_executes_in_order",
+  "issue": "https://github.com/celerp/celerp/issues/406",
+  "owner": "celerp-ai",
+  "remove_when": "the write takes the company lock (lock_company) at its owning service"
+ },
+ {
+  "route": "api POST /ai/conversations/{conversation_id}/dismiss",
+  "kind": "unprotected",
+  "table": "ai_messages",
+  "fingerprint": "0ae88b6558f86b92",
+  "where": [
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py _run",
+   "default_modules/celerp-ai/celerp_ai/routes.py dismiss_action",
+   "celerp/ai/conversations.py dismiss_tool_call",
+   "celerp/ai/conversations.py dismiss_tool_calls"
+  ],
+  "test": "default_modules/celerp-ai/tests/test_routes_coverage.py::test_dismiss_one_action_persists_and_a_second_dismiss_is_409",
+  "issue": "https://github.com/celerp/celerp/issues/406",
+  "owner": "celerp-ai",
+  "remove_when": "the write takes the company lock (lock_company) at its owning service"
+ },
+ {
+  "route": "api POST /ai/conversations/{conversation_id}/dismiss-all",
+  "kind": "unprotected",
+  "table": "ai_messages",
+  "fingerprint": "0ae88b6558f86b92",
+  "where": [
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py _run",
+   "default_modules/celerp-ai/celerp_ai/routes.py dismiss_all",
+   "celerp/ai/conversations.py dismiss_tool_calls"
+  ],
+  "test": "default_modules/celerp-ai/tests/test_routes_coverage.py::test_dismiss_all_is_atomic_and_idempotent",
+  "issue": "https://github.com/celerp/celerp/issues/406",
+  "owner": "celerp-ai",
+  "remove_when": "the write takes the company lock (lock_company) at its owning service"
+ },
+ {
+  "route": "api POST /ai/conversations/{conversation_id}/jobs/{job_id}/proposals",
+  "kind": "unprotected",
+  "table": "ai_batch_jobs",
+  "fingerprint": "33b2535a800ebf00",
+  "where": [
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py _run",
+   "default_modules/celerp-ai/celerp_ai/routes.py propose_from_job"
+  ],
+  "test": "default_modules/celerp-ai/tests/test_routes_coverage.py::test_proposal_flags_total_mismatch",
+  "issue": "https://github.com/celerp/celerp/issues/406",
+  "owner": "celerp-ai",
+  "remove_when": "the write takes the company lock (lock_company) at its owning service"
+ },
+ {
+  "route": "api POST /ai/conversations/{conversation_id}/jobs/{job_id}/proposals",
+  "kind": "unprotected",
+  "table": "ai_conversations",
+  "fingerprint": "862d7e2852409ca3",
+  "where": [
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py _run",
+   "default_modules/celerp-ai/celerp_ai/routes.py propose_from_job",
+   "celerp/ai/conversations.py add_message"
+  ],
+  "test": "default_modules/celerp-ai/tests/test_routes_coverage.py::test_proposal_flags_total_mismatch",
+  "issue": "https://github.com/celerp/celerp/issues/406",
+  "owner": "celerp-ai",
+  "remove_when": "the write takes the company lock (lock_company) at its owning service"
+ },
+ {
+  "route": "api POST /ai/conversations/{conversation_id}/jobs/{job_id}/proposals",
+  "kind": "unprotected",
+  "table": "ai_messages",
+  "fingerprint": "ea54b6580a2e4f31",
+  "where": [
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py _run",
+   "default_modules/celerp-ai/celerp_ai/routes.py propose_from_job",
+   "celerp/ai/conversations.py add_message"
+  ],
+  "test": "default_modules/celerp-ai/tests/test_routes_coverage.py::test_proposal_flags_total_mismatch",
+  "issue": "https://github.com/celerp/celerp/issues/406",
+  "owner": "celerp-ai",
+  "remove_when": "the write takes the company lock (lock_company) at its owning service"
+ },
+ {
+  "route": "api POST /api/labels/print-source",
+  "kind": "unprotected",
+  "table": "label_templates",
+  "fingerprint": "66666111f73d39ef",
+  "where": [
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py _run",
+   "default_modules/celerp-labels/celerp_labels/routes.py print_source",
+   "default_modules/celerp-labels/celerp_labels/routes.py _source_templates"
+  ],
+  "test": "default_modules/celerp-fixed-assets/tests/test_files_tags.py::test_label_rows_for_assets",
+  "issue": "https://github.com/celerp/celerp/issues/405",
+  "owner": "celerp-labels",
+  "remove_when": "the write takes the company lock (lock_company) at its owning service"
+ },
+ {
+  "route": "api POST /api/labels/print-source",
+  "kind": "unprotected",
+  "table": "label_templates",
+  "fingerprint": "66666111f73d39ef",
+  "where": [
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py _run",
+   "default_modules/celerp-labels/celerp_labels/routes.py print_source",
+   "default_modules/celerp-labels/celerp_labels/routes.py _source_templates",
+   "default_modules/celerp-labels/celerp_labels/routes.py _seed_presets"
+  ],
+  "test": "default_modules/celerp-fixed-assets/tests/test_files_tags.py::test_label_rows_for_assets",
+  "issue": "https://github.com/celerp/celerp/issues/405",
+  "owner": "celerp-labels",
+  "remove_when": "the write takes the company lock (lock_company) at its owning service"
+ },
+ {
+  "route": "api POST /api/labels/templates",
+  "kind": "unprotected",
+  "table": "label_templates",
+  "fingerprint": "66666111f73d39ef",
+  "where": [
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py _run",
+   "default_modules/celerp-labels/celerp_labels/routes.py create_template"
+  ],
+  "test": "default_modules/celerp-labels/tests/test_labels.py::test_label_print_strips_costs_for_ungranted_role",
+  "issue": "https://github.com/celerp/celerp/issues/405",
+  "owner": "celerp-labels",
+  "remove_when": "the write takes the company lock (lock_company) at its owning service"
+ },
+ {
+  "route": "api POST /lists/{entity_id}/unmark-sent",
+  "kind": "unprotected",
+  "table": "ledger",
+  "fingerprint": "a309da89b86e9e0a",
+  "where": [
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py _run",
+   "default_modules/celerp-docs/celerp_docs/routes.py unmark_list_sent",
+   "default_modules/celerp-docs/celerp_docs/routes.py _set_list_fields",
+   "default_modules/celerp-docs/celerp_docs/routes.py _emit_list",
+   "celerp/events/engine.py emit_event"
+  ],
+  "test": "tests/test_routers/test_lists.py::TestListLifecycle::test_full_lifecycle_draft_finalize_close",
+  "issue": "https://github.com/celerp/celerp/issues/408",
+  "owner": "celerp-docs",
+  "remove_when": "the write takes the company lock (lock_company) at its owning service"
+ },
+ {
+  "route": "api POST /lists/{entity_id}/unmark-sent",
+  "kind": "unprotected",
+  "table": "projections",
+  "fingerprint": "23b83c47b1af9fce",
+  "where": [
+   "default_modules/celerp-docs/celerp_docs/routes.py unmark_list_sent",
+   "default_modules/celerp-docs/celerp_docs/routes.py _set_list_fields",
+   "default_modules/celerp-docs/celerp_docs/routes.py _emit_list",
+   "celerp/events/engine.py emit_event",
+   "celerp/projections/engine.py apply_event",
+   "celerp/projections/engine.py _write"
+  ],
+  "test": "tests/test_routers/test_lists.py::TestListLifecycle::test_full_lifecycle_draft_finalize_close",
+  "issue": "https://github.com/celerp/celerp/issues/408",
+  "owner": "celerp-docs",
+  "remove_when": "the write takes the company lock (lock_company) at its owning service"
+ },
+ {
+  "route": "api POST /notifications/read-all",
+  "kind": "unprotected",
+  "table": "notification_reads",
+  "fingerprint": "5b94128e04ce3593",
+  "where": [
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py _run",
+   "celerp/routers/notifications.py mark_all_read",
+   "celerp/notifications/service.py mark_all_read"
+  ],
+  "test": "tests/test_notifications/test_router.py::test_mark_all_read",
+  "issue": "https://github.com/celerp/celerp/issues/407",
+  "owner": "celerp notifications",
+  "remove_when": "the write takes the company lock (lock_company) at its owning service"
+ },
+ {
+  "route": "api POST /notifications/{notification_id}/read",
+  "kind": "unprotected",
+  "table": "notification_reads",
+  "fingerprint": "264ac604a277892c",
+  "where": [
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py _run",
+   "celerp/routers/notifications.py mark_read",
+   "celerp/notifications/service.py mark_read"
+  ],
+  "test": "tests/test_notifications/test_router.py::test_company_wide_notice_read_by_one_user_stays_unread_for_others",
+  "issue": "https://github.com/celerp/celerp/issues/407",
+  "owner": "celerp notifications",
+  "remove_when": "the write takes the company lock (lock_company) at its owning service"
+ },
+ {
+  "route": "api PUT /api/labels/templates/{template_id}",
+  "kind": "unprotected",
+  "table": "label_templates",
+  "fingerprint": "a9dd78c5266037f5",
+  "where": [
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py _run",
+   "default_modules/celerp-labels/celerp_labels/routes.py update_template"
+  ],
+  "test": "default_modules/celerp-labels/tests/test_labels.py::test_barcode_height_saved_and_retrieved",
+  "issue": "https://github.com/celerp/celerp/issues/405",
+  "owner": "celerp-labels",
+  "remove_when": "the write takes the company lock (lock_company) at its owning service"
+ },
+ {
+  "route": "api PUT /api/labels/templates/{template_id}",
+  "kind": "unprotected",
+  "table": "label_templates",
+  "fingerprint": "c4201cc48c00ea81",
+  "where": [
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py _run",
+   "default_modules/celerp-labels/celerp_labels/routes.py update_template"
+  ],
+  "test": "default_modules/celerp-labels/tests/test_labels.py::test_template_update",
+  "issue": "https://github.com/celerp/celerp/issues/405",
+  "owner": "celerp-labels",
+  "remove_when": "the write takes the company lock (lock_company) at its owning service"
+ },
+ {
+  "route": "api PUT /api/labels/templates/{template_id}",
+  "kind": "unprotected",
+  "table": "label_templates",
+  "fingerprint": "fe408a397e6c242e",
+  "where": [
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py __call__",
+   "celerp/middleware.py _run",
+   "default_modules/celerp-labels/celerp_labels/routes.py update_template"
+  ],
+  "test": "default_modules/celerp-labels/tests/test_labels.py::test_custom_dimensions_update",
+  "issue": "https://github.com/celerp/celerp/issues/405",
+  "owner": "celerp-labels",
+  "remove_when": "the write takes the company lock (lock_company) at its owning service"
+ }
+]
