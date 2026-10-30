@@ -591,3 +591,17 @@ def test_shipping_goods_another_invoice_set_aside_shows_a_lasting_notice(page, u
     page.wait_for_timeout(7000)  # longer than a passing notice stays
     assert page.locator(".toast-container .toast--info").count() == 1
     assert api.get(f"/items/{item_id}").json()["status"] == "sold"
+
+
+def test_invoice_selected_on_a_memo_shows_the_preview(page, ui_server, api):
+    """Choosing Invoice selected on a memo line shows the server's preview of the invoice
+    inside the panel, and it follows the quantity typed."""
+    doc_id, _item = _shipped_memo(api, f"MDP-{uuid.uuid4().hex[:6]}", 4)
+    page.goto(f"{ui_server}/docs/{doc_id}", wait_until="domcontentloaded")
+    _assert_no_crash(page, "memo invoice selected")
+    page.locator(".li-select").first.check()
+    page.locator("#li-bulk-select").select_option(value="li-invoice")
+    preview = page.locator("#draw-preview")
+    expect(preview).to_contain_text("Invoice total after this: $40.00")
+    page.locator("#draw-panel input[name=qty_0]").fill("1")
+    expect(preview).to_contain_text("Invoice total after this: $10.00")

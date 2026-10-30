@@ -6993,11 +6993,13 @@ def _draw_panel(entity_id: str, doc: dict, targets: list | None, unit_map: dict)
         Div(Label(t("documents.invoice_target"), cls="form-label"),
             searchable_select("target_doc_id", options, value=""), cls="inline-form-row"),
         Div(id="draw-preview", hx_post=f"/docs/{entity_id}/invoice-lines/preview", hx_include="#draw-panel",
-            hx_trigger="change from:#draw-panel, keyup delay:400ms from:#draw-panel, celerpDrawOpen"),
+            hx_trigger="change from:#draw-panel, input delay:400ms from:#draw-panel, celerpDrawOpen"),
         operation_key_input(),
         _line_action_submit(t("btn.invoice_selected"), "btn btn--primary btn--sm"),
         id="draw-panel", style="display:none", hx_post=f"/docs/{entity_id}/invoice-lines", hx_swap="none",
         hx_disabled_elt="find button[type=submit]",
+        # The preview inside swaps its own answer in; the form's swap and disabled element are the draw's alone.
+        hx_disinherit="hx-swap hx-disabled-elt",
     )
 
 
