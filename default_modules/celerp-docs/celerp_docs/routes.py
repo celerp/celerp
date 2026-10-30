@@ -48,7 +48,7 @@ from celerp.services.journal_accounts import require_destinations, require_line_
 from celerp.services.lot_origin import in_stock, is_stock_type, rerun_after_placing
 from celerp.services.physical_codes import lock_item_code_namespace
 from celerp.services.peer_import import SourceRevision, peer_batch, receive_file
-from celerp.services.payments import recorded_unmatched, return_unmatched
+from celerp.services.payments import lock_recorded_unmatched, recorded_unmatched, return_unmatched
 from celerp.tax_regimes import default_line_taxes, set_new_line_taxes, side_taxes
 from celerp.services.business_time import business_date_at, business_date_of, company_today
 from celerp.services.landed_cost import compute_bill_landed_allocation
@@ -4358,6 +4358,7 @@ async def delete_payment(
     from celerp.services import auto_je
     from celerp_accounting.models import ReconciliationSession, BankStatementLine  # noqa: PLC0415
 
+    await lock_recorded_unmatched(session, company_id, entity_id)  # a deleted one goes back to them
     row = await _get_doc(session, company_id, entity_id, for_update=True)
     key, digest = _operation("delete-payment", f"{entity_id}:{payment_index}", payload)
     if (done := await _earlier_run(session, company_id, key, event_type="doc.payment.deleted",
