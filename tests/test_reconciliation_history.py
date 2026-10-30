@@ -615,8 +615,7 @@ async def test_entry_with_no_amount_in_the_account_currency_is_flagged_not_conve
     _, h = await admin(client)
     b = await bank(client, h, currency="JPY", opening=0)
     je = await legacy_deposit(client, h, session, b, "2026-09-10", 12.40)
-    sid = (await start(client, h, b["id"], "2026-09-30", 12)).json()["id"]
-    assert (await match(client, h, sid, [je])).status_code == 200
+    sid = await legacy_session(session, b, "2026-09-30", status="open", je_ids=[je], balance=12)
     got = (await client.get(f"/accounting/reconciliation/{sid}", headers=h)).json()
     assert got["reconciled_entries"][0]["amount"] is None
     assert got["difference"] is None and got["balanced"] is False and got["book_balance"] is None

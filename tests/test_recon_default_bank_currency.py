@@ -81,8 +81,7 @@ async def test_mislabelled_bank_is_corrected_from_the_notice_and_its_reconciliat
     paid = await legacy_deposit(client, h, session, b, "2026-08-10", 300.0)
     done = await legacy_session(session, b, "2026-08-31", je_ids=[paid], balance=300.0)
     je = await legacy_deposit(client, h, session, b, "2026-09-10", 200.0)
-    sid = (await start(client, h, b["id"], "2026-09-30", 200.0)).json()["id"]
-    assert (await client.post(f"/accounting/reconciliation/{sid}/match", json={"je_ids": [je]}, headers=h)).status_code == 200
+    sid = await legacy_session(session, b, "2026-09-30", status="open", je_ids=[je], balance=200.0)
 
     recon = (await client.get(f"/accounting/reconciliation/{sid}", headers=h)).json()
     assert recon["difference"] is None and recon["bank_account"]["relabel_to"] == "USD"
