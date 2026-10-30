@@ -231,9 +231,9 @@ async def test_a_restart_resumes_before_the_first_reconcile_so_a_dead_upload_is_
     await jobs.shutdown()
     # The service never admitted the second file: the app died between its usage row and the send.
     second = _op(job_id, file_ids[1])
+    await session.execute(update(AIUsage).values(reconcile_at=AIUsage.created_at))
     await session.execute(update(AIJobStep).where(AIJobStep.operation_id == uuid.UUID(second))
                           .values(state="running"))
-    await session.execute(update(AIUsage).values(reconcile_at=AIUsage.created_at))
     await session.commit()
     cloud.release(first)
 

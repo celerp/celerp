@@ -558,7 +558,9 @@ async def _finished_job(session, c, h, conv_id, files):
         session, conv.company_id, conv.user_id, "", [f["file_id"] for f in files],
         conversation_id=conv.id,
     )
-    job.status = "completed"
+    await session.commit()
+    job.status = "completed"    # a runner writes its job's row before the job's steps
+    await session.flush()
     state_of = {"success": "done", "error": "failed"}
     steps = (await jobs.job_steps(session, [job.id]))[job.id]
     for step, f in zip(steps, files):

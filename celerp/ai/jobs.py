@@ -762,15 +762,15 @@ async def _reopen(job_id: uuid.UUID, company_id: uuid.UUID, user_id: uuid.UUID, 
         )).scalars().all()
         if not steps:
             return 0
-        if retry:
-            for step in steps:
-                step.generation += 1
-                step.operation_id = step.step_id = file_operation_id(job_id, step.key, step.generation)
-                step.state, step.result, step.charge_known = "pending", None, False
         if not await _claim(session, job_id, reopenable(), status="running", error=None, completed_at=None,
                             cancel_requested_at=None):
             await session.rollback()        # another send took it first, or its conversation is gone
             return None
+        if retry:       # the job's row is claimed before its steps are written, as every runner write is
+            for step in steps:
+                step.generation += 1
+                step.operation_id = step.step_id = file_operation_id(job_id, step.key, step.generation)
+                step.state, step.result, step.charge_known = "pending", None, False
         await session.commit()
     start_job(job_id)
     return len(steps)
