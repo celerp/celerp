@@ -13684,7 +13684,7 @@ async def unmark_list_sent(
     user=Depends(get_current_user), session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Clear the sent milestone (the list stays finalized)."""
-    row = await _get_list(session, company_id, entity_id)
+    await _get_list_for_update(session, company_id, entity_id)
     await _set_list_fields(session, company_id, entity_id, user,
                            {"sent_at": None, "sent_via": None, "sent_to": None})
     await session.commit()

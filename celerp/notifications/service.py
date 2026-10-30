@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session, SessionTransaction
 
 from celerp.models.notification import Notification, NotificationRead
 from celerp.notifications.sse import deliver
+from celerp.services.company_lock import lock_company
 
 log = logging.getLogger(__name__)
 
@@ -429,7 +430,9 @@ async def mark_read(
     user_id: uuid.UUID,
 ) -> bool:
     """Mark one notice read for this user. Returns False when no notice with this id
-    reaches the user in this company. Marking it again changes nothing."""
+    reaches the user in this company. Marking it again changes nothing. A read mark is a
+    write of company data, so it is made under the company's lock."""
+    await lock_company(session, company_id)
     found = (await session.execute(
         select(Notification.id).where(
             Notification.id == notification_id,
@@ -469,7 +472,8 @@ async def mark_all_read(
     user_id: uuid.UUID,
 ) -> int:
     """Mark every notice that reaches this user read, for this user only. Returns the
-    number newly marked."""
+    number newly marked. Made under the company's lock, as mark_read is."""
+    await lock_company(session, company_id)
     unread = select(Notification.id, literal(user_id, sa.Uuid())).where(
         Notification.company_id == company_id,
         _addressed_to(user_id),

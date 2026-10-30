@@ -24,6 +24,7 @@ from celerp.ai import jobs
 from celerp.models.ai import AIConversation, AIMessage
 from celerp.ai.service import NEW_QUESTION_ERRORS
 from celerp.ai.usage import record_usage
+from celerp.services.company_lock import holds_company_lock
 from ui.i18n import t
 
 log = logging.getLogger(__name__)
@@ -70,7 +71,9 @@ async def create_conversation(
     user_id: uuid.UUID,
     title: str | None = None,
 ) -> AIConversation:
-    """Create a new conversation. Prunes the user's oldest if the limit is exceeded."""
+    """Create a new conversation, under the company's lock as every AI writer of the company.
+    Prunes the user's oldest if the limit is exceeded."""
+    await jobs.lock_for_ai(session, company_id)
     conv = AIConversation(
         company_id=company_id,
         user_id=user_id,
@@ -173,9 +176,13 @@ async def list_conversation_history(
 
 
 async def _lock_conversation(session: AsyncSession, conversation_id: uuid.UUID) -> None:
-    """Lock the conversation's row before any of its messages. Every writer of a
-    conversation's messages takes this first, so two writers never wait on each
-    other in opposite order."""
+    """Lock the conversation's company, unless this transaction holds it already, then the
+    conversation's row, before any of its messages. Every writer of a conversation's
+    messages takes this first, so two writers never wait on each other in opposite order
+    (company, job, conversation, messages)."""
+    company_id = await session.scalar(select(AIConversation.company_id).where(AIConversation.id == conversation_id))
+    if company_id is not None and not holds_company_lock(session, company_id):
+        await jobs.lock_for_ai(session, company_id)
     await session.execute(
         select(AIConversation.id)
         .where(AIConversation.id == conversation_id)
@@ -234,7 +241,8 @@ async def rename_conversation(
     user_id: uuid.UUID,
     title: str,
 ) -> AIConversation | None:
-    """Rename a conversation. Returns updated conversation or None."""
+    """Rename a conversation, under the company's lock. Returns updated conversation or None."""
+    await jobs.lock_for_ai(session, company_id)
     conv = await get_conversation(session, conversation_id, company_id, user_id)
     if conv is None:
         return None

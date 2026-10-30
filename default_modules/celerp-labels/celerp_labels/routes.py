@@ -285,17 +285,24 @@ async def _templates(session: AsyncSession, company_id: uuid.UUID) -> list[Label
 async def _seed_presets(session: AsyncSession, company_id: uuid.UUID) -> None:
     """Give a company with no templates the default presets, on first read, so every consumer
     (inventory/doc print dropdowns, the labels page) sees them without visiting Settings first.
-    A seeder takes the company's lock, as every template writer does, and reads again under it, so
-    two first reads seed the presets once."""
+    A plain read takes no lock; a seeder takes the company's lock, as every template writer
+    does, and reads again under it, so two first reads seed the presets once."""
     if await _templates(session, company_id):
         return
     await lock_company(session, company_id)
+    if await _add_presets(session, company_id):
+        await session.commit()
+
+
+async def _add_presets(session: AsyncSession, company_id: uuid.UUID) -> bool:
+    """Add the default presets when the company has no templates, read under the company's
+    lock the caller holds; the caller commits. Returns whether it added them."""
     if await _templates(session, company_id):
-        return
+        return False
     from .presets import PRESET_TEMPLATES
     for preset in PRESET_TEMPLATES:
         session.add(LabelTemplate(id=uuid.uuid4(), company_id=company_id, **TemplateCreate(**preset).model_dump()))
-    await session.commit()
+    return True
 
 
 def _fitting(rows: list[LabelTemplate], keys: set[str]) -> list[dict]:
@@ -322,7 +329,7 @@ async def _source_templates(session: AsyncSession, company_id: uuid.UUID, entry:
     await lock_company(session, company_id)
     if fits := _fitting(await _templates(session, company_id), keys):
         return fits
-    await _seed_presets(session, company_id)
+    await _add_presets(session, company_id)
     preset = entry["preset"]
     fields = [{**f, "label": translate(f["label"]) if f.get("label") else ""} for f in preset.get("fields") or []]
     # The contract requires neither a name nor a size: a preset without a name is named after
