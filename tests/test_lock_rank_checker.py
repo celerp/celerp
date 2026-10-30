@@ -370,7 +370,7 @@ def test_every_insert_into_a_fresh_keyed_table_draws_a_new_key(table):
     """FRESH_KEYED holds: the table's only unique key is a uuid primary key defaulting to
     uuid.uuid4, every model construction leaves it to that default or passes uuid.uuid4(),
     and every SQL insert into it takes gen_random_uuid(). Nothing builds the table through
-    insert() or copies a stored id into it."""
+    insert() of the model or its table, or copies a stored id into it."""
     import ast
     import uuid
 
@@ -397,7 +397,8 @@ def test_every_insert_into_a_fresh_keyed_table_draws_a_new_key(table):
             if not isinstance(node, ast.Call):
                 continue
             name = node.func.id if isinstance(node.func, ast.Name) else getattr(node.func, "attr", "")
-            args = [a for a in node.args if isinstance(a, ast.Name) and a.id == model]
+            args = [a for a in node.args if isinstance(a, ast.Name) and a.id == model
+                    or isinstance(a, ast.Attribute) and isinstance(a.value, ast.Name) and a.value.id == model]
             if name in ("insert", "pg_insert") and args:
                 wrong.append(f"{path}:{node.lineno}: insert({model})")
             if name == model:

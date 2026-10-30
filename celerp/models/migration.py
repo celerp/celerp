@@ -143,8 +143,9 @@ class MigrationCleanupTask(Base):
     transaction that deletes the company. An attachment task names one
     file a migration batch is about to store: committed before the file is written and
     deleted in the batch transaction that links it, so a task that outlives its batch
-    marks a file no committed record links. No foreign keys: the company and runs a task
-    names may no longer exist, and paths are derived from the ids, never stored."""
+    marks a file no committed record may link: it is deleted only while none does. No
+    foreign keys: the company and runs a task names may no longer exist, and paths are
+    derived from the ids, never stored."""
     __tablename__ = "migration_cleanup_tasks"
 
     id: Mapped[uuid.UUID] = mapped_column(sa.Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)

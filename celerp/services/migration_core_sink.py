@@ -17,7 +17,6 @@ from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass
 
 from sqlalchemy import select
-from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.events.engine import find_event_by_idempotency
@@ -218,21 +217,18 @@ def attachment_file_id(run_id: uuid.UUID, source_external_id: str, sha256: str) 
     return str(uuid.uuid5(run_id, f"attachment:{source_external_id}:{sha256}"))
 
 
-def attachment_cleanup_task_id(run_id: uuid.UUID, file_id: str) -> uuid.UUID:
-    return uuid.uuid5(run_id, f"cleanup:{file_id}")
-
-
 async def stage_file_cleanup(session: AsyncSession, company_id: uuid.UUID, run_id: uuid.UUID,
                              file_id: str, mime: str, key: str) -> uuid.UUID:
     """Record a migrated file for deletion, committed on its own before the file is written,
     so a file whose transaction never commits is always found and removed. The transaction
-    that links the file deletes the returned task."""
-    task_id = attachment_cleanup_task_id(run_id, file_id)
+    that links the file deletes the returned task. Each call records a new task, so its
+    insert waits on no other transaction while the caller's holds its locks; a task left by
+    a retried batch deletes the file only while no committed record links it."""
+    task = MigrationCleanupTask(id=uuid.uuid4(), company_id=company_id, run_ids=[str(run_id)],
+                                attachment={"file_id": file_id, "mime": mime, "idempotency_key": key})
+    task_id = task.id
     async with AsyncSession(bind=session.bind) as s:
-        await s.execute(pg_insert(MigrationCleanupTask.__table__).values(
-            id=task_id, company_id=company_id, run_ids=[str(run_id)],
-            attachment={"file_id": file_id, "mime": mime, "idempotency_key": key},
-        ).on_conflict_do_nothing(index_elements=["id"]))
+        s.add(task)
         await s.commit()
     return task_id
 

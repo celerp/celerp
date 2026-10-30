@@ -1023,7 +1023,7 @@ def _serial_keyed(table: str) -> str | None:
 # Tables whose only unique key is a uuid primary key every insert draws fresh (uuid.uuid4,
 # by the model's default or the writer): no two inserts carry one key, so an insert waits on
 # no row of its own table. tests/test_lock_rank_checker.py proves each table's writers do.
-FRESH_KEYED = frozenset({"notifications", "password_resets"})
+FRESH_KEYED = frozenset({"migration_cleanup_tasks", "notifications", "password_resets"})
 
 # Tables whose every unique key beside a fresh uuid primary key holds a column naming a row of
 # a FRESH_KEYED table the same function has just built: that row is this transaction's own, so
