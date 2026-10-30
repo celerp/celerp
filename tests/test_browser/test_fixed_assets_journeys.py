@@ -440,7 +440,9 @@ def test_u46_the_first_use_card_keeps_its_list_inside_and_its_closing_line_apart
 
 def _edges(page: Page, table: str) -> tuple[float, float]:
     """How light the left and right edges of a table's scroll box look on screen, along its
-    first row (255 is white): the pixels a person sees, whatever draws them."""
+    first row (255 is white): the pixels a person sees, whatever draws them. Two animation frames
+    first, so the resize observer has run and the box is painted at its current width."""
+    page.evaluate("() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))")
     box = page.locator(table).evaluate("t => { const r = t.parentElement.getBoundingClientRect(); return [r.x, r.width]; }")
     row = page.locator(f"{table} tbody tr").first.bounding_box()
     shot = Image.open(io.BytesIO(page.screenshot(clip={"x": box[0], "y": row["y"] + 2, "width": box[1],
