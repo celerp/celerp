@@ -344,9 +344,10 @@ class Recorder:
             self.savepoints[conn_key].append((words[1], snapshot))
             return True
         if upper[:2] == ["RELEASE", "SAVEPOINT"] and len(words) == 3:
-            self._unwind(conn_key, words[2], keep=False)
+            self._unwind(self._savepoint_owner(conn_key, words[2]), words[2], keep=False)
             return True
         if upper[:3] == ["ROLLBACK", "TO", "SAVEPOINT"] and len(words) == 4:
+            conn_key = self._savepoint_owner(conn_key, words[3])
             snapshot = self._unwind(conn_key, words[3], keep=True)
             if snapshot is not None:
                 for state, before in zip(self._transaction_state(), snapshot):
@@ -356,6 +357,16 @@ class Recorder:
                         state[conn_key] = _copy_state(before)
             return True
         return False
+
+    def _savepoint_owner(self, conn_key, name: str):
+        """The transaction that made the savepoint ``name``: on a shared connection the flow
+        whose savepoints hold it, which need not be the running task's (AsyncSession.close()
+        runs shielded, in a task of its own). Savepoint names are unique on a connection."""
+        if not isinstance(conn_key, tuple) or any(n == name for n, _ in self.savepoints.get(conn_key, ())):
+            return conn_key
+        return next((key for key, stack in self.savepoints.items()
+                     if isinstance(key, tuple) and key[0] == conn_key[0] and any(n == name for n, _ in stack)),
+                    conn_key)
 
     def _unwind(self, conn_key: int, name: str, *, keep: bool) -> tuple | None:
         """Drop the savepoints made after ``name`` (and ``name`` itself unless ``keep``);

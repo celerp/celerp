@@ -298,6 +298,26 @@ def test_the_connection_ending_ends_every_flow_on_it():
     assert not any(recorder.held.values())
 
 
+def test_a_savepoint_rolled_back_by_a_shielded_close_releases_what_its_flow_took_after_it():
+    """AsyncSession.close() runs shielded, in a task of its own: the savepoint it rolls back on
+    the shared test connection is still the closing flow's, so what that flow took after the
+    savepoint is released, as PostgreSQL releases it."""
+    recorder = Recorder()
+    recorder.shared.add(1)
+
+    async def close():
+        recorder.statement(1, "ROLLBACK TO SAVEPOINT sa_savepoint_1", None, 0.0)
+
+    async def body():
+        recorder.statement(1, "SAVEPOINT sa_savepoint_1", None, 0.0)
+        recorder.statement(1, _NOTICES, None, 0.0)
+        await asyncio.shield(close())
+        recorder.statement(1, _COMPANY, None, 0.0)
+
+    asyncio.run(body())
+    assert ("order", "row:companies") not in _kinds(recorder)
+
+
 _NOTICE_ROWS = "SELECT notifications.id FROM notifications ORDER BY notifications.company_id FOR UPDATE"
 _COMPANY_ROW = "SELECT companies.id FROM companies WHERE companies.id = 'a' FOR UPDATE"
 
