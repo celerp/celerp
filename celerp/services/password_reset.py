@@ -37,9 +37,16 @@ async def set_password(session: AsyncSession, user: User, new_password: str) -> 
     """Give *user* *new_password* and end every session they had; commits.
 
     Raises ValueError when the password is below policy, before anything is written."""
+    await _rehash(session, user, new_password)
+    await invalidate_sessions(session, str(user.id))
+
+
+async def _rehash(session: AsyncSession, user: User, new_password: str) -> None:
+    """Write *user*'s new password hash now: the login's row is locked before any row
+    that names it (tests/lock_rank.py RANKS)."""
     validate_password(new_password)
     user.auth_hash = hash_password(new_password)
-    await invalidate_sessions(session, str(user.id))
+    await session.flush()
 
 
 async def _told_of_reset(session: AsyncSession, user: User) -> list:
@@ -61,7 +68,7 @@ async def reset_password(
 ) -> None:
     """Reset *user*'s password by *method*, record it and leave a notice for everyone
     told of it except *by_user*; all of it commits together or not at all."""
-    validate_password(new_password)
+    await _rehash(session, user, new_password)
     reset = PasswordReset(user_id=user.id, method=method, os_user=os_user,
                           by_user_id=by_user.id if by_user else None)
     session.add(reset)
@@ -70,7 +77,7 @@ async def reset_password(
         if by_user is None or recipient_id != by_user.id:
             session.add(PasswordResetNotice(reset_id=reset.id, recipient_id=recipient_id))
     await session.flush()
-    await set_password(session, user, new_password)
+    await invalidate_sessions(session, str(user.id))
 
 
 def _posix_quote(value: str) -> str:

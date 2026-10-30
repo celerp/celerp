@@ -13,7 +13,7 @@ from datetime import date
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field, model_validator
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -767,22 +767,24 @@ async def transfer_install_owner(
 ) -> dict:
     """Transfer installation-wide authority to an active user in this company.
 
-    The company lock comes before the login rows, as in every company request that
-    locks a login, and holds the company for the notice the transfer leaves there. Logins
-    are locked FOR NO KEY UPDATE: a sign-in holding the login's session state still writes
-    the rows that name the login, so this never waits on it while it waits here."""
-    await lock_company(session, company_id)
-    current = (await session.execute(
-        select(User).where(User.is_install_owner.is_(True)).with_for_update(key_share=True)
-    )).scalar_one_or_none()
+    The login rows come before the company lock (tests/lock_rank.py RANKS, as a sign-in
+    takes them); the company is held for the membership and the notice the transfer
+    leaves there. Logins are locked FOR NO KEY UPDATE: a sign-in holding the login's
+    session state still writes the rows that name the login, so this never waits on it
+    while it waits here."""
+    # Both logins in one statement, in id order, so two transfers lock them alike.
+    logins = (await session.execute(
+        select(User).where(or_(User.is_install_owner.is_(True), User.id == user_id))
+        .order_by(User.id).with_for_update(key_share=True)
+    )).scalars().all()
+    current = next((u for u in logins if u.is_install_owner), None)
     if current is None or current.id != owner.id:
         raise HTTPException(status_code=403, detail="Installation owner access required")
     if current.id == user_id:
         return {"ok": True}
 
-    target = (await session.execute(
-        select(User).where(User.id == user_id).with_for_update(key_share=True)
-    )).scalar_one_or_none()
+    target = next((u for u in logins if u.id == user_id), None)
+    await lock_company(session, company_id)
     membership = (await session.execute(
         select(UserCompany).where(
             UserCompany.user_id == user_id,
@@ -821,14 +823,15 @@ async def _staff_reset_target(
         raise HTTPException(status_code=403, detail=t("users.reset_password_owner_only"))
     target_q = select(User).where(User.id == user_id)
     if lock:
-        # The company, then the user's row, then the memberships: the order patch_user
+        # The user's row, then the company, then the memberships: the order patch_user
         # takes them in, so a role change made at the same moment waits or is seen. FOR NO
         # KEY UPDATE, as patch_user: a sign-in of this user may hold their session state,
         # which ending their sessions waits for, and still has to write its session record
         # (a key share on the login).
-        await lock_company(session, company_id)
         target_q = target_q.with_for_update(key_share=True)
     target = (await session.execute(target_q)).scalar_one_or_none()
+    if lock:
+        await lock_company(session, company_id)
     links = [] if target is None else (await session.execute(
         select(UserCompany).where(UserCompany.user_id == user_id, UserCompany.is_active.is_(True))
     )).scalars().all()
@@ -906,49 +909,43 @@ async def create_user(
     if payload.role not in ROLE_LEVELS:
         raise HTTPException(400, f"Invalid role. Must be one of: {', '.join(sorted(ROLE_LEVELS, key=ROLE_LEVELS.get))}")
     _assert_role_assignable(caller_role, payload.role)
-    await lock_company(session, company_id)
 
-    # Check if user with this email already exists globally; if so, just link them.
-    existing_user = (await session.execute(select(User).where(User.email == payload.email))).scalar_one_or_none()
-    if existing_user:
-        # Verify not already a member of this company
-        existing_link = (await session.execute(
-            select(UserCompany).where(UserCompany.user_id == existing_user.id, UserCompany.company_id == company_id)
-        )).scalar_one_or_none()
-        if existing_link:
-            raise HTTPException(status_code=400, detail=t("company.err_user_already_member"))
-        link = UserCompany(id=uuid.uuid4(), user_id=existing_user.id, company_id=company_id, role=payload.role)
-        session.add(link)
+    # The user's row is held, or inserted, before the company lock (tests/lock_rank.py
+    # RANKS, as a sign-in takes them): a known email is linked, a new one becomes a user.
+    user = (await session.execute(
+        select(User).where(User.email == payload.email).with_for_update(read=True, key_share=True)
+    )).scalar_one_or_none()
+    if user is None:
+        # Only the branch that actually creates a new password hash enforces the length
+        # policy; linking an existing global user never touches this password field.
         try:
-            await session.commit()
+            validate_password(payload.password)
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Password must be at least {MIN_PASSWORD_LENGTH} characters.",
+            )
+        user = User(
+            id=uuid.uuid4(),
+            email=payload.email,
+            name=payload.name,
+            auth_hash=hash_password(payload.password),
+            is_active=True,
+        )
+        session.add(user)
+        try:
+            await session.flush()  # persist user first so FK on user_companies is satisfied
         except Exception as e:
             await session.rollback()
-            logger.error("create_user link failed: %s", e, exc_info=True)
+            logger.error("create_user failed: %s", e, exc_info=True)
             raise HTTPException(status_code=400, detail=t("company.err_user_not_added")) from e
-        return {"id": str(existing_user.id)}
-
-    # Only the branch that actually creates a new password hash enforces the length
-    # policy; linking an existing global user never touches this password field.
+    await lock_company(session, company_id)
+    if (await session.execute(
+        select(UserCompany.id).where(UserCompany.user_id == user.id, UserCompany.company_id == company_id)
+    )).scalar_one_or_none():
+        raise HTTPException(status_code=400, detail=t("company.err_user_already_member"))
+    session.add(UserCompany(id=uuid.uuid4(), user_id=user.id, company_id=company_id, role=payload.role))
     try:
-        validate_password(payload.password)
-    except ValueError:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Password must be at least {MIN_PASSWORD_LENGTH} characters.",
-        )
-
-    user = User(
-        id=uuid.uuid4(),
-        email=payload.email,
-        name=payload.name,
-        auth_hash=hash_password(payload.password),
-        is_active=True,
-    )
-    session.add(user)
-    try:
-        await session.flush()  # persist user first so FK on user_companies is satisfied
-        link = UserCompany(id=uuid.uuid4(), user_id=user.id, company_id=company_id, role=payload.role)
-        session.add(link)
         await session.commit()
     except Exception as e:
         await session.rollback()
@@ -969,13 +966,14 @@ async def patch_user(
     from celerp.models.accounting import UserCompany
     from sqlalchemy import func as _func
 
-    await lock_company(session, company_id)
+    # The user's row before the company (tests/lock_rank.py RANKS, as a sign-in takes them).
     # FOR NO KEY UPDATE: a sign-in of this user may hold their session state, which
     # invalidate_sessions below waits for, and still has to write its session record (a
     # key share on the login).
     user = (await session.execute(
         select(User).where(User.id == user_id).with_for_update(key_share=True)
     )).scalar_one_or_none()
+    await lock_company(session, company_id)
     link = (await session.execute(
         select(UserCompany).where(
             UserCompany.user_id == user_id,
