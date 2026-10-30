@@ -10,6 +10,7 @@ import uuid
 from pathlib import Path
 
 import pytest
+from playwright.sync_api import expect
 
 from .test_inventory_merge_after_disconnect_browser import _db
 
@@ -80,7 +81,7 @@ def test_a_run_needing_reconciliation_is_reconciled_on_its_page(page, ui_server,
     value = page.locator("#reconcile-panel input[name='value']")
     value.fill("0")
     value.press("Escape")
-    assert page.evaluate("document.activeElement.name") != "value", "Escape did not leave the field"
+    expect(page.locator('[name="value"]:focus'), "Escape did not leave the field").to_have_count(0)
     page.screenshot(path=str(SHOTS / "reconcile-run.png"), full_page=True)
 
     page.click("#reconcile-panel button[type='submit']")

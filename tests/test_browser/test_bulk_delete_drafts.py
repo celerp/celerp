@@ -74,7 +74,7 @@ def test_the_row_menu_offers_delete_only_for_a_draft_and_a_refusal_keeps_the_row
 
 
 _ROW_SHAPE = """tr => ({
-  cells: Array.from(tr.cells).map(td => (td.dataset.col || td.className) + (td.style.display === 'none' ? ':hidden' : '')),
+  cells: Array.from(tr.cells).map(td => (td.dataset.col || [...td.classList].filter(c => !c.startsWith('htmx-')).join(' ')) + (td.style.display === 'none' ? ':hidden' : '')),
   delete: tr.querySelectorAll('.row-menu-item--danger').length})"""
 
 

@@ -107,7 +107,8 @@ def test_escape_cancels_the_edit_without_saving(page, ui_server, api, draft):
     assert float(qty.input_value()) == 5, "Escape must put the field back to its value before the edit"
     assert posts == [], "Escape must not save"
     assert _toasts(page) == 0
-    assert page.evaluate("document.activeElement === document.body"), "Escape must leave the field"
+    # Escape leaves the field: nothing holds the focus.
+    page.wait_for_function("document.activeElement === document.body")
 
 
 def test_delete_selected_asks_first(page, ui_server, api, draft):

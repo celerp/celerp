@@ -475,7 +475,8 @@ def test_u50_a_table_wider_than_a_phone_shades_where_more_columns_wait(page: Pag
     # Wide enough for every column, the register is unshaded.
     page.set_viewport_size({"width": 1600, "height": 900})
     page.goto("/fixed-assets")
-    expect(page.locator(table).locator("xpath=..")).not_to_have_class(css_class("scroll-more"))
+    expect(page.locator(table).locator("xpath=..")).not_to_have_class(css_class("scroll-more-left"))
+    expect(page.locator(table).locator("xpath=..")).not_to_have_class(css_class("scroll-more-right"))
     # Narrower, it scrolls in its own box and the page itself never scrolls sideways.
     page.set_viewport_size({"width": 1280, "height": 900})
     assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")

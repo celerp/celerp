@@ -269,7 +269,7 @@ def test_keyboard_and_focus(playwright, fresh):
     try:
         page = ctx.new_page()
         page.goto(f"{fresh.ui}/setup", wait_until="networkidle")
-        assert page.evaluate("() => document.activeElement.id") == "company_name"
+        expect(page.locator("#company_name")).to_be_focused()
         for name in ("vertical", "currency"):
             wrap = page.locator(f'.combobox-wrap:has(input[type="hidden"][name="{name}"])')
             wrap.locator(".combobox-input").click()
@@ -284,10 +284,7 @@ def test_keyboard_and_focus(playwright, fresh):
         page.wait_for_load_state("networkidle")
         assert urlsplit(page.url).path == "/setup"
         expect(page.locator(".flash")).to_be_visible()
-        active = page.evaluate("() => document.activeElement.closest('.combobox-wrap')"
-                               " && document.activeElement.closest('.combobox-wrap')"
-                               ".querySelector('input[type=hidden]').name")
-        assert active == "currency", active
+        expect(page.locator('.combobox-wrap:has(input[type="hidden"][name="currency"]) :focus')).to_have_count(1)
     finally:
         browser.close()
 

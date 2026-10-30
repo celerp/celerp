@@ -11,6 +11,7 @@ import uuid
 
 import pytest
 
+from .conftest import css_class
 from .test_migration_wizard_browser import _pg_admin
 
 pytestmark = pytest.mark.browser
@@ -128,14 +129,15 @@ def test_a_notice_asking_for_action_leads_the_bell_and_stands_out(page, ui_serve
     page.click(".notif-bell-btn")
     items = page.locator("#notif-panel .notif-item")
     expect(items.first).to_contain_text(f"Act {tag}")
-    expect(page.locator("#notif-panel .notif-item", has_text=f"News 1 {tag}")).to_be_visible()
-    # Opening the panel and loading the page each render the list again, so both notices
+    news = page.locator("#notif-panel .notif-item", has_text=f"News 1 {tag}")
+    expect(news).to_be_visible()
+    expect(items.first).to_have_class(css_class("notif-item--high"))
+    expect(news).not_to_have_class(css_class("notif-item--high"))
+    # Opening the panel and loading the page each render the list again, so both colours
     # are read in one step: a read split in two can land on a notice the panel replaced.
-    seen = page.evaluate("""news => {
+    colours = page.evaluate("""news => {
         const items = [...document.querySelectorAll('#notif-panel .notif-item')];
-        const read = el => ({high: el.classList.contains('notif-item--high'),
-                             colour: getComputedStyle(el).borderLeftColor});
-        return {first: read(items[0]), news: read(items.find(el => el.textContent.includes(news)))};
+        const colour = el => getComputedStyle(el).borderLeftColor;
+        return [colour(items[0]), colour(items.find(el => el.textContent.includes(news)))];
     }""", f"News 1 {tag}")
-    assert seen["first"]["high"] and not seen["news"]["high"], seen
-    assert seen["first"]["colour"] != seen["news"]["colour"], seen
+    assert colours[0] != colours[1], colours

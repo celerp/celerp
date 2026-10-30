@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 from playwright.sync_api import Page, expect
 
+from .conftest import css_class
 from .test_import_hint import _OVERLAPS_JS
 
 pytestmark = pytest.mark.browser
@@ -200,7 +201,7 @@ def test_hint_dismissed_by_esc_and_by_its_close(page: Page, fresh_company):
     expect(page.locator(".import-arrow")).to_be_visible()
     page.keyboard.press("Escape")
     expect(page.locator(".import-arrow")).to_have_count(0)
-    expect(page.locator("#select-all-rows")).not_to_have_class("import-arrow-pulse")
+    expect(page.locator("#select-all-rows")).not_to_have_class(css_class("import-arrow-pulse"))
     page.goto(_DEMO_URL)
     page.locator(".import-arrow").get_by_role("button", name="Close").click()
     expect(page.locator(".import-arrow")).to_have_count(0)
