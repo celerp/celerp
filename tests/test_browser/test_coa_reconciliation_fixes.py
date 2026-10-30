@@ -122,7 +122,7 @@ def bank_account(api, seeded_chart):
         "bank_name": "E2E Bank",
         "account_number": "****1234",
         "bank_type": "checking",
-        "currency": "THB",
+        "currency": "USD",
         "opening_balance": 100000.0,
     })
     assert r.status_code == 200, r.text
