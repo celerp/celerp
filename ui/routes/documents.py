@@ -1301,6 +1301,8 @@ async def _line_items_from_inventory(token: str, entity_ids: list[str], price_li
                                      doc_type: str | None = None, doc: dict | None = None) -> list[dict]:
     """Fetch inventory items and build doc/list line items; a document's lines start with its default
     taxes (see _new_line_taxes; pass the target `doc` when appending)."""
+    from celerp_inventory.services import line_rate
+
     line_taxes = await _new_line_taxes(token, doc_type, doc)
     line_items = []
     for eid in entity_ids:
@@ -1311,14 +1313,14 @@ async def _line_items_from_inventory(token: str, entity_ids: list[str], price_li
         sku = item.get("sku", "")
         name = item.get("name", "")
         sell_by = item.get("sell_by") or "piece"
-        unit_price = resolve_price(item, price_list)
+        unit_price = line_rate(item, price_list)
         qty = float(item.get("quantity", 1)) if float(item.get("quantity", 1)) > 0 else 1
         desc = f"{sku} - {name}" if sku else name
 
         line = {
             "description": desc,
             "quantity": qty,
-            "unit_price": unit_price,
+            **({} if unit_price is None else {"unit_price": unit_price}),
             "unit": sell_by,
             "sku": sku,
             "price_list": price_list,
@@ -1361,7 +1363,8 @@ def _reorder_po_line(item: dict, unit_decimals: int | None = None) -> dict:
       when reorder_qty is unset (never a fabricated number - the qty field then shows
       the velocity suggestion as a placeholder instead).
     - unit_price = cost per PURCHASE unit = cost_price (per sell unit) x factor, so the
-      PO total is the real money owed (qty_purchase x price_purchase == sell_qty x cost).
+      PO total is the real money owed (qty_purchase x price_purchase == sell_qty x cost);
+      left out when the item's goods cost is not known (line_rate), so the line asks for it.
     - carries the purchase_* fields + item_id so PO -> Bill -> receive reads back the
       same factor and restocks exactly reorder_qty sell units.
     """
@@ -1375,17 +1378,17 @@ def _reorder_po_line(item: dict, unit_decimals: int | None = None) -> dict:
         reorder_qty = float(item.get("reorder_qty") or 0)
     except (TypeError, ValueError):
         reorder_qty = 0.0
-    try:
-        cost = float(item.get("cost_price") or 0)
-    except (TypeError, ValueError):
-        cost = 0.0
+    from celerp_inventory.services import line_rate
+
+    cost = line_rate(item, "Cost")
     qty = _to_purchase_qty(reorder_qty, factor, unit_decimals) if reorder_qty > 0 else 0
     unit = item.get("purchase_unit") or item.get("sell_by") or "piece"
     eid = item.get("entity_id") or item.get("id") or ""
     return {
         "description": f"{sku} - {name}" if sku else name,
         "quantity": qty,
-        "unit_price": round(cost * factor, 4),   # cost per purchase unit
+        # cost per purchase unit; unpriced when the goods cost is not known
+        **({} if cost is None else {"unit_price": round(cost * factor, 4)}),
         "unit": unit,
         "sell_by": unit,
         "sku": sku,

@@ -62,7 +62,8 @@ from celerp.services.peer_import import SourceRevision
 from celerp.services.line_measures import check_sell_qty_fits_unit, validate_default_sell_qty
 from celerp.services.permissions import role_has_permission
 from celerp.services.vertical_presets import category_item_defaults
-from celerp.services.pricing import derived_price_keys, get_price_config, is_derived, price_key, price_keys_in
+from celerp.services.pricing import (derived_price_keys, get_price_config, is_cost_list_name, is_derived, price_key,
+                                     price_keys_in, resolve_price)
 from celerp.services.units import (
     SERVICE_SELL_BY,
     build_unit_map,
@@ -204,6 +205,15 @@ def goods_cost_known(state: dict) -> bool:
         return False
     return goods_basis(state) is not None or (
         state.get("cost_price") is not None and float(state.get("quantity") or 0) <= 0)
+
+
+def line_rate(item: dict, price_list: str) -> float | None:
+    """The unit rate a document line takes from a flattened item on a price list, or None
+    when the list is a cost list and the item's goods cost is not known: the line is left
+    unpriced rather than priced at a cost no one knows."""
+    if is_cost_list_name(price_list) and not goods_cost_known(item):
+        return None
+    return resolve_price(item, price_list)
 
 
 def goods_cost_empty(state: dict) -> bool:

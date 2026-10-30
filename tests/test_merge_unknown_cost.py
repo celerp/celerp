@@ -406,3 +406,54 @@ async def test_a_copy_keeps_a_known_cost_and_never_an_unknown_one(client, sessio
         assert copy["cost_total"] == 100.0 and MARK not in copy, copy
     else:
         assert not {"cost_total", "cost_price", "cost_base", MARK} & set(copy), copy
+
+
+# ── P5: a cost list prices a line only from a known goods cost ──────────────
+
+async def _doc(client, auth, doc_type: str, lines: list[dict] | None = None) -> str:
+    r = await client.post("/docs", headers=auth["headers"], json={"doc_type": doc_type, "line_items": lines or []})
+    assert r.status_code == 200, r.text
+    return r.json()["id"]
+
+
+async def _scanned(client, auth, doc_type: str, item_id: str, price_list: str) -> dict:
+    doc = await _doc(client, auth, doc_type)
+    sku = (await _read(client, auth, item_id))["sku"]
+    r = await client.post(f"/docs/{doc}/scan", headers=auth["headers"],
+                          json={"barcode": sku, "price_list": price_list, "run_key": uuid.uuid4().hex[:8]})
+    assert r.status_code == 200 and r.json()["scanned"] == 1, r.text
+    [line] = (await client.get(f"/docs/{doc}", headers=auth["headers"])).json()["line_items"]
+    return line
+
+
+async def _repriced(client, auth, doc_type: str, item_id: str, price_list: str) -> tuple[dict, dict]:
+    doc = await _doc(client, auth, doc_type, [{"item_id": item_id, "description": "Beads", "quantity": 1,
+                                               "unit_price": 7.0}])
+    version = (await client.get(f"/docs/{doc}", headers=auth["headers"])).json()["version"]
+    r = await client.post(f"/docs/{doc}/reprice", headers=auth["headers"],
+                          json={"price_list": price_list, "expected_version": version})
+    assert r.status_code == 200, r.text
+    [line] = (await client.get(f"/docs/{doc}", headers=auth["headers"])).json()["line_items"]
+    return r.json(), line
+
+
+async def test_a_sold_out_lot_keeps_its_unit_cost_on_a_cost_list(client, session, auth):
+    await _seed(session, auth)
+    lot = await _item(client, auth, qty=0, cost_price=5.0)
+    assert (await _read(client, auth, lot))["cost_price"] == 5.0
+    assert (await _scanned(client, auth, "purchase_order", lot, "Cost"))["unit_price"] == 5.0
+
+
+async def test_a_cost_list_leaves_an_unknown_cost_unpriced(client, session, auth):
+    await _seed(session, auth)
+    x = await _merge(client, auth, [await _item(client, auth, qty=2, cost_total=100.0),
+                                    await _item(client, auth, qty=3)])
+    assert "unit_price" not in await _scanned(client, auth, "purchase_order", x, "Cost")
+    result, line = await _repriced(client, auth, "purchase_order", x, "Cost")
+    assert {"item_id": x, "reason": "unpriced"} in result["skipped"] and line["unit_price"] == 7.0, result
+
+
+async def test_a_sales_list_still_prices_an_unpriced_item_at_zero(client, session, auth):
+    await _seed(session, auth)
+    _result, line = await _repriced(client, auth, "invoice", await _item(client, auth, qty=2), "Retail")
+    assert line["unit_price"] == 0.0

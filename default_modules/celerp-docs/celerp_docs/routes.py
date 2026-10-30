@@ -8787,10 +8787,12 @@ def _check_price_list(settings: dict, role: str, price_list: str, price_config: 
 
 def _catalog_rate(item_state: dict, entity_id: str, price_list: str, currency: str | None,
                   price_config: tuple[list[dict], str, str]):
-    """An item's unit rate on a price list, on flattened state and rounded to the currency."""
+    """An item's unit rate on a price list, on flattened state and rounded to the currency, or
+    None when the line is left unpriced (line_rate)."""
     from celerp_inventory.routes import flatten_item
-    flat = flatten_item(item_state or {}, entity_id, price_config=price_config)
-    return round_rate(resolve_price(flat, price_list), currency or price_config[2])
+    from celerp_inventory.services import line_rate
+    rate = line_rate(flatten_item(item_state or {}, entity_id, price_config=price_config), price_list)
+    return None if rate is None else round_rate(rate, currency or price_config[2])
 
 
 def _reprice_idempotency_key(kind: str, entity_id: str, payload: RepriceBody) -> str:
@@ -8883,6 +8885,10 @@ async def _reprice_catalog_lines(
             continue
 
         new_rate = _catalog_rate(item.state, item.entity_id, price_list, effective_currency, price_config)
+        if new_rate is None:
+            skipped.append({"item_id": item_id, "reason": "unpriced"})
+            updated_lines.append(line)
+            continue
         line["unit_price"] = float(new_rate)
         line["line_total"] = to_stored_float(
             document_line_amount({**line, "line_total": None}, effective_currency) or to_decimal(0))
@@ -12460,9 +12466,10 @@ def _scan_line(item: Projection, quantity, *, priced: bool, price_list: str | No
     line = {"line_id": uuid.uuid4().hex, "item_id": item.entity_id, "sku": st.get("sku"), "name": st.get("name"),
             "description": st.get("name"), "barcode": st.get("barcode"),
             "unit": st.get("sell_by"), "sell_by": st.get("sell_by"), "quantity": float(quantity or 0)}
-    if priced:
-        line["unit_price"] = float(_catalog_rate(st, item.entity_id, price_list or DEFAULT_PRICE_LIST_NAME,
-                                                 currency, price_config))
+    rate = _catalog_rate(st, item.entity_id, price_list or DEFAULT_PRICE_LIST_NAME, currency,
+                         price_config) if priced else None
+    if rate is not None:
+        line["unit_price"] = float(rate)
     return line
 
 
