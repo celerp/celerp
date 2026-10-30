@@ -3395,6 +3395,10 @@ async def revert_doc_to_draft(entity_id: str, payload: DocRevertBody, company_id
     # locked period, and nothing may mutate before that check passes.
     # Pass current revert_count (before this revert increments it).
     current_revert_count = int(state.get("revert_count", 0))
+    # Its landed cost is taken off every lot holding it, which first has to be all of it.
+    lineage_lots = await _bill_lineage(session, company_id, state) if to_order or emptied else []
+    if (folded := await _folded_freight(session, company_id, entity_id, lineage_lots)) is not None:
+        raise HTTPException(status_code=409, detail=folded)
     await auto_je.void_for_doc_finalized(session, company_id=company_id, user_id=user.id, doc_id=entity_id,
                                          revert_count=current_revert_count, goods_movements=not to_order)
     if to_order:
@@ -3405,7 +3409,7 @@ async def revert_doc_to_draft(entity_id: str, payload: DocRevertBody, company_id
         # capitalisation is reversed here: what the lots still hold in stock goes back to
         # clearing and what returns and sales expensed comes back off stock shrinkage. Otherwise
         # the bill's own receipt and return entries were reversed above, landed cost included.
-        lots = [row for row, _, _ in await _bill_lineage(session, company_id, state)]
+        lots = [row for row, _, _ in lineage_lots]
         if to_order:
             returned = {x.get("returned_lot_id") or x["item_id"] for x in state.get("returned_items") or []}
             await auto_je.void_landed_capitalisation(
@@ -5952,6 +5956,95 @@ async def _bill_lineage(session: AsyncSession, company_id,
             return family
         held |= ids
         await lock_projections(session, company_id, held)
+
+
+# Why a bill's freight can no longer be taken off a lot of its lineage (_folded_freight), by
+# what folded it into the goods cost.
+_FOLDS = {
+    "docs.revert_folded_merged": "SKU '{sku}' was merged, or made into another product, without its freight following it.",
+    "docs.revert_folded_returned": "SKU '{sku}' came back from a customer as goods, its freight included.",
+    "docs.revert_folded_production": "SKU '{sku}' gave units to production run {run} while it held the freight.",
+    "docs.revert_folded_counted": "SKU '{sku}' went down to zero while it held the freight and came back up.",
+}
+
+
+async def _folded_freight(session: AsyncSession, company_id, doc_id: str,
+                          lots: list[tuple[Projection, str | None, str | None]]) -> dict | None:
+    """The refusal for taking document ``doc_id``'s landed cost off its lineage (``lots``,
+    _bill_lineage) when some of it became part of a goods cost on the way, so no pool holds
+    it any more and taking the rest back would credit cost of goods sold for freight still in
+    stock; None when every part of it is a pool, or left with units at a lot's average. Read
+    from each lot's own events, replayed: a lot merged or transformed while it held a pool of
+    the bill whose successor was not made holding that pool (a merge before merges carried
+    freight, a product made at a restated cost), goods a customer returned from a lot that
+    shipped units holding it, units a production run took from a lot holding it, and a lot
+    that went to zero holding it (the pool folded into its unit cost) and came back up."""
+    from celerp.models.ledger import LedgerEntry
+    from celerp.projections.engine import ProjectionEngine
+
+    prefix = f"{doc_id}::"
+
+    def pools(s: dict) -> set[str]:
+        return {k for k, v in (s.get("landed_costs") or {}).items() if k.startswith(prefix) and v}
+
+    by_id = {row.entity_id: row for row, _, _ in lots}
+    entries = (await session.execute(
+        select(LedgerEntry.id, LedgerEntry.entity_id, LedgerEntry.event_type, LedgerEntry.data, LedgerEntry.metadata_)
+        .where(LedgerEntry.company_id == company_id, LedgerEntry.entity_id.in_(list(by_id)))
+        .order_by(LedgerEntry.id))).all()
+    states: dict[str, dict] = {}
+    born: dict[str, tuple[int, dict]] = {}
+    history: dict[str, list[tuple[int, str, dict, dict, dict]]] = {}
+    for entry_id, lot, event_type, data, meta in entries:
+        before = states.get(lot) or {}
+        states[lot] = ProjectionEngine._apply(dict(before), event_type, data or {})
+        if event_type == "item.created":
+            born.setdefault(lot, (entry_id, data or {}))
+        history.setdefault(lot, []).append((entry_id, event_type, meta or {}, before, states[lot]))
+    found: list[tuple[str, Projection, list[str]]] = []
+    for row, parent, link in lots:
+        lot, state = row.entity_id, row.state or {}
+        steps = history.get(lot, [])
+        if state.get("status") == "merged" and state.get("merged_into"):
+            successor = str(state["merged_into"])
+            exit_ = next((s for s in reversed(steps) if s[1] == "item.source_deactivated"), None)
+        else:
+            successor = next((r.entity_id for r, p, how in lots if p == lot and how == "transformed_from"), None)
+            exit_ = next((s for s in reversed(steps) if s[1] == "item.status.set"
+                          and s[2].get("reason") == "consumed_by_transform"), None)
+        used = list(dict.fromkeys(str(s[2]["manufacturing_order_id"]) for s in steps if s[1] == "item.consumed"
+                                  and s[2].get("manufacturing_order_id") and pools(s[3])))
+        if exit_ is not None and successor in born and pools(exit_[3]) - set(born[successor][1].get("landed_costs") or {}):
+            found.append(("docs.revert_folded_merged", row, []))
+        elif link == "returned_from" and lot in born and any(
+                s[1] == "item.fulfilled" and s[0] < born[lot][0] and pools(s[3]) for s in history.get(parent, [])):
+            found.append(("docs.revert_folded_returned", row, []))
+        elif used:
+            found.append(("docs.revert_folded_production", row, used))
+        elif any(pools(s[3]) and not pools(s[4]) and float(s[4].get("quantity") or 0) <= 0
+                 and s[4].get("cost_price") is not None and s[4].get("cost_base") is None
+                 and any(float(t[4].get("quantity") or 0) > 0 for t in steps[i + 1:])
+                 for i, s in enumerate(steps)):
+            found.append(("docs.revert_folded_counted", row, []))
+    if not found:
+        return None
+    refs = {r.entity_id: str((r.state or {}).get("ref_id") or r.entity_id) for r in (await session.execute(
+        select(Projection).where(Projection.company_id == company_id, Projection.entity_id.in_(
+            sorted({run for _, _, used in found for run in used}))))).scalars()}
+    folds = []
+    for why, row, used in found:
+        params: dict = {"sku": str((row.state or {}).get("sku") or row.entity_id), "id": row.entity_id}
+        if used:
+            params["run"] = ", ".join(refs.get(run, run) for run in used)
+        folds.append(refusal(why, _FOLDS[why].format(**params), **params))
+    return refusal(
+        "docs.revert_lineage_folded",
+        "This bill cannot go back to its order: part of its freight has become part of the goods cost of stock, "
+        "so it can no longer be taken off. " + " ".join(f["message"] for f in folds) + " Undo the merge or the "
+        "transform on that item's page while it is still the item's last change, then try again. Otherwise "
+        "record a supplier credit note for what is no longer owed: the freight already in the stock's cost "
+        "stays there.",
+        lots=folds, runs=[{"id": run, "ref": refs.get(run, run)} for _, _, used in found for run in used])
 
 
 async def _drop_landed(session: AsyncSession, company_id, user_id, doc_id: str, lots: list[Projection],
