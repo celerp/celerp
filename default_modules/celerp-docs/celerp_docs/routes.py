@@ -3405,7 +3405,7 @@ async def revert_doc_to_draft(entity_id: str, payload: DocRevertBody, company_id
         # capitalisation is reversed here: what the lots still hold in stock goes back to
         # clearing and what returns and sales expensed comes back off stock shrinkage. Otherwise
         # the bill's own receipt and return entries were reversed above, landed cost included.
-        lots = await _bill_lineage(session, company_id, state)
+        lots = [row for row, _, _ in await _bill_lineage(session, company_id, state)]
         if to_order:
             returned = {x.get("returned_lot_id") or x["item_id"] for x in state.get("returned_items") or []}
             await auto_je.void_landed_capitalisation(
@@ -5838,13 +5838,23 @@ def _landed_held(doc_id: str, lots: Iterable[dict]) -> dict[str, float]:
     return held
 
 
-async def _bill_lineage(session: AsyncSession, company_id, state: dict) -> list[Projection]:
-    """The lots a document's receipts made or added to, and the lots split off them."""
+async def _bill_lineage(session: AsyncSession, company_id,
+                        state: dict) -> list[tuple[Projection, str | None, str | None]]:
+    """The lots a document's goods live in now, locked: the lots its receipts made or added to
+    and every lot that came from them by a split, a transform, a customer return or a live
+    merge, each with the lot it came from and how (account_roles.lineage). lock_projections
+    takes the company lock first, which holds back every other writer, so the family read
+    again under the row locks is the one that stays until the caller commits."""
     roots = list(dict.fromkeys([*(state.get("received_item_ids") or []),
                                 *(x["item_id"] for x in state.get("received_items") or [] if x.get("item_id"))]))
-    rows = await lock_projections(session, company_id, roots)
-    return [*rows.values(), *(r for kids in (await _split_descendants(session, company_id, list(rows), set())).values()
-                              for r in kids)]
+    held: set[str] = set()
+    while True:
+        family = await lineage(session, company_id, roots)
+        ids = {row.entity_id for row, _, _ in family}
+        if ids <= held:
+            return family
+        held |= ids
+        await lock_projections(session, company_id, held)
 
 
 async def _drop_landed(session: AsyncSession, company_id, user_id, doc_id: str, lots: list[Projection],
