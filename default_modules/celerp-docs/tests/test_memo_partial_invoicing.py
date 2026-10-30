@@ -89,11 +89,14 @@ async def test_draw_refuses_non_draft_target(client, session):
     quote = (await ok(await client.post("/docs", headers=h, json={"doc_type": "quotation", "line_items": []})))["id"]
     stranger = await auth(session)
     foreign = await draft(client, stranger)
-    for target in (final, void, quote, foreign):
+    for target in (final, void, quote):
         r = await draw(client, h, memo, {lids[0]: 1}, target=target)
-        assert r.status_code in (404, 409), r.text
-        assert r.status_code == 404 or key_of(r) == "docs.draw_target_not_draft"
+        assert r.status_code == 409 and key_of(r) == "docs.draw_target_not_draft", r.text
         assert await owner(client, h, lots[0][0]) == ("memo_out", memo)
+    # Another company's draft is not found for this company, and the memo route itself is.
+    r = await draw(client, h, memo, {lids[0]: 1}, target=foreign)
+    assert r.status_code == 404 and (await draw(client, h, memo, {lids[0]: 1}, dry_run=True)).status_code == 200, r.text
+    assert await owner(client, h, lots[0][0]) == ("memo_out", memo)
     assert (await state(client, h, final))["line_items"][0]["description"] == "Setting fee"
 
 
