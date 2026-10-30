@@ -78,7 +78,7 @@ _VERTICALS = sorted(_NEW_BY_VERTICAL)
 _ACCOUNTANTS = _SHOTS / "accountants"
 _ACCOUNTANTS_SCREENS = {
     "migration-verify", "new-company", "company-backup",
-    "client-companies", "fixed-assets", "bank-reconciliation",
+    "client-companies", "fixed-assets", "bank-reconciliation", "ai-receipt-review",
 }
 
 # Width caps documented for each tier.
