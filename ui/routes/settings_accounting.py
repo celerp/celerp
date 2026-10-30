@@ -82,8 +82,10 @@ def _bank_account_row(b: dict) -> FT:
             Div(
                 A(t("btn.edit"), href=f"/settings/accounting/bank-accounts/{b['id']}/edit",
                   cls="btn btn--secondary btn--xs"),
-                A(t("acct.reconcile"), href="/accounting/reconcile/start",
+                A(t("acct.reconcile"), href=f"/accounting/reconcile/start?bank_id={b['id']}",
                   cls="btn btn--primary btn--xs"),
+                A(t("recon.history"), href=f"/accounting/reconcile/history/{b['id']}",
+                  cls="btn btn--secondary btn--xs"),
                 Button(
                     t("inv.archive") if b.get("is_active") else t("btn.restore"),
                     hx_patch=f"/settings/accounting/bank-accounts/{b['id']}/toggle",

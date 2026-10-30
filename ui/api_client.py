@@ -1903,6 +1903,11 @@ async def get_bank_account(token: str, bank_id: str) -> dict:
         return _raise(await c.get(f"/accounting/bank-accounts/{bank_id}")).json()
 
 
+async def get_bank_reconciliations(token: str, bank_id: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.get(f"/accounting/bank-accounts/{bank_id}/reconciliations")).json()
+
+
 async def create_bank_account(token: str, data: dict) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.post("/accounting/bank-accounts", json=data)).json()

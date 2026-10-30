@@ -23,7 +23,7 @@ from ui.components.attrs import hx_vals
 from ui.components.shell import base_shell, flash, page_header, page_title
 from ui.components.table import (
     EMPTY, PARTY_PRELOAD, PARTY_SEARCH_URL, add_new_option, display_enum, fmt_money,
-    party_options, searchable_select,
+    party_options, searchable_select, status_cards,
 )
 from ui.config import get_token as _token
 from ui.i18n import t
@@ -106,14 +106,17 @@ if (!window._reconScrollHook) {
 
 # ── Statement line row ────────────────────────────────────────────────────────
 
-def _stmt_line_row(line: dict, session_id: str, currency: str) -> FT:
+def _stmt_line_row(line: dict, session_id: str, currency: str, *, read_only: bool = False,
+                   reason: str | None = None) -> FT:
+    """One statement line. A *read_only* line (of a completed reconciliation) has no
+    actions; *reason* is the key of why a bulk confirm left the line unmatched."""
     lid = line["id"]
     status = line.get("status", "unmatched")
     row_cls = "recon-row " + _STATUS_CLS.get(status, "")
     amount = float(line.get("amount", 0))
     amt_cls = "cell--number " + ("recon-amount--credit" if amount >= 0 else "recon-amount--debit")
 
-    selectable = status in ("unmatched", "suggested")
+    selectable = not read_only and status in ("unmatched", "suggested")
     actions = []
     if selectable:
         actions += [
@@ -150,7 +153,7 @@ def _stmt_line_row(line: dict, session_id: str, currency: str) -> FT:
                 cls="btn btn--xs btn--outline",
             )
         )
-    elif status in ("matched", "created"):
+    elif not read_only and status in ("matched", "created"):
         actions.append(
             Button(t("btn.undo"),
                 hx_post=f"/accounting/reconcile/{session_id}/lines/{lid}/unmatch",
@@ -176,6 +179,7 @@ def _stmt_line_row(line: dict, session_id: str, currency: str) -> FT:
             ),
             cls="recon-row-main",
         ),
+        P(t(reason), cls="flash flash--warning") if reason else None,
         Div(id=f"recon-expand-{lid}", cls="recon-row-expand"),
         id=f"stmt-line-{lid}",
         cls=row_cls + (" recon-row--selectable" if selectable else ""),
@@ -314,7 +318,14 @@ def _workspace_view(
     book_entries: list[dict],
     currency: str,
     notice: str | None = None,
+    notice_kind: str = "error",
+    skipped_reasons: dict[str, str] | None = None,
 ) -> FT:
+    # A completed reconciliation is the closed record of a bank statement, so it shows
+    # no edit controls (GDR 2e, owner decision): its one way to change, Reopen, sits on
+    # the banner, and the server still refuses and explains any change to it.
+    read_only = recon.get("status") == "completed"
+    skipped_reasons = skipped_reasons or {}
     total = len(lines)
     matched = sum(1 for l in lines if l["status"] in ("matched", "created"))
     suggested = sum(1 for l in lines if l["status"] == "suggested")
@@ -342,6 +353,8 @@ def _workspace_view(
         Div(
             H2(t("recon.title", bank=bank_name, account=acc_num), cls="recon-title"),
             Span(t("recon.statement_date", date=recon.get("statement_date", "--")), cls="text-muted"),
+            A(t("recon.history"), href=f"/accounting/reconcile/history/{bank.get('id', '')}",
+              cls="btn btn--secondary btn--sm"),
         ),
         Div(
             Span(t("recon.statement_balance", amount=fmt_money(stmt_bal, currency)), cls="val-chip"),
@@ -383,19 +396,20 @@ def _workspace_view(
             if abs(float(difference)) <= tol else []
         ),
         cls="recon-toolbar",
-    )
+    ) if not read_only else None
 
     bank_panel = Div(
         H3(t("page.bank_statement"), cls="recon-panel-title"),
         _recon_progress(total, matched, created=sum(1 for l in lines if l["status"] == "created"),
                         skipped=skipped),
         Div(
-            *[_stmt_line_row(l, session_id, currency) for l in lines],
+            *[_stmt_line_row(l, session_id, currency, read_only=read_only,
+                             reason=skipped_reasons.get(l["id"])) for l in lines],
             id="stmt-lines-panel",
             cls="recon-panel-body",
         ) if lines else Div(
             P(t("acct.no_statement_lines_imported_yet"), cls="empty-state"),
-            Form(
+            None if read_only else Form(
                 Div(
                     Label(t("label.upload_csv"), cls="form-label"),
                     Input(type="file", name="csv_file", accept=".csv", cls="form-input", required=True),
@@ -413,7 +427,7 @@ def _workspace_view(
 
     book_panel = Div(
         H3(t("page.book_entries"), cls="recon-panel-title"),
-        P(t("recon.book_match_hint"), cls="recon-panel-hint text-muted"),
+        None if read_only else P(t("recon.book_match_hint"), cls="recon-panel-hint text-muted"),
         Input(type="search", placeholder=t("label.search"),
               oninput="reconFilterBook(this)",
               cls="form-input recon-book-filter") if unmatched_entries else None,
@@ -431,7 +445,7 @@ def _workspace_view(
                     ),
                     cls="recon-row recon-row--unmatched recon-book-entry",
                     id=f"book-entry-{e['je_id']}",
-                    onclick="reconMatchEntry(this)",
+                    onclick=None if read_only else "reconMatchEntry(this)",
                 )
                 for e in unmatched_entries
             ],
@@ -443,8 +457,6 @@ def _workspace_view(
         cls="recon-panel recon-panel--book",
     )
 
-    # A completed reconciliation still shows every action: each one explains that it
-    # must be reopened first (GDR 2e), and Reopen sits right here.
     completed = Div(
         Span(t("recon.completed_banner", date=(recon.get("completed_at") or "")[:10] or EMPTY)),
         Button(
@@ -452,13 +464,15 @@ def _workspace_view(
             hx_post=f"/accounting/reconcile/{session_id}/reopen",
             hx_target="#recon-workspace",
             hx_swap="outerHTML",
+            hx_confirm=t("recon.reopen_confirm"),
             cls="btn btn--secondary btn--sm",
         ),
         cls="flash flash--success recon-completed",
-    ) if recon.get("status") == "completed" else None
+    ) if read_only else None
 
     return Div(
         completed,
+        P(t("recon.needs_review"), cls="flash flash--warning") if recon.get("needs_review") else None,
         header,
         toolbar,
         Div(
@@ -470,7 +484,7 @@ def _workspace_view(
         ),
         Div(bank_panel, book_panel, cls="recon-panels"),
         Script(_RECON_MATCH_JS),
-        Script(f"celerpToast({json.dumps(notice)}, 'error');") if notice else None,
+        Script(f"celerpToast({json.dumps(notice)}, {json.dumps(notice_kind)});") if notice else None,
         id="recon-workspace",
         cls="recon-workspace",
         **{"data-session-id": session_id,
@@ -478,25 +492,48 @@ def _workspace_view(
     )
 
 
-async def _fresh_workspace(token: str, session_id: str, notice: str | None = None):
+# ── Reconciliation history ───────────────────────────────────────────────────
+
+# Session statuses in the order the history filter cards show them, with their colour.
+_SESSION_STATUSES = {"open": "yellow", "completed": "green"}
+
+
+def _history_table(items: list[dict], currency: str) -> FT:
+    """An account's reconciliations, newest statement first (the API's order)."""
+    def _row(i: dict) -> FT:
+        return Tr(
+            Td(A(i["statement_date"], href=f"/accounting/reconcile/{i['id']}"),
+               P(t("recon.needs_review"), cls="flash flash--warning") if i.get("needs_review") else None),
+            Td(fmt_money(i["statement_balance"], currency), cls="cell--number"),
+            Td(display_enum(i["status"], "recon_session_status")),
+            Td((i.get("completed_at") or "")[:10] or EMPTY),
+        )
+    return Table(
+        Thead(Tr(Th(t("label.statement_date")), Th(t("label.statement_closing_balance"), cls="cell--number"),
+                 Th(t("th.status")), Th(t("th.completed")))),
+        Tbody(*[_row(i) for i in items]),
+        cls="data-table",
+    )
+
+
+async def _fresh_workspace(token: str, session_id: str, notice: str | None = None, **view):
     """Re-render the whole workspace from fresh API state.
 
     Every reconciliation mutation returns this, so the book panel, stats bar,
     difference chip, and toolbar can never drift out of step with the lines.
+    *view* passes the notice kind and skipped-line reasons on to the view.
     """
     try:
-        company = await api.get_company(token)
-        currency = company.get("currency", "")
         recon = await api.get_reconciliation(token, session_id)
         lines = (await api.get_statement_lines(token, session_id)).get("items", [])
     except APIError as e:
         if e.status == 401:
             return Response("", status_code=401, headers={"HX-Redirect": "/login"})
         return P(str(e.detail), cls="error-banner")
-    bank = recon.get("bank_account", {})
+    bank = recon["bank_account"]
     book_entries = recon.get("unreconciled_entries", [])
-    return _workspace_view(session_id, recon, bank, lines, book_entries, currency,
-                           notice=notice)
+    return _workspace_view(session_id, recon, bank, lines, book_entries, bank["currency"],
+                           notice=notice, **view)
 
 
 # ── CSV import helpers ────────────────────────────────────────────────────────
@@ -587,8 +624,9 @@ def setup_routes(app):
                 return RedirectResponse("/login", status_code=302)
             banks = []
 
+        chosen = request.query_params.get("bank_id", "")
         bank_options = [
-            Option(f"{b['bank_name']} {b.get('account_number', '')}", value=b["id"])
+            Option(f"{b['bank_name']} {b.get('account_number', '')}", value=b["id"], selected=b["id"] == chosen)
             for b in banks if b.get("is_active", True)
         ]
         _bank_opt, _bank_js = add_new_option(t("recon.add_new_bank_account"), "/settings/accounting?tab=bank-accounts")
@@ -636,9 +674,11 @@ def setup_routes(app):
             cls="settings-card",
         )
 
+        msg = request.query_params.get("msg", "").strip()
         return await base_shell(
             page_header(t("btn.start_reconciliation"),
                         A(t("btn.back"), href="/settings/accounting?tab=bank-accounts", cls="btn btn--secondary")),
+            flash(msg) if msg else None,
             form,
             title=page_title("btn.start_reconciliation"),
             nav_active="accounting",
@@ -668,7 +708,48 @@ def setup_routes(app):
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
-            return RedirectResponse("/accounting/reconcile/start", status_code=302)
+            return RedirectResponse(
+                "/accounting/reconcile/start?msg=" + quote(str(e.detail), safe=""), status_code=302)
+
+    @app.get("/accounting/reconcile/history/{bank_id}")
+    async def reconcile_history(request: Request, bank_id: str):
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        try:
+            bank = await api.get_bank_account(token, bank_id)
+            items = (await api.get_bank_reconciliations(token, bank_id)).get("items", [])
+        except APIError as e:
+            if e.status == 401:
+                return RedirectResponse("/login", status_code=302)
+            return RedirectResponse(
+                "/settings/accounting?tab=bank-accounts&msg=" + quote(str(e.detail), safe=""),
+                status_code=302,
+            )
+        status = request.query_params.get("status", "")
+        if status not in _SESSION_STATUSES:
+            status = ""
+        base = f"/accounting/reconcile/history/{bank_id}"
+        reconcile = A(t("acct.reconcile"), href=f"/accounting/reconcile/start?bank_id={bank_id}",
+                      cls="btn btn--primary")
+        cards = status_cards(
+            [{"label": display_enum(s, "recon_session_status"),
+              "count": sum(1 for i in items if i["status"] == s), "total": None, "status": s,
+              "color": color} for s, color in _SESSION_STATUSES.items()],
+            base, status or None)
+        shown = [i for i in items if not status or i["status"] == status]
+        return await base_shell(
+            page_header(f"{t('recon.history')}: {bank.get('bank_name', '')}",
+                        A(t("btn.back"), href="/settings/accounting?tab=bank-accounts", cls="btn btn--secondary"),
+                        reconcile),
+            P(t("recon.history_intro"), cls="text-muted"),
+            cards,
+            _history_table(shown, bank["currency"]) if items else Div(
+                P(t("recon.history_empty"), cls="empty-state"), reconcile, cls="settings-card"),
+            title=page_title("recon.history"),
+            nav_active="accounting",
+            request=request,
+        )
 
     @app.get("/accounting/reconcile/{session_id}")
     async def reconcile_workspace(request: Request, session_id: str):
@@ -676,12 +757,10 @@ def setup_routes(app):
         if not token:
             return RedirectResponse("/login", status_code=302)
         try:
-            company = await api.get_company(token)
-            currency = company.get("currency", "")
             recon = await api.get_reconciliation(token, session_id)
             lines_data = await api.get_statement_lines(token, session_id)
             lines = lines_data.get("items", [])
-            bank = recon.get("bank_account", {})
+            bank = recon["bank_account"]
             book_entries = recon.get("unreconciled_entries", [])
         except APIError as e:
             if e.status == 401:
@@ -692,7 +771,7 @@ def setup_routes(app):
             )
 
         msg = request.query_params.get("msg", "").strip()
-        workspace = _workspace_view(session_id, recon, bank, lines, book_entries, currency)
+        workspace = _workspace_view(session_id, recon, bank, lines, book_entries, bank["currency"])
         return await base_shell(
             flash(msg) if msg else None,
             workspace,
@@ -941,12 +1020,16 @@ def setup_routes(app):
         if not token:
             return P(t("error.session_expired"), cls="error-banner")
         try:
-            await api.bulk_confirm_recon(token, session_id)
+            result = await api.bulk_confirm_recon(token, session_id)
         except APIError as e:
             if e.status == 401:
                 return Response("", status_code=401, headers={"HX-Redirect": "/login"})
             return await _fresh_workspace(token, session_id, notice=str(e.detail))
-        return await _fresh_workspace(token, session_id)
+        skipped = {s["line_id"]: s["reason"] for s in result.get("skipped", [])}
+        if not skipped:
+            return await _fresh_workspace(token, session_id)
+        return await _fresh_workspace(token, session_id, notice=t("recon.bulk_confirm_skipped", count=len(skipped)),
+                                      notice_kind="warning", skipped_reasons=skipped)
 
     @app.post("/accounting/reconcile/{session_id}/complete")
     async def complete_recon(request: Request, session_id: str):
