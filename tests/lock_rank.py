@@ -67,7 +67,7 @@ RANKS: dict[str, int] = {
     # company row, after the fence; a turn-off takes it after the module state.
     "adv:module-use": 27,
     # The company (R3) and what is read under it.
-    "row:companies": 30, "row:user_auth_state": 31, "row:user_companies": 32,
+    "row:companies": 30, "row:user_companies": 32,
     "row:company_peer_identities": 33, "row:locations": 34, "row:sync_runs": 35,
     # A connection's config, then its first-sync record (a disconnect forgets it, a first sync
     # locks it, before either touches the store's identities).
@@ -91,7 +91,9 @@ RANKS: dict[str, int] = {
     "row:migration_batch_files": 76, "row:migration_entity_maps": 77,
     "row:ai_conversations": 78, "row:ai_messages": 79,
     "row:ai_batch_jobs": 80, "row:instance_meta": 81,
-    "row:session_registry": 84, "row:doc_share_tokens": 85, "row:label_templates": 86,
+    # A login's session generation, then its sessions: revoking or issuing a session follows
+    # whatever change it ends (a role, a reset, a restore), so both are taken late.
+    "row:user_auth_state": 83, "row:session_registry": 84, "row:doc_share_tokens": 85, "row:label_templates": 86,
     "row:marketplace_configs": 87, "row:work_centers": 88, "row:supporter_badges": 89, "row:ai_usage": 90,
     "row:ai_job_steps": 91,
     # Notices, written as their transaction's last statements (celerp/notifications/service.py
@@ -410,8 +412,12 @@ class Recorder:
 
     def _take(self, conn_key: int, lock: Lock) -> None:
         """Note what this transaction now holds. A row named by its primary key is also held by
-        that key alone, as a foreign-key share of it binds it: the share is then granted at once."""
+        that key alone, as a foreign-key share of it binds it: the share is then granted at once.
+        A lock naming several values holds each value's rows as a lock naming it alone would."""
         self.taken[conn_key].setdefault((lock.cls, lock.key), set()).add(_strength(lock))
+        values = _row_values(lock) if _explicit(lock.mode) else ()
+        for value in values if len(values) > 1 else ():
+            self.taken[conn_key].setdefault((lock.cls, repr((value,))), set()).add(_strength(lock))
         if lock.row:
             parent = "key:" + lock.cls.split(":", 1)[1]
             self.taken[conn_key].setdefault((parent, repr((lock.row,))), set()).add(_strength(lock))
@@ -1019,6 +1025,17 @@ def _serial_keyed(table: str) -> str | None:
 # no row of its own table. tests/test_lock_rank_checker.py proves each table's writers do.
 FRESH_KEYED = frozenset({"notifications", "password_resets"})
 
+# Tables whose every unique key beside a fresh uuid primary key holds a column naming a row of
+# a FRESH_KEYED table the same function has just built: that row is this transaction's own, so
+# no other insert carries the key and the insert waits on no row of its table.
+# tests/test_lock_rank_checker.py proves each table's writers do.
+FRESH_PARENTED = {"password_reset_notices": ("reset_id", "password_resets")}
+
+
+def _insert_waits_on_no_key(table: str) -> bool:
+    """Whether an insert into *table* can wait on no other transaction's row of it."""
+    return table in FRESH_KEYED or table in FRESH_PARENTED
+
 # Tables whose unique keys, those holding the company aside, are one column the writer draws
 # from ``secrets`` (stored as is or as its hash): no two inserts carry one value, so that key
 # never makes an insert of one company wait on another's. tests/test_lock_rank_checker.py
@@ -1133,7 +1150,7 @@ def _row_locks(statement: str) -> tuple[tuple[tuple[str, str, tuple[int, ...] | 
                 numbers = [_params(v) for v in values]
                 if numbers and all(n and len(n) == 1 for n in numbers):
                     company = tuple(n[0] for n in numbers)
-            if table not in FRESH_KEYED and (_serial_keyed(table) is None or _serial_keyed(table) in cols):
+            if not _insert_waits_on_no_key(table) and (_serial_keyed(table) is None or _serial_keyed(table) in cols):
                 out.append((f"row:{table}", "insert", None, company, None))
             for col, ref in fks.items():
                 if cols and col not in cols:
@@ -1428,13 +1445,13 @@ def _scan_writers(files) -> dict[str, set[tuple[str, str, str]]]:
 def static_writers() -> dict[str, list[str]]:
     """class -> sorted "path function" of every production function that takes a row lock of a
     company's table the recorder counts: updates, deletes and locking reads, and inserts into a
-    table whose insert waits on a key of its own (not FRESH_KEYED, not serial-keyed)."""
+    table whose insert waits on a key of its own (not FRESH_KEYED or FRESH_PARENTED, not serial-keyed)."""
     out: dict[str, set[str]] = defaultdict(set)
     for table, found in _scan_writers(_production_files()).items():
         if table not in _app_tables() or not _has_company(table):
             continue
         for path, function, kind in found:
-            if kind == "insert" and (table in FRESH_KEYED or _serial_keyed(table) is not None):
+            if kind == "insert" and (_insert_waits_on_no_key(table) or _serial_keyed(table) is not None):
                 continue
             out[f"row:{table}"].add(f"{path} {function}")
     return {k: sorted(v) for k, v in out.items()}

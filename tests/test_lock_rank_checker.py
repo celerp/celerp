@@ -407,6 +407,58 @@ def test_every_insert_into_a_fresh_keyed_table_draws_a_new_key(table):
     assert not wrong, wrong
 
 
+@pytest.mark.parametrize("table", sorted(lock_rank.FRESH_PARENTED))
+def test_every_insert_into_a_fresh_parented_table_names_a_row_its_function_built(table):
+    """FRESH_PARENTED holds: the table's primary key is a fresh uuid, every other unique key
+    holds the column, which references the FRESH_KEYED parent, and every model construction
+    passes it the id of a parent the same function built. Nothing inserts it by SQL or insert()."""
+    import ast
+    import uuid
+
+    from celerp.models.base import Base
+
+    column, parent = lock_rank.FRESH_PARENTED[table]
+    assert parent in lock_rank.FRESH_KEYED
+    mappers = {m.local_table.name: m for m in Base.registry.mappers}
+    t = mappers[table].local_table
+    pk = list(t.primary_key.columns)
+    assert len(pk) == 1 and getattr(getattr(pk[0].default, "arg", None), "__wrapped__", None) is uuid.uuid4
+    assert {fk.column.table.name for fk in t.columns[column].foreign_keys} == {parent}
+    uniques = [c.columns for c in t.constraints if c.__class__.__name__ == "UniqueConstraint"]
+    uniques += [i.columns for i in t.indexes if i.unique] + [[c] for c in t.columns if c.unique]
+    assert uniques and all(column in {c.name for c in u} for u in uniques)
+
+    model, parent_model = mappers[table].class_.__name__, mappers[parent].class_.__name__
+    wrong, built = [], 0
+    for path, text in _production_sources():
+        if "INSERT INTO " + table in text:
+            wrong.append(f"{path}: SQL insert into {table}")
+        if model not in text:
+            continue
+        for fn in ast.walk(ast.parse(text)):
+            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            parents = {a.targets[0].id for a in ast.walk(fn) if isinstance(a, ast.Assign)
+                       and isinstance(a.targets[0], ast.Name) and isinstance(a.value, ast.Call)
+                       and getattr(a.value.func, "id", None) == parent_model}
+            for node in ast.walk(fn):
+                if not isinstance(node, ast.Call):
+                    continue
+                name = node.func.id if isinstance(node.func, ast.Name) else getattr(node.func, "attr", "")
+                if name in ("insert", "pg_insert") and any(getattr(a, "id", None) == model for a in node.args):
+                    wrong.append(f"{path}:{node.lineno}: insert({model})")
+                if name != model:
+                    continue
+                built += 1
+                given = {kw.arg: kw.value for kw in node.keywords}
+                value = given.get(column)
+                if None in given or pk[0].key in given or not (
+                        isinstance(value, ast.Attribute) and value.attr == "id"
+                        and isinstance(value.value, ast.Name) and value.value.id in parents):
+                    wrong.append(f"{path}:{node.lineno}: {model}(...) not keyed on a {parent_model} built here")
+    assert built and not wrong, wrong
+
+
 # ── R1: rows of a company the transaction inserted; R2: inserts under the company lock ──
 
 _COMPANY = "INSERT INTO companies (id, name, slug) VALUES ($1::UUID, $2, $3)"
@@ -1120,6 +1172,17 @@ def test_one_statement_over_rows_each_already_held_is_a_retake(recorder, held, v
         recorder.statement(1, _LOCK_COMPANY, (company,), 0.0)
     _chart(recorder)
     recorder.statement(1, _SHARE_TWO_COMPANIES, ("c1", "c2"), 0.0)
+    assert (("order", "row:companies") in _kinds(recorder)) is violates
+
+
+@pytest.mark.parametrize("named, violates", [
+    (("c1", "c2"), False),  # the statement named c1 among its keys: c1 is held
+    (("c2", "c3"), True),   # c1 was never named, so taking it can wait
+])
+def test_a_row_one_statement_locked_among_several_keys_is_held_by_its_own_key(recorder, named, violates):
+    recorder.statement(1, _SHARE_COMPANIES.replace("FOR KEY SHARE", "FOR UPDATE"), named, 0.0)
+    _chart(recorder)
+    recorder.statement(1, _LOCK_COMPANY, ("c1",), 0.0)
     assert (("order", "row:companies") in _kinds(recorder)) is violates
 
 
