@@ -409,12 +409,12 @@ class TestJtiCleanupLoop:
         The cleanup loop uses SessionLocal() which points to celerp.db.engine -
         a different connection than the rollback-isolated test session fixture.
         We verify correctness by seeding rows into the test session, then running
-        cleanup via a context manager that patches SessionLocal to yield it.
+        cleanup through SessionLocal sessions of its own on the test's connection.
         """
         from celerp.services.session_tracker import clear
         from celerp.models.auth import SessionRegistry
         from sqlalchemy import select
-        from contextlib import asynccontextmanager
+        from test_helpers import own_sessions_on
 
         # Register a real user
         r = await client.post("/auth/register", json={
@@ -436,12 +436,7 @@ class TestJtiCleanupLoop:
         session.add(SessionRegistry(jti=live_jti, user_id=user_id, company_id=company_id, expiry=_future(3600)))
         await session.commit()
 
-        # Patch SessionLocal so cleanup loop uses the test session
-        @asynccontextmanager
-        async def _fake_session_local():
-            yield session
-
-        with patch("celerp.services.session_tracker.SessionLocal", return_value=_fake_session_local()):
+        with patch("celerp.services.session_tracker.SessionLocal", await own_sessions_on(session)):
             with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
                 mock_sleep.side_effect = [None, asyncio.CancelledError()]
                 from celerp.services.session_tracker import run_jti_cleanup_loop

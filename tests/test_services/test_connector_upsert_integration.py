@@ -19,6 +19,7 @@ import json
 import uuid
 
 import pytest
+import pytest_asyncio
 from sqlalchemy import select, text
 
 from celerp.services.company_lock import locked_company
@@ -27,7 +28,7 @@ from celerp.models.company import Company, User
 import celerp.connectors.upsert as u
 
 from connector_test_support import add_item
-from test_helpers import provision_company_books
+from test_helpers import own_sessions_on, provision_company_books
 from migration_support import real_engine  # noqa: F401 - fixture
 
 pytestmark = pytest.mark.usefixtures("connector_modules_running")
@@ -68,13 +69,11 @@ async def _same(session):
     yield session
 
 
-@pytest.fixture
-def use_test_session(session, monkeypatch):
-    """Make the connector services' own SessionLocal resolve to the test session."""
-    @contextlib.asynccontextmanager
-    async def _fake_sessionlocal():
-        yield session
-    monkeypatch.setattr("celerp.db.SessionLocal", _fake_sessionlocal)
+@pytest_asyncio.fixture
+async def use_test_session(session, monkeypatch):
+    """The connector services' own SessionLocal opens sessions of its own on the test's
+    connection (own_sessions_on)."""
+    monkeypatch.setattr("celerp.db.SessionLocal", await own_sessions_on(session))
     return session
 
 
@@ -404,7 +403,7 @@ async def test_reimport_updates_legacy_uuid_projection_not_duplicate(use_test_se
         actor_id=None, location_id=None, source="connector",
         idempotency_key="shopify:order:555", metadata_={},
     )
-    await session.flush()  # the legacy row exists before the re-import queries for it
+    await session.commit()  # the legacy row was saved before the re-import after upgrade
     # A changed re-import of the same Shopify order after upgrade.
     order = {"id": 555, "name": "#1001", "financial_status": "paid",
              "line_items": [{"title": "X", "quantity": 1, "price": "20.00"}], "total_price": "20.00"}
@@ -442,7 +441,7 @@ async def test_invoice_push_writeback_prevents_duplicate(use_test_session, monke
               "line_items": [{"description": "X", "quantity": 1, "unit_price": 50.0, "total": 50.0}]},
         actor_id=None, location_id=None, source="api", idempotency_key="native-1", metadata_={},
     )
-    await session.flush()
+    await session.commit()  # the invoice was saved by its own request before the push
 
     before = await list_unsynced_invoices(str(cid), "quickbooks")
     assert any(i["ref_id"] == "INV-100" for i in before)  # a push candidate before the push
@@ -1905,7 +1904,7 @@ async def test_queued_woocommerce_stock_push_reads_only_that_product(
         "external_links": {"woocommerce": {"product_id": "11", "manage_stock": True}},
     })
     item("item:sock", {"sku": "SOCK", "quantity": 4})
-    await session.flush()
+    await session.commit()
     session.expunge_all()
 
     loaded: list[str] = []

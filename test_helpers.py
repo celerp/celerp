@@ -235,6 +235,17 @@ async def provision_company_books(session, company_id) -> None:
     await session.flush()
 
 
+async def own_sessions_on(session):
+    """A session factory for the app's own SessionLocal in a test: each session it makes
+    is a session of its own on the test session's connection, joined by savepoint, as
+    production opens one per block. It sees what the test flushed; what a block leaves
+    uncommitted ends with it, and its commits stay inside the rolled-back test transaction."""
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    return async_sessionmaker(bind=await session.connection(), class_=AsyncSession,
+                              expire_on_commit=False, join_transaction_mode="create_savepoint")
+
+
 TZ = "Pacific/Kiritimati"  # the timezone of the company company_auth creates
 
 
