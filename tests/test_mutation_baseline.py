@@ -18,6 +18,7 @@ from mutation_observer import serving
 from celerp.events.engine import emit_event
 from celerp.services.permissions import authorize_request
 from scripts import mutation_census
+from test_mutation_census_coverage import committed_gaps
 
 pytestmark = [pytest.mark.observer_control]
 
@@ -78,12 +79,11 @@ def _census(tmp_path, findings, entries) -> int:
     (folder / "census-1-gw0.json").write_text(json.dumps({"routes": {}, "sites": {}, "findings": findings}))
     baseline = tmp_path / "baseline.json"
     baseline.write_text(json.dumps(entries))
-    gaps = tmp_path / "gaps.json"
-    gaps.write_text("[]")
+    gaps = committed_gaps(tmp_path / "gaps.json")
     with pytest.MonkeyPatch.context() as patch:  # findings alone: no source, so no coverage gap
         patch.setattr(mutation_census, "static_inventory", lambda graph: ([], []))
         return mutation_census.main([str(folder), "--out", str(tmp_path / "census.md"),
-                                     "--baseline", str(baseline), "--gaps", str(gaps), "--enforce"])
+                                     "--baseline", str(baseline), "--gaps", gaps, "--base", "HEAD", "--enforce"])
 
 
 def test_the_census_passes_when_every_finding_matches_one_entry(tmp_path):

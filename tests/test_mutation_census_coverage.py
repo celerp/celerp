@@ -38,6 +38,19 @@ WRITER = "api POST /new"
 SITE = "celerp/routers/x.py create add"
 
 
+def committed_gaps(path, entries=(), base_entries=None) -> str:
+    """Writes *entries* to the gaps file at *path* over a commit of *base_entries* (the same
+    entries when not given) in a new repository at its folder, so the census reads the base
+    branch's list at HEAD."""
+    git = ["git", "-C", str(path.parent), "-c", "user.name=t", "-c", "user.email=t@example.com"]
+    subprocess.run([*git, "init", "-q"], check=True)
+    path.write_text(json.dumps(list(entries if base_entries is None else base_entries)))
+    subprocess.run([*git, "add", path.name], check=True)
+    subprocess.run([*git, "commit", "-qm", "base"], check=True)
+    path.write_text(json.dumps(list(entries)))
+    return str(path)
+
+
 def _census(tmp_path, monkeypatch, routes=None, sites=None, gaps=(), base_gaps=None) -> tuple[int, str]:
     """Runs the census with *gaps* checked out over a base commit holding *base_gaps*
     (the same entries when not given)."""
@@ -52,15 +65,9 @@ def _census(tmp_path, monkeypatch, routes=None, sites=None, gaps=(), base_gaps=N
     (folder / "census-1-gw0.routes.json").write_text(json.dumps(inventory))
     (folder / "census-1-gw0.json").write_text(json.dumps({"routes": routes or {}, "sites": sites or {}, "findings": []}))
     (tmp_path / "baseline.json").write_text("[]")
-    git = ["git", "-C", str(tmp_path), "-c", "user.name=t", "-c", "user.email=t@example.com"]
-    subprocess.run([*git, "init", "-q"], check=True)
-    (tmp_path / "gaps.json").write_text(json.dumps(list(gaps if base_gaps is None else base_gaps)))
-    subprocess.run([*git, "add", "gaps.json"], check=True)
-    subprocess.run([*git, "commit", "-qm", "base"], check=True)
-    (tmp_path / "gaps.json").write_text(json.dumps(list(gaps)))
     status = mutation_census.main([str(folder), "--out", str(tmp_path / "census.md"), "--enforce",
-                                   "--baseline", str(tmp_path / "baseline.json"), "--gaps", str(tmp_path / "gaps.json"),
-                                   "--base", "HEAD"])
+                                   "--baseline", str(tmp_path / "baseline.json"),
+                                   "--gaps", committed_gaps(tmp_path / "gaps.json", gaps, base_gaps), "--base", "HEAD"])
     return status, (tmp_path / "census.md").read_text()
 
 
