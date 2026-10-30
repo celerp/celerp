@@ -23,7 +23,7 @@ LINE = "11111111-1111-4111-8111-111111111111"
 
 
 def _memo(**extra) -> dict:
-    return {"entity_id": MEMO, "id": MEMO, "doc_type": "memo", "status": "final", "ref_id": "M-12", "version": 3,
+    return {"id": MEMO, "doc_type": "memo", "status": "final", "ref_id": "M-12", "version": 3,
             "currency": "USD", "amount_paid": 0, "subtotal": 350.0, "tax": 35.0, "total": 385.0,
             "line_items": [{"line_id": LINE, "sku": "S-1", "item_id": "item:1", "entity_id": "item:1",
                             "quantity": 2, "sell_by": "piece", "unit_price": 175.0}], **extra}
@@ -41,6 +41,23 @@ def ui_client():
     client = AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui", follow_redirects=False)
     client.cookies.update({"celerp_token": make_test_token(role="owner")})
     return client
+
+
+@pytest.mark.parametrize(("status", "still", "shown"), [("final", 120.0, "120.00"), ("closed", None, None)])
+def test_memo_totals_say_what_is_still_on_an_open_memo_only(status, still, shown):
+    """The totals name what is still on the memo while a draw can come from it; a closed memo
+    has nothing left to bill, so the row is left out rather than shown as zero."""
+    from fasthtml.common import to_xml
+    from ui.routes.documents import _memo_take_rows
+
+    take = {"invoice_id": "doc:inv-1", "doc_number": "INV-1", "shipping": 40.0, "discount": 0, "tax": 0}
+    memo = _memo(status=status, memo_fixed_amounts={"shipping": 0, "discount": 0, "tax": 0, "takes": [take],
+                                                    "still_on_memo": still})
+    rows = to_xml(_memo_take_rows(memo, "USD"))
+    assert "INV-1" in rows
+    assert (t("documents.memo_still_on_memo") in rows) == (shown is not None)
+    if shown:
+        assert shown in rows
 
 
 @pytest.mark.parametrize(("left", "takes", "names"), [
@@ -130,3 +147,14 @@ async def test_memo_rate_cell_ui(ui_client):
 
     for doc in ({**issued, "doc_type": "invoice"}, _memo(tax_rate=7, tax=24.5)):
         assert "/tax-rate/preview" not in _html(doc)
+
+
+def test_a_drawn_invoice_line_badge_names_the_memo_its_goods_are_out_on():
+    """A lot invoiced from a memo stays out on that memo while the invoice holds it, so the
+    invoice line's status badge names the memo, never the invoice the page already is."""
+    from ui.routes.documents import _line_status_doc
+
+    held_by = {"item:1": ("doc:inv-1", "PF-1")}
+    drawn = {"item_id": "item:1", "drawn_from": {"memo_id": MEMO, "memo_number": "M-12"}}
+    assert _line_status_doc(drawn, "item:1", held_by) == (MEMO, "M-12")
+    assert _line_status_doc({"item_id": "item:1"}, "item:1", held_by) == ("doc:inv-1", "PF-1")

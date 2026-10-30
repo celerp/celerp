@@ -605,3 +605,30 @@ def test_invoice_selected_on_a_memo_shows_the_preview(page, ui_server, api):
     expect(preview).to_contain_text("Invoice total after this: $40.00")
     page.locator("#draw-panel input[name=qty_0]").fill("1")
     expect(preview).to_contain_text("Invoice total after this: $10.00")
+
+
+def test_setting_a_memo_tax_rate_previews_each_rate_typed_then_saves(page, ui_server, api):
+    """A memo whose tax was entered as an amount gets a rate from its Rate cell: every rate
+    typed shows the tax it gives, and Save sets it with a notice."""
+    sku = f"MTR-{uuid.uuid4().hex[:6]}"
+    item = _create_item(api, sku, qty=1)
+    r = api.post("/docs", json={
+        "doc_type": "memo", "ref_id": f"MR-{uuid.uuid4().hex[:6]}", "tax": 50.0,
+        "line_items": [{"sku": sku, "name": sku, "quantity": 1, "unit_price": 100.0, "line_total": 100.0,
+                        "item_id": item, "sell_by": "piece"}],
+    })
+    assert r.status_code in {200, 201}, r.text
+    doc_id = r.json()["id"]
+    assert api.post(f"/docs/{doc_id}/finalize").status_code in {200, 201}
+    page.goto(f"{ui_server}/docs/{doc_id}", wait_until="domcontentloaded")
+    _assert_no_crash(page, "memo rate")
+    page.locator("[hx-get*='/field/tax_rate']").first.click()
+    field = page.locator("form.editable-cell input[name=value]")
+    preview = page.locator("form.editable-cell .memo-rate-preview")
+    field.fill("10")
+    expect(preview).to_contain_text("$10.00")
+    field.fill("20")
+    expect(preview).to_contain_text("$20.00")
+    page.locator("form.editable-cell button[type=submit]").click()
+    expect(page.locator(".toast-container .toast").last).to_contain_text("$50.00 became $20.00")
+    assert float(api.get(f"/docs/{doc_id}").json()["tax_rate"]) == 20

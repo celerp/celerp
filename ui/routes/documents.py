@@ -281,6 +281,15 @@ def _status_doc(item: dict) -> tuple[str, str] | None:
     return (doc_id, doc_number) if doc_id and doc_number else None
 
 
+def _line_status_doc(li: dict, eid: str, item_status_doc_map: dict | None) -> tuple[str, str] | None:
+    """The document a line's status badge names: for a line invoiced from a memo, the memo its
+    goods are out on (the invoice holding them is the page itself); otherwise the item's own."""
+    drawn = li.get("drawn_from") or {}
+    if drawn.get("memo_id"):
+        return drawn["memo_id"], drawn.get("memo_number") or drawn["memo_id"]
+    return (item_status_doc_map or {}).get(eid)
+
+
 def _picker_item(item: dict, unit_price, unit_map: dict) -> dict:
     """Inventory item -> line-item picker payload, shared by both catalog
     autocomplete endpoints (lookup-by-SKU and typeahead search)."""
@@ -2683,13 +2692,13 @@ celerpUpdateBulkAlloc();
             display_value = doc.get(field)
         return _doc_display_cell(entity_id, field, display_value)
 
-    async def _set_memo_rate(token: str, memo: dict, value: str, version: int | None):
+    async def _set_memo_rate(token: str, entity_id: str, memo: dict, value: str, version: int | None):
         """Set an issued memo's tax rate from its Rate cell and put its tax rows and total back
         in place, with a notice of the tax before and after that stays until closed."""
         from starlette.responses import HTMLResponse as _HR
         try:
             rate = float(value)
-            result = await api.set_memo_tax_rate(token, memo["entity_id"], rate, version)
+            result = await api.set_memo_tax_rate(token, entity_id, rate, version)
         except ValueError:
             return P(t("documents.enter_a_number"), cls="cell-error")
         except APIError as e:
@@ -2767,6 +2776,8 @@ celerpUpdateBulkAlloc();
                 Span(cls="memo-rate-preview"),
                 cls="editable-cell", hx_patch=f"/docs/{entity_id}/field/{field}",
                 hx_target="this", hx_swap="outerHTML",
+                # The preview swaps its own answer into its span; the form's swap is Save's alone.
+                hx_disinherit="hx-swap",
             )
         if field == "company_address":
             # Re-editing the From address must re-open the location picker (the same control shown on
@@ -2942,7 +2953,7 @@ celerpUpdateBulkAlloc();
             except APIError as e:
                 return P(error_message(e), cls="cell-error")
             if _memo_rate_open(doc):
-                return await _set_memo_rate(token, doc, value, _form_version(form))
+                return await _set_memo_rate(token, entity_id, doc, value, _form_version(form))
         try:
             patch = {field: value}
             # A contact change sends only the contact: the backend copies its details, terms,
@@ -6915,7 +6926,7 @@ def _from_memo_link(li: dict):
     if not drawn.get("memo_id"):
         return ""
     return Div(A(t("documents.line_from_memo", memo=drawn.get("memo_number") or drawn["memo_id"]),
-                 href=doc_href(drawn["memo_id"]), cls="auth-link"), cls="text-muted")
+                 href=doc_href(drawn["memo_id"]), cls="auth-link"), cls="text-muted drawn-from")
 
 
 def _memo_take_labels(li: dict) -> list:
@@ -6970,9 +6981,10 @@ def _memo_take_rows(doc: dict, currency: str) -> list:
                 *(Div(Span(A(tk.get("doc_number") or tk.get("invoice_id"), href=doc_href(tk.get("invoice_id")),
                              cls="auth-link"), cls="total-label"),
                       Span(_fixed_amounts_text(tk, currency), cls="total-value"), cls="total-row") for tk in takes),
-                Div(Span(t("documents.memo_still_on_memo"), cls="total-label"),
-                    Span(fmt_money(float(fixed.get("still_on_memo") or 0), currency), cls="total-value"),
-                    cls="total-row")]
+                # None on a memo no draw can come from (closed, void): nothing is still on it to bill.
+                *([Div(Span(t("documents.memo_still_on_memo"), cls="total-label"),
+                       Span(fmt_money(float(fixed["still_on_memo"]), currency), cls="total-value"),
+                       cls="total-row")] if fixed.get("still_on_memo") is not None else [])]
     return [Div(A(t("documents.invoice_amount_from_memo", amounts=_fixed_amounts_text(tk, currency),
                     memo=tk.get("memo_number") or tk.get("memo_id")), href=doc_href(tk.get("memo_id"))),
                 cls="total-row total-label--conversion")
@@ -8039,7 +8051,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             if _draft_show_item_status:
                 cells.insert(1, _item_status_badge_cell(
                     (item_status_map or {}).get(li_entity_id, ""), li_entity_id,
-                    status_doc=(item_status_doc_map or {}).get(li_entity_id),
+                    status_doc=_line_status_doc(li, li_entity_id, item_status_doc_map),
                     held=_line_held(li, (item_status_doc_map or {}).get(li_entity_id))))
             if category_cell:
                 cells.append(category_cell)
@@ -10374,7 +10386,7 @@ async function celerpCsvImport(input, entityId) {{
                     status_val = item_status_map.get(li_eid, "") if item_status_map else ""
                     cells.append(_item_status_badge_cell(
                         status_val, li_eid,
-                        status_doc=(item_status_doc_map or {}).get(li_eid),
+                        status_doc=_line_status_doc(li, li_eid, item_status_doc_map),
                         held=_line_held(li, (item_status_doc_map or {}).get(li_eid))))
             if _show_shipped_label:
                 _lbl = li.get("shipped_label")
