@@ -58,7 +58,8 @@ DATABASE_READS = {
         "commit": "ends the transaction and sends pending row changes; it is counted as a commit, not a write "
                   "site, so a change made by setting a loaded row's attribute is covered at route level, not per site",
         "rollback": "discards the transaction",
-        "begin": "opens a transaction", "begin_nested": "opens a savepoint",
+        "begin": "opens a transaction that commits when its block ends; counted as a commit, like commit",
+        "begin_nested": "opens a savepoint",
         "in_transaction": "reports transaction state", "in_nested_transaction": "reports transaction state",
         "close": "returns the connection to its pool",
         "expunge": "detaches a row from the session", "expunge_all": "detaches every row from the session",
@@ -83,7 +84,8 @@ DATABASE_READS = {
         "url": "the database address", "dialect": "the database dialect", "pool": "the connection pool, for its counts",
     },
     "database session factory": {
-        "begin": "opens a session in a transaction, itself checked as a session",
+        "begin": "opens a session in a transaction that commits when its block ends, itself checked as a "
+                 "session; counted as a commit, like a session's commit",
     },
 }
 # What an expression can hold, as Graph.kind names it.
@@ -224,6 +226,20 @@ def _statement(name: str, statement: str | None) -> tuple[str | None, str | None
     return _written(statement) or f"write unclassified {name}", None
 
 
+def commits(node, kind=lambda expr: None) -> bool:
+    """Whether *node* is a commit: commit on a session, or begin on a session or session
+    factory (the block it opens commits when it ends), referenced in any form: called,
+    aliased (done = session.commit) or looked up by getattr with a constant name."""
+    if isinstance(node, ast.Attribute):
+        held, name = node.value, node.attr
+    elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "getattr" \
+            and len(node.args) > 1 and isinstance(node.args[1], ast.Constant):
+        held, name = node.args[0], node.args[1].value
+    else:
+        return False
+    return name in ("commit", "begin") and kind(held) in ((SESSION,) if name == "commit" else (SESSION, FACTORY))
+
+
 def classify(node: ast.Call, kind=lambda expr: None, decorator: bool = False,
              built=None) -> tuple[str | None, str | None]:
     """What a call does itself, and for a call that writes nothing the named rule it reads
@@ -237,7 +253,7 @@ def classify(node: ast.Call, kind=lambda expr: None, decorator: bool = False,
         return f"lock {name}", None
     if name == "emit_event":
         return "write emit_event", None
-    if name == "commit" and isinstance(node.func, ast.Attribute):
+    if isinstance(node.func, ast.Attribute) and (name == "commit" or commits(node.func, kind)) or commits(node, kind):
         return "commit", None
     if name in MUTATING and receiver in _CLIENTS:
         return f"api {name.upper()}", None
@@ -417,8 +433,14 @@ class Graph:
         for node in ast.walk(fn.node):  # a function's own imports are visible in all of it
             if isinstance(node, (ast.Import, ast.ImportFrom)) and id(node) not in nested:
                 self._imports(node, local, self._modules[fn.module]["package"])
+        called = {id(n.func) for n in ast.walk(fn.node) if isinstance(n, ast.Call)}
         for node in ast.walk(fn.node):
-            if not isinstance(node, ast.Call) or id(node) in nested:
+            if id(node) in nested:
+                continue
+            if isinstance(node, ast.Attribute) and id(node) not in called \
+                    and commits(node, lambda expr: self.kind(expr, fn)):
+                fn.effects.append((node.lineno, "commit"))  # done = session.commit: a commit wherever it is called
+            if not isinstance(node, ast.Call):
                 continue
             if what := self.effect(node, fn):
                 fn.effects.append((node.lineno, what))

@@ -51,11 +51,11 @@ def committed_gaps(path, entries=(), base_entries=None) -> str:
     return str(path)
 
 
-def _census(tmp_path, monkeypatch, routes=None, sites=None, gaps=(), base_gaps=None) -> tuple[int, str]:
-    """Runs the census with *gaps* checked out over a base commit holding *base_gaps*
-    (the same entries when not given)."""
+def _census(tmp_path, monkeypatch, routes=None, sites=None, gaps=(), base_gaps=None, source=SOURCE) -> tuple[int, str]:
+    """Runs the census over *source* with *gaps* checked out over a base commit holding
+    *base_gaps* (the same entries when not given)."""
     (tmp_path / "celerp" / "routers").mkdir(parents=True)
-    (tmp_path / "celerp" / "routers" / "x.py").write_text(SOURCE)
+    (tmp_path / "celerp" / "routers" / "x.py").write_text(source)
     monkeypatch.setattr(mutation_census, "ROOT", str(tmp_path))
     monkeypatch.setattr(mutation_census.static_calls, "ROOT", str(tmp_path))
     folder = tmp_path / "census"
@@ -138,6 +138,47 @@ def test_a_gap_entry_without_its_classification_is_refused(tmp_path, change, err
     path.write_text(json.dumps([{k: v for k, v in {**_route_gap(), **change}.items() if v is not None}]))
     with pytest.raises(ValueError, match=error):
         mutation_baseline.load_gaps(str(path))
+
+
+# A route whose only write is setting a loaded row's attribute has no write site: it reaches a
+# write through its commit, however the commit is spelled.
+RENAMES = '''\
+@router.post("/new")
+async def create(session: AsyncSession, row_id):
+    row = await session.get(Item, row_id)
+    row.name = "renamed"
+    COMMIT
+
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+SessionLocal = async_sessionmaker()
+'''
+FACTORY_BEGIN = '''\
+@router.post("/new")
+async def create(row_id):
+    async with SessionLocal.begin() as session:
+        row = await session.get(Item, row_id)
+        row.name = "renamed"
+
+from sqlalchemy.ext.asyncio import async_sessionmaker
+SessionLocal = async_sessionmaker()
+'''
+COMMIT_SPELLINGS = {
+    "called": RENAMES.replace("COMMIT", "await session.commit()"),
+    "aliased": RENAMES.replace("COMMIT", "done = session.commit\n    await done()"),
+    "getattr": RENAMES.replace("COMMIT", "await getattr(session, 'commit')()"),
+    "sync session": RENAMES.replace("COMMIT", "session.sync_session.commit()"),
+    "session begin block": RENAMES.replace("    row = await session.get(Item, row_id)\n    row.name = \"renamed\"\n    COMMIT",
+                                           "    async with session.begin():\n        row = await session.get(Item, row_id)\n"
+                                           "        row.name = \"renamed\""),
+    "factory begin block": FACTORY_BEGIN,
+}
+
+
+@pytest.mark.parametrize("source", COMMIT_SPELLINGS.values(), ids=COMMIT_SPELLINGS.keys())
+def test_a_route_reaches_a_write_through_its_commit_however_it_is_spelled(tmp_path, monkeypatch, source):
+    status, text = _census(tmp_path, monkeypatch, source=source)
+    assert status == 1
+    assert "| api | POST /new | celerp/routers/x.py:1 | never requested |" in text
 
 
 OTHER = "api POST /other"
