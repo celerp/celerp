@@ -216,7 +216,7 @@ class Recorder:
     contention: list[dict] = field(default_factory=list)
     violations: list[dict] = field(default_factory=list)
     seen: dict[str, dict] = field(default_factory=dict)  # each distinct violation, its first example
-    # R5, R6: each distinct wait across connections, with the fixed keys its flow held.
+    # R5, R6, R7: each distinct wait across connections, with the fixed keys its flow held and the classes its task held.
     cross: dict[str, dict] = field(default_factory=dict)
     test: str = ""
     # The connections each task has used, and the task that last used each connection.
@@ -675,8 +675,8 @@ class Recorder:
         itself: the lock it holds is released only when this wait ends. Every take ties its
         connection to the task, a try included, so what that connection holds is seen. Such a
         wait is judged offline: it cannot wait on itself if every take of its class held one of
-        the fixed keys the flow holds exclusively (``serial``, R5), or if no holder of its class
-        ever waits holding it (R6)."""
+        the fixed keys the flow holds exclusively (``serial``, R5), if no holder of its class
+        ever waits holding it (R6), or if its class ranks above every class the task holds (R7)."""
         try:
             task = asyncio.current_task()
         except RuntimeError:
@@ -694,12 +694,13 @@ class Recorder:
                 self._violate("self-deadlock", lock, held_lock=holding[0])
                 break
             if holding:
-                # Judged offline (R5, R6): the wait ends if the flow's keys serialize the class
-                # or if no holder of the class ever waits holding it.
+                # Judged offline (R5, R6, R7): the wait ends if the flow's keys serialize the
+                # class, if no holder of the class ever waits holding it, or if it ranks above
+                # every class the task holds.
                 v = {"kind": "cross-connection", "cls": lock.cls, "site": lock.site, "test": self.test,
                      "held": holding[0].cls, "held_site": holding[0].site, "gate": sorted(serial),
-                     "insert": _strength(lock) == "insert"}
-                self.cross.setdefault(f"{violation_key(v)} {v['gate']}", v)
+                     "holding": sorted({h.cls for h in holding}), "insert": _strength(lock) == "insert"}
+                self.cross.setdefault(f"{violation_key(v)} {v['gate']} {v['holding']}", v)
                 break
         conns.add(conn_key)
         self.conn_task[conn_key] = weakref.ref(task)
@@ -1856,14 +1857,26 @@ def _cross_keys(g: dict) -> set[str]:
     what the task holds. The wait is proven when every take of the class held one of the
     flow's serializing keys (R5), or when no transaction ever waited, on any of its task's
     connections, while it held the class (R6: its holder always commits; one holding only rows
-    it inserted counts against an inserting wait alone); either needs every production writer
-    of the class exercised."""
+    it inserted counts against an inserting wait alone), or when the class ranks above every
+    class the task holds (R7: a holder of the class waits only on higher ranks, so no chain of
+    waits from it comes back down to what the task holds; a debt edge is the one decreasing
+    wait allowed to stand, so R7 holds only above the lowest class a debt edge waits on). Each
+    needs every production writer of the class exercised."""
     unexercised = _unexercised(g)
+    debt_floor = min((rank(entry.split()[3]) for entry in debt() if entry.split()[0] == "order"
+                      and rank(entry.split()[3]) is not None), default=None)
+
+    def ranked(v: dict) -> bool:
+        ranks = [rank(c) for c in (v.get("holding") or [v["held"]])]
+        top, taken = (None if None in ranks else max(ranks)), rank(v["cls"])
+        return (top is not None and taken is not None and taken > top
+                and (debt_floor is None or top < debt_floor))
 
     def proven(v: dict) -> bool:
         info = g["classes"].get(v["cls"], {})
         waits = info.get("holder_waits", 0) + (info.get("insert_holder_waits", 0) if v.get("insert", True) else 0)
-        return v["cls"] not in unexercised and (bool(set(v["gate"]) & info.get("serial", set())) or not waits)
+        return v["cls"] not in unexercised and (
+            bool(set(v["gate"]) & info.get("serial", set())) or not waits or ranked(v))
     return {violation_key(v) for v in g["cross"] if not proven(v)}
 
 

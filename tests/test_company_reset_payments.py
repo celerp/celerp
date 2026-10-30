@@ -17,6 +17,7 @@ books is kept among the unmatched payments."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from datetime import datetime, timezone
@@ -347,16 +348,24 @@ async def test_a_lost_prepare_that_cannot_be_reopened_stays_closed_until_the_nex
 
 async def test_a_sign_out_during_the_reset_keeps_the_company_and_reopens_its_payments(real_engine, real_client,
                                                                                      monkeypatch):
+    """The sign-out is another request: it commits from the test's task while the reset waits
+    on Cloud's answer to the prepare, so the reset never waits on it."""
     from celerp.services.session_tracker import invalidate_sessions
     boss, a, b = await _harbor(real_engine)
     cloud = _Cloud(monkeypatch, real_engine)
+    prepared, signed_out = asyncio.Event(), asyncio.Event()
 
-    async def sign_out():
-        async with maker(real_engine)() as s:
-            await invalidate_sessions(s, str(boss))
-    cloud.on_prepared = sign_out
+    async def wait_for_the_sign_out():
+        prepared.set()
+        await signed_out.wait()
+    cloud.on_prepared = wait_for_the_sign_out
 
-    r = await _reset(real_client, real_engine, boss, a)
+    resetting = asyncio.create_task(_reset(real_client, real_engine, boss, a))
+    await asyncio.wait_for(prepared.wait(), 30)
+    async with maker(real_engine)() as s:
+        await invalidate_sessions(s, str(boss))
+    signed_out.set()
+    r = await asyncio.wait_for(resetting, 30)
 
     assert r.status_code == 401, r.text
     assert _steps(cloud) == ["prepare", "cancel"]

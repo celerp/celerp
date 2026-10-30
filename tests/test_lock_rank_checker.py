@@ -162,7 +162,7 @@ def test_one_task_waiting_on_a_second_connection_while_holding_a_lock_on_the_fir
     recorder = Recorder()
 
     async def body():
-        recorder.acquire(1, _lock("row:companies", "update wait"), 0.0)
+        recorder.acquire(1, _lock("row:outbound_queue", "update wait"), 0.0)
         recorder.acquire(2, _lock("row:connector_configs", "update wait"), 0.0)
 
     asyncio.run(body())
@@ -373,11 +373,13 @@ def test_a_waiting_take_of_a_key_every_taker_should_only_try_fails():
 
 def test_a_key_others_wait_on_still_fails_when_held_across_connections(tmp_path):
     """Held under the migration key, the wait is judged offline (R5); a take of the class
-    outside the key, as every import runner makes, leaves it unproven."""
+    outside the key, as every import runner makes, leaves it unproven. The flow also holds a
+    higher rank, so ranks do not prove it either (R7)."""
     recorder = Recorder()
 
     async def body():
         recorder.acquire(1, _lock("adv:migration", "session exclusive try"), 0.0)
+        recorder.acquire(1, _lock("row:session_registry", "write"), 0.0)
         recorder.acquire(2, _lock("row:migration_runs", "update wait"), 0.0)
 
     asyncio.run(body())
@@ -1265,11 +1267,14 @@ def test_a_key_of_many_values_is_no_serializing_gate(recorder):
     assert ("order", "row:alembic_version") in _kinds(recorder)
 
 
-def _stamp_across_connections(recorder: Recorder) -> None:
+def _stamp_across_connections(recorder: Recorder, higher: bool = False) -> None:
     """A flow holds the migration key on one connection and stamps on another, as every
-    alembic run does: its wait on the stamp crosses connections."""
+    alembic run does: its wait on the stamp crosses connections. *higher*: the flow also holds
+    a class ranked above the stamp, so ranks do not prove the wait (R7)."""
     async def body():
         recorder.statement(9, _TAKE_KEY, (), 0.0)
+        if higher:
+            recorder.acquire(9, _lock("row:session_registry", "write"), 0.0)
         recorder.acquire(2, _lock("row:alembic_version", "write"), 0.0)
         recorder.end(2)
         recorder.statement(9, _DROP_KEY, (), 0.0)
@@ -1289,7 +1294,7 @@ def test_a_cross_connection_wait_on_a_class_the_flow_serializes_is_proven_offlin
 
 
 def test_one_take_of_the_class_outside_the_key_fails_the_cross_connection_wait(recorder, tmp_path):
-    _stamp_across_connections(recorder)
+    _stamp_across_connections(recorder, higher=True)
     recorder.acquire(3, _lock("row:alembic_version", "write"), 0.0)
     (tmp_path / "lock-graph-gw0.json").write_text(json.dumps(recorder.dump()))
     assert _CROSS_STAMP in lock_rank.debt_listing(tmp_path)
@@ -1298,11 +1303,12 @@ def test_one_take_of_the_class_outside_the_key_fails_the_cross_connection_wait(r
 
 
 def _closure_across_connections(recorder: Recorder, holder_waits: bool) -> None:
-    """A maintenance flow holds the connector guard on one connection and writes a payment
-    closure on its own connection; another transaction writes a closure too and, when
-    *holder_waits*, then waits on a company row while it still holds the closure."""
+    """A company reset holds the connector guard and its company's lock on one connection and
+    writes a payment closure on its own connection; another transaction writes a closure too
+    and, when *holder_waits*, then waits on a company row while it still holds the closure."""
     async def body():
         recorder.acquire(9, _lock("adv:connector-runtime", "xact exclusive wait"), 0.0)
+        recorder.acquire(9, _lock("key:companies", "update wait"), 0.0)
         recorder.acquire(2, _lock("row:payment_closures", "write"), 0.0)
         recorder.end(2)
         recorder.end(9)
@@ -1346,6 +1352,7 @@ def test_a_holder_that_waits_holding_only_rows_it_inserted_blocks_only_an_insert
 
     async def body():
         recorder.acquire(9, _lock("adv:connector-runtime", "xact exclusive wait"), 0.0)
+        recorder.acquire(9, _lock("key:companies", "update wait"), 0.0)
         recorder.acquire(2, _lock("row:payment_recoveries", waiter), 0.0)
         recorder.end(2)
         recorder.end(9)
@@ -1586,3 +1593,47 @@ def test_a_foreign_key_share_of_a_row_its_transaction_locked_by_key_is_a_retake(
     recorder.statement(1, "COMMIT", (), 0.0)
     takes = recorder.dump()["classes"]["key:migration_runs"].get("ungated_takes", [])
     assert takes == ([] if retake else ["keyshare|unknown"])
+
+
+def _guard_then_ranked_wait(recorder: Recorder, more: str | None = None) -> None:
+    """A recovery holds the connector guard on a connection of its own for the whole run and
+    ends every session on another (*more*: a class it also holds there); a sign-in holds one
+    login's state and then waits on its sessions, a higher rank."""
+    recorder.acquire(3, _lock("row:user_auth_state", "update wait", key="2"), 0.0)
+    recorder.acquire(3, _lock("row:session_registry", "update wait", key="2"), 0.0)
+    recorder.end(3)
+
+    async def body():
+        recorder.acquire(9, _lock("adv:connector-runtime", "session exclusive wait"), 0.0)
+        if more:
+            recorder.acquire(9, _lock(more, "update wait"), 0.0)
+        recorder.acquire(2, _lock("row:user_auth_state", "update wait"), 0.0)
+        recorder.end(2)
+        recorder.end(9)
+
+    asyncio.run(body())
+
+
+def test_a_cross_connection_wait_ranked_above_all_its_task_holds_is_proven_offline(recorder, tmp_path):
+    """R7: a holder of the class waits only on higher ranks, so no chain of waits from it
+    reaches what the task holds: the wait ends although the holders do wait."""
+    _guard_then_ranked_wait(recorder)
+    assert not recorder.violations
+    assert ("cross-connection", "row:user_auth_state") not in _offline_kinds(recorder, tmp_path)
+    assert not lock_rank.check_failed(lock_rank.check(tmp_path))
+
+
+def test_a_cross_connection_wait_ranked_below_a_class_its_task_holds_stays_unproven(recorder, tmp_path):
+    _guard_then_ranked_wait(recorder, more="key:companies")
+    assert ("cross-connection", "row:user_auth_state") in _offline_kinds(recorder, tmp_path)
+
+
+def test_a_debt_edge_down_to_what_the_task_holds_leaves_the_ranked_wait_unproven(
+        recorder, tmp_path, monkeypatch):
+    """A debt edge is a decreasing wait Postgres breaks only when the whole cycle is its own;
+    one through a task's two connections would hang, so ranks prove nothing below it."""
+    debt = tmp_path / "debt.txt"
+    debt.write_text("order row:session_registry -> adv:connector-runtime celerp/x.py f  # maintenance\n")
+    monkeypatch.setattr(lock_rank, "DEBT_FILE", debt)
+    _guard_then_ranked_wait(recorder)
+    assert ("cross-connection", "row:user_auth_state") in _offline_kinds(recorder, tmp_path)
