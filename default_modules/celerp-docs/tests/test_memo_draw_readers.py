@@ -160,11 +160,12 @@ async def test_new_readers_over_legacy_memo_states(client, session, column):
     r = await draw(client, h, memo, line_ids=lids, dry_run=True)
     expected_key = {"converted": "documents.err_memo_nothing_out", "closed": "documents.err_memo_issue_first",
                     "voided": "documents.err_memo_issue_first"}.get(column)
+    assert r.status_code == 200, r.text
+    problems = r.json()["problems"]
     if expected_key:
-        assert r.status_code == 409, r.text
-        assert key_of(r) == expected_key
+        assert problems and problems[0]["message_key"] == expected_key, r.text
     else:
-        assert r.status_code == 200, r.text
+        assert not problems, r.text
 
     # Close: refused in every column but closing a memo with nothing out, which none of these is
     if column != "closed":
@@ -191,7 +192,7 @@ async def test_new_readers_over_legacy_memo_states(client, session, column):
 async def test_renumbered_documents_named_by_current_number(client, session, monkeypatch):
     h = await auth(session)
     memo, lids, _ = await memo_out(client, h, [(2, 10.0), (1, 10.0)], lots_per_line=1, shipping=50.0)
-    pf = await drawn(client, h, memo, line_ids=[lids[0]])
+    pf = await drawn(client, h, memo, line_ids=lids)
     old_memo_no, old_pf_no = (await state(client, h, memo))["ref_id"], (await state(client, h, pf))["ref_id"]
     await ok(await client.post(f"/docs/{memo}/renumber", headers=h, json={"ref_id": "MEMO-RENUMBERED"}))
     await ok(await client.post(f"/docs/{pf}/renumber", headers=h, json={"ref_id": "PF-RENUMBERED"}))

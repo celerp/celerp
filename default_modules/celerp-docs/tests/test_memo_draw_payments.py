@@ -204,5 +204,9 @@ async def test_invoice_all_leaves_memo_live_and_closable(client, session):
 
     assert (await state(client, h, memo))["status"] == "final"
     assert {(await owner(client, h, i))[1] for i in lots[0]} == {inv}
+    r = await client.post(f"/docs/{memo}/close", headers=h, json={})
+    assert r.status_code == 409 and key_of(r) == "docs.close_drawn_draft", r.text
+    assert (await state(client, h, inv))["ref_id"] in r.json()["detail"]["message"]
+    await ok(await client.post(f"/docs/{inv}/finalize", headers=h))
     await ok(await client.post(f"/docs/{memo}/close", headers=h, json={}))
     assert (await state(client, h, memo))["status"] == "closed"

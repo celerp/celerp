@@ -13,7 +13,7 @@ from sqlalchemy import func, select
 
 from celerp.models.ledger import LedgerEntry
 from memo_draw_support import (
-    auth, auth_full, back_to_memo, draft, draw, drawn, drawn_lines, item, memo_out, ok, owner, revoke,
+    auth, auth_full, back_to_memo, draft, draw, drawn, drawn_lines, item, key_of, memo_out, ok, owner, revoke,
     service_line, state,
 )
 
@@ -195,7 +195,11 @@ async def test_close_refused_while_draft_holds_drawn_goods(client, session, then
     if then == "finalize":
         await ok(await client.post(f"/docs/{pf}/finalize", headers=h))
     else:
+        # Back on the memo, the goods are out again: the memo's own goods-out rule applies until they return.
         await back_all(client, h, pf, memo)
+        r = await client.post(f"/docs/{memo}/close", headers=h, json={})
+        assert r.status_code == 409 and key_of(r) == "docs.close_goods_out", r.text
+        await ok(await client.post(f"/docs/{memo}/set-available", headers=h, json={"line_ids": lids}))
     await ok(await client.post(f"/docs/{memo}/close", headers=h, json={}))
 
 

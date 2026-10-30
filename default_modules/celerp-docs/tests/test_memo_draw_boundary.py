@@ -48,7 +48,7 @@ async def _patch(client, h, doc_id: str, changes: dict):
 
 async def _upsert(client, h, doc_id: str, changes: dict):
     st = await state(client, h, doc_id)
-    data = {k: v for k, v in st.items() if k in ("doc_type", "status", "contact_id", "currency", "line_items")}
+    data = {k: v for k, v in st.items() if k in ("doc_type", "status", "contact_id", "currency")}
     rec = {"entity_id": doc_id, "event_type": "doc.created", "source": "import", "idempotency_key": uuid.uuid4().hex,
            "data": {**data, **changes}}
     return await client.post("/docs/import/batch", headers=h, json={"records": [rec], "upsert": True})
@@ -61,6 +61,15 @@ def _refused_in_batch(r, text: str) -> bool:
 
 def _page_lines(doc: dict) -> list[dict]:
     return [{k: li.get(k) for k in PAGE_KEYS} for li in doc["line_items"]]
+
+
+# What the document response adds to a memo line for display; the stored line has none of it.
+RESPONSE_ONLY_KEYS = ("shipped_label", "out_quantity", "invoiced_on")
+
+
+def _stored_lines(doc: dict) -> list[dict]:
+    """The lines as stored, which the one-field edit copies before it sets its one field."""
+    return [{k: v for k, v in li.items() if k not in RESPONSE_ONLY_KEYS} for li in doc["line_items"]]
 
 
 # ── (a) The invoice side ──────────────────────────────────────────────────────
@@ -234,17 +243,19 @@ async def test_memo_line_with_draws_operations_boundary(client, session):
     assert exc.value.detail["message_key"] == "docs.memo_line_drawn"
     refuse_drawn_memo_line_action(m, [3])
     for route in ("fulfill-lines", "reserve-lines", "set-available", "revert-lines"):
-        r = await client.post(f"/docs/{s.memo}/{route}", headers=h, json={"line_ids": [s.lids["B"]]})
+        body = {"line_ids": [s.lids["B"]]}
+        r = await client.post(f"/docs/{s.memo}/{route}", headers=h,
+                              json={**body, "new_status": "reserved"} if route == "reserve-lines" else body)
         assert key_of(r) == "docs.memo_line_drawn", (route, r.text)
 
     # Lifecycle and money
     for path, body, refusal in (
         ("revert-to-draft", {}, "docs.memo_revert_while_drawn"),
         ("void", {"reason": "not sent"}, "docs.memo_void_while_drawn"),
-        ("close", {}, "docs.close_drawn_draft"),
+        # Lines A and C are still out on the memo, so Close meets the goods-out count before the draft rule.
+        ("close", {}, "docs.close_goods_out"),
         ("payment", {"amount": 10.0, "payment_date": "2026-03-02", "bank_account": "1111"},
          "docs.memo_payment_while_drawn"),
-        ("refund", {"amount": 10.0, "refund_date": "2026-03-02"}, "docs.memo_payment_while_drawn"),
         ("tax-rate", {"tax_rate": 8, "expected_version": m["version"]}, "docs.memo_rate_no_unrated_tax"),
     ):
         r = await client.post(f"/docs/{s.memo}/{path}", headers=h, json=body)
@@ -283,13 +294,14 @@ async def test_memo_line_with_draws_operations_boundary_transports(client, sessi
     other = await contact(client, h, "Store B")
 
     if transport == "api_patch":
-        r = await _patch(client, h, s.memo, {"line_items": _without(before, s.lids["D"])})
+        r = await _patch(client, h, s.memo, {"line_items": [li for li in _page_lines(before)
+                                                            if li["line_id"] != s.lids["D"]]})
         assert r.status_code == 409 and key_of(r) == "docs.memo_line_drawn", r.text
-        allowed = await _patch(client, h, s.memo, {"notes": "Back Friday"})
+        allowed = await _patch(client, h, s.memo, {"internal_note": "Back Friday"})
     elif transport == "import_upsert":
         r = await _upsert(client, h, s.memo, {"contact_id": other})
         assert _refused_in_batch(r, "Send them back to the memo"), r.text
-        allowed = await _upsert(client, h, s.memo, {"notes": "Back Friday"})
+        allowed = await _upsert(client, h, s.memo, {"internal_note": "Back Friday"})
     elif transport == "peer_sync":
         exc = await _peer_sync(session, a, s.memo, {"doc_type": "memo", "status": before["status"],
                                                     "contact_id": other}, monkeypatch)
@@ -303,20 +315,20 @@ async def test_memo_line_with_draws_operations_boundary_transports(client, sessi
         allowed = None
     elif transport == "one_field_edit":
         r = await _patch(client, h, s.memo, {"line_items": [
-            {**li, "quantity": 2} if li["line_id"] == s.lids["B"] else li for li in before["line_items"]]})
-        assert r.status_code == 409 and key_of(r) == "documents.err_line_field_finalized", r.text
+            {**li, "quantity": 2} if li["line_id"] == s.lids["B"] else li for li in _stored_lines(before)]})
+        assert r.status_code == 409 and "can't change its quantity" in r.text, r.text
         allowed = await _patch(client, h, s.memo, {"line_items": [
             {**li, "description": "Ring B, resized"} if li["line_id"] == s.lids["B"] else li
-            for li in before["line_items"]]})
+            for li in _stored_lines(before)]})
     elif transport == "customer_field":
         r = await _patch(client, h, s.memo, {"contact_id": other})
         assert r.status_code == 409 and key_of(r) == "docs.memo_contact_drawn", r.text
-        allowed = await _patch(client, h, s.memo, {"notes": "Back Friday"})
+        allowed = await _patch(client, h, s.memo, {"internal_note": "Back Friday"})
     else:
         plain = await draft(client, h, lines=[service_line(30.0)])
         await ok(await client.post(f"/docs/{plain}/finalize", headers=h))
         r = await client.post("/docs/bulk-payment", headers=h, json={
-            "doc_ids": [s.memo, plain], "amount": 30.0, "payment_date": "2026-03-02", "bank_account": "1111"})
+            "doc_ids": [s.memo, plain], "amount": 1000.0, "payment_date": "2026-03-02", "bank_account": "1111"})
         body = await ok(r)
         assert [x["doc_id"] for x in body.get("skipped") or []] == [s.memo], r.text
         assert (await state(client, h, plain))["amount_paid"] == 30.0

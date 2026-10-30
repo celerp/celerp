@@ -339,7 +339,8 @@ async def test_release_after_discount_type_changed_keeps_percentage(client, sess
     doc = await state(client, h, inv)
     assert doc["discount"] == 60.0
     await ok(await client.patch(f"/docs/{inv}", headers=h, json={
-        "discount": 10, "discount_type": "percentage", "expected_version": doc["version"]}))
+        "fields_changed": {"discount": {"new": 10}, "discount_type": {"new": "percentage"}},
+        "expected_version": doc["version"]}))
 
     await ok(await back_to_memo(client, h, inv, back_ids(doc, memo)))
 
@@ -372,7 +373,8 @@ async def _redraw(client, h, memo, lids, nxt, x, full):
     if nxt == "x_pct":
         doc = await state(client, h, x)
         await ok(await client.patch(f"/docs/{x}", headers=h, json={
-            "discount": 10, "discount_type": "percentage", "expected_version": doc["version"]}))
+            "fields_changed": {"discount": {"new": 10}, "discount_type": {"new": "percentage"}},
+            "expected_version": doc["version"]}))
     target = None if nxt == "new" else x
     if full:
         return await draw(client, h, memo, line_ids=lids, target=target)
@@ -448,7 +450,7 @@ async def test_way_back_after_return_draft_with_other_lines(client, session, rat
     if rate:
         doc = await state(client, h, x)
         await ok(await client.patch(f"/docs/{x}", headers=h, json={
-            "tax_rate": 7, "expected_version": doc["version"]}))
+            "fields_changed": {"tax_rate": {"new": 7}}, "expected_version": doc["version"]}))
         m = await state(client, h, memo)
         await ok(await client.post(f"/docs/{memo}/tax-rate", headers=h, json={
             "tax_rate": 7 if rate == "same" else 10, "expected_version": m["version"]}))
@@ -575,4 +577,6 @@ async def test_take_readers_replay_adv_a_sequences(client, session, sequence):
         else:
             assert key_of(payment) != "docs.memo_payment_while_drawn", step
             if payment.status_code == 200:
-                await ok(await client.post(f"/docs/{memo}/void-payment", headers=h, json={"payment_index": 0}))
+                last = (await state(client, h, memo))["payments"][-1]
+                await ok(await client.post(f"/docs/{memo}/void-payment", headers=h,
+                                           json={"payment_index": last["index"]}))

@@ -227,8 +227,12 @@ async def test_memo_void_refused_while_goods_on_invoice(client, session):
     await ok(await client.post(f"/docs/{fin}/void", headers=h, json={}))
     r = await client.post(f"/docs/{memo}/void", headers=h, json={})
     assert r.status_code == 409 and key_of(r) == "docs.memo_void_while_drawn"
-    assert (await state(client, h, pf))["doc_number"] in r.text
+    assert (await state(client, h, pf))["ref_id"] in r.text
 
     await ok(await back_to_memo(client, h, pf, [li["line_id"] for li in drawn_lines(await state(client, h, pf))]))
+    # Every take is back: the memo's own delivered-goods rule applies until its goods return to stock.
+    r = await client.post(f"/docs/{memo}/void", headers=h, json={})
+    assert r.status_code == 409 and key_of(r) != "docs.memo_void_while_drawn", r.text
+    await ok(await client.post(f"/docs/{memo}/set-available", headers=h, json={"line_ids": lids}))
     await ok(await client.post(f"/docs/{memo}/void", headers=h, json={}))
     assert (await state(client, h, memo))["status"] == "void"

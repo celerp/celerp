@@ -43,9 +43,12 @@ def also_keys(r) -> list[str | None]:
     return [p.get("message_key") for p in (detail.get("also") or [])] if isinstance(detail, dict) else []
 
 
-async def lot(client, h, sku: str, qty: float, *, cost: float = 100.0, weight: float | None = None) -> str:
+async def lot(client, h, sku: str, qty: float, *, cost: float = 100.0, weight: float | None = None,
+              price: float | None = None) -> str:
     data = {"sku": sku, "name": sku, "quantity": qty, "sell_by": "piece", "status": "available",
             "cost_total": cost * qty}
+    if price is not None:
+        data["retail_price"] = price
     if weight is not None:
         data["weight"] = weight
     return (await ok(await client.post("/items", headers=h, json=data)))["id"]
@@ -81,7 +84,8 @@ async def memo_out(client, h, lines: list[tuple[int, float]] | None = None, *, l
     for units, price in lines:
         sku = f"MD-{uuid.uuid4().hex[:6]}"
         per = units / lots_per_line
-        ids = [await lot(client, h, sku, per) for _ in range(lots_per_line)]
+        # The sell price on the default list, so choosing a customer prices the line as given.
+        ids = [await lot(client, h, sku, per, price=price) for _ in range(lots_per_line)]
         li = {"item_id": ids[0], "sku": sku, "description": sku, "quantity": units,
               "unit_price": price, "sell_by": "piece"}
         li.update(line_extra or {})
