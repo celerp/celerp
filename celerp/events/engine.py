@@ -21,6 +21,7 @@ from celerp.services.document_lines import (
     assert_line_holds_respected,
     assert_new_references_eligible,
     assert_protected_lines_kept,
+    converted_from_memo,
     line_id_counts,
     linked_items,
     normalize_line_ids,
@@ -660,9 +661,13 @@ async def emit_event(
             # Prefer the event's own doc_type; otherwise the stored document's. A List has
             # none, so the invoice/memo rules never apply to it.
             doc_type = data.get("doc_type") or stored.get("doc_type")
+            legacy_memo = await converted_from_memo(
+                session, kwargs.get("company_id"), kwargs.get("entity_id"),
+                {"doc_type": doc_type, "source_memo_id": data.get("source_memo_id") or stored.get("source_memo_id")},
+            )
             assert_new_references_eligible(
                 items, line_set, known=known, doc_type=doc_type, entity_id=kwargs.get("entity_id"),
-                source_memo_id=data.get("source_memo_id") or stored.get("source_memo_id"),
+                source_memo_id=legacy_memo,
             )
             assert_line_holds_respected(
                 items, line_set, stored.get("line_items"), entity_id=kwargs.get("entity_id"),

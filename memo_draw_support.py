@@ -163,11 +163,13 @@ async def legacy_convert(client, session, a: dict, memo: str, lot_ids: list[str]
             if k not in LIFECYCLE_OWNED_FIELDS and k not in ("id", "entity_id", "version", "memo_fixed_amounts")}
     data.update({"doc_type": "invoice", "ref_id": ref, "source_memo_id": memo, "status": "draft"})
     common = {"company_id": cid, "actor_id": a["user_id"], "location_id": None, "metadata_": {}}
-    await emit_event(session, entity_id=inv, entity_type="doc", event_type="doc.created", data=data,
-                     source="api", idempotency_key=uuid.uuid4().hex, **common)
+    # The memo's entry first: the invoice's lines take the memo's lots only once the memo's
+    # ledger names the invoice (converted_from_memo).
     await emit_event(session, entity_id=memo, entity_type="doc", event_type="doc.converted",
                      data={"target_doc_id": inv, "target_doc_type": "invoice",
                            "pre_convert_status": memo_doc.get("status")},
+                     source="api", idempotency_key=uuid.uuid4().hex, **common)
+    await emit_event(session, entity_id=inv, entity_type="doc", event_type="doc.created", data=data,
                      source="api", idempotency_key=uuid.uuid4().hex, **common)
     for lot_id in lot_ids:
         await emit_event(session, entity_id=lot_id, entity_type="item", event_type="item.status.set",

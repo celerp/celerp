@@ -58,7 +58,7 @@ from celerp.services.line_measures import (FULL, floor_to_unit, line_label, prop
 from celerp.services.document_lines import (
     DrawnLine, MemoDraw, MemoReturn, assert_line_holds_respected, assert_new_references_eligible,
     line_id_counts, line_item_id, linked_items, memo_out_refusal, out_on_another_memo, received_line_index,
-    new_line_id, refuse_drawn_line_action, shipped_elsewhere, strip_line_ids,
+    converted_from_memo, memo_of_line, new_line_id, refuse_drawn_line_action, shipped_elsewhere, strip_line_ids,
 )
 from celerp.services.attachments import attach_file, storing
 from celerp.services.csv_export import csv_stream, resolve_export_cols
@@ -995,6 +995,7 @@ class DocListFilters:
     due_to: str | None = None
     q: str | None = None
     contact_id: str | None = None
+    currency: str | None = None
     overdue_only: bool = False
     all_issued: bool = False
     unfulfilled_only: bool = False
@@ -1049,6 +1050,8 @@ def _doc_sql_where(company_id: str, f: DocListFilters) -> list:
         base_where.append(Projection.state["converted_to_type"].as_string() == f.converted_to_type)
     if f.contact_id:
         base_where.append(Projection.state["contact_id"].as_string() == f.contact_id)
+    if f.currency:
+        base_where.append(Projection.state["currency"].as_string() == f.currency)
     if f.accounting_sync:
         excluded = Projection.state["accounting_sync_excluded"].as_boolean()
         base_where.append(excluded.is_(True) if f.accounting_sync == "excluded"
@@ -2286,16 +2289,19 @@ async def send_doc(entity_id: str, payload: DocSendBody, company_id: str = Depen
 
 async def _refuse_unsellable_lots(session, company_id, entity_id: str, state: dict) -> None:
     """Finalizing an invoice books the cost of the lots its lines are bound to, so each must be
-    stock this invoice can sell: free, reserved to it, out on the memo it was converted from (the
-    customer keeps it), or already sold to it or to that memo. A lot out on any other memo is
+    stock this invoice can sell: free, reserved to it, out on the memo its line bills (memo_of_line:
+    the customer keeps it), or already sold to it or to that memo. A lot out on any other memo is
     refused naming that memo, and a lot sold elsewhere, expired or otherwise not stock by name
     and status (409), before anything is booked. A product made from a recipe is exempt: an
     order for it is met by making it."""
     from celerp_inventory.projections import demand_claim, is_manufacturable
-    lines = [li.get("entity_id") or li.get("item_id") for li in state.get("line_items") or []]
-    lots = await lock_projections(session, company_id, lines)
-    sold_to = {entity_id, state.get("source_memo_id")} - {None, ""}
-    for eid in dict.fromkeys(e for e in lines if e):
+    legacy = await converted_from_memo(session, company_id, entity_id, state)
+    memo_of = {}
+    for li in state.get("line_items") or []:
+        if eid := line_item_id(li):
+            memo_of.setdefault(eid, memo_of_line(li, legacy))
+    lots = await lock_projections(session, company_id, list(memo_of))
+    for eid, memo in memo_of.items():
         if eid not in lots:
             continue
         lot = lots[eid].state
@@ -2303,10 +2309,10 @@ async def _refuse_unsellable_lots(session, company_id, entity_id: str, state: di
             continue
         status = str(lot.get("status") or "").lower()
         sku = lot.get("sku") or eid
-        if out_on_another_memo(lot, entity_id, state.get("source_memo_id")):
+        if out_on_another_memo(lot, entity_id, memo):
             raise HTTPException(status_code=409, detail=memo_out_refusal(lot, sku))
         if demand_claim(lot, entity_id) is not None or status == "memo_out" or (
-                status == "sold" and lot.get("status_doc_id") in sold_to):
+                status == "sold" and lot.get("status_doc_id") in {entity_id, memo}):
             continue
         said, doc = status.replace("_", " "), lot.get("status_doc_number")
         raise HTTPException(status_code=409, detail=refusal(
@@ -2391,11 +2397,11 @@ async def _refuse_unfillable_invoice_lines(session, company_id, entity_id: str, 
     may not be split is refused, and so is one whose stock another finalized invoice with no
     cost record holds and has not shipped (_invoiced_elsewhere). Each line gets one
     refusal, the most specific true one: its own lot's reason before a sibling's. Stock the customer
-    already has (out on the memo the invoice came from, or sold to it) is not drawn again.
+    already has (out on the memo its line bills, or sold to it) is not drawn again.
     A line no stock covers at all is a backorder and still finalizes."""
     from celerp_inventory.projections import is_manufacturable
     line_items = state.get("line_items") or []
-    sold_to = {entity_id, state.get("source_memo_id")} - {None, ""}
+    legacy = await converted_from_memo(session, company_id, entity_id, state)
     indices = [i for i, li in enumerate(line_items) if line_item_id(li)]
     if not indices:
         return
@@ -2409,7 +2415,8 @@ async def _refuse_unfillable_invoice_lines(session, company_id, entity_id: str, 
         lot = bound.state
         status = str(lot.get("status") or "").lower()
         if (is_non_stock_line(lot.get("inventory_type"), lot.get("sell_by")) or is_manufacturable(lot)
-                or status == "memo_out" or (status == "sold" and lot.get("status_doc_id") in sold_to)):
+                or status == "memo_out" or (status == "sold" and lot.get("status_doc_id")
+                                            in {entity_id, memo_of_line(line_items[i], legacy)})):
             continue
         sku = str(lot.get("sku") or bound.entity_id)
         draws, short, _own, skipped = _line_plan(line_items, i, locked, by_line, entity_id, company_settings, remaining)
@@ -3486,7 +3493,7 @@ async def unvoid_doc(entity_id: str, payload: DocUnvoidBody, company_id: str = D
     if restored_status not in UNISSUED_STATUSES:
         # Unvoiding an issued document issues it again, under the tax rules it would be issued under today.
         auto_je.refuse_unissuable_taxes(await current_settings(session, company_id), state.get("doc_type"), state)
-    if (memo := await _source_memo(session, company_id, state)) is not None and \
+    if (memo := await _source_memo(session, company_id, entity_id, state)) is not None and \
             memo.state.get("converted_to") != entity_id:
         number = memo.state.get("doc_number") or memo.state.get("ref_id") or memo.entity_id
         raise HTTPException(status_code=409, detail=refusal(
@@ -9998,10 +10005,11 @@ async def _held_lots(session, company_id, owner_id: str) -> dict[str, Projection
             if p.state.get("status") == "reserved" and p.state.get("status_doc_id") == owner_id}
 
 
-async def _source_memo(session, company_id, state: dict, *, for_update: bool = False) -> Projection | None:
-    """The memo an invoice was converted from, or None when it was not converted from one."""
-    memo_id = state.get("source_memo_id")
-    if not memo_id or state.get("doc_type") != "invoice":
+async def _source_memo(session, company_id, entity_id: str, state: dict, *,
+                       for_update: bool = False) -> Projection | None:
+    """The memo an invoice was converted from (converted_from_memo), or None."""
+    memo_id = await converted_from_memo(session, company_id, entity_id, state)
+    if not memo_id:
         return None
     if for_update:
         return (await lock_projections(session, company_id, [memo_id])).get(memo_id)
@@ -10014,7 +10022,7 @@ async def _return_to_source_memo(session, *, company_id, uid, owner: Projection)
     memo, and the memo is live again in the status it was converted from, so it can be
     converted again. A memo converted to some other invoice since keeps that conversion.
     Does not commit."""
-    memo = await _source_memo(session, company_id, owner.state, for_update=True)
+    memo = await _source_memo(session, company_id, owner.entity_id, owner.state, for_update=True)
     if memo is None:
         return
     memo_number = memo.state.get("doc_number") or memo.state.get("ref_id") or ""
@@ -12951,6 +12959,7 @@ async def _apply_scan_run(session: AsyncSession, company_id: str, entity_id: str
     inventory = await load_item_index(session, company_id)
     resolved = inventory.resolve(codes)
     unit_map = await _get_unit_map(session, company_id)
+    legacy = await converted_from_memo(session, company_id, entity_id, state)
     locked = state.get("status") == FINALIZED
     now = datetime.now(timezone.utc).isoformat()
     results: list[dict] = []
@@ -12968,7 +12977,7 @@ async def _apply_scan_run(session: AsyncSession, company_id: str, entity_id: str
             stock = [m for m in inventory.lots_of(sku)
                      if is_stock_type(m.state or {})
                      and str((m.state or {}).get("status") or "").lower() not in HIDDEN_STATUSES | {"draft"}
-                     and not held_elsewhere(m.state or {}, entity_id, None, state.get("source_memo_id"))]
+                     and not held_elsewhere(m.state or {}, entity_id, None, legacy)]
             pools[sku] = ({m.entity_id for m in stock},
                           sum((to_decimal((m.state or {}).get("quantity") or 0) for m in stock), Decimal(0)))
         ids, available = pools[sku]
@@ -12989,7 +12998,7 @@ async def _apply_scan_run(session: AsyncSession, company_id: str, entity_id: str
             continue
         lot, on_hand, reason, label = ((None, 0, "unknown_code", _unknown_code_detail(code))
                                        if res is None or not res.matches
-                                       else _scan_lot(code, res, sb, settings, state, entity_id))
+                                       else _scan_lot(code, res, sb, settings, entity_id, legacy))
         if lot is None:
             if locked and reason == "unknown_code":
                 reason, label = _locked_manifest_failure(code, None, lines)
@@ -13101,14 +13110,15 @@ def _whole_piece(item_state: dict | None) -> bool:
     return is_stock_type(item_state or {}) and not splitting_allowed(item_state or {})
 
 
-def _scan_lot(code: str, res, sb: ScanBehavior, settings: dict, state: dict,
-              entity_id: str) -> tuple[Projection | None, float, str | None, str | None]:
+def _scan_lot(code: str, res, sb: ScanBehavior, settings: dict, entity_id: str,
+              legacy: str | None) -> tuple[Projection | None, float, str | None, str | None]:
     """The one lot a resolved code places on a document and the quantity its line takes, as
     (lot, quantity, reason, label); reason and label name why no lot was placed.
 
     A physical code (barcode, RFID EPC) names its lot. A product code (GTIN, SKU) names every lot of
     the product: lots out of use are passed over, lots held for another record are taken only when
-    nothing else is left (the writer then refuses them, naming the holder), and what remains is
+    nothing else is left (the writer then refuses them, naming the holder; ``legacy`` is the memo the
+    record was converted from, converted_from_memo), and what remains is
     picked by the record's scan behaviour - the pick-order representative of splittable stock
     (consolidate) or a sold lot first (sold, for returns). Several lots still left is ambiguous: a
     piece that may not be split is never chosen for the operator, who scans its own barcode or tag.
@@ -13139,7 +13149,7 @@ def _scan_lot(code: str, res, sb: ScanBehavior, settings: dict, state: dict,
         return stock[0], (stock[0].state or {}).get("quantity"), None, None
     if sb.lots == "sold":
         stock = [m for m in stock if status(m) == "sold"] or stock
-    free = [m for m in stock if not held_elsewhere(m.state or {}, entity_id, None, state.get("source_memo_id"))]
+    free = [m for m in stock if not held_elsewhere(m.state or {}, entity_id, None, legacy)]
     stock = free or stock
     # The pick-order representative carries the quantity of every lot it stands for.
     picked = [{**(m.state or {}), "entity_id": m.entity_id, "created_at": m.created_at} for m in stock]
@@ -13192,6 +13202,7 @@ async def scan_doc(
     # see costs adds unpriced.
     price_list = line_price_list(doc_type, payload.price_list)
     priced = sb.priced and (not is_cost_list_name(price_list) or role_has_permission(settings, role, "view_inventory_costs"))
+    legacy = await converted_from_memo(session, company_id, entity_id, state)
     currency = state.get("currency")
     line_taxes = default_line_taxes(side_taxes(settings, doc_type), doc_type, doc=state)
     existing = [dict(l) for l in (state.get("line_items") or [])]
@@ -13201,7 +13212,7 @@ async def scan_doc(
         """The document writer's own rules for a new line, judged per code."""
         try:
             assert_new_references_eligible({lot.entity_id: lot}, candidate, known=known, doc_type=doc_type,
-                                           entity_id=entity_id, source_memo_id=state.get("source_memo_id"))
+                                           entity_id=entity_id, source_memo_id=legacy)
             assert_line_holds_respected({lot.entity_id: lot}, candidate, existing, entity_id=entity_id)
         except HTTPException as exc:
             return "unavailable", exc.detail.get("message") or "; ".join(e["message"] for e in exc.detail["errors"])

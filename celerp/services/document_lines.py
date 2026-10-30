@@ -323,10 +323,37 @@ async def linked_items(session, company_id, line_items, *, known: Counter | None
     return items
 
 
+async def converted_from_memo(session, company_id, invoice_id: str | None, state: dict) -> str | None:
+    """The memo an invoice was converted from before partial invoicing, or None.
+
+    Such an invoice names its memo in its header (``source_memo_id``), but the header alone
+    proves nothing: it counts only when the memo's ledger holds the ``doc.converted`` naming
+    this invoice, which only the old convert wrote and no import can carry. Reopening the memo
+    clears its ``converted_to`` but not that entry, so the ledger is the proof. New code never
+    writes the header."""
+    from celerp.models.ledger import LedgerEntry
+
+    memo_id = state.get("source_memo_id")
+    if not memo_id or not invoice_id or state.get("doc_type") != "invoice":
+        return None
+    found = (await session.execute(select(LedgerEntry.id).where(
+        LedgerEntry.company_id == uuid.UUID(str(company_id)), LedgerEntry.entity_id == memo_id,
+        LedgerEntry.event_type == "doc.converted",
+        LedgerEntry.data["target_doc_id"].as_string() == invoice_id,
+    ).limit(1))).scalar_one_or_none()
+    return memo_id if found is not None else None
+
+
+def memo_of_line(line: dict, legacy_memo: str | None) -> str | None:
+    """The memo whose goods a line bills: the memo it was drawn from, else the memo the whole
+    invoice was converted from (``converted_from_memo``)."""
+    return (line.get("drawn_from") or {}).get("memo_id") or legacy_memo
+
+
 def out_on_another_memo(state: dict, entity_id: str | None, source_memo_id: str | None) -> bool:
     """A lot out on a memo belongs to that memo until it comes back or is invoiced from it:
-    only the memo itself (``entity_id``) or an invoice made from it (``source_memo_id``)
-    may take it. A memo_out lot that names no memo has no record that may take it."""
+    only the memo itself (``entity_id``) or an invoice converted from it (``source_memo_id``,
+    converted_from_memo) may take it; a draw restamps each lot onto its invoice. A memo_out lot that names no memo has no record that may take it."""
     holder = state.get("status_doc_id")
     return state.get("status") == "memo_out" and (not holder or holder not in (entity_id, source_memo_id))
 
@@ -373,7 +400,7 @@ def assert_new_references_eligible(
     A draft item is not stock yet, and a deleted one is out of use until restored, so no
     document or List may newly reference either. An
     item reserved by another record, or by a status edit that no record owns, is held,
-    and an item out on a memo is that memo's (``out_on_another_memo``: an invoice made
+    and an item out on a memo is that memo's (``out_on_another_memo``: an invoice converted
     from the memo, ``source_memo_id``, may take it), so an invoice or memo (which claim
     stock) may not newly reference either; quotations, other documents and Lists may.
     "Newly" counts occurrences: a line beyond the number

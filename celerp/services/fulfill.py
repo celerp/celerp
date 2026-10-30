@@ -69,9 +69,10 @@ async def outstanding_physical_lines(session: AsyncSession, company_id, docs: li
     What is sent is read from the fulfillment record, as the invoice's cost of sales reads
     it: each lot whose latest fulfillment event for the document ships it counts at its
     quantity, on the line it belongs to (auto_je.line_of_lot), so a reversal asks for the
-    goods again. Goods an invoice bills from a memo were sent under the memo, so the memo's
-    record counts for the invoice. A lot no line can claim is put on the document's lines
-    of its SKU in order, each taking at most what it ordered.
+    goods again. Goods an invoice bills from a memo were sent under the memo: a line drawn
+    from a memo is sent in full, and for an invoice converted from a memo the memo's record
+    counts for the invoice. A lot no line can claim is put on the document's lines of its SKU
+    in order, each taking at most what it ordered.
 
     Goods a customer sent back on a credit note raised on the document were taken back too:
     each returned lot still received comes off the line of the sold lot it was valued from,
@@ -80,16 +81,17 @@ async def outstanding_physical_lines(session: AsyncSession, company_id, docs: li
     from sqlalchemy import select
 
     from celerp.models.ledger import LedgerEntry
+    from celerp.services.document_lines import converted_from_memo
 
     docs = [d for d in docs if d is not None]
     if not docs:
         return {}
     cid = _to_uuid(company_id)
     # The document whose deliveries a fulfillment event records: its own, or the invoice a
-    # memo was billed on.
+    # memo was converted to.
     owner: dict[str, str] = {d.entity_id: d.entity_id for d in docs}
     for d in docs:
-        memo = (d.state or {}).get("source_memo_id")
+        memo = await converted_from_memo(session, cid, d.entity_id, d.state or {})
         if memo:
             owner[memo] = d.entity_id
     events = (await session.execute(
@@ -133,7 +135,7 @@ async def outstanding_physical_lines(session: AsyncSession, company_id, docs: li
             if st is not None and not is_non_stock_line(st.get("inventory_type"), st.get("sell_by")):
                 physical[idx] = item_id
         ordered = {idx: float(line_items[idx].get("quantity") or 0) for idx in physical}
-        sent = dict.fromkeys(physical, 0.0)
+        sent = {idx: ordered[idx] if line_items[idx].get("drawn_from") else 0.0 for idx in physical}
         unclaimed: list[tuple[str, float]] = []
         line_of: dict[str, int | None] = {}  # lot sent -> the line it went on
         for (doc_id, lot), e in out_lots.items():

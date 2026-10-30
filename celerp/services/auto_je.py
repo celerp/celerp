@@ -3175,6 +3175,14 @@ def recorded_line(event) -> tuple[str | None, int | None]:
     return (line_id if isinstance(line_id, str) and line_id else None), recorded_line_index(event)
 
 
+def stamped_line(event) -> str | None:
+    """The line of its target doc an item.status.set stamp names, or None: the invoice line a
+    memo draw put the lot on, else the doc line the stamp was written for."""
+    meta = event.metadata_ or {}
+    line_id = meta.get("invoice_line_id") or meta.get("source_line_id")
+    return line_id if isinstance(line_id, str) and line_id else None
+
+
 def line_of_lot(line_items: list[dict], lot_id: str, lot_state: dict, recorded: int | None,
                 source_line_id: str | None = None) -> int | None:
     """The index of the doc line a lot belongs to, or None when it cannot be told safely.
@@ -3208,25 +3216,35 @@ def line_of_lot(line_items: list[dict], lot_id: str, lot_state: dict, recorded: 
 
 
 async def doc_line_of_lot(session, company_id, doc_id: str, doc_state: dict, lot_id: str, lot_state: dict) -> int | None:
-    """line_of_lot for one lot, reading its latest fulfillment for this doc from the ledger.
+    """line_of_lot for one lot, reading from the ledger the line that sent it under this doc.
 
-    An invoice converted from a memo bills goods the memo sent, so with no shipment of its
-    own a lot's latest shipment on that memo names its line. Line ids carry across the
+    That is the lot's latest shipment for this doc. Without one, it is the latest stamp of the
+    lot onto this doc that names a line: a memo draw stamps each lot onto the invoice line it
+    adds, and a lot that came back onto a memo line or was split off on it carries that line.
+    An invoice converted from a memo before partial invoicing bills goods the memo sent, so
+    there a lot's latest shipment on that memo names its line. Line ids carry across the
     conversion; positions do not, so only the line id is read from the memo's shipment."""
     from celerp.models.ledger import LedgerEntry
+    from celerp.services.document_lines import converted_from_memo
 
     rows = (await session.execute(
         _select(LedgerEntry).where(
             LedgerEntry.company_id == company_id,
             LedgerEntry.entity_id == lot_id,
-            LedgerEntry.event_type == "item.fulfilled",
+            LedgerEntry.event_type.in_(("item.fulfilled", "item.status.set")),
         ).order_by(LedgerEntry.id.desc())
     )).scalars().all()
-    latest = next((e for e in rows if (e.data or {}).get("source_doc_id") == doc_id), None)
-    line_id, recorded = recorded_line(latest) if latest is not None else (None, None)
-    memo_id = doc_state.get("source_memo_id")
-    if latest is None and memo_id:
-        sent = next((e for e in rows if (e.data or {}).get("source_doc_id") == memo_id), None)
+
+    def latest(event_type: str, doc: str):
+        return next((e for e in rows if e.event_type == event_type and (e.data or {}).get("source_doc_id") == doc
+                     and (event_type == "item.fulfilled" or stamped_line(e))), None)
+
+    shipped = latest("item.fulfilled", doc_id)
+    line_id, recorded = recorded_line(shipped) if shipped is not None else (None, None)
+    if shipped is None and (stamp := latest("item.status.set", doc_id)) is not None:
+        line_id = stamped_line(stamp)
+    elif shipped is None and (memo_id := await converted_from_memo(session, company_id, doc_id, doc_state)):
+        sent = latest("item.fulfilled", memo_id)
         line_id = recorded_line(sent)[0] if sent is not None else None
     return line_of_lot(doc_state.get("line_items", []), lot_id, lot_state, recorded, line_id)
 
