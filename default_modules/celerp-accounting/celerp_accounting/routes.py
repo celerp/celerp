@@ -2616,6 +2616,20 @@ async def _bank_dicts(
     return out
 
 
+async def _company_bank(
+    session: AsyncSession, company_id: uuid.UUID, bank_id: uuid.UUID, *, for_update: bool = False,
+) -> BankAccount:
+    """The company's bank account *bank_id*, read again as committed and row-locked when
+    *for_update*; 404 when the company has no such account."""
+    query = select(BankAccount).where(BankAccount.id == bank_id, BankAccount.company_id == company_id)
+    if for_update:
+        query = query.with_for_update().execution_options(populate_existing=True)
+    bank = (await session.execute(query)).scalar_one_or_none()
+    if not bank:
+        raise HTTPException(status_code=404, detail=t("acct.err_bank_account_not_found"))
+    return bank
+
+
 @router.get(
     "/bank-accounts",
     summary="List the company's bank and card accounts",
@@ -2643,14 +2657,27 @@ async def get_bank_account(
     session: AsyncSession = Depends(get_session),
     _: None = require_permission("manage_accounting"),
 ) -> dict:
-    b = (
-        await session.execute(
-            select(BankAccount).where(BankAccount.id == bank_id, BankAccount.company_id == company_id)
-        )
-    ).scalar_one_or_none()
-    if not b:
-        raise HTTPException(status_code=404, detail=t("acct.err_bank_account_not_found"))
+    b = await _company_bank(session, company_id, bank_id)
     return (await _bank_dicts(session, company_id, [b]))[0]
+
+
+@router.get("/bank-accounts/{bank_id}/reconciliations")
+async def list_bank_reconciliations(
+    bank_id: uuid.UUID,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    session: AsyncSession = Depends(get_session),
+    _: None = require_permission("manage_accounting"),
+) -> dict:
+    """Every reconciliation of one bank account, newest statement date first."""
+    bank = await _company_bank(session, company_id, bank_id)
+    rows = (await session.execute(
+        select(ReconciliationSession)
+        .where(ReconciliationSession.company_id == company_id, ReconciliationSession.bank_account_id == bank.id)
+        .order_by(ReconciliationSession.statement_date.desc(), ReconciliationSession.created_at.desc())
+    )).scalars().all()
+    all_entries = await _je_entries_for_account(session, company_id, bank.chart_account_code)
+    items = [{**_recon_to_dict(r), "needs_review": _needs_review(r, bank, all_entries)} for r in rows]
+    return {"items": items, "total": len(items)}
 
 
 @router.post("/bank-accounts")
@@ -2761,14 +2788,7 @@ async def patch_bank_account(
     # Under the company lock and the account row lock, so a first posting on the
     # account commits before its history is counted below.
     await lock_company(session, company_id)
-    b = (
-        await session.execute(
-            select(BankAccount).where(BankAccount.id == bank_id, BankAccount.company_id == company_id)
-            .with_for_update().execution_options(populate_existing=True)
-        )
-    ).scalar_one_or_none()
-    if not b:
-        raise HTTPException(status_code=404, detail=t("acct.err_bank_account_not_found"))
+    b = await _company_bank(session, company_id, bank_id, for_update=True)
     if payload.bank_type is not None and payload.bank_type not in _BANK_TYPES:
         raise HTTPException(status_code=422, detail=t("acct.err_bank_type", types=_enum_labels("bank_type", sorted(_BANK_TYPES))))
 
@@ -2984,6 +3004,16 @@ def _recon_balance(recon: ReconciliationSession, bank: BankAccount, all_entries:
             round_money(to_decimal(recon.statement_balance) - matched, bank.currency))
 
 
+def _needs_review(recon: ReconciliationSession, bank: BankAccount, all_entries: list[dict]) -> bool:
+    """Whether a session asks to be checked: it counts an entry that is no longer one of the
+    account's posted entries, or it is completed and no longer balances with its statement.
+    Computed on read and stored nowhere; nothing the session holds is ever corrected."""
+    posted = {e["je_id"] for e in all_entries}
+    if set(recon.reconciled_je_ids or []) - posted:
+        return True
+    return recon.status == "completed" and _recon_balance(recon, bank, all_entries)[1] != 0
+
+
 def _money_text(value: Decimal, currency: str) -> str:
     """An amount written with the currency's own decimals."""
     return f"{value:.{currency_dp(currency)}f}"
@@ -3130,16 +3160,7 @@ async def start_reconciliation(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     await lock_company(session, company_id)
-    bank = (
-        await session.execute(
-            select(BankAccount).where(
-                BankAccount.id == payload.bank_account_id,
-                BankAccount.company_id == company_id,
-            ).with_for_update().execution_options(populate_existing=True)
-        )
-    ).scalar_one_or_none()
-    if not bank:
-        raise HTTPException(status_code=404, detail=t("acct.err_bank_account_not_found"))
+    bank = await _company_bank(session, company_id, payload.bank_account_id, for_update=True)
 
     # One session per statement: starting a statement again continues the one in
     # progress, or returns the completed one to read. Rows from before this rule may
@@ -3200,6 +3221,7 @@ async def get_reconciliation(
         "book_balance": sum(e["amount"] for e in all_entries),
         "matched_balance": to_stored_float(matched_balance),
         "difference": to_stored_float(difference),
+        "needs_review": _needs_review(recon, bank, all_entries),
     })
     return d
 
