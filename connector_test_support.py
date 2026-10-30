@@ -6,12 +6,20 @@ pointed at the test's savepoint-isolated session."""
 from __future__ import annotations
 
 import contextlib
+import sys
 import uuid
 from types import SimpleNamespace
 
 import pytest
 
 from test_helpers import provision_company_books
+
+
+def ungated_first_sync_takes() -> set[str]:
+    """The sites in the sync runner that took a first-sync record without its company's lock,
+    as the lock checker's census records them: empty when every take is company-gated."""
+    return sys.modules["lock_rank"].RECORDER.ungated_sites(("row:connector_first_syncs",),
+                                                            "celerp/connectors/sync_runner.py")
 
 
 async def seed_company(session, name: str = "Store") -> uuid.UUID:

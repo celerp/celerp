@@ -2137,8 +2137,9 @@ async def _first_sync_then_undo(session, monkeypatch) -> None:
     from celerp_connectors.routes import undo_first_sync_links
     from celerp_inventory.routes import undo_import_batch
     from celerp.connectors.product_links import external_link_for_state
-    from connector_test_support import connect, item_state
+    from connector_test_support import connect, item_state, ungated_first_sync_takes
 
+    before = ungated_first_sync_takes()
     monkeypatch.setattr("celerp.connectors.woocommerce.validate_public_base_url",
                         AsyncMock(side_effect=lambda value, **_kw: value.rstrip("/")))
     cid = await _seed_company(session, "FirstUndo")
@@ -2178,6 +2179,7 @@ async def _first_sync_then_undo(session, monkeypatch) -> None:
             results = await run_first_sync(WooCommerceConnector(), ex.ctx)
 
     assert [r.entity for r in results] and all(r.ok for r in results), results
+    assert ungated_first_sync_takes() - before == set()
     await session.refresh(batch)
     created = [e for e in batch.entity_ids]
     assert len(created) == 1 and (await item_state(session, cid, created[0]))["sku"] == "NEW-1"

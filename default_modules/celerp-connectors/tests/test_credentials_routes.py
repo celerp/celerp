@@ -590,9 +590,10 @@ async def test_connect_makes_no_store_write():
 async def test_a_key_the_store_will_not_let_write_stops_the_first_sync_with_its_reason(connector_session):
     from celerp.connectors.sync_runner import fail_first_sync
     from celerp.models.connector_first_sync import ConnectorFirstSync
-    from connector_test_support import connect, seed_company
+    from connector_test_support import connect, seed_company, ungated_first_sync_takes
 
     session = connector_session
+    before = ungated_first_sync_takes()
     cid = await seed_company(session, "ReadOnlyKey")
     await connect(session, cid, "woocommerce", dict(WOO_DEFAULTS), first_sync="running")
     refused = httpx.Response(401, json={"code": "woocommerce_rest_cannot_create"},
@@ -604,6 +605,7 @@ async def test_a_key_the_store_will_not_let_write_stops_the_first_sync_with_its_
     assert row.state == "failed"
     assert row.error == {"key": "connectors.err_read_only_key"}
     assert "Read/Write" in t(row.error["key"])
+    assert ungated_first_sync_takes() - before == set()
 
 
 def _ui_connect_patches(start):

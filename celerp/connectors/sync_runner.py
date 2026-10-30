@@ -132,12 +132,11 @@ async def run_first_sync(connector: ConnectorBase, ctx: ConnectorContext) -> lis
 
     from celerp.connectors.execution import plan_resources
     from celerp.db import get_session_ctx
-    from celerp.models.connector_first_sync import ConnectorFirstSync
     from celerp.models.import_batch import ImportBatch
 
     key = (str(ctx.company_id), connector.name)
     async with get_session_ctx() as session:
-        row = await session.get(ConnectorFirstSync, key, with_for_update=True)
+        row = await _locked_first_sync(session, *key)
         if row is None or row.state not in ("starting", "running"):
             raise ValueError(f"The first sync of {connector.display_name} has not been started")
         row.state = "running"
@@ -152,7 +151,7 @@ async def run_first_sync(connector: ConnectorBase, ctx: ConnectorContext) -> lis
 
     record = first_sync.record
     async with get_session_ctx() as session:
-        row = await session.get(ConnectorFirstSync, key, with_for_update=True)
+        row = await _locked_first_sync(session, *key)
         undo = dict(row.undo or {})
         undo["links"] = [*undo.get("links", []), *record.linked]
         row.undo = undo
@@ -177,6 +176,16 @@ async def run_first_sync(connector: ConnectorBase, ctx: ConnectorContext) -> lis
     return results
 
 
+async def _locked_first_sync(session, company_id: str, connector_name: str):
+    """A connection's first-sync record under its company's lock, taken first as every
+    writer of the company's connector rows does; None when it is gone."""
+    from celerp.models.connector_first_sync import ConnectorFirstSync
+
+    await lock_company(session, uuid.UUID(company_id))
+    return await session.get(ConnectorFirstSync, (company_id, connector_name), with_for_update=True,
+                             populate_existing=True)
+
+
 def _resource_of(entity) -> str:
     from celerp.connectors.execution import execution_resource
 
@@ -190,12 +199,11 @@ async def fail_first_sync(company_id, connector_name: str, exc: BaseException) -
     import httpx
 
     from celerp.db import get_session_ctx
-    from celerp.models.connector_first_sync import ConnectorFirstSync
 
     status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
     reason = {"key": "connectors.err_read_only_key"} if status in (401, 403) else {"detail": str(exc)}
     async with get_session_ctx() as session:
-        row = await session.get(ConnectorFirstSync, (str(company_id), connector_name), with_for_update=True)
+        row = await _locked_first_sync(session, str(company_id), connector_name)
         if row is not None and row.state in ("starting", "running"):
             row.state = "failed"
             row.error = reason
