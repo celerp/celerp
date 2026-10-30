@@ -704,12 +704,13 @@ async def emit_event(
             previous_item_state = deepcopy(previous.state or {})
         # A lot's goods cost is never negative, whichever writer sets it. Writers refuse
         # it first in their own response shape; this is the backstop for the rest.
-        from celerp.services.goods_cost import event_goods_costs, lot_label, negative_cost_error
+        from celerp.services.goods_cost import (event_goods_costs, lot_label, negative_cost_error,
+                                                unknown_flag_error)
 
         refusal = negative_cost_error(
             lot_label({**(previous_item_state or {}), **kwargs["data"]}, kwargs["entity_id"]),
             *event_goods_costs(kwargs["event_type"], kwargs["data"]),
-        )
+        ) or unknown_flag_error(kwargs["event_type"], kwargs["data"])
         if refusal:
             raise HTTPException(status_code=422, detail=refusal)
         check_codes = _touches_physical_codes(

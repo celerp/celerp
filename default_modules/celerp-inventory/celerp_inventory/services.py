@@ -39,7 +39,7 @@ from celerp.models.projections import Projection
 from celerp.services.account_roles import current_settings, is_consigned, lot_account, sold_lot_account, sold_lot_key
 from celerp.services.business_time import business_date_at
 from celerp.services.demo import delete_untouched_demo_items
-from celerp.services.goods_cost import event_goods_costs, lot_label, negative_cost_error
+from celerp.services.goods_cost import GOODS_COST_UNKNOWN, event_goods_costs, lot_label, negative_cost_error
 from celerp.services.cost_visibility import COST_ITEM_KEYS
 from celerp.services.money import allocate_pro_rata, round_basis, to_decimal
 from celerp.services.company_lock import holds_company_lock, lock_company, lock_projections, locked_company
@@ -50,6 +50,7 @@ from celerp.services.lot_origin import (
     is_deleted,
     place_company_stock,
     recognize_opening_lots,
+    recorded_value,
     self_booked,
 )
 from celerp.importers.tabular import SYSTEM_SKIP_COLS, CsvImportSpec, cell_error_code, finite_float
@@ -191,6 +192,42 @@ def goods_basis(state: dict) -> float | None:
     if basis is None:
         basis = state.get("cost_total")
     return None if basis is None else round_basis(basis)
+
+
+def goods_cost_known(state: dict) -> bool:
+    """Whether the lot carries a known goods cost: a goods basis, or the unit cost an empty
+    lot keeps for stock to come, and no GOODS_COST_UNKNOWN. Margins, unit costs, Cost-based
+    prices and merges read this, never the value alone."""
+    if state.get(GOODS_COST_UNKNOWN):
+        return False
+    return goods_basis(state) is not None or (
+        state.get("cost_price") is not None and float(state.get("quantity") or 0) <= 0)
+
+
+def goods_cost_empty(state: dict) -> bool:
+    """A lot holding no units and no goods value (its value is landed cost only, or nothing).
+    It neither makes a merge or a receipt into it of unknown goods cost nor of known."""
+    if float(state.get("quantity") or 0) != 0:
+        return False
+    landed = sum(float(v or 0) for v in (state.get("landed_costs") or {}).values())
+    return round_basis(float(recorded_value(state)) - landed) == 0
+
+
+def topped_up_cost(state: dict, added: float) -> dict:
+    """The cost data of an item.quantity.adjusted adding goods worth ``added`` to a lot: its
+    goods basis grows by ``added``, and its goods cost turns unknown when it held goods of
+    unknown cost, or known when it held none. A lot without cost taking goods without cost
+    stays without cost."""
+    basis = goods_basis(state)
+    if basis is None and not added:
+        return {}
+    out: dict = {"cost_base": round_basis((basis or 0.0) + added)}
+    if goods_cost_empty(state):
+        if state.get(GOODS_COST_UNKNOWN):
+            out[GOODS_COST_UNKNOWN] = False
+    elif not goods_cost_known(state):
+        out[GOODS_COST_UNKNOWN] = True
+    return out
 
 
 @dataclass(frozen=True)
