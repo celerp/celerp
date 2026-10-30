@@ -191,6 +191,25 @@ async def test_clearing_goods_cost_with_freight_leaves_it_unknown(client, sessio
     assert (await _read(client, auth, lot)).get("cost_price") is None
 
 
+async def test_clear_set_clear_keeps_freight_and_the_books(client, session, auth):
+    # The API's cost_total is the goods cost; freight stays on its own pools whatever is set or cleared.
+    from stock_books import assert_books_carry_stock
+    await _seed(session, auth)
+    lot = await _item(client, auth, qty=1, cost_total=10.0)
+    await _po_into(client, auth, lot, 9, 10.0, shipping=30.0)
+    pools = (await _state(session, auth, lot))["landed_costs"]
+    freight = sum(pools.values())
+    for goods in (None, 250.0, None, None, 130.0, 0.0, None):
+        r = await client.patch(f"/items/{lot}", headers=auth["headers"],
+                               json={"fields_changed": {"cost_total": {"new": goods}}})
+        assert r.status_code == 200, (goods, r.text)
+        st = await _state(session, auth, lot)
+        assert st["landed_costs"] == pools, (goods, st)
+        assert st["cost_total"] == freight + (goods or 0.0), (goods, st)
+        assert (st.get("cost_base") or 0.0) == (goods or 0.0) and (MARK in st) == (goods is None), (goods, st)
+        await assert_books_carry_stock(session, auth["company_id"])
+
+
 async def test_value_without_units_shows_no_unit_cost(client, session, auth):
     a = await _item(client, auth, qty=2, cost_total=100.0)
     b = await _item(client, auth, qty=3, cost_total=60.0)
