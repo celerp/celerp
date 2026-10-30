@@ -127,6 +127,15 @@ async def lock_accounts(session: AsyncSession, company_id, codes) -> dict[str, d
     return await chart.lock_accounts(session, company_id, set(codes))
 
 
+async def bank_currencies(session: AsyncSession, company_id) -> dict[str, str]:
+    """{chart code: currency} of every bank account; empty when the accounting module is
+    not running."""
+    chart = chart_access()
+    if chart is None:
+        return {}
+    return {a["code"]: a["currency"] for a in await chart.list_accounts(session, company_id) if a.get("currency")}
+
+
 async def add_account(session: AsyncSession, company_id, code: str, name: str, account_type: str) -> None:
     """Add a top-level account to the company's chart, for any module to post to.
 

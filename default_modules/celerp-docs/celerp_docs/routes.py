@@ -3846,6 +3846,15 @@ async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
             status_code=422,
             detail=t("error.rate_not_one_for_base", base=_base_currency, raw=body["conversion_rate"]),
         )
+    # The bank line carries the amount in the account's own currency (auto_je.payment_bank_fx),
+    # known only when the account is kept in the document's currency or the books'.
+    if moves_cash:
+        from celerp.services.journal_accounts import bank_currencies
+        bank_currency = (await bank_currencies(session, company_id)).get(bank_code)
+        if bank_currency and bank_currency not in (doc_currency, str(_base_currency).upper()):
+            raise HTTPException(status_code=422, detail=t(
+                "documents.err_payment_bank_currency", bank_currency=bank_currency,
+                doc_currency=doc_currency, base=_base_currency))
     body["remaining_balance"] = to_stored_float(max(Decimal(0), outstanding_d - amount_d))
     payment_index = await _alloc_payment_index(
         session, company_id, doc_state.get("payments", []),

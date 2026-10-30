@@ -4577,6 +4577,7 @@
   "documents.err_no_money_doc": "This kind of document has no amount to pay, so it can't take a payment.",
   "documents.err_payment_recorded": "This payment was already recorded. Select Try again to see it.",
   "documents.err_payment_currency": "The payment is in {payment_currency} but the document is in {doc_currency}. Record the payment in {doc_currency}.",
+  "documents.err_payment_bank_currency": "That bank account is kept in {bank_currency}, and this payment is in {doc_currency}. Pick an account kept in {doc_currency} or {base}, then record the payment.",
   "documents.err_invoice_paid": "This invoice is already fully paid. Nothing more is owed.",
   "documents.err_payment_amount_positive": "Enter a payment amount greater than zero.",
   "documents.err_payment_too_much": "The payment ({amount}) is more than what is still owed ({outstanding}). Lower the amount to {outstanding} or less.",
