@@ -80,6 +80,13 @@ def to_stored_float(v: Decimal) -> float:
     return float(v)
 
 
+def line_moves(line: dict) -> bool:
+    """Whether a journal line moves money. A line is empty only when its books-currency
+    and its foreign amounts are all zero: a foreign amount too small to show in the
+    books' currency (VND 100 at USD 0.000039) still moves that much of its currency."""
+    return any(to_decimal(line.get(key) or 0) for key in ("debit", "credit", "fx_debit", "fx_credit"))
+
+
 # ---------------------------------------------------------------------------
 # Rates (unit prices) vs amounts.
 # A unit price is a RATE, not a money amount: it may carry more precision so that

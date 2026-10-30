@@ -58,7 +58,7 @@ from celerp.services.je_keys import je_idempotency_key, je_void_data, unminted_p
 from celerp.services.journal_accounts import UnbalancedJournalEntry, bank_currencies, lock_accounts
 from celerp.services.line_measures import splitting_allowed
 from celerp.services.lot_origin import held_value, in_stock, is_stock_type, recorded_value
-from celerp.services.money import allocate_pro_rata, checked_exchange_rate, document_line_amount, received_share, require_doc_rate, require_line_amount, round_money, to_base, to_decimal, to_stored_float
+from celerp.services.money import allocate_pro_rata, checked_exchange_rate, document_line_amount, line_moves, received_share, require_doc_rate, require_line_amount, round_money, to_base, to_decimal, to_stored_float
 from celerp.services.posting_dates import correction_day, void_reversal
 from celerp.services.pick import as_lot, attribute_holds, line_draw_sources, plan_line_draws, resolve_pick_method
 from celerp.services.units import is_non_stock_line, line_receive_kind
@@ -248,8 +248,8 @@ async def _emit_auto_posted_je(
     to the company currency (*currency* when the producer already holds the books it posts
     on), and an entry that does not balance after rounding is refused, so producers build
     their lines to balance once rounded. *extra* adds fields the created event records
-    with the entry (a module journal's source and request hash). A line that is zero on
-    both sides once rounded moves nothing and is not written, so no producer can post one."""
+    with the entry (a module journal's source and request hash). A line that moves nothing
+    once rounded (``line_moves``) is not written, so no producer can post one."""
     currency = currency or await company_currency(session, company_id)
     rounded = (
         {**e,
@@ -257,7 +257,7 @@ async def _emit_auto_posted_je(
          "credit": to_stored_float(round_money(e.get("credit") or 0, currency))}
         for e in entries
     )
-    entries = [e for e in rounded if e["debit"] or e["credit"]]
+    entries = [e for e in rounded if line_moves(e)]
     debits = sum((to_decimal(e["debit"]) for e in entries), _Dec(0))
     credits = sum((to_decimal(e["credit"]) for e in entries), _Dec(0))
     if debits != credits:

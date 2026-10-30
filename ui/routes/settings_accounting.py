@@ -63,8 +63,10 @@ def _accounting_settings_tabs(active: str) -> FT:
 
 
 def _bank_account_row(b: dict) -> FT:
-    balance = b.get("balance", 0.0)
-    bal_cls = "balance--positive" if balance >= 0 else "balance--negative"
+    # The balance is in the account's own currency, or None when the API cannot read
+    # every posting in it: then it shows as unknown and says why, never as a guess.
+    balance = b.get("balance")
+    bal_cls = "balance--negative" if balance is not None and balance < 0 else "balance--positive"
     currency = b.get("currency", "")
     return Div(
         Div(
@@ -73,7 +75,9 @@ def _bank_account_row(b: dict) -> FT:
             cls="bank-info",
         ),
         Div(
-            Span(f"{currency} {balance:,.2f}", cls=f"balance {bal_cls}"),
+            Span(EMPTY if balance is None else fmt_money(balance, currency), cls=f"balance {bal_cls}"),
+            *([P(t("acct.balance_unknown", currency=currency), cls="flash flash--warning")]
+              if balance is None else []),
             # The balance is the ledger's. Say so when an opening balance was
             # entered here that no journal entry carries, rather than letting the
             # figure look wrong for no stated reason.

@@ -5,7 +5,9 @@
 emit_event calls ``guard_journal_change`` (registered on core's ``ChartAccess``) for
 every journal entry event, whoever writes it. The change is compared as the books read
 it, before and after: the entry's effective rows (``ledger_rows.entry_rows``) and their
-lines on each bank account. Two rules refuse it:
+lines on each bank account, each line read in the account's own currency the way its
+reconciliation reads it (``_bank_amounts``), so a change of the foreign amount that
+leaves the books-currency figure as it was is a change too. Two rules refuse it:
 
 - Held: a row a reconciliation counts (matched on it, or the bank's opening entry) may
   not disappear or change, and a counted entry may not be voided or reversed.
@@ -35,11 +37,13 @@ from celerp.services.journal_accounts import ReconciledHistoryChanged
 from celerp.services.ledger_rows import entry_rows
 from celerp.services.permissions import _authority_for, read_authority, role_has_permission
 from celerp_accounting.models import BankAccount, ReconciliationSession
-from celerp_accounting.routes import _line_amounts, _opening_je_id
+from celerp_accounting.routes import _bank_amounts, _base_currency, _line_amounts, _opening_je_id
 from ui.i18n import list_text, t
 
-# {(row id, bank chart code): (day, amount)}
-BankRows = dict[tuple[str, str], tuple[str, Decimal]]
+# {(row id, bank chart code): (day, the row's lines on it)}, each line its (debit, credit)
+# in the currency of every bank account kept on that code (None where it has no amount in it).
+LineAmounts = tuple[tuple[Decimal, Decimal] | None, ...]
+BankRows = dict[tuple[str, str], tuple[str, tuple[LineAmounts, ...]]]
 
 
 def iso_day(value: str) -> str | None:
@@ -50,18 +54,19 @@ def iso_day(value: str) -> str | None:
         return None
 
 
-def _bank_rows(entity_id: str, state: dict, codes: set[str]) -> BankRows:
-    """The entry's effective rows on bank accounts, one amount per row and bank."""
-    out: BankRows = {}
+def _bank_rows(entity_id: str, state: dict, currencies: dict[str, list[str]], base: str) -> BankRows:
+    """The entry's effective rows on bank accounts, keyed by row and bank code: the day
+    and every line on the code, each line's amounts in the currencies of the bank
+    accounts kept on it (*currencies*, by code), in a stable order."""
+    lines: dict[tuple[str, str], tuple[str, list[LineAmounts]]] = {}
     for row_id, row_state, day in entry_rows(entity_id, state):
         for line in row_state.get("entries") or []:
             code = line.get("account")
-            amounts = _line_amounts(line) if code in codes else None
-            if amounts is None:
+            if code not in currencies or _line_amounts(line) is None:
                 continue
-            _, total = out.get((row_id, code), (day, Decimal(0)))
-            out[(row_id, code)] = (day, total + amounts[0] - amounts[1])
-    return out
+            lines.setdefault((row_id, code), (day, []))[1].append(
+                tuple(_bank_amounts(line, currency, base) for currency in currencies[code]))
+    return {key: (day, tuple(sorted(amounts, key=repr))) for key, (day, amounts) in lines.items()}
 
 
 async def _state(session: AsyncSession, company_id, entity_id: str, *, fresh: bool) -> dict:
@@ -106,23 +111,28 @@ async def guard_journal_change(
     company_id = uuid.UUID(str(company_id))
     # Several bank accounts may share one ledger account: each is judged on its own.
     codes: dict[str, list[uuid.UUID]] = {}
-    for bank_id, code in (await session.execute(
-        select(BankAccount.id, BankAccount.chart_account_code).where(BankAccount.company_id == company_id)
+    currencies: dict[str, list[str]] = {}
+    for bank_id, code, currency in (await session.execute(
+        select(BankAccount.id, BankAccount.chart_account_code, BankAccount.currency)
+        .where(BankAccount.company_id == company_id).order_by(BankAccount.currency)
     )).all():
         codes.setdefault(code, []).append(bank_id)
+        if currency not in currencies.setdefault(code, []):
+            currencies[code].append(currency)
     if not codes:
         return
+    base = await _base_currency(session, company_id)
     reversed_id = _reversed_id(event_type, data)
 
     async def touched(fresh: bool) -> tuple[BankRows, BankRows, set[str]]:
         before = await _state(session, company_id, entity_id, fresh=fresh)
         after = ProjectionEngine._apply(before, event_type, data)
-        rows_before = _bank_rows(entity_id, before, set(codes))
-        rows_after = _bank_rows(entity_id, after, set(codes))
+        rows_before = _bank_rows(entity_id, before, currencies, base)
+        rows_after = _bank_rows(entity_id, after, currencies, base)
         banks = {code for _, code in rows_before} | {code for _, code in rows_after}
         if reversed_id:
             reversed_state = await _state(session, company_id, reversed_id, fresh=fresh)
-            banks |= {code for _, code in _bank_rows(reversed_id, reversed_state, set(codes))}
+            banks |= {code for _, code in _bank_rows(reversed_id, reversed_state, currencies, base)}
         return rows_before, rows_after, banks
 
     _, _, banks = await touched(False)

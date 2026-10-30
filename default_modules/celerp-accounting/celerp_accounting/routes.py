@@ -63,8 +63,8 @@ from celerp.services.je_keys import je_void_data
 from celerp.services.journal_accounts import require_destinations
 from celerp.services.line_measures import line_label
 from celerp.services.money import (
-    books_currency, checked_exchange_rate, currency_dp, require_line_amount, round_money, split_to_base, to_base,
-    to_decimal, to_stored_float,
+    books_currency, checked_exchange_rate, currency_dp, line_moves, require_line_amount, round_money, split_to_base,
+    to_base, to_decimal, to_stored_float,
 )
 from celerp.services.permissions import locked_authority, require_permission
 from celerp.schemas.numbers import FiniteFloat
@@ -1211,17 +1211,19 @@ def _statement_kind(ref: dict) -> str:
 def _line_amounts(entry: dict) -> tuple[Decimal, Decimal] | None:
     """(debit, credit) of a JE line as Decimals, or None for a line that is skipped.
 
-    One rule for every report: a line whose amounts cannot be parsed, or a line with
-    no debit and no credit, is skipped the same way everywhere, so the trial balance,
-    journal, ledger, and general ledger always agree on which lines count. Entries
-    posted before automatic postings stopped writing lines that move nothing still
-    store such lines; they are read past here and never rewritten.
+    One rule for every report: a line whose amounts cannot be parsed, or a line that
+    moves nothing (``line_moves``), is skipped the same way everywhere, so the trial
+    balance, journal, ledger, and general ledger always agree on which lines count. A
+    foreign amount too small to show in the books' currency counts at zero there and
+    is still a line. Entries posted before automatic postings stopped writing lines that
+    move nothing still store such lines; they are read past here and never rewritten.
     """
     try:
         amounts = (Decimal(str(entry.get("debit") or 0)), Decimal(str(entry.get("credit") or 0)))
+        moves = line_moves(entry)
     except Exception:
         return None
-    return amounts if any(amounts) else None
+    return amounts if moves else None
 
 
 def _build_balances(posted: list[tuple[str, dict, str]], date_from: str | None, date_to: str | None) -> dict[str, Decimal]:
@@ -1689,8 +1691,6 @@ async def create_manual_journal_entry(
             detail=t(f"acct.err_je_unbalanced_{short}", base=base,
                      debits=total_debit, credits=total_credit, gap=gap),
         )
-    if total_debit == 0:
-        raise HTTPException(status_code=422, detail=t("acct.err_je_zero"))
     # A line on a bank account kept in another currency than the books' carries its
     # amount in that currency, so the account's reconciliation can read it.
     from celerp.services.journal_accounts import bank_currencies
@@ -2625,29 +2625,31 @@ async def _bank_dicts(
 ) -> list[dict]:
     """Bank accounts with their balance and the health of their opening balance.
 
-    The balance is the ledger's, and only the ledger's. Creating an account with
-    an opening balance posts that balance as a journal entry, so adding the column
-    on top of the entries would count it twice. An opening balance with no entry
-    behind it is reported as `opening_unbacked` rather than folded back into the
-    figure, which would put the bank screen back out of step with the books.
+    The balance is the ledger's, and only the ledger's, in the account's own currency
+    and read line by line exactly as its reconciliation reads it (``_bank_line_amounts``),
+    so the two always agree. A line with no amount in the account's currency makes the
+    balance unknown (None) rather than a books-currency figure under the account's
+    currency. Creating an account with an opening balance posts that balance as a
+    journal entry, so adding the column on top of the entries would count it twice. An
+    opening balance with no entry behind it is reported as `opening_unbacked` rather
+    than folded back into the figure, which would put the bank screen back out of step
+    with the books.
     """
     rows = await journal_rows(session, company_id)
     posted_ids = {je_id for je_id, _state, _ts in rows}
     base = await _base_currency(session, company_id)
     out = []
     for b in banks:
-        net = Decimal(0)
+        net: Decimal | None = Decimal(0)
         foreign = False
-        for _je_id, state, _ts in rows:
+        for je_id, state, _ts in rows:
             for entry in state.get("entries", []):
-                if entry.get("account") == b.chart_account_code:
-                    amounts = _line_amounts(entry)
-                    if amounts is None:
-                        continue
-                    net += amounts[0] - amounts[1]
+                if entry.get("account") == b.chart_account_code and _line_amounts(entry) is not None:
+                    amounts = _bank_line_amounts(b, base, je_id, entry)
+                    net = None if net is None or amounts is None else net + amounts[0] - amounts[1]
                     foreign = foreign or _carries_foreign_amount(entry)
         d = _bank_to_dict(b)
-        d["balance"] = float(net)
+        d["balance"] = None if net is None else to_stored_float(round_money(net, b.currency))
         d["opening_unbacked"] = bool(b.opening_balance) and _opening_je_id(b.id) not in posted_ids
         # The currency the account can be corrected to: one labelled in another currency
         # than the books', whose postings carry books-currency amounts only, reads none of
@@ -3187,6 +3189,17 @@ def _bank_amounts(line: dict, bank_currency: str, base: str) -> tuple[Decimal, D
     return _line_amounts(line) if bank_currency == base else None
 
 
+def _bank_line_amounts(bank: BankAccount, base: str, je_id: str, line: dict) -> tuple[Decimal, Decimal] | None:
+    """``_bank_amounts`` of a line on *bank*'s ledger account in entry *je_id*. An opening
+    balance posted before it carried its own amount was posted as the figure typed in the
+    account's currency, which the account keeps, so that figure is its amount."""
+    amounts = _bank_amounts(line, bank.currency, base)
+    if amounts is None and je_id == _opening_je_id(bank.id):
+        typed = to_decimal(bank.opening_balance or 0)
+        amounts = (typed, Decimal(0)) if typed > 0 else (Decimal(0), -typed)
+    return amounts
+
+
 def _bank_rate(bank: BankAccount, base: str, rate: float | None) -> Decimal | None:
     """The rate converting *bank*'s currency into the books' *base*: None for an account
     kept in the books' currency, otherwise the one entered, which is then required."""
@@ -3236,21 +3249,15 @@ async def _je_entries_for_account(
 ) -> list[dict]:
     """Posted JE lines on a bank account's ledger account as {je_id, ts, memo, amount,
     debit, credit}, the amounts in the bank account's currency (None when unknown, see
-    ``_bank_amounts``)."""
+    ``_bank_line_amounts``)."""
     base = await _base_currency(session, company_id)
-    opening = _opening_je_id(bank.id)
     result = []
     for je_id, state, _ in await journal_rows(session, company_id):
         for entry in state.get("entries", []):
             if entry.get("account") == bank.chart_account_code:
                 if _line_amounts(entry) is None:
                     continue
-                amounts = _bank_amounts(entry, bank.currency, base)
-                if amounts is None and je_id == opening:
-                    # An opening balance posted before it carried its own amount was posted
-                    # as the figure typed in the account's currency, which the account keeps.
-                    typed = to_decimal(bank.opening_balance or 0)
-                    amounts = (typed, Decimal(0)) if typed > 0 else (Decimal(0), -typed)
+                amounts = _bank_line_amounts(bank, base, je_id, entry)
                 debit, credit = (to_stored_float(round_money(a, bank.currency)) for a in amounts) if amounts else (None, None)
                 result.append({
                     "je_id": je_id,
