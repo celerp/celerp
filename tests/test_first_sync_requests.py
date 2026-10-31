@@ -97,3 +97,26 @@ async def test_starting_the_first_sync_from_its_preview_runs_it_under_a_renewed_
         assert (await s.scalars(sa.select(ImportBatch).where(
             ImportBatch.company_id == uuid.UUID(store_owner.cid)))).all() == []
         assert await execution.live_executions(s, store_owner.cid, PLATFORM) == []
+
+
+async def test_the_first_sync_preview_its_summary_and_the_status_poll_read_through_their_requests(
+        store_owner, store_answers, monkeypatch):
+    """The read pages of a pending first sync, each through its own request: the preview page
+    asks the API for the preview, the summary is read from the API, and the settings page polls
+    the connection's status. The write observer holds each of them to writing nothing."""
+    from celerp.connectors import first_sync
+
+    await connected(store_owner.cid, PLATFORM, {"products": "inbound"}, first_sync="pending")
+    monkeypatch.setattr(first_sync, "_preview_products", AsyncMock())  # the store has no products
+
+    r = await store_owner.ui.get(f"/settings/connectors/{PLATFORM}/first-sync")
+    assert r.status_code == 200, r.text
+    assert f'hx-post="/settings/connectors/{PLATFORM}/first-sync"' in r.text
+
+    r = await store_owner.api.get(f"/connectors/{PLATFORM}/first-sync/summary",
+                                  headers={"Authorization": f"Bearer {store_owner.tok}"})
+    assert r.status_code == 200, r.text
+    assert r.json()["batch"] is None
+
+    r = await store_owner.ui.get(f"/settings/connectors/{PLATFORM}/status")
+    assert r.status_code == 200, r.text
