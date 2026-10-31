@@ -33,6 +33,7 @@ from ui.components.shell import base_shell, minimal_shell, module_active, page_h
 from ui.components.table import fmt_money, data_table, search_bar, pagination, EMPTY, empty_mark, breadcrumbs, status_cards, empty_state_cta, add_new_option, searchable_select, currency_symbol, SERVER_FILTER_JS, filter_th, sortable_th, table_pager, COLUMN_FILTER_JS, ENHANCED_TABLE_JS, date_range_filter, display_enum, display_unit, doc_href
 from ui.config import get_token as _token, get_role as _get_role
 from celerp.services import import_stage
+from celerp.services.ledger_display import run_reference
 from ui.security import not_permitted_redirect
 from celerp.services.permissions import missing_permission_text, role_has_permission
 from ui.module_slots import (
@@ -1825,9 +1826,10 @@ def setup_routes(app):
                 preview_hash=preview_hash, decisions=decisions,
             )
         except APIError as e:
-            if e.status in (409, 422):
+            stale = api.error_code(e) == "preview_stale"
+            if stale or e.status == 422:
                 return await _item_import_review(
-                    token, csv_ref, notice=t("inventory.import_review_changed") if e.status == 409 else "",
+                    token, csv_ref, notice=t("inventory.import_review_changed") if stale else "",
                 )
             return _item_import_api_error(e)
 
@@ -3495,7 +3497,10 @@ function celerpPrintLabel(entityId, templateId) {
         except APIError as e:
             return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
         updated = result.get("updated", len(entity_ids))
-        return _bulk_destructive_success(request, t("inventory.bulk_transferred", n=updated))
+        refused = [row["detail"] for row in result.get("refused") or []]
+        return _bulk_destructive_success(request, t("inventory.bulk_transferred", n=updated),
+                                         cls="flash--warning" if refused else "flash--success",
+                                         notice=refusal_text(refused))
 
     @app.post("/api/items/bulk/delete")
     async def bulk_item_delete(request: Request):
@@ -7454,7 +7459,7 @@ def _production_block(entity_id: str, item: dict, hub: dict, cur: str,
         rid, status = run.get("id"), run.get("status", "planned")
         qty = float((run.get("expected_outputs") or [{}])[0].get("quantity", 0))
         return Tr(
-            Td("WO-" + str(rid).split(":")[-1][:8], cls="wo-ref"),
+            Td(run_reference(rid), cls="wo-ref"),
             Td(_wo_source_cell(run)),
             Td(run.get("source_contact_name") or EMPTY),
             Td(f"{qty:g}", cls="cell--number"),

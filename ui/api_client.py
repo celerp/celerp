@@ -407,6 +407,15 @@ def error_message(e: APIError) -> str:
     return text or t("error.unexpected_error_body")
 
 
+def error_code(e: APIError) -> str:
+    """The machine code a refusal carries (``detail.code``), else "". Pages branch on
+    this, never on the status alone: one status can carry several refusals."""
+    for source in (e.data, e.detail):
+        if isinstance(source, dict) and source.get("code"):
+            return str(source["code"])
+    return ""
+
+
 def refusal_response(e: APIError) -> PlainTextResponse:
     """The reply a UI route gives for an APIError it caught: the refusal as short plain
     text with its status, which the page's error banner shows. An ended session is raised
@@ -1908,6 +1917,11 @@ async def get_bank_account(token: str, bank_id: str) -> dict:
         return _raise(await c.get(f"/accounting/bank-accounts/{bank_id}")).json()
 
 
+async def get_bank_reconciliations(token: str, bank_id: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.get(f"/accounting/bank-accounts/{bank_id}/reconciliations")).json()
+
+
 async def create_bank_account(token: str, data: dict) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.post("/accounting/bank-accounts", json=data)).json()
@@ -1974,6 +1988,11 @@ async def match_recon_line(token: str, session_id: str, line_id: str, je_id: str
         )).json()
 
 
+async def unmatch_reconciliation(token: str, session_id: str, je_ids: list[str]) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/accounting/reconciliation/{session_id}/unmatch", json={"je_ids": je_ids})).json()
+
+
 async def unmatch_recon_line(token: str, session_id: str, line_id: str) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.post(f"/accounting/reconciliation/{session_id}/lines/{line_id}/unmatch")).json()
@@ -1987,11 +2006,11 @@ async def create_recon_expense(token: str, session_id: str, line_id: str, data: 
         )).json()
 
 
-async def split_recon_line(token: str, session_id: str, line_id: str, splits: list[dict]) -> dict:
+async def split_recon_line(token: str, session_id: str, line_id: str, data: dict) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.post(
             f"/accounting/reconciliation/{session_id}/lines/{line_id}/split",
-            json={"splits": splits},
+            json=data,
         )).json()
 
 
@@ -2665,6 +2684,41 @@ async def export_lists_csv(token: str, params: dict | None = None):
 async def convert_doc(token: str, entity_id: str) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.post(f"/docs/{entity_id}/convert")).json()
+
+
+async def invoice_lines(token: str, memo_id: str, body: dict) -> dict:
+    """Invoice chosen goods out on a memo (Invoice selected)."""
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/docs/{memo_id}/invoice-lines", json=body)).json()
+
+
+async def invoice_lines_preview(token: str, memo_id: str, body: dict) -> dict:
+    """What Invoice selected would do with these goods (a dry run; nothing is saved)."""
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/docs/{memo_id}/invoice-lines", json={**body, "dry_run": True})).json()
+
+
+async def back_to_memo(token: str, entity_id: str, *, line_ids: list[str] | None = None,
+                       line_entity_ids: list[str] | None = None, idempotency_key: str | None = None) -> dict:
+    """Send chosen lines of a draft invoice back to the memos they were invoiced from."""
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/docs/{entity_id}/back-to-memo", json={
+            "line_ids": line_ids or [], "line_entity_ids": line_entity_ids or [],
+            "idempotency_key": idempotency_key})).json()
+
+
+async def set_memo_tax_rate(token: str, memo_id: str, rate: float, binding: str, idempotency_key: str) -> dict:
+    """Set the tax rate of an issued memo whose tax was entered as an amount, confirming the
+    preview whose ``binding`` is sent; the same ``idempotency_key`` sent again returns the first result."""
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/docs/{memo_id}/tax-rate", json={
+            "tax_rate": rate, "binding": binding, "idempotency_key": idempotency_key})).json()
+
+
+async def memo_tax_rate_preview(token: str, memo_id: str, rate: float) -> dict:
+    """The tax and total a memo tax rate would give, with their binding (a dry run; nothing is saved)."""
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/docs/{memo_id}/tax-rate", json={"tax_rate": rate, "dry_run": True})).json()
 
 
 async def create_shipment_from_docs(token: str, doc_ids: list[str]) -> dict:

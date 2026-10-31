@@ -407,17 +407,23 @@ async def test_sale_with_no_document_saves_the_cost_and_posts_nothing(client, se
     assert await _count(session, auth, event_type="acc.journal_entry.created") == jes
 
 
-async def _memo_converted(client, session, auth, item: str) -> str:
-    """The lot out on a memo, then the memo converted to a draft invoice; returns the invoice."""
+async def _memo_converted(client, session, auth, item: str, *, older: bool = False) -> str:
+    """The lot out on a memo, then the memo invoiced in full onto a draft invoice, or with
+    *older* converted the way an older release did it; returns the invoice."""
+    from memo_draw_support import legacy_convert
+
     sku = (await _state(session, auth, item))["sku"]
     r = await client.post("/docs", headers=auth["headers"], json={"doc_type": "memo", "line_items": [
         {"entity_id": item, "sku": sku, "name": sku, "quantity": 1, "unit_price": 150.0, "sell_by": "piece"}]})
     assert r.status_code == 200, r.text
     memo = r.json()["id"]
-    for path, body in ((f"/docs/{memo}/finalize", {}), (f"/docs/{memo}/fulfill-lines", {"line_entity_ids": [item]}),
-                       (f"/docs/{memo}/convert", {})):
+    for path, body in ((f"/docs/{memo}/finalize", {}), (f"/docs/{memo}/fulfill-lines", {"line_entity_ids": [item]})):
         r = await client.post(path, headers=auth["headers"], json=body)
         assert r.status_code == 200, r.text
+    if older:
+        return await legacy_convert(client, session, auth, memo, [])
+    r = await client.post(f"/docs/{memo}/convert", headers=auth["headers"], json={})
+    assert r.status_code == 200, r.text
     return r.json()["target_doc_id"]
 
 
@@ -427,7 +433,7 @@ async def test_sale_without_an_exact_invoice_line_refuses_correction(client, ses
     from celerp.events.engine import emit_event
 
     item = await _item(client, auth, 100.0)
-    invoice = await _memo_converted(client, session, auth, item)
+    invoice = await _memo_converted(client, session, auth, item, older=True)
     memo = (await _state(session, auth, invoice))["source_memo_id"]
     await emit_event(session, company_id=auth["company_id"], entity_id=item, entity_type="item",
                      event_type="item.status.set", data={"new_status": "sold", "source_doc_id": memo},

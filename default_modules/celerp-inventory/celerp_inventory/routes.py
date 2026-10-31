@@ -23,7 +23,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
-from celerp.events.engine import emit_event, find_event_by_idempotency
+from celerp.events.engine import HeldLotCarve, emit_event, find_event_by_idempotency
 from celerp.events.schemas import reject_comma_sku
 from celerp.importers.tabular import HEADER_SEARCH_LINES, MAX_CELLS, MAX_ROWS
 from celerp.inventory_codes import (
@@ -3012,24 +3012,34 @@ async def bulk_transfer(payload: BulkTransferBody, company_id=Depends(get_curren
     from celerp.models.company import Location
     loc_rows = (await session.execute(select(Location).where(Location.company_id == company_id))).scalars().all()
     loc_map = {str(r.id): r.name for r in loc_rows}
-    event_ids = []
+    event_ids, refused = [], []
     for entity_id in payload.entity_ids:
-        entry = await emit_event(
-            session,
-            company_id=company_id,
-            entity_id=entity_id,
-            entity_type="item",
-            event_type="item.transferred",
-            data=await _build_transfer_data(session, company_id, entity_id, payload.to_location_id, loc_map),
-            actor_id=user.id,
-            location_id=payload.to_location_id,
-            source="api",
-            idempotency_key=str(uuid.uuid4()),
-            metadata_={},
-        )
+        data = await _build_transfer_data(session, company_id, entity_id, payload.to_location_id, loc_map)
+        try:
+            entry = await emit_event(
+                session,
+                company_id=company_id,
+                entity_id=entity_id,
+                entity_type="item",
+                event_type="item.transferred",
+                data=data,
+                actor_id=user.id,
+                location_id=payload.to_location_id,
+                source="api",
+                idempotency_key=str(uuid.uuid4()),
+                metadata_={},
+            )
+        except HTTPException as exc:
+            # A lot whose own state refuses the move (409: one held by a memo) is that row's
+            # answer, with nothing of it stored, and the other lots move. A request the server
+            # cannot carry out at all (a location of another company) refuses the whole move.
+            if exc.status_code != 409:
+                raise
+            refused.append({"entity_id": entity_id, "detail": exc.detail})
+            continue
         event_ids.append(entry.id)
     await session.commit()
-    return {"updated": len(event_ids), "event_ids": event_ids}
+    return {"updated": len(event_ids), "event_ids": event_ids, "refused": refused}
 
 
 @router.post("/bulk/delete")
@@ -3890,6 +3900,8 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
                          idempotency_key=str(uuid.uuid4()), metadata_={"reason": "from_split"})
 
     # --- reduce the mother ---
+    # The one change a memo may make to a lot it holds (engine._refuse_held_lot_change).
+    carved = HeldLotCarve(entity_id, child_qty, child_weight, ch_pieces)
     new_parent_qty = round(parent_qty - child_qty, 10)
     adjusted: dict = {"new_qty": new_parent_qty, "landed_costs": carve.rest_landed}
     if carve.rest_goods is not None:
@@ -3897,12 +3909,14 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
     await emit_event(session, company_id=company_id, entity_id=entity_id, entity_type="item",
                      event_type="item.quantity.adjusted", data=adjusted,
                      actor_id=user_id, location_id=None, source="fulfill_split",
-                     idempotency_key=str(uuid.uuid4()), metadata_={"reason": "split_parent"})
+                     idempotency_key=str(uuid.uuid4()), metadata_={"reason": "split_parent"},
+                     held_lot_carve=carved)
     if fields_changed:
         await emit_event(session, company_id=company_id, entity_id=entity_id, entity_type="item",
                          event_type="item.updated", data={"fields_changed": fields_changed},
                          actor_id=user_id, location_id=None, source="fulfill_split",
-                         idempotency_key=str(uuid.uuid4()), metadata_={"reason": "split_parent"})
+                         idempotency_key=str(uuid.uuid4()), metadata_={"reason": "split_parent"},
+                         held_lot_carve=carved)
 
     # history
     child_detail: dict = {

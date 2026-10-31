@@ -41,6 +41,12 @@ async def _memo(client, h, item_ids: list[str]) -> str:
     return r.json()["id"]
 
 
+async def _sold_on(client, h, invoice: str) -> str:
+    """A drawn line's label names the invoice that sold it."""
+    inv = (await client.get(f"/docs/{invoice}", headers=h)).json()
+    return f"Sold {inv.get('ref_id') or inv.get('doc_number')}"
+
+
 def _label_for(doc: dict, eid: str):
     for li in doc.get("line_items") or []:
         if (li.get("entity_id") or li.get("item_id")) == eid:
@@ -88,7 +94,7 @@ async def test_line_label_sold(client):
     assert (await client.post(f"/docs/{r.json()['target_doc_id']}/finalize", headers=h)).status_code == 200
 
     doc = (await client.get(f"/docs/{memo}", headers=h)).json()
-    assert _label_for(doc, sold) == "Sold"
+    assert _label_for(doc, sold) == await _sold_on(client, h, r.json()["target_doc_id"])
 
 
 async def _item_sku(client, h, sku, qty=1) -> str:
@@ -158,15 +164,16 @@ async def test_line_label_sold_survives_archive(client):
     assert r.status_code == 200, r.text
     assert (await client.post(f"/docs/{r.json()['target_doc_id']}/finalize", headers=h)).status_code == 200
 
+    label = await _sold_on(client, h, r.json()["target_doc_id"])
     doc = (await client.get(f"/docs/{memo}", headers=h)).json()
-    assert _label_for(doc, sold) == "Sold", f"expected Sold before archive; got {_label_for(doc, sold)!r}"
+    assert _label_for(doc, sold) == label, f"expected {label} before archive; got {_label_for(doc, sold)!r}"
 
     # Archive the sold item; its live status becomes "archived".
     assert (await client.post("/items/bulk/status", headers=h, json={"entity_ids": [sold], "status": "archived"})).status_code == 200
     assert (await client.get(f"/items/{sold}", headers=h)).json().get("status") == "archived"
 
     doc = (await client.get(f"/docs/{memo}", headers=h)).json()
-    assert _label_for(doc, sold) == "Sold", f"label must stay Sold after archive; got {_label_for(doc, sold)!r}"
+    assert _label_for(doc, sold) == label, f"label must stay {label} after archive; got {_label_for(doc, sold)!r}"
 
 
 @pytest.mark.asyncio

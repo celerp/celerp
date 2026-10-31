@@ -23,12 +23,15 @@ import uuid
 import pytest
 from playwright.sync_api import expect
 
+from .conftest import css_class, release_held_routes
+
 pytestmark = pytest.mark.browser
 
 
-def _create_item(api, sku, qty=10):
+def _create_item(api, sku, qty=10, **fields):
     """Create an inventory item via API; return its entity_id."""
-    r = api.post("/items", json={"status": "available", "sku": sku, "name": sku, "quantity": qty, "sell_by": "piece"})
+    r = api.post("/items", json={"status": "available", "sku": sku, "name": sku, "quantity": qty, "sell_by": "piece",
+                                 **fields})
     assert r.status_code in {200, 201}, f"create item failed: {r.text}"
     return r.json()["id"]
 
@@ -438,10 +441,11 @@ def test_set_as_available_mixed_selection_routes_both(page, ui_server, api):
     )
 
 
-def _shipped_memo(api, sku, qty):
-    item = _create_item(api, sku, qty=qty)
+def _shipped_memo(api, sku, qty, contact_id=None):
+    # A customer's price list prices the line from the item, so the item carries the line's price.
+    item = _create_item(api, sku, qty=qty, retail_price=10.0)
     r = api.post("/docs", json={
-        "doc_type": "memo", "ref_id": f"MR-{uuid.uuid4().hex[:6]}",
+        "doc_type": "memo", "ref_id": f"MR-{uuid.uuid4().hex[:6]}", "contact_id": contact_id,
         "line_items": [{"sku": sku, "name": sku, "quantity": qty, "unit_price": 10.0,
                         "line_total": 10.0 * qty, "item_id": item, "sell_by": "piece"}],
         "total": 10.0 * qty,
@@ -596,3 +600,203 @@ def test_shipping_goods_another_invoice_set_aside_shows_a_lasting_notice(page, u
     page.wait_for_timeout(7000)  # longer than a passing notice stays
     assert page.locator(".toast-container .toast--info").count() == 1
     assert api.get(f"/items/{item_id}").json()["status"] == "sold"
+
+
+def test_invoice_selected_on_a_memo_previews_then_invoices_the_units_typed(page, ui_server, api):
+    """Choosing Invoice selected on a memo line shows the server's preview of the invoice
+    inside the panel, it follows the quantity typed, and the button invoices those units and
+    opens the new invoice while the rest stays on the memo."""
+    doc_id, _item = _shipped_memo(api, f"MDP-{uuid.uuid4().hex[:6]}", 4)
+    page.goto(f"{ui_server}/docs/{doc_id}", wait_until="domcontentloaded")
+    _assert_no_crash(page, "memo invoice selected")
+    page.locator(".li-select").first.check()
+    page.locator("#li-bulk-select").select_option(value="li-invoice")
+    preview = page.locator("#draw-preview")
+    expect(preview).to_contain_text("Invoice total after this: $40.00")
+    page.locator("#draw-panel input[name=qty_0]").fill("1")
+    expect(preview).to_contain_text("Invoice total after this: $10.00")
+    page.locator("#draw-panel button[type=submit]").click()
+    page.wait_for_url(lambda url: f"/docs/{doc_id}" not in url and "/docs/" in url)
+    invoice_id = page.url.rsplit("/docs/", 1)[1].split("?")[0]
+    invoice = api.get(f"/docs/{invoice_id}").json()
+    assert invoice["doc_type"] == "invoice" and float(invoice["total"]) == 10.0
+    assert float(api.get(f"/docs/{doc_id}").json()["line_items"][0]["out_quantity"]) == 3
+
+
+@pytest.mark.parametrize(("read_for", "sent_to"), [("new", "a"), ("a", "b"), ("a", "new")])
+def test_choosing_another_invoice_after_a_preview_invoices_onto_it(page, ui_server, api, read_for, sent_to):
+    """Invoice selected re-previews for each invoice chosen, and the button adds the units to
+    the invoice chosen last, whatever the earlier preview read."""
+    r = api.post("/crm/contacts", json={"name": f"Memo Customer {uuid.uuid4().hex[:6]}", "contact_type": "customer"})
+    assert r.status_code in {200, 201}, r.text
+    contact = r.json()["id"]
+    doc_id, _item = _shipped_memo(api, f"MDT-{uuid.uuid4().hex[:6]}", 4, contact_id=contact)
+    currency = api.get(f"/docs/{doc_id}").json().get("currency")
+    drafts, totals = {"new": ""}, {"new": "$10.00"}
+    for name, price in (("a", 5.0), ("b", 7.0)):
+        r = api.post("/docs", json={
+            "doc_type": "invoice", "ref_id": f"PF-{uuid.uuid4().hex[:6]}", "contact_id": contact, "currency": currency,
+            "line_items": [{"name": "Service", "quantity": 1, "unit_price": price, "line_total": price}]})
+        assert r.status_code in {200, 201}, r.text
+        drafts[name], totals[name] = r.json()["id"], f"${10 + price:.2f}"
+    doc = api.get(f"/docs/{drafts['b']}").json()
+    assert api.patch(f"/docs/{drafts['b']}", json={"fields_changed": {"notes": {"new": "changed"}},
+                                                   "expected_version": doc["version"]}).status_code == 200
+
+    page.goto(f"{ui_server}/docs/{doc_id}", wait_until="domcontentloaded")
+    _assert_no_crash(page, "memo invoice target")
+    page.locator(".li-select").first.check()
+    page.locator("#li-bulk-select").select_option(value="li-invoice")
+    preview = page.locator("#draw-preview")
+    page.locator("#draw-panel input[name=qty_0]").fill("1")
+    expect(preview).to_contain_text(f"Invoice total after this: {totals['new']}")
+    for name in (read_for, sent_to):
+        page.locator("#draw-panel .combobox-input").click()
+        page.locator(f'#draw-panel .combobox-option[data-value="{drafts[name]}"]').click()
+        expect(preview).to_contain_text(f"Invoice total after this: {totals[name]}")
+    page.locator("#draw-panel button[type=submit]").click()
+    page.wait_for_url(lambda url: f"/docs/{doc_id}" not in url and "/docs/" in url)
+    invoice_id = page.url.rsplit("/docs/", 1)[1].split("?")[0]
+    assert invoice_id == drafts[sent_to] if sent_to != "new" else invoice_id not in drafts.values()
+    assert float(api.get(f"/docs/{invoice_id}").json()["total"]) == float(totals[sent_to].strip("$"))
+
+
+def _open_draw_panel(page, ui_server, doc_id):
+    page.goto(f"{ui_server}/docs/{doc_id}", wait_until="domcontentloaded")
+    _assert_no_crash(page, "memo invoice selected")
+    page.locator(".li-select").first.check()
+    page.locator("#li-bulk-select").select_option(value="li-invoice")
+
+
+_PREVIEWS = "**/invoice-lines/preview"
+
+
+def test_invoice_selected_cannot_confirm_until_the_preview_of_the_selection_returns(page, ui_server, api):
+    """Changing a quantity and pressing the button at once never invoices against the old
+    preview: the button waits for the preview of the units now typed."""
+    doc_id, _item = _shipped_memo(api, f"MDW-{uuid.uuid4().hex[:6]}", 4)
+    _open_draw_panel(page, ui_server, doc_id)
+    preview, confirm = page.locator("#draw-preview"), page.locator("#draw-panel button[type=submit]")
+    page.locator("#draw-panel input[name=qty_0]").fill("1")
+    expect(preview).to_contain_text("Invoice total after this: $10.00")
+    expect(confirm).to_be_enabled()
+
+    held = []
+    page.route(_PREVIEWS, lambda route: held.append(route))
+    page.locator("#draw-panel input[name=qty_0]").fill("3")
+    expect(confirm).to_be_disabled()
+    page.wait_for_timeout(600)
+    expect(confirm).to_be_disabled()
+    assert held, "the preview of the new quantity was sent"
+    held.pop().continue_()
+    release_held_routes(page, _PREVIEWS, held)
+    expect(preview).to_contain_text("Invoice total after this: $30.00")
+    expect(confirm).to_be_enabled()
+    confirm.click()
+    page.wait_for_url(lambda url: f"/docs/{doc_id}" not in url and "/docs/" in url)
+    invoice_id = page.url.rsplit("/docs/", 1)[1].split("?")[0]
+    assert float(api.get(f"/docs/{invoice_id}").json()["total"]) == 30.0
+
+
+def test_invoice_selected_keeps_the_newest_preview_when_an_older_answer_comes_last(page, ui_server, api):
+    """A slow preview of an earlier quantity answering after the preview of the later one never
+    replaces it, and the button invoices the quantity shown."""
+    doc_id, _item = _shipped_memo(api, f"MDS-{uuid.uuid4().hex[:6]}", 4)
+    _open_draw_panel(page, ui_server, doc_id)
+    preview, confirm = page.locator("#draw-preview"), page.locator("#draw-panel button[type=submit]")
+    page.locator("#draw-panel input[name=qty_0]").fill("4")
+    expect(preview).to_contain_text("Invoice total after this: $40.00")
+
+    held = []
+    page.route(_PREVIEWS,
+               lambda route: held.append(route) if "qty_0=1&" in (route.request.post_data or "") + "&"
+               else route.continue_())
+    page.locator("#draw-panel input[name=qty_0]").fill("1")
+    page.wait_for_timeout(600)
+    assert len(held) == 1
+    older = held.pop()
+    page.locator("#draw-panel input[name=qty_0]").fill("2")
+    expect(preview).to_contain_text("Invoice total after this: $20.00")
+    older.continue_()
+    page.wait_for_timeout(600)
+    expect(preview).to_contain_text("Invoice total after this: $20.00")
+    expect(confirm).to_be_enabled()
+    confirm.click()
+    page.wait_for_url(lambda url: f"/docs/{doc_id}" not in url and "/docs/" in url)
+    invoice_id = page.url.rsplit("/docs/", 1)[1].split("?")[0]
+    assert float(api.get(f"/docs/{invoice_id}").json()["total"]) == 20.0
+
+
+def test_setting_a_memo_tax_rate_previews_each_rate_typed_then_saves(page, ui_server, api):
+    """A memo whose tax was entered as an amount gets a rate from its Rate cell: every rate
+    typed shows the tax it gives, and Save sets it with a notice."""
+    sku = f"MTR-{uuid.uuid4().hex[:6]}"
+    item = _create_item(api, sku, qty=1)
+    r = api.post("/docs", json={
+        "doc_type": "memo", "ref_id": f"MR-{uuid.uuid4().hex[:6]}", "tax": 50.0,
+        "line_items": [{"sku": sku, "name": sku, "quantity": 1, "unit_price": 100.0, "line_total": 100.0,
+                        "item_id": item, "sell_by": "piece"}],
+    })
+    assert r.status_code in {200, 201}, r.text
+    doc_id = r.json()["id"]
+    assert api.post(f"/docs/{doc_id}/finalize").status_code in {200, 201}
+    page.goto(f"{ui_server}/docs/{doc_id}", wait_until="domcontentloaded")
+    _assert_no_crash(page, "memo rate")
+    page.locator("[hx-get*='/field/tax_rate']").first.click()
+    field = page.locator("form.editable-cell input[name=value]")
+    preview = page.locator("form.editable-cell .memo-rate-preview")
+    # htmx binds the editor's triggers when it settles the swap, the step that drops htmx-added;
+    # a rate typed before then would go unheard.
+    expect(page.locator("form.editable-cell")).not_to_have_class(css_class("htmx-added"))
+    field.fill("10")
+    expect(preview).to_contain_text("$10.00")
+    field.fill("20")
+    expect(preview).to_contain_text("$20.00")
+    page.locator("form.editable-cell button[type=submit]").click()
+    expect(page.locator(".toast-container .toast").last).to_contain_text("$50.00 became $20.00")
+    assert float(api.get(f"/docs/{doc_id}").json()["tax_rate"]) == 20
+
+
+_RATE_PREVIEWS = "**/tax-rate/preview"
+
+
+def test_a_memo_rate_cannot_be_saved_until_the_preview_of_the_rate_typed_returns(page, ui_server, api):
+    """Setting a memo's rate cannot be undone, so Save waits for the preview of the rate now
+    typed and saves the rate that preview shows, never one still on its way."""
+    sku = f"MRW-{uuid.uuid4().hex[:6]}"
+    item = _create_item(api, sku, qty=1)
+    r = api.post("/docs", json={
+        "doc_type": "memo", "ref_id": f"MR-{uuid.uuid4().hex[:6]}", "tax": 50.0,
+        "line_items": [{"sku": sku, "name": sku, "quantity": 1, "unit_price": 100.0, "line_total": 100.0,
+                        "item_id": item, "sell_by": "piece"}],
+    })
+    assert r.status_code in {200, 201}, r.text
+    doc_id = r.json()["id"]
+    assert api.post(f"/docs/{doc_id}/finalize").status_code in {200, 201}
+    page.goto(f"{ui_server}/docs/{doc_id}", wait_until="domcontentloaded")
+    _assert_no_crash(page, "memo rate wait")
+    page.locator("[hx-get*='/field/tax_rate']").first.click()
+    field = page.locator("form.editable-cell input[name=value]")
+    preview = page.locator("form.editable-cell .memo-rate-preview")
+    save = page.locator("form.editable-cell button[type=submit]")
+    expect(page.locator("form.editable-cell")).not_to_have_class(css_class("htmx-added"))
+    expect(save).to_be_disabled()
+    field.fill("10")
+    expect(preview).to_contain_text("$10.00")
+    expect(save).to_be_enabled()
+
+    held = []
+    page.route(_RATE_PREVIEWS, lambda route: held.append(route))
+    field.fill("20")
+    expect(save).to_be_disabled()
+    page.wait_for_timeout(600)
+    expect(save).to_be_disabled()
+    assert held, "the preview of the new rate was sent"
+    assert not api.get(f"/docs/{doc_id}").json().get("tax_rate")
+    held.pop().continue_()
+    release_held_routes(page, _RATE_PREVIEWS, held)
+    expect(preview).to_contain_text("$20.00")
+    expect(save).to_be_enabled()
+    save.click()
+    expect(page.locator(".toast-container .toast").last).to_contain_text("$50.00 became $20.00")
+    assert float(api.get(f"/docs/{doc_id}").json()["tax_rate"]) == 20

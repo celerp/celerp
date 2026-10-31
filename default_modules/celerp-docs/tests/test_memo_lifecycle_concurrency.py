@@ -572,8 +572,8 @@ async def test_close_revert_to_draft_race_mutually_exclusive(_db_engine):
 
 @pytest.mark.asyncio
 async def test_close_convert_race_mutually_exclusive(_db_engine):
-    """Close vs convert_doc race. The invariant: a memo is never both closed and
-    converted. Close and convert have COMPLEMENTARY custody preconditions that already
+    """Close vs convert_doc (Invoice all) race. The invariant: a memo is never both closed
+    and drawn onto an invoice. Close and convert have COMPLEMENTARY custody preconditions that already
     make them mutually exclusive at merge-base - Close refuses while any line is memo_out
     (still at the customer), while convert refuses unless at least one line is memo_out
     to invoice - so the memo here carries a fulfilled (memo_out) line: convert is
@@ -608,7 +608,8 @@ async def test_close_convert_race_mutually_exclusive(_db_engine):
         async def _convert(session):
             try:
                 outcome["convert"] = await convert_doc(
-                    memo_id, company_id=company_id, _=None, user=user, session=session)
+                    memo_id, company_id=company_id, _=None, role="owner", settings={}, user=user,
+                    session=session)
             except Exception as exc:  # noqa: BLE001 - a 409 (close won) is allowed
                 outcome["convert"] = exc
                 await session.rollback()
@@ -629,7 +630,11 @@ async def test_close_convert_race_mutually_exclusive(_db_engine):
         # Close is inadmissible (a memo_out line remains) so convert is the sole committer.
         assert not close_committed, (
             f"close must refuse while a line is memo_out; got {outcome.get('close')!r}")
-        assert status == "converted", f"convert should be the sole terminal transition; got {status!r}"
+        # Invoice all draws every line onto a draft invoice and leaves the memo live.
+        assert convert_committed, f"invoice all should commit; got {outcome.get('convert')!r}"
+        assert status == "sent", f"invoice all leaves the memo as it was; got {status!r}"
+        assert [t["invoice_id"] for t in memo_state.get("invoiced_on") or []] == [
+            outcome["convert"]["target_doc_id"]]
     finally:
         await _cleanup(factory, company_id, user_id)
 

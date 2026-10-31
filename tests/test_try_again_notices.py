@@ -172,7 +172,7 @@ def test_a_refusal_the_api_sends_with_a_key_reaches_the_reader_with_the_try_agai
 _RETRY_THE_ACTION = (
     "shell.request_failed", "api.unreachable", "error.backup_running", "auth.sign_ins_paused_one",
     "settings.reset_not_done", "connectors.connect_failed", "inventory.err_merge_stores_unchecked",
-    "acct.err_je_zero", "acct.err_void_none_selected", "acct.err_writeoff_too_large",
+    "acct.err_void_none_selected", "acct.err_writeoff_too_large",
     "contacts.err_none_selected", "modules.unavailable_retry", "msg.files_load_failed",
     "error.company_settings_unavailable", "older_stock.failed", "btn.try_again", "btn.retry",
 )

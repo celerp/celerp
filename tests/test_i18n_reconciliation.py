@@ -64,7 +64,7 @@ def _sample_workspace() -> str:
         "tolerance": 1.0,
         "statement_date": "2026-08-01",
     }
-    bank = {"bank_name": "Test Bank", "account_number": "123"}
+    bank = {"bank_name": "Test Bank", "account_number": "123", "currency": "USD", "books_currency": "USD"}
     lines = [
         {"id": "L1", "status": "unmatched", "amount": -50.0,
          "line_date": "2026-08-01", "description": "Coffee", "reference": "R1"},
@@ -114,5 +114,5 @@ def test_mapper_heading_translates():
 def test_create_form_add_new_option_translates():
     line = {"amount": -50.0, "description": "Coffee"}
     chart = [{"code": "5000", "name": "Expenses", "account_type": "expense"}]
-    html = to_xml(_create_form("S1", "L1", line, chart, "USD", contacts=[]))
+    html = to_xml(_create_form("S1", "L1", line, chart, {"currency": "USD", "books_currency": "USD"}, contacts=[]))
     assert "XX_ADDACCT" in html

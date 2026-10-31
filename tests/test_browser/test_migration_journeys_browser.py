@@ -22,6 +22,7 @@ import uuid
 from urllib.parse import urlsplit
 
 import pytest
+from playwright.sync_api import expect
 
 from .test_migration_wizard_browser import (
     _pg_admin,
@@ -102,8 +103,9 @@ def _lose_start_response(page, path: str) -> None:
     page.unroute(f"**{path}")
     assert handled == [303], handled
     # The aborted submit commits the browser's error page a moment later; a navigation
-    # started before that commit is interrupted by it.
-    page.wait_for_url(_BROWSER_ERROR_PAGE, timeout=_WAIT_MS)
+    # started before that commit is interrupted by it. Polled, not awaited as a navigation:
+    # wait_for_url raises the error page's own net::ERR_FAILED when it commits after the call.
+    expect(page).to_have_url(_BROWSER_ERROR_PAGE, timeout=_WAIT_MS)
     context.clear_cookies()
     if cookies:
         context.add_cookies(cookies)

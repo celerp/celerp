@@ -14,6 +14,8 @@ from fasthtml.common import *
 from celerp.services.update import CARD_REASONS, PIP_BLOCKERS, REASON_CODES, reason_key
 from ui.config import COOKIE_NAME, get_role
 from ui.i18n import t, get_lang, available_langs, lang_label, try_again_pattern
+from ui.components.doc_money import DOC_MONEY_JS
+from ui.components.preview_confirm import PREVIEW_CONFIRM_JS
 from ui.components.table import searchable_select
 
 # Cache-bust static assets by hashing app.css content
@@ -2296,6 +2298,8 @@ def _shell_document(*content, nav: FT, title: str = "Celerp", companies: list[di
         Link(rel="stylesheet", href=f"/static/app.css?v={_CSS_VER}"),
         *client_scripts(lang, request),
         Script(ESC_BLURS_FIELD),
+        Script(PREVIEW_CONFIRM_JS),
+        Script(DOC_MONEY_JS),
         Script(_idle_logout_js()),
         Script(_HEALTH_BANNER_JS),
         Script(_POLL_CONTROLLER_JS),
