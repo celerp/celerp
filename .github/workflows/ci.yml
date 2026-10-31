@@ -24,7 +24,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        group: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+        group: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]
 
     services:
       postgres:
@@ -55,7 +55,7 @@ jobs:
       - name: Install deps
         run: pip install uv && uv pip install --system -e ".[dev]" pytest-xdist pytest-split -c constraints.txt
 
-      - name: Run tests (shard ${{ matrix.group }}/16)
+      - name: Run tests (shard ${{ matrix.group }}/21)
         env:
           ALLOW_INSECURE_JWT: "true"
           CELERP_LOCK_RANK_DIR: lockgraph
@@ -64,20 +64,21 @@ jobs:
           # Each test process writes what the write observer saw here; the census job reads all shards.
           CELERP_MUTATION_CENSUS: ${{ runner.temp }}/mutation-census
         # ubuntu-latest has 2 vCPUs, so a single `-n auto` run can't keep up.
-        # pytest-split fans the suite across 16 parallel runners; each still uses -n auto
+        # pytest-split fans the suite across 21 parallel runners; each still uses -n auto
         # within its 2 cores.
         # Process tests run in their own job so the split stays even.
         # The split balances measured time from tests/.test_durations (refresh it with
         # --store-durations when a shard nears the cap). The same shard swings by a third
         # from run to run on these runners, and collection takes about a minute of the
-        # 600s, so each shard's estimate stays near 450s. The file sits under tests/ so the
+        # 600s, so each shard's estimate stays at 450s or less (tests/test_ci_shard_split.py
+        # holds the split to it). The file sits under tests/ so the
         # repo-wide name checks, which skip tests/, never read its test ids. A test missing
         # from it counts as the average, so a split by count alone would put the slow
         # backup and reset files in one shard.
         run: >
           timeout 600 pytest tests/ default_modules/*/tests/ -n auto -q --tb=short --no-cov
           -m "not browser and not embedded_pg and not process and not integration"
-          --splits 16 --group ${{ matrix.group }} --splitting-algorithm least_duration
+          --splits 21 --group ${{ matrix.group }} --splitting-algorithm least_duration
           --durations-path tests/.test_durations
           --ignore=tests/test_visual.py
           --ignore=tests/test_browser
