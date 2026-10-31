@@ -1540,6 +1540,22 @@ def test_a_row_named_in_an_ended_transaction_names_nothing_in_the_next(recorder)
     assert recorder.dump()["classes"]["row:outbound_queue"]["ungated_takes"] == ["nokey|unknown"]
 
 
+def test_a_test_boundary_leaves_the_transactions_of_other_threads_open(recorder):
+    """A test starts holding nothing, but an in-process server's thread may be inside a
+    transaction across that boundary: it still holds its company lock, and is not retaken
+    (lock_company skips a lock its transaction holds), so forgetting it would read every
+    later take of that transaction as outside the lock."""
+    def server():
+        recorder.statement(2, _LOCK_COMPANY, ("c1",), 0.0)
+
+    thread = threading.Thread(target=server)
+    thread.start()
+    thread.join()
+    recorder.statement(1, _LOCK_COMPANY, ("c2",), 0.0)
+    recorder.clear_transactions()
+    assert dict(recorder.company_rows) == {2: {"c1": {"nokey"}}}
+
+
 async def test_the_orm_names_the_company_of_every_row_it_flushes(session, auth):
     """End to end: an account changed under its company's lock and flushed by the ORM is
     counted as gated, not as a take of an unknown company."""

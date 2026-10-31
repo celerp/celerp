@@ -273,6 +273,9 @@ class Recorder:
     leaves: dict[int, list[tuple[dict, str, set[str]]]] = field(default_factory=lambda: defaultdict(list))
     # Per transaction: the strengths it holds of each class, whatever the key (``taken`` by class).
     taken_classes: dict[int, dict[str, set[str]]] = field(default_factory=lambda: defaultdict(dict))
+    # Per transaction: the thread its statements run on. A test boundary forgets only the
+    # test thread's: an in-process server's thread may be inside a transaction across it.
+    threads: dict = field(default_factory=dict)
 
     def _transaction_state(self) -> tuple:
         return (self.held, self.taken, self.explicit, self.last_key, self.own, self.company_rows, self.rows,
@@ -351,16 +354,22 @@ class Recorder:
         self._end(self.flow(conn_key))
 
     def _end(self, key) -> None:
-        for state in (*self._transaction_state(), self.savepoints, self.flow_sessions):
+        for state in (*self._transaction_state(), self.savepoints, self.flow_sessions, self.threads):
             state.pop(key, None)
         for info, _, sites in self.leaves.pop(key, ()):
             info.setdefault("leaf_sites", set()).update(sites)
 
     def clear_transactions(self) -> None:
-        self._holders_wait(list(self.taken))
-        for state in (*self._transaction_state(), self.savepoints, self.flow_sessions):
-            state.clear()
-        self._spoil_leaves()
+        """A test boundary: the calling thread's transactions are no longer followed. Another
+        thread's (an in-process server's) go on as they are."""
+        states = (*self._transaction_state(), self.savepoints, self.flow_sessions, self.threads, self.leaves)
+        here = threading.get_ident()
+        keys = [k for k in {k for state in states for k in state} if self.threads.get(k, here) == here]
+        self._holders_wait([k for k in keys if k in self.taken])
+        self._spoil_leaves(keys)
+        for key in keys:
+            for state in states:
+                state.pop(key, None)
 
     def _task_connections(self) -> set:
         try:
@@ -383,13 +392,13 @@ class Recorder:
                 count = "insert_holder_waits" if taken == {"insert"} else "holder_waits"
                 info[count] = info.get(count, 0) + 1
 
-    def _spoil_leaves(self) -> None:
-        """A lock that can wait was taken (or the transactions are no longer followed): every
-        pending leaf take's transaction may wait holding its row, so each counts as ungated."""
-        for info, take, sites in (leaf for leaves in self.leaves.values() for leaf in leaves):
-            _ungated(info, take)
-            info.setdefault("counted_sites", set()).update(sites)
-        self.leaves.clear()
+    def _spoil_leaves(self, keys=None) -> None:
+        """A lock that can wait was taken (or the transactions ``keys`` are no longer followed):
+        every pending leaf take's transaction may wait holding its row, so each counts as ungated."""
+        for key in list(self.leaves) if keys is None else [k for k in keys if k in self.leaves]:
+            for info, take, sites in self.leaves.pop(key):
+                _ungated(info, take)
+                info.setdefault("counted_sites", set()).update(sites)
 
     def _savepoint(self, conn_key: int, statement: str) -> bool:
         """SAVEPOINT, RELEASE SAVEPOINT and ROLLBACK TO SAVEPOINT; False for any other statement."""
@@ -458,6 +467,7 @@ class Recorder:
             self.end(conn_key)
             return
         conn_key = self.flow(conn_key)
+        self.threads.setdefault(conn_key, threading.get_ident())
         if self._savepoint(conn_key, statement.strip()):
             return
         try:
