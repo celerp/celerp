@@ -839,6 +839,26 @@ def ungated_takes(classes=None, *paths: str):
             recorder.classes[c].setdefault(k, set()).update(sites)
 
 
+@contextlib.contextmanager
+def writers_taken(path: str):
+    """Yields a set that, once the block ends, holds the "path function" (as static_writers names
+    them) of every site in a file whose path starts with ``path`` that took a row inside the block,
+    so a test can require that it ran writers the checker would otherwise leave unexercised.
+    Sites recorded before the block are set aside for it and put back after."""
+    classes = RECORDER.classes
+    kept = {c: {s for s in info.get("sites", ()) if s.startswith(path)} for c, info in classes.items()}
+    for c, sites in kept.items():
+        classes[c]["sites"] -= sites
+    seen: set[str] = set()
+    try:
+        yield seen
+    finally:
+        for c, info in classes.items():
+            seen.update(f"{s.split(' ', 1)[0].rsplit(':', 1)[0]} {s.split(' ', 1)[1]}"
+                        for s in info.get("sites", ()) if " " in s and s.startswith(path))
+            info["sites"] |= kept.get(c, set())
+
+
 def _ungated(info: dict, take: str) -> None:
     """R4: count a take of a company's row outside its company's lock that its transaction
     may hold while it waits."""

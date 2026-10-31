@@ -436,6 +436,80 @@ async def test_identity_backoff_applies_to_newer_rows(_db_engine, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_a_busy_or_failing_identity_waits_under_its_company_lock(_db_engine, monkeypatch):
+    """The background queue defers an identity whose resource another execution holds by 30 s,
+    and one whose store credentials fail by a minute with the error kept; both writers take the
+    queue rows under the company lock, and the test requires that it ran them (the checker
+    cannot judge a writer no test ran)."""
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    from celerp.connectors.base import ConnectorContext
+    from celerp.connectors.execution import connector_execution, execution_resource
+    from celerp.db import get_session_ctx
+
+    monkeypatch.setattr("celerp.connectors.relay_token.fetch_context", AsyncMock(
+        side_effect=lambda cid, *_a, **_k: ConnectorContext(company_id=str(cid), access_token="k:s")))
+    company_id = uuid.uuid4()
+    try:
+        async with get_session_ctx() as seed:
+            seed.add(Company(id=company_id, name="Deferred Co", slug=f"deferred-{company_id.hex[:8]}", settings={}))
+            await seed.flush()
+            await connect(seed, company_id, "woocommerce", first_sync="completed")
+            seed.add(OutboundQueue(company_id=str(company_id), connector="woocommerce",
+                                   entity_type="inventory", entity_id="88", status="pending"))
+            await seed.commit()
+
+        async def row() -> OutboundQueue:
+            async with get_session_ctx() as check:
+                return await check.scalar(sa.select(OutboundQueue).where(
+                    OutboundQueue.company_id == str(company_id), OutboundQueue.entity_id == "88"))
+
+        async def due_again() -> None:
+            async with get_session_ctx() as reset:
+                await reset.execute(sa.update(OutboundQueue).where(
+                    OutboundQueue.company_id == str(company_id)).values(next_retry_at=None))
+                await reset.commit()
+
+        with sys.modules["lock_rank"].writers_taken("celerp/connectors/outbound_queue.py") as seen:
+            # Another task holds the identity's resource (the queue's own execution is a
+            # separate task, so it cannot join it).
+            held, done = asyncio.Event(), asyncio.Event()
+
+            async def holder() -> None:
+                async with connector_execution(company_id, "woocommerce", "manual_sync",
+                                               [execution_resource("outbound", "inventory")]):
+                    held.set()
+                    await done.wait()
+
+            holding = asyncio.create_task(holder())
+            await asyncio.wait({holding, asyncio.create_task(held.wait())}, return_when=asyncio.FIRST_COMPLETED)
+            assert held.is_set(), holding.exception()
+            before = datetime.now(timezone.utc)
+            try:
+                await process_outbound_queue_once()
+            finally:
+                done.set()
+                await holding
+            busy = await row()
+            assert busy.status == "pending" and busy.error_message is None
+            assert before + timedelta(seconds=25) <= busy.next_retry_at <= before + timedelta(seconds=40)
+
+            await due_again()
+            monkeypatch.setattr("celerp.connectors.relay_token.fetch_context",
+                                AsyncMock(side_effect=RuntimeError("store credentials unavailable")))
+            before = datetime.now(timezone.utc)
+            await process_outbound_queue_once()
+            failed = await row()
+            assert failed.status == "pending" and failed.error_message == "store credentials unavailable"
+            assert before + timedelta(seconds=55) <= failed.next_retry_at <= before + timedelta(seconds=70)
+        assert {"celerp/connectors/outbound_queue.py defer",
+                "celerp/connectors/outbound_queue.py process_outbound_identity"} <= seen
+    finally:
+        await _purge_committed(company_id)
+
+
+@pytest.mark.asyncio
 async def test_ambiguous_connector_ownership_fails_closed(session, monkeypatch):
     from celerp.connectors.ownership import (
         ConnectorOwnershipAmbiguousError,

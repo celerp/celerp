@@ -13,7 +13,6 @@ test ran.
 """
 from __future__ import annotations
 
-import contextlib
 import sys
 import uuid
 from pathlib import Path
@@ -91,24 +90,6 @@ def _company_with_chart_and_work_centers(async_url: str, sync_url: str) -> None:
         eng.dispose()
 
 
-@contextlib.contextmanager
-def _migration_sites_taken():
-    """Yields a set that, once the block ends, holds the "path function" of every migration
-    site that took a row inside it. Sites recorded before are set aside and put back after."""
-    classes = sys.modules["lock_rank"].RECORDER.classes
-    kept = {c: {s for s in info.get("sites", ()) if s.startswith("celerp/migrations/")} for c, info in classes.items()}
-    for c, sites in kept.items():
-        classes[c]["sites"] -= sites
-    seen: set[str] = set()
-    try:
-        yield seen
-    finally:
-        for c, info in classes.items():
-            seen.update(f"{s.split(' ', 1)[0].rsplit(':', 1)[0]} {s.split(' ', 1)[1]}"
-                        for s in info.get("sites", ()) if " " in s and s.startswith("celerp/migrations/"))
-            info["sites"] |= kept.get(c, set())
-
-
 def test_every_revision_that_writes_a_company_row_runs_over_one_both_ways():
     """Every revision function that writes a company's rows runs here over a company that has
     them, down and up again from head, so the lock checker judges each one (a writer it never saw stays
@@ -117,7 +98,7 @@ def test_every_revision_that_writes_a_company_row_runs_over_one_both_ways():
     writers = {w for found in lock_rank.static_writers().values() for w in found
                if w.startswith("celerp/migrations/")}
     newest_first = sorted({_revision_of(w) for w in writers}, key=_REVISIONS.index, reverse=True)
-    with throwaway_db("rowwalk") as (async_url, sync_url), _migration_sites_taken() as seen, \
+    with throwaway_db("rowwalk") as (async_url, sync_url), lock_rank.writers_taken("celerp/migrations/") as seen, \
             lock_rank.ungated_takes(None, "celerp/migrations/") as found:
         _company_with_chart_and_work_centers(async_url, sync_url)
         # Down to each revision's parent and up again, newest first: a revision runs over the
