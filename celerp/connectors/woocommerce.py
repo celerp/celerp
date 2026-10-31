@@ -994,7 +994,6 @@ class WooCommerceConnector(ConnectorBase):
                         errors.append(f"WooCommerce product {product_id}: {exc}")
                         continue
                     agreed.update({k: fingerprint(v) for k, v in send.items()})
-                    updates["last_pushed_modified"] = resp.json().get("date_modified_gmt")
                 if images_changed:
                     images, unshared = await store_images(ctx, self.name, item.get("files") or [], link)
                     if unshared:
@@ -1019,9 +1018,7 @@ class WooCommerceConnector(ConnectorBase):
                                 **{fid: str(img["id"]) for fid, img in zip(image_ids, returned) if img.get("id")},
                             }
                             agreed["images"] = fingerprint(image_ids)
-                            updates["last_pushed_modified"] = body.get("date_modified_gmt") or updates.get(
-                                "last_pushed_modified")
-                if not updates:
+                if not send and not updates:
                     continue
                 try:
                     await self._save_push(ctx, item, link, {LINK_KEY: agreed, **updates})
@@ -1257,10 +1254,11 @@ class WooCommerceConnector(ConnectorBase):
             raise RuntimeError(f"WooCommerce did not return a webhook id for {topic}")
         return hook
 
-    async def activate_webhook(self, ctx: ConnectorContext, webhook_id) -> dict:
+    async def update_webhook(self, ctx: ConnectorContext, webhook_id, secret: str) -> dict:
+        """Make one hook active and signed with `secret`."""
         async with _http_client() as client:
             resp = await client.put(f"{_base_url(ctx)}/webhooks/{webhook_id}", auth=_auth(ctx),
-                                    json={"status": "active"})
+                                    json={"status": "active", "secret": secret})
         _raise_for_status(resp)
         return resp.json()
 

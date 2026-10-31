@@ -497,7 +497,7 @@ class ConnectorBase(ABC):
                              secret: str | None) -> dict:
         raise NotImplementedError(f"{self.name} has no webhooks")
 
-    async def activate_webhook(self, ctx: ConnectorContext, webhook_id) -> dict:
+    async def update_webhook(self, ctx: ConnectorContext, webhook_id, secret: str) -> dict:
         raise NotImplementedError(f"{self.name} has no webhooks")
 
     async def get_webhook(self, ctx: ConnectorContext, webhook_id) -> dict | None:

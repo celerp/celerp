@@ -73,14 +73,25 @@ class ConnectorConfig(Base):
         return self.first_sync.links_holding_store_values if self.first_sync is not None else 0
 
     @property
-    def webhook_ids(self) -> list[str]:
+    def webhook_hooks(self) -> dict[str, str | None]:
+        """The store's Celerp hooks this connection created or adopted: hook id to the
+        fingerprint of the secret it was last given. The store never returns a secret, so
+        this record is how a reconcile knows it. Older versions stored a list of ids,
+        read here as hooks whose secret is unknown."""
         if not self.webhook_ids_json:
-            return []
-        return json.loads(self.webhook_ids_json)
+            return {}
+        stored = json.loads(self.webhook_ids_json)
+        if isinstance(stored, list):
+            return {str(hook_id): None for hook_id in stored}
+        return {str(hook_id): fp for hook_id, fp in stored.items()}
 
-    @webhook_ids.setter
-    def webhook_ids(self, ids: list[str]) -> None:
-        self.webhook_ids_json = json.dumps(ids) if ids else None
+    @webhook_hooks.setter
+    def webhook_hooks(self, hooks: dict[str, str | None]) -> None:
+        self.webhook_ids_json = json.dumps(hooks) if hooks else None
+
+    @property
+    def webhook_ids(self) -> list[str]:
+        return list(self.webhook_hooks)
 
 
 class OutboundQueue(Base):

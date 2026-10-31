@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import uuid
 from contextlib import asynccontextmanager
 
@@ -283,8 +282,7 @@ async def claim_connector_ownership(
             and current.webhook_secret != legacy.webhook_secret
         ):
             raise ConnectorOwnershipError(t("error.connector_legacy_conflict", service=_service(connector)))
-        merged_ids = list(dict.fromkeys(current.webhook_ids + legacy.webhook_ids))
-        current.webhook_ids_json = json.dumps(merged_ids) if merged_ids else None
+        current.webhook_hooks = {**legacy.webhook_hooks, **current.webhook_hooks}
         if not current.webhook_secret:
             current.webhook_secret = legacy.webhook_secret
         if (

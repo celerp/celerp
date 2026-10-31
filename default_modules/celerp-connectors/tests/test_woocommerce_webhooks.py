@@ -7,12 +7,14 @@ from __future__ import annotations
 import os
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 
+import asyncio
 import base64
 import hashlib
 import hmac as _hmac
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
+
 import pytest
 import respx
 
@@ -180,9 +182,11 @@ async def test_delivery_before_first_sync_ignored(connector_session):
 
 
 @pytest.mark.asyncio
-async def test_own_push_does_not_trigger_inbound_run(connector_session, monkeypatch):
-    from datetime import datetime, timezone
-
+async def test_a_product_update_matching_celerps_push_still_reconciles_inbound(connector_session, monkeypatch):
+    """A store edit made in the same second as Celerp's push carries the push's modified
+    time. Each delivery runs the inbound reconcile, which is idempotent, so a genuine edit
+    is never taken for an echo, also when the link still holds the push time an earlier
+    version recorded, and two overlapping deliveries both reach it."""
     from celerp.connectors.webhooks import WebhookEvent, handle_webhook
     from connector_test_support import add_item
 
@@ -195,11 +199,8 @@ async def test_own_push_does_not_trigger_inbound_run(connector_session, monkeypa
     stand_in_execution(monkeypatch, ConnectorContext(
         company_id=str(cid), access_token="k:s", store_handle="https://shop.test"))
     run = AsyncMock()
+    event = WebhookEvent(platform="woocommerce", topic="product.updated",
+                         payload={"id": 7, "date_modified_gmt": "2026-09-01T10:00:00"})
     with patch("celerp.connectors.webhooks.run_sync", new=run):
-        await handle_webhook(WebhookEvent(platform="woocommerce", topic="product.updated",
-                                          payload={"id": 7, "date_modified_gmt": "2026-09-01T10:00:00"}), cid)
-        run.assert_not_awaited()
-        # A change made in the store after the push does run.
-        await handle_webhook(WebhookEvent(platform="woocommerce", topic="product.updated",
-                                          payload={"id": 7, "date_modified_gmt": "2026-09-02T08:00:00"}), cid)
-    run.assert_awaited_once()
+        await asyncio.gather(handle_webhook(event, cid), handle_webhook(event, cid))
+    assert run.await_count == 2

@@ -123,7 +123,6 @@ EXTERNAL_LINK_CALLERS: dict[tuple[str, str], tuple[str, str]] = {
     ("celerp/connectors/woocommerce.py", "set_product_status"): ("SYNC", _SYNC),
     ("celerp/connectors/first_sync.py", "_preview_products"):
         ("SYNC", "reads links for the first sync's preview of an owned connector"),
-    ("celerp/connectors/webhooks.py", "_own_push"): ("SYNC", _SYNC),
     ("default_modules/celerp-connectors/celerp_connectors/routes.py", "resolve_product_conflict"):
         ("SYNC", "acts only on an entry of the owned connector's attention list"),
     ("celerp/connectors/product_links.py", "refuse_while_links_cannot_detach"):

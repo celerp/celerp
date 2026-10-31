@@ -591,7 +591,7 @@ async def store_credentials(
         # Connecting writes nothing to the store: the first sync creates the webhooks,
         # signed with this secret, and retires any an earlier connection left.
         config.webhook_secret = secrets.token_hex(32)
-        config.webhook_ids = []
+        config.webhook_hooks = {}
 
     try:
         await session.commit()

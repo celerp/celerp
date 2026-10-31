@@ -304,7 +304,6 @@ async def test_unchanged_product_not_sent(connector_session):
     assert result.updated == 1
     link = external_link_for_state(await item_state(session, cid, "item:u"), "woocommerce")
     assert link["field_fingerprints"]["name"] == _agreed(name="Big mug")["name"]
-    assert link["last_pushed_modified"] == "2026-09-01T10:00:00"
 
     # Sent once, agreed since: the next run sends nothing.
     await WooCommerceConnector().sync_products_out(ctx)

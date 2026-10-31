@@ -41,38 +41,6 @@ class WebhookEvent:
     payload: dict[str, Any] | None = None
 
 
-async def _own_push(company_id: str, payload: dict) -> bool:
-    """Whether a WooCommerce product update is the store echoing Celerp's own push:
-    its modified time is the one the store returned for that push."""
-    import uuid
-
-    import sqlalchemy as sa
-
-    from celerp.db import get_session_ctx
-    from celerp.models.projections import Projection
-    from celerp.connectors.product_links import external_link_for_state
-
-    remote_id, parent_id = payload.get("id"), payload.get("parent_id")
-    modified = payload.get("date_modified_gmt")
-    if remote_id in (None, "") or not modified:
-        return False
-    is_variation = parent_id not in (None, "", 0, "0")
-    product_id = str(parent_id) if is_variation else str(remote_id)
-    async with get_session_ctx() as session:
-        rows = (await session.execute(sa.select(Projection.state).where(
-            Projection.company_id == uuid.UUID(str(company_id)),
-            Projection.entity_type == "item",
-            Projection.state["external_links"]["woocommerce"]["product_id"].as_string() == product_id,
-        ))).scalars().all()
-    for state in rows:
-        link = external_link_for_state(state or {}, "woocommerce")
-        if is_variation and str(link.get("variation_id") or "") != str(remote_id):
-            continue
-        if link.get("last_pushed_modified") == modified:
-            return True
-    return False
-
-
 def topic_to_entity(topic: str) -> str | None:
     """Map a webhook topic (e.g. 'products/update') to a sync entity name."""
     prefix = topic.split("/")[0].split(".")[0]
@@ -128,10 +96,6 @@ async def handle_webhook(
     if state in (None, "pending"):
         # Accepted and left alone: the first sync reads the whole store.
         log.info("webhook: %s/%s before the first sync, ignored", event.platform, event.topic)
-        return
-    if (event.platform == "woocommerce" and normalized_topic == "product.updated"
-            and await _own_push(company_id, event.payload or {})):
-        log.info("webhook: WooCommerce echo of Celerp's own product update, ignored")
         return
 
     resource = execution_resource("entity", entity)

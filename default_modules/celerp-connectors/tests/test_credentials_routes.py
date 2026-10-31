@@ -559,7 +559,7 @@ async def test_connect_makes_no_store_write():
     """Connecting creates nothing on the store (it only reads it, after retiring an
     earlier connection's hooks): its webhooks are created by the first sync, signed
     with the secret saved now."""
-    config = SimpleNamespace(webhook_ids=["9"], webhook_secret=None, first_sync_state="pending",
+    config = SimpleNamespace(webhook_hooks={"9": None}, webhook_secret=None, first_sync_state="pending",
                              entity_directions=dict(WOO_DEFAULTS))
     url_p, hdr_p = _relay_state()
     with patch("celerp.connectors.ownership.lock_connector_operation", new=AsyncMock(return_value=config)), \
@@ -570,7 +570,7 @@ async def test_connect_makes_no_store_write():
 
     assert result == {"ok": True}
     assert store_calls and {r.method for r in store_calls} == {"GET"}
-    assert config.webhook_secret and config.webhook_ids == []
+    assert config.webhook_secret and config.webhook_hooks == {}
 
 
 @pytest.mark.asyncio

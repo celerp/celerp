@@ -12,6 +12,7 @@ duplicate, and nothing creates hooks on a store that was disconnected meanwhile.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import re
 import uuid
@@ -33,14 +34,23 @@ _ORDER_TOPICS = {"order.created", "order.updated", "order.deleted"}
 
 
 class FakeStore:
-    """WooCommerce's webhook endpoints over an in-memory list. `pause_list` holds the next
-    listing call until released, so a test can interleave a second writer."""
+    """WooCommerce's webhook endpoints over an in-memory list. Like the real store it keeps
+    each hook's secret but never returns it (the property is write-only). `pause_list` holds
+    the next listing call until released, so a test can interleave a second writer;
+    `fail_next` makes the next request of a method raise after or instead of acting."""
 
     def __init__(self) -> None:
         self.hooks: dict[int, dict] = {}
         self.writes: list[tuple[str, int, str]] = []
         self.next_id = 100
         self.pause_list: tuple[asyncio.Event, asyncio.Event] | None = None
+        self.timeout_after_create = False
+        self.disabled_on_read: set[int] = set()
+        self.before_create = None
+
+    @staticmethod
+    def _shown(hook: dict) -> dict:
+        return {k: v for k, v in hook.items() if k != "secret"}
 
     def add(self, hook_id: int, topic: str, secret: str = _SECRET, status: str = "active") -> None:
         self.hooks[hook_id] = {"id": hook_id, "topic": topic, "delivery_url": _DELIVERY,
@@ -60,7 +70,7 @@ class FakeStore:
             entered.set()
             await go.wait()
         page = int(request.url.params.get("page", "1"))
-        body = [dict(h) for h in self.hooks.values()] if page == 1 else []
+        body = [self._shown(h) for h in self.hooks.values()] if page == 1 else []
         return httpx.Response(200, json=body)
 
     def _one(self, request: httpx.Request) -> httpx.Response:
@@ -74,14 +84,22 @@ class FakeStore:
         if request.method == "PUT":
             hook.update(json.loads(request.content))
             self.writes.append(("update", hook_id, hook["topic"]))
-        return httpx.Response(200, json=dict(hook))
+        shown = self._shown(hook)
+        if hook_id in self.disabled_on_read:
+            shown["status"] = "disabled"
+        return httpx.Response(200, json=shown)
 
-    def _create(self, request: httpx.Request) -> httpx.Response:
+    async def _create(self, request: httpx.Request) -> httpx.Response:
+        if self.before_create is not None:
+            await self.before_create()
         body = json.loads(request.content)
         self.next_id += 1
         self.add(self.next_id, body["topic"], body.get("secret", ""), body.get("status", "active"))
         self.writes.append(("create", self.next_id, body["topic"]))
-        return httpx.Response(201, json=dict(self.hooks[self.next_id]))
+        if self.timeout_after_create:
+            self.timeout_after_create = False
+            raise httpx.ReadTimeout("the store took the hook but the answer never came", request=request)
+        return httpx.Response(201, json=self._shown(self.hooks[self.next_id]))
 
     def mount(self, router: respx.Router) -> None:
         router.get(f"{_STORE}/wp-json/wc/v3/webhooks").mock(side_effect=self._list)
@@ -114,22 +132,47 @@ def store(committed_engine, monkeypatch):
         yield fake, factory
 
 
-async def _connected(factory, fake: FakeStore, directions: dict) -> uuid.UUID:
+async def _connected(factory, fake: FakeStore, directions: dict, *, recorded: bool = False) -> uuid.UUID:
     """A committed WooCommerce connection whose first sync is done and whose store holds
-    exactly the hooks the directions call for."""
+    exactly the hooks the directions call for; `recorded` when the connection also holds
+    their identity, as the reconcile that created them left it."""
     from celerp import connectors
     from celerp.models.connector_config import ConnectorConfig
     from celerp.models.connector_first_sync import ConnectorFirstSync
 
+    from celerp.connectors.webhook_reconcile import secret_fingerprint
+
     company_id, _user_id = await _seed_race_company(factory)
-    async with factory() as s:
-        s.add(ConnectorConfig(company_id=str(company_id), connector="woocommerce",
-                              entity_directions=directions, webhook_secret=_SECRET))
-        s.add(ConnectorFirstSync(company_id=str(company_id), connector="woocommerce", state="completed"))
-        await s.commit()
     for i, topic in enumerate(connectors.get("woocommerce").webhook_topics(directions)):
         fake.add(1 + i, topic)
+    config = ConnectorConfig(company_id=str(company_id), connector="woocommerce",
+                             entity_directions=directions, webhook_secret=_SECRET)
+    if recorded:
+        config.webhook_hooks = {str(hook_id): secret_fingerprint(_SECRET) for hook_id in fake.hooks}
+    async with factory() as s:
+        s.add(config)
+        s.add(ConnectorFirstSync(company_id=str(company_id), connector="woocommerce", state="completed"))
+        await s.commit()
     return company_id
+
+
+async def _recorded(factory, company_id) -> dict:
+    from celerp.models.connector_config import ConnectorConfig
+
+    async with factory() as s:
+        config = await s.scalar(sa.select(ConnectorConfig).where(ConnectorConfig.company_id == str(company_id)))
+        return config.webhook_hooks
+
+
+async def _rotate_secret(factory, company_id, secret: str) -> None:
+    from celerp.connectors.webhook_reconcile import mark_webhooks_dirty
+    from celerp.connectors.ownership import lock_connection_row
+
+    async with factory() as s:
+        config = await lock_connection_row(s, str(company_id), "woocommerce")
+        config.webhook_secret = secret
+        await mark_webhooks_dirty(s, config)
+        await s.commit()
 
 
 async def _set_orders_inbound(factory, company_id) -> None:
@@ -258,3 +301,133 @@ async def test_a_direction_change_never_writes_to_the_store_and_a_disconnect_lea
     await asyncio.wait_for(run_webhook_reconcile(str(company_id), "woocommerce"), timeout=10)
     created = [w for w in fake.writes[after_disconnect:] if w[0] in ("create", "update")]
     assert created == [], f"hooks written to a disconnected store: {created}"
+
+
+async def _reconcile(company_id) -> None:
+    from celerp.connectors.webhook_reconcile import run_webhook_reconcile
+
+    await asyncio.wait_for(run_webhook_reconcile(str(company_id), "woocommerce"), timeout=10)
+
+
+async def test_hooks_recorded_with_the_current_secret_are_left_alone_when_the_store_hides_it(store):
+    """WooCommerce never returns a hook's secret. Hooks the connection recorded with its
+    current secret are kept as they are: no hook is created, updated or deleted."""
+    fake, factory = store
+    company_id = await _connected(factory, fake, _NO_ORDERS, recorded=True)
+    before = dict(fake.hooks)
+
+    await _reconcile(company_id)
+
+    assert fake.writes == [], f"a hidden secret was read as a different one: {fake.writes}"
+    assert fake.hooks.keys() == before.keys()
+
+
+async def test_a_rotated_secret_updates_each_hook_in_place(store):
+    """A new secret is sent to the hooks the connection already has: each is updated where
+    it is, nothing is created or deleted, and the record names the new secret."""
+    from celerp.connectors.webhook_reconcile import secret_fingerprint
+
+    fake, factory = store
+    company_id = await _connected(factory, fake, _NO_ORDERS, recorded=True)
+    ids = set(fake.hooks)
+    await _rotate_secret(factory, company_id, "s4")
+
+    await _reconcile(company_id)
+
+    assert {w[0] for w in fake.writes} == {"update"}, fake.writes
+    assert set(fake.hooks) == ids and all(h["secret"] == "s4" for h in fake.hooks.values())
+    assert await _recorded(factory, company_id) == {str(i): secret_fingerprint("s4") for i in ids}
+    assert await _webhooks_dirty(factory, company_id) is False
+
+
+async def test_a_disabled_hook_is_reactivated_in_place(store):
+    """The store disables a hook after failed deliveries. The reconcile turns the same hook
+    back on with the current secret instead of replacing it."""
+    fake, factory = store
+    company_id = await _connected(factory, fake, _NO_ORDERS, recorded=True)
+    fake.hooks[1]["status"] = "disabled"
+
+    await _reconcile(company_id)
+
+    assert fake.writes == [("update", 1, fake.hooks[1]["topic"])], fake.writes
+    assert fake.hooks[1]["status"] == "active" and fake.hooks[1]["secret"] == _SECRET
+
+
+async def test_a_create_that_timed_out_is_adopted_not_duplicated(store):
+    """The store created a hook but its answer timed out. Nothing is deleted on that
+    ambiguous outcome; the next reconcile finds the hook, gives it the secret and records
+    it, so the topic ends with exactly one hook and no second create."""
+    fake, factory = store
+    company_id = await _connected(factory, fake, _NO_ORDERS, recorded=True)
+    await _set_orders_inbound(factory, company_id)
+    fake.timeout_after_create = True
+
+    with contextlib.suppress(Exception):
+        await _reconcile(company_id)
+    assert [w[0] for w in fake.writes] == ["create"] and await _webhooks_dirty(factory, company_id)
+    await _reconcile(company_id)
+
+    creates = [w for w in fake.writes if w[0] == "create"]
+    assert len(creates) == len(_ORDER_TOPICS), f"a topic was created twice: {fake.writes}"
+    assert not [w for w in fake.writes if w[0] == "delete"], fake.writes
+    assert all(len(ids) == 1 for ids in fake.topics().values()), fake.topics()
+    assert set(await _recorded(factory, company_id)) == {str(i) for i in fake.hooks}
+
+
+async def test_a_hook_created_before_a_crash_is_adopted_by_the_next_run(store, monkeypatch):
+    """The worker stops after the store acknowledged a create and before it was recorded.
+    The next run adopts that hook: no duplicate, and no hook that works is removed."""
+    from celerp.connectors import webhook_reconcile
+
+    fake, factory = store
+    company_id = await _connected(factory, fake, _NO_ORDERS, recorded=True)
+    await _set_orders_inbound(factory, company_id)
+
+    async def _crash(*_a, **_k):
+        raise RuntimeError("worker stopped")
+
+    with monkeypatch.context() as m:
+        m.setattr(webhook_reconcile, "_record_hook", _crash)
+        with contextlib.suppress(Exception):
+            await _reconcile(company_id)
+    assert [w[0] for w in fake.writes] == ["create"]
+    await _reconcile(company_id)
+
+    assert len([w for w in fake.writes if w[0] == "create"]) == len(_ORDER_TOPICS), fake.writes
+    assert not [w for w in fake.writes if w[0] == "delete"], fake.writes
+    assert all(len(ids) == 1 for ids in fake.topics().values()), fake.topics()
+
+
+async def test_each_acknowledged_hook_is_recorded_before_the_next_store_call(store):
+    """A create the store acknowledged is in the connection's record before the reconcile
+    makes its next store request, so an interruption never loses a hook's identity."""
+    fake, factory = store
+    company_id = await _connected(factory, fake, _NO_ORDERS, recorded=True)
+    await _set_orders_inbound(factory, company_id)
+    missing: list[str] = []
+
+    async def _check() -> None:
+        recorded = await _recorded(factory, company_id)
+        missing.extend(str(w[1]) for w in fake.writes if w[0] == "create" and str(w[1]) not in recorded)
+
+    fake.before_create = _check
+    await _reconcile(company_id)
+
+    assert len([w for w in fake.writes if w[0] == "create"]) == len(_ORDER_TOPICS)
+    assert missing == [], f"hooks the store acknowledged were not yet recorded: {missing}"
+    assert set(await _recorded(factory, company_id)) == {str(i) for i in fake.hooks}
+
+
+async def test_nothing_is_deleted_while_a_kept_hook_fails_verification(store):
+    """A hook the reconcile keeps reads back disabled. The run stops before deleting the
+    hooks it would retire, so the store is never left without a working hook."""
+    fake, factory = store
+    company_id = await _connected(factory, fake, _NO_ORDERS, recorded=True)
+    for hook_id, hook in list(fake.hooks.items()):
+        fake.add(hook_id + 50, hook["topic"])
+    fake.disabled_on_read.add(1)
+
+    with pytest.raises(RuntimeError, match="is not active"):
+        await _reconcile(company_id)
+
+    assert not [w for w in fake.writes if w[0] == "delete"], fake.writes
