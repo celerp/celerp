@@ -531,13 +531,6 @@ def _mutation_census(request):
         pytest.fail(mutation_observer.explain(seen.findings), pytrace=False)
 
 
-def pytest_sessionfinish(session, exitstatus):
-    path = mutation_observer.census_path()
-    if path:
-        _CENSUS.write(f"{path}.json")
-        mutation_observer.write_routes(f"{path}.routes.json", [app, _ui_app])
-
-
 @pytest.fixture(autouse=True)
 def _reset_hot_path_caches():
     """Bust the in-process drain cache and relay methods cache before each test.
@@ -1458,6 +1451,12 @@ def pytest_runtest_call(item):
             f"lock order: {len(found)} violation(s) not in tests/lock_order_debt.txt:\n" + "\n".join(lines)))
 
 
-if os.environ.get("CELERP_LOCK_RANK_DIR"):
-    def pytest_sessionfinish(session, exitstatus):
+def pytest_sessionfinish(session, exitstatus):
+    """Each test process writes the write observer's census and the lock rank graph to
+    the folders their variables name."""
+    path = mutation_observer.census_path()
+    if path:
+        _CENSUS.write(f"{path}.json")
+        mutation_observer.write_routes(f"{path}.routes.json", [app, _ui_app])
+    if os.environ.get("CELERP_LOCK_RANK_DIR"):
         _lock_rank.dump(Path(os.environ["CELERP_LOCK_RANK_DIR"]) / f"lock-graph-{_worker}.json")
