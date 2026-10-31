@@ -75,8 +75,8 @@ def _refusals_first(planned_steps):
         planned = list(planned_steps(heads, migration))
         for step in planned:
             if isinstance(step, RevisionStep) and not step.is_upgrade:
-                refusal = getattr(step.revision.module, "downgrade_refusal", None)
-                reason = refusal(migration.connection) if refusal else None
+                declared = getattr(step.revision.module, "downgrade_refusal", None)
+                reason = declared(migration.connection) if declared else None
                 if reason:
                     raise RuntimeError(reason)
         # The checks hold nothing into the first revision's transaction.
