@@ -87,11 +87,12 @@ async def locked_agreement(session: AsyncSession, company_id, entity_id: str) ->
 
 
 async def write_agreement(session: AsyncSession, company_id, entity_id: str, changes: dict, actor_id, *,
-                          key: str | None = None, result: dict | None = None) -> None:
-    """Record a change to the agreement's own fields (``{field: new value}``)."""
+                          drop: tuple[str, ...] = (), key: str | None = None, result: dict | None = None) -> None:
+    """Record a change to the agreement's own fields (``{field: new value}``); ``drop``
+    removes fields from its state."""
     await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.updated",
-        data={"fields_changed": {k: {"new": v} for k, v in changes.items()}},
+        data={"fields_changed": {**{k: {"new": v} for k, v in changes.items()}, **{k: {"drop": True} for k in drop}}},
         actor_id=actor_id, location_id=None, source="subscription",
         idempotency_key=key or str(uuid.uuid4()), metadata_={"result": result} if result is not None else None,
     )
@@ -104,14 +105,18 @@ def refuse_status(state: dict) -> None:
         raise HTTPException(status_code=409, detail=t(key))
 
 
-async def _doc_ref(session, company_id, doc_id: str) -> str:
+async def doc_state(session, company_id, doc_id: str) -> dict | None:
     row = await session.get(Projection, {"company_id": company_id, "entity_id": doc_id})
-    return ((row.state or {}).get("ref_id") if row else None) or doc_id
+    return (row.state or {}) if row is not None else None
+
+
+async def doc_ref(session, company_id, doc_id: str) -> str:
+    return ((await doc_state(session, company_id, doc_id)) or {}).get("ref_id") or doc_id
 
 
 async def _result(session, company_id, doc_id: str, k: int, schedule: Schedule, state: dict) -> dict:
     nxt = schedule.next_bill_date(floor=review_floor(state))
-    return {"doc_id": doc_id, "ref_id": await _doc_ref(session, company_id, doc_id), "period_index": k,
+    return {"doc_id": doc_id, "ref_id": await doc_ref(session, company_id, doc_id), "period_index": k,
             "next_bill_date": nxt.isoformat() if nxt else None}
 
 

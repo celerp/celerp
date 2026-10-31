@@ -237,6 +237,9 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
             # note issued at another rate than its invoice's takes the invoice's at upgrade.
             if field == "conversion_rate" and _is_finalized and not data.get("takes_invoice_rate"):
                 continue
+            if change.get("drop"):
+                current.pop(field, None)
+                continue
             current[field] = change.get("new")
         # If total changed (e.g. line items added/removed on a draft), recalculate outstanding
         # based on how much has already been paid or credited - never let outstanding go negative.

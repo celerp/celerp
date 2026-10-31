@@ -175,8 +175,8 @@ async def test_operator_summary_since_ack(client, session, monkeypatch):
 
 async def test_module_disabled_skips_dispatch_keeps_records(client, session, monkeypatch):
     import uuid
-    from celerp.models.company import Company
     from celerp.modules.registry import disable_for_company, enable_for_company
+    from celerp.services.company_lock import locked_company
 
     freeze_day(monkeypatch, "2026-07-01")
     hd = await register(client)
@@ -184,13 +184,14 @@ async def test_module_disabled_skips_dispatch_keeps_records(client, session, mon
     eid = await _auto(client, hd, start="2026-07-01", catchup=1)
     kept = ("generation_mode", "consents", "periods", "catchup_periods")
     before = await template(client, hd, eid)
-    company = await session.get(Company, uuid.UUID(cid))
+    company = await locked_company(session, uuid.UUID(cid))
     company.settings = disable_for_company(company.settings, "celerp-subscriptions")
-    await session.flush()
+    await session.commit()
     await tick(session, cid, "2026-07-01")
     assert await billed_docs(session, eid) == []
+    company = await locked_company(session, uuid.UUID(cid))
     company.settings, _ = enable_for_company(company.settings, "celerp-subscriptions")
-    await session.flush()
+    await session.commit()
     after = await template(client, hd, eid)
     assert {k: after.get(k) for k in kept} == {k: before.get(k) for k in kept}
     await tick(session, cid, "2026-08-01")  # back on: resumes within the catch-up window

@@ -81,6 +81,7 @@ async def test_claim_survives_renumber_and_restore(client, session, monkeypatch)
 
     from celerp.models.projections import Projection
     from celerp.projections.engine import ProjectionEngine
+    from celerp.services.company_lock import lock_company
 
     freeze_day(monkeypatch, "2026-03-15")
     hd = await register(client)
@@ -88,6 +89,7 @@ async def test_claim_survives_renumber_and_restore(client, session, monkeypatch)
     doc_id = (await generate_due(client, hd, eid)).json()["doc_id"]
     assert (await client.post(f"/docs/{doc_id}/renumber", headers=hd, json={"ref_id": "RENUMBERED-1"})).status_code == 200
     cid = (await session.execute(select(Projection.company_id).where(Projection.entity_id == eid))).scalar_one()
+    await lock_company(session, cid)
     await ProjectionEngine.rebuild(session, cid)
     await session.commit()
     state = await template(client, hd, eid)
@@ -262,7 +264,7 @@ async def test_po_template_uses_period_engine_without_collection_or_deferral(cli
     r = await generate_due(client, hd, eid)
     assert r.status_code == 200 and r.json()["period_index"] == 0
     doc = (await billed_docs(session, eid))[0]
-    assert doc["doc_type"] == "purchase_order" and doc["source_agreement"] == eid
+    assert doc["doc_type"] == "bill" and doc["source_agreement"] == eid  # a purchase order finalizes into a bill
     assert not any(k in doc for k in ("revenue_schedule", "deferral"))
     collect = (await session.execute(select(func.count()).select_from(LedgerEntry).where(
         LedgerEntry.idempotency_key.like(f"collect:{doc['entity_id']}:%")))).scalar_one()
@@ -337,7 +339,7 @@ async def test_client_cannot_set_period_fields_on_documents(client, field, value
     assert r.status_code == 422 and field in r.text
     r = await client.post("/docs", headers=hd, json={"doc_type": "invoice", "line_items": [line]})
     doc_id = r.json()["id"]
-    p = await client.patch(f"/docs/{doc_id}", headers=hd, json={field: value})
+    p = await client.patch(f"/docs/{doc_id}", headers=hd, json={"fields_changed": {field: {"new": value}}})
     assert p.status_code == 422 and field in p.text
 
 
@@ -360,8 +362,11 @@ async def test_generate_all_due_rejects_over_cap_and_foreign_ids(client, session
 
     hd = await register(client)
     other = (await company_auth(session, uuid.uuid4(), uuid.uuid4()))["headers"]
+    # Each company numbers its own agreements: the other company's second one has no namesake here.
+    await agreement(client, other, start="2026-03-01")
     foreign = await agreement(client, other, start="2026-03-01")
     mine = await agreement(client, hd, start="2026-03-01")
+    assert foreign != mine
     assert (await client.post("/subscriptions/generate-due", headers=hd,
                               json={"ids": [mine] * 51})).status_code == 422
     r = (await client.post("/subscriptions/generate-due", headers=hd,

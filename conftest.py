@@ -327,8 +327,13 @@ if _wh_available:
     from celerp_warehousing.routes import router as _wh_router
     app.include_router(_wh_router, prefix="/warehousing", tags=["warehousing"])
 
-def _nav_slot_contributions() -> list[dict]:
-    """Nav entries read from the modules' own manifests, as the loader reads them.
+# Slots the harness reads from the modules' own manifests rather than listing below.
+_MANIFEST_SLOTS = ("nav", "periodic_operation")
+
+
+def _manifest_slot_contributions() -> list[dict]:
+    """Nav entries and periodic operations read from the modules' own manifests, as the
+    loader reads them.
 
     They used to be hand-copied into this file, which put a second copy of every
     manifest in the test harness and left it free to drift: a nav entry added to a
@@ -336,20 +341,24 @@ def _nav_slot_contributions() -> list[dict]:
     A nav test written against the copy proves only that the copy is intact.
     """
     from celerp.modules.loader import read_manifest
+    from celerp.modules.slots import FIRST_PARTY_SLOTS
 
     out: list[dict] = []
     for pkg in sorted((Path(__file__).parent / "default_modules").iterdir()):
         manifest = read_manifest(pkg)
         name = manifest.get("name")
-        nav = (manifest.get("slots") or {}).get("nav")
-        if not name or not nav:
-            continue
-        for item in (nav if isinstance(nav, list) else [nav]):
-            out.append({"slot": "nav", "contrib": {**item, "_module": name}})
+        for slot in _MANIFEST_SLOTS:
+            found = (manifest.get("slots") or {}).get(slot)
+            if not name or not found:
+                continue
+            for item in (found if isinstance(found, list) else [found]):
+                # Every module here is bundled, so it is first party as the loader would mark it.
+                mark = {"_first_party": True} if slot in FIRST_PARTY_SLOTS else {}
+                out.append({"slot": slot, "contrib": {**item, "_module": name, **mark}})
     return out
 
 
-_SLOT_CONTRIBUTIONS = _nav_slot_contributions() + [
+_SLOT_CONTRIBUTIONS = _manifest_slot_contributions() + [
     # --- projection_handler slots ---
     {
         "slot": "projection_handler",

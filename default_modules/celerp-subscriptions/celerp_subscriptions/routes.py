@@ -2,97 +2,148 @@
 # SPDX-License-Identifier: MIT
 """celerp-subscriptions API routes.
 
-Subscription templates are stored as docs with doc_type "subscription_invoice"
-or "subscription_po". This module provides convenience endpoints for listing
-templates and lifecycle actions (generate, pause, resume, cancel).
+Agreements are stored as docs with doc_type "subscription_invoice" or "subscription_po".
+Each period is billed once (``billing.claim_period``); these routes list agreements,
+bill what is due, skip or reopen a period, change the schedule, resolve history from
+the previous release, and report what unattended billing did.
 """
 from __future__ import annotations
 
-import copy
 import uuid
-from datetime import date, timedelta
+from datetime import date
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException
-from pydantic import BaseModel, Field
-from sqlalchemy import select
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
-from celerp.events.engine import emit_event, find_event_by_idempotency
-from celerp.models.company import Company
-from celerp.models.projections import Projection
-from celerp.services.auth import get_current_company_id, get_current_user
-from celerp.services.business_time import business_today, company_today
-from celerp.services.company_lock import lock_projections, locked_company
-from celerp.services.permissions import require_permission
-from celerp.services.terms import resolve_document_terms
-from celerp.services.units import require_moving_fits_units
-from celerp.services.record_quantities import template_label
-from celerp_docs.doc_money import document_money
-from celerp_docs.routes import finalize_document
-from celerp_docs.sequences import next_draft_ref
-from celerp_subscriptions.search import SUBSCRIPTION_DOC_TYPES, search_subscription_templates
+from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
+from celerp.services.business_time import company_today
+from celerp.services.company_lock import locked_company
+from celerp.services.permissions import missing_permission, require_permission, role_has_permission
+from celerp_subscriptions import billing, summary
+from celerp_subscriptions.periods import BILLED, CLAIMED_STATES, FREQUENCIES, RELEASED, SKIPPED, TIMINGS, Schedule, UNRESOLVED
+from celerp_subscriptions.search import search_subscription_templates
 from ui.i18n import t
 
-VALID_FREQUENCIES = frozenset({"weekly", "biweekly", "monthly", "quarterly", "annually", "custom"})
+BATCH_CAP = 50
+GENERATION_MODES = frozenset({"manual_due"}) | billing.AUTO_MODES
+# Schedule terms that place the periods: fixed once any period is claimed.
+PLACING_FIELDS = ("anchor_date", "frequency", "custom_interval_days", "billing_timing")
 
 
-def _days_in_month(year: int, month: int) -> int:
-    leap = year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)
-    return [31, 29 if leap else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1]
-
-
-def _add_months(d: date, months: int) -> date:
-    month = d.month + months
-    year = d.year + (month - 1) // 12
-    month = ((month - 1) % 12) + 1
-    return date(year, month, min(d.day, _days_in_month(year, month)))
-
-
-def _next_run_date(frequency: str, custom_interval_days: int | None, from_date: str) -> str:
-    d = date.fromisoformat(from_date)
-    if frequency == "weekly":
-        d += timedelta(weeks=1)
-    elif frequency == "biweekly":
-        d += timedelta(weeks=2)
-    elif frequency == "monthly":
-        d = _add_months(d, 1)
-    elif frequency == "quarterly":
-        d = _add_months(d, 3)
-    elif frequency == "annually":
-        try:
-            d = date(d.year + 1, d.month, d.day)
-        except ValueError:
-            d = date(d.year + 1, d.month, d.day - 1)
-    else:  # custom
-        d += timedelta(days=custom_interval_days or 30)
-    return d.isoformat()
-
-
-def _compute_due_date(issue_date: date, payment_terms: str | None, company: Company) -> str | None:
-    """Return ISO due_date by looking up payment_terms days in company settings."""
-    if not payment_terms:
+def next_bill_date(state: dict) -> str | None:
+    """The derived next bill date of an active or paused agreement."""
+    if state.get("status") not in ("active", "paused") or not state.get("anchor_date"):
         return None
-    terms_list: list[dict] = (company.settings or {}).get("payment_terms", [])
-    for t in terms_list:
-        if t.get("name") == payment_terms:
-            days = int(t.get("days") or 0)
-            return (issue_date + timedelta(days=days)).isoformat() if days else None
-    return None
+    nxt = Schedule.from_state(state).next_bill_date(floor=billing.review_floor(state))
+    return nxt.isoformat() if nxt else None
 
 
-async def _locked_subscription(session: AsyncSession, company_id: uuid.UUID, entity_id: str) -> Projection:
-    """The template under the company lock and its own row lock, as the previous writer
-    committed it: a lifecycle change checks its status and writes the next one, so two
-    changes at once never both pass the check."""
-    proj = (await lock_projections(session, company_id, [entity_id])).get(entity_id)
-    if not proj or proj.state.get("doc_type") not in SUBSCRIPTION_DOC_TYPES:
-        raise HTTPException(status_code=404, detail=t("subscriptions.err_not_found"))
-    return proj
+class RequestBody(BaseModel):
+    request_key: str | None = Field(None, min_length=1, max_length=200)
 
 
-class GenerateBody(BaseModel):
-    idempotency_key: str | None = Field(None, max_length=255)
+class EarlyBody(BaseModel):
+    request_key: str = Field(..., min_length=1, max_length=200)
+    period_index: int | None = None
+
+
+class BulkBody(BaseModel):
+    ids: list[str] = Field(..., max_length=BATCH_CAP)
+
+
+class SkipBody(BaseModel):
+    reason: str = Field(..., max_length=500)
+
+    @field_validator("reason")
+    @classmethod
+    def _stated(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("A reason is required")
+        return v.strip()
+
+
+class ConfirmBody(BaseModel):
+    period_index: int
+
+
+class CatchUpItem(BaseModel):
+    entity_id: str
+    period_index: int
+
+
+class CatchUpBody(BaseModel):
+    items: list[CatchUpItem]
+
+
+class ScheduleBody(BaseModel):
+    anchor_date: date | None = None
+    frequency: str | None = None
+    custom_interval_days: int | None = Field(None, gt=0)
+    billing_timing: str | None = None
+    term_start: date | None = None
+    term_end: date | None = None
+    cancel_at_period_end: bool | None = None
+    catchup_periods: int | None = Field(None, ge=0, le=billing.CATCHUP_CAP)
+    generation_mode: str | None = None
+    auto_send: bool | None = None
+
+    @field_validator("frequency")
+    @classmethod
+    def _frequency(cls, v):
+        if v is not None and v not in FREQUENCIES:
+            raise ValueError(f"Unknown frequency {v!r}")
+        return v
+
+    @field_validator("billing_timing")
+    @classmethod
+    def _timing(cls, v):
+        if v is not None and v not in TIMINGS:
+            raise ValueError(f"Unknown billing timing {v!r}")
+        return v
+
+    @field_validator("generation_mode")
+    @classmethod
+    def _mode(cls, v):
+        if v is not None and v not in GENERATION_MODES:
+            raise ValueError(f"Unknown generation mode {v!r}")
+        return v
+
+    @field_validator("anchor_date", "generation_mode", "frequency", "billing_timing", "catchup_periods", mode="before")
+    @classmethod
+    def _not_null(cls, v):
+        if v is None:
+            raise ValueError("A value is required")
+        return v
+
+
+def _periods(state: dict) -> dict[str, dict]:
+    return billing.periods_of(state)
+
+
+async def _refuse_claimed(session, company_id, entry: dict) -> None:
+    """409 naming the document when the period is billed."""
+    if entry.get("state") == BILLED:
+        ref = await billing.doc_ref(session, company_id, entry["doc_id"])
+        raise HTTPException(status_code=409, detail=t("subscriptions.err_period_billed", ref=ref))
+
+
+def _settle(periods: dict[str, dict], review: list[dict]) -> None:
+    """A period no document in review names any more is open again."""
+    named = {str(k) for row in review for k in row.get("candidates") or []}
+    for key, entry in periods.items():
+        if entry.get("state") == UNRESOLVED and key not in named:
+            periods[key] = {**entry, "state": RELEASED}
+
+
+def _review_change(review: list[dict]) -> dict:
+    return {"history_review": review} if review else {}
+
+
+async def _write(session, company_id, entity_id, changes: dict, user, *, drop: tuple[str, ...] = ()) -> None:
+    await billing.write_agreement(session, company_id, entity_id, changes, user.id, drop=drop)
+    await session.commit()
 
 
 def _build_router() -> APIRouter:
@@ -103,146 +154,336 @@ def _build_router() -> APIRouter:
         direction: str | None = None,
         status: str | None = None,
         q: str | None = None,
+        review: bool = False,
         limit: int = 50,
         offset: int = 0,
         company_id: uuid.UUID = Depends(get_current_company_id),
         session: AsyncSession = Depends(get_session),
     ) -> dict:
-        """List subscription templates (docs with subscription_invoice/subscription_po doc_type)."""
+        """List agreements, each with its derived next bill date; ``review`` keeps those
+        with earlier documents waiting for history review."""
         items, total = await search_subscription_templates(
-            session, company_id, direction=direction, status=status, q=q, limit=limit, offset=offset
+            session, company_id, direction=direction, status=status, q=q, review=review, limit=limit, offset=offset
         )
-        return {"items": items, "total": total}
+        return {"items": [{**i, "next_bill_date": next_bill_date(i)} for i in items], "total": total}
 
-    @router.post("/{entity_id}/generate")
-    async def generate_now(
-        entity_id: str,
-        body: GenerateBody | None = None,
+    @router.get("/due")
+    async def list_due(
+        company_id: uuid.UUID = Depends(get_current_company_id),
+        _: None = require_permission("view_subscriptions"),
+        session: AsyncSession = Depends(get_session),
+    ) -> dict:
+        """Every active agreement with a period due today: what Generate due would bill."""
+        return await billing.due_preview(session, company_id, await company_today(session, company_id))
+
+    @router.post("/generate-due")
+    async def generate_all_due(
+        body: BulkBody,
         company_id: uuid.UUID = Depends(get_current_company_id),
         _: None = require_permission("finalize_documents"),
         user=Depends(get_current_user),
         session: AsyncSession = Depends(get_session),
     ) -> dict:
-        """Create the template's document and finalize it; a retry with the same key returns the first result."""
-        company = await locked_company(session, company_id)
-        key = (body and body.idempotency_key) or str(uuid.uuid4())
-        if (earlier := await find_event_by_idempotency(session, company_id, key)) is not None:
-            if (earlier.event_type != "doc.updated" or earlier.entity_id != entity_id
-                    or "result" not in (earlier.metadata_ or {})):
-                raise HTTPException(status_code=409, detail="Idempotency key was already used for another operation")
-            return earlier.metadata_["result"]
-        proj = await _locked_subscription(session, company_id, entity_id)
-        if proj.state.get("status") == "cancelled":
-            raise HTTPException(status_code=409, detail=t("subscriptions.err_generate_cancelled"))
+        """Bill the oldest due period of each listed agreement, each on its own: one
+        refusal never stops the rest."""
+        results = []
+        for eid in body.ids:
+            try:
+                async with session.begin_nested():
+                    found = await billing.claim_period(session, company_id, eid, actor=user)
+                results.append({"entity_id": eid, "ok": True, **found})
+            except HTTPException as exc:
+                detail = "Not found" if exc.status_code == 404 else str(exc.detail)
+                results.append({"entity_id": eid, "ok": False, "error": detail})
+        await session.commit()
+        billed = sum(1 for r in results if r["ok"])
+        return {"results": results, "billed": billed, "refused": len(results) - billed}
 
-        state = proj.state
-        target_doc_type = "invoice" if state.get("doc_type") == "subscription_invoice" else "purchase_order"
-        today = business_today((company.settings or {}).get("timezone"))
+    @router.get("/catch-up")
+    async def catch_up(
+        company_id: uuid.UUID = Depends(get_current_company_id),
+        _: None = require_permission("view_subscriptions"),
+        session: AsyncSession = Depends(get_session),
+    ) -> dict:
+        """Unattended agreements further behind than their catch-up window."""
+        today = await company_today(session, company_id)
+        return {"items": await billing.catch_up_preview(session, company_id, today)}
 
-        # Resolve contact name from projection
-        contact_id = state.get("contact_id")
-        contact_name = ""
-        contact_company_name = ""
-        contact_state: dict = {}
-        if contact_id:
-            contact_proj = await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})
-            if contact_proj and contact_proj.entity_type == "contact":
-                contact_state = contact_proj.state or {}
-                contact_name = contact_state.get("name") or ""
-                contact_company_name = contact_state.get("company_name") or ""
+    @router.post("/catch-up/run")
+    async def catch_up_run(
+        body: CatchUpBody,
+        company_id: uuid.UUID = Depends(get_current_company_id),
+        _: None = require_permission("finalize_documents"),
+        user=Depends(get_current_user),
+        session: AsyncSession = Depends(get_session),
+    ) -> dict:
+        """Bill the chosen periods from the catch-up preview, in order. An item is billed
+        only when the preview lists it and it is its agreement's oldest open period."""
+        today = await company_today(session, company_id)
+        listed = {(i["entity_id"], p["period_index"])
+                  for i in await billing.catch_up_preview(session, company_id, today) for p in i["periods"]}
+        results = []
+        for n, item in enumerate(body.items):
+            row = {"entity_id": item.entity_id, "period_index": item.period_index}
+            if n >= BATCH_CAP or (item.entity_id, item.period_index) not in listed:
+                results.append({**row, "ok": False, "error": t("subscriptions.err_catchup_not_listed")})
+                continue
+            try:
+                async with session.begin_nested():
+                    proj = await billing.locked_agreement(session, company_id, item.entity_id)
+                    oldest = Schedule.from_state(proj.state).oldest_open(floor=billing.review_floor(proj.state))
+                    if oldest != item.period_index:
+                        raise HTTPException(status_code=409, detail=t("subscriptions.err_early_not_next"))
+                    found = await billing.claim_period(session, company_id, item.entity_id, actor=user)
+                results.append({**row, "ok": True, **found})
+            except HTTPException as exc:
+                results.append({**row, "ok": False, "error": str(exc.detail)})
+        await session.commit()
+        return {"results": results}
 
-        pf_ref = next_draft_ref(company, target_doc_type)
-        doc_entity_id = f"doc:{pf_ref}"
+    @router.get("/summary")
+    async def get_summary(
+        all: bool = False,
+        company_id: uuid.UUID = Depends(get_current_company_id),
+        _: None = require_permission("view_subscriptions"),
+        user=Depends(get_current_user),
+        session: AsyncSession = Depends(get_session),
+    ) -> dict:
+        """What unattended billing did since this user's acknowledgment (``all``: everything)."""
+        return await summary.report(session, company_id, user.id, everything=all)
 
-        line_items = copy.deepcopy(list(state.get("line_items") or []))
-        payment_terms = state.get("payment_terms")
-        due_date = _compute_due_date(today, payment_terms, company)
-        template_name = template_label(state, entity_id)
-        auto_note = f"Auto-created from subscription template {template_name}"
-        existing_notes = state.get("notes") or ""
-        notes = f"{existing_notes}\n{auto_note}".strip() if existing_notes else auto_note
+    @router.post("/summary/ack")
+    async def ack_summary(
+        company_id: uuid.UUID = Depends(get_current_company_id),
+        _: None = require_permission("view_subscriptions"),
+        user=Depends(get_current_user),
+        session: AsyncSession = Depends(get_session),
+    ) -> dict:
+        """Mark the summary read up to now (the server's clock, never the client's)."""
+        at = await summary.acknowledge(session, company_id, user.id)
+        await session.commit()
+        return {"ok": True, "at": at}
 
-        currency = state.get("currency") or (company.settings or {}).get("currency", "USD")
-        money_inputs = {k: state[k] for k in ("discount", "discount_type", "shipping", "tax", "tax_rate", "doc_taxes")
-                        if k in state}
-        money = document_money(money_inputs, line_items, currency, keep_unrated_tax=True)
-
-        doc_data: dict = {
-            "doc_type": target_doc_type,
-            "ref_id": pf_ref,
-            "contact_id": contact_id,
-            "contact_name": contact_name,
-            "contact_company_name": contact_company_name,
-            "line_items": line_items,
-            "payment_terms": payment_terms,
-            "currency": currency,
-            **money_inputs,
-            **money,
-            "amount_outstanding": money["total"],
-            "issue_date": today.isoformat(),
-            "subscription_id": entity_id,
-            "notes": notes,
-        }
-        if due_date:
-            doc_data["due_date"] = due_date
-        # The template may predate a precision change; what it makes is held to today's units.
-        await require_moving_fits_units(session, company_id, doc_entity_id, "doc", doc_data, template=template_name)
-
-        # Use the same canonical creation policy as ordinary documents. Legacy
-        # subscription templates may still carry `terms`, but generated docs do not.
-        doc_data.update(resolve_document_terms(
-            state, company.settings or {}, target_doc_type,
-        ))
-        if "customer_note" in state:
-            doc_data["customer_note"] = state.get("customer_note") or ""
-
-        await emit_event(
-            session,
-            company_id=company_id,
-            entity_id=doc_entity_id,
-            entity_type="doc",
-            event_type="doc.created",
-            data=doc_data,
-            actor_id=user.id,
-            location_id=None,
-            source="subscription",
-            idempotency_key=str(uuid.uuid4()),
-        )
-        await session.flush()
-        await finalize_document(doc_entity_id, company_id, user, session, commit=False)
-        await session.flush()
-        final_ref = (await session.get(Projection, {"company_id": company_id, "entity_id": doc_entity_id})).state["ref_id"]
-
-        # Update template: next_run_date + append to generated_doc_ids
-        today_str = today.isoformat()
-        next_run = _next_run_date(
-            state.get("frequency", "monthly"),
-            state.get("custom_interval_days"),
-            today_str,
-        )
-        existing_ids = list(state.get("generated_doc_ids") or [])
-        existing_ids.append(doc_entity_id)
-        result = {"doc_id": doc_entity_id, "ref_id": final_ref, "next_run_date": next_run}
-
-        await emit_event(
-            session,
-            company_id=company_id,
-            entity_id=entity_id,
-            entity_type="doc",
-            event_type="doc.updated",
-            data={"fields_changed": {
-                "next_run_date": {"new": next_run},
-                "generated_doc_ids": {"new": existing_ids},
-            }},
-            actor_id=user.id,
-            location_id=None,
-            source="subscription",
-            idempotency_key=key,
-            metadata_={"result": result},
-        )
-
+    @router.post("/{entity_id}/generate-due")
+    async def generate_due(
+        entity_id: str,
+        body: RequestBody | None = None,
+        company_id: uuid.UUID = Depends(get_current_company_id),
+        _: None = require_permission("finalize_documents"),
+        user=Depends(get_current_user),
+        session: AsyncSession = Depends(get_session),
+    ) -> dict:
+        """Bill the agreement's oldest due period."""
+        result = await billing.claim_period(session, company_id, entity_id, actor=user,
+                                            request_key=body.request_key if body else None)
         await session.commit()
         return result
+
+    @router.post("/{entity_id}/bill-early")
+    async def bill_early(
+        entity_id: str,
+        body: EarlyBody,
+        company_id: uuid.UUID = Depends(get_current_company_id),
+        _: None = require_permission("finalize_documents"),
+        user=Depends(get_current_user),
+        session: AsyncSession = Depends(get_session),
+    ) -> dict:
+        """Bill the next period ahead of its bill date; only the oldest open one."""
+        result = await billing.claim_period(session, company_id, entity_id, actor=user, early=True,
+                                            period_index=body.period_index, request_key=body.request_key)
+        await session.commit()
+        return result
+
+    @router.post("/{entity_id}/periods/{k}/skip")
+    async def skip_period(
+        entity_id: str,
+        k: int,
+        body: SkipBody,
+        company_id: uuid.UUID = Depends(get_current_company_id),
+        _: None = require_permission("edit_documents"),
+        user=Depends(get_current_user),
+        session: AsyncSession = Depends(get_session),
+    ) -> dict:
+        """Record that period ``k`` is not billed, and why."""
+        proj = await billing.locked_agreement(session, company_id, entity_id)
+        periods = _periods(proj.state)
+        entry = periods.get(str(k)) or {}
+        await _refuse_claimed(session, company_id, entry)
+        if entry.get("state") == SKIPPED:
+            return {"ok": True}
+        if entry.get("state") == UNRESOLVED:
+            raise HTTPException(status_code=409, detail=t("subscriptions.err_period_in_review"))
+        if not Schedule.from_state(proj.state).exists(k):
+            raise HTTPException(status_code=409, detail=t("subscriptions.err_period_missing"))
+        periods[str(k)] = {"state": SKIPPED, "reason": body.reason, "by": str(user.id), "at": billing.now_stamp(),
+                           "release_count": entry.get("release_count", 0)}
+        await _write(session, company_id, entity_id, {"periods": periods}, user)
+        return {"ok": True}
+
+    async def _hand_back(entity_id: str, k: int, company_id, user, session, *, after_void: bool) -> dict:
+        proj = await billing.locked_agreement(session, company_id, entity_id)
+        periods = _periods(proj.state)
+        entry = periods.get(str(k)) or {}
+        release = entry.get("release_count", 0)
+        if entry.get("state") == BILLED:
+            doc = await billing.doc_state(session, company_id, entry["doc_id"])
+            if not after_void or (doc is not None and doc.get("status") != "void"):
+                await _refuse_claimed(session, company_id, entry)
+            release += 1  # the next document for this period takes a new claim key
+        elif entry.get("state") != SKIPPED:
+            return {"ok": True}
+        periods[str(k)] = {"state": RELEASED, "release_count": release, "by": str(user.id), "at": billing.now_stamp()}
+        await _write(session, company_id, entity_id, {"periods": periods}, user)
+        return {"ok": True}
+
+    @router.post("/{entity_id}/periods/{k}/unskip")
+    async def unskip_period(
+        entity_id: str,
+        k: int,
+        company_id: uuid.UUID = Depends(get_current_company_id),
+        _: None = require_permission("edit_documents"),
+        user=Depends(get_current_user),
+        session: AsyncSession = Depends(get_session),
+    ) -> dict:
+        """Undo a skip: the period is open again."""
+        return await _hand_back(entity_id, k, company_id, user, session, after_void=False)
+
+    @router.post("/{entity_id}/periods/{k}/reopen")
+    async def reopen_period(
+        entity_id: str,
+        k: int,
+        company_id: uuid.UUID = Depends(get_current_company_id),
+        _: None = require_permission("finalize_documents"),
+        user=Depends(get_current_user),
+        session: AsyncSession = Depends(get_session),
+    ) -> dict:
+        """Open a billed period again once its document is voided, so it can be billed once more."""
+        return await _hand_back(entity_id, k, company_id, user, session, after_void=True)
+
+    @router.post("/{entity_id}/periods/{k}/send")
+    async def send_period(
+        entity_id: str,
+        k: int,
+        company_id: uuid.UUID = Depends(get_current_company_id),
+        _: None = require_permission("edit_documents"),
+        session: AsyncSession = Depends(get_session),
+    ) -> dict:
+        """Send period ``k``'s document again after a failed send; once."""
+        return await billing.deliver(lambda: billing.same_session(session), company_id, entity_id, k, retry=True)
+
+    @router.patch("/{entity_id}/schedule")
+    async def change_schedule(
+        entity_id: str,
+        body: ScheduleBody,
+        company_id: uuid.UUID = Depends(get_current_company_id),
+        _: None = require_permission("edit_documents"),
+        role: str = Depends(get_current_role),
+        user=Depends(get_current_user),
+        session: AsyncSession = Depends(get_session),
+    ) -> dict:
+        """Change the agreement's schedule terms and unattended modes. Turning a mode on
+        needs its permission and records the consent of the person who did."""
+        sent = body.model_dump(include=body.model_fields_set)
+        company = await locked_company(session, company_id)
+        settings = company.settings or {}
+        proj = await billing.locked_agreement(session, company_id, entity_id)
+        state = proj.state
+        needed = []
+        if sent.get("generation_mode") in billing.AUTO_MODES:
+            needed.append("generation")
+        if sent.get("generation_mode") == "auto_invoice_collect":
+            needed.append("collection")
+        if sent.get("auto_send"):
+            needed.append("sending")
+        for mode in needed:
+            if not role_has_permission(settings, role, billing.MODE_PERMISSION[mode]):
+                raise missing_permission(billing.MODE_PERMISSION[mode])
+        if "collection" in needed:
+            # Collection runs through the Connect service; until it offers it, no agreement collects.
+            raise HTTPException(status_code=422, detail=t("subscriptions.err_collect_unavailable"))
+        changes = {f: (v.isoformat() if isinstance(v, date) else v) for f, v in sent.items()}
+        claimed = [int(k) for k, e in (state.get("periods") or {}).items() if e.get("state") in CLAIMED_STATES]
+        if claimed and any(f in changes and changes[f] != state.get(f) for f in PLACING_FIELDS):
+            raise HTTPException(status_code=409, detail=t("subscriptions.err_schedule_claimed"))
+        if "cancel_at_period_end" in changes:
+            # Stored as the last period kept, so the end is fixed when it is chosen and undone by clearing it.
+            changes["cancel_at_period_end"] = (
+                Schedule.from_state(state).current(await company_today(session, company_id))
+                if changes["cancel_at_period_end"] else None)
+        merged = {**state, **changes}
+        try:
+            schedule = Schedule.from_state(merged) if merged.get("anchor_date") else None
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if merged.get("term_start") and merged.get("term_end") and merged["term_start"] >= merged["term_end"]:
+            raise HTTPException(status_code=422, detail=t("subscriptions.err_term_order"))
+        if schedule is not None and any(not schedule.exists(k) for k in claimed):
+            raise HTTPException(status_code=409, detail=t("subscriptions.err_term_cuts_claimed"))
+        if needed:
+            stamp = {"by": str(user.id), "at": billing.now_stamp()}
+            changes["consents"] = {**(state.get("consents") or {}), **{m: stamp for m in needed}}
+        await _write(session, company_id, entity_id, changes, user)
+        return {"ok": True, "next_bill_date": next_bill_date(merged)}
+
+    @router.post("/{entity_id}/history/{doc_id}/confirm")
+    async def confirm_history(
+        entity_id: str,
+        doc_id: str,
+        body: ConfirmBody,
+        company_id: uuid.UUID = Depends(get_current_company_id),
+        _: None = require_permission("edit_documents"),
+        user=Depends(get_current_user),
+        session: AsyncSession = Depends(get_session),
+    ) -> dict:
+        """Place an earlier document in one of its candidate periods."""
+        proj = await billing.locked_agreement(session, company_id, entity_id)
+        periods = _periods(proj.state)
+        k = str(body.period_index)
+        entry = periods.get(k) or {}
+        if entry.get("state") == BILLED and entry.get("doc_id") == doc_id:
+            return {"ok": True}
+        review = list(proj.state.get("history_review") or [])
+        row = next((r for r in review if r.get("doc_id") == doc_id), None)
+        if row is None or body.period_index not in (row.get("candidates") or []):
+            raise HTTPException(status_code=409, detail=t("subscriptions.err_history_not_candidate"))
+        if entry.get("state") in CLAIMED_STATES:
+            await _refuse_claimed(session, company_id, entry)
+            raise HTTPException(status_code=409, detail=t("subscriptions.err_period_skipped"))
+        periods[k] = {"state": BILLED, "doc_id": doc_id, "release_count": entry.get("release_count", 0),
+                      "candidates": row.get("candidates") or [], "history": True,
+                      "by": str(user.id), "at": billing.now_stamp()}
+        review = [r for r in review if r is not row]
+        _settle(periods, review)
+        await _write(session, company_id, entity_id, {"periods": periods, **_review_change(review)}, user,
+                     drop=() if review else ("history_review",))
+        return {"ok": True}
+
+    @router.post("/{entity_id}/history/{doc_id}/withdraw")
+    async def withdraw_history(
+        entity_id: str,
+        doc_id: str,
+        company_id: uuid.UUID = Depends(get_current_company_id),
+        _: None = require_permission("edit_documents"),
+        user=Depends(get_current_user),
+        session: AsyncSession = Depends(get_session),
+    ) -> dict:
+        """Undo a confirmation while no later period is billed: the document waits for review again."""
+        proj = await billing.locked_agreement(session, company_id, entity_id)
+        periods = _periods(proj.state)
+        k = next((int(i) for i, e in periods.items() if e.get("history") and e.get("doc_id") == doc_id
+                  and e.get("state") == BILLED), None)
+        if k is None:
+            raise HTTPException(status_code=409, detail=t("subscriptions.err_history_not_confirmed"))
+        if any(int(i) > k and e.get("state") == BILLED and not e.get("history") for i, e in periods.items()):
+            raise HTTPException(status_code=409, detail=t("subscriptions.err_history_later_billed"))
+        candidates = periods[str(k)].get("candidates") or [k]
+        for c in candidates:
+            entry = periods.get(str(c)) or {}
+            if c == k or entry.get("state") in (None, RELEASED):
+                periods[str(c)] = {"state": UNRESOLVED, "release_count": entry.get("release_count", 0)}
+        review = [*(proj.state.get("history_review") or []), {"doc_id": doc_id, "candidates": candidates}]
+        await _write(session, company_id, entity_id, {"periods": periods, "history_review": review}, user)
+        return {"ok": True}
 
     @router.post("/{entity_id}/pause")
     async def pause_subscription(
@@ -252,14 +493,10 @@ def _build_router() -> APIRouter:
         user=Depends(get_current_user),
         session: AsyncSession = Depends(get_session),
     ) -> dict:
-        proj = await _locked_subscription(session, company_id, entity_id)
+        proj = await billing.locked_agreement(session, company_id, entity_id)
         if proj.state.get("status") != "active":
             raise HTTPException(status_code=409, detail=t("subscriptions.err_pause_not_active"))
-        await emit_event(session, company_id=company_id, entity_id=entity_id, entity_type="doc",
-                         event_type="doc.updated", data={"fields_changed": {"status": {"new": "paused"}}},
-                         actor_id=user.id, location_id=None, source="subscription",
-                         idempotency_key=str(uuid.uuid4()))
-        await session.commit()
+        await _write(session, company_id, entity_id, {"status": "paused"}, user)
         return {"ok": True}
 
     @router.post("/{entity_id}/resume")
@@ -270,23 +507,12 @@ def _build_router() -> APIRouter:
         user=Depends(get_current_user),
         session: AsyncSession = Depends(get_session),
     ) -> dict:
-        proj = await _locked_subscription(session, company_id, entity_id)
+        """Resume billing. Periods missed while paused stay due: none is skipped."""
+        proj = await billing.locked_agreement(session, company_id, entity_id)
         if proj.state.get("status") != "paused":
             raise HTTPException(status_code=409, detail=t("subscriptions.err_resume_not_paused"))
-        next_run = _next_run_date(
-            proj.state.get("frequency", "monthly"),
-            proj.state.get("custom_interval_days"),
-            (await company_today(session, company_id)).isoformat(),
-        )
-        await emit_event(session, company_id=company_id, entity_id=entity_id, entity_type="doc",
-                         event_type="doc.updated", data={"fields_changed": {
-                             "status": {"new": "active"},
-                             "next_run_date": {"new": next_run},
-                         }},
-                         actor_id=user.id, location_id=None, source="subscription",
-                         idempotency_key=str(uuid.uuid4()))
-        await session.commit()
-        return {"ok": True, "next_run_date": next_run}
+        await _write(session, company_id, entity_id, {"status": "active"}, user)
+        return {"ok": True, "next_bill_date": next_bill_date({**proj.state, "status": "active"})}
 
     @router.post("/{entity_id}/cancel")
     async def cancel_subscription(
@@ -296,14 +522,10 @@ def _build_router() -> APIRouter:
         user=Depends(get_current_user),
         session: AsyncSession = Depends(get_session),
     ) -> dict:
-        proj = await _locked_subscription(session, company_id, entity_id)
+        proj = await billing.locked_agreement(session, company_id, entity_id)
         if proj.state.get("status") == "cancelled":
             raise HTTPException(status_code=409, detail=t("subscriptions.err_already_cancelled"))
-        await emit_event(session, company_id=company_id, entity_id=entity_id, entity_type="doc",
-                         event_type="doc.updated", data={"fields_changed": {"status": {"new": "cancelled"}}},
-                         actor_id=user.id, location_id=None, source="subscription",
-                         idempotency_key=str(uuid.uuid4()))
-        await session.commit()
+        await _write(session, company_id, entity_id, {"status": "cancelled"}, user)
         return {"ok": True}
 
     @router.post("/{entity_id}/activate")
@@ -314,25 +536,21 @@ def _build_router() -> APIRouter:
         user=Depends(get_current_user),
         session: AsyncSession = Depends(get_session),
     ) -> dict:
-        """Promote a draft subscription template to active, computing next_run_date."""
-        proj = await _locked_subscription(session, company_id, entity_id)
+        """Promote a draft agreement to active. Its first period starts on the start date,
+        which is also its first bill date when billed in advance."""
+        proj = await billing.locked_agreement(session, company_id, entity_id)
         if proj.state.get("status") != "draft":
             raise HTTPException(status_code=409, detail=t("subscriptions.err_activate_not_draft"))
-        frequency = proj.state.get("frequency", "monthly")
-        if frequency not in VALID_FREQUENCIES:
-            raise HTTPException(status_code=422, detail=t("subscriptions.err_frequency_required"))
         start = proj.state.get("start_date") or (await company_today(session, company_id)).isoformat()
-        next_run = _next_run_date(frequency, proj.state.get("custom_interval_days"), start)
-        await emit_event(session, company_id=company_id, entity_id=entity_id, entity_type="doc",
-                         event_type="doc.updated", data={"fields_changed": {
-                             "status": {"new": "active"},
-                             "start_date": {"new": start},
-                             "next_run_date": {"new": next_run},
-                         }},
-                         actor_id=user.id, location_id=None, source="subscription",
-                         idempotency_key=str(uuid.uuid4()))
-        await session.commit()
-        return {"ok": True, "next_run_date": next_run}
+        changes = {"status": "active", "start_date": start,
+                   "anchor_date": proj.state.get("anchor_date") or start}
+        merged = {**proj.state, **changes}
+        try:
+            Schedule.from_state(merged)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=t("subscriptions.err_frequency_required")) from exc
+        await _write(session, company_id, entity_id, changes, user)
+        return {"ok": True, "next_bill_date": next_bill_date(merged)}
 
     return router
 

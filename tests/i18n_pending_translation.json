@@ -692,6 +692,131 @@
         "paid",
         "where"
       ]
+    },
+    "subscriptions.err_bill_draft": {
+      "en": "This subscription is still a draft, so it can't bill yet. Activate it first.",
+      "params": []
+    },
+    "subscriptions.err_bill_paused": {
+      "en": "This subscription is paused, so it can't bill. Resume it to bill the periods that are due.",
+      "params": []
+    },
+    "subscriptions.err_bill_ended": {
+      "en": "This subscription has ended: every period in its term is billed or skipped. Nothing more to bill.",
+      "params": []
+    },
+    "subscriptions.err_nothing_due": {
+      "en": "Nothing is due yet. The next bill date is {date}. To bill that period now, use Bill early.",
+      "params": [
+        "date"
+      ]
+    },
+    "subscriptions.err_no_period_left": {
+      "en": "There is no period left to bill. The term has ended or the subscription stops at the end of its current period.",
+      "params": []
+    },
+    "subscriptions.err_early_not_next": {
+      "en": "Only the next unbilled period can be billed. Bill the earlier periods first.",
+      "params": []
+    },
+    "subscriptions.err_send_not_billed": {
+      "en": "This period has no invoice yet, so there is nothing to send.",
+      "params": []
+    },
+    "subscriptions.err_send_no_email": {
+      "en": "The contact on this subscription has no email address. Add one to the contact, then retry.",
+      "params": []
+    },
+    "subscriptions.err_send_void": {
+      "en": "The document for this period was voided, so it was not sent.",
+      "params": []
+    },
+    "subscriptions.notice_billed_title": {
+      "en": "Subscriptions billed automatically",
+      "params": []
+    },
+    "subscriptions.notice_billed_body": {
+      "en": "Automatic billing created documents on {day}. Open the summary to review them.",
+      "params": [
+        "day"
+      ]
+    },
+    "subscriptions.err_period_billed": {
+      "en": "This period is already billed on {ref}. Void {ref} first if the period should not be billed.",
+      "params": [
+        "ref"
+      ]
+    },
+    "subscriptions.err_period_in_review": {
+      "en": "This period waits for history review. Place or withdraw the earlier documents first.",
+      "params": []
+    },
+    "subscriptions.err_period_missing": {
+      "en": "This period is not part of the subscription's schedule.",
+      "params": []
+    },
+    "subscriptions.err_catchup_not_listed": {
+      "en": "This period is not the next one to catch up on. Refresh the catch-up list and bill from the top.",
+      "params": []
+    },
+    "subscriptions.err_collect_unavailable": {
+      "en": "Automatic collection is not available yet, so this mode can't be turned on.",
+      "params": []
+    },
+    "subscriptions.err_schedule_claimed": {
+      "en": "The first bill date, frequency and billing timing can't change once a period is billed or skipped. To move a bill, skip periods instead.",
+      "params": []
+    },
+    "subscriptions.err_term_order": {
+      "en": "The term must start before it ends.",
+      "params": []
+    },
+    "subscriptions.err_term_cuts_claimed": {
+      "en": "That term would leave out periods that are already billed or skipped. Choose a term that keeps them.",
+      "params": []
+    },
+    "subscriptions.err_history_not_candidate": {
+      "en": "That document can't be placed in that period. Choose one of the periods listed for it.",
+      "params": []
+    },
+    "subscriptions.err_period_skipped": {
+      "en": "That period is skipped. Undo the skip first to place a document in it.",
+      "params": []
+    },
+    "subscriptions.err_history_not_confirmed": {
+      "en": "That document is not placed in a period, so there is nothing to withdraw.",
+      "params": []
+    },
+    "subscriptions.err_history_later_billed": {
+      "en": "A later period is already billed, so this placement can't be withdrawn.",
+      "params": []
+    },
+    "subscriptions.summary_generated": {
+      "en": "Billed {ref} automatically",
+      "params": [
+        "ref"
+      ]
+    },
+    "subscriptions.summary_sent": {
+      "en": "Sent {ref} automatically",
+      "params": [
+        "ref"
+      ]
+    },
+    "subscriptions.summary_send_failed": {
+      "en": "Could not send {ref}: {error}",
+      "params": [
+        "error",
+        "ref"
+      ]
+    },
+    "subscriptions.summary_billing_lapsed": {
+      "en": "Automatic billing stopped: authorization lapsed",
+      "params": []
+    },
+    "subscriptions.summary_sending_lapsed": {
+      "en": "Automatic sending stopped: authorization lapsed",
+      "params": []
     }
   }
 }
