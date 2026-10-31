@@ -592,6 +592,48 @@ async def test_a_connector_lease_is_written_by_the_execution_only(session, auth,
     assert _kinds() == ([] if writer == "the execution" else ["unprotected"])
 
 
+@pytest.mark.parametrize("writer, columns", [("the heartbeat", ("lease_until",)), ("the heartbeat", ("status",)),
+                                             ("elsewhere", ("lease_until",))])
+async def test_an_ai_jobs_lease_is_renewed_by_its_heartbeat_only(session, auth, monkeypatch, writer, columns):
+    """A job's lease is renewed without the company lock by jobs._heartbeat alone, setting
+    the LEASE_RENEWALS columns only: a renewal of another column, or the same write from
+    anywhere else, is judged as company data."""
+    import asyncio
+    import contextlib
+
+    from celerp.ai import jobs
+    from celerp.models.ai import AIBatchJob
+
+    monkeypatch.setitem(mutation_observer.LEASE_RENEWALS, ("ai_batch_jobs", "UPDATE"), mutation_observer.LeaseRenewal(
+        columns, ("celerp/ai/jobs.py _heartbeat",), "a lease renewed"))
+    job = jobs.question_job(job_id=uuid.uuid4(), request=jobs.JobRequest.question(
+        company_id=auth["company_id"], user_id=auth["user_id"], query="Renewed"))
+    job.status, job.runner_id, job.lease_until = "running", "here", datetime.now(timezone.utc)
+    session.add(job)
+    await session.commit()
+    before = job.lease_until
+
+    @contextlib.asynccontextmanager
+    async def _same_session():
+        yield session
+
+    with serving("POST", "/observed"):
+        if writer == "the heartbeat":
+            monkeypatch.setattr(jobs, "SessionLocal", _same_session)
+            monkeypatch.setattr(jobs, "LEASE_RENEW_S", 0.01)
+            stop = asyncio.Event()
+            beat = asyncio.create_task(jobs._heartbeat(job.id, ["here"], stop))
+            while (await session.scalar(select(AIBatchJob.lease_until).where(AIBatchJob.id == job.id))) == before:
+                await asyncio.sleep(0.01)
+            stop.set()
+            await beat
+        else:
+            await session.execute(update(AIBatchJob).where(AIBatchJob.id == job.id).values(
+                lease_until=datetime.now(timezone.utc) + timedelta(seconds=30)))
+            await session.commit()
+    assert _kinds() == ([] if (writer, columns) == ("the heartbeat", ("lease_until",)) else ["unprotected"])
+
+
 async def test_a_lease_row_fenced_before_the_company_lock_is_in_order(session, auth):
     with serving("POST", "/observed"):
         cid = _authorize(session, auth)

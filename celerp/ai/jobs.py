@@ -586,11 +586,12 @@ async def _heartbeat(job_id: uuid.UUID, claim: list[str | None], stop: asyncio.E
     LEASE_RENEW_S until ``stop``. A renewal that fails is tried again at the next beat;
     a claim another took is never renewed.
 
-    The one write of a job row made without its company lock: it sets the lease end
-    only, of the row its own claim holds, under that row's lock. A renewal that waited
-    for the company lock would wait behind any long holder of it (an import, a
-    migration batch) past the lease, and a healthy runner's job would read as nobody's,
-    for a Stop or another process to take."""
+    The one write of a job row made without its company lock: one statement that sets
+    the lease end only, of the row its own claim still holds open, checked in the
+    statement itself, in a transaction that takes nothing else and so waits on nothing
+    while it holds the row. A renewal that waited for the company lock would wait behind
+    any long holder of it (an import, a migration batch) past the lease, and a healthy
+    runner's job would read as nobody's, for a Stop or another process to take."""
     from celerp.models.ai import AIBatchJob
     while True:
         try:
@@ -600,9 +601,8 @@ async def _heartbeat(job_id: uuid.UUID, claim: list[str | None], stop: asyncio.E
             pass
         try:
             async with SessionLocal() as session:
-                held = (AIBatchJob.id == job_id, AIBatchJob.runner_id == claim[0], is_open())
-                if await session.scalar(select(AIBatchJob.id).where(*held).with_for_update(key_share=True)) is not None:
-                    await session.execute(update(AIBatchJob).where(*held).values(lease_until=_lease_end()))
+                await session.execute(update(AIBatchJob).where(
+                    AIBatchJob.id == job_id, AIBatchJob.runner_id == claim[0], is_open()).values(lease_until=_lease_end()))
                 await session.commit()
         except Exception:
             log.warning("AI job %s: its lease was not renewed", job_id, exc_info=True)

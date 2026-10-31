@@ -10,7 +10,7 @@ judging the request's authority again) and PostgreSQL still holds that lock (the
 company_lock keeps), and no narrower lock (a chart, row or other advisory lock) was taken
 before that company's lock; a write named in JUDGED_WITHOUT_LOCK is protected by the
 request's authority judged again without the lock, one named in UNDER_ROW_LOCK by its
-own row lock, one to a LEASE_STATE table by the lease's own statements, and a write to a company this transaction created by that company being
+own row lock, one to a LEASE_STATE table or a LEASE_RENEWALS renewal by the lease's own statements, and a write to a company this transaction created by that company being
 invisible to every other transaction until it commits; a write on a connection no Session
 uses while the request holds the migration lock is the schema migrator's. Each statement is judged on the Session that ran it. A write is
 judged when its transaction commits: a write rolled back with its savepoint or transaction
@@ -163,11 +163,6 @@ UNDER_ROW_LOCK: dict[tuple[str, str], RowLocked] = {
     ("session_registry", "INSERT"): _TOKEN_ISSUE,
     ("session_registry", "UPDATE"): _TOKEN_ISSUE,
     ("session_registry", "DELETE"): _TOKEN_REVOKE,
-    ("ai_batch_jobs", "UPDATE"): RowLocked(
-        "ai_batch_jobs", ("celerp/ai/jobs.py _heartbeat",),
-        "a runner's lease renewed, and nothing else: only while its runner id still holds the job open, so it "
-        "never takes a job, and never waits on the company lock, as a renewal held past the lease would hand a "
-        "healthy runner's job to another"),
 }
 
 # Tables whose rows are a connector execution's lease, kept by statements on those rows
@@ -183,6 +178,24 @@ LEASE_STATE: dict[str, Judged] = {
         _LEASE_SITES, "a connector execution's fenced generation and holder, taken and given back"),
     "connector_execution_heartbeats": Judged(
         _LEASE_SITES, "a connector execution's expiry, renewed while it runs, and the reruns asked of it"),
+}
+# Lease renewals of a row whose other writes are judged as usual, by table and statement type:
+# one statement that sets the lease columns alone and checks the holder in the statement
+# itself, in a transaction that holds nothing else. Each names its columns and the only
+# functions that may make it.
+@dataclass(frozen=True)
+class LeaseRenewal:
+    columns: tuple[str, ...]  # the only columns the renewal sets
+    sites: tuple[str, ...]  # "<file> <function>" that make the write
+    reason: str
+
+
+LEASE_RENEWALS: dict[tuple[str, str], LeaseRenewal] = {
+    ("ai_batch_jobs", "UPDATE"): LeaseRenewal(
+        ("lease_until",), ("celerp/ai/jobs.py _heartbeat",),
+        "a runner's lease renewed, and nothing else: only while its runner id still holds the job open, so it "
+        "never takes a job, and never waits on the company lock, as a renewal held past the lease would hand a "
+        "healthy runner's job to another"),
 }
 
 # A request in one of these methods only reads, and so does every request made for it in
@@ -699,9 +712,14 @@ def _under_row_lock(request: dict, session, op: Op) -> bool:
 
 
 def _lease_write(op: Op) -> bool:
-    """The write is to a LEASE_STATE table, made by one of its functions."""
+    """The write is to a LEASE_STATE table, made by one of its functions, or a LEASE_RENEWALS
+    renewal: its columns only, made by one of its functions."""
     rule = LEASE_STATE.get(op.table)
-    return rule is not None and _made_by(rule.sites)
+    if rule is not None:
+        return _made_by(rule.sites)
+    renewal = LEASE_RENEWALS.get((op.table, op.detail))
+    return renewal is not None and bool(op.columns) and set(op.columns) <= set(renewal.columns) \
+        and _made_by(renewal.sites)
 
 
 def _read_note(request: dict, op: Op) -> bool:
