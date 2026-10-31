@@ -231,9 +231,10 @@ def _period_row(schedule: Schedule, k: int) -> dict:
 
 async def period_list(session: AsyncSession, company_id, state: dict, today: date, *, limit: int = 24) -> dict:
     """An agreement's periods from its lowest to the one after today (and any claimed later),
-    newest first, at most ``limit``, with each claim's state and document; and its next bill date."""
+    newest first, at most ``limit``, with each claim's state and document; its next bill date;
+    and the earlier documents waiting for history review, each with its candidate periods."""
     if not state.get("anchor_date"):
-        return {"next_bill_date": None, "rows": []}
+        return {"next_bill_date": None, "rows": [], "review": []}
     schedule = Schedule.from_state(state)
     nxt = schedule.next_bill_date(floor=review_floor(state))
     first = schedule.first()
@@ -247,9 +248,12 @@ async def period_list(session: AsyncSession, company_id, state: dict, today: dat
                 doc_id = entry.get("doc_id")
                 rows.append({**_period_row(schedule, k), "state": entry.get("state"), "doc_id": doc_id,
                              "ref_id": await doc_ref(session, company_id, doc_id) if doc_id else None,
-                             "reason": entry.get("reason")})
+                             "reason": entry.get("reason"), "history": bool(entry.get("history"))})
             k -= 1
-    return {"next_bill_date": nxt.isoformat() if nxt else None, "rows": rows}
+    review = [{"doc_id": r.get("doc_id"), "ref_id": await doc_ref(session, company_id, r.get("doc_id")),
+               "candidates": [_period_row(schedule, c) for c in r.get("candidates") or []]}
+              for r in state.get("history_review") or []]
+    return {"next_bill_date": nxt.isoformat() if nxt else None, "rows": rows, "review": review}
 
 
 def due_periods(state: dict, today: date) -> tuple[Schedule, list[int]] | None:
@@ -331,15 +335,21 @@ async def run_due(*, session: AsyncSession, company_id, today: date, budget: int
     report = OperationReport()
     company = await session.get(Company, company_id)
     settings = (company.settings or {}) if company else {}
+    held: list[int] = []  # due periods of each agreement held for the catch-up preview
     for row in await agreements(session, company_id):
         state = row.state
         for k, entry in (state.get("periods") or {}).items():
             if ((entry.get("send") or {}).get("state")) == "pending":
                 report.after_commit.append(_deliverer(company_id, row.entity_id, int(k)))
-        if report.done >= budget or state.get("generation_mode") not in AUTO_MODES or state.get("history_review"):
+        if state.get("generation_mode") not in AUTO_MODES or state.get("history_review"):
             continue
         found = due_periods(state, today)
-        if not found or not found[1] or outside_window(state, *found, today):
+        if not found or not found[1]:
+            continue
+        if outside_window(state, *found, today):
+            held.append(len(found[1]))
+            continue
+        if report.done >= budget:
             continue
         actor = await authorizer(session, company_id, settings, state, "generation")
         if actor is None:
@@ -363,13 +373,19 @@ async def run_due(*, session: AsyncSession, company_id, today: date, budget: int
             if send:
                 report.after_commit.append(_deliverer(company_id, row.entity_id, k))
     if report.done:
-        from celerp.notifications.service import notify_once
-
-        title, body = "subscriptions.notice_billed_title", "subscriptions.notice_billed_body"
-        await notify_once(session, company_id, "system", t(title, "en"), t(body, "en", day=today.isoformat()),
-                          action_url="/subscriptions?direction=sales&summary=1",
-                          i18n={"title": title, "body": body, "params": {"day": today.isoformat()}})
+        await _notify(session, company_id, "notice_billed", "/subscriptions/summary", day=today.isoformat())
+    if held:
+        await _notify(session, company_id, "notice_catchup", "/subscriptions/catch-up", n=len(held), m=sum(held))
     return report
+
+
+async def _notify(session, company_id, notice: str, url: str, **params) -> None:
+    """Tell the company once about ``notice`` with these figures; new figures tell it again."""
+    from celerp.notifications.service import notify_once
+
+    title, body = f"subscriptions.{notice}_title", f"subscriptions.{notice}_body"
+    await notify_once(session, company_id, "system", t(title, "en"), t(body, "en", **params), action_url=url,
+                      i18n={"title": title, "body": body, "params": params})
 
 
 def _deliverer(company_id, template_id: str, k: int):

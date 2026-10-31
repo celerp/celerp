@@ -2143,6 +2143,47 @@ async def update_subscription_schedule(token: str, entity_id: str, changes: dict
         return _raise(await c.patch(f"/subscriptions/{entity_id}/schedule", json=changes)).json()
 
 
+HISTORY_ACTIONS = ("confirm", "withdraw")
+
+
+async def subscription_history_action(token: str, entity_id: str, doc_id: str, action: str,
+                                      body: dict | None = None) -> dict:
+    if action not in HISTORY_ACTIONS:
+        raise ValueError(f"Unknown history action: {action}")
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/subscriptions/{entity_id}/history/{doc_id}/{action}", json=body)).json()
+
+
+async def subscriptions_due(token: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.get("/subscriptions/due")).json()
+
+
+async def generate_all_due(token: str, ids: list[str]) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post("/subscriptions/generate-due", json={"ids": ids})).json()
+
+
+async def subscriptions_catch_up(token: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.get("/subscriptions/catch-up")).json()
+
+
+async def run_subscriptions_catch_up(token: str, items: list[dict]) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post("/subscriptions/catch-up/run", json={"items": items})).json()
+
+
+async def subscriptions_summary(token: str, everything: bool = False) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.get("/subscriptions/summary", params={"all": "true"} if everything else {})).json()
+
+
+async def acknowledge_subscriptions_summary(token: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post("/subscriptions/summary/ack")).json()
+
+
 # ---------------------------------------------------------------------------
 # Manufacturing
 # ---------------------------------------------------------------------------

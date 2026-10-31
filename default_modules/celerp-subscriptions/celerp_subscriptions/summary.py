@@ -69,7 +69,8 @@ async def report(session: AsyncSession, company_id, user_id, *, everything: bool
     rows = []
     for r in found:
         params = {"ref": refs.get(r["doc_id"], r["doc_id"]), "error": r.pop("error", None) or ""}
-        rows.append({"retry_url": None, **r, "message": t(f"subscriptions.summary_{r['kind']}", **params)})
+        rows.append({"retry_url": None, **r, "ref_id": params["ref"] if r["doc_id"] else None,
+                     "message": t(f"subscriptions.summary_{r['kind']}", **params)})
     rows.sort(key=lambda r: r["at"] or "", reverse=True)
     counts = {kind: sum(1 for r in rows if r["kind"] == kind) for kind in KINDS}
     return {"counts": counts, "rows": rows}

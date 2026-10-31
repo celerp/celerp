@@ -911,6 +911,213 @@
     "th.bill_date": {
       "en": "Bill date",
       "params": []
+    },
+    "btn.generate_all_due": {
+      "en": "Generate all due",
+      "params": []
+    },
+    "subscriptions.due_none": {
+      "en": "Nothing is due, and no active agreement has a next bill date.",
+      "params": []
+    },
+    "subscriptions.due_empty": {
+      "en": "Nothing is due. The next bill date is {date} for {name}.",
+      "params": [
+        "date",
+        "name"
+      ]
+    },
+    "subscriptions.due_hint": {
+      "en": "{n} agreements have a period due. Generate due bills the oldest due period of each ticked agreement. Agreements with more periods due can be run again.",
+      "params": [
+        "n"
+      ]
+    },
+    "subscriptions.due_more": {
+      "en": "{n} more due",
+      "params": [
+        "n"
+      ]
+    },
+    "subscriptions.due_result": {
+      "en": "Billed {billed}, refused {refused}.",
+      "params": [
+        "billed",
+        "refused"
+      ]
+    },
+    "subscriptions.catchup_banner": {
+      "en": "Billing paused for review: {n} agreements have {m} periods outside their automatic window.",
+      "params": [
+        "m",
+        "n"
+      ]
+    },
+    "subscriptions.catchup_open": {
+      "en": "Review billing",
+      "params": []
+    },
+    "subscriptions.catchup_title": {
+      "en": "Billing waiting for review",
+      "params": []
+    },
+    "subscriptions.catchup_hint": {
+      "en": "Automatic billing held these periods back because each is further behind than its agreement's catch-up window. Bill the ticked periods, or skip them with a reason. Each agreement bills its oldest period first.",
+      "params": []
+    },
+    "subscriptions.catchup_empty": {
+      "en": "No billing is waiting for review.",
+      "params": []
+    },
+    "subscriptions.catchup_bill": {
+      "en": "Bill selected",
+      "params": []
+    },
+    "subscriptions.catchup_skip": {
+      "en": "Skip selected",
+      "params": []
+    },
+    "subscriptions.catchup_result": {
+      "en": "Done {done}, refused {refused}.",
+      "params": [
+        "done",
+        "refused"
+      ]
+    },
+    "subscriptions.summary_banner": {
+      "en": "Since you last looked: generated {generated}, sent {sent}, failed to send {failed}.",
+      "params": [
+        "failed",
+        "generated",
+        "sent"
+      ]
+    },
+    "subscriptions.summary_open": {
+      "en": "Open the summary",
+      "params": []
+    },
+    "subscriptions.summary_title": {
+      "en": "Automatic billing summary",
+      "params": []
+    },
+    "subscriptions.summary_counts": {
+      "en": "Generated {generated}, sent {sent}, failed to send {failed}.",
+      "params": [
+        "failed",
+        "generated",
+        "sent"
+      ]
+    },
+    "subscriptions.summary_ack": {
+      "en": "Mark as read",
+      "params": []
+    },
+    "subscriptions.summary_all": {
+      "en": "Show all",
+      "params": []
+    },
+    "subscriptions.summary_unread": {
+      "en": "Show unread",
+      "params": []
+    },
+    "subscriptions.summary_empty": {
+      "en": "Nothing new since you last looked.",
+      "params": []
+    },
+    "subscriptions.notice_catchup_title": {
+      "en": "Billing paused for review",
+      "params": []
+    },
+    "subscriptions.notice_catchup_body": {
+      "en": "{n} agreements have {m} periods outside their automatic window. Review them before they are billed.",
+      "params": [
+        "m",
+        "n"
+      ]
+    },
+    "subscriptions.bills_automatically": {
+      "en": "Bills automatically",
+      "params": []
+    },
+    "subscriptions.bills_and_collects_automatically": {
+      "en": "Bills and collects automatically",
+      "params": []
+    },
+    "subscriptions.billing_heading": {
+      "en": "Billing",
+      "params": []
+    },
+    "subscriptions.billing_mode": {
+      "en": "Billing mode",
+      "params": []
+    },
+    "subscriptions.mode_manual_due": {
+      "en": "Generate due by hand",
+      "params": []
+    },
+    "subscriptions.mode_auto_invoice": {
+      "en": "Bill automatically",
+      "params": []
+    },
+    "subscriptions.mode_auto_invoice_collect": {
+      "en": "Bill and collect automatically",
+      "params": []
+    },
+    "subscriptions.auto_send": {
+      "en": "Send automatically",
+      "params": []
+    },
+    "subscriptions.catchup_window": {
+      "en": "Catch-up window (periods)",
+      "params": []
+    },
+    "subscriptions.catchup_window_title": {
+      "en": "How many past periods automatic billing may still bill on its own after a gap. Older periods wait for review.",
+      "params": []
+    },
+    "subscriptions.err_catchup_window": {
+      "en": "Enter the catch-up window as a whole number of periods, from 0 to 12.",
+      "params": []
+    },
+    "subscriptions.consent_generation": {
+      "en": "Automatic billing authorized on {date}",
+      "params": [
+        "date"
+      ]
+    },
+    "subscriptions.consent_sending": {
+      "en": "Automatic sending authorized on {date}",
+      "params": [
+        "date"
+      ]
+    },
+    "subscriptions.consent_collection": {
+      "en": "Automatic collection authorized on {date}",
+      "params": [
+        "date"
+      ]
+    },
+    "subscriptions.history_heading": {
+      "en": "Earlier documents to place",
+      "params": []
+    },
+    "subscriptions.history_hint": {
+      "en": "These documents were made before this agreement tracked its periods, and Celerp could not match them to a period on its own. Place each one in the period it billed. Until every one is placed, earlier periods are not billed and automatic billing waits.",
+      "params": []
+    },
+    "subscriptions.history_place": {
+      "en": "Place in {period}",
+      "params": [
+        "period"
+      ]
+    },
+    "subscriptions.history_no_period": {
+      "en": "This document is missing or has no issue date, so it can't be placed in a period.",
+      "params": []
+    },
+    "subscriptions.history_withdraw": {
+      "en": "Withdraw placement",
+      "params": []
     }
   }
 }

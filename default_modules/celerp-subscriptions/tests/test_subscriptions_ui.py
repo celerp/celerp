@@ -164,3 +164,110 @@ class TestSubscriptionActions:
         r = await owner_ui.post(f"/subscriptions/{eid}/pause")
         assert r.status_code == 204 and r.headers["HX-Redirect"] == f"/subscriptions/{eid}"
         assert (await owner_ui.api.get(f"/docs/{eid}")).json()["status"] == "paused"
+
+
+class TestBillingPages:
+    """Generate all due, the catch-up page, the summary, the Billing section and history
+    review, through the UI to the real API."""
+
+    async def test_generate_all_due_previews_then_bills_each_agreement(self, owner_ui, monkeypatch):
+        from agreement_kit import agreement, freeze_day
+        freeze_day(monkeypatch, "2026-03-15")
+        eid = await agreement(owner_ui.api, {}, start="2026-02-01")  # periods 0 and 1 due
+        panel = (await owner_ui.get("/subscriptions/due?direction=sales")).text
+        assert f'value="{eid}"' in panel and t("subscriptions.due_more", "en", n=1) in panel
+        r = await owner_ui.post("/subscriptions/generate-due", data={"ids": [eid]})
+        assert t("subscriptions.due_result", "en", billed=1, refused=0) in r.text
+        sub = (await owner_ui.api.get(f"/docs/{eid}")).json()
+        assert [k for k, e in sub["periods"].items() if e["state"] == "billed"] == ["0"]
+
+    async def test_a_refused_agreement_shows_why_with_retry(self, owner_ui, monkeypatch):
+        from agreement_kit import agreement, freeze_day
+        freeze_day(monkeypatch, "2026-03-15")
+        eid = await agreement(owner_ui.api, {}, start="2026-03-01")
+        assert (await owner_ui.api.post(f"/subscriptions/{eid}/pause")).status_code == 200
+        r = await owner_ui.post("/subscriptions/generate-due", data={"ids": [eid]})
+        assert t("subscriptions.err_bill_paused", "en") in r.text
+        assert t("btn.retry", "en") in r.text and "#sub-due-panel" in r.text
+
+    async def test_nothing_due_names_the_next_bill_date_and_its_agreement(self, owner_ui, monkeypatch):
+        from agreement_kit import agreement, freeze_day
+        freeze_day(monkeypatch, "2026-03-15")
+        eid = await agreement(owner_ui.api, {}, start="2026-04-01")
+        panel = (await owner_ui.get("/subscriptions/due?direction=sales")).text
+        assert "Nothing is due. The next bill date is 2026-04-01" in panel
+        assert f'href="/subscriptions/{eid}"' in panel
+
+    async def test_billing_mode_records_consent_and_shows_the_badge(self, owner_ui):
+        eid = await _active_subscription(owner_ui)
+        r = await owner_ui.patch(f"/subscriptions/{eid}/schedule/generation_mode", data={"value": "auto_invoice"})
+        assert t("subscriptions.bills_automatically", "en") in r.text and 'hx-swap-oob="true"' in r.text
+        assert "Automatic billing authorized on" in r.text
+        r = await owner_ui.patch(f"/subscriptions/{eid}/schedule/generation_mode", data={"value": "manual_due"})
+        assert t("subscriptions.bills_automatically", "en") not in r.text
+        html = (await owner_ui.get(f"/subscriptions/{eid}")).text
+        assert 'id="sub-billing"' in html and 'id="sub-auto-badge"' in html
+
+    async def test_catch_up_page_bills_the_held_periods_and_the_list_says_so(self, owner_ui, session, monkeypatch):
+        from sqlalchemy import select
+        from agreement_kit import agreement, company_id, freeze_day, schedule, tick
+        from celerp.models.notification import Notification
+        freeze_day(monkeypatch, "2026-01-01")
+        eid = await agreement(owner_ui.api, {}, start="2026-01-01")
+        assert (await schedule(owner_ui.api, {}, eid, generation_mode="auto_invoice")).status_code == 200
+        freeze_day(monkeypatch, "2026-03-15")
+        await tick(session, await company_id(owner_ui.api, {}), "2026-03-15")
+        notices = (await session.execute(select(Notification.action_url))).scalars().all()
+        assert "/subscriptions/catch-up" in notices
+        listing = (await owner_ui.get("/subscriptions?direction=sales")).text
+        assert t("subscriptions.catchup_banner", "en", n=1, m=3) in listing
+        page = (await owner_ui.get("/subscriptions/catch-up")).text
+        assert f'value="{eid}|0"' in page and f'value="{eid}|2"' in page
+        r = await owner_ui.post("/subscriptions/catch-up/run", data={"item": [f"{eid}|0", f"{eid}|1", f"{eid}|2"]})
+        assert t("subscriptions.catchup_result", "en", done=3, refused=0) in r.text
+        assert t("subscriptions.catchup_empty", "en") in r.text
+
+    async def test_catch_up_skip_needs_a_reason_per_period(self, owner_ui, monkeypatch):
+        from agreement_kit import agreement, freeze_day, schedule
+        freeze_day(monkeypatch, "2026-01-01")
+        eid = await agreement(owner_ui.api, {}, start="2026-01-01")
+        assert (await schedule(owner_ui.api, {}, eid, generation_mode="auto_invoice")).status_code == 200
+        freeze_day(monkeypatch, "2026-03-15")
+        r = await owner_ui.post("/subscriptions/catch-up/skip", data={"item": [f"{eid}|0"], "reason": ""})
+        assert t("subscriptions.catchup_result", "en", done=0, refused=1) in r.text
+        r = await owner_ui.post("/subscriptions/catch-up/skip", data={"item": [f"{eid}|0"], "reason": "Closed"})
+        assert t("subscriptions.catchup_result", "en", done=1, refused=0) in r.text
+        sub = (await owner_ui.api.get(f"/docs/{eid}")).json()
+        assert sub["periods"]["0"]["state"] == "skipped"
+
+    async def test_summary_page_lists_unattended_rows_and_mark_as_read_empties_it(self, owner_ui, session, monkeypatch):
+        from agreement_kit import agreement, company_id, freeze_day, schedule, tick
+        freeze_day(monkeypatch, "2026-03-01")
+        eid = await agreement(owner_ui.api, {}, start="2026-03-01")
+        assert (await schedule(owner_ui.api, {}, eid, generation_mode="auto_invoice")).status_code == 200
+        await tick(session, await company_id(owner_ui.api, {}), "2026-03-01")
+        listing = (await owner_ui.get("/subscriptions?direction=sales")).text
+        assert t("subscriptions.summary_banner", "en", generated=1, sent=0, failed=0) in listing
+        page = (await owner_ui.get("/subscriptions/summary")).text
+        assert f'href="/subscriptions/{eid}"' in page and t("subscriptions.summary_ack", "en") in page
+        r = await owner_ui.post("/subscriptions/summary/ack")
+        assert r.status_code == 204 and r.headers["HX-Redirect"] == "/subscriptions/summary"
+        assert t("subscriptions.summary_empty", "en") in (await owner_ui.get("/subscriptions/summary")).text
+        assert f'href="/subscriptions/{eid}"' in (await owner_ui.get("/subscriptions/summary?all=1")).text
+
+    async def test_history_review_places_a_document_and_withdraw_returns_it(self, owner_ui):
+        eid = await _active_subscription(owner_ui)
+        review = {"next_bill_date": None, "rows": [], "review": [
+            {"doc_id": "doc:old", "ref_id": "INV-OLD", "candidates": [
+                {"period_index": -2, "service_start": "2025-11-01", "service_end": "2025-11-30", "bill_date": "2025-11-01"}]}]}
+        with patch("ui.api_client.get_subscription_periods", new=AsyncMock(return_value=review)):
+            html = (await owner_ui.get(f"/subscriptions/{eid}")).text
+        assert 'id="history-review"' in html and "INV-OLD" in html
+        assert f'hx-post="/subscriptions/{eid}/history/doc:old/confirm"' in html
+        confirm = AsyncMock(return_value={"ok": True})
+        with patch("ui.api_client.subscription_history_action", new=confirm):
+            r = await owner_ui.post(f"/subscriptions/{eid}/history/doc:old/confirm", data={"period_index": "-2"})
+        assert r.headers["HX-Redirect"] == f"/subscriptions/{eid}#history-review"
+        assert confirm.await_args.args[2:] == ("doc:old", "confirm", {"period_index": -2})
+        r = await owner_ui.post(f"/subscriptions/{eid}/history/doc:old/withdraw")
+        assert t("subscriptions.err_history_not_confirmed", "en") in json.loads(r.headers["HX-Trigger"])["celerpToast"]["message"]
