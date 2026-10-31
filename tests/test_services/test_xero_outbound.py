@@ -15,6 +15,7 @@ import pytest
 import respx
 import sqlalchemy as sa
 from connector_test_support import connect
+from migration_support import real_client, real_engine  # noqa: F401
 
 from celerp.connectors.base import ConnectorContext
 from celerp.connectors.outbound_queue import process_outbound_queue_once
@@ -637,3 +638,42 @@ async def test_import_matching_two_invoices_fails_closed(company):
         )
     assert after == before
     assert sorted(d.entity_id for d in await _docs(company)) == sorted([DOC_ID, "doc:imported"])
+
+
+@pytest.mark.asyncio
+async def test_a_push_from_the_sync_request_whose_answer_is_lost_keeps_one_row(
+        real_client, real_engine, relay, company, signed_in_to_cloud):
+    """A person's sync request pushes the invoice. Two requests queued the same invoice;
+    Xero's answer is lost, so the push keeps one row for it, the operation's, and drops
+    the later request for the same identity."""
+    import asyncio
+
+    from company_backup_support import member, owner, token
+    from celerp.connectors.outbound_queue import enqueue_outbound
+    from celerp.db import get_session_ctx
+    from celerp.models.connector_config import ConnectorConfig
+    from celerp.services import background
+    from migration_support import auth
+
+    user = await owner(real_engine)
+    await member(real_engine, user, company, role="owner")
+    tok = await token(real_engine, user, company)
+    async with get_session_ctx() as session:  # the sync carries invoices out and nothing in
+        await session.execute(sa.update(ConnectorConfig).where(ConnectorConfig.company_id == str(company)).values(
+            entity_directions={"products": "off", "invoices": "outbound", "contacts": "off"}))
+        await session.commit()
+    await enqueue_outbound(str(company), "xero", "invoice", DOC_ID)
+    async with get_session_ctx() as session:  # a concurrent enqueue that also inserted
+        session.add(OutboundQueue(company_id=str(company), connector="xero", entity_type="invoice",
+                                  entity_id=DOC_ID, status="pending", retry_count=0))
+        await session.commit()
+
+    with _Xero(put=[LOST]) as xero:
+        before = set(background._BG_TASKS)
+        r = await real_client.post("/connectors/xero/sync-plan", headers=auth(tok))
+        assert r.status_code == 200, r.text
+        await asyncio.wait_for(asyncio.gather(*(set(background._BG_TASKS) - before)), 30)
+    assert len(xero.puts) == 1
+    rows = await _rows(company)
+    assert len(rows) == 1 and rows[0].status == "pending"
+    assert json.loads(rows[0].payload_json)["idempotency_key"] == xero.put_keys()[0]

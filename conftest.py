@@ -1339,6 +1339,16 @@ def connector_modules_running(monkeypatch):
     mark_running(monkeypatch, "celerp-inventory", "celerp-docs", "celerp-contacts")
 
 
+@pytest.fixture
+def signed_in_to_cloud():
+    """The install signed in to Celerp Cloud, as a store or accounting connection needs."""
+    import celerp.gateway.state as gw_state
+
+    gw_state.set_session_token("test-session-token")
+    yield
+    gw_state.set_session_token("")
+
+
 @pytest.fixture(autouse=True)
 def no_connection_off_this_machine(monkeypatch):
     """Refuse, and fail the test for, any connection to a host but this machine or the

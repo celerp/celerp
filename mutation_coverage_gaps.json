@@ -216,8 +216,8 @@
  },
  {
   "route": "ui POST /api/items/bulk/channel-sync/{platform}/{action}",
-  "class": "never requested",
-  "reason": "No test requests this route; its source reaches api POST."
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
  },
  {
   "route": "ui POST /api/items/bulk/duplicate",
@@ -236,11 +236,6 @@
  },
  {
   "route": "ui POST /api/items/bulk/revert-to-draft",
-  "class": "never requested",
-  "reason": "No test requests this route; its source reaches api POST."
- },
- {
-  "route": "ui POST /api/items/bulk/shopify-sync/{action}",
   "class": "never requested",
   "reason": "No test requests this route; its source reaches api POST."
  },
@@ -286,8 +281,8 @@
  },
  {
   "route": "ui POST /api/items/{entity_id}/channel-sync/{platform}/{action}",
-  "class": "never requested",
-  "reason": "No test requests this route; its source reaches api POST."
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
  },
  {
   "route": "ui POST /api/items/{entity_id}/duplicate",
@@ -1128,12 +1123,6 @@
   "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
  },
  {
-  "site": "celerp/connectors/sync_runner.py _finish_run add",
-  "count": 1,
-  "class": "reached from a route",
-  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
- },
- {
   "site": "celerp/events/engine.py connector_upsert emit_event",
   "count": 1,
   "class": "not reached from a route",
@@ -1164,12 +1153,6 @@
   "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
  },
  {
-  "site": "celerp/services/company_reset.py reset execute",
-  "count": 1,
-  "class": "reached from a route",
-  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
- },
- {
   "site": "celerp/services/lot_origin.py _normalize emit_event",
   "count": 1,
   "class": "not reached from a route",
@@ -1188,19 +1171,7 @@
   "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
  },
  {
-  "site": "celerp/services/migration_core_sink.py _import_attachment execute",
-  "count": 1,
-  "class": "not reached from a route",
-  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
- },
- {
   "site": "celerp/services/migration_core_sink.py _import_location add",
-  "count": 1,
-  "class": "not reached from a route",
-  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
- },
- {
-  "site": "celerp/services/migration_core_sink.py stage_file_cleanup execute",
   "count": 1,
   "class": "not reached from a route",
   "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
@@ -1348,12 +1319,6 @@
   "count": 1,
   "class": "reached from a route",
   "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
- },
- {
-  "site": "celerp/services/session_tracker.py clear execute",
-  "count": 1,
-  "class": "not reached from a route",
-  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
  },
  {
   "site": "celerp/services/session_tracker.py run_jti_cleanup_loop execute",
