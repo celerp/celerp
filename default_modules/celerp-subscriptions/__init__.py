@@ -5,7 +5,7 @@ PLUGIN_MANIFEST = {
     "name": "celerp-subscriptions",
     "version": "2.0.0",
     "display_name": "Subscriptions",
-    "description": "Recurring invoice and purchase order templates. Generate Now creates each document when it is due.",
+    "description": "Recurring invoice and purchase order agreements. Each period is billed once, on its bill date, by hand or automatically.",
     "license": "MIT",
     "author": "Celerp",
     "api_routes": "celerp_subscriptions.routes",
@@ -16,6 +16,7 @@ PLUGIN_MANIFEST = {
             {"group": "Subscriptions", "key": "subscriptions_sales", "href": "/subscriptions?direction=sales", "label": "Sales Subscriptions", "label_key": "nav.subscriptions_sales", "order": 25, "permission": "view_subscriptions"},
             {"group": "Subscriptions", "key": "subscriptions_purchasing", "href": "/subscriptions?direction=purchasing", "label": "Purchasing Subscriptions", "label_key": "nav.subscriptions_purchasing", "order": 26, "permission": "view_subscriptions"},
         ],
+        "periodic_operation": {"handler": "celerp_subscriptions.billing:run_due", "module": "celerp-subscriptions"},
         "search_provider": {
             "handler": "celerp_subscriptions.search:global_search",
             "result_key": "items",

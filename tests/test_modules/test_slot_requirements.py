@@ -37,6 +37,7 @@ _CODE = {
         "async def extra_in_production(*, session, company_id, when=None):\n    return 0\n"
         "async def demo(*, session, company_id, user_id):\n    return None\n"
         "async def asset_lines(*, session, company_id, user_id, doc_id, doc, change):\n    return None\n"
+        "async def periodic(*, session, company_id, today, budget):\n    return None\n"
         "async def label_rows(*, session, company_id, ids):\n    return []\n"
         "async def loose_label_rows(*, session, company_id):\n    return []\n"
         "async def import_rows(*, session, company_id, user_id, rows, as_at, source, body):\n    return {}\n"
@@ -77,6 +78,7 @@ _VALID = {
     "inventory_in_production": [{"handler": "{inner}.lineage:in_production"}],
     "demo_records": [{"handler": "{inner}.lineage:demo"}],
     "background_loop": [{"handler": "{inner}.hooks:loop"}],
+    "periodic_operation": [{"handler": "{inner}.lineage:periodic", "module": "acme"}],
     "doc_asset_lines": [{"handler": "{inner}.lineage:asset_lines"}],
     "fixed_asset_rules": [{"kind": "method", "key": "acme_rate", "handler": "{inner}.rules:Rate"}],
     "label_source": [{"entity_type": "acme_box", "handler": "{inner}.lineage:label_rows",
@@ -137,6 +139,8 @@ _WRONG = [
     ("import_target", {"handler": "{inner}.lineage:short_import_rows"},
      "session, company_id, user_id, rows, as_at, source, body"),
     ("turn_off_preflight", {"handler": "{inner}.lineage:loose_preflight"}, "session, company_id"),
+    ("periodic_operation", {"module": 3}, "module"),
+    ("periodic_operation", {"handler": "{inner}.lineage:loose_preflight"}, "session, company_id, today, budget"),
     ("item_lineage_guard", {"handler": "{inner}.lineage:sync_guard"}, "must be async"),
     ("item_lineage_guard", {"handler": "{inner}.lineage:short_guard"}, "session, entry, transition"),
     ("item_lineage_guard", {"handler": "{inner}.lineage:loose_guard"}, "session, entry, transition"),

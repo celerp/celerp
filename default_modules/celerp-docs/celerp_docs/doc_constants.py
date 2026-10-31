@@ -72,6 +72,21 @@ LEGACY_CONTACT_FIELDS: dict[str, str] = {
     "customer_id": "contact_id", "customer_name": "contact_name", "receiver": "contact_name",
 }
 
+# What an agreement's schedule operations write (celerp-subscriptions): on a billed
+# document, the agreement and period it bills; on the agreement, its period claims,
+# history review and the unattended modes with their consents.
+SCHEDULE_OWNED_FIELDS: frozenset[str] = frozenset({
+    "source_agreement", "period_index", "service_start", "service_end",
+    "periods", "history_review", "consents", "generation_mode", "auto_send",
+})
+# An agreement's schedule terms: changed only through its schedule, which checks them
+# against the periods already claimed. A draft may carry them when it is created.
+SCHEDULE_TERM_FIELDS: frozenset[str] = frozenset({
+    "anchor_date", "frequency", "custom_interval_days", "billing_timing", "term_start", "term_end",
+    "cancel_at_period_end", "catchup_periods",
+})
+
+
 # State that only lifecycle operations write: finalize, send, payment, credit,
 # receive, fulfil, convert, invoicing from a memo, close, void and scan, plus the record identity the ledger assigns.
 # Ordinary creation never carries any of it, since a new document or list is an
@@ -86,7 +101,7 @@ LIFECYCLE_OWNED_FIELDS: frozenset[str] = frozenset({
     "result", "close_reason", "void_reason", "revert_count", "files",
     "pre_close_status", "pre_void_status", "pre_void_fulfillment", "pre_receipt_status", "pre_convert_status",
     "entity_type", "company_id", "doc_number", SCAN_RUNS_FIELD,
-})
+}) | SCHEDULE_OWNED_FIELDS
 
 
 # Document types that can be shared by link and imported by the recipient. One
