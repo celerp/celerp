@@ -95,11 +95,12 @@ def _add_config(conn, connector: str, direction: str) -> str:
     return company_id
 
 
-def _add_run(conn, company_id: str, connector: str, entity: str, at: datetime) -> None:
+def _add_run(conn, company_id: str, connector: str, entity: str, at: datetime,
+             status: str = "success") -> None:
     conn.execute(text(
         "INSERT INTO sync_runs (company_id, connector, entity, direction, started_at, status)"
-        " VALUES (:c, :n, :e, 'inbound', :at, 'success')"
-    ), {"c": company_id, "n": connector, "e": entity, "at": at})
+        " VALUES (:c, :n, :e, 'inbound', :at, :s)"
+    ), {"c": company_id, "n": connector, "e": entity, "at": at, "s": status})
 
 
 def _directions(conn, company_id: str) -> dict:
@@ -173,6 +174,34 @@ def test_first_sync_counts_as_done_for_a_connection_that_already_synced(cfg_db):
     assert first[synced] == ("completed", early)
     assert first[never] == ("pending", None)
     assert first[reset] == ("completed", None)
+
+
+def test_a_store_disconnected_before_the_upgrade_waits_for_its_review(cfg_db):
+    """A reviewed connector's store disconnected since its last run has synced nothing
+    since: it reviews a first sync when it reconnects. One that reconnected and ran again
+    completed its first sync at that run, and a connection whose runs all failed was still
+    syncing each cycle, so it carries on as it did."""
+    early = datetime(2026, 3, 1, tzinfo=timezone.utc)
+    with cfg_db.begin() as conn:
+        disconnected = _add_config(conn, "woocommerce", "both")
+        _add_run(conn, disconnected, "woocommerce", "products", early)
+        _add_run(conn, disconnected, "woocommerce", "__connector_reset__", early + timedelta(days=1))
+        reconnected = _add_config(conn, "shopify", "both")
+        _add_run(conn, reconnected, "shopify", "products", early)
+        _add_run(conn, reconnected, "shopify", "__connector_reset__", early + timedelta(days=1))
+        _add_run(conn, reconnected, "shopify", "orders", early + timedelta(days=2))
+        failing = _add_config(conn, "woocommerce", "both")
+        _add_run(conn, failing, "woocommerce", "products", early, status="error")
+
+    run_migration_ops(cfg_db, MODULE)
+    run_migration_ops(cfg_db, FIRST_SYNC_MODULE)
+
+    with cfg_db.connect() as conn:
+        first = {row[0]: row[1:] for row in conn.execute(text(
+            "SELECT company_id, state, started_at FROM connector_first_syncs")).all()}
+    assert first[disconnected] == ("pending", None)
+    assert first[reconnected] == ("completed", early + timedelta(days=2))
+    assert first[failing] == ("completed", early)
 
 
 def test_the_first_sync_backfill_names_every_reviewed_connector():
