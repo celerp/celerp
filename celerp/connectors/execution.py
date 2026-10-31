@@ -751,7 +751,7 @@ async def settle_unrun(company_id, connector: str, resource: str, exc: Exception
 async def resume_reruns(session, company_id, connector: str) -> None:
     """Try each of the connection's reruns waiting for a retry time, or parked, at the next
     sweeper tick: the person's own work proved the store, or the connection was bound to
-    a store. In the caller's transaction."""
+    a store. In the caller's transaction, which holds no other row (the heartbeat's lock rank)."""
     await session.execute(sa.text(
         "UPDATE connector_execution_heartbeats SET rerun_attempts = 0, rerun_retry_at = NULL "
         "WHERE company_id = :c AND connector = :k AND rerun_retry_at IS NOT NULL"),
@@ -969,16 +969,17 @@ async def _credentials(ex: Execution):
     return ctx
 
 
-async def _prove_store(ex: Execution, connector) -> None:
+async def _prove_store(ex: Execution, connector) -> bool:
     """Before any store work: the store in the context is the one the company's records
-    came from (ownership.ensure_store_bound). It runs as the execution, so its store
-    calls meet the no-open-transaction check every store call meets."""
+    came from (ownership.ensure_store_bound); True when it bound the store now. It runs
+    as the execution, so its store calls meet the no-open-transaction check every store
+    call meets."""
     from celerp.connectors.ownership import (
         ConnectorStoreChangedError, ConnectorStoreUncheckedError, ensure_store_bound,
     )
 
     try:
-        await ensure_store_bound(ex.company_id, connector, ex.ctx)
+        return await ensure_store_bound(ex.company_id, connector, ex.ctx)
     except ConnectorStoreUncheckedError as exc:
         raise ExecutionRefused("store_unchecked", str(exc)) from exc
     except ConnectorStoreChangedError as exc:
@@ -1038,8 +1039,9 @@ async def connector_execution(
             token = _CURRENT.set(ex)
             try:
                 if ex.ctx is not None:
-                    await _prove_store(ex, connector)
-                    if purpose in PERSON_PURPOSES:
+                    # A new binding or the person's own work resumes the waiting reruns, in a
+                    # transaction of its own (the heartbeat row is taken holding nothing else).
+                    if await _prove_store(ex, connector) or purpose in PERSON_PURPOSES:
                         await _resume(ex)
                 yield ex
                 await _run_reruns(ex, connector)

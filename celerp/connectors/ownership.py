@@ -664,23 +664,24 @@ async def prove_store(session: AsyncSession, company_id, connector, ctx) -> list
     return await _confirm_store(connector, ctx, samples, origin)
 
 
-async def ensure_store_bound(company_id, connector, ctx) -> None:
+async def ensure_store_bound(company_id, connector, ctx) -> bool:
     """Bind the connection's store before any store work runs (connector_execution).
     A bound connection is only read. Otherwise the samples are read, the store is asked
     with no transaction open, and a short transaction binds it under the company lock,
-    making no network call there."""
+    making no network call there. True when this call bound it."""
     from celerp.db import get_session_ctx
 
     if not connector.store_scoped_ids or not ctx.store_handle:
-        return
+        return False
     async with get_session_ctx() as session:
         if await _bound(session, company_id, connector, ctx.store_handle):
-            return
+            return False
         samples, origin = await _store_samples(session, company_id, connector)
     proven = await _confirm_store(connector, ctx, samples, origin)
     async with get_session_ctx() as session:
         await bind_connector_store(session, company_id, connector, ctx, proven=proven)
         await session.commit()
+    return True
 
 
 async def bind_connector_store(session: AsyncSession, company_id, connector, ctx, *, proven: list[str]) -> None:
@@ -690,8 +691,7 @@ async def bind_connector_store(session: AsyncSession, company_id, connector, ctx
     exist yet or when it still holds a sample of them: ``proven``, the sample
     ``prove_store`` confirmed. Under the company lock the sample is read again and
     must be the same; no network call is made here. Each new connection is
-    checked once, even when the store address is unchanged. The connection's waiting
-    reruns are tried at the next sweeper tick. Caller commits."""
+    checked once, even when the store address is unchanged. Caller commits."""
     from datetime import datetime, timezone
 
     from celerp.models.connector_source import ConnectorSource
@@ -724,7 +724,3 @@ async def bind_connector_store(session: AsyncSession, company_id, connector, ctx
         source.store_handle = store_handle
         source.bound_at = now
         source.config_id = config_id
-    from celerp.connectors.execution import resume_reruns
-
-    # A rerun parked or waiting because the store was not the company's is tried again.
-    await resume_reruns(session, key[0], connector.name)
