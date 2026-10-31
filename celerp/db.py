@@ -20,30 +20,48 @@ from celerp.config import settings
 # (a company backup or restore). One key, one source of truth, across every process.
 _MIGRATION_LOCK_KEY = 4207320001
 
-# Set on the session while a change that must commit whole runs (one_unit).
+# Set on the session while a change that must commit whole runs (one_unit), and when
+# a full rollback inside it threw away the work done before.
 _ONE_UNIT = "one_unit_open"
+_UNIT_BROKEN = "one_unit_broken"
 
 
 @contextmanager
 def one_unit(session):
     """Run a change that commits whole or not at all: while it runs, a commit of the
     outer transaction (a step committing part of the change, and releasing the locks
-    the rest relies on) is refused. Savepoints still release. The caller commits after."""
+    the rest relies on) is refused, and a full rollback (a step discarding the work
+    before it and carrying on) makes leaving the unit raise, so the caller rolls back
+    the rest. Savepoints still release and roll back. The caller commits after."""
     open_units = session.info.get(_ONE_UNIT, 0)
     session.info[_ONE_UNIT] = open_units + 1
+    failed = False
     try:
         yield
+    except BaseException:
+        failed = True
+        raise
     finally:
         if open_units:
             session.info[_ONE_UNIT] = open_units
+            broken = session.info.get(_UNIT_BROKEN)
         else:
             session.info.pop(_ONE_UNIT, None)
+            broken = session.info.pop(_UNIT_BROKEN, None)
+        if broken and not failed:
+            raise RuntimeError("A step rolled back part of a change that commits whole or not at all")
 
 
 @event.listens_for(Session, "before_commit")
 def _a_unit_commits_whole(session: Session) -> None:
     if session.info.get(_ONE_UNIT) and not session.in_nested_transaction():
         raise RuntimeError("A step committed part of a change that commits whole or not at all")
+
+
+@event.listens_for(Session, "after_soft_rollback")
+def _a_unit_rolls_back_whole(session: Session, previous_transaction) -> None:
+    if session.info.get(_ONE_UNIT) and previous_transaction.parent is None:
+        session.info[_UNIT_BROKEN] = True
 
 
 # Redacts the password in any Postgres URL: "://user:secret@host" -> "://user:***@host".
