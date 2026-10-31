@@ -3,10 +3,9 @@
 
 """Alembic changes a database only under the migration key.
 
-A migration run stamps alembic_version after each migration in one transaction, so it
-locks a table and then the stamp, and the stamp and then the next table: no lock order
-can rank it. It is safe only because every run holds the exclusive migration key, so
-alembic refuses to run without it (``celerp.db.migration_key``)."""
+Two runs at once would both apply the revision after the stamp they read. Every run holds
+the exclusive migration key, so alembic refuses to run without it
+(``celerp.db.migration_key``)."""
 
 from __future__ import annotations
 

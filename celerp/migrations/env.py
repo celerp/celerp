@@ -10,6 +10,7 @@ import os
 from logging.config import fileConfig
 
 from alembic import context
+from alembic.runtime.migration import RevisionStep
 from sqlalchemy import engine_from_config, pool
 
 from celerp.db_url import sync_url as sync_db_url
@@ -63,10 +64,30 @@ def run_migrations_offline() -> None:
         context.run_migrations()
 
 
+def _refusals_first(planned_steps):
+    """The run's steps, once every downgrade step's revision has been asked whether it refuses.
+
+    Each revision commits on its own, so a refusal met part-way down would leave the
+    revisions above it already undone. A revision whose downgrade can refuse says so in its
+    ``downgrade_refusal(bind)``, and the whole run stops on the first one before any
+    revision changes the schema. The revision asks again under its own locks when it runs."""
+    def steps(heads, migration):
+        planned = list(planned_steps(heads, migration))
+        for step in planned:
+            if isinstance(step, RevisionStep) and not step.is_upgrade:
+                refusal = getattr(step.revision.module, "downgrade_refusal", None)
+                reason = refusal(migration.connection) if refusal else None
+                if reason:
+                    raise RuntimeError(reason)
+        # The checks hold nothing into the first revision's transaction.
+        migration.connection.commit()
+        return planned
+    return steps
+
+
 def run_migrations_online() -> None:
-    # A run stamps alembic_version after each migration in one transaction, so it locks
-    # tables and the stamp in both orders: it is safe only while it holds the migration
-    # key, which keeps every other run out.
+    # A run changes the schema only while it holds the migration key, which keeps every
+    # other run out.
     from celerp.db import holds_migration_key
     if not holds_migration_key(_sync_url):
         raise RuntimeError(
@@ -86,11 +107,18 @@ def run_migrations_online() -> None:
         engines = contextlib.nullcontext(
             engine_from_config(cfg, prefix="sqlalchemy.", poolclass=pool.NullPool))
     with engines as connectable, connectable.connect() as connection:
-        context.configure(
+        options = dict(
             connection=connection,
             target_metadata=target_metadata,
             render_as_batch=False,
+            # Each revision commits with its stamp before the next begins, as the CLI's
+            # one-revision-per-upgrade run does: no revision holds an earlier one's locks, and
+            # a failure leaves the stamp naming the last revision that completed.
+            transaction_per_migration=True,
         )
+        context.configure(**options)
+        # The command's steps, configured again so that every refusal is asked first.
+        context.configure(**options, fn=_refusals_first(context.get_context().opts["fn"]))
         with context.begin_transaction():
             context.run_migrations()
 

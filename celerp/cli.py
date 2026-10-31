@@ -523,11 +523,8 @@ def _run_upgrade_with_auto_stamp(alembic_cfg, engine_url: str) -> None:
     Alembic will crash with DuplicateTable/DuplicateObject on the re-apply; that
     revision alone is stamped and the upgrade continues.
 
-    One revision per upgrade is what makes the failing revision known. A single
-    `upgrade head` runs every pending revision in one transaction, so a failure
-    rolls back the revisions before it as well and the stamp no longer says which
-    one raised: stepping past "the one after the stamp" would skip a revision that
-    never ran.
+    One revision per upgrade is what makes the failing revision known: the one this
+    loop asked for is the one that raised, and only that one is stamped past.
     """
     from alembic import command
     from alembic.script import ScriptDirectory

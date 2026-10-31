@@ -54,7 +54,7 @@ def _legacy_hours_per_day(value) -> float:
 def upgrade() -> None:
     conn = op.get_bind()
     notices = conn.execute(sa.text("SELECT to_regclass('notifications')")).scalar() is not None
-    lock_tables(conn, "work_centers", *(["notifications"] if notices else []))
+    lock_tables(conn, "companies", "work_centers", *(["notifications"] if notices else []))
 
     # Never ask PostgreSQL to interpret companies.settings here. SQL_ASCII
     # databases can contain valid JSON with escaped Unicode that server-side

@@ -29,7 +29,7 @@ depends_on = None
 
 
 def upgrade() -> None:
-    lock_tables(op.get_bind(), "session_registry")
+    lock_tables(op.get_bind(), "session_registry", "user_auth_state")
     op.execute("DELETE FROM session_registry")
     bind = op.get_bind()
     for (user_id,) in bind.execute(sa.text("SELECT user_id FROM user_auth_state")).all():

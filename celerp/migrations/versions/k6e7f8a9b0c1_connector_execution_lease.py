@@ -111,13 +111,11 @@ def upgrade() -> None:
     """).bindparams(sa.bindparam("reviewed", expanding=True)), {"reviewed": list(_REVIEWED)})
 
 
-def downgrade() -> None:
+def downgrade_refusal(bind) -> str | None:
     """The old schema has no first sync and no execution lease, so it cannot hold a
     connection waiting on its first-sync review (it would sync unreviewed), one part-way
     through or failed (its resume and undo would be lost), or work still running. Any of
     those stops the downgrade before the schema changes, naming the connections."""
-    bind = op.get_bind()
-    lock_tables(bind, "connector_first_syncs", "connector_execution_leases")
     open_work = bind.execute(sa.text("""
         SELECT f.company_id, f.connector, 'first sync ' || f.state FROM connector_first_syncs f
         JOIN connector_configs c ON c.company_id = f.company_id AND c.connector = f.connector
@@ -126,9 +124,18 @@ def downgrade() -> None:
         SELECT company_id, connector, 'running ' || resource FROM connector_execution_leases
         WHERE holder IS NOT NULL
     """)).all()
-    if open_work:
-        raise RuntimeError("Cannot downgrade connector executions: " + "; ".join(
-            f"company {company} {connector}: {what}" for company, connector, what in open_work))
+    if not open_work:
+        return None
+    return "Cannot downgrade connector executions: " + "; ".join(
+        f"company {company} {connector}: {what}" for company, connector, what in open_work)
+
+
+def downgrade() -> None:
+    bind = op.get_bind()
+    lock_tables(bind, "connector_first_syncs", "connector_execution_leases")
+    refusal = downgrade_refusal(bind)
+    if refusal:
+        raise RuntimeError(refusal)
     op.drop_column("connector_configs", "webhooks_version")
     op.drop_column("connector_configs", "webhooks_dirty")
     op.drop_table("connector_first_syncs")

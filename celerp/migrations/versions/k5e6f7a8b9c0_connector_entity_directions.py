@@ -73,12 +73,8 @@ def upgrade() -> None:
     op.drop_column("connector_configs", "direction")
 
 
-def downgrade() -> None:
-    """Every connection goes back to the one direction it was upgraded from. A setting
-    changed since that no single direction holds stops the downgrade before the schema
-    changes, naming the connections to set back first."""
-    bind = op.get_bind()
-    lock_tables(bind, "connector_configs")
+def _old_directions(bind) -> tuple[dict, str | None]:
+    """Each connection's old direction, and the refusal naming every connection that has none."""
     old, refused = {}, []
     for row_id, company_id, connector, directions in bind.execute(sa.text(
             "SELECT id, company_id, connector, entity_directions FROM connector_configs")).all():
@@ -87,8 +83,22 @@ def downgrade() -> None:
             old[row_id] = _old_direction(connector, values)
         except RuntimeError as exc:
             refused.append(f"company {company_id}: {exc}")
-    if refused:
-        raise RuntimeError("Cannot downgrade connector directions: " + "; ".join(refused))
+    return old, ("Cannot downgrade connector directions: " + "; ".join(refused)) if refused else None
+
+
+def downgrade_refusal(bind) -> str | None:
+    """A setting changed since the upgrade that no single direction holds stops the
+    downgrade before the schema changes, naming the connections to set back first."""
+    return _old_directions(bind)[1]
+
+
+def downgrade() -> None:
+    """Every connection goes back to the one direction it was upgraded from."""
+    bind = op.get_bind()
+    lock_tables(bind, "connector_configs")
+    old, refusal = _old_directions(bind)
+    if refusal:
+        raise RuntimeError(refusal)
     op.add_column("connector_configs", sa.Column(
         "direction", sa.String(16), nullable=False, server_default="both"))
     for row_id, direction in old.items():

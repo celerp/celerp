@@ -197,6 +197,67 @@ def test_peer_downgrade_preserves_persisted_records(table):
             eng.dispose()
 
 
+def test_a_downgrade_refused_below_the_top_revision_changes_nothing():
+    """Each revision commits on its own, so a refusal met part-way down the chain would
+    leave the revisions above it undone. Every refusal is asked before the first runs: a
+    connection whose directions no single old direction holds stops the run with the
+    first-sync and media tables of the revisions above it still in place."""
+    directions = "connector_entity_directions"
+    target = next(_declared(p)["down_revision"] for p in _revision_files() if directions in p.name)
+    off = '{"products": "off", "stock": "off", "orders": "off", "customers": "off"}'
+    with throwaway_db("refusal_first") as (_, sync_url):
+        upgrade_to(sync_url, head_rev())
+        before = schema_of(sync_url)
+        eng = create_engine(sync_url)
+        try:
+            with eng.begin() as conn:
+                conn.execute(text("INSERT INTO connector_configs (company_id, connector, entity_directions) "
+                                  "VALUES (:c, 'woocommerce', CAST(:d AS json))"),
+                             {"c": str(uuid.uuid4()), "d": off})
+        finally:
+            eng.dispose()
+        with pytest.raises(RuntimeError, match="Cannot downgrade connector directions"):
+            _downgrade_to(sync_url, target)
+        eng = create_engine(sync_url)
+        try:
+            with eng.connect() as conn:
+                version = conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
+        finally:
+            eng.dispose()
+        after = schema_of(sync_url)
+    assert version == head_rev()
+    assert after == before
+
+
+def _module_functions(tree: ast.Module) -> dict[str, ast.FunctionDef]:
+    return {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
+
+
+def _reaches_a_raise(functions: dict[str, ast.FunctionDef], name: str, seen: set[str]) -> bool:
+    seen.add(name)
+    for node in ast.walk(functions[name]):
+        if isinstance(node, ast.Raise):
+            return True
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) \
+                and node.func.id in functions and node.func.id not in seen \
+                and _reaches_a_raise(functions, node.func.id, seen):
+            return True
+    return False
+
+
+def test_every_downgrade_that_can_refuse_declares_its_refusal():
+    """A downgrade that can raise, itself or through its module's helpers, says why in
+    ``downgrade_refusal(bind)``, which the migration env asks before any revision of the
+    run changes the schema (celerp/migrations/env.py _refusals_first)."""
+    undeclared = []
+    for path in _revision_files():
+        functions = _module_functions(ast.parse(path.read_text(encoding="utf-8")))
+        if "downgrade" in functions and _reaches_a_raise(functions, "downgrade", set()) \
+                and "downgrade_refusal" not in functions:
+            undeclared.append(path.name)
+    assert undeclared == []
+
+
 def test_ai_charges_from_before_the_usage_record_are_carried_over():
     """The assistant's tables are created at startup, so a database that has started the
     app holds them before the usage record exists; each charged question and receipts
